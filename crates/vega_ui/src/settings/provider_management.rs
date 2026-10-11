@@ -914,7 +914,7 @@ impl SettingsView {
                 if enabled && primary {
                     colors.brand_primary
                 } else {
-                    colors.bg_elevated
+                    gpui_kit::transparent_black().into()
                 },
                 if primary {
                     colors.brand_primary_strong
@@ -928,6 +928,11 @@ impl SettingsView {
                 },
                 enabled,
             )
+            .border_color(if destructive || primary {
+                colors.border_subtle
+            } else {
+                gpui_kit::transparent_black().into()
+            })
             .debug_selector(move || selector.clone())
             .key_context("ProviderControl")
             .focusable()
@@ -1037,6 +1042,11 @@ impl SettingsView {
                     )
                     .child(
                         div()
+                            .size(px(Layout::ICON_SIZE))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .text_color(if p.enabled {
                                 colors.success
                             } else {
@@ -1114,7 +1124,6 @@ impl SettingsView {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
                                 .text_size(px(Typography::HEADING_CARD))
                                 .child(p.name.clone()),
                         )
@@ -1160,7 +1169,6 @@ impl SettingsView {
                     div()
                         .debug_selector(|| "provider-base-url".into())
                         .min_w_0()
-                        .truncate()
                         .child(p.base_url.clone()),
                 )
                 .child(
@@ -1239,8 +1247,17 @@ impl SettingsView {
                                 .relative()
                                 .flex()
                                 .items_center()
+                                .flex_wrap()
                                 .gap_1()
-                                .child(div().flex_1().min_w_0().truncate().child(model.clone()))
+                                .child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("provider-model-name-{index}")
+                                        })
+                                        .w_full()
+                                        .min_w_0()
+                                        .child(model.clone()),
+                                )
                                 .child(self.provider_button(
                                     format!("model-test-{index}"),
                                     "测试",
@@ -1281,7 +1298,7 @@ impl SettingsView {
             if let Some(editor) = &self.provider_management.model_editor {
                 let can_edit = !busy && !editor.saving;
                 detail = detail
-                    .child(editor.model_input.clone())
+                    .child(settings_field("provider-model-editor-name", "模型 ID", None, editor.model_input.clone(), colors))
                     .when(editor.original.is_some(), |detail| {
                         let source = match editor.source {
                             PolicySource::Loading => "正在读取模型上下文配置…".to_string(),
@@ -1322,24 +1339,10 @@ impl SettingsView {
                                     .flex()
                                     .flex_col()
                                     .gap_2()
-                                    .child(
-                                        div()
-                                            .child("输入最大限制（token）")
-                                            .child(
-                                                div()
-                                                    .debug_selector(|| "model-context-input".into())
-                                                    .child(editor.input_limit.clone()),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .child("输出最大限制（token）")
-                                            .child(
-                                                div()
-                                                    .debug_selector(|| "model-context-output".into())
-                                                    .child(editor.output_limit.clone()),
-                                            ),
-                                    ),
+                                    .child(settings_field("provider-model-input-limit", "输入最大限制", Some("token".into()),
+                                        div().debug_selector(|| "model-context-input".into()).child(editor.input_limit.clone()), colors))
+                                    .child(settings_field("provider-model-output-limit", "输出最大限制", Some("token".into()),
+                                        div().debug_selector(|| "model-context-output".into()).child(editor.output_limit.clone()), colors)),
                             ))
                             .child(self.provider_button(
                                 "model-context-auto".into(),
@@ -1413,7 +1416,15 @@ impl SettingsView {
                                 !existing && !busy,
                                 cx,
                             ))
-                            .child(div().min_w_0().truncate().child(model)),
+                            .child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("provider-candidate-name-{index}")
+                                    })
+                                    .min_w_0()
+                                    .flex_1()
+                                    .child(model),
+                            ),
                     );
                 }
                 detail = detail.child(

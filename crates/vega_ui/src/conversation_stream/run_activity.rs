@@ -329,6 +329,33 @@ impl RunActivityGroup {
             .unwrap_or_default()
     }
 
+    pub(crate) fn estimated_segment_height(&self, segment: usize, width: f32, cx: &App) -> f32 {
+        if !self.expanded {
+            return 0.;
+        }
+        let Some(segment) = self.segments.get(segment) else {
+            return 0.;
+        };
+        let mut height = 0.;
+        for (index, child) in segment.children.iter().enumerate() {
+            if index > 0 {
+                height += Layout::PROCESS_ITEM_GAP;
+            }
+            height += match child {
+                RunActivityChild::Thinking(card) => card.read(cx).estimated_height(width),
+                RunActivityChild::Tool(card) => card.read(cx).estimated_height(),
+                RunActivityChild::ToolGroup(group) => group.read(cx).estimated_height(cx),
+                RunActivityChild::Artifact(card) => {
+                    card.read(cx).row_count() as f32 * ROW_HEIGHT + 12.
+                }
+            };
+            if height >= Layout::TOOL_GROUP_MAX_HEIGHT {
+                break;
+            }
+        }
+        height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
+    }
+
     fn child_row_count(child: &RunActivityChild, cx: &App) -> usize {
         match child {
             RunActivityChild::Thinking(card) => card.read(cx).row_count(),
@@ -461,12 +488,8 @@ impl RunActivityGroup {
                     colors.text_tertiary,
                 ))
             });
-        div()
+        render_rows::process_surface(&colors)
             .debug_selector(|| "run-activity-group".to_string())
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
             .child(header)
             .into_any_element()
     }
@@ -482,10 +505,11 @@ impl RunActivityGroup {
             return div().h_0().into_any_element();
         }
         let children = group_ref.segment_children(segment_index);
+        let colors = theme(cx).colors;
         let scroll = group_ref
             .segment_scroll_handle(segment_index)
             .unwrap_or_default();
-        div()
+        render_rows::process_surface(&colors)
             .id(format!(
                 "run-activity-{}-{segment_index}",
                 group.entity_id()
@@ -505,7 +529,7 @@ impl RunActivityGroup {
                     div().w_full().min_w_0().child(card).into_any_element()
                 }
                 RunActivityChild::Tool(card) => {
-                    ToolCard::render(card, "tool-activity-single-row".to_string(), true, cx)
+                    ToolCard::render(card, "tool-activity-single-row".to_string(), false, cx)
                 }
                 RunActivityChild::ToolGroup(group) => ToolActivityGroup::render(group, cx),
                 RunActivityChild::Artifact(card) => {

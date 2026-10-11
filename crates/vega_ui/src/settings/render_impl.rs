@@ -156,25 +156,23 @@ impl SettingsView {
         let edit_entry = entry.clone();
         let model_for_reset = entry.model.clone();
         let model_for_delete = entry.model.clone();
-        div()
-            .flex()
+        settings_group(colors)
+            .flex_row()
             .items_center()
-            .justify_between()
-            .min_w_0()
-            .p(px(Layout::SETTINGS_CONTENT_GAP))
-            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .gap(px(Layout::SETTINGS_FIELD_GAP))
             .flex_wrap()
-            .rounded(px(Layout::PANEL_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .min_w_0()
                     .flex_1()
-                    .child(div().truncate().child(entry.model))
+                    .child(
+                        div()
+                            .debug_selector(move || format!("pricing-model-name-{index}"))
+                            .min_w_0()
+                            .child(entry.model),
+                    )
                     .child(
                         div()
                             .text_size(px(Typography::BODY))
@@ -236,19 +234,51 @@ impl SettingsView {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let show_peak = editor.kind == PricingEditorKind::UpdateDeepSeek;
-        settings_section()
-            .p(px(Layout::SETTINGS_CONTENT_GAP))
-            .rounded(px(Layout::PANEL_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
+        settings_group(colors)
+            .when_some(editor.model.clone(), |form, model| {
+                form.child(
+                    div()
+                        .debug_selector(|| "pricing-editor-model".into())
+                        .min_w_0()
+                        .mb_3()
+                        .font_weight(Typography::HEADING_CARD_WEIGHT)
+                        .child(model),
+                )
+            })
             .when(editor.kind == PricingEditorKind::AddCustom, |form| {
-                form.child(self.pricing_model_input.clone())
+                form.child(settings_field(
+                    "pricing-model",
+                    "模型 ID",
+                    None,
+                    self.pricing_model_input.clone(),
+                    colors,
+                ))
             })
-            .children(self.pricing_rate_inputs[..4].iter().cloned())
-            .when(show_peak, |form| {
-                form.children(self.pricing_rate_inputs[4..].iter().cloned())
-            })
+            .children(
+                self.pricing_rate_inputs
+                    .iter()
+                    .enumerate()
+                    .take(if show_peak { 8 } else { 4 })
+                    .map(|(index, input)| {
+                        let label = [
+                            "基础输入",
+                            "基础输出",
+                            "基础缓存读取",
+                            "基础缓存写入",
+                            "高峰输入",
+                            "高峰输出",
+                            "高峰缓存读取",
+                            "高峰缓存写入",
+                        ][index];
+                        settings_field(
+                            format!("pricing-rate-{index}"),
+                            label,
+                            Some("USD / 1M tokens".into()),
+                            input.clone(),
+                            colors,
+                        )
+                    }),
+            )
             .child(
                 div()
                     .flex()
@@ -346,7 +376,7 @@ impl SettingsView {
             (colors.bg_hover, colors.text_tertiary)
         };
 
-        settings_section()
+        settings_group(colors)
             .key_context("ProviderSettings")
             .child(section_title("添加或更新 Provider", colors.text_primary))
             .child(
@@ -405,9 +435,9 @@ impl SettingsView {
                     }),
                 ),
             )
-            .child(self.name_input.clone())
-            .child(self.base_url_input.clone())
-            .child(
+            .child(settings_field("provider-name", "名称", None, self.name_input.clone(), colors))
+            .child(settings_field("provider-url", "服务地址", None, self.base_url_input.clone(), colors))
+            .child(settings_field("provider-models", "模型 ID", None,
                 div()
                     .id("provider-models-input-frame")
                     .debug_selector(|| "provider-models-input-frame".to_string())
@@ -419,8 +449,7 @@ impl SettingsView {
                     .border_color(colors.border_subtle)
                     .bg(colors.bg_elevated)
                     .p_2()
-                    .child(self.models_input.clone()),
-            )
+                    .child(self.models_input.clone()), colors))
             .child(
                 div()
                     .debug_selector(|| "provider-models-input-help".to_string())
@@ -433,13 +462,8 @@ impl SettingsView {
             )
             .child(div().text_color(colors.text_tertiary).text_size(px(Typography::BODY))
                 .child("Responses 请求摘要；需要兼容的 reasoning 配置，不支持原始思考回传或 Zhipu thinking 开关。"))
-            .child(self.key_input.clone())
-            .child(
-                div()
-                    .text_color(colors.text_tertiary)
-                    .text_size(px(Typography::BODY))
-                    .child("更新已有 Provider 时可留空，以保留现有密钥"),
-            )
+            .child(settings_field("provider-key", "API Key", Some("更新时留空以保留现有密钥".into()), self.key_input.clone(), colors))
+
             .child(
                 settings_action_chrome(colors)
                     .id("provider-save")
@@ -477,164 +501,109 @@ impl SettingsView {
         let sidebar_visible = !cx
             .try_global::<crate::sidebar::SidebarCollapsed>()
             .is_some_and(|sidebar| sidebar.0);
+        let themes = settings_actions().children(
+            [("light", "浅色"), ("dark", "深色"), ("system", "跟随系统")]
+                .into_iter()
+                .map(|(value, label)| {
+                    settings_action_chrome(colors)
+                        .id(label)
+                        .interaction_surface(
+                            if self.config.ui.theme == value {
+                                colors.bg_active
+                            } else {
+                                colors.bg_elevated
+                            },
+                            if self.config.ui.theme == value {
+                                colors.bg_active
+                            } else {
+                                colors.bg_hover
+                            },
+                            colors.bg_active,
+                            !self.provider_management.saving,
+                        )
+                        .focusable()
+                        .tab_stop(true)
+                        .focus_visible(move |style| style.border_color(colors.accent))
+                        .cursor_pointer()
+                        .child(label)
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| this.set_appearance(value, cx)),
+                        )
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    this.set_appearance(value, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                }),
+        );
+        let sidebar = settings_switch(
+            "settings-sidebar-switch",
+            if sidebar_visible {
+                "隐藏侧栏"
+            } else {
+                "显示侧栏"
+            },
+            sidebar_visible,
+            true,
+            colors,
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|_, _, window, cx| {
+                window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx)
+            }),
+        )
+        .on_key_down(
+            cx.listener(|_, event: &gpui_kit::KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx);
+                    cx.stop_propagation();
+                }
+            }),
+        );
         settings_section()
             .gap(px(Layout::SETTINGS_SECTION_GAP))
             .child(
-                settings_section()
+                settings_group(colors)
                     .debug_selector(|| "settings-general-appearance".into())
                     .child(section_title("外观与布局", colors.text_primary))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(field_label("主题", colors.text_secondary))
-                            .children(
-                                [("light", "浅色"), ("dark", "深色"), ("system", "跟随系统")]
-                                    .into_iter()
-                                    .map(|(value, label)| {
-                                        settings_action_chrome(colors)
-                                    .id(label)
-                                    .interaction_surface(if self.config.ui.theme == value { colors.bg_active } else { colors.bg_elevated }, if self.config.ui.theme == value { colors.bg_active } else { colors.bg_hover }, colors.bg_active, !self.provider_management.saving)
-                                    .focusable()
-                                    .tab_stop(true)
-                                    .focus_visible(move |style| style.border_color(colors.accent))
-                                    .cursor_pointer()
-                                    .bg(if self.config.ui.theme == value {
-                                        colors.bg_active
-                                    } else {
-                                        colors.bg_elevated
-                                    })
-                                    .child(label)
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.set_appearance(value, cx)
-                                        }),
-                                    )
-                                    .on_key_down(cx.listener(
-                                        move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                            if matches!(
-                                                event.keystroke.key.as_str(),
-                                                "enter" | "space"
-                                            ) {
-                                                this.set_appearance(value, cx);
-                                                cx.stop_propagation();
-                                            }
-                                        },
-                                    ))
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_4()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(field_label("侧栏", colors.text_primary))
-                                    .child(
-                                        div()
-                                            .text_size(px(Typography::METADATA))
-                                            .text_color(colors.text_secondary)
-                                            .child("在主窗口中显示侧栏"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id("settings-sidebar-visibility")
-                                    .interaction_surface(if sidebar_visible { colors.brand_primary } else { colors.bg_hover }, if sidebar_visible { colors.brand_primary_strong } else { colors.border_subtle }, if sidebar_visible { colors.brand_primary_strong } else { colors.bg_active }, true)
-                                    .debug_selector(|| "settings-sidebar-switch".into())
-                                    .aria_label(if sidebar_visible {
-                                        "隐藏侧栏"
-                                    } else {
-                                        "显示侧栏"
-                                    })
-                                    .focusable()
-                                    .tab_stop(true)
-                                    .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-                                    .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-                                    .p(px(2.))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(if sidebar_visible {
-                                        colors.brand_primary
-                                    } else {
-                                        colors.border_subtle
-                                    })
-                                    .bg(if sidebar_visible {
-                                        colors.brand_primary
-                                    } else {
-                                        colors.bg_hover
-                                    })
-                                    .flex()
-                                    .items_center()
-                                    .when(sidebar_visible, |switch| switch.justify_end())
-                                    .when(!sidebar_visible, |switch| switch.justify_start())
-                                    .cursor_pointer()
-                                    .focus_visible(move |switch| {
-                                        switch.border_color(colors.brand_primary_strong)
-                                    })
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|_, _, window, cx| {
-                                            window.dispatch_action(
-                                                Box::new(crate::sidebar::ToggleSidebar),
-                                                cx,
-                                            )
-                                        }),
-                                    )
-                                    .on_key_down(cx.listener(
-                                        |_, event: &gpui_kit::KeyDownEvent, window, cx| {
-                                            if matches!(
-                                                event.keystroke.key.as_str(),
-                                                "enter" | "space"
-                                            ) {
-                                                window.dispatch_action(
-                                                    Box::new(crate::sidebar::ToggleSidebar),
-                                                    cx,
-                                                );
-                                                cx.stop_propagation();
-                                            }
-                                        },
-                                    ))
-                                    .child(
-                                        div()
-                                            .size(px(Layout::ICON_SIZE))
-                                            .rounded_full()
-                                            .bg(colors.bg_elevated),
-                                    ),
-                            ),
-                    ),
+                    .child(settings_field(
+                        "settings-theme",
+                        "主题",
+                        None,
+                        themes,
+                        colors,
+                    ))
+                    .child(settings_field(
+                        "settings-sidebar",
+                        "侧栏",
+                        Some("在主窗口中显示侧栏".into()),
+                        sidebar,
+                        colors,
+                    )),
             )
             .child(
-                settings_section()
+                settings_group(colors)
                     .debug_selector(|| "settings-general-defaults".into())
                     .child(section_title("默认项", colors.text_primary))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(field_label("权限模式", colors.text_secondary))
-                            .child(self.render_mode_selector(cx)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(field_label("模型", colors.text_secondary))
-                            .child(self.render_model_selector(cx)),
-                    ),
+                    .child(settings_field(
+                        "settings-permission",
+                        "权限模式",
+                        None,
+                        self.render_mode_selector(cx),
+                        colors,
+                    ))
+                    .child(settings_field(
+                        "settings-model",
+                        "模型",
+                        None,
+                        self.render_model_selector(cx),
+                        colors,
+                    )),
             )
             .child(self.render_updater(cx))
             .into_any_element()
@@ -933,6 +902,16 @@ impl Render for SettingsView {
         ];
         div()
             .id("settings-page")
+            .on_key_down(|event, window, cx| {
+                if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }
+            })
             .key_context(if self.section == 5 {
                 "McpSettings"
             } else if self.section == 6 {
@@ -961,7 +940,7 @@ impl Render for SettingsView {
                 div()
                     .id("settings-navigation")
                     .debug_selector(|| "settings-navigation".into())
-                    .w(px(crate::sidebar::width(cx)))
+                    .w(px(Layout::SETTINGS_NAV_WIDTH))
                     .h_full()
                     .flex_shrink_0()
                     .flex()
@@ -1058,6 +1037,20 @@ impl Render for SettingsView {
                                     cx.notify();
                                 }),
                             )
+                            .gap_2()
+                            .child(crate::icons::icon(
+                                match index {
+                                    0 => crate::icons::Icon::Split,
+                                    1 => crate::icons::Icon::Settings,
+                                    2 => crate::icons::Icon::TextSelect,
+                                    3 => crate::icons::Icon::ArrowUpDown,
+                                    4 => crate::icons::Icon::Summary,
+                                    5 => crate::icons::Icon::Terminal,
+                                    6 => crate::icons::Icon::Document,
+                                    _ => crate::icons::Icon::Terminal,
+                                },
+                                colors.text_secondary,
+                            ))
                             .child(label)
                     })),
             )
@@ -1068,11 +1061,7 @@ impl Render for SettingsView {
                     .h_full()
                     .bg(colors.bg_base)
                     .px(px(24.))
-                    .pt(px(if window.viewport_size().height > px(700.) {
-                        68.
-                    } else {
-                        48.
-                    }))
+                    .pt(px(Layout::SETTINGS_SECTION_GAP))
                     .pb(px(24.))
                     .flex()
                     .flex_col()
@@ -1102,8 +1091,12 @@ impl Render for SettingsView {
                             )
                             .child(
                                 div()
-                                    .id("settings-section-content")
+                                    .id(("settings-section-content", self.section))
                                     .debug_selector(|| "settings-section-content".into())
+                                    .when_some(
+                                        self.section_scrolls.get(self.section),
+                                        |body, scroll| body.track_scroll(scroll),
+                                    )
                                     .flex_1()
                                     .min_h_0()
                                     .min_w_0()

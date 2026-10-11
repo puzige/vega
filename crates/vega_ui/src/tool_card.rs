@@ -411,6 +411,17 @@ impl ToolCard {
         }
     }
 
+    pub(crate) fn estimated_height(&self) -> f32 {
+        let detail_rows = self.row_count().saturating_sub(1);
+        Layout::DISCLOSURE_HEADER_HEIGHT
+            + if detail_rows > 0 {
+                Layout::PROCESS_ITEM_GAP
+                    + (detail_rows as f32 * ROW_HEIGHT).min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+            } else {
+                0.
+            }
+    }
+
     /// Whether this card is the atomic invalid terminal and must never prompt.
     pub fn is_invalid_terminal(&self) -> bool {
         matches!(
@@ -1080,12 +1091,7 @@ fn render_detail(
         .on_scroll_wheel(contain_disclosure_scroll(scroll))
         .w_full()
         .min_w_0()
-        .mt_1()
-        .mb_1()
-        .rounded(px(Layout::DISCLOSURE_RADIUS))
-        .border_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.code_bg)
+        .mt(px(Layout::PROCESS_ITEM_GAP))
         .overflow_x_hidden()
         .overflow_y_scroll()
         .flex()

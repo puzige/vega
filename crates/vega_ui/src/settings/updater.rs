@@ -10,6 +10,23 @@ impl SettingsView {
         projection: UpdateProjection,
         cx: &mut Context<Self>,
     ) {
+        if self.updater.notes != projection.notes {
+            self.updater_notes_scroll
+                .set_offset(gpui_kit::point(px(0.), px(0.)));
+            self.updater_notes = if projection.notes.is_empty() {
+                None
+            } else {
+                let mut stream = vega_markdown::MarkdownStream::new();
+                stream.append(&projection.notes);
+                stream.finish();
+                let mut model = crate::conversation_stream::StreamModel::default();
+                model.sync(
+                    &stream.snapshot(),
+                    &crate::conversation_stream::StreamCounters::default(),
+                );
+                Some(model)
+            };
+        }
         self.updater = projection;
         cx.notify();
     }
@@ -53,69 +70,84 @@ impl SettingsView {
             }
             _ => None,
         };
-        settings_section()
+        let automatic = self.updater.automatic;
+        let automatic_switch = settings_switch(
+            "updater-automatic",
+            "自动检查并下载",
+            automatic,
+            !busy,
+            colors,
+        )
+        .when(!busy, |switch| {
+            switch
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |_, _, _, cx| cx.emit(UpdateRequest::Automatic(!automatic))),
+                )
+                .on_key_down(
+                    cx.listener(move |_, event: &gpui_kit::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.emit(UpdateRequest::Automatic(!automatic));
+                            cx.stop_propagation();
+                        }
+                    }),
+                )
+        });
+        settings_group(colors)
             .debug_selector(|| "settings-general-updater".into())
             .child(section_title("Vega 更新", colors.text_primary))
-            .child(format!("当前版本：{}", self.updater.current_version))
-            .when_some(self.updater.latest_version.clone(), |view, version| {
-                view.child(format!("最新版本：{version}"))
-            })
-            .child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .text_size(px(Typography::METADATA))
-                    .child(checked),
-            )
-            .child(
+            .child(settings_field(
+                "updater-version",
+                "版本",
+                Some(checked),
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child("自动检查并下载")
-                            .child(
-                                div()
-                                    .text_color(colors.text_secondary)
-                                    .text_size(px(Typography::METADATA))
-                                    .child("每天检查一次；安装需要你确认重启"),
-                            ),
-                    )
-                    .child(self.update_button(
-                        "updater-automatic",
-                        if self.updater.automatic {
-                            "已开启"
-                        } else {
-                            "已关闭"
-                        },
-                        UpdateRequest::Automatic(!self.updater.automatic),
-                        !busy,
-                        cx,
-                    )),
-            )
+                    .flex_col()
+                    .gap_1()
+                    .child(format!("当前 {}", self.updater.current_version))
+                    .when_some(self.updater.latest_version.clone(), |view, version| {
+                        view.child(
+                            div()
+                                .text_color(colors.text_secondary)
+                                .child(format!("最新 {version}")),
+                        )
+                    }),
+                colors,
+            ))
+            .child(settings_field(
+                "updater-auto",
+                "自动检查并下载",
+                Some("每天检查一次；安装需要你确认重启".into()),
+                automatic_switch,
+                colors,
+            ))
             .when(!self.updater.message.is_empty(), |view| {
-                view.child(settings_status(
-                    self.updater.message.clone(),
-                    if self.updater.phase == UpdatePhase::Error {
-                        colors.danger
-                    } else if self.updater.phase == UpdatePhase::Ready {
-                        colors.success
-                    } else {
-                        colors.text_secondary
-                    },
-                    colors,
-                ))
+                view.child(
+                    settings_status(
+                        self.updater.message.clone(),
+                        if self.updater.phase == UpdatePhase::Error {
+                            colors.danger
+                        } else if ready {
+                            colors.success
+                        } else {
+                            colors.text_secondary
+                        },
+                        colors,
+                    )
+                    .mt_3(),
+                )
             })
-            .when_some(progress, |view, progress| view.child(progress))
+            .when_some(progress, |view, progress| {
+                view.child(
+                    div()
+                        .mt_2()
+                        .text_color(colors.text_secondary)
+                        .child(progress),
+                )
+            })
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
+                settings_actions()
+                    .mt_3()
                     .child(self.update_button(
                         "updater-check",
                         "检查更新",
@@ -147,21 +179,73 @@ impl SettingsView {
                         ))
                     }),
             )
-            .when(!self.updater.notes.is_empty(), |view| {
+            .when_some(self.updater_notes.as_ref(), |view, notes| {
                 view.child(
                     div()
+                        .id("updater-notes-toggle")
+                        .interactive(colors, true, false)
+                        .debug_selector(|| "updater-notes-toggle".into())
+                        .mt_3()
+                        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+                        .px_2()
+                        .self_start()
                         .flex()
-                        .flex_col()
+                        .items_center()
                         .gap_2()
-                        .mt_2()
-                        .child(section_title("发行说明", colors.text_primary))
-                        .child(
-                            div()
-                                .whitespace_normal()
-                                .text_color(colors.text_secondary)
-                                .child(self.updater.notes.clone()),
-                        ),
+                        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(gpui_kit::transparent_black())
+                        .focusable()
+                        .tab_stop(true)
+                        .cursor_pointer()
+                        .focus_visible(move |style| style.border_color(colors.accent))
+                        .aria_label(if self.updater_notes_open {
+                            "收起发行说明"
+                        } else {
+                            "展开发行说明"
+                        })
+                        .child(crate::icons::icon(
+                            if self.updater_notes_open {
+                                crate::icons::Icon::ChevronDown
+                            } else {
+                                crate::icons::Icon::ChevronRight
+                            },
+                            colors.text_secondary,
+                        ))
+                        .child("发行说明")
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.updater_notes_open = !this.updater_notes_open;
+                                cx.notify();
+                            }),
+                        )
+                        .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.updater_notes_open = !this.updater_notes_open;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        })),
                 )
+                .when(self.updater_notes_open, |view| {
+                    view.child(
+                        div()
+                            .id("updater-notes-body")
+                            .debug_selector(|| "updater-notes-body".into())
+                            .min_w_0()
+                            .max_h(px(Layout::SETTINGS_NOTES_MAX_HEIGHT))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.updater_notes_scroll)
+                            .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(
+                                &self.updater_notes_scroll,
+                            ))
+                            .mt_2()
+                            .child(crate::conversation_stream::markdown_item(
+                                notes, None, &colors,
+                            )),
+                    )
+                })
             })
             .into_any_element()
     }
@@ -178,13 +262,27 @@ impl SettingsView {
         settings_action_chrome(colors)
             .id(id)
             .interaction_surface(
-                colors.bg_elevated,
-                colors.bg_hover,
-                colors.bg_active,
+                if id == "updater-install" {
+                    colors.brand_primary
+                } else {
+                    colors.bg_elevated
+                },
+                if id == "updater-install" {
+                    colors.brand_primary_strong
+                } else {
+                    colors.bg_hover
+                },
+                if id == "updater-install" {
+                    colors.brand_primary_strong
+                } else {
+                    colors.bg_active
+                },
                 enabled,
             )
             .debug_selector(move || id.into())
-            .text_color(if enabled {
+            .text_color(if enabled && id == "updater-install" {
+                colors.brand_on_accent
+            } else if enabled {
                 colors.text_primary
             } else {
                 colors.text_tertiary

@@ -99,6 +99,25 @@ impl ToolActivityGroup {
         }
     }
 
+    pub(crate) fn estimated_height(&self, cx: &App) -> f32 {
+        if !self.expanded || self.children.is_empty() {
+            return Layout::DISCLOSURE_HEADER_HEIGHT;
+        }
+        let mut height = 0.;
+        for (index, card) in self.children.iter().enumerate() {
+            if index > 0 {
+                height += Layout::PROCESS_ITEM_GAP;
+            }
+            height += card.read(cx).estimated_height();
+            if height >= Layout::TOOL_GROUP_MAX_HEIGHT {
+                break;
+            }
+        }
+        Layout::DISCLOSURE_HEADER_HEIGHT
+            + Layout::PROCESS_ITEM_GAP
+            + height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
+    }
+
     #[cfg(test)]
     pub(crate) fn visible_text(&self, cx: &App) -> String {
         let mut text = self.aggregate_summary(cx);
@@ -256,6 +275,7 @@ impl ToolActivityGroup {
                     .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
                     .flex()
                     .flex_col()
+                    .gap(px(Layout::PROCESS_ITEM_GAP))
                     .children(children.into_iter().enumerate().map(|(index, card)| {
                         ToolCard::render(card, format!("tool-activity-child-{index}"), true, cx)
                     }))
@@ -268,6 +288,7 @@ impl ToolActivityGroup {
             .min_w_0()
             .flex()
             .flex_col()
+            .gap(px(Layout::PROCESS_ITEM_GAP))
             .children(rows)
             .into_any_element()
     }

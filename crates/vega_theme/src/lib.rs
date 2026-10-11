@@ -47,6 +47,7 @@ pub struct ThemeColors {
     pub bg_sidebar: Rgba,
     /// Cards and composer background.
     pub bg_elevated: Rgba,
+    pub bg_subtle: Rgba,
     /// Hover state background.
     pub bg_hover: Rgba,
     /// Selected state background (current thread).
@@ -112,6 +113,7 @@ pub const LIGHT: ThemeColors = ThemeColors {
     bg_base: rgba(0xFFFFFFFF),
     bg_sidebar: rgba(0xFAF9F9FF),
     bg_elevated: rgba(0xFFFFFFFF),
+    bg_subtle: rgba(0xF6F6F6FF),
     bg_hover: rgba(0xF3F3F3FF),
     bg_active: rgba(0xEDEDEDFF),
     bg_active_alpha: rgba_alpha(0x1A1C1F, 0.05),
@@ -145,6 +147,7 @@ pub const DARK: ThemeColors = ThemeColors {
     bg_base: rgba(0x202020FF),
     bg_sidebar: rgba(0x191919FF),
     bg_elevated: rgba(0x2A2A2AFF),
+    bg_subtle: rgba(0x262626FF),
     bg_hover: rgba(0x282828FF),
     bg_active: rgba(0x303030FF),
     bg_active_alpha: rgba_alpha(0xFFFFFF, 0.03),
@@ -268,7 +271,7 @@ pub struct Typography;
 
 impl Typography {
     /// Settings page title from R8 reference.
-    pub const SETTINGS_TITLE: f32 = 24.0;
+    pub const SETTINGS_TITLE: f32 = 20.0;
     /// Body text: 13px (§3 "正文字体 …13px/1.55 行高").
     pub const BODY: f32 = 13.0;
     /// Body line height: 1.55× font size (ratio, §3).
@@ -343,6 +346,15 @@ impl Layout {
     pub const SETTINGS_CONTROL_MIN_HEIGHT: f32 = 28.0;
     pub const SETTINGS_CONTROL_PADDING_X: f32 = 12.0;
     pub const SETTINGS_CONTROL_RADIUS: f32 = 8.0;
+    pub const SETTINGS_NAV_WIDTH: f32 = 224.0;
+    pub const SETTINGS_LABEL_WIDTH: f32 = 208.0;
+    pub const SETTINGS_FIELD_GAP: f32 = 16.0;
+    pub const SETTINGS_GROUP_PADDING: f32 = 16.0;
+    pub const SETTINGS_ROW_PADDING_Y: f32 = 12.0;
+    pub const SETTINGS_NOTES_MAX_HEIGHT: f32 = 240.0;
+    pub const PROCESS_PADDING_X: f32 = 12.0;
+    pub const PROCESS_ITEM_GAP: f32 = 4.0;
+    pub const ASSISTANT_ROLE_HEIGHT: f32 = 20.0;
 
     pub const DISCLOSURE_CONTENT_MAX_HEIGHT: f32 = 240.0;
     pub const TOOL_GROUP_MAX_HEIGHT: f32 = 320.0;
@@ -532,7 +544,7 @@ impl Layout {
     /// Width at which the persistent Environment rail becomes available.
     pub const ENVIRONMENT_BREAKPOINT: f32 = 1230.0;
     /// Maximum width of the Settings content column.
-    pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 744.0;
+    pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 720.0;
     /// Width of a Settings boolean switch.
     pub const SETTINGS_SWITCH_WIDTH: f32 = 32.0;
     /// Height of a Settings boolean switch.
@@ -614,6 +626,7 @@ mod tests {
         assert_eq!(u32::from(DARK.bg_base), 0x202020FF);
         assert_eq!(u32::from(DARK.text_primary), 0xEDEDEDFF);
         assert_eq!(u32::from(DARK.code_bg), 0x262626FF);
+        assert_eq!(u32::from(DARK.bg_subtle), 0x262626FF);
         assert_eq!(u32::from(DARK.bg_hover), 0x282828FF);
         assert_eq!(u32::from(DARK.bg_active), 0x303030FF);
     }
@@ -629,6 +642,7 @@ mod tests {
         assert_eq!(u32::from(LIGHT.bg_sidebar), 0xFAF9F9FF);
         assert_eq!(u32::from(LIGHT.text_primary), 0x191C1FFF);
         assert_eq!(u32::from(LIGHT.code_bg), 0xF6F6F6FF);
+        assert_eq!(u32::from(LIGHT.bg_subtle), 0xF6F6F6FF);
         assert_eq!(u32::from(LIGHT.accent), 0x3478D8FF);
         assert_eq!(u32::from(LIGHT.brand_primary_strong), 0x245AAFFF);
         assert_eq!(u32::from(LIGHT.bg_hover), 0xF3F3F3FF);
@@ -694,7 +708,7 @@ mod tests {
         assert_eq!(Layout::ENVIRONMENT_CARD_INSET, 16.0);
         assert_eq!(Layout::ENVIRONMENT_CARD_RADIUS, 18.0);
         assert_eq!(Layout::ENVIRONMENT_BREAKPOINT, 1230.0);
-        assert_eq!(Layout::SETTINGS_CONTENT_MAX_WIDTH, 744.0);
+        assert_eq!(Layout::SETTINGS_CONTENT_MAX_WIDTH, 720.0);
         assert_eq!(Layout::SETTINGS_SWITCH_WIDTH, 32.0);
         assert_eq!(Layout::SETTINGS_SWITCH_HEIGHT, 20.0);
         assert_eq!(Layout::MENU_MAX_WIDTH, 350.0);

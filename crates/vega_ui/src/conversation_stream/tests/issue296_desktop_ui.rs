@@ -55,7 +55,7 @@ async fn issue296_reading_column_and_navigation_do_not_compete(cx: &mut TestAppC
                 visual.update(|window, _| (window.painted_quads(), window.scale_factor()));
             for (side, color) in [
                 (1., colors.border_subtle),
-                (4., colors.text_tertiary),
+                (4., colors.border_subtle),
                 (6., colors.accent),
             ] {
                 assert!(

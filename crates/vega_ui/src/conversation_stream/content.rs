@@ -110,7 +110,11 @@ impl ConversationStream {
     pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
         let was_empty = self.entries.is_empty();
         self.ensure_entry_identities();
-        let anchor = self.scroll_anchor_snapshot();
+        let mut anchor = self.scroll_anchor_snapshot();
+        let old_first_role = self
+            .assistant_role_rows
+            .iter()
+            .position(|has_role| *has_role);
         let (mut hydrated, mut hydrated_identities) =
             self.hydrate_history_entries(page.entries, cx);
         let prepended_entries = hydrated.len();
@@ -120,6 +124,18 @@ impl ConversationStream {
         self.entry_identities = hydrated_identities;
         self.list_prepend(prepended_entries);
         if prepended_entries > 0 {
+            if let Some(index) = old_first_role.map(|index| index + prepended_entries)
+                && !self.assistant_role_rows[index]
+            {
+                if let Some(identity) = self.entry_identities.get(index) {
+                    self.measured_entry_heights.remove(&identity.key);
+                    if anchor.identity.as_deref() == Some(identity.key.as_str()) {
+                        anchor.offset_in_item_px =
+                            (anchor.offset_in_item_px - Layout::ASSISTANT_ROLE_HEIGHT).max(0.);
+                    }
+                }
+                self.list.remeasure_items(index..index + 1);
+            }
             if let Some((_, index)) = &mut self.active_agent_message
                 && *index != usize::MAX
             {
@@ -563,6 +579,7 @@ impl ConversationStream {
             return false;
         }
         self.entries.clear();
+        self.assistant_role_rows.clear();
         self.entry_identities.clear();
         self.measured_entry_heights.clear();
         self.message_anchor_hovered = None;

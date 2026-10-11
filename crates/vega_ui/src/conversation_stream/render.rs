@@ -230,7 +230,6 @@ impl ConversationStream {
                     .border_1()
                     .border_color(colors.border_subtle)
                     .rounded(px(Layout::COMPOSER_RADIUS))
-                    .shadow_sm()
                     .p_3()
                     .when(
                         !self.attachments.is_empty()
@@ -1457,8 +1456,13 @@ impl Render for ConversationStream {
                                                 let row_t0 = Instant::now();
                                                 let entry = this.entries.get(index);
                                                 let item = match entry {
-                                                    Some(entry) => render_entry_with_selection(
+                                                    Some(entry) => render_stream_entry(
                                                         entry,
+                                                        index,
+                                                        this.assistant_role_rows
+                                                            .get(index)
+                                                            .copied()
+                                                            .unwrap_or(false),
                                                         window,
                                                         cx,
                                                         &this.selection_focus,

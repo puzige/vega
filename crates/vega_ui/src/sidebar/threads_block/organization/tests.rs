@@ -743,8 +743,8 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
         .unwrap();
     let pinned_row = bounds(&f, cx, format!("pinned-thread-row-{}", f.first.id));
     let pinned_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id));
-    let pinned_heading = bounds(&f, cx, "organization-section-label-Pinned");
-    let recents_heading = bounds(&f, cx, "organization-section-label-Recents");
+    let pinned_heading = bounds(&f, cx, "organization-section-label-已固定");
+    let recents_heading = bounds(&f, cx, "organization-section-label-最近任务");
     let child_row = bounds(&f, cx, format!("project-thread-row-{}", child.id));
     let child_title = bounds(&f, cx, format!("project-thread-row-title-{}", child.id));
     let recent_row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
@@ -820,11 +820,11 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
     cx.run_until_parked();
     assert_eq!(
         bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id)).left(),
-        bounds(&f, cx, "organization-section-label-Pinned").left()
+        bounds(&f, cx, "organization-section-label-已固定").left()
     );
     assert_eq!(
         bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id)).left(),
-        bounds(&f, cx, "organization-section-label-Recents").left()
+        bounds(&f, cx, "organization-section-label-最近任务").left()
     );
     assert_eq!(
         f32::from(
@@ -1559,7 +1559,7 @@ async fn r33_project_tasks_expand_independently_and_preserve_mounted_state(
 }
 
 #[gpui_kit::test]
-async fn r28_sidebar_section_labels_use_title_case(cx: &mut gpui_kit::TestAppContext) {
+async fn issue296_v2_sidebar_section_labels_are_localized(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     let store = Store::open(f.dir.path().join("organization.db")).unwrap();
     conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
@@ -1567,7 +1567,7 @@ async fn r28_sidebar_section_labels_use_title_case(cx: &mut gpui_kit::TestAppCon
     cx.run_until_parked();
 
     let mut headings = Vec::new();
-    for label in ["Pinned", "Projects", "Recents"] {
+    for label in ["已固定", "项目", "最近任务"] {
         assert!(!absent(
             &f,
             cx,
@@ -1580,7 +1580,9 @@ async fn r28_sidebar_section_labels_use_title_case(cx: &mut gpui_kit::TestAppCon
         ));
     }
     assert!(headings[0].top() < headings[1].top() && headings[1].top() < headings[2].top());
-    for label in ["PINNED", "PROJECTS", "RECENTS"] {
+    for label in [
+        "Pinned", "Projects", "Recents", "PINNED", "PROJECTS", "RECENTS",
+    ] {
         assert!(absent(
             &f,
             cx,
@@ -1872,9 +1874,9 @@ async fn r31_sidebar_typography_restores_compact_mounted_sizes(cx: &mut gpui_kit
 
     let metadata_height = bounds(&f, cx, "sidebar-new-task-shortcut").size.height;
     for selector in [
-        "organization-section-label-Pinned".to_string(),
-        "organization-section-label-Projects".to_string(),
-        "organization-section-label-Recents".to_string(),
+        "organization-section-label-已固定".to_string(),
+        "organization-section-label-项目".to_string(),
+        "organization-section-label-最近任务".to_string(),
     ] {
         let height = bounds(&f, cx, &selector).size.height;
         assert_eq!(height, metadata_height, "unexpected height for {selector}");
@@ -1903,7 +1905,7 @@ async fn r31_sidebar_typography_restores_compact_mounted_sizes(cx: &mut gpui_kit
         primary_height
     );
     assert_eq!(
-        bounds(&f, cx, "organization-section-label-Projects")
+        bounds(&f, cx, "organization-section-label-项目")
             .size
             .height,
         metadata_height
@@ -1964,7 +1966,7 @@ async fn r35_pinned_to_projects_gap_uses_one_extra_rhythm_step_across_themes(
         assert_eq!(f32::from(projects_header.size.height), 28.0);
         assert_eq!(
             projects_header.left(),
-            bounds(f, cx, "organization-section-label-Projects").left()
+            bounds(f, cx, "organization-section-label-项目").left()
         );
     }
 
@@ -1996,7 +1998,7 @@ async fn r35_projects_starts_without_a_pinned_only_spacer_across_themes(
         assert_eq!(f32::from(projects_header.size.height), 28.0);
         assert_eq!(
             projects_header.left(),
-            bounds(f, cx, "organization-section-label-Projects").left()
+            bounds(f, cx, "organization-section-label-项目").left()
         );
     }
 
@@ -2016,8 +2018,8 @@ async fn r37_pinned_surfaces_keep_padding_inside_scroll_clips(cx: &mut gpui_kit:
         child: &Thread,
         cx: &mut gpui_kit::TestAppContext,
     ) {
-        let heading = bounds(f, cx, "organization-section-label-Pinned");
-        let recents_heading = bounds(f, cx, "organization-section-label-Recents");
+        let heading = bounds(f, cx, "organization-section-label-已固定");
+        let recents_heading = bounds(f, cx, "organization-section-label-最近任务");
         let selected_row = bounds(f, cx, format!("pinned-thread-row-{}", f.first.id));
         let selected_title = bounds(f, cx, format!("pinned-thread-row-title-{}", f.first.id));
         let rest_row = bounds(f, cx, format!("pinned-thread-row-{}", f.other.id));
@@ -2114,9 +2116,9 @@ async fn r38_organization_content_keeps_eight_pixel_edge_inset_across_themes_and
     ) {
         let sidebar = bounds(f, cx, "sidebar");
         let sidebar_scroll = bounds(f, cx, "sidebar-scroll");
-        let pinned_heading = bounds(f, cx, "organization-section-label-Pinned");
-        let projects_heading = bounds(f, cx, "organization-section-label-Projects");
-        let recents_heading = bounds(f, cx, "organization-section-label-Recents");
+        let pinned_heading = bounds(f, cx, "organization-section-label-已固定");
+        let projects_heading = bounds(f, cx, "organization-section-label-项目");
+        let recents_heading = bounds(f, cx, "organization-section-label-最近任务");
         let pinned_row = bounds(f, cx, format!("pinned-thread-row-{}", f.first.id));
         let pinned_title = bounds(f, cx, format!("pinned-thread-row-title-{}", f.first.id));
         let project_row = bounds(f, cx, "project-header-p");
@@ -2435,7 +2437,7 @@ async fn r15_sidebar_mounts_at_minimum_viewport(cx: &mut gpui_kit::TestAppContex
 async fn r48_project_folder_shares_the_section_label_column(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     let folder = bounds(&f, cx, "project-folder-p-open");
-    let label = bounds(&f, cx, "organization-section-label-Projects");
+    let label = bounds(&f, cx, "organization-section-label-项目");
     assert!(
         (f32::from(folder.left() - label.left())).abs() <= 1.0,
         "folder icon ({}) must share the section label column ({})",
@@ -2527,11 +2529,10 @@ async fn r50_sidebar_section_boundaries_share_one_pitch(cx: &mut gpui_kit::TestA
     let pinned_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id));
     let projects_title = bounds(&f, cx, format!("project-thread-row-title-{}", f.other.id));
     let recents_title = bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id));
-    let pinned_band = f32::from(
-        bounds(&f, cx, "organization-section-label-Projects").top() - pinned_title.bottom(),
-    );
+    let pinned_band =
+        f32::from(bounds(&f, cx, "organization-section-label-项目").top() - pinned_title.bottom());
     let projects_band = f32::from(
-        bounds(&f, cx, "organization-section-label-Recents").top() - projects_title.bottom(),
+        bounds(&f, cx, "organization-section-label-最近任务").top() - projects_title.bottom(),
     );
     assert_eq!(
         pinned_band, projects_band,

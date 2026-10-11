@@ -45,6 +45,7 @@ pub struct ConversationStream {
     pub(crate) thread: Thread,
     /// 消息块列表（T18）：user 回显与 assistant 流交替，顺序即会话顺序。
     pub(crate) entries: Vec<StreamEntry>,
+    pub(crate) assistant_role_rows: Vec<bool>,
     pub(crate) counters: Arc<StreamCounters>,
     /// Variable-height list state (S8-T44/C4): one item per semantic entry,
     /// natural heights. The same state owns the scroll position and the P4
@@ -53,6 +54,7 @@ pub struct ConversationStream {
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
     pub(crate) measured_entry_heights: HashMap<String, f32>,
     pub(crate) message_anchor_hovered: Option<String>,
+    pub(crate) message_anchor_rail_hovered: bool,
     pub(crate) message_anchor_preview_hovered: Option<String>,
     pub(crate) message_anchor_keyboard_id: Option<String>,
     pub(crate) message_anchor_focus: FocusHandle,
@@ -422,7 +424,9 @@ impl ConversationStream {
             list,
             entry_identities: Vec::new(),
             measured_entry_heights: HashMap::new(),
+            assistant_role_rows: Vec::new(),
             message_anchor_hovered: None,
+            message_anchor_rail_hovered: false,
             message_anchor_preview_hovered: None,
             message_anchor_keyboard_id: None,
             message_anchor_focus: cx.focus_handle().tab_index(17).tab_stop(true),
@@ -531,9 +535,26 @@ impl ConversationStream {
         debug_assert!(count >= previous_len);
         self.ensure_entry_identities();
         if count > previous_len {
+            self.refresh_assistant_roles();
             self.list
                 .splice(previous_len..previous_len, count - previous_len);
         }
+    }
+
+    fn refresh_assistant_roles(&mut self) {
+        let mut needs_role = true;
+        self.assistant_role_rows = self
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                StreamEntry::User { .. } | StreamEntry::UserImages { .. } => {
+                    needs_role = true;
+                    false
+                }
+                StreamEntry::Assistant { .. } => std::mem::replace(&mut needs_role, false),
+                _ => false,
+            })
+            .collect();
     }
 
     pub(crate) fn ensure_entry_identities(&mut self) {
@@ -660,6 +681,7 @@ impl ConversationStream {
     /// Registers one item inserted at `index` (e.g. an inline artifact after
     /// its exact tool).
     pub(crate) fn list_insert(&mut self, index: usize) {
+        self.refresh_assistant_roles();
         let identity = self.new_local_identity();
         if index <= self.entry_identities.len() {
             self.entry_identities.insert(index, identity);
@@ -674,6 +696,7 @@ impl ConversationStream {
     /// the page-boundary anchor is exact (drift <1px by construction).
     pub(crate) fn list_prepend(&mut self, count: usize) {
         if count > 0 {
+            self.refresh_assistant_roles();
             let old_count = self.entries.len().saturating_sub(count);
             if self.entry_identities.len() == old_count {
                 let mut identities = (0..count)
@@ -689,6 +712,7 @@ impl ConversationStream {
 
     /// Registers the removal of the item at `index` (permission resolution).
     pub(crate) fn list_remove(&mut self, index: usize) {
+        self.refresh_assistant_roles();
         if index < self.entry_identities.len() {
             let identity = self.entry_identities.remove(index);
             self.measured_entry_heights.remove(&identity.key);

@@ -47,6 +47,133 @@ pub(crate) fn settings_section() -> Div {
         .gap(px(Layout::SETTINGS_CONTENT_GAP))
 }
 
+pub(crate) fn settings_group(colors: vega_theme::ThemeColors) -> Div {
+    settings_section()
+        .gap_0()
+        .p(px(Layout::SETTINGS_GROUP_PADDING))
+        .rounded(px(Layout::PANEL_RADIUS))
+        .border_1()
+        .border_color(colors.border_subtle)
+        .bg(colors.bg_subtle)
+}
+
+pub(crate) fn settings_field(
+    id: impl Into<String>,
+    label: &'static str,
+    description: Option<String>,
+    control: impl IntoElement,
+    colors: vega_theme::ThemeColors,
+) -> Div {
+    let id = id.into();
+    let label_id = format!("{id}-label");
+    let control_id = format!("{id}-control");
+    div()
+        .debug_selector(move || id.clone())
+        .min_w_0()
+        .flex_shrink_0()
+        .flex()
+        .flex_wrap()
+        .items_start()
+        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
+        .gap_y_2()
+        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
+        .border_b_1()
+        .border_color(colors.border_subtle)
+        .child(
+            div()
+                .debug_selector(move || label_id.clone())
+                .w(px(Layout::SETTINGS_LABEL_WIDTH))
+                .max_w_full()
+                .flex_shrink_0()
+                .py_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .text_size(px(Typography::BODY))
+                .child(label)
+                .when_some(description, |view, description| {
+                    view.child(
+                        div()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_secondary)
+                            .child(description),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .debug_selector(move || control_id.clone())
+                .flex_1()
+                .flex_basis(px(220.))
+                .min_w_0()
+                .max_w_full()
+                .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+                .flex()
+                .flex_col()
+                .justify_center()
+                .child(control),
+        )
+}
+
+pub(crate) fn settings_switch(
+    id: impl Into<String>,
+    label: impl Into<gpui_kit::SharedString>,
+    value: bool,
+    enabled: bool,
+    colors: vega_theme::ThemeColors,
+) -> crate::interaction::Interaction {
+    let id = id.into();
+    div()
+        .id(id.clone())
+        .interaction_surface(
+            if value {
+                colors.brand_primary
+            } else {
+                colors.bg_hover
+            },
+            if value {
+                colors.brand_primary_strong
+            } else {
+                colors.border_subtle
+            },
+            if value {
+                colors.brand_primary_strong
+            } else {
+                colors.bg_active
+            },
+            enabled,
+        )
+        .debug_selector(move || id.clone())
+        .aria_label(label)
+        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+        .flex_shrink_0()
+        .p(px(1.))
+        .rounded_full()
+        .border_1()
+        .border_color(if value {
+            colors.brand_primary
+        } else {
+            colors.border_subtle
+        })
+        .flex()
+        .items_center()
+        .when(value, |switch| switch.justify_end())
+        .when(!value, |switch| switch.justify_start())
+        .when(enabled, |switch| {
+            switch.focusable().tab_stop(true).cursor_pointer()
+        })
+        .when(!enabled, |switch| switch.opacity(0.5))
+        .focus_visible(move |style| style.border_color(colors.text_primary))
+        .child(
+            div()
+                .size(px(Layout::ICON_SIZE))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(colors.bg_elevated),
+        )
+}
+
 pub(crate) fn settings_actions() -> Div {
     div().min_w_0().flex().flex_wrap().items_center().gap_2()
 }
@@ -156,7 +283,7 @@ pub(crate) fn action_button_owned(
             if enabled && primary {
                 colors.brand_primary
             } else {
-                colors.bg_elevated
+                gpui_kit::transparent_black().into()
             },
             if primary {
                 colors.brand_primary_strong
@@ -170,6 +297,11 @@ pub(crate) fn action_button_owned(
             },
             enabled,
         )
+        .border_color(if destructive || primary {
+            colors.border_subtle
+        } else {
+            gpui_kit::transparent_black().into()
+        })
         .when_some(focus, |button, focus| button.track_focus(&focus))
         .focus_visible(move |style| style.border_color(colors.accent))
         .when(enabled && destructive, |button| {
@@ -218,14 +350,6 @@ pub(crate) fn section_title(label: &'static str, color: gpui_kit::Rgba) -> Div {
         .text_size(px(Typography::HEADING_BLOCK))
         .font_weight(Typography::HEADING_BLOCK_WEIGHT)
         .text_color(color)
-        .child(label)
-}
-
-pub(crate) fn field_label(label: &'static str, color: gpui_kit::Rgba) -> Div {
-    div()
-        .w(px(72.))
-        .text_color(color)
-        .text_size(px(Typography::BODY))
         .child(label)
 }
 

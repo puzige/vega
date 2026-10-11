@@ -164,11 +164,24 @@ impl ConversationStream {
             .entries
             .iter()
             .zip(&self.entry_identities)
-            .map(|(entry, identity)| {
+            .enumerate()
+            .map(|(index, (entry, identity))| {
                 self.measured_entry_heights
                     .get(&identity.key)
                     .copied()
-                    .unwrap_or_else(|| estimate_entry_height(entry, cx, self.workspace_width))
+                    .unwrap_or_else(|| {
+                        estimate_entry_height(entry, cx, self.workspace_width)
+                            + if self
+                                .assistant_role_rows
+                                .get(index)
+                                .copied()
+                                .unwrap_or(false)
+                            {
+                                Layout::ASSISTANT_ROLE_HEIGHT
+                            } else {
+                                0.
+                            }
+                    })
             })
             .collect::<Vec<_>>();
         let total_height = entry_heights.iter().sum::<f32>();
@@ -252,6 +265,7 @@ impl ConversationStream {
             .map(|anchor| (anchor.message_id.clone(), anchor.fraction))
             .collect::<Vec<_>>();
         let is_focused = self.message_anchor_focus.is_focused(window);
+        let emphasized = is_focused || self.message_anchor_rail_hovered;
         let selected_id = self
             .message_anchor_preview_hovered
             .as_ref()
@@ -376,6 +390,16 @@ impl ConversationStream {
                 bounds
             },
             move |bounds, _, window, _| {
+                if is_focused {
+                    window.paint_quad(gpui_kit::quad(
+                        bounds,
+                        px(4.),
+                        gpui_kit::transparent_black(),
+                        px(1.),
+                        colors.accent,
+                        gpui_kit::BorderStyle::default(),
+                    ));
+                }
                 let center_x = bounds.center().x;
                 let track = gpui_kit::Bounds::new(
                     gpui_kit::point(
@@ -398,8 +422,10 @@ impl ConversationStream {
                     last_y = f32::from(y);
                     let color = if selected {
                         colors.accent
-                    } else {
+                    } else if emphasized {
                         colors.text_tertiary
+                    } else {
+                        colors.border_subtle
                     };
                     let side = px(if selected {
                         Layout::MESSAGE_ANCHOR_ACTIVE_SIZE
@@ -433,9 +459,6 @@ impl ConversationStream {
             .aria_label(accessible_label)
             .tab_stop(true)
             .track_focus(&self.message_anchor_focus)
-            .when(is_focused, |rail| {
-                rail.border_1().border_color(colors.accent).rounded_md()
-            })
             .w(px(Layout::CONVERSATION_NAVIGATION_GUTTER))
             .h_full()
             .flex_shrink_0()
@@ -473,10 +496,12 @@ impl ConversationStream {
                 }),
             )
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !hovered
+                let changed = this.message_anchor_rail_hovered != *hovered;
+                this.message_anchor_rail_hovered = *hovered;
+                let cleared = !hovered
                     && this.message_anchor_preview_hovered.is_none()
-                    && this.message_anchor_hovered.take().is_some()
-                {
+                    && this.message_anchor_hovered.take().is_some();
+                if changed || cleared {
                     cx.notify();
                 }
             }))
@@ -693,13 +718,25 @@ fn preview_from_lines<'a>(lines: impl Iterator<Item = &'a StreamLine>) -> String
 }
 
 fn estimate_entry_height(entry: &StreamEntry, cx: &App, workspace_width: Option<f32>) -> f32 {
-    let width = workspace_width.unwrap_or(Layout::CONTENT_MAX_WIDTH);
-    let text_width = (width - 48.0).max(160.0);
+    let text_width = workspace_width
+        .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
+        .unwrap_or(Layout::CONTENT_MAX_WIDTH)
+        .clamp(1., Layout::CONTENT_MAX_WIDTH);
     let line_height = Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT;
     let chars_per_line = (text_width / (Typography::MESSAGE * 0.56)).max(12.0) as usize;
     match entry {
+        StreamEntry::RunActivity { .. } => Layout::DISCLOSURE_HEADER_HEIGHT,
+        StreamEntry::RunActivitySegment { group, segment } => {
+            group.read(cx).estimated_segment_height(
+                *segment,
+                text_width - 2. * Layout::PROCESS_PADDING_X - 1.,
+                cx,
+            )
+        }
+        StreamEntry::Tool { card } => card.read(cx).estimated_height(),
+        StreamEntry::ToolGroup { group } => group.read(cx).estimated_height(cx),
         StreamEntry::User { lines, .. } => {
-            let bubble_width = text_width * Layout::USER_MESSAGE_MAX_WIDTH_RATIO;
+            let bubble_width = text_width * Layout::USER_MESSAGE_MAX_WIDTH_RATIO - 24.;
             let user_chars_per_line =
                 (bubble_width / (Typography::MESSAGE * 0.56)).max(12.0) as usize;
             let rows = lines
@@ -714,7 +751,10 @@ fn estimate_entry_height(entry: &StreamEntry, cx: &App, workspace_width: Option<
                     chars.div_ceil(user_chars_per_line).max(1)
                 })
                 .sum::<usize>();
-            (rows.max(1) as f32 * line_height + 34.0).max(44.0)
+            rows.max(1) as f32 * line_height
+                + Layout::USER_MESSAGE_PADDING_TOP
+                + Layout::MESSAGE_PADDING_BOTTOM
+                + 16.
         }
         StreamEntry::Assistant { model, failure, .. } => {
             let rows = model
@@ -731,7 +771,9 @@ fn estimate_entry_height(entry: &StreamEntry, cx: &App, workspace_width: Option<
                 })
                 .sum::<usize>()
                 + usize::from(failure.is_some());
-            (rows.max(1) as f32 * line_height + 12.0).max(30.0)
+            rows.max(1) as f32 * line_height
+                + Layout::ASSISTANT_MESSAGE_PADDING_TOP
+                + Layout::MESSAGE_PADDING_BOTTOM
         }
         StreamEntry::UserImages { .. } => 128.0,
         StreamEntry::Summary { card }
