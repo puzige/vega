@@ -303,6 +303,12 @@ impl Typography {
     pub const HEADING_CARD_WEIGHT: FontWeight = FontWeight::MEDIUM;
 }
 
+pub struct Motion;
+
+impl Motion {
+    pub const INTERACTION_DURATION_MS: u64 = 120;
+}
+
 /// Shared layout tokens for the native client.
 ///
 /// Keeping radii and content geometry here makes the visual contract explicit
@@ -311,6 +317,33 @@ impl Typography {
 pub struct Layout;
 
 impl Layout {
+    pub const ICON_SIZE: f32 = 16.0;
+    pub const CONVERSATION_NAVIGATION_GUTTER: f32 = 20.0;
+    pub const CONVERSATION_PADDING: f32 =
+        Self::CONTENT_PADDING + Self::CONVERSATION_NAVIGATION_GUTTER;
+    pub const MESSAGE_ANCHOR_TRACK_WIDTH: f32 = 1.0;
+    pub const MESSAGE_ANCHOR_MARKER_SIZE: f32 = 4.0;
+    pub const MESSAGE_ANCHOR_ACTIVE_SIZE: f32 = 6.0;
+    pub const READING_NAVIGATION_HEIGHT: f32 = 40.0;
+    pub const READING_NAVIGATION_PADDING: f32 = 4.0;
+    pub const READING_NAVIGATION_PADDING_X: f32 = 12.0;
+    pub const READING_NAVIGATION_GAP: f32 = 8.0;
+    pub const DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
+    pub const DISCLOSURE_PADDING_X: f32 = 8.0;
+    pub const DISCLOSURE_RADIUS: f32 = 8.0;
+    pub const USER_MESSAGE_PADDING_TOP: f32 = 24.0;
+    pub const ASSISTANT_MESSAGE_PADDING_TOP: f32 = 8.0;
+    pub const MESSAGE_PADDING_BOTTOM: f32 = 16.0;
+    pub const STATUS_PADDING: f32 = 8.0;
+    pub const STATUS_GAP: f32 = 8.0;
+    pub const STATUS_RADIUS: f32 = 8.0;
+    pub const SETTINGS_SECTION_GAP: f32 = 24.0;
+    pub const SETTINGS_CONTENT_GAP: f32 = 12.0;
+    pub const SETTINGS_TITLE_GAP: f32 = 16.0;
+    pub const SETTINGS_CONTROL_MIN_HEIGHT: f32 = 28.0;
+    pub const SETTINGS_CONTROL_PADDING_X: f32 = 12.0;
+    pub const SETTINGS_CONTROL_RADIUS: f32 = 8.0;
+
     pub const DISCLOSURE_CONTENT_MAX_HEIGHT: f32 = 240.0;
     pub const TOOL_GROUP_MAX_HEIGHT: f32 = 320.0;
     /// Minimum readable Markdown table column: eight message ems.
@@ -412,16 +445,7 @@ impl Layout {
     pub const COMPOSER_UTILITY_CHIP_PADDING_X: f32 = 8.0;
     /// R1 utility chip capsule radius (half of the 28px chip height).
     pub const COMPOSER_UTILITY_CHIP_RADIUS: f32 = 14.0;
-    /// Issue #98: the floating "back to bottom" control's circular hit face.
-    ///
-    /// The reference implementation (Codex) shows a 32px circle above the
-    /// composer when the transcript is detached from the live tail; the Issue
-    /// #98 screenshot measured 63–64px at 2x, i.e. 32px logical.
     pub const SCROLL_TO_BOTTOM_SIZE: f32 = 32.0;
-    /// Issue #98: clearance between the floating "back to bottom" control's
-    /// bottom edge and the transcript viewport's bottom edge (measured ≈24px
-    /// above the composer card in the reference).
-    pub const SCROLL_TO_BOTTOM_GAP: f32 = 24.0;
     /// Height reserved by every non-Settings main route.
     pub const MAIN_HEADER_HEIGHT: f32 = 46.0;
     /// Gap between the main content panel and the native window edges/sidebar.
@@ -689,12 +713,44 @@ mod tests {
     }
 
     #[test]
-    fn issue98_scroll_to_bottom_tokens_are_frozen() {
-        // Issue #98: the floating "back to bottom" circle is 32px (63–64px at
-        // 2x in the reference screenshot) and floats 24px above the transcript
-        // viewport's bottom edge.
+    fn issue296_desktop_geometry_tokens_are_frozen() {
+        assert_eq!(Layout::ICON_SIZE, 16.0);
+        assert_eq!(Motion::INTERACTION_DURATION_MS, 120);
+        assert_eq!(Layout::CONVERSATION_NAVIGATION_GUTTER, 20.0);
+        assert_eq!(Layout::CONVERSATION_PADDING, 36.0);
+        assert_eq!(Layout::MESSAGE_ANCHOR_TRACK_WIDTH, 1.0);
+        assert_eq!(Layout::MESSAGE_ANCHOR_MARKER_SIZE, 4.0);
+        assert_eq!(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE, 6.0);
+        assert_eq!(Layout::READING_NAVIGATION_HEIGHT, 40.0);
+        assert_eq!(Layout::READING_NAVIGATION_PADDING, 4.0);
         assert_eq!(Layout::SCROLL_TO_BOTTOM_SIZE, 32.0);
-        assert_eq!(Layout::SCROLL_TO_BOTTOM_GAP, 24.0);
+        assert_eq!(
+            Layout::READING_NAVIGATION_HEIGHT,
+            Layout::SCROLL_TO_BOTTOM_SIZE + 2.0 * Layout::READING_NAVIGATION_PADDING
+        );
+        assert_eq!(Layout::READING_NAVIGATION_PADDING_X, 12.0);
+        assert_eq!(Layout::READING_NAVIGATION_GAP, 8.0);
+        assert_eq!(
+            Layout::DISCLOSURE_HEADER_HEIGHT,
+            Layout::TITLEBAR_CONTROL_SIZE
+        );
+        assert_eq!(Layout::DISCLOSURE_PADDING_X, 8.0);
+        assert_eq!(Layout::DISCLOSURE_RADIUS, 8.0);
+        assert_eq!(Layout::USER_MESSAGE_PADDING_TOP, 24.0);
+        assert_eq!(Layout::ASSISTANT_MESSAGE_PADDING_TOP, 8.0);
+        assert_eq!(Layout::MESSAGE_PADDING_BOTTOM, 16.0);
+        assert_eq!(Layout::STATUS_PADDING, 8.0);
+        assert_eq!(Layout::STATUS_GAP, 8.0);
+        assert_eq!(Layout::STATUS_RADIUS, 8.0);
+        assert_eq!(Layout::SETTINGS_SECTION_GAP, 24.0);
+        assert_eq!(Layout::SETTINGS_CONTENT_GAP, 12.0);
+        assert_eq!(Layout::SETTINGS_TITLE_GAP, 16.0);
+        assert_eq!(
+            Layout::SETTINGS_CONTROL_MIN_HEIGHT,
+            Layout::TITLEBAR_CONTROL_SIZE
+        );
+        assert_eq!(Layout::SETTINGS_CONTROL_PADDING_X, 12.0);
+        assert_eq!(Layout::SETTINGS_CONTROL_RADIUS, 8.0);
     }
 
     #[test]

@@ -10,8 +10,7 @@ impl SettingsView {
     pub(crate) fn render_reasoning(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let reload_enabled = !matches!(&self.reasoning, ReasoningSettingsProjection::Saving { .. });
-        let header = div()
-            .flex()
+        let header = settings_actions()
             .items_center()
             .justify_between()
             .child(section_title("思考能力与偏好", colors.text_primary))
@@ -25,30 +24,37 @@ impl SettingsView {
                     cx.emit(ReasoningReloadRequested);
                 }),
             ));
-        let mut column = div().flex().flex_col().gap_2().child(header);
+        let mut column = settings_section().child(header);
         match &self.reasoning {
             ReasoningSettingsProjection::Loading => {
-                column = column.child(reasoning_status("正在读取思考设置…", colors.text_secondary));
+                column = column.child(settings_status(
+                    "正在读取思考设置…",
+                    colors.text_secondary,
+                    colors,
+                ));
             }
             ReasoningSettingsProjection::Saving { profile, .. } => {
-                column = column.child(reasoning_status(
+                column = column.child(settings_status(
                     format!("正在保存 {} / {}…", profile.provider, profile.model),
                     colors.text_secondary,
+                    colors,
                 ));
             }
             ReasoningSettingsProjection::Ready {
                 profiles, error, ..
             } => {
                 if profiles.is_empty() {
-                    column = column.child(reasoning_status(
+                    column = column.child(settings_status(
                         "当前还没有已声明的模型能力；未知模型会使用提供方默认",
-                        colors.text_tertiary,
+                        colors.text_secondary,
+                        colors,
                     ));
                 }
                 if let Some(error) = error {
-                    column = column.child(reasoning_status(
+                    column = column.child(settings_status(
                         reasoning_settings_error_label(*error),
                         colors.danger,
+                        colors,
                     ));
                 }
                 let profiles = profiles.clone();
@@ -77,12 +83,8 @@ impl SettingsView {
             .cloned()
             .unwrap_or(authority);
         let owner = format!("{} / {}", profile.provider, profile.model);
-        let mut card = div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .px_3()
-            .py_2()
+        let mut card = settings_section()
+            .p(px(Layout::SETTINGS_CONTENT_GAP))
             .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
@@ -108,6 +110,8 @@ impl SettingsView {
             card = card.child(
                 div()
                     .flex()
+                    .flex_wrap()
+                    .items_center()
                     .gap_2()
                     .child(action_button(
                         "使用 OpenAI 兼容模板",
@@ -289,13 +293,6 @@ impl SettingsView {
         );
         card.into_any_element()
     }
-}
-
-fn reasoning_status(label: impl Into<String>, color: gpui_kit::Rgba) -> Div {
-    div()
-        .text_color(color)
-        .text_size(px(Typography::BODY))
-        .child(label.into())
 }
 
 fn reasoning_choice_label(choice: &ReasoningChoice) -> String {

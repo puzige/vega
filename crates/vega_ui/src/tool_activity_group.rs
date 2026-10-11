@@ -1,12 +1,12 @@
 //! UI-only grouping for adjacent audited tool calls.
 
+use crate::interaction::InteractionExt;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Entity, MouseButton, MouseUpEvent, ScrollHandle, div, px,
 };
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
-use crate::conversation_stream::ROW_HEIGHT;
 use crate::icons::Icon;
 use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard};
 
@@ -176,23 +176,51 @@ impl ToolActivityGroup {
         let scroll = group.read(cx).scroll.clone();
         let scroll_id = format!("tool-group-{}", group.entity_id());
         let toggle_group = group.clone();
+        let keyboard_group = group.clone();
         let mut rows = Vec::with_capacity(1 + child_count);
         rows.push(
             div()
+                .id(("tool-activity-group-toggle", group.entity_id()))
+                .focusable()
+                .tab_stop(true)
+                .border_1()
+                .border_color(gpui_kit::transparent_black())
+                .focus_visible(move |row| row.border_color(colors.accent))
                 .debug_selector(|| "tool-activity-group-toggle".to_string())
-                .h(px(ROW_HEIGHT))
+                .h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
+                .text_size(px(Typography::BODY))
+                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
                 .w_full()
                 .min_w_0()
                 .flex()
                 .items_center()
                 .gap_2()
+                .px(px(Layout::DISCLOSURE_PADDING_X))
+                .rounded(px(Layout::DISCLOSURE_RADIUS))
+                .interactive(colors, true, false)
+                .on_key_down(move |event, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        keyboard_group.update(cx, ToolActivityGroup::toggle_expanded);
+                        cx.stop_propagation();
+                    }
+                })
                 .cursor_pointer()
                 .on_mouse_up(MouseButton::Left, move |_: &MouseUpEvent, _, cx| {
                     toggle_group.update(cx, ToolActivityGroup::toggle_expanded);
                 })
-                .child(crate::icons::icon(icon, icon_color))
                 .child(
                     div()
+                        .debug_selector(|| "tool-activity-group-icon".into())
+                        .size(px(Layout::ICON_SIZE))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::icons::icon(icon, icon_color)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "tool-activity-group-label".into())
                         .min_w_0()
                         .flex_1()
                         .truncate()

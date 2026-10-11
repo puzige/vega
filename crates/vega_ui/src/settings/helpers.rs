@@ -1,4 +1,5 @@
 use super::*;
+use crate::interaction::InteractionExt;
 
 pub(crate) fn read_rate_inputs(inputs: &[Entity<TextInput>], cx: &App) -> PricingRateInputs {
     PricingRateInputs {
@@ -37,15 +38,90 @@ pub(crate) fn pricing_mutation_input_bytes(mutation: &PricingMutation) -> Option
     }
 }
 
-pub(crate) fn pricing_status(label: &'static str, color: gpui_kit::Rgba) -> Div {
+pub(crate) fn settings_section() -> Div {
     div()
-        .px_3()
-        .py_2()
-        .rounded_md()
+        .min_w_0()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .gap(px(Layout::SETTINGS_CONTENT_GAP))
+}
+
+pub(crate) fn settings_actions() -> Div {
+    div().min_w_0().flex().flex_wrap().items_center().gap_2()
+}
+
+pub(crate) fn settings_action_chrome(colors: vega_theme::ThemeColors) -> Div {
+    div()
+        .min_w_0()
+        .max_w_full()
+        .self_start()
+        .flex_shrink_0()
+        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
+        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .border_1()
-        .border_color(color)
+        .border_color(colors.border_subtle)
+        .bg(colors.bg_elevated)
+        .text_size(px(Typography::BODY))
+        .line_height(relative(Typography::BODY_LINE_HEIGHT))
+        .text_color(colors.text_primary)
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap_2()
+}
+
+pub(crate) fn settings_status(
+    label: impl Into<String>,
+    color: gpui_kit::Rgba,
+    colors: vega_theme::ThemeColors,
+) -> Div {
+    let icon = if color == colors.danger || color == colors.warning {
+        crate::icons::Icon::Warning
+    } else if color == colors.success {
+        crate::icons::Icon::Check
+    } else {
+        crate::icons::Icon::Summary
+    };
+    div()
+        .debug_selector(|| "settings-status".into())
+        .min_w_0()
+        .flex_shrink_0()
+        .flex()
+        .items_start()
+        .gap_2()
+        .p_2()
+        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+        .border_1()
+        .border_color(colors.border_subtle)
+        .text_size(px(Typography::BODY))
+        .line_height(relative(Typography::BODY_LINE_HEIGHT))
         .text_color(color)
-        .child(label)
+        .child(
+            div()
+                .debug_selector(|| "settings-status-icon-line".into())
+                .w(px(Layout::ICON_SIZE))
+                .h(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .debug_selector(|| "settings-status-icon".into())
+                        .size(px(Layout::ICON_SIZE))
+                        .child(crate::icons::icon(icon, color)),
+                ),
+        )
+        .child(
+            div()
+                .debug_selector(|| "settings-status-text".into())
+                .min_w_0()
+                .flex_1()
+                .child(label.into()),
+        )
 }
 
 pub(crate) fn action_button(
@@ -53,7 +129,7 @@ pub(crate) fn action_button(
     colors: vega_theme::ThemeColors,
     focus: Option<FocusHandle>,
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui_kit::App) + 'static,
-) -> Div {
+) -> AnyElement {
     action_button_owned(label.to_string(), colors, focus, listener)
 }
 
@@ -66,24 +142,52 @@ pub(crate) fn action_button_owned(
     colors: vega_theme::ThemeColors,
     focus: Option<FocusHandle>,
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui_kit::App) + 'static,
-) -> Div {
+) -> AnyElement {
     let enabled = focus.is_some();
-    div()
+    let id = focus
+        .as_ref()
+        .map(gpui_kit::ElementId::from)
+        .unwrap_or_else(|| label.clone().into());
+    let destructive = label == "删除";
+    let primary = label.starts_with("保存");
+    settings_action_chrome(colors)
+        .id(id)
+        .interaction_surface(
+            if enabled && primary {
+                colors.brand_primary
+            } else {
+                colors.bg_elevated
+            },
+            if primary {
+                colors.brand_primary_strong
+            } else {
+                colors.bg_hover
+            },
+            if primary {
+                colors.brand_primary_strong
+            } else {
+                colors.bg_active
+            },
+            enabled,
+        )
         .when_some(focus, |button, focus| button.track_focus(&focus))
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.bg_elevated)
+        .focus_visible(move |style| style.border_color(colors.accent))
+        .when(enabled && destructive, |button| {
+            button.text_color(colors.danger)
+        })
+        .when(enabled && primary, |button| {
+            button
+                .bg(colors.brand_primary)
+                .text_color(colors.brand_on_accent)
+        })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(move |style| style.bg(colors.bg_hover))
                 .on_mouse_up(MouseButton::Left, listener)
         })
         .when(!enabled, |button| button.text_color(colors.text_tertiary))
         .child(label)
+        .into_any_element()
 }
 
 pub(crate) fn pricing_error_label(code: PricingSettingsErrorCode) -> &'static str {

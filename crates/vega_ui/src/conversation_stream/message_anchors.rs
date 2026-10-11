@@ -296,7 +296,7 @@ impl ConversationStream {
         let points_for_paint = geometry
             .anchors
             .iter()
-            .map(|anchor| (anchor.message_id.clone(), anchor.fraction, anchor.kind))
+            .map(|anchor| (anchor.message_id.clone(), anchor.fraction))
             .collect::<Vec<_>>();
         let current_fraction = geometry.current_fraction;
         let colors = theme(cx).colors;
@@ -310,7 +310,7 @@ impl ConversationStream {
             let available_width = self
                 .workspace_width
                 .unwrap_or_else(|| f32::from(window.viewport_size().width));
-            let content_width = (available_width - Layout::CONTENT_PADDING * 2.0).max(0.0);
+            let content_width = (available_width - Layout::CONVERSATION_PADDING * 2.0).max(0.0);
             let column_width = content_width.min(Layout::CONTENT_MAX_WIDTH);
             let outer_gutter_width =
                 Layout::CONTENT_PADDING + ((content_width - column_width).max(0.0) / 2.0);
@@ -341,8 +341,7 @@ impl ConversationStream {
                     .into_any_element();
                 (Some(overlay), false)
             } else {
-                let lane_width =
-                    ((content_width - 20.0).max(0.0) * 0.3).min(MESSAGE_ANCHOR_PREVIEW_MAX_WIDTH);
+                let lane_width = (content_width * 0.3).min(MESSAGE_ANCHOR_PREVIEW_MAX_WIDTH);
                 let content = render_message_anchor_preview(
                     message_id,
                     preview_label,
@@ -379,20 +378,34 @@ impl ConversationStream {
             move |bounds, _, window, _| {
                 let center_x = bounds.center().x;
                 let track = gpui_kit::Bounds::new(
-                    gpui_kit::point(center_x - px(1.), bounds.top() + px(3.)),
-                    gpui_kit::size(px(2.), (bounds.size.height - px(6.)).max(px(0.))),
+                    gpui_kit::point(
+                        center_x - px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH / 2.),
+                        bounds.top() + px(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE / 2.),
+                    ),
+                    gpui_kit::size(
+                        px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH),
+                        (bounds.size.height - px(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE)).max(px(0.)),
+                    ),
                 );
                 window.paint_quad(gpui_kit::fill(track, colors.border_subtle));
                 let mut last_y = f32::NEG_INFINITY;
-                for (message_id, fraction, kind) in &points_for_paint {
+                for (message_id, fraction) in &points_for_paint {
                     let y = bounds.top() + bounds.size.height * *fraction;
                     let selected = selected_for_paint.as_deref() == Some(message_id.as_str());
                     if !selected && f32::from(y) - last_y < 2.5 {
                         continue;
                     }
                     last_y = f32::from(y);
-                    let color = anchor_color(*kind, &colors);
-                    let side = if selected { px(7.) } else { px(4.) };
+                    let color = if selected {
+                        colors.accent
+                    } else {
+                        colors.text_tertiary
+                    };
+                    let side = px(if selected {
+                        Layout::MESSAGE_ANCHOR_ACTIVE_SIZE
+                    } else {
+                        Layout::MESSAGE_ANCHOR_MARKER_SIZE
+                    });
                     let marker = gpui_kit::Bounds::new(
                         gpui_kit::point(center_x - side / 2., y - side / 2.),
                         gpui_kit::size(side, side),
@@ -401,8 +414,14 @@ impl ConversationStream {
                 }
                 let current_y = bounds.top() + bounds.size.height * current_fraction;
                 let current = gpui_kit::Bounds::new(
-                    gpui_kit::point(center_x - px(4.), current_y - px(4.)),
-                    gpui_kit::size(px(8.), px(8.)),
+                    gpui_kit::point(
+                        center_x - px(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE / 2.),
+                        current_y - px(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE / 2.),
+                    ),
+                    gpui_kit::size(
+                        px(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE),
+                        px(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE),
+                    ),
                 );
                 window.paint_quad(gpui_kit::fill(current, colors.accent));
             },
@@ -417,10 +436,12 @@ impl ConversationStream {
             .when(is_focused, |rail| {
                 rail.border_1().border_color(colors.accent).rounded_md()
             })
-            .w(px(20.))
+            .w(px(Layout::CONVERSATION_NAVIGATION_GUTTER))
             .h_full()
             .flex_shrink_0()
-            .relative()
+            .absolute()
+            .left(px(-Layout::CONVERSATION_NAVIGATION_GUTTER))
+            .top_0()
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -591,14 +612,6 @@ fn track_fraction_at_y(bounds: gpui_kit::Bounds<Pixels>, y: Pixels) -> f32 {
         return 0.0;
     }
     (f32::from(y - bounds.top()) / f32::from(bounds.size.height)).clamp(0.0, 1.0)
-}
-
-fn anchor_color(kind: MessageAnchorKind, colors: &ThemeColors) -> Rgba {
-    match kind {
-        MessageAnchorKind::User => colors.brand_primary,
-        MessageAnchorKind::Assistant | MessageAnchorKind::Summary => colors.text_secondary,
-        MessageAnchorKind::Tool | MessageAnchorKind::Plan => colors.text_tertiary,
-    }
 }
 
 pub(crate) fn sanitize_anchor_preview(text: &str) -> String {

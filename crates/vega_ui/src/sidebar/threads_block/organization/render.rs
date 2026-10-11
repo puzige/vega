@@ -140,25 +140,22 @@ impl ThreadsBlock {
             } else {
                 colors.text_secondary
             })
-            .when(selected, |s| {
-                s.bg(colors.bg_active).text_color(colors.text_primary)
-            })
             .cursor_pointer()
-            .hover(move |s| {
-                s.bg(if selected {
-                    colors.bg_active
-                } else {
-                    colors.bg_hover
-                })
-            })
-            .focus_visible(move |s| {
-                s.bg(if selected {
-                    colors.bg_active
-                } else {
-                    colors.bg_hover
-                })
-                .border_1()
-                .border_color(colors.border_subtle)
+            .interactive(colors, true, selected)
+            .focus_visible(move |style| {
+                style
+                    .bg(if selected {
+                        colors.bg_active
+                    } else {
+                        colors.bg_hover
+                    })
+                    .shadow(vec![gpui_kit::BoxShadow {
+                        color: colors.accent.into(),
+                        offset: point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(1.),
+                        inset: true,
+                    }])
             })
             .on_mouse_up(
                 MouseButton::Left,
@@ -781,14 +778,7 @@ impl ThreadsBlock {
             ))
             .aria_expanded(!collapsed)
             .cursor_pointer()
-            .when(selected, |row| row.bg(colors.bg_active))
-            .hover(move |style| {
-                style.bg(if selected {
-                    colors.bg_active
-                } else {
-                    colors.bg_hover
-                })
-            })
+            .interactive(colors, true, selected)
             .focus_visible(move |style| {
                 style
                     .bg(if selected {
@@ -796,8 +786,13 @@ impl ThreadsBlock {
                     } else {
                         colors.bg_hover
                     })
-                    .border_1()
-                    .border_color(colors.border_subtle)
+                    .shadow(vec![gpui_kit::BoxShadow {
+                        color: colors.accent.into(),
+                        offset: point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(1.),
+                        inset: true,
+                    }])
             })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hovered_project(&project_for_hover, *hovered, cx);

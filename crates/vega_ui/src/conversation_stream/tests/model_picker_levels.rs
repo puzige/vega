@@ -1139,13 +1139,11 @@ async fn r59_trigger_reads_select_effort_on_the_slider_level(cx: &mut TestAppCon
     // The label is a constant so the assertion cannot drift from the render.
     assert_eq!(PICKER_EFFORT_LABEL, "选择强度");
     assert_eq!(PICKER_LIST_HEADING, "选择模型");
-    // The trigger keeps its own geometry in this state, so switching the label
-    // cannot change the bottom row's shape (R57's frozen row).
     let trigger = mounted(window, "composer-model", cx).expect("trigger on slider level");
     assert_eq!(
         f32::from(trigger.size.height),
-        29.0,
-        "the trigger keeps its frozen height while the label changes"
+        Layout::TITLEBAR_CONTROL_SIZE,
+        "Issue #296 R4 fixes the trigger at 28px while the label changes"
     );
 }
 

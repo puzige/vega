@@ -1,5 +1,6 @@
 use super::context_usage::ContextUsageDisplay;
 use super::*;
+use crate::interaction::InteractionExt;
 use gpui_kit::{PathBuilder, canvas, point};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
@@ -85,54 +86,54 @@ impl ConversationStream {
         self.resume_tail(cx);
     }
 
-    /// Issue #98: the detached-tail recovery control, matching the reference
-    /// implementation's floating circular "back to bottom" button.
-    ///
-    /// R19 moved route identity and project actions into the window header, so
-    /// this control stays on the conversation surface. It is a 32px circle
-    /// (`bg_elevated` fill, 1px `border_subtle`, `ArrowDown` glyph) that floats
-    /// `SCROLL_TO_BOTTOM_GAP` above the transcript viewport's bottom edge and
-    /// is centred on the content column; the caller mounts it only while
-    /// `!following_tail()`. Backed by the original scroll handler
-    /// (`resume_tail`), reachable by pointer and keyboard.
-    ///
-    /// `.id()` is required for `.hover()` to repaint (R67).
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         div()
-            .absolute()
-            .bottom(px(Layout::SCROLL_TO_BOTTOM_GAP))
-            .left_0()
-            .right_0()
+            .debug_selector(|| "conversation-reading-navigation".into())
+            .h(px(Layout::READING_NAVIGATION_HEIGHT))
+            .flex_shrink_0()
+            .py(px(Layout::READING_NAVIGATION_PADDING))
             .flex()
             .justify_center()
-            .child(
-                div()
-                    .id("scroll-to-bottom")
-                    .debug_selector(|| "scroll-to-bottom".into())
-                    .aria_label("回到底部")
-                    .track_focus(&self.resume_tail_focus)
-                    .tab_stop(true)
-                    .key_context("ResumeTailButton")
-                    .on_action(cx.listener(Self::on_resume_tail))
-                    .flex_shrink_0()
-                    .size(px(Layout::SCROLL_TO_BOTTOM_SIZE))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
-                    .shadow_sm()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_resume_tail_clicked))
-                    .child(crate::icons::icon(
-                        crate::icons::Icon::ArrowDown,
-                        colors.text_secondary,
-                    )),
-            )
+            .when(!self.following_tail(), |row| {
+                row.child(
+                    div()
+                        .id("scroll-to-bottom")
+                        .debug_selector(|| "scroll-to-bottom".into())
+                        .aria_label("回到底部")
+                        .track_focus(&self.resume_tail_focus)
+                        .tab_stop(true)
+                        .key_context("ResumeTailButton")
+                        .on_action(cx.listener(Self::on_resume_tail))
+                        .flex_shrink_0()
+                        .h(px(Layout::SCROLL_TO_BOTTOM_SIZE))
+                        .px(px(Layout::READING_NAVIGATION_PADDING_X))
+                        .gap(px(Layout::READING_NAVIGATION_GAP))
+                        .rounded(px(Layout::SCROLL_TO_BOTTOM_SIZE / 2.0))
+                        .border_1()
+                        .border_color(colors.border_subtle)
+                        .bg(colors.bg_elevated)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(Typography::BODY))
+                        .text_color(colors.text_secondary)
+                        .cursor_pointer()
+                        .interaction_surface(
+                            colors.bg_elevated,
+                            colors.bg_hover,
+                            colors.bg_active,
+                            true,
+                        )
+                        .focus_visible(move |style| style.border_color(colors.accent))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_resume_tail_clicked))
+                        .child(crate::icons::icon(
+                            crate::icons::Icon::ArrowDown,
+                            colors.text_secondary,
+                        ))
+                        .child("回到底部"),
+                )
+            })
             .into_any_element()
     }
 
@@ -163,7 +164,7 @@ impl ConversationStream {
             && self.model_selection_pending.is_none();
         div()
             .debug_selector(|| "composer-wrapper".into())
-            .px(px(Layout::CONTENT_PADDING))
+            .px(px(Layout::CONVERSATION_PADDING))
             .pt(px(Layout::COMPOSER_PADDING_TOP))
             .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
             .flex_shrink_0()
@@ -187,9 +188,8 @@ impl ConversationStream {
                     .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                     .mx_auto()
                     .mt_1()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.danger)
-                    .child(error)
+                    .mb_2()
+                    .child(render_rows::status_notice(error, colors.danger, &colors))
             }))
             .child(
                 div()
@@ -264,7 +264,6 @@ impl ConversationStream {
                             .items_center()
                             .justify_between()
                             .gap_2()
-                            .when(!self.compact_workspace, |row| row.flex_wrap())
                             .when(self.compact_workspace, |row| row.gap_1())
                             .child(
                                 crate::icons::icon_button(
@@ -275,6 +274,7 @@ impl ConversationStream {
                                         this.open_composer_actions(window, cx)
                                     }),
                                 )
+                                .size(px(Layout::TITLEBAR_CONTROL_SIZE))
                                 .track_focus(&self.action_focus[0])
                                 .debug_selector(|| "composer-add".into()),
                             )
@@ -284,7 +284,7 @@ impl ConversationStream {
                             .when(self.thread.backend == TaskBackend::Codex, |row| {
                                 row.child(self.render_backend_status(cx))
                             })
-                            .child(div().flex_1())
+                            .child(div().min_w_0().flex_1())
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_model_controls(window, cx))
                             })
@@ -313,9 +313,6 @@ impl ConversationStream {
                                                     .bg(colors.accent)
                                                     .text_color(colors.brand_on_accent)
                                                     .cursor_pointer()
-                                                    .hover(move |style| {
-                                                        style.bg(colors.brand_primary_strong)
-                                                    })
                                                     .on_mouse_up(
                                                         MouseButton::Left,
                                                         cx.listener(Self::on_send_clicked),
@@ -326,6 +323,16 @@ impl ConversationStream {
                                                     .bg(colors.bg_hover)
                                                     .text_color(colors.text_tertiary)
                                             })
+                                            .interaction_surface(
+                                                if can_send {
+                                                    colors.accent
+                                                } else {
+                                                    colors.bg_hover
+                                                },
+                                                colors.brand_primary_strong,
+                                                colors.accent,
+                                                can_send,
+                                            )
                                             .child(crate::icons::icon(
                                                 crate::icons::Icon::ArrowUp,
                                                 if can_send {
@@ -347,9 +354,7 @@ impl ConversationStream {
                     .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                     .mx_auto()
                     .mt_1()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.warning)
-                    .child(warning)
+                    .child(render_rows::status_notice(warning, colors.warning, &colors))
             }))
             .into_any_element()
     }
@@ -410,14 +415,15 @@ impl ConversationStream {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .px_1()
-                    .py_1()
-                    .rounded_md()
-                    .text_size(px(Typography::METADATA))
+                    .gap_2()
+                    .px_2()
+                    .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                    .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+                    .rounded(px(Layout::DISCLOSURE_RADIUS))
+                    .text_size(px(Typography::BODY))
                     .text_color(ink)
                     .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover))
+                    .interactive(colors, true, self.permission_picker_open)
                     .tooltip(move |_, cx| crate::icons::tooltip("切换权限模式", cx))
                     .on_mouse_up(
                         MouseButton::Left,
@@ -447,17 +453,25 @@ impl ConversationStream {
 
     fn render_backend_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let label = if self.codex_mode_confirmed {
+            "Codex ACP · workspace-write · on-request"
+        } else {
+            "Codex ACP"
+        };
         div()
             .id("composer-backend-status")
             .debug_selector(|| "composer-backend-status".into())
-            .flex_shrink_0()
-            .text_size(px(Typography::METADATA))
+            .aria_label(label)
+            .min_w_0()
+            .flex_shrink_1()
+            .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+            .flex()
+            .items_center()
+            .text_size(px(Typography::BODY))
+            .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
             .text_color(colors.text_secondary)
-            .child(if self.codex_mode_confirmed {
-                "Codex ACP · workspace-write · on-request"
-            } else {
-                "Codex ACP"
-            })
+            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
+            .child(div().min_w_0().truncate().child(label))
             .into_any_element()
     }
 
@@ -690,17 +704,32 @@ impl ConversationStream {
             div()
                 .flex()
                 .flex_row()
-                .items_center()
+                .items_start()
                 .justify_between()
                 .gap_2()
-                .px_2()
-                .py_2()
-                .text_size(px(Typography::SIDEBAR))
+                .p(px(Layout::STATUS_PADDING))
+                .rounded(px(Layout::STATUS_RADIUS))
+                .border_1()
+                .border_color(colors.border_subtle)
+                .text_size(px(Typography::BODY))
+                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+                .child(
+                    div()
+                        .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
+                            - Layout::ICON_SIZE)
+                            / 2.0))
+                        .size(px(Layout::ICON_SIZE))
+                        .flex_shrink_0()
+                        .child(crate::icons::icon(
+                            crate::icons::Icon::Warning,
+                            colors.danger,
+                        )),
+                )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_color(colors.text_secondary)
+                        .text_color(colors.danger)
                         .child(code.message()),
                 )
                 .child(
@@ -708,8 +737,11 @@ impl ConversationStream {
                         .id("file-index-retry")
                         .flex_shrink_0()
                         .px_2()
-                        .py_1()
-                        .rounded_md()
+                        .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(Layout::DISCLOSURE_RADIUS))
                         .text_color(colors.text_primary)
                         .bg(colors.bg_hover)
                         .aria_label("重试文件索引")
@@ -806,6 +838,8 @@ impl ConversationStream {
         let hovered = self.context_usage_trigger_hovered || self.context_usage_tooltip_hovered;
         div()
             .relative()
+            .min_w_0()
+            .flex_shrink_1()
             .flex()
             .items_center()
             .gap_1()
@@ -1016,19 +1050,15 @@ impl ConversationStream {
             self.model_selection_pending.is_some(),
         );
         div()
-            // R61 R1: this wrapper is exactly the trigger's own box, so the
-            // layer's `bottom: 100%` / `right: 0` land on the trigger's edges
-            // rather than on the composer column's. It reproduces the trigger's
-            // own flex-item semantics (`flex` + `flex_shrink_0`), so the frozen
-            // bottom row's shape is unchanged: the absolutely positioned layer
-            // contributes nothing to the wrapper's measured size.
             .relative()
             .flex()
-            .flex_shrink_0()
+            .min_w_0()
+            .flex_shrink_1()
             .child(
                 div()
                     .id("composer-model")
                     .debug_selector(|| "composer-model".into())
+                    .aria_label(current.to_owned())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .track_focus(&self.model_focus)
                     .key_context("ModelSelector")
@@ -1038,25 +1068,20 @@ impl ConversationStream {
                     .on_action(cx.listener(Self::on_model_close))
                     .min_w_0()
                     .max_w(px(if self.compact_workspace { 98. } else { 150. }))
-                    .flex_shrink_0()
-                    // Keep the trigger on one line with an ellipsis. The
-                    // max-width alone leaves the text node's intrinsic width
-                    // in the flex measure and can crowd the send action.
+                    .flex_shrink_1()
                     .truncate()
                     .px_2()
-                    .py_1()
-                    .rounded_md()
+                    .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                    .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+                    .rounded(px(Layout::DISCLOSURE_RADIUS))
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(if enabled {
                         colors.text_secondary
                     } else {
                         colors.text_tertiary
                     })
-                    .when(enabled, |trigger| {
-                        trigger
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(colors.bg_hover))
-                    })
+                    .when(enabled, |trigger| trigger.cursor_pointer())
+                    .interactive(colors, enabled, self.model_picker_level.is_open())
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseUpEvent, window, cx| {
@@ -1065,10 +1090,18 @@ impl ConversationStream {
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .h_full()
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(current.to_owned())
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .child(current.to_owned()),
+                            )
                             .child(crate::icons::icon(
                                 crate::icons::Icon::ChevronDown,
                                 colors.text_tertiary,
@@ -1384,14 +1417,13 @@ impl Render for ConversationStream {
                 .size_full()
                 .flex()
                 .flex_col()
-                .overflow_hidden()
                 .child(
                     div()
                         .min_h_0()
                         .flex_1()
                         .flex()
                         .flex_row()
-                        .overflow_hidden()
+                        .relative()
                         .child(message_anchor_rail)
                         .when(preview_in_lane, |row| {
                             row.children(message_anchor_preview.take())
@@ -1403,6 +1435,7 @@ impl Render for ConversationStream {
                                 .min_w_0()
                                 .flex_1()
                                 .h_full()
+                                .overflow_hidden()
                                 .child(
                                     list(
                                         self.list.clone(),
@@ -1479,7 +1512,7 @@ impl Render for ConversationStream {
                             .items_center()
                             .justify_center()
                     })
-                    .px(px(Layout::CONTENT_PADDING))
+                    .px(px(Layout::CONVERSATION_PADDING))
                     .relative()
                     .child(
                         div()
@@ -1488,25 +1521,8 @@ impl Render for ConversationStream {
                             .w_full()
                             .max_w(px(Layout::CONTENT_MAX_WIDTH))
                             .mx_auto()
-                            .when(!self.entries.is_empty(), |body| {
-                                body.h_full().overflow_hidden()
-                            })
-                            .child(body)
-                            // Issue #98: the detached-tail control floats at the
-                            // bottom of the transcript viewport, centred on this
-                            // content column. It MUST be the column's **last**
-                            // child so it paints above the transcript: GPUI paints
-                            // siblings in tree order, so a control mounted before
-                            // `body` is overdrawn by the list rows — which showed
-                            // up as the circle being half-covered and the opaque
-                            // white fill reading as translucent (list text bled
-                            // through). The fill was never transparent; only the
-                            // z-order was wrong. tech-spec §5.4 动效禁令：流式期间
-                            // 节点无任何入场 opacity/动画（本管线自 T17 起即不
-                            // 引入入场动画，T18 维持）。
-                            .when(!self.following_tail(), |column| {
-                                column.relative().child(self.render_resume_tail(cx))
-                            }),
+                            .when(!self.entries.is_empty(), |body| body.h_full())
+                            .child(body),
                     )
                     .children(if message_anchor_preview_in_lane {
                         None
@@ -1514,6 +1530,9 @@ impl Render for ConversationStream {
                         message_anchor_preview
                     }),
             )
+            .when(!self.entries.is_empty(), |root| {
+                root.child(self.render_resume_tail(cx))
+            })
             .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))
             .into_any_element();

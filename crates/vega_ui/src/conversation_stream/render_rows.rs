@@ -179,9 +179,28 @@ fn render_entry_internal(
         StreamEntry::Permission { card } => {
             let card = card.clone();
             let row_count = card.read(cx).row_count();
-            card_rows_item(row_count, move |row| {
-                PermissionCard::render_row(card.clone(), row, window, cx)
-            })
+            let rows = (0..row_count)
+                .map(|row| PermissionCard::render_row(card.clone(), row, window, cx))
+                .collect::<Vec<_>>();
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .pt_1()
+                .pb_2()
+                .child(
+                    div()
+                        .debug_selector(|| "conversation-permission-card".into())
+                        .w_full()
+                        .rounded(px(Layout::STATUS_RADIUS))
+                        .border_1()
+                        .border_color(colors.border_subtle)
+                        .p(px(Layout::STATUS_PADDING))
+                        .flex()
+                        .flex_col()
+                        .gap(px(Layout::STATUS_GAP))
+                        .children(rows),
+                )
+                .into_any_element()
         }
         StreamEntry::Plan { card } => {
             let card = card.clone();
@@ -198,15 +217,19 @@ fn render_entry_internal(
             outcome => div()
                 .debug_selector(|| "task-outcome-status".to_string())
                 .py_1()
-                .text_size(px(Typography::METADATA))
-                .text_color(theme(cx).colors.text_secondary)
-                .child(
+                .child(status_notice(
                     if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
-                        "失败"
+                        "失败".to_string()
                     } else {
-                        "已中断"
+                        "已中断".to_string()
                     },
-                )
+                    if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
+                        colors.danger
+                    } else {
+                        colors.warning
+                    },
+                    &colors,
+                ))
                 .into_any_element(),
         },
         StreamEntry::SkillActivation { activation } => {
@@ -278,8 +301,8 @@ pub(crate) fn markdown_item(
         .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
-        .pt(px(4.0))
-        .pb(px(8.0))
+        .pt(px(Layout::ASSISTANT_MESSAGE_PADDING_TOP))
+        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
         .flex()
         .flex_col()
         .children(
@@ -292,10 +315,11 @@ pub(crate) fn markdown_item(
         .children(failure.map(|reason| {
             div()
                 .debug_selector(|| "assistant-run-failure".to_string())
-                .py_1()
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.danger)
-                .child(reason.message())
+                .child(status_notice(
+                    reason.message().to_string(),
+                    colors.danger,
+                    colors,
+                ))
         }))
         .into_any_element()
 }
@@ -306,8 +330,43 @@ thread_local! {
     pub(super) static USER_TEXT_LAYOUTS: std::cell::RefCell<Vec<gpui_kit::TextLayout>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// One right-aligned, content-hugging user bubble. Logical source lines retain
-/// their natural wrapping height; the legacy label stays only in the row model.
+pub(super) fn status_notice(message: String, color: Rgba, colors: &ThemeColors) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_start()
+        .gap(px(Layout::STATUS_GAP))
+        .p(px(Layout::STATUS_PADDING))
+        .rounded(px(Layout::STATUS_RADIUS))
+        .border_1()
+        .border_color(colors.border_subtle)
+        .text_size(px(Typography::BODY))
+        .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+        .text_color(color)
+        .child(
+            div()
+                .debug_selector(|| "conversation-status-icon".into())
+                .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
+                    - Layout::ICON_SIZE)
+                    / 2.0))
+                .size(px(Layout::ICON_SIZE))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(Icon::Warning, color)),
+        )
+        .child(
+            div()
+                .debug_selector(|| "conversation-status-text".into())
+                .min_w_0()
+                .flex_1()
+                .child(message),
+        )
+        .into_any_element()
+}
+
 pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> AnyElement {
     #[cfg(test)]
     USER_TEXT_LAYOUTS.with_borrow_mut(Vec::clear);
@@ -345,8 +404,9 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
     div()
         .w_full()
         .flex_shrink_0()
-        .pt(px(8.0))
-        .pb(px(8.0))
+        .debug_selector(|| "user-message".into())
+        .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
+        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
         .flex()
         .flex_col()
         .items_end()
@@ -406,8 +466,9 @@ fn selectable_user_message(
     let body = div()
         .w_full()
         .flex_shrink_0()
-        .pt(px(8.0))
-        .pb(px(8.0))
+        .debug_selector(|| "user-message".into())
+        .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
+        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
         .flex()
         .flex_col()
         .items_end()
@@ -431,8 +492,8 @@ fn selectable_markdown_message(
         .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
-        .pt(px(4.0))
-        .pb(px(8.0))
+        .pt(px(Layout::ASSISTANT_MESSAGE_PADDING_TOP))
+        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
         .flex()
         .flex_col();
     let mut previous: Option<(u64, LineKind)> = None;
@@ -459,10 +520,11 @@ fn selectable_markdown_message(
     body = body.children(failure.map(|reason| {
         div()
             .debug_selector(|| "assistant-run-failure".to_string())
-            .py_1()
-            .text_size(px(Typography::METADATA))
-            .text_color(colors.danger)
-            .child(reason.message())
+            .child(status_notice(
+                reason.message().to_string(),
+                colors.danger,
+                colors,
+            ))
     }));
     selection_context_menu(document.wrap(body.into_any_element(), window, cx), copy)
 }

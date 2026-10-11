@@ -100,6 +100,7 @@ fn main() {
         ]);
         // Key bindings for the vega_ui text input components.
         vega_ui::init(cx);
+        vega_ui::interaction::install_system_motion(cx);
 
         // T12: open + migrate the store at the platform data root (tech-spec
         // §6) and seed the sidebar globals (selected project, block collapse
@@ -144,7 +145,12 @@ fn main() {
                 window_min_size: Some(min_size),
                 ..Default::default()
             },
-            |_, cx| cx.new(VegaWindow::new),
+            |window, cx| {
+                cx.new(|cx| {
+                    vega_ui::interaction::observe_system_motion(window, cx);
+                    VegaWindow::new(cx)
+                })
+            },
         );
 
         let window = match window {

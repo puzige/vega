@@ -1,5 +1,6 @@
 //! Audited tool-call activities over strict `vega_conversation` projections.
 
+use crate::interaction::InteractionExt;
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
@@ -527,18 +528,40 @@ impl ToolCard {
         let detail_scroll = card.read(cx).detail_scroll.clone();
         let detail_id = format!("tool-detail-{}", card.entity_id());
         let toggle_card = card.clone();
+        let keyboard_card = card.clone();
         let debug_selector = selector.clone();
+        let icon_selector = format!("{selector}-icon");
         let title_selector = format!("{selector}-title");
         let duration_selector = format!("{selector}-duration");
         let chevron_selector = format!("{selector}-chevron");
         let row = div()
+            .id(("tool-activity-toggle", card.entity_id()))
+            .focusable()
+            .tab_stop(expandable)
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(move |row| row.border_color(colors.accent))
             .debug_selector(move || debug_selector.clone())
-            .h(px(ROW_HEIGHT))
+            .h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
+            .text_size(px(Typography::BODY))
+            .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
             .w_full()
             .min_w_0()
             .flex()
             .items_center()
             .gap_2()
+            .px(px(Layout::DISCLOSURE_PADDING_X))
+            .rounded(px(Layout::DISCLOSURE_RADIUS))
+            .interactive(colors, expandable, false)
+            .on_key_down(move |event, _, cx| {
+                if expandable && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    keyboard_card.update(cx, |card, cx| {
+                        card.expanded = !card.expanded;
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
+                }
+            })
             .when(expandable, |row| {
                 row.cursor_pointer().on_mouse_up(
                     MouseButton::Left,
@@ -550,7 +573,16 @@ impl ToolCard {
                     },
                 )
             })
-            .child(crate::icons::icon(leading_icon, leading_icon_color))
+            .child(
+                div()
+                    .debug_selector(move || icon_selector.clone())
+                    .size(px(Layout::ICON_SIZE))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::icons::icon(leading_icon, leading_icon_color)),
+            )
             .child(
                 div()
                     .debug_selector(move || title_selector.clone())
@@ -1050,7 +1082,7 @@ fn render_detail(
         .min_w_0()
         .mt_1()
         .mb_1()
-        .rounded_lg()
+        .rounded(px(Layout::DISCLOSURE_RADIUS))
         .border_1()
         .border_color(colors.border_subtle)
         .bg(colors.code_bg)
@@ -1074,7 +1106,7 @@ fn detail_row(text: String, color: gpui_kit::Rgba, code: bool) -> AnyElement {
         .text_size(px(if code {
             Typography::CODE
         } else {
-            Typography::METADATA
+            Typography::BODY
         }))
         .text_color(color)
         .child(text)

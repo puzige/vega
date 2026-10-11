@@ -1756,7 +1756,7 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
     assert!(stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).expanded()));
     let body = bounds(window, "tool-activity-group", cx);
     assert!(
-        body.size.height <= px(320. + ROW_HEIGHT),
+        body.size.height <= px(320. + Layout::DISCLOSURE_HEADER_HEIGHT),
         "group: {:?}",
         body.size.height
     );
