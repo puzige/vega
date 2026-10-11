@@ -97,9 +97,11 @@ fn diagnostic_failure(error: &VegaError) -> RuntimeDiagnosticFailure {
             status: Some(_), ..
         } => RuntimeDiagnosticFailure::ProviderHttp,
         VegaError::ReasoningBudgetExceeded { .. } => RuntimeDiagnosticFailure::ReasoningLimit,
-        VegaError::Context(ContextRuntimeError::OverLimit { .. }) => {
-            RuntimeDiagnosticFailure::ContextOverLimit
-        }
+        VegaError::Context(
+            ContextRuntimeError::OverLimit { .. }
+            | ContextRuntimeError::SummaryInputOverLimit { .. }
+            | ContextRuntimeError::ResultOverLimit { .. },
+        ) => RuntimeDiagnosticFailure::ContextOverLimit,
         VegaError::Cancelled => RuntimeDiagnosticFailure::UnknownSafeFailure,
         _ => RuntimeDiagnosticFailure::UnknownSafeFailure,
     }
@@ -2061,7 +2063,11 @@ where
                         result: conflict.clone(),
                     }
                 );
-                messages.push(ChatMessage::tool_result(call.id, conflict.output));
+                messages.push(ChatMessage::projected_tool_result(
+                    call.id,
+                    &call.name,
+                    &conflict.output,
+                ));
                 continue;
             }
             let validation_output = match &prepared {
@@ -2093,7 +2099,11 @@ where
                                 result: conflict.clone(),
                             }
                         );
-                        messages.push(ChatMessage::tool_result(&call.id, &conflict.output));
+                        messages.push(ChatMessage::projected_tool_result(
+                            &call.id,
+                            &call.name,
+                            &conflict.output,
+                        ));
                         continue;
                     }
                     terminal = prior.result;
@@ -2109,7 +2119,11 @@ where
                         result: terminal.clone(),
                     }
                 );
-                messages.push(ChatMessage::tool_result(&call.id, &terminal.output));
+                messages.push(ChatMessage::projected_tool_result(
+                    &call.id,
+                    &call.name,
+                    &terminal.output,
+                ));
                 completed.insert(
                     call.id.clone(),
                     CompletedToolCall {
@@ -2147,7 +2161,11 @@ where
                             result: conflict.clone(),
                         }
                     );
-                    messages.push(ChatMessage::tool_result(call.id, conflict.output));
+                    messages.push(ChatMessage::projected_tool_result(
+                        call.id,
+                        &call.name,
+                        &conflict.output,
+                    ));
                     continue;
                 }
                 emit!(events, sink, RuntimeEvent::ToolCallProposed(call.clone()));
@@ -2164,7 +2182,11 @@ where
                     }
                 );
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
-                messages.push(ChatMessage::tool_result(call.id, result.output));
+                messages.push(ChatMessage::projected_tool_result(
+                    call.id,
+                    &call.name,
+                    &result.output,
+                ));
                 continue;
             }
             if batch_policy == BatchPolicy::RejectOtherTools
@@ -2180,7 +2202,11 @@ where
                 let mut result = result;
                 redact_runtime_tool_result(&tool_config, &mut result);
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
-                messages.push(ChatMessage::tool_result(&call.id, &result.output));
+                messages.push(ChatMessage::projected_tool_result(
+                    &call.id,
+                    &call.name,
+                    &result.output,
+                ));
                 completed.insert(
                     call.id.clone(),
                     CompletedToolCall {
@@ -2373,7 +2399,11 @@ where
                     pattern: target.exact_pattern.clone(),
                 });
             }
-            messages.push(ChatMessage::tool_result(&call.id, &result.output));
+            messages.push(ChatMessage::projected_tool_result(
+                &call.id,
+                &call.name,
+                &result.output,
+            ));
             completed.insert(
                 call.id,
                 CompletedToolCall {

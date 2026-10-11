@@ -292,7 +292,11 @@ fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
                 b'"' | b'\'' | b',' | b';' | b'&' | b'}' | b']' | b')'
             )
     }) {
-        end += 1;
+        if bytes[end..].starts_with(PROVIDER_CREDENTIAL_REDACTION_MARKER.as_bytes()) {
+            end += PROVIDER_CREDENTIAL_REDACTION_MARKER.len();
+        } else {
+            end += 1;
+        }
     }
     end
 }
@@ -323,6 +327,33 @@ mod tests {
     use super::*;
 
     const SECRET: &str = "canary-provider-credential-output-170-abcdefghijklmnopqrstuvwxyz";
+
+    #[test]
+    fn issue302_redacted_assignments_are_idempotent_without_hiding_following_secrets() {
+        let marker = PROVIDER_CREDENTIAL_REDACTION_MARKER;
+        for safe in [
+            format!("api_key={marker}"),
+            format!("{{\"password\":\"{marker}\"}}"),
+            format!("authorization={marker}; ordinary text"),
+        ] {
+            assert_eq!(redact_sensitive_credential_text(&safe, &[]), safe);
+            assert!(!contains_sensitive_credential(&safe, &[]));
+        }
+        for output in [
+            format!("api_key={marker}{SECRET}"),
+            format!("api_key={marker}; password=remaining-private-value"),
+            format!("api_key={marker} {SECRET}"),
+        ] {
+            assert!(contains_sensitive_credential(
+                &output,
+                &[SECRET.to_string()]
+            ));
+            let redacted = redact_sensitive_credential_text(&output, &[SECRET.to_string()]);
+            assert!(!redacted.contains(SECRET));
+            assert!(!redacted.contains("remaining-private-value"));
+            assert_eq!(redact_sensitive_credential_text(&redacted, &[]), redacted);
+        }
+    }
 
     #[test]
     fn issue170_exact_credentials_are_redacted_in_all_tool_output_shapes() {

@@ -317,7 +317,9 @@ pub(crate) fn history_from_context_source(
                 let output = call.output_text.clone().ok_or_else(|| {
                     ConversationError::CorruptRow("terminal tool result has no output".into())
                 })?;
-                history.push(vega_runtime::ChatMessage::tool_result(&call.id, output));
+                history.push(vega_runtime::ChatMessage::projected_tool_result(
+                    &call.id, &call.tool, &output,
+                ));
             }
             cursor = boundary;
         }

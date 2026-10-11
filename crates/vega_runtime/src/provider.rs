@@ -397,6 +397,32 @@ impl ChatMessage {
         }
     }
 
+    pub fn projected_tool_result(call_id: impl Into<String>, tool: &str, content: &str) -> Self {
+        const SHELL_MODEL_OUTPUT_BYTES: usize = 65_536;
+        const OMISSION: &str = "\n[Shell output shortened: middle omitted for model context. Narrow/filter or page the command to retrieve more detail.]\n";
+        if tool != "bash" || content.len() <= SHELL_MODEL_OUTPUT_BYTES {
+            return Self::tool_result(call_id, content);
+        }
+        let retained_bytes = SHELL_MODEL_OUTPUT_BYTES - OMISSION.len();
+        let mut head_end = retained_bytes / 2;
+        while !content.is_char_boundary(head_end) {
+            head_end -= 1;
+        }
+        let mut tail_start = content.len() - (retained_bytes - retained_bytes / 2);
+        while !content.is_char_boundary(tail_start) {
+            tail_start += 1;
+        }
+        Self::tool_result(
+            call_id,
+            format!(
+                "{}{}{}",
+                &content[..head_end],
+                OMISSION,
+                &content[tail_start..]
+            ),
+        )
+    }
+
     /// Builds a tool-result message associated with `call_id`.
     pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
@@ -642,6 +668,44 @@ pub trait Provider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue302_shell_projection_bounds_utf8_and_preserves_other_tools() {
+        for output in [String::new(), "x".repeat(65_535), "x".repeat(65_536)] {
+            assert_eq!(
+                ChatMessage::projected_tool_result("call", "bash", &output),
+                ChatMessage::tool_result("call", &output)
+            );
+        }
+        for output in [
+            "x".repeat(65_537),
+            "x".repeat(2_622_078),
+            "界🦀".repeat(30_000),
+        ] {
+            let projected = ChatMessage::projected_tool_result("call", "bash", &output);
+            assert!(projected.content.len() <= 65_536);
+            let (head, rest) = projected
+                .content
+                .split_once("\n[Shell output shortened:")
+                .unwrap();
+            let (_, tail) = rest.split_once("]\n").unwrap();
+            assert!(!head.is_empty() && !tail.is_empty());
+            assert!(output.starts_with(head));
+            assert!(output.ends_with(tail));
+            assert!(projected.content.contains("middle omitted"));
+            assert!(projected.content.contains("Narrow/filter or page"));
+            assert_eq!(
+                ChatMessage::projected_tool_result("call", "bash", &projected.content),
+                projected
+            );
+            for tool in ["read", "edit", "write", "mcp__fixture"] {
+                assert_eq!(
+                    ChatMessage::projected_tool_result("call", tool, &output),
+                    ChatMessage::tool_result("call", &output)
+                );
+            }
+        }
+    }
 
     /// Compile-time proof of the architect's pre-ruling: the trait is
     /// dyn-compatible and its objects are `Send + Sync`.
