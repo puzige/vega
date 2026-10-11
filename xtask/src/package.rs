@@ -88,6 +88,7 @@ const APP_BUNDLE: &str = "Vega.app";
 pub fn run(args: &[String]) -> Result<()> {
     let version = resolve_version(args)?;
     let workspace = crate::workspace_root()?;
+    let prepared_executors = prepare_computer_use(&workspace)?;
     let build = provenance::rebuild_release(&workspace)?;
 
     let dist = workspace.join("dist");
@@ -111,6 +112,14 @@ pub fn run(args: &[String]) -> Result<()> {
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
         .with_context(|| format!("failed to chmod {}", executable.display()))?;
 
+    for directory in ["Helpers", "Resources/computer-use"] {
+        run_tool(
+            "ditto",
+            &[prepared_executors.join(directory), contents.join(directory)],
+            None,
+        )?;
+    }
+
     // Icon: SVG → transparent 1024 PNG (AppKit) → iconset (sips) → .icns (iconutil).
     let icon_path = contents.join("Resources").join(format!("{ICON_FILE}.icns"));
     render_icon(&workspace, &icon_path)?;
@@ -120,17 +129,10 @@ pub fn run(args: &[String]) -> Result<()> {
         .context("failed to write Info.plist")?;
     fs::write(contents.join("PkgInfo"), PKG_INFO).context("failed to write PkgInfo")?;
 
-    // Ad-hoc signature + verification (no identity required; other Macs
-    // still need the Gatekeeper right-click open, see INSTALL.txt/docs).
     run_tool(
-        "codesign",
-        &["--force", "--deep", "--sign", "-", APP_BUNDLE],
-        Some(dist.as_path()),
-    )?;
-    run_tool(
-        "codesign",
-        &["--verify", "--strict", APP_BUNDLE],
-        Some(dist.as_path()),
+        "python3",
+        &[workspace.join("scripts/sign-computer-use.py"), app.clone()],
+        None,
     )?;
     run_tool(
         "plutil",
@@ -173,6 +175,20 @@ pub fn run(args: &[String]) -> Result<()> {
         app.display(),
     );
     Ok(())
+}
+
+fn prepare_computer_use(workspace: &Path) -> Result<std::path::PathBuf> {
+    let prepared = workspace.join("target/computer-use/Contents");
+    run_tool(
+        "python3",
+        &[
+            workspace.join("scripts/prepare-computer-use.py"),
+            "--output".into(),
+            prepared.clone(),
+        ],
+        None,
+    )?;
+    Ok(prepared)
 }
 
 /// Exports only the production icon, without rebuilding or signing the app.
