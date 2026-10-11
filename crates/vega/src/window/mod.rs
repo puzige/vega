@@ -21,6 +21,7 @@ mod artifact;
 mod branch;
 mod commit;
 mod commit_reconcile;
+pub(crate) mod computer_use;
 mod context;
 mod diff;
 mod file_index;
@@ -92,6 +93,7 @@ impl ModelSelectionRefresh {
 /// ([`ConversationStream`], S3-T17), or the ui-spec §4.6 empty state.
 pub(crate) struct VegaWindow {
     pub(crate) updater: crate::updater::Updater,
+    computer_use_previews: Entity<computer_use::ComputerUsePreviews>,
     update_notice_dismissed: bool,
     navigation: navigation::Navigation,
     pub(crate) palette: crate::app_palette::AppPalette,
@@ -307,6 +309,7 @@ impl VegaWindow {
             .map(|root| Arc::new(PricingSettingsService::new(root.join("pricing.json"))));
         let mut window = Self {
             updater: crate::updater::Updater::default(),
+            computer_use_previews: computer_use::ComputerUsePreviews::new(cx),
             update_notice_dismissed: false,
             navigation: navigation::Navigation::new(cx, None),
             palette: crate::app_palette::AppPalette::default(),
@@ -381,6 +384,9 @@ impl VegaWindow {
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
         for (_, active) in self.agent_controller.active.drain() {
+            if let Some(control) = &active.computer_use {
+                control.stop();
+            }
             active.cancel.cancel();
         }
         self.file_index_controller.cancel();

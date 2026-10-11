@@ -1531,10 +1531,10 @@ where
         } else {
             None
         };
-        if let Some(run) = &tool_config.computer_use {
-            if run.wait_ready(&cancel).await.is_err() {
-                cancel.cancel();
-            }
+        if let Some(run) = &tool_config.computer_use
+            && run.wait_ready(&cancel).await.is_err()
+        {
+            cancel.cancel();
         }
         let response_text_start = final_text.len();
         let attempt_id = ulid::Ulid::generate().to_string();
@@ -1985,10 +1985,10 @@ where
                 false,
             ));
         }
-        if let Some(run) = &tool_config.computer_use {
-            if run.wait_ready(&cancel).await.is_err() {
-                cancel.cancel();
-            }
+        if let Some(run) = &tool_config.computer_use
+            && run.wait_ready(&cancel).await.is_err()
+        {
+            cancel.cancel();
         }
         if cancel.is_cancelled() {
             emit!(events, sink, RuntimeEvent::Interrupted);

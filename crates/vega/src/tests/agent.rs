@@ -532,6 +532,7 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
         let batch = |record| AgentBatch {
             events: vec![ConversationEvent::ContextCompactionStatus { record }],
             codex_mode_confirmed: false,
+            computer_use_ready: None,
             mcp_unavailable: vec![],
             reference_failure: None,
             credential_failure: false,

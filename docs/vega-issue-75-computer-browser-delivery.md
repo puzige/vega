@@ -30,8 +30,8 @@
 | CU10、CU14 | 专用媒体解析与普通 MCP 分离，真实图片解码、MIME 伪造拒绝、缩放尺寸；缺组件、版本错、路径错、过大 manifest 拒绝 | PASS（纯函数/临时文件） |
 | CU11 | Responses 工具图像数组；Chat Completions 完整工具批次后投影，保留真实 call ID | PASS（provider request fixture） |
 | CU12 | 连续 20 次观察后旧上下文正文/图片清除、缓存上界、失效后晚图拒绝；相同编码长度的变图改变 fingerprint；用户图片旧估算合同保持 | PASS（runtime/context） |
-| CU02、CU16 | 设置持久化、运行控制条、查看观察与关闭/删除入口 | UI 独立实现，集成证据由主代理补充 |
-| CU15 | 固定依赖、打包路径、哈希和签名责任 | packaging 独立实现，集成证据由主代理补充 |
+| CU02、CU16 | 设置持久化、运行控制条、查看观察与关闭/删除入口 | PASS（集成后的 store/GPUI 定向回归） |
+| CU15 | 固定依赖、打包路径、哈希和签名责任 | PASS（12 项纯函数测试；真实 prepare/Node MCP 握手另有证据） |
 | CU17、CU18 | TextEdit 与登录 Chrome 上的真实观察、操作和接管 | NOT RUN，用户手测 |
 
 初始 provider 失败命令：
@@ -77,3 +77,128 @@ Summary [   2.287s] 22 tests run: 22 passed, 907 skipped
 5. 停止运行、关闭窗口或删除任务，确认没有新增动作；重启 Vega 后能力开关可恢复，但授权、连接与截图均不恢复。
 
 与冻结规格偏离：无；上述限制均在 R13、R21、R24–R28 和实施裁决中明确。用户手测通过前不关闭 Issue、不标 Done、不清理本卡 worktree。
+
+## 主线集成验证
+
+2026-10-12：三个提交已整合到 `484fac9` 主线，没有代码冲突；UI 使用正式核心接口再次编译和验证。以下是本卡定向验证，未执行本地全量门禁。
+
+```sh
+cargo nextest run -p vega_runtime -p vega_mcp -p vega_conversation -p vega_store -p vega_ui -p vega -E 'test(issue75) | test(issue296_h3a_agents_argv_has_input_surface)'
+```
+
+退出 0，原始输出：
+
+```text
+ Nextest run ID ed822298-d5a9-4073-a576-f7504f8991b2 with nextest profile: default
+    Starting 30 tests across 17 binaries (1972 tests skipped)
+        PASS [   0.015s] ( 1/30) vega_mcp managed::tests::issue75_managed_wrong_response_id_poisons_connection
+        PASS [   0.016s] ( 2/30) vega_mcp managed::tests::issue75_managed_media_profile_is_bounded_and_separate
+        PASS [   0.017s] ( 3/30) vega_mcp managed::tests::issue75_managed_partial_write_cancel_poisons_connection
+        PASS [   0.017s] ( 4/30) vega_conversation agent::tests::issue75_history_accepts_only_dedicated_safe_audit_and_session_approval
+        PASS [   0.023s] ( 5/30) vega_runtime agent::context_accounting::tests::issue75_observation_fingerprint_changes_when_same_size_pixels_change
+        PASS [   0.029s] ( 6/30) vega::bin/vega window::computer_use::tests::issue75_observation_previews_evict_app_assets_on_replace_clear_and_release
+        PASS [   0.020s] ( 7/30) vega_runtime agent::tests::issue75_disabled_desktop_name_cannot_trigger_discovery_from_browser_grant_config
+        PASS [   0.020s] ( 8/30) vega_runtime agent::tests::issue75_native_tool_gate_rejects_plan_readonly_and_disabled_without_dispatch
+        PASS [   0.013s] ( 9/30) vega_runtime computer_use::backend::tests::issue75_browser_refs_are_exact_and_navigation_preserves_only_the_single_connection
+        PASS [   0.022s] (10/30) vega_runtime agent::tests::mcp_registry::issue75_computer_capability_does_not_bypass_ordinary_mcp_once
+        PASS [   0.013s] (11/30) vega_runtime computer_use::backend::tests::issue75_browser_tab_parser_rejects_ambiguous_or_privileged_targets
+        PASS [   0.009s] (12/30) vega_runtime computer_use::control::tests::issue75_granting_browser_does_not_renew_desktop_expiry
+        PASS [   0.010s] (13/30) vega_runtime computer_use::backend::tests::issue75_driver_action_maps_only_typed_window_target_and_original_png_coordinates
+        PASS [   0.015s] (14/30) vega_runtime computer_use::components::tests::issue75_component_manifest_rejects_missing_version_path_and_oversize
+        PASS [   0.054s] (15/30) vega::bin/vega tests::computer_use::issue75_window_cleanup_revokes_every_control_before_cancelling
+        PASS [   0.054s] (16/30) vega::bin/vega tests::computer_use::issue75_late_ready_after_stop_is_revoked_and_stale_generation_is_ignored
+        PASS [   0.013s] (17/30) vega_runtime computer_use::tests::issue75_audit_contains_no_typed_text_or_target
+        PASS [   0.013s] (18/30) vega_runtime computer_use::tests::issue75_coordinate_projection_tracks_image_resize_and_rejects_out_of_bounds
+        PASS [   0.015s] (19/30) vega_runtime computer_use::tests::issue75_observation_cache_trims_all_old_payloads_and_rejects_late_frames
+        PASS [   0.013s] (20/30) vega_runtime computer_use::tests::issue75_takeover_waits_for_cleanup_and_keeps_single_lease
+        PASS [   0.011s] (21/30) vega_runtime openai::tests::computer_use::issue75_provider_chat_observation_follows_complete_tool_batch
+        PASS [   0.012s] (22/30) vega_runtime openai::tests::computer_use::issue75_provider_responses_observation_retains_tool_identity
+        PASS [   0.012s] (23/30) vega_store config::tests::issue75_computer_use_settings_default_off_and_round_trip
+        PASS [   0.085s] (24/30) vega::bin/vega tests::computer_use::issue75_confirming_background_task_deletion_revokes_its_control
+        PASS [   0.117s] (25/30) vega_runtime context::tests::issue75_tool_visual_estimate_does_not_change_user_image_contract
+        PASS [   0.148s] (26/30) vega_ui settings::tests::issue296::issue296_h3a_agents_argv_has_input_surface
+        PASS [   0.217s] (27/30) vega_runtime agent::tests::issue75_pause_holds_final_response_until_user_resumes
+        PASS [   0.190s] (28/30) vega_ui settings::tests::issue296::issue75_native_toggles_preserve_other_disk_settings_and_reject_conflict
+        PASS [   0.392s] (29/30) vega::bin/vega tests::computer_use::issue75_control_bar_survives_settings_and_stop_has_epoch_and_owner_fences
+        PASS [   2.287s] (30/30) vega_runtime computer_use::media::tests::issue75_observation_decode_rejects_spoofed_mime_and_retains_original_scale
+────────────
+     Summary [   2.328s] 30 tests run: 30 passed, 1972 skipped
+```
+
+```sh
+python3 -m unittest discover -s scripts -p prepare_computer_use_tests.py -v
+```
+
+退出 0，原始输出：
+
+```text
+test_archive_extracts_only_requested_files (prepare_computer_use_tests.ComputerUsePackagingTests.test_archive_extracts_only_requested_files) ... ok
+test_archive_rejects_selected_links_and_duplicate_members (prepare_computer_use_tests.ComputerUsePackagingTests.test_archive_rejects_selected_links_and_duplicate_members) ... ok
+test_archive_rejects_size_and_count_limits (prepare_computer_use_tests.ComputerUsePackagingTests.test_archive_rejects_size_and_count_limits) ... ok
+test_archive_rejects_traversal_absolute_and_backslash_names (prepare_computer_use_tests.ComputerUsePackagingTests.test_archive_rejects_traversal_absolute_and_backslash_names) ... ok
+test_contract_has_fixed_versions_paths_and_official_sources (prepare_computer_use_tests.ComputerUsePackagingTests.test_contract_has_fixed_versions_paths_and_official_sources) ... ok
+test_hash_mismatch_and_oversize_never_accept_cache (prepare_computer_use_tests.ComputerUsePackagingTests.test_hash_mismatch_and_oversize_never_accept_cache) ... ok
+test_lock_rejects_version_integrity_url_and_package_drift (prepare_computer_use_tests.ComputerUsePackagingTests.test_lock_rejects_version_integrity_url_and_package_drift) ... ok
+test_npm_command_disables_scripts_and_browser_downloads (prepare_computer_use_tests.ComputerUsePackagingTests.test_npm_command_disables_scripts_and_browser_downloads) ... ok
+test_output_replacement_preserves_unowned_directories (prepare_computer_use_tests.ComputerUsePackagingTests.test_output_replacement_preserves_unowned_directories) ... ok
+test_runtime_manifest_uses_contents_relative_paths_and_source_hashes (prepare_computer_use_tests.ComputerUsePackagingTests.test_runtime_manifest_uses_contents_relative_paths_and_source_hashes) ... ok
+test_signing_inventory_rejects_hidden_native_code_and_symlinks (prepare_computer_use_tests.ComputerUsePackagingTests.test_signing_inventory_rejects_hidden_native_code_and_symlinks) ... ok
+test_signs_nested_helpers_before_app_and_jit_entitlement_only_on_node (prepare_computer_use_tests.ComputerUsePackagingTests.test_signs_nested_helpers_before_app_and_jit_entitlement_only_on_node) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.009s
+
+OK
+```
+
+日志 SHA-256：
+
+- `vega-75-integrated-tests.log`：`901b7562ee6000952004189823812d3a1c62563ea5370b5abda4160bce5a7da6`。
+- `vega-75-integrated-packaging-tests.log`：`c8f59125d64a22bea97c70f6ddfb0003c6f30cd5537c7f2aec398b42acc4a73a`。
+
+组件准备已独立实际完成，Node 的版本及 MCP initialize/tools/list 握手已验证；没有派发浏览器或桌面操作。云端全量门禁、合并身份和用户手测状态以关联 PR/Issue 为准。本地日常 Vega.app 尚未替换。
+
+## 云端首轮反馈修复
+
+PR #306 首轮 run `38159970473` 的 Format 通过，Clippy 在 managed transport 的嵌套条件报错。按实际诊断合并条件，并统一 MCP 连接枚举的装箱存储；未增加 lint allow，也未放宽断言。针对受影响核心库的 Clippy 和本卡回归再次通过：
+
+```sh
+cargo clippy -p vega_runtime -p vega_conversation --lib -- -D warnings
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_mcp issue75 --no-fail-fast
+```
+
+两条命令均退出 0。原始输出：
+
+```text
+    Checking vega_runtime v0.1.0 (<integration-worktree>/crates/vega_runtime)
+    Checking vega_conversation v0.1.0 (<integration-worktree>/crates/vega_conversation)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.29s
+ Nextest run ID 66465429-9c77-4e03-bd9b-b614b49d8d72 with nextest profile: default
+    Starting 22 tests across 13 binaries (907 tests skipped)
+        PASS [   0.015s] ( 1/22) vega_mcp managed::tests::issue75_managed_wrong_response_id_poisons_connection
+        PASS [   0.015s] ( 2/22) vega_mcp managed::tests::issue75_managed_partial_write_cancel_poisons_connection
+        PASS [   0.017s] ( 3/22) vega_mcp managed::tests::issue75_managed_media_profile_is_bounded_and_separate
+        PASS [   0.017s] ( 4/22) vega_runtime agent::tests::issue75_disabled_desktop_name_cannot_trigger_discovery_from_browser_grant_config
+        PASS [   0.017s] ( 5/22) vega_runtime agent::tests::issue75_native_tool_gate_rejects_plan_readonly_and_disabled_without_dispatch
+        PASS [   0.018s] ( 6/22) vega_conversation agent::tests::issue75_history_accepts_only_dedicated_safe_audit_and_session_approval
+        PASS [   0.018s] ( 7/22) vega_runtime computer_use::backend::tests::issue75_browser_refs_are_exact_and_navigation_preserves_only_the_single_connection
+        PASS [   0.019s] ( 8/22) vega_runtime agent::context_accounting::tests::issue75_observation_fingerprint_changes_when_same_size_pixels_change
+        PASS [   0.019s] ( 9/22) vega_runtime agent::tests::mcp_registry::issue75_computer_capability_does_not_bypass_ordinary_mcp_once
+        PASS [   0.008s] (10/22) vega_runtime computer_use::backend::tests::issue75_browser_tab_parser_rejects_ambiguous_or_privileged_targets
+        PASS [   0.008s] (11/22) vega_runtime computer_use::backend::tests::issue75_driver_action_maps_only_typed_window_target_and_original_png_coordinates
+        PASS [   0.010s] (12/22) vega_runtime computer_use::control::tests::issue75_granting_browser_does_not_renew_desktop_expiry
+        PASS [   0.011s] (13/22) vega_runtime computer_use::components::tests::issue75_component_manifest_rejects_missing_version_path_and_oversize
+        PASS [   0.010s] (14/22) vega_runtime computer_use::tests::issue75_audit_contains_no_typed_text_or_target
+        PASS [   0.009s] (15/22) vega_runtime computer_use::tests::issue75_takeover_waits_for_cleanup_and_keeps_single_lease
+        PASS [   0.012s] (16/22) vega_runtime computer_use::tests::issue75_coordinate_projection_tracks_image_resize_and_rejects_out_of_bounds
+        PASS [   0.012s] (17/22) vega_runtime computer_use::tests::issue75_observation_cache_trims_all_old_payloads_and_rejects_late_frames
+        PASS [   0.008s] (18/22) vega_runtime openai::tests::computer_use::issue75_provider_chat_observation_follows_complete_tool_batch
+        PASS [   0.007s] (19/22) vega_runtime openai::tests::computer_use::issue75_provider_responses_observation_retains_tool_identity
+        PASS [   0.109s] (20/22) vega_runtime context::tests::issue75_tool_visual_estimate_does_not_change_user_image_contract
+        PASS [   0.222s] (21/22) vega_runtime agent::tests::issue75_pause_holds_final_response_until_user_resumes
+        PASS [   2.249s] (22/22) vega_runtime computer_use::media::tests::issue75_observation_decode_rejects_spoofed_mime_and_retains_original_scale
+────────────
+     Summary [   2.269s] 22 tests run: 22 passed, 907 skipped
+```
+
+以上编译输出中的工作树绝对路径已脱敏；原始本地日志保留供核查。

@@ -164,7 +164,7 @@ mod credential_tests {
 }
 
 enum McpConnection {
-    Stdio(StdioClient),
+    Stdio(Box<StdioClient>),
     Http(Box<HttpClient>),
 }
 
@@ -313,7 +313,7 @@ impl McpReadyServer {
             server_id,
             config_revision,
             catalog,
-            McpConnection::Stdio(client),
+            McpConnection::Stdio(Box::new(client)),
             None,
         )
         .map(|ready| ready.with_known_credentials(known_credentials))

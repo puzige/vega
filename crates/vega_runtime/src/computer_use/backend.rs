@@ -143,15 +143,14 @@ impl Backends {
             if run.control.check_epoch(epoch).is_err() {
                 return Ok("outcome_unknown: control was revoked while the action was in flight. Do not retry.".into());
             }
-            if capability == Capability::Browser {
-                if self
+            if capability == Capability::Browser
+                && self
                     .refresh_browser_target(run, epoch, cancel, true)
                     .await
                     .is_err()
-                {
-                    run.control.fail(epoch, Error::TargetChanged);
-                    return Ok("outcome_unknown: action dispatched but the selected tab changed or could not be verified. Do not retry; reconnect the extension to one target tab.".into());
-                }
+            {
+                run.control.fail(epoch, Error::TargetChanged);
+                return Ok("outcome_unknown: action dispatched but the selected tab changed or could not be verified. Do not retry; reconnect the extension to one target tab.".into());
             }
             match self
                 .observe(run, capability, epoch, call_id, include_image, cancel)
@@ -235,10 +234,10 @@ impl Backends {
                         }
                     }
                 };
-                if let Some(desktop) = self.desktop.as_mut() {
-                    if !desktop.shutdown().await {
-                        return Err(Error::Unavailable);
-                    }
+                if let Some(desktop) = self.desktop.as_mut()
+                    && !desktop.shutdown().await
+                {
+                    return Err(Error::Unavailable);
                 }
                 self.desktop = None;
                 run.control.check_epoch(epoch)?;

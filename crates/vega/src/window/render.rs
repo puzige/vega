@@ -663,7 +663,8 @@ impl Render for VegaWindow {
                             })
                             .flatten(),
                     )
-                    .child(div().flex_1().min_h_0().child(content)),
+                    .child(div().flex_1().min_h_0().child(content))
+                    .children(self.render_computer_use_bar(window, cx)),
             )
             // R46 §2.1: the shell slots belong to the window, not to a column.
             // They paint after every sidebar/rail/pane so they stay on top,
@@ -677,11 +678,15 @@ impl Render for VegaWindow {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_sidebar_resize))
             .children(self.palette.view.clone())
             // T13 删除确认弹层：最后绘制以覆盖全窗口；遮罩点击 / Esc 取消。
-            .children(
-                pending_delete.map(|thread| {
-                    render_delete_confirm_overlay(&thread, self.sidebar.clone(), colors)
-                }),
-            )
+            .children(pending_delete.map(|thread| {
+                render_delete_confirm_overlay(&thread, self.sidebar.clone(), colors, {
+                    let owner = cx.entity().downgrade();
+                    move |thread_id, cx| {
+                        let _ = owner
+                            .update(cx, |this, cx| this.cancel_agent_for_thread(thread_id, cx));
+                    }
+                })
+            }))
     }
 }
 

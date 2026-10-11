@@ -258,6 +258,16 @@ impl VegaWindow {
         if !self.agent_controller.matches(generation, thread_id, stream) {
             return AgentBatchIngress::Stale;
         }
+        if let Some((control, owner)) = batch.computer_use_ready
+            && let Some(active) = self.agent_controller.active.get_mut(thread_id)
+        {
+            if active.cancel.is_cancelled() {
+                control.stop();
+            }
+            active.computer_use = Some(control);
+            active.computer_use_owner = owner;
+            cx.notify();
+        }
         if batch.codex_mode_confirmed {
             stream.update(cx, ConversationStream::confirm_codex_mode);
         }

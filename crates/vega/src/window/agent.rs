@@ -570,7 +570,7 @@ impl VegaWindow {
         self.cancel_agent_for_thread(&thread_id, cx);
     }
 
-    fn cancel_agent_for_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+    pub(super) fn cancel_agent_for_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
         let pending_review = self.agent_controller.pending_review.remove(thread_id);
         let artifact_run = self
             .agent_controller
@@ -578,6 +578,9 @@ impl VegaWindow {
             .get(thread_id)
             .map(|active| (active.generation, active.stream.clone()));
         if let Some(active) = self.agent_controller.active.get(thread_id) {
+            if let Some(control) = &active.computer_use {
+                control.stop();
+            }
             active.cancel.cancel();
             active
                 .stream
@@ -863,11 +866,37 @@ impl VegaWindow {
 
         let thread_id = thread_id.to_string();
         cx.spawn(async move |this, cx| {
+            let mut control_status = None;
+            let mut control_check = std::time::Instant::now();
             loop {
                 cx.background_executor().timer(AGENT_EVENT_POLL).await;
                 let batch = drain_agent_updates(&receiver);
                 let keep_running = this
                     .update(cx, |this, cx| {
+                        if control_check.elapsed() >= std::time::Duration::from_millis(50) {
+                            control_check = std::time::Instant::now();
+                            let latest = this
+                                .agent_controller
+                                .active
+                                .get(&thread_id)
+                                .filter(|active| active.generation == generation)
+                                .and_then(|active| active.computer_use.as_ref())
+                                .map(|control| {
+                                    let status = control.status();
+                                    (
+                                        status.phase,
+                                        status.epoch,
+                                        status.target_label,
+                                        status.windows,
+                                        status.browser_target,
+                                        status.error,
+                                    )
+                                });
+                            if latest != control_status {
+                                control_status = latest;
+                                cx.notify();
+                            }
+                        }
                         let (success, finished_run, reference_failure, credential_failure) =
                             match this.apply_agent_batch_ingress(
                                 generation, &thread_id, &stream, batch, cx,

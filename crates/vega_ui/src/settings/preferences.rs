@@ -23,6 +23,8 @@ impl SettingsView {
                     }
                 };
             }
+            patch!(agent.desktop_use_enabled);
+            patch!(agent.browser_use_enabled);
             patch!(defaults.model);
             patch!(defaults.permission_mode);
             patch!(ui.theme);

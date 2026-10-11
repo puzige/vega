@@ -218,18 +218,18 @@ impl ComputerUseRun {
             .await
             .execute(self, name, call_id, arguments, cancel)
             .await;
-        if let Err(error) = &result {
-            if !matches!(
+        if let Err(error) = &result
+            && !matches!(
                 error,
                 ComputerUseError::StaleObservation
                     | ComputerUseError::InvalidAction
                     | ComputerUseError::Busy
                     | ComputerUseError::NotReady
                     | ComputerUseError::Cancelled
-            ) {
-                self.control.fail(epoch, *error);
-                self.cleanup_revoked().await;
-            }
+            )
+        {
+            self.control.fail(epoch, *error);
+            self.cleanup_revoked().await;
         }
         if matches!(
             self.control.status().phase,

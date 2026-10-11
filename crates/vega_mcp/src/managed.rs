@@ -101,15 +101,14 @@ impl ManagedClient {
         }
         for entry in entries {
             let name = entry["name"].as_str().ok_or(McpError::InvalidMessage)?;
-            if required.contains(&name) {
-                if entry["inputSchema"]["type"] != "object"
+            if required.contains(&name)
+                && (entry["inputSchema"]["type"] != "object"
                     || self
                         .tools
                         .insert(name.to_owned(), entry["inputSchema"].clone())
-                        .is_some()
-                {
-                    return Err(McpError::InvalidMessage);
-                }
+                        .is_some())
+            {
+                return Err(McpError::InvalidMessage);
             }
         }
         if required.iter().any(|name| !self.tools.contains_key(*name)) {

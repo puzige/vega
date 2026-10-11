@@ -12,7 +12,9 @@ pub fn render_delete_confirm_overlay(
     thread: &Thread,
     sidebar: Entity<Sidebar>,
     colors: ThemeColors,
+    before_delete: impl Fn(&str, &mut App) + 'static,
 ) -> AnyElement {
+    let thread_id = thread.id.clone();
     let cancel = |_event: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
         cx.set_global(PendingDeleteConfirm(None));
         cx.refresh_windows();
@@ -81,8 +83,8 @@ pub fn render_delete_confirm_overlay(
                                 .child("取消"),
                         )
                         .child(
-                            // [删除]：danger 主操作；确认后由编排器执行删除。
                             div()
+                                .debug_selector(|| "delete-confirm-action".into())
                                 .px_3()
                                 .py_1()
                                 .rounded_md()
@@ -94,7 +96,10 @@ pub fn render_delete_confirm_overlay(
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     move |_: &MouseUpEvent, _window, cx: &mut App| {
-                                        sidebar.update(cx, Sidebar::confirm_pending_delete);
+                                        if cx.global::<PendingDeleteConfirm>().0.as_ref().is_some_and(|thread| thread.id == thread_id) {
+                                            before_delete(&thread_id, cx);
+                                            sidebar.update(cx, Sidebar::confirm_pending_delete);
+                                        }
                                     },
                                 )
                                 .child("删除"),

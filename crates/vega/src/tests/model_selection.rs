@@ -389,6 +389,9 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
                 terminal_message_id: None,
                 terminal_failure: None,
                 mcp_unavailable: Vec::new(),
+                computer_use: None,
+                computer_use_owner: String::new(),
+                computer_use_details_open: false,
             },
         );
     });
