@@ -1,5 +1,6 @@
 //! Provider selection and explicit, cancellable background operations.
 use super::*;
+use crate::interaction::InteractionExt;
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_util::sync::CancellationToken;
 use vega_conversation::ProviderSettingsService;
@@ -110,6 +111,7 @@ impl SettingsView {
         };
         div()
             .id(selector.clone())
+            .interactive(colors, true, false)
             .debug_selector(move || selector.clone())
             .role(gpui_kit::Role::Button)
             .aria_label("测试请求说明")
@@ -117,15 +119,16 @@ impl SettingsView {
             .focusable()
             .track_focus(&focus)
             .tab_stop(true)
-            .size(px(24.))
+            .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
             .flex_shrink_0()
             .relative()
             .flex()
             .items_center()
             .justify_center()
-            .rounded_md()
-            .focus_visible(move |style| style.border_2().border_color(colors.accent))
-            .hover(move |style| style.bg(colors.bg_hover))
+            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(move |style| style.border_color(colors.accent))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {
                     this.provider_management.test_help_hovered = Some(index);
@@ -903,27 +906,47 @@ impl SettingsView {
         let colors = theme(cx).colors;
         let key_command = command.clone();
         let selector = id.clone();
-        div()
+        let destructive = matches!(command, Command::DeleteModel(_));
+        let primary = matches!(command, Command::SaveModel);
+        settings_action_chrome(colors)
             .id(id)
+            .interaction_surface(
+                if enabled && primary {
+                    colors.brand_primary
+                } else {
+                    colors.bg_elevated
+                },
+                if primary {
+                    colors.brand_primary_strong
+                } else {
+                    colors.bg_hover
+                },
+                if primary {
+                    colors.brand_primary_strong
+                } else {
+                    colors.bg_active
+                },
+                enabled,
+            )
             .debug_selector(move || selector.clone())
             .key_context("ProviderControl")
             .focusable()
-            .px_2()
-            .py_1()
-            .flex_shrink_0()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
             .text_color(if enabled {
-                colors.text_secondary
+                if destructive {
+                    colors.danger
+                } else if primary {
+                    colors.brand_on_accent
+                } else {
+                    colors.text_primary
+                }
             } else {
                 colors.text_tertiary
             })
-            .focus_visible(move |s| s.bg(colors.bg_active))
+            .when(enabled && primary, |button| button.bg(colors.brand_primary))
+            .focus_visible(move |style| style.border_color(colors.accent))
             .when(enabled, |button| {
                 button
                     .cursor_pointer()
-                    .hover(move |s| s.bg(colors.bg_hover))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -972,16 +995,20 @@ impl SettingsView {
             list = list.child(
                 div()
                     .id(("provider-select", index))
+                    .interactive(colors, true, selected)
                     .track_focus(&self.provider_edit_focuses[index].1)
                     .tab_stop(true)
                     .flex()
                     .items_center()
                     .gap_2()
                     .p_2()
-                    .rounded_md()
+                    .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                    .border_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .when(selected, |row| row.bg(colors.bg_active))
                     .cursor_pointer()
-                    .focus_visible(move |s| s.bg(colors.bg_hover))
+                    .focus_visible(move |style| style.border_color(colors.accent))
                     .on_drag(ProviderDrag(name.clone()), |drag, _, _, cx| {
                         cx.new(|_| drag.clone())
                     })
@@ -1044,7 +1071,7 @@ impl SettingsView {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .gap_3();
+            .gap(px(Layout::SETTINGS_CONTENT_GAP));
         if self.provider_management.form {
             detail = detail
                 .child(self.render_add_form(cx))
@@ -1392,6 +1419,8 @@ impl SettingsView {
                 detail = detail.child(
                     div()
                         .flex()
+                        .flex_wrap()
+                        .items_center()
                         .gap_2()
                         .child(self.provider_button(
                             "provider-import".into(),
@@ -1412,10 +1441,8 @@ impl SettingsView {
         }
         if let Some(message) = &self.provider_management.message {
             detail = detail.child(
-                div()
-                    .debug_selector(|| "provider-network-message".into())
-                    .text_color(colors.text_secondary)
-                    .child(message.clone()),
+                settings_status(message.clone(), colors.text_secondary, colors)
+                    .debug_selector(|| "provider-network-message".into()),
             );
         }
         div()

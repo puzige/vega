@@ -1,4 +1,5 @@
 use super::*;
+use crate::interaction::InteractionExt;
 use vega_conversation::types::{UpdatePhase, UpdateProjection, UpdateRequest};
 
 impl EventEmitter<UpdateRequest> for SettingsView {}
@@ -52,11 +53,8 @@ impl SettingsView {
             }
             _ => None,
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .mt_4()
+        settings_section()
+            .debug_selector(|| "settings-general-updater".into())
             .child(section_title("Vega 更新", colors.text_primary))
             .child(format!("当前版本：{}", self.updater.current_version))
             .when_some(self.updater.latest_version.clone(), |view, version| {
@@ -99,15 +97,19 @@ impl SettingsView {
                         cx,
                     )),
             )
-            .child(
-                div()
-                    .text_color(if self.updater.phase == UpdatePhase::Error {
+            .when(!self.updater.message.is_empty(), |view| {
+                view.child(settings_status(
+                    self.updater.message.clone(),
+                    if self.updater.phase == UpdatePhase::Error {
                         colors.danger
+                    } else if self.updater.phase == UpdatePhase::Ready {
+                        colors.success
                     } else {
                         colors.text_secondary
-                    })
-                    .child(self.updater.message.clone()),
-            )
+                    },
+                    colors,
+                ))
+            })
             .when_some(progress, |view, progress| view.child(progress))
             .child(
                 div()
@@ -173,14 +175,15 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        div()
+        settings_action_chrome(colors)
             .id(id)
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
+            .interaction_surface(
+                colors.bg_elevated,
+                colors.bg_hover,
+                colors.bg_active,
+                enabled,
+            )
+            .debug_selector(move || id.into())
             .text_color(if enabled {
                 colors.text_primary
             } else {
@@ -192,7 +195,6 @@ impl SettingsView {
                     .focusable()
                     .tab_stop(true)
                     .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover))
                     .focus_visible(move |style| style.border_color(colors.brand_primary))
                     .on_mouse_up(
                         MouseButton::Left,

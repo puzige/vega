@@ -1,6 +1,7 @@
 //! Issue #74 Skills Settings. This view only talks to the conversation-owned
 //! service; no Skill path, file or SQLite row is trusted on the UI thread.
 
+use crate::interaction::InteractionExt;
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::{
@@ -17,9 +18,12 @@ use vega_conversation::types::{
     SkillSourceView, SkillUiScope,
 };
 use vega_conversation::{SkillSettingsError, SkillSettingsService};
-use vega_theme::{Typography, theme};
+use vega_theme::{Layout, Typography, theme};
 
-use super::{SettingsView, section_title};
+use super::{
+    SettingsView, section_title, settings_action_chrome, settings_actions, settings_section,
+    settings_status,
+};
 
 #[cfg(test)]
 pub(super) struct SkillsOperationGate {
@@ -328,12 +332,9 @@ impl SettingsView {
 
     pub(crate) fn render_skills(&mut self, cx: &mut gpui_kit::Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let mut column = div()
+        let mut column = settings_section()
             .id("settings-skills")
             .debug_selector(|| "settings-skills".into())
-            .flex()
-            .flex_col()
-            .gap_4()
             .child(section_title("Agent Skills", colors.text_primary))
             .child(
                 div()
@@ -350,24 +351,24 @@ impl SettingsView {
                 cx,
             ));
         if self.skills.busy {
-            column = column.child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .child("正在检查 Skills…"),
-            );
+            column = column.child(settings_status(
+                "正在检查 Skills…",
+                colors.text_secondary,
+                colors,
+            ));
         }
         if let Some(message) = &self.skills.message {
             column = column.child(
-                div()
+                settings_status(message.clone(), colors.warning, colors)
                     .id("skills-message")
-                    .debug_selector(|| "skills-message".into())
-                    .text_color(colors.warning)
-                    .child(message.clone()),
+                    .debug_selector(|| "skills-message".into()),
             );
         }
         if let Some(projection) = self.skills.projection.clone() {
             column = column
-                .child(section_title("来源与触发", colors.text_primary))
+                .child(section_title("来源与触发", colors.text_primary).mt(px(
+                    Layout::SETTINGS_SECTION_GAP - Layout::SETTINGS_CONTENT_GAP,
+                )))
                 .child(skill_toggle_row(
                     "使用全局 Skills",
                     projection.global_enabled,
@@ -424,27 +425,29 @@ impl SettingsView {
                         cx,
                     ));
             }
-            column = column
-                .child(skill_button(
-                    "检查 Vega 全局 Skills".into(),
-                    "skills-preview-global".into(),
-                    SkillAction::PreviewGlobal,
-                    colors,
-                    cx,
-                ))
-                .child(skill_button(
-                    "导入外部 Skills 目录…".into(),
-                    "skills-import-folder".into(),
-                    SkillAction::ImportFolder,
-                    colors,
-                    cx,
-                ));
+            column = column.child(
+                settings_actions()
+                    .child(skill_button(
+                        "检查 Vega 全局 Skills".into(),
+                        "skills-preview-global".into(),
+                        SkillAction::PreviewGlobal,
+                        colors,
+                        cx,
+                    ))
+                    .child(skill_button(
+                        "导入外部 Skills 目录…".into(),
+                        "skills-import-folder".into(),
+                        SkillAction::ImportFolder,
+                        colors,
+                        cx,
+                    )),
+            );
             if projection.sources.is_empty() {
-                column = column.child(
-                    div()
-                        .text_color(colors.text_secondary)
-                        .child("尚未关联任何 Skills 目录"),
-                );
+                column = column.child(settings_status(
+                    "尚未关联任何 Skills 目录",
+                    colors.text_secondary,
+                    colors,
+                ));
             }
             for source in &projection.sources {
                 column = column.child(self.render_skill_source(source, &projection, cx));
@@ -471,9 +474,11 @@ impl SettingsView {
             .id(format!("skills-source-{}", source.id))
             .flex()
             .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded_md()
+            .min_w_0()
+            .flex_shrink_0()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .p(px(Layout::SETTINGS_CONTENT_GAP))
+            .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
             .bg(colors.bg_elevated)
@@ -627,9 +632,11 @@ impl SettingsView {
             .debug_selector(|| "skills-root-preview".into())
             .flex()
             .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded_md()
+            .min_w_0()
+            .flex_shrink_0()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .p(px(Layout::SETTINGS_CONTENT_GAP))
+            .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.warning)
             .child(section_title("确认关联目录", colors.text_primary))
@@ -678,9 +685,11 @@ impl SettingsView {
             .debug_selector(|| "skills-body-preview".into())
             .flex()
             .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded_md()
+            .min_w_0()
+            .flex_shrink_0()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .p(px(Layout::SETTINGS_CONTENT_GAP))
+            .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.warning)
             .child(section_title("审阅 Skill", colors.text_primary))
@@ -726,12 +735,13 @@ fn skill_button(
     cx: &mut gpui_kit::Context<SettingsView>,
 ) -> AnyElement {
     let key_action = action.clone();
-    div()
+    settings_action_chrome(colors)
         .id(id.clone())
+        .interaction_surface(colors.bg_elevated, colors.bg_hover, colors.bg_active, true)
         .debug_selector(move || id.clone())
         .focusable()
         .tab_stop(true)
-        .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
+        .focus_visible(move |style| style.border_color(colors.accent))
         .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                 this.handle_skills_action(key_action.clone(), cx);
@@ -739,19 +749,12 @@ fn skill_button(
             }
         }))
         .cursor_pointer()
-        .hover(move |style| style.bg(colors.bg_hover))
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                 this.handle_skills_action(action.clone(), cx);
             }),
         )
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.bg_elevated)
         .child(label)
         .into_any_element()
 }
@@ -765,10 +768,13 @@ fn skill_toggle_row(
     cx: &mut gpui_kit::Context<SettingsView>,
 ) -> Div {
     div()
+        .min_w_0()
         .flex()
+        .flex_wrap()
         .items_center()
+        .justify_between()
         .gap_2()
-        .child(label)
+        .child(div().min_w_0().flex_1().child(label))
         .child(skill_button(
             if value { "已开启" } else { "已关闭" }.into(),
             id.to_owned(),

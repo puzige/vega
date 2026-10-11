@@ -1,5 +1,6 @@
 //! Read-only Settings usage dashboard, populated by the app-owned worker.
 use super::*;
+use crate::interaction::InteractionExt;
 use gpui_kit::{Bounds, PathBuilder, Rgba, canvas, fill, point, size};
 use vega_conversation::types::{UsageDashboard, UsageDashboardError, UsageTotals};
 
@@ -51,12 +52,9 @@ impl SettingsView {
 
     pub(crate) fn render_usage(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let mut page = div()
+        let mut page = settings_section()
             .debug_selector(|| "usage-dashboard".into())
             .w_full()
-            .flex()
-            .flex_col()
-            .gap_4()
             .child(
                 div()
                     .flex()
@@ -73,47 +71,45 @@ impl SettingsView {
                             .text_color(colors.text_secondary)
                             .child("应用用量"),
                     ),
-            );
+            )
+            .child(settings_actions().child(self.usage_button(
+                "usage-refresh",
+                if self.usage.loading {
+                    "刷新中…"
+                } else {
+                    "刷新"
+                },
+                false,
+                |this, cx| this.request_usage_reload(cx),
+                cx,
+            )));
         if self.usage.error {
             page = page.child(
-                div()
-                    .debug_selector(|| "usage-error".into())
-                    .text_color(colors.danger)
-                    .child("使用统计读取失败，请刷新重试"),
+                settings_status("使用统计读取失败，请刷新重试", colors.danger, colors)
+                    .debug_selector(|| "usage-error".into()),
             );
         }
         if let Some(data) = self.usage.dashboard.clone() {
             if data.lifetime.calls == 0 {
                 page = page.child(
-                    div()
-                        .debug_selector(|| "usage-empty".into())
-                        .py_6()
-                        .text_color(colors.text_secondary)
-                        .child("暂无使用记录。完成对话后将在这里显示实际用量。"),
+                    settings_status(
+                        "暂无使用记录。完成对话后将在这里显示实际用量。",
+                        colors.text_secondary,
+                        colors,
+                    )
+                    .debug_selector(|| "usage-empty".into()),
                 );
             } else {
                 page = page.child(self.render_usage_data(&data, cx));
             }
         } else if !self.usage.error {
-            page = page.child(
-                div()
-                    .py_6()
-                    .text_color(colors.text_secondary)
-                    .child("正在加载使用统计…"),
-            );
+            page = page.child(settings_status(
+                "正在加载使用统计…",
+                colors.text_secondary,
+                colors,
+            ));
         }
-        page.child(div().flex().justify_end().child(self.usage_button(
-            "usage-refresh",
-            if self.usage.loading {
-                "刷新中…"
-            } else {
-                "刷新"
-            },
-            false,
-            |this, cx| this.request_usage_reload(cx),
-            cx,
-        )))
-        .into_any_element()
+        page.into_any_element()
     }
 
     fn usage_button(
@@ -133,14 +129,29 @@ impl SettingsView {
             "usage-30days" => 4,
             _ => 5,
         };
+        let enabled = id != "usage-refresh" || !self.usage.loading;
         let action = std::rc::Rc::new(action);
         let keyboard_action = action.clone();
-        div()
+        settings_action_chrome(colors)
             .id(id)
+            .interaction_surface(
+                if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_elevated
+                },
+                if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                },
+                colors.bg_active,
+                enabled,
+            )
             .track_focus(&self.usage_focuses[index])
             .on_key_down(
                 cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         keyboard_action(this, cx);
                         cx.stop_propagation();
                     }
@@ -148,17 +159,17 @@ impl SettingsView {
             )
             .debug_selector(move || id.into())
             .tab_stop(true)
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .cursor_pointer()
-            .text_size(px(Typography::METADATA))
-            .text_color(colors.text_secondary)
+            .when(enabled, |button| button.cursor_pointer())
+            .when(!enabled, |button| button.text_color(colors.text_tertiary))
+            .focus_visible(move |style| style.border_color(colors.accent))
             .when(selected, |d| {
                 d.bg(colors.bg_active).text_color(colors.text_primary)
             })
-            .hover(|d| d.bg(colors.bg_hover))
-            .on_click(cx.listener(move |this, _, _, cx| action(this, cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if enabled {
+                    action(this, cx);
+                }
+            }))
             .child(label)
             .into_any_element()
     }
@@ -797,6 +808,63 @@ mod tests {
             }),
             "未计价"
         );
+    }
+
+    #[gpui_kit::test]
+    async fn issue296_usage_refresh_and_filters_keep_keyboard_actions(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            crate::init(cx);
+        });
+        let view = cx.new(SettingsView::new_for_test);
+        view.update(cx, |view, cx| {
+            view.section = 4;
+            view.apply_usage_dashboard(Ok(sample(2)), cx);
+        });
+        let reloads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = reloads.clone();
+        cx.update(|cx| {
+            cx.subscribe(&view, move |_, _: &UsageReloadRequested, _| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .detach();
+        });
+        let root = view.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), move |_, _| root)
+                .expect("usage keyboard fixture")
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                let refresh_focus = view.usage_focuses[5].clone();
+                window.focus(&refresh_focus, cx);
+                window.focus_next(cx);
+                assert!(view.usage_focuses[0].is_focused(window));
+                window.focus_next(cx);
+                assert!(view.usage_focuses[1].is_focused(window));
+            })
+            .expect("usage filter focus order");
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.usage.heatmap_mode), 1);
+        window
+            .update(cx, |view, window, cx| {
+                let refresh_focus = view.usage_focuses[5].clone();
+                window.focus(&refresh_focus, cx)
+            })
+            .expect("refresh focus");
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        view.update(cx, |view, cx| view.apply_usage_dashboard(Ok(sample(2)), cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[gpui_kit::test]

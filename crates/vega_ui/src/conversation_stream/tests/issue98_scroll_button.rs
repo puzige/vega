@@ -1,36 +1,3 @@
-//! Issue #98: the detached-tail recovery control is the reference
-//! implementation's floating circular "back to bottom" button.
-//!
-//! Contract source: `docs/vega-issue-98-scroll-to-bottom.md` §3 (R1–R5) and
-//! §5 (A1–A8). The control used to be a top-right text pill (`回到底部`); the
-//! frozen spec replaces it with a 32px `ArrowDown` circle that floats
-//! `SCROLL_TO_BOTTOM_GAP` above the transcript viewport, centred on the
-//! content column, mounted only while the stream is detached from the tail.
-//!
-//! ## What each case pins, and why none is redundant
-//!
-//! - **A1** pins the shape: a 32×32 painted quad whose four corner radii are
-//!   half the size (a true circle, `rounded_full()`).
-//! - **A2** pins the surface tokens (fill = `bg_elevated`, border =
-//!   `border_subtle`) in **both** palettes, so a hard-coded colour cannot pass
-//!   in one theme only.
-//! - **A3** pins the horizontal anchor: the button shares the content column's
-//!   centre. This is the "floating, not top-right" claim that the issue is
-//!   actually about.
-//! - **A4** pins the visibility predicate: mounted only when `!following_tail()`.
-//! - **A5** pins the production behaviour: a real click re-engages tail follow
-//!   and the button unmounts.
-//! - **A6** pins the keyboard path through the same `resume_tail` handler.
-//! - **A7** pins the accessible name (the label moved off-screen but must not
-//!   be lost).
-//! - **A8** is the theme token freeze, asserted in `vega_theme`'s own suite.
-//!
-//! ## What these tests cannot pin
-//!
-//! The exact native pixel geometry above the composer (A10): `debug_bounds`
-//! proves layout, not rendering, and the composer's dynamic height is not
-//! observable here. That claim belongs to the native screenshot scan.
-
 use super::r64_popup_deferred::{PROJECT_BINDING, install_utility_globals};
 use super::*;
 use gpui_kit::{Bounds, Hsla, Modifiers, Pixels, Quad, Rgba, VisualTestContext};
@@ -167,8 +134,6 @@ async fn issue98_a4_button_mounts_only_when_detached(cx: &mut TestAppContext) {
     );
 }
 
-/// A1 + A2: the control paints a 32×32 circle (`rounded_full()` → radius 16)
-/// filled with `bg_elevated` and bordered `border_subtle`, in both palettes.
 async fn assert_button_surface(cx: &mut TestAppContext, dark: bool) {
     let (window, stream, _events) = open_controller_stream(
         cx,
@@ -189,9 +154,9 @@ async fn assert_button_surface(cx: &mut TestAppContext, dark: bool) {
 
     let target = bounds(window, BUTTON, cx);
     assert!(
-        (f32::from(target.size.width) - Layout::SCROLL_TO_BOTTOM_SIZE).abs() <= 0.5
+        target.size.width > target.size.height
             && (f32::from(target.size.height) - Layout::SCROLL_TO_BOTTOM_SIZE).abs() <= 0.5,
-        "the control must be a {}px square, got {}×{}",
+        "the control must be a {}px high pill, got {}×{}",
         Layout::SCROLL_TO_BOTTOM_SIZE,
         f32::from(target.size.width),
         f32::from(target.size.height),
@@ -234,7 +199,7 @@ async fn assert_button_surface(cx: &mut TestAppContext, dark: bool) {
     ] {
         assert!(
             (actual.as_f32() - half).abs() <= 0.75,
-            "the control must be a full circle: {corner} radius {} ≠ half-size {half}",
+            "the control must have pill ends: {corner} radius {} ≠ half-height {half}",
             actual.as_f32(),
         );
     }
@@ -266,8 +231,6 @@ async fn issue98_a1_a2_button_surface_dark(cx: &mut TestAppContext) {
     assert_button_surface(cx, true).await;
 }
 
-/// A3: the button floats on the content column's centre — this is the
-/// "floating, not top-right" contract the issue is about.
 #[gpui_kit::test]
 async fn issue98_a3_button_is_centred_on_the_content_column(cx: &mut TestAppContext) {
     let (window, stream, _events) = open_controller_stream(cx, "issue98-a3");
@@ -282,8 +245,8 @@ async fn issue98_a3_button_is_centred_on_the_content_column(cx: &mut TestAppCont
         f32::from(column.center().x),
     );
     assert!(
-        f32::from(button.bottom()) <= f32::from(column.bottom()) + 0.5,
-        "the button must sit inside the transcript viewport"
+        button.top() >= column.bottom(),
+        "the button must sit outside the transcript viewport"
     );
 }
 
@@ -381,11 +344,13 @@ async fn issue98_a7_button_is_mounted_and_focusable(cx: &mut TestAppContext) {
 /// overlaps. This is the paint-order claim A1–A8 cannot make — they only read
 /// `debug_bounds`, which proves layout, not stacking.
 #[gpui_kit::test]
-async fn issue98_a11_button_paints_above_the_transcript(cx: &mut TestAppContext) {
+async fn issue98_a11_button_paints_in_reserved_navigation_region(cx: &mut TestAppContext) {
     let (window, stream, _events) = open_controller_stream(cx, "issue98-a11");
     seed_and_detach(window, &stream, cx);
 
     let button = bounds(window, BUTTON, cx);
+    let column = bounds(window, COLUMN, cx);
+    assert!(button.top() >= column.bottom());
     let (quads, scale) = painted_quads(window, cx);
     let scaled = button.scale(scale);
 

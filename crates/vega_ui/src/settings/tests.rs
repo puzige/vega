@@ -7,6 +7,7 @@ use gpui_kit::{
 };
 
 use super::*;
+mod issue296;
 use crate::settings::state::{
     PRICING_INPUT_BYTES_LIMIT, PROVIDER_MODELS_FRAME_INSET, PROVIDER_MODELS_MAX_ROWS,
     PROVIDER_MODELS_MIN_ROWS,
@@ -666,6 +667,17 @@ fn issue73_mcp_oauth_exact_preconsent_discloses_dcr_and_blocks_unavailable_ident
 
 #[gpui_kit::test]
 async fn issue73_mcp_bearer_secret_is_masked_cleared_and_never_in_sqlite(cx: &mut TestAppContext) {
+    assert_mcp_bearer_secret_save(cx, false).await;
+}
+
+#[gpui_kit::test]
+async fn issue296_mcp_bearer_save_is_scroll_and_keyboard_reachable_in_narrow_window(
+    cx: &mut TestAppContext,
+) {
+    assert_mcp_bearer_secret_save(cx, true).await;
+}
+
+async fn assert_mcp_bearer_secret_save(cx: &mut TestAppContext, narrow_keyboard: bool) {
     let owned = tempfile::tempdir().expect("owned MCP Settings root");
     let database_path = owned.path().join("vega.db");
     let service = vega_conversation::McpServerSettingsService::new(
@@ -683,8 +695,15 @@ async fn issue73_mcp_bearer_secret_is_masked_cleared_and_never_in_sqlite(cx: &mu
         })
         .expect("saved disabled bearer fixture");
     cx.update(|cx| {
-        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(if narrow_keyboard {
+            vega_theme::Theme::dark()
+        } else {
+            vega_theme::Theme::light()
+        });
         cx.set_global(SettingsOpen(true));
+        if narrow_keyboard {
+            cx.set_global(crate::sidebar::SidebarWidth(Layout::SIDEBAR_MAX_WIDTH));
+        }
         crate::init(cx);
     });
     let view = cx.new(SettingsView::new_for_test);
@@ -699,7 +718,11 @@ async fn issue73_mcp_bearer_secret_is_masked_cleared_and_never_in_sqlite(cx: &mu
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
-                        size(px(1403.), px(860.)),
+                        if narrow_keyboard {
+                            size(px(960.), px(600.))
+                        } else {
+                            size(px(1403.), px(860.))
+                        },
                         cx,
                     ))),
                     ..Default::default()
@@ -743,9 +766,59 @@ async fn issue73_mcp_bearer_secret_is_masked_cleared_and_never_in_sqlite(cx: &mu
     let save = visual
         .debug_bounds("mcp-save-bearer")
         .expect("save masked bearer");
-    visual.simulate_click(save.center(), Default::default());
+    let viewport = visual
+        .debug_bounds("settings-section-content")
+        .expect("MCP content viewport");
+    if save.bottom() > viewport.bottom() {
+        visual.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                px(0.),
+                viewport.bottom() - save.bottom() - px(8.),
+            )),
+            modifiers: Default::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let visible_save = visual
+        .debug_bounds("mcp-save-bearer")
+        .expect("visible masked bearer save");
+    assert!(visible_save.top() >= viewport.top());
+    assert!(visible_save.bottom() <= viewport.bottom());
+    assert!(visible_save.left() >= viewport.left());
+    assert!(visible_save.right() <= viewport.right());
+    assert!(visible_save.size.height >= px(Layout::SETTINGS_CONTROL_MIN_HEIGHT));
+    if narrow_keyboard {
+        window
+            .update(cx, |_, window, cx| {
+                let input = view.read(cx).mcp.bearer_input.read(cx).focus_handle(cx);
+                input.focus(window, cx);
+            })
+            .expect("focus masked bearer input");
+        cx.simulate_keystrokes(window.into(), "tab");
+        assert!(
+            window
+                .update(cx, |_, window, cx| {
+                    window.painted_quads().iter().any(|quad| {
+                        quad.bounds == visible_save.scale(window.scale_factor())
+                            && quad.border_color == theme(cx).colors.accent.into()
+                    })
+                })
+                .expect("bearer save keyboard focus ring")
+        );
+        cx.simulate_keystrokes(window.into(), "enter");
+    } else {
+        visual.simulate_click(visible_save.center(), Default::default());
+    }
     wait_for_mcp_idle(cx, &view);
-    assert!(service.list().expect("after secret save")[0].credential_configured);
+    let saved = service.list().expect("after secret save");
+    assert!(saved[0].credential_configured);
+    assert!(!saved[0].enabled);
+    assert!(matches!(
+        saved[0].health,
+        vega_conversation::types::McpServerHealth::Disabled
+    ));
     assert!(view.read_with(cx, |view, cx| {
         view.mcp.bearer_input.read(cx).text().is_empty()
     }));

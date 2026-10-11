@@ -1,5 +1,6 @@
 //! Bounded, memory-only reasoning content, separate from answer Markdown.
 use super::*;
+use crate::interaction::InteractionExt;
 
 // Match the runtime's delta/turn/run byte ceilings, with an additional bound
 // on retained block count. The view budget is not reset between messages.
@@ -160,7 +161,7 @@ impl ThinkingBlock {
             summary_preview: Preview::default(),
             expanded: false,
             truncated: false,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
         }
     }
@@ -212,16 +213,20 @@ impl Render for ThinkingBlock {
                     .id("thinking-toggle")
                     .track_focus(&self.focus)
                     .tab_stop(true)
-                    .focus_visible(move |row| row.border_1().border_color(colors.accent))
+                    .border_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .focus_visible(move |row| row.border_color(colors.accent))
                     .debug_selector(|| "thinking-toggle".into())
                     .aria_label("展开或收起思考过程")
                     .flex()
                     .items_center()
                     .gap_2()
-                    .py_1()
-                    .rounded_md()
+                    .h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
+                    .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+                    .px(px(Layout::DISCLOSURE_PADDING_X))
+                    .rounded(px(Layout::DISCLOSURE_RADIUS))
                     .cursor_pointer()
-                    .hover(move |row| row.bg(colors.bg_hover))
+                    .interactive(colors, true, false)
                     .text_size(px(Typography::BODY))
                     .text_color(colors.text_secondary)
                     .on_mouse_up(
@@ -239,16 +244,26 @@ impl Render for ThinkingBlock {
                             cx.notify();
                         }
                     }))
-                    .child(crate::icons::icon(
-                        if self.expanded {
-                            crate::icons::Icon::ChevronDown
-                        } else {
-                            crate::icons::Icon::ChevronRight
-                        },
-                        colors.text_secondary,
-                    ))
                     .child(
                         div()
+                            .debug_selector(|| "thinking-icon".into())
+                            .size(px(Layout::ICON_SIZE))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(crate::icons::icon(
+                                if self.expanded {
+                                    crate::icons::Icon::ChevronDown
+                                } else {
+                                    crate::icons::Icon::ChevronRight
+                                },
+                                colors.text_secondary,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "thinking-title".into())
                             .min_w_0()
                             .flex_1()
                             .truncate()
@@ -267,7 +282,9 @@ impl Render for ThinkingBlock {
                         .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&self.scroll))
                         .w_full()
                         .min_w_0()
+                        .px(px(Layout::DISCLOSURE_PADDING_X))
                         .text_size(px(Typography::BODY))
+                        .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
                         .text_color(colors.text_secondary)
                         .child(self.visible_text().to_owned()),
                 )

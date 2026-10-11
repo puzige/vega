@@ -49,7 +49,7 @@ use std::{
 
 use gpui_kit::component::{
     Sizable,
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonCustomVariant, ButtonVariants},
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -65,6 +65,7 @@ use vega_store::git_detect;
 use vega_store::projects::{self, Project, ProjectSort};
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
+use crate::interaction::InteractionExt;
 use crate::settings::{CloseSettings, SettingsOpen};
 use crate::text_input::TextInput;
 
@@ -664,7 +665,7 @@ impl Sidebar {
                     .text_color(colors.text_primary)
                     .text_size(px(Typography::SIDEBAR))
                     .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover))
+                    .interactive(*colors, true, false)
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseUpEvent, _, cx| this.create_thread(cx)),
@@ -697,9 +698,7 @@ impl Sidebar {
 
     /// Stable low-frequency settings entry. It stays in the rail even when
     /// project/session blocks grow or collapse, so the route is discoverable.
-    fn render_settings_entry(&self, colors: &ThemeColors) -> AnyElement {
-        const HOVER_GROUP: &str = "sidebar-settings-control";
-
+    fn render_settings_entry(colors: &ThemeColors, cx: &App) -> AnyElement {
         div()
             .w_full()
             .flex_shrink_0()
@@ -709,18 +708,18 @@ impl Sidebar {
                 div()
                     .id("sidebar-settings-surface")
                     .debug_selector(|| "sidebar-settings-surface".into())
-                    .group(HOVER_GROUP)
                     .w_full()
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .rounded_lg()
                     .overflow_hidden()
-                    .group_hover(HOVER_GROUP, move |style| style.bg(colors.bg_hover))
-                    .group_active(HOVER_GROUP, move |style| style.bg(colors.bg_active))
+                    .interactive(*colors, true, false)
+                    .capture_native_button_press()
                     .child(
                         Button::new("sidebar-settings")
                             .debug_selector(|| "sidebar-settings".into())
-                            .group(HOVER_GROUP)
-                            .text()
+                            .custom(
+                                ButtonCustomVariant::new(cx).foreground(colors.text_primary.into()),
+                            )
                             .small()
                             .w_full()
                             .h_full()
@@ -838,7 +837,7 @@ impl Render for Sidebar {
                             .child(self.sessions_block.clone()),
                     ),
             )
-            .child(self.render_settings_entry(&colors))
+            .child(Self::render_settings_entry(&colors, cx))
             .into_any_element()
     }
 }
@@ -994,5 +993,46 @@ mod tests {
         assert_eq!(civil_from_days(19_675), (2023, 11, 14));
         // 闰年边界：2024-02-29。
         assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+    }
+}
+
+#[cfg(test)]
+mod issue296_tests {
+    use super::*;
+
+    struct Harness;
+    impl gpui_kit::Render for Harness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(Sidebar::render_settings_entry(&vega_theme::LIGHT, cx))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn issue296_native_settings_press_preserves_activation(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::init(cx);
+            cx.set_global(vega_theme::Theme::light());
+            cx.set_global(SettingsOpen(false));
+        });
+        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |_, _| Harness);
+        cx.run_until_parked();
+        crate::interaction::tests::assert_native_control_press(window, cx, "sidebar-settings");
+        assert!(cx.read(|cx| cx.global::<SettingsOpen>().0));
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.focus_next(cx));
+        for key in ["enter", "space"] {
+            visual.update(|_, cx| cx.set_global(SettingsOpen(false)));
+            let keystroke = gpui_kit::Keystroke::parse(key).expect("key");
+            visual.simulate_event(gpui_kit::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            visual.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+            assert!(visual.read(|cx| cx.global::<SettingsOpen>().0));
+        }
     }
 }

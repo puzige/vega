@@ -1,5 +1,6 @@
 //! Fail-closed GPUI permission card over the conversation-layer handoff.
 
+use crate::interaction::InteractionExt;
 use std::fmt;
 
 use gpui_kit::prelude::*;
@@ -9,7 +10,7 @@ use gpui_kit::{
 };
 use vega_conversation::agent::{PERMISSION_TIMEOUT, PermissionLease};
 use vega_conversation::types::{PermissionDecision, PermissionOptionChoice, PermissionRequest};
-use vega_theme::{Typography, theme};
+use vega_theme::{Layout, Typography, theme};
 
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT, display_width};
 use crate::text_input::TextInput;
@@ -395,14 +396,13 @@ impl PermissionCard {
 
         let action_card = card.clone();
         let mut container = div()
-            .h(px(ROW_HEIGHT))
+            .min_h(px(ROW_HEIGHT))
+            .flex_shrink_0()
             .w_full()
             .flex()
             .items_center()
-            .px_2()
-            .border_l_3()
-            .border_color(colors.warning)
-            .bg(colors.bg_elevated)
+            .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+            .gap_2()
             .key_context("PermissionCard")
             .on_action(move |_: &PermissionEnter, window, cx| {
                 action_card.update(cx, |card, cx| {
@@ -445,21 +445,42 @@ impl PermissionCard {
 
         let card_ref = card.read(cx);
         if row == 0 {
+            let color = if is_danger {
+                colors.danger
+            } else {
+                colors.warning
+            };
+            let label = if is_danger {
+                format!("危险命令需要确认 · {}", card_ref.prompt.display_tool())
+            } else {
+                format!("需要权限 · {}", card_ref.prompt.display_tool())
+            };
             return container
-                .rounded_tl_lg()
-                .rounded_tr_lg()
+                .debug_selector(|| "permission-card-heading".into())
+                .items_start()
                 .text_size(px(Typography::HEADING_CARD))
                 .font_weight(Typography::HEADING_CARD_WEIGHT)
-                .text_color(if is_danger {
-                    colors.danger
-                } else {
-                    colors.warning
-                })
-                .child(if is_danger {
-                    format!("危险命令需要确认 · {}", card_ref.prompt.display_tool())
-                } else {
-                    format!("需要权限 · {}", card_ref.prompt.display_tool())
-                })
+                .text_color(color)
+                .child(
+                    div()
+                        .debug_selector(|| "permission-card-icon".into())
+                        .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
+                            - Layout::ICON_SIZE)
+                            / 2.0))
+                        .size(px(Layout::ICON_SIZE))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::icons::icon(crate::icons::Icon::Warning, color)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "permission-card-label".into())
+                        .min_w_0()
+                        .flex_1()
+                        .child(label),
+                )
                 .into_any_element();
         }
         let command_end = 1 + card_ref.prompt.command_rows.len();
@@ -501,6 +522,7 @@ impl PermissionCard {
                 return container
                     .justify_end()
                     .child(permission_button(
+                        format!("permission-option-{}-{option_index}", card.entity_id()),
                         option.name.clone(),
                         focus,
                         option_index == 0,
@@ -538,23 +560,20 @@ impl PermissionCard {
         let once_card = card.clone();
         let always_card = card.clone();
         let reject_card = card.clone();
-        let mut container = container
-            .rounded_bl_lg()
-            .rounded_br_lg()
-            .justify_end()
-            .gap_2()
-            .child(permission_button(
-                "允许一次".to_string(),
-                once,
-                true,
-                colors,
-                window,
-                move |_: &MouseUpEvent, _, cx| {
-                    once_card.update(cx, |card, cx| card.resolve(PermissionDecision::Once, cx));
-                },
-            ));
+        let mut container = container.justify_end().gap_2().child(permission_button(
+            format!("permission-once-{}", card.entity_id()),
+            "允许一次".to_string(),
+            once,
+            true,
+            colors,
+            window,
+            move |_: &MouseUpEvent, _, cx| {
+                once_card.update(cx, |card, cx| card.resolve(PermissionDecision::Once, cx));
+            },
+        ));
         if !card.read(cx).prompt.external {
             container = container.child(permission_button(
+                format!("permission-always-{}", card.entity_id()),
                 "总是允许".to_string(),
                 always,
                 false,
@@ -567,6 +586,7 @@ impl PermissionCard {
         }
         container
             .child(permission_button(
+                format!("permission-deny-{}", card.entity_id()),
                 "拒绝".to_string(),
                 reject,
                 false,
@@ -626,6 +646,7 @@ impl fmt::Debug for PermissionCard {
 }
 
 fn permission_button(
+    id: String,
     label: String,
     focus: FocusHandle,
     primary: bool,
@@ -635,8 +656,14 @@ fn permission_button(
 ) -> AnyElement {
     let focused = focus.is_focused(window);
     let button = div()
-        .px_2()
-        .rounded_md()
+        .id(gpui_kit::SharedString::from(id))
+        .debug_selector(|| "permission-action".into())
+        .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(Layout::DISCLOSURE_PADDING_X))
+        .rounded(px(Layout::DISCLOSURE_RADIUS))
         .border_1()
         .border_color(if focused {
             colors.warning
@@ -645,19 +672,25 @@ fn permission_button(
         })
         .text_size(px(Typography::SIDEBAR))
         .text_color(if primary {
-            colors.bg_base
+            colors.brand_on_accent
         } else {
             colors.text_primary
         })
         .cursor_pointer()
-        .hover(move |style| style.bg(colors.bg_hover))
         .track_focus(&focus)
         .on_mouse_up(MouseButton::Left, listener)
         .child(label);
     if primary {
-        button.bg(colors.accent).into_any_element()
+        button
+            .interaction_surface(
+                colors.accent,
+                colors.brand_primary_strong,
+                colors.accent,
+                true,
+            )
+            .into_any_element()
     } else {
-        button.into_any_element()
+        button.interactive(colors, true, false).into_any_element()
     }
 }
 

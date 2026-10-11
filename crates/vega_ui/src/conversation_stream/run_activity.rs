@@ -1,4 +1,5 @@
 use super::*;
+use crate::interaction::InteractionExt;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,40 +385,69 @@ impl RunActivityGroup {
         let status = group_ref.status;
         let children = group_ref.children();
         let toggle = group.clone();
+        let keyboard_toggle = group.clone();
         let can_expand = !children.is_empty();
         let header = div()
+            .id(("run-activity-toggle", group.entity_id()))
+            .focusable()
+            .tab_stop(can_expand)
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(move |row| row.border_color(colors.accent))
             .debug_selector(|| "run-activity-toggle".to_string())
             .w_full()
-            .h(px(ROW_HEIGHT))
+            .h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
+            .text_size(px(Typography::BODY))
+            .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
             .min_w_0()
             .flex()
             .items_center()
             .gap_2()
-            .cursor_pointer()
-            .when(can_expand, |row| {
-                row.on_mouse_up(MouseButton::Left, move |_: &MouseUpEvent, _, cx| {
-                    toggle.update(cx, RunActivityGroup::toggle_expanded);
-                })
+            .px(px(Layout::DISCLOSURE_PADDING_X))
+            .rounded(px(Layout::DISCLOSURE_RADIUS))
+            .interactive(colors, can_expand, false)
+            .on_key_down(move |event, _, cx| {
+                if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    keyboard_toggle.update(cx, RunActivityGroup::toggle_expanded);
+                    cx.stop_propagation();
+                }
             })
-            .child(crate::icons::icon(
-                if status == RunActivityStatus::Running {
-                    crate::icons::Icon::Refresh
-                } else {
-                    crate::icons::Icon::Summary
-                },
-                if matches!(status, RunActivityStatus::Failed) {
-                    colors.danger
-                } else {
-                    colors.text_secondary
-                },
-            ))
+            .when(can_expand, |row| {
+                row.cursor_pointer().on_mouse_up(
+                    MouseButton::Left,
+                    move |_: &MouseUpEvent, _, cx| {
+                        toggle.update(cx, RunActivityGroup::toggle_expanded);
+                    },
+                )
+            })
+            .child(
+                div()
+                    .debug_selector(|| "run-activity-icon".into())
+                    .size(px(Layout::ICON_SIZE))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::icons::icon(
+                        if status == RunActivityStatus::Running {
+                            crate::icons::Icon::Refresh
+                        } else {
+                            crate::icons::Icon::Summary
+                        },
+                        if matches!(status, RunActivityStatus::Failed) {
+                            colors.danger
+                        } else {
+                            colors.text_secondary
+                        },
+                    )),
+            )
             .child(
                 div()
                     .debug_selector(|| "run-activity-status".to_string())
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_size(px(Typography::METADATA))
+                    .text_size(px(Typography::BODY))
                     .text_color(colors.text_secondary)
                     .child(label),
             )

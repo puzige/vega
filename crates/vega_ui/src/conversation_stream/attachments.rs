@@ -255,7 +255,11 @@ impl ConversationStream {
                 el.child("正在添加图片…")
             })
             .when_some(self.attachment_error, |el, message| {
-                el.child(div().text_color(colors.danger).child(message))
+                el.child(render_rows::status_notice(
+                    message.to_string(),
+                    colors.danger,
+                    &colors,
+                ))
             })
             .into_any_element()
     }
@@ -274,7 +278,11 @@ fn thumbnail(image: &ImagePreview) -> AnyElement {
 
 pub(crate) fn render_user_images(images: &[ImagePreview]) -> AnyElement {
     div()
+        .debug_selector(|| "user-message-images".into())
         .w_full()
+        .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
+        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
+        .flex_shrink_0()
         .flex()
         .justify_end()
         .flex_wrap()

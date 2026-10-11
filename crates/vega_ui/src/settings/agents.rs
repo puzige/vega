@@ -1,4 +1,5 @@
 use super::*;
+use crate::interaction::InteractionExt;
 
 impl SettingsView {
     pub(crate) fn save_codex_profile(&mut self, cx: &mut Context<Self>) {
@@ -74,34 +75,111 @@ impl SettingsView {
         } else {
             "配置一个本地 Codex ACP executable 后，New Task 才能选择 Codex。"
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
+        settings_section()
             .child(
                 div()
                     .text_size(px(Typography::BODY))
                     .text_color(colors.text_secondary)
                     .child(profile_status),
             )
-            .child(self.codex_name_input.clone())
-            .child(self.codex_executable_input.clone())
-            .child(self.codex_args_input.clone())
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-agent-name-label".into())
+                            .font_weight(Typography::HEADING_CARD_WEIGHT)
+                            .child("名称"),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-agent-name-input".into())
+                            .child(self.codex_name_input.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-agent-executable-label".into())
+                            .font_weight(Typography::HEADING_CARD_WEIGHT)
+                            .child("可执行文件"),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-agent-executable-input".into())
+                            .child(self.codex_executable_input.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-agent-args-label".into())
+                            .font_weight(Typography::HEADING_CARD_WEIGHT)
+                            .child("参数（每行一个 argv）"),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-agent-args-input".into())
+                            .child(self.codex_args_input.clone()),
+                    ),
+            )
             .child(
                 div().flex().justify_end().child(
-                    div()
+                    settings_action_chrome(colors)
                         .id("settings-codex-profile-save")
+                        .interaction_surface(
+                            if self.codex_profile_saving {
+                                colors.bg_elevated
+                            } else {
+                                colors.brand_primary
+                            },
+                            colors.brand_primary_strong,
+                            colors.brand_primary_strong,
+                            !self.codex_profile_saving,
+                        )
                         .debug_selector(|| "settings-codex-profile-save".into())
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .bg(colors.accent)
-                        .text_color(colors.bg_base)
+                        .focusable()
+                        .tab_stop(true)
+                        .focus_visible(move |style| style.border_color(colors.accent))
+                        .bg(if self.codex_profile_saving {
+                            colors.bg_elevated
+                        } else {
+                            colors.brand_primary
+                        })
+                        .text_color(if self.codex_profile_saving {
+                            colors.text_tertiary
+                        } else {
+                            colors.brand_on_accent
+                        })
                         .when(!self.codex_profile_saving, |button| {
-                            button.cursor_pointer().on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| this.save_codex_profile(cx)),
-                            )
+                            button
+                                .cursor_pointer()
+                                .on_key_down(cx.listener(
+                                    |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                        {
+                                            this.save_codex_profile(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| this.save_codex_profile(cx)),
+                                )
                         })
                         .child(if self.codex_profile_saving {
                             "保存中…"

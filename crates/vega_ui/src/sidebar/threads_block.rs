@@ -1187,15 +1187,27 @@ impl ThreadsBlock {
                     }
                 }),
             )
-            .when(
-                selected || (actions_visible && !editing_this_row),
-                move |row| {
-                    row.bg(if selected {
-                        colors.bg_active
-                    } else {
-                        colors.bg_hover
-                    })
+            .interaction_surface(
+                if selected {
+                    colors.bg_active
+                } else if !editing_this_row
+                    && (self.actions_open.as_deref() == Some(thread.id.as_str())
+                        || self.focused_thread_action.as_deref() == Some(thread.id.as_str()))
+                {
+                    colors.bg_hover
+                } else {
+                    gpui_kit::Rgba {
+                        a: 0.,
+                        ..colors.bg_hover
+                    }
                 },
+                if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                },
+                colors.bg_active,
+                !editing_this_row && !self.hover_suppressed_until_move,
             );
         if let Some(session) = editing_session {
             row = row.child(self.render_rename_editor(session, cx));

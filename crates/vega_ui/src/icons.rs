@@ -14,7 +14,8 @@ use gpui_kit::{
     px, svg,
 };
 
-const ICON_SIZE: f32 = 16.0;
+use crate::interaction::{Interaction, InteractionExt};
+use vega_theme::Layout;
 
 /// The small set of functional symbols shared by Vega's native chrome.
 #[derive(Clone, Copy)]
@@ -157,7 +158,7 @@ fn icon_name(kind: Icon) -> IconName {
 
 fn kit_icon(kind: Icon, color: Rgba) -> AnyElement {
     KitIcon::new(icon_name(kind))
-        .with_size(px(ICON_SIZE))
+        .with_size(px(Layout::ICON_SIZE))
         .text_color(color)
         .flex_shrink_0()
         .into_any_element()
@@ -166,7 +167,7 @@ fn kit_icon(kind: Icon, color: Rgba) -> AnyElement {
 fn inline_icon(data: &'static [u8], color: Rgba) -> AnyElement {
     svg()
         .data(data)
-        .size(px(ICON_SIZE))
+        .size(px(Layout::ICON_SIZE))
         .flex_shrink_0()
         .text_color(color)
         .into_any_element()
@@ -174,7 +175,7 @@ fn inline_icon(data: &'static [u8], color: Rgba) -> AnyElement {
 
 /// Paints a 16px icon in the caller's semantic text color.
 pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
-    match kind {
+    let glyph = match kind {
         Icon::Pin => inline_icon(PIN_SVG, color),
         Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color),
         Icon::Summary => inline_icon(SUMMARY_SVG, color),
@@ -185,7 +186,15 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
         Icon::TextSelect => inline_icon(TEXT_SELECT_SVG, color),
         Icon::Help => inline_icon(HELP_SVG, color),
         _ => kit_icon(kind, color),
-    }
+    };
+    gpui_kit::div()
+        .size(px(Layout::ICON_SIZE))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(glyph)
+        .into_any_element()
 }
 
 /// Native tooltip body: a label plus an optional shortcut keycap chip. The
@@ -233,7 +242,7 @@ pub fn icon_button(
     label: impl Into<gpui_kit::SharedString>,
     colors: vega_theme::ThemeColors,
     activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
+) -> Interaction {
     use gpui_kit::{MouseButton, div};
     let label = label.into();
     let tooltip_label = label.clone();
@@ -252,7 +261,7 @@ pub fn icon_button(
         .justify_center()
         .rounded_md()
         .cursor_pointer()
-        .hover(move |style| style.bg(colors.bg_hover))
+        .interactive(colors, true, false)
         .focus(move |style| style.bg(colors.bg_active))
         .tooltip(move |_, cx| cx.new(|_| IconTooltip(tooltip_label.clone(), None)).into())
         .on_mouse_up(MouseButton::Left, move |_, window, cx| {
@@ -291,7 +300,7 @@ pub fn shell_icon_button(
     enabled: bool,
     colors: vega_theme::ThemeColors,
     activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
+) -> Interaction {
     use gpui_kit::{MouseButton, div};
     let label = label.into();
     let tooltip_label = label.clone();
@@ -309,15 +318,13 @@ pub fn shell_icon_button(
         .items_center()
         .justify_center()
         .rounded_md()
-        .when(selected, |button| button.bg(colors.bg_active))
+        .interactive(colors, enabled, selected)
+        .border_2()
+        .border_color(gpui_kit::transparent_black())
         .when(enabled, |button| {
             button.focus_visible(move |style| style.border_2().border_color(colors.accent))
         })
-        .when(enabled && !selected, |button| {
-            button
-                .cursor_pointer()
-                .hover(move |style| style.bg(colors.bg_hover))
-        })
+        .when(enabled && !selected, |button| button.cursor_pointer())
         .tooltip(move |_, cx| {
             cx.new(|_| IconTooltip(tooltip_label.clone(), shortcut.clone()))
                 .into()

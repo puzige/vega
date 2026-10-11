@@ -1,6 +1,7 @@
 //! Small local composer commands; all durable changes still use thread settings.
 use super::context_usage::ContextUsageDisplay;
 use super::*;
+use crate::interaction::InteractionExt;
 use gpui_kit::Focusable;
 
 /// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
@@ -700,11 +701,13 @@ impl ConversationStream {
             // §2.3); only the cursor and aria label change.
             .bg(colors.accent)
             .text_color(colors.brand_on_accent)
-            .when(!self.actions.stopping, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(colors.brand_primary_strong))
-            })
+            .when(!self.actions.stopping, |button| button.cursor_pointer())
+            .interaction_surface(
+                colors.accent,
+                colors.brand_primary_strong,
+                colors.accent,
+                !self.actions.stopping,
+            )
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.request_composer_stop(cx)),

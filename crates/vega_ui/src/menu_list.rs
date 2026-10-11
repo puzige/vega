@@ -17,6 +17,7 @@ use gpui_kit::{
 use vega_theme::{ThemeColors, Typography};
 
 use crate::icons::{Icon, icon};
+use crate::interaction::{Interaction, InteractionExt};
 use crate::text_input::TextInput;
 
 /// Height of one dropdown row. Both dropdowns already use
@@ -144,7 +145,7 @@ pub fn action_row(
             .into_any_element();
     }
     row.cursor_pointer()
-        .hover(move |style| style.bg(colors.bg_hover))
+        .interactive(colors, true, false)
         .on_mouse_up(MouseButton::Left, activate)
         .into_any_element()
 }
@@ -163,7 +164,7 @@ pub fn row_container(
     selected: bool,
     enabled: bool,
     colors: ThemeColors,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
+) -> Interaction {
     div()
         .id(id.into())
         .h(px(MENU_ROW_HEIGHT))
@@ -177,11 +178,24 @@ pub fn row_container(
         .gap_2()
         .rounded_md()
         .text_size(px(Typography::SIDEBAR))
-        .when(selected, move |row| row.bg(selected_row_bg(colors)))
-        .when(enabled, |row| {
-            row.cursor_pointer()
-                .hover(move |style| style.bg(colors.bg_hover))
-        })
+        .interaction_surface(
+            if selected {
+                selected_row_bg(colors)
+            } else {
+                gpui_kit::Rgba {
+                    a: 0.,
+                    ..colors.bg_hover
+                }
+            },
+            if selected {
+                selected_row_bg(colors)
+            } else {
+                colors.bg_hover
+            },
+            colors.bg_active,
+            enabled,
+        )
+        .when(enabled, |row| row.cursor_pointer())
 }
 
 /// The trailing selection marker column: the checkmark exists only on the

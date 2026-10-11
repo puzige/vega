@@ -1,6 +1,7 @@
 //! Issue #73 Settings surface. Every operation goes through the app-injected
 //! conversation service; this view never reads MCP tables or credential files.
 
+use crate::interaction::InteractionExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -14,7 +15,10 @@ use vega_conversation::types::{
 use vega_conversation::{McpServerSettingsService, McpSettingsError};
 use vega_theme::{Layout, Typography, theme};
 
-use super::{NextMcpAction, PreviousMcpAction, SettingsView, TextInput, section_title};
+use super::{
+    NextMcpAction, PreviousMcpAction, SettingsView, TextInput, section_title,
+    settings_action_chrome, settings_section, settings_status,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum McpTransportChoice {
@@ -1158,8 +1162,35 @@ impl SettingsView {
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
         let keyboard_action = action.clone();
-        div()
+        let primary = matches!(
+            action,
+            McpAction::Save | McpAction::SaveBearer | McpAction::SaveLocalSecret
+        );
+        let destructive = matches!(action, McpAction::Ask(McpConfirmation::Remove { .. }));
+        settings_action_chrome(colors)
             .id(selector.clone())
+            .interaction_surface(
+                if enabled && primary {
+                    colors.brand_primary
+                } else if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_elevated
+                },
+                if primary {
+                    colors.brand_primary_strong
+                } else if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                },
+                if primary {
+                    colors.brand_primary_strong
+                } else {
+                    colors.bg_active
+                },
+                enabled,
+            )
             .debug_selector(move || {
                 if debug_name.is_empty() {
                     selector.clone()
@@ -1169,18 +1200,19 @@ impl SettingsView {
             })
             .track_focus(&focus)
             .tab_stop(true)
-            .focus_visible(move |style| style.border_1().border_color(colors.accent))
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
+            .focus_visible(move |style| style.border_color(colors.accent))
             .when(selected, |button| button.bg(colors.bg_active))
+            .when(enabled && primary, |button| {
+                button
+                    .bg(colors.brand_primary)
+                    .text_color(colors.brand_on_accent)
+            })
+            .when(enabled && destructive, |button| {
+                button.text_color(colors.danger)
+            })
             .when(enabled, |button| {
                 button
                     .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, _: &MouseUpEvent, _, cx| {
@@ -1325,9 +1357,10 @@ impl SettingsView {
             .id(format!("mcp-row-{id}"))
             .flex()
             .flex_col()
-            .gap_2()
-            .px_3()
-            .py_3()
+            .min_w_0()
+            .flex_shrink_0()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .p(px(Layout::SETTINGS_CONTENT_GAP))
             .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
@@ -1426,9 +1459,10 @@ impl SettingsView {
             .id("mcp-editor")
             .flex()
             .flex_col()
-            .gap_2()
-            .px_3()
-            .py_3()
+            .min_w_0()
+            .flex_shrink_0()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .p(px(Layout::SETTINGS_CONTENT_GAP))
             .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
@@ -1444,6 +1478,8 @@ impl SettingsView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
+                    .items_center()
                     .gap_2()
                     .child(self.mcp_button(
                         "本地 stdio",
@@ -1630,7 +1666,7 @@ impl SettingsView {
             McpConfirmation::DiscoverOAuth { .. } => "确认发现授权元数据",
             McpConfirmation::DisconnectOAuth { .. } => "确认断开本地授权",
         };
-        div().id("mcp-confirmation").debug_selector(|| "mcp-confirmation".into()).flex().flex_col().gap_2().px_3().py_3()
+        settings_section().id("mcp-confirmation").debug_selector(|| "mcp-confirmation".into()).p(px(Layout::SETTINGS_CONTENT_GAP))
             .rounded(px(Layout::PANEL_RADIUS)).border_1().border_color(colors.warning)
             .child(section_title("确认 MCP 操作", colors.text_primary))
             .child(div().child(row.form.display_name))
@@ -1732,9 +1768,10 @@ impl SettingsView {
             .debug_selector(|| "mcp-oauth-preparation".into())
             .flex()
             .flex_col()
-            .gap_2()
-            .px_3()
-            .py_3()
+            .min_w_0()
+            .flex_shrink_0()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .p(px(Layout::SETTINGS_CONTENT_GAP))
             .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.warning)
@@ -1774,6 +1811,8 @@ impl SettingsView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
+                    .items_center()
                     .gap_2()
                     .child(self.mcp_button(
                         if is_step_up {
@@ -1800,87 +1839,84 @@ impl SettingsView {
     pub(crate) fn render_mcp(&mut self, cx: &mut gpui_kit::Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let connected = self.mcp.service.is_some();
-        let mut page = div()
-            .id("mcp-settings-content")
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .child(section_title("MCP 服务器", colors.text_primary))
-                    .child(self.mcp_button(
-                        "新增本地",
-                        "mcp-add-local",
-                        McpAction::Add(McpTransportChoice::Local),
-                        connected && !self.mcp.busy,
-                        cx,
-                    ))
-                    .child(self.mcp_button(
-                        "新增远程",
-                        "mcp-add-remote",
-                        McpAction::Add(McpTransportChoice::Remote),
-                        connected && !self.mcp.busy,
-                        cx,
-                    ))
-                    .child(self.mcp_button(
-                        "刷新服务器与权限请求",
-                        "mcp-reload",
-                        McpAction::Reload,
-                        connected && !self.mcp.busy,
-                        cx,
-                    )),
-            )
-            .child(
-                div()
-                    .text_size(px(Typography::BODY))
-                    .text_color(colors.text_secondary)
-                    .child(
-                        "服务器配置默认禁用；启用/测试需分别确认。每次外部工具调用仍须单独批准。",
-                    ),
-            );
+        let mut page =
+            settings_section()
+                .id("mcp-settings-content")
+                .child(section_title("MCP 服务器", colors.text_primary))
+                .child(div().text_color(colors.text_secondary).child(
+                    "服务器配置默认禁用；启用/测试需分别确认。每次外部工具调用仍须单独批准。",
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(self.mcp_button(
+                            "新增本地",
+                            "mcp-add-local",
+                            McpAction::Add(McpTransportChoice::Local),
+                            connected && !self.mcp.busy,
+                            cx,
+                        ))
+                        .child(self.mcp_button(
+                            "新增远程",
+                            "mcp-add-remote",
+                            McpAction::Add(McpTransportChoice::Remote),
+                            connected && !self.mcp.busy,
+                            cx,
+                        ))
+                        .child(self.mcp_button(
+                            "刷新服务器与权限请求",
+                            "mcp-reload",
+                            McpAction::Reload,
+                            connected && !self.mcp.busy,
+                            cx,
+                        )),
+                );
         if !connected {
-            page = page.child(
-                div()
-                    .text_color(colors.warning)
-                    .child("MCP 服务不可用，请重启 Vega 或检查应用数据目录。"),
-            );
+            page = page.child(settings_status(
+                "MCP 服务不可用，请重启 Vega 或检查应用数据目录。",
+                colors.warning,
+                colors,
+            ));
         } else if self.mcp.loading {
-            page = page.child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .child("正在加载 MCP 配置…"),
-            );
+            page = page.child(settings_status(
+                "正在加载 MCP 配置…",
+                colors.text_secondary,
+                colors,
+            ));
         } else if self.mcp.servers.is_empty() {
-            page = page.child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .child("尚未添加 MCP 服务器"),
-            );
+            page = page.child(settings_status(
+                "尚未添加 MCP 服务器",
+                colors.text_secondary,
+                colors,
+            ));
         }
         if self.mcp.busy && !self.mcp.loading {
-            page = page.child(div().text_color(colors.text_secondary).child(
+            page = page.child(settings_status(
                 if self.mcp.oauth_waiting {
                     "等待浏览器授权回调…完成后服务器仍保持禁用；可取消本次授权。"
                 } else {
                     "正在处理 MCP 操作…"
                 },
+                colors.text_secondary,
+                colors,
             ));
         }
         if let Some(message) = &self.mcp.message {
             page = page.child(
-                div()
-                    .id("mcp-message")
-                    .debug_selector(|| "mcp-message".into())
-                    .text_color(if self.mcp.message_error {
+                settings_status(
+                    message.clone(),
+                    if self.mcp.message_error {
                         colors.danger
                     } else {
                         colors.text_secondary
-                    })
-                    .child(message.clone()),
+                    },
+                    colors,
+                )
+                .id("mcp-message")
+                .debug_selector(|| "mcp-message".into()),
             );
         }
         if let Some(confirmation) = self.mcp.confirmation.clone() {

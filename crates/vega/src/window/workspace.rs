@@ -3411,9 +3411,6 @@ mod tests {
             (f32::from(panel.left()) + f32::from(rail.left())) / 2.0,
             "composer centers on the conversation column with the rail open",
         );
-        // Issue #100: with the rail open the padded column is 747px, below the
-        // 768px cap, so the Composer must equal the body column rather than
-        // reach the cap.
         assert_close(
             composer.size.width,
             f32::from(shell_bounds(window, "conversation-column", cx).size.width),
@@ -3432,8 +3429,6 @@ mod tests {
             (f32::from(panel.left()) + f32::from(panel.right())) / 2.0,
             "composer re-centers after the rail closes",
         );
-        // Without the rail the padded column is 1067px, so both surfaces reach
-        // the 768px cap and stay equal (issue #100).
         assert_close(
             composer.size.width,
             Layout::COMPOSER_MAX_WIDTH,
@@ -3505,16 +3500,16 @@ mod tests {
         );
         assert_close(
             composer.size.width,
-            f32::from(panel.size.width) - 2.0 * Layout::CONTENT_PADDING,
+            f32::from(panel.size.width) - 2.0 * Layout::CONVERSATION_PADDING,
             "narrow composer fills the padded column",
         );
         assert!(
-            f32::from(composer.left() - panel.left()) >= Layout::CONTENT_PADDING,
-            "left padding stays at least 16px"
+            f32::from(composer.left() - panel.left()) >= Layout::CONVERSATION_PADDING,
+            "left padding preserves the 36px conversation gutter"
         );
         assert!(
-            f32::from(panel.right() - composer.right()) >= Layout::CONTENT_PADDING,
-            "right padding stays at least 16px"
+            f32::from(panel.right() - composer.right()) >= Layout::CONVERSATION_PADDING,
+            "right padding preserves the 36px conversation gutter"
         );
         assert!(
             f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT,
