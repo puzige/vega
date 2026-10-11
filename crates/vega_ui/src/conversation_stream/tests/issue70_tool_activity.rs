@@ -548,7 +548,16 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
     );
     assert_eq!(terminal_duration.left() - terminal_title.right(), px(8.));
     assert_eq!(running_duration.left() - title.right(), px(8.));
-    assert_eq!(terminal_chevron.left() - terminal_duration.right(), px(8.));
+    assert_eq!(
+        terminal_chevron.size.width,
+        px(Layout::DISCLOSURE_TRAILING_SLOT)
+    );
+    let terminal_row = bounds(window, "tool-activity-child-0", cx);
+    assert!(
+        (terminal_row.right() - terminal_chevron.right() - px(Layout::DISCLOSURE_PADDING_X + 1.))
+            .abs()
+            < px(1.)
+    );
     stream.read_with(cx, |stream, cx| {
         assert_eq!(
             stream.tool_cards["long-running"].read(cx).visible_text(),

@@ -169,17 +169,21 @@ impl ConversationStream {
                     .get(&identity.key)
                     .copied()
                     .unwrap_or_else(|| {
-                        estimate_entry_height(entry, cx, self.workspace_width)
-                            + if self
-                                .assistant_role_rows
-                                .get(index)
-                                .copied()
-                                .unwrap_or(false)
-                            {
-                                Layout::ASSISTANT_ROLE_HEIGHT
-                            } else {
-                                0.
+                        (match entry {
+                            StreamEntry::RunActivity { group } => {
+                                self.estimated_run_height(group, cx)
                             }
+                            _ => estimate_entry_height(entry, cx, self.workspace_width),
+                        }) + if self
+                            .assistant_role_rows
+                            .get(index)
+                            .copied()
+                            .unwrap_or(false)
+                        {
+                            Layout::ASSISTANT_ROLE_HEIGHT
+                        } else {
+                            0.
+                        }
                     })
             })
             .collect::<Vec<_>>();
@@ -621,7 +625,11 @@ fn preview_from_lines<'a>(lines: impl Iterator<Item = &'a StreamLine>) -> String
     preview
 }
 
-fn estimate_entry_height(entry: &StreamEntry, cx: &App, workspace_width: Option<f32>) -> f32 {
+pub(super) fn estimate_entry_height(
+    entry: &StreamEntry,
+    cx: &App,
+    workspace_width: Option<f32>,
+) -> f32 {
     let text_width = workspace_width
         .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
         .unwrap_or(Layout::CONTENT_MAX_WIDTH)

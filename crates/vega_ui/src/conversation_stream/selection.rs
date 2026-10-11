@@ -14,6 +14,7 @@ use super::model::MessageCopy;
 
 #[cfg(test)]
 thread_local! {
+    pub(super) static SELECTION_TARGET_LAYOUT: RefCell<Option<(String, Option<TextLayout>)>> = const { RefCell::new(None) };
     pub(super) static SELECTION_RUN_LAYOUTS: RefCell<Vec<(String, TextLayout, Bounds<Pixels>)>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -197,6 +198,14 @@ impl Element for SelectableStyledText {
                 runs.clear();
             }
             runs.push((self.content.to_string(), self.text.layout().clone(), bounds));
+        });
+        #[cfg(test)]
+        SELECTION_TARGET_LAYOUT.with_borrow_mut(|target| {
+            if let Some((text, layout)) = target
+                && text == self.content.as_ref()
+            {
+                *layout = Some(self.text.layout().clone());
+            }
         });
         self.paint_runs.as_ref().and_then(|runs| {
             let line_layouts = self.text.layout().line_layouts();

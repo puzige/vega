@@ -1605,6 +1605,13 @@ impl Render for ConversationStream {
                                                     div().h_0().into_any_element()
                                                 } else {
                                                     match entry {
+                                                        Some(StreamEntry::RunActivity {
+                                                            group,
+                                                        }) => this.render_run_details(
+                                                            group.clone(),
+                                                            window,
+                                                            cx,
+                                                        ),
                                                         Some(entry) => render_stream_entry(
                                                             entry,
                                                             index,

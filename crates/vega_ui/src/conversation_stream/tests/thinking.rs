@@ -145,6 +145,7 @@ async fn i61_thinking_blocks_follow_real_event_order_and_expand(cx: &mut TestApp
         assert!(stream.active_thinking.is_none());
         cards
     });
+    open_run_details(window, cx);
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("run-activity-content").is_some());
     assert!(visual.debug_bounds("thinking-block").is_some());
@@ -345,6 +346,10 @@ async fn issue103_thinking_body_is_bounded(cx: &mut TestAppContext) {
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
+        stream
+            .run_activity_groups
+            .values()
+            .for_each(|group| group.update(cx, |group, cx| group.reveal(cx)));
         cards(stream, cx)[0].update(cx, |card, cx| card.set_expanded(true, cx));
     });
     cx.run_until_parked();
@@ -364,6 +369,10 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
+        stream
+            .run_activity_groups
+            .values()
+            .for_each(|group| group.update(cx, |group, cx| group.reveal(cx)));
         cards(stream, cx)[0].update(cx, |card, cx| card.set_expanded(true, cx));
     });
     cx.run_until_parked();
@@ -464,6 +473,7 @@ async fn i71_live_heading_replaces_thinking_label_without_changing_activity_expa
         }),
         "现在验证结果"
     );
+    open_run_details(window, cx);
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let toggle = visual
         .debug_bounds("thinking-toggle")
@@ -577,6 +587,10 @@ async fn i71_fenced_summary_keeps_received_content(cx: &mut TestAppContext) {
             },
             cx,
         );
+        stream
+            .run_activity_groups
+            .values()
+            .for_each(|group| group.update(cx, |group, cx| group.reveal(cx)));
         cards(stream, cx)[0].update(cx, |card, cx| card.set_expanded(true, cx));
     });
     stream.read_with(cx, |stream, app| {
@@ -595,6 +609,10 @@ async fn issue296_v3_thinking_follows_only_when_reader_is_at_its_tail(cx: &mut T
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
+        stream
+            .run_activity_groups
+            .values()
+            .for_each(|group| group.update(cx, |group, cx| group.reveal(cx)));
         cards(stream, cx)[0].update(cx, |card, cx| card.set_expanded(true, cx));
     });
     cx.run_until_parked();
@@ -623,6 +641,10 @@ async fn issue296_v3_thinking_short_content_follows_through_first_overflow(
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", "first short line\n"), cx);
+        stream
+            .run_activity_groups
+            .values()
+            .for_each(|group| group.update(cx, |group, cx| group.reveal(cx)));
         cards(stream, cx)[0].update(cx, |card, cx| card.set_expanded(true, cx));
     });
     cx.run_until_parked();

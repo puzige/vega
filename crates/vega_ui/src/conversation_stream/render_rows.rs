@@ -205,6 +205,7 @@ fn render_entry_internal(
                     card,
                     "tool-activity-single-row".to_string(),
                     false,
+                    window,
                     cx,
                 ))
                 .into_any_element()
@@ -213,7 +214,7 @@ fn render_entry_internal(
             let group = group.clone();
             process_surface(&colors)
                 .debug_selector(|| "standalone-tool-group-process".into())
-                .child(ToolActivityGroup::render(group, cx))
+                .child(ToolActivityGroup::render(group, window, cx))
                 .into_any_element()
         }
         StreamEntry::Artifact { card } => {

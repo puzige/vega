@@ -45,11 +45,12 @@ fn issue87_s14_metadata_card_is_truthful_content_free_and_reusable() {
 struct AssetHarness(Entity<ToolCard>);
 
 impl Render for AssetHarness {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(ToolCard::render(
             self.0.clone(),
             "s14-asset".into(),
             false,
+            window,
             cx,
         ))
     }

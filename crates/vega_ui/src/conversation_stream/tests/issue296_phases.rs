@@ -98,6 +98,10 @@ async fn issue296_phase_final_hides_only_process_once_and_anchor_reopens(cx: &mu
             "Worked for 23s"
         );
     });
+    let copy_before = stream.read_with(cx, |stream, _| match &stream.entries[1] {
+        StreamEntry::Assistant { copy, .. } => (copy.id, copy.original_text()),
+        _ => panic!("commentary"),
+    });
     stream.update(cx, |stream, cx| {
         assert!(stream.reveal_loaded_message("run", cx));
         stream.apply_event(final_event(), cx);
@@ -105,10 +109,36 @@ async fn issue296_phase_final_hides_only_process_once_and_anchor_reopens(cx: &mu
     });
     cx.run_until_parked();
     stream.read_with(cx, |stream, cx| {
-        assert!((0..stream.entries.len()).all(|index| !stream.process_entry_hidden(index, cx)))
+        assert_eq!(
+            (0..stream.entries.len())
+                .filter(|index| stream.process_entry_hidden(*index, cx))
+                .count(),
+            1
+        );
+        let details = stream.run_details(&stream.run_activity_groups["run"], cx);
+        let copies = details
+            .iter()
+            .filter_map(|(_, detail)| match detail {
+                phase::RunDetail::Assistant(index) => match &stream.entries[*index] {
+                    StreamEntry::Assistant { copy, .. } => Some((copy.id, copy.original_text())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(copies, vec![copy_before.clone()]);
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("run-activity-toggle").is_some());
+    let details = visual
+        .debug_bounds("run-activity-content")
+        .expect("commentary details");
+    let body = visual
+        .debug_bounds(Box::leak(
+            format!("run-process-message-{}", copy_before.0).into_boxed_str(),
+        ))
+        .expect("commentary markdown");
+    assert!(body.top() >= details.top() && body.bottom() <= details.bottom());
 }
 
 #[gpui_kit::test]
@@ -385,7 +415,8 @@ async fn issue296_phase_rejected_tools_and_permissions_survive_final_collapse(
     stream.read_with(cx, |stream, cx| {
         let group = stream.run_activity_groups["run"].read(cx);
         assert!(!group.test_projection().2);
-        assert!(group.segment_row_count(1, cx) > 0);
+        assert_eq!(group.segment_row_count(1, cx), 0);
+        assert_eq!(group.exception_label(cx), Some("含已拒绝操作"));
         assert!(stream.active_permission.is_some());
         assert!(
             stream.tool_cards["rejected"]
@@ -396,6 +427,7 @@ async fn issue296_phase_rejected_tools_and_permissions_survive_final_collapse(
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("permission-card-heading").is_some());
+    assert!(visual.debug_bounds("run-activity-exception").is_some());
     drop(decision);
 }
 
@@ -667,7 +699,7 @@ async fn issue296_phase_permission_wait_takes_priority_over_parallel_tools_and_t
                 .unwrap()
                 .read(cx)
                 .shimmer_epoch
-                .is_some()
+                .is_none()
         );
     });
 }

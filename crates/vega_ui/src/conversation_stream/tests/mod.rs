@@ -34,6 +34,7 @@ mod issue151_latest_activity;
 mod issue296_desktop_ui;
 mod issue296_hierarchy_v2;
 mod issue296_phases;
+mod issue296_single_activity;
 mod issue64_context_usage;
 mod issue70_tool_activity;
 mod issue72_message_anchor_navigation;
@@ -446,3 +447,13 @@ fn mixed_entry(
 }
 
 // ---------- Composer token counter（S7-T39/A10-05） ----------
+
+fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext) {
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let header = visual
+        .debug_bounds("run-activity-toggle")
+        .expect("single process header");
+    visual.simulate_click(header.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+}

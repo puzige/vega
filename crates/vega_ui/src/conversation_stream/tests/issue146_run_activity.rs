@@ -63,12 +63,15 @@ async fn issue146_live_activity_folds_once_and_keeps_final_answer_visible(cx: &m
         let group = run_group(stream, "live");
         assert_eq!(
             group.read(cx).test_projection(),
-            (RunActivityStatus::Running, None, true, false)
+            (RunActivityStatus::Running, None, false, false)
         );
         group
     });
 
-    group.update(cx, |group, cx| group.toggle_expanded(cx));
+    group.update(cx, |group, cx| {
+        group.reveal(cx);
+        group.toggle_expanded(cx);
+    });
     stream.update(cx, |stream, cx| {
         stream.apply_event(
             ConversationEvent::ThinkingDelta {
@@ -189,7 +192,7 @@ async fn issue146_text_only_run_has_no_empty_live_row_and_shows_total_duration(
         let group = run_group(stream, "text-only");
         assert_eq!(
             group.read(cx).test_projection(),
-            (RunActivityStatus::Completed, Some(6_543), true, true)
+            (RunActivityStatus::Completed, Some(6_543), false, true)
         );
         assert_eq!(group.read(cx).test_label(), "Worked for 6s");
         assert_eq!(assistant_text(stream, cx), "visible answer");
@@ -232,6 +235,7 @@ async fn issue146_long_run_activity_is_bounded_and_keeps_its_scroll_position(
     });
     let group = stream.read_with(cx, |stream, _| run_group(stream, "bounded"));
     group.update(cx, |group, cx| {
+        group.reveal(cx);
         for child in group.children() {
             if let RunActivityChild::Thinking(card) = child {
                 card.update(cx, |card, cx| card.set_expanded(true, cx));
@@ -335,7 +339,7 @@ async fn issue146_empty_runtime_failure_keeps_reason_visible_without_assistant_t
             run_group(stream, "empty-runtime-failure")
                 .read(cx)
                 .test_projection(),
-            (RunActivityStatus::Failed, Some(2_345), true, true)
+            (RunActivityStatus::Failed, Some(2_345), false, true)
         );
     });
 
@@ -389,7 +393,7 @@ async fn issue146_terminal_failure_cancel_and_hydration_restore_truthful_statuse
         let group = stream.read_with(cx, |stream, _| run_group(stream, message_id));
         assert_eq!(
             group.read_with(cx, |group, _| group.test_projection()),
-            (status, Some(duration), true, true)
+            (status, Some(duration), false, true)
         );
         let expected = match status {
             RunActivityStatus::Failed => "已失败 · 用时 1s",

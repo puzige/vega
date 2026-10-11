@@ -195,13 +195,13 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
             .expect("initial thinking")
             .size
             .height,
-        px(28. + 4. + 28.)
+        px(28.)
     );
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         assert_eq!(
             stream.message_anchor_geometry(cx, 600.).entry_heights[0],
-            28. + 4. + 28.
+            28.
         );
         stream.apply_event(
             ConversationEvent::ThinkingDelta {
@@ -218,6 +218,11 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
         );
     });
     visual.run_until_parked();
+    let header = visual
+        .debug_bounds("run-activity-toggle")
+        .expect("single header");
+    visual.simulate_click(header.center(), Modifiers::default());
+    visual.run_until_parked();
     let surface = visual
         .debug_bounds("run-activity-content")
         .expect("segment");
@@ -233,15 +238,19 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
-        assert_eq!(geometry.entry_heights[0], 28.);
-        assert_eq!(geometry.entry_heights[1], 28. + 4. + 28.);
+        assert_eq!(geometry.entry_heights[0], 28. + 4. + 28. + 4. + 28.);
+        assert_eq!(geometry.entry_heights[1], 0.);
     });
     visual.simulate_click(tool.center(), Modifiers::default());
     visual.run_until_parked();
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
-        assert_eq!(geometry.entry_heights[1], 28. + 4. + 28. + 4. + 98.);
+        assert_eq!(
+            geometry.entry_heights[0],
+            28. + 4. + 28. + 4. + 28. + 4. + 98.
+        );
+        assert_eq!(geometry.entry_heights[1], 0.);
         stream.apply_event(
             ConversationEvent::TextDelta {
                 message_id: "run".into(),

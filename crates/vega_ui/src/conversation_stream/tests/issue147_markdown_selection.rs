@@ -604,3 +604,105 @@ fn issue296_v3_list_paragraphs_and_long_code_keep_local_geometry(cx: &mut TestAp
     assert_eq!(end.bounds().left(), outside.bounds().left());
     assert_eq!(end.bounds().top() - surface.bottom(), px(16.));
 }
+
+#[gpui_kit::test]
+fn issue296_single_activity_folded_commentary_reopens_with_original_selection_and_copy(
+    cx: &mut TestAppContext,
+) {
+    use vega_conversation::types::{AssistantResponseKind, AssistantResponseMetadata};
+    selection::SELECTION_RUN_LAYOUTS.with_borrow_mut(Vec::clear);
+    let (stream, mut visual) = open_empty_selection_harness(cx);
+    let process = "Review Alpha你好 😀 result.";
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "copy-run".into(),
+                seq: 1,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "copy-run".into(),
+                delta: process.into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::AssistantResponseCompleted {
+                message_id: "copy-run".into(),
+                response: AssistantResponseMetadata {
+                    response_id: "c".into(),
+                    text_start_bytes: 0,
+                    text_end_bytes: process.len(),
+                    kind: AssistantResponseKind::Commentary,
+                },
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("read", "pwd"),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "copy-run".into(),
+                delta: "Final.".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::AssistantResponseCompleted {
+                message_id: "copy-run".into(),
+                response: AssistantResponseMetadata {
+                    response_id: "f".into(),
+                    text_start_bytes: process.len(),
+                    text_end_bytes: process.len() + 6,
+                    kind: AssistantResponseKind::Final,
+                },
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let original = stream.read_with(&visual, |stream, cx| {
+        let index = (0..stream.entries.len())
+            .find(|index| stream.process_entry_hidden(*index, cx))
+            .expect("folded commentary");
+        match &stream.entries[index] {
+            StreamEntry::Assistant { copy, .. } => copy.clone(),
+            _ => panic!("commentary"),
+        }
+    });
+    let header = visual
+        .debug_bounds("run-activity-toggle")
+        .expect("root header");
+    selection::SELECTION_TARGET_LAYOUT
+        .with_borrow_mut(|target| *target = Some((process.into(), None)));
+    visual.simulate_click(header.center(), Modifiers::default());
+    visual.run_until_parked();
+    let layout = selection::SELECTION_TARGET_LAYOUT.with_borrow_mut(|target| {
+        target
+            .take()
+            .and_then(|(_, layout)| layout)
+            .expect("commentary selection layout")
+    });
+    drag(
+        &mut visual,
+        text_point(&layout, process.find("Alpha").unwrap(), false),
+        text_point(&layout, process.find(" result").unwrap(), true),
+    );
+    visual.run_until_parked();
+    assert!(original.has_selected_text());
+    assert_eq!(original.original_text(), process);
+    visual.simulate_keystrokes("cmd-c");
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("Alpha你好 😀")
+    );
+}
