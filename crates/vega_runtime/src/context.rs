@@ -572,7 +572,7 @@ pub fn estimate_chat_context(
             image_count = image_count
                 .checked_add(1)
                 .ok_or(ContextEstimateError::Overflow)?;
-            image_tokens = checked_add(image_tokens, estimate_image(image)?)?;
+            image_tokens = checked_add(image_tokens, estimate_message_image(message, image)?)?;
         }
     }
     let mut tool_count = 0usize;
@@ -639,7 +639,7 @@ pub fn estimate_wire_context(
             image_count = image_count
                 .checked_add(1)
                 .ok_or(ContextEstimateError::Overflow)?;
-            image_tokens = checked_add(image_tokens, estimate_image(image)?)?;
+            image_tokens = checked_add(image_tokens, estimate_message_image(message, image)?)?;
         }
     }
     let mut tool_count = 0usize;
@@ -696,6 +696,20 @@ fn estimate_bytes(value: &str, divisor: u64) -> Result<u64, ContextEstimateError
         .checked_add(divisor - 1)
         .map(|bytes| bytes / divisor)
         .ok_or(ContextEstimateError::Overflow)
+}
+
+fn estimate_message_image(
+    message: &ChatMessage,
+    image: &crate::ImageAttachment,
+) -> Result<u64, ContextEstimateError> {
+    if message.role == crate::ChatRole::Tool {
+        let pixels = u64::from(image.width())
+            .checked_mul(u64::from(image.height()))
+            .ok_or(ContextEstimateError::Overflow)?;
+        checked_add(ceil_ratio(pixels, 1, 256)?, 1280)
+    } else {
+        estimate_image(image)
+    }
 }
 
 fn estimate_image(image: &crate::ImageAttachment) -> Result<u64, ContextEstimateError> {
@@ -1006,5 +1020,20 @@ mod tests {
         let wire = estimate_wire_context(&[system, history[0].clone()], &[]).unwrap();
         assert_eq!(wire.input_tokens, separate.input_tokens);
         assert_eq!(wire.message_count, separate.message_count);
+    }
+    #[test]
+    fn issue75_tool_visual_estimate_does_not_change_user_image_contract() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1600, 900)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let image = crate::ImageAttachment::from_bytes(bytes.into_inner()).unwrap();
+        let user = ChatMessage::new(ChatRole::User, "");
+        let tool = ChatMessage::tool_result("call", "");
+        assert_eq!(
+            estimate_message_image(&user, &image).unwrap(),
+            estimate_image(&image).unwrap()
+        );
+        assert_eq!(estimate_message_image(&tool, &image).unwrap(), 6905);
     }
 }

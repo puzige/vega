@@ -40,6 +40,9 @@ pub(crate) fn valid_skill_call_projection(tool: &str, input_json: &str) -> bool 
 }
 
 fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
+    if vega_runtime::computer_use::ComputerUseRun::tool_capability(tool).is_some() {
+        return vega_runtime::computer_use::ComputerUseAudit::valid(input_json);
+    }
     match tool {
         "Write" | "Edit" | "write" | "edit" => vega_tools::WriteEditAudit::from_json(input_json)
             .is_ok_and(|audit| audit.tool().as_str().eq_ignore_ascii_case(tool)),
@@ -957,6 +960,19 @@ pub(crate) fn validate_recovered_projection(
     {
         return Ok(input_json.to_string());
     }
+    if vega_runtime::computer_use::ComputerUseRun::tool_capability(tool).is_some() {
+        if !vega_runtime::computer_use::ComputerUseAudit::valid(input_json)
+            || output.len() > 2048
+            || exit_code.is_some()
+            || duration_ms.is_some()
+            || approval.danger.is_some()
+            || approval.decision == Approval::Always
+            || !approval_source_matches(tool, status, approval.source, false)
+        {
+            return Err(corrupt());
+        }
+        return Ok(input_json.to_owned());
+    }
     match tool {
         "load_skill" | "read_skill_resource" => {
             if exit_code.is_some()
@@ -1394,6 +1410,7 @@ pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAud
         | ApprovalSource::User
         | ApprovalSource::Validation
         | ApprovalSource::ReadonlyTool
+        | ApprovalSource::ComputerUse
         | ApprovalSource::Recovery
         | ApprovalSource::Legacy => false,
     }
@@ -1405,6 +1422,16 @@ pub(crate) fn approval_source_matches(
     source: ApprovalSource,
     invalid_projection: bool,
 ) -> bool {
+    if vega_runtime::computer_use::ComputerUseRun::tool_capability(tool).is_some() {
+        return if status == RuntimeToolStatus::Rejected {
+            matches!(
+                source,
+                ApprovalSource::RunMode | ApprovalSource::Recovery | ApprovalSource::Validation
+            )
+        } else {
+            source == ApprovalSource::ComputerUse
+        };
+    }
     if invalid_projection {
         return status == RuntimeToolStatus::Rejected && source == ApprovalSource::Validation;
     }

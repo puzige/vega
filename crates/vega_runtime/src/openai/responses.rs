@@ -35,7 +35,15 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
     for message in &req.messages {
         input.extend(message.response_reasoning.iter().cloned());
         if message.role == ChatRole::Tool {
-            input.push(json!({"type":"function_call_output", "call_id":message.tool_call_id, "output":message.content}));
+            let output = if message.images.is_empty() {
+                json!(message.content)
+            } else {
+                use base64::Engine;
+                let mut parts = vec![json!({"type":"input_text","text":message.content})];
+                parts.extend(message.images.iter().map(|image| json!({"type":"input_image","image_url":format!("data:{};base64,{}", image.mime_type(), base64::engine::general_purpose::STANDARD.encode(image.bytes())),"detail":"auto"})));
+                Value::Array(parts)
+            };
+            input.push(json!({"type":"function_call_output", "call_id":message.tool_call_id, "output":output}));
             continue;
         }
         if !message.content.is_empty() || !message.images.is_empty() {

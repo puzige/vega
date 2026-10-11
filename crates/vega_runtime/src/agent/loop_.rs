@@ -287,6 +287,7 @@ fn skill_fits(
 
 #[allow(clippy::too_many_arguments)]
 async fn compact_before_skill_rejection<F, Fut>(
+    computer_use: Option<&crate::computer_use::ComputerUseRun>,
     prospective: &str,
     base: &str,
     catalog: &str,
@@ -389,6 +390,11 @@ where
     sink(started.clone()).await?;
     events.push(started);
     *attempted_source = Some((source, fingerprint.clone(), *projection_revision));
+    if let Some(run) = computer_use {
+        run.invalidate_observations();
+        run.trim_messages(messages);
+        run.trim_messages(&mut projected);
+    }
     let compacted = hook
         .compact(
             ContextCompactionRequest {
@@ -787,6 +793,48 @@ pub async fn run_agent_with_permission_sink_and_context<F, Fut>(
     cancel: CancellationToken,
     permission_hook: &dyn RuntimePermissionHook,
     external_context_hook: Option<&dyn crate::ContextCompactionHook>,
+    sink: F,
+) -> Result<AgentOutcome, VegaError>
+where
+    F: FnMut(RuntimeEvent) -> Fut,
+    Fut: Future<Output = Result<(), VegaError>>,
+{
+    let computer_use = request.tool_config.computer_use.clone();
+    let lifetime = CancellationToken::new();
+    let monitor = computer_use.clone().map(|run| {
+        let lifetime = lifetime.clone();
+        let root_cancel = cancel.clone();
+        tokio::spawn(async move {
+            run.monitor(lifetime, root_cancel).await;
+        })
+    });
+    let result = run_agent_with_permission_sink_and_context_inner(
+        provider,
+        tools,
+        request,
+        cancel,
+        permission_hook,
+        external_context_hook,
+        sink,
+    )
+    .await;
+    lifetime.cancel();
+    if let Some(monitor) = monitor {
+        let _ = monitor.await;
+    }
+    if let Some(run) = computer_use {
+        run.shutdown().await;
+    }
+    result
+}
+
+async fn run_agent_with_permission_sink_and_context_inner<F, Fut>(
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    request: AgentRequest,
+    cancel: CancellationToken,
+    permission_hook: &dyn RuntimePermissionHook,
+    external_context_hook: Option<&dyn crate::ContextCompactionHook>,
     mut sink: F,
 ) -> Result<AgentOutcome, VegaError>
 where
@@ -849,7 +897,8 @@ where
         tool_config.permission_mode,
         tool_config.mcp_candidates.clone(),
     )?
-    .with_skills(!skill_catalog.is_empty(), skill_config.is_some())?;
+    .with_skills(!skill_catalog.is_empty(), skill_config.is_some())?
+    .with_computer_use(tool_config.computer_use.as_ref());
     let mut exact_rules: HashSet<RuntimeExactRule> =
         tool_config.exact_rules.iter().cloned().collect();
     let mut events = Vec::new();
@@ -962,6 +1011,7 @@ where
                     compacted_for_selection = true;
                     let hook = external_context_hook.or(request_context_hook.as_deref());
                     if compact_before_skill_rejection(
+                        tool_config.computer_use.as_ref(),
                         &prospective,
                         &base_system_prompt,
                         &skill_catalog,
@@ -1082,6 +1132,12 @@ where
             ));
         }
 
+        if let Some(run) = &tool_config.computer_use {
+            if run.wait_ready(&cancel).await.is_err() {
+                cancel.cancel();
+            }
+            run.trim_messages(&mut messages);
+        }
         let tool_definitions = capabilities.definitions().to_vec();
         'compaction: {
             let Some(budget) = context_budget else {
@@ -1178,6 +1234,10 @@ where
                     source_fingerprint.clone(),
                     live_projection_revision,
                 ));
+                if let Some(run) = &tool_config.computer_use {
+                    run.invalidate_observations();
+                    run.trim_messages(&mut messages);
+                }
                 let compacted = hook
                     .compact(
                         ContextCompactionRequest {
@@ -1396,6 +1456,10 @@ where
                 }
                 automatic_compaction_failures = 0;
                 messages = next_messages;
+                if let Some(run) = &tool_config.computer_use {
+                    run.invalidate_observations();
+                    run.trim_messages(&mut messages);
+                }
                 drop(input_anchor.take());
                 live_projection_revision = generation;
                 context_source_version = Some(compacted.source_version);
@@ -1467,6 +1531,11 @@ where
         } else {
             None
         };
+        if let Some(run) = &tool_config.computer_use {
+            if run.wait_ready(&cancel).await.is_err() {
+                cancel.cancel();
+            }
+        }
         let response_text_start = final_text.len();
         let attempt_id = ulid::Ulid::generate().to_string();
         let attempt_started_at = std::time::Instant::now();
@@ -1916,6 +1985,23 @@ where
                 false,
             ));
         }
+        if let Some(run) = &tool_config.computer_use {
+            if run.wait_ready(&cancel).await.is_err() {
+                cancel.cancel();
+            }
+        }
+        if cancel.is_cancelled() {
+            emit!(events, sink, RuntimeEvent::Interrupted);
+            return Ok(outcome(
+                events,
+                messages,
+                final_text,
+                tool_call_count,
+                executed_tool_call_count,
+                true,
+                false,
+            ));
+        }
         let normal_terminal = matches!(
             (stop_reason, calls.is_empty()),
             (Some(StopReason::End), true) | (Some(StopReason::ToolUse), false)
@@ -2313,6 +2399,7 @@ where
                                     let hook =
                                         external_context_hook.or(request_context_hook.as_deref());
                                     if compact_before_skill_rejection(
+                                        tool_config.computer_use.as_ref(),
                                         prospective,
                                         &base_system_prompt,
                                         &skill_catalog,
@@ -2399,11 +2486,15 @@ where
                     pattern: target.exact_pattern.clone(),
                 });
             }
-            messages.push(ChatMessage::projected_tool_result(
-                &call.id,
-                &call.name,
-                &result.output,
-            ));
+            let mut model_result =
+                ChatMessage::projected_tool_result(&call.id, &call.name, &result.output);
+            if let Some(run) = &tool_config.computer_use {
+                run.apply_observation(&call.id, &mut model_result);
+            }
+            messages.push(model_result);
+            if let Some(run) = &tool_config.computer_use {
+                run.trim_messages(&mut messages);
+            }
             completed.insert(
                 call.id,
                 CompletedToolCall {

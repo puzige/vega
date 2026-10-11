@@ -9,6 +9,7 @@ use serde_json::Value;
 
 mod auth;
 mod http;
+mod managed;
 mod stdio;
 mod wire;
 
@@ -17,6 +18,7 @@ pub use auth::{
     ResourceAuthorization, ScopeChallenge,
 };
 pub use http::HttpClient;
+pub use managed::{ManagedClient, ManagedImage, ManagedResult};
 pub use stdio::StdioClient;
 
 /// Validate an exact endpoint in Settings without sending any network request.

@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    pub(crate) computer_use: Option<vega_runtime::computer_use::ComputerUseRun>,
     pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
     /// Maximum agentic turns (provider round-trips) for this run; `0` means
     /// unlimited (Issue #114, mirrors Claude Code's `--max-turns`). Carried
@@ -35,6 +36,13 @@ pub(crate) enum InjectedPersistenceFailure {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_computer_use(
+        mut self,
+        run: Option<vega_runtime::computer_use::ComputerUseRun>,
+    ) -> Self {
+        self.computer_use = run;
+        self
+    }
     pub fn with_owner_credential_reader(mut self, reader: vega_runtime::CredentialReader) -> Self {
         self.owner_credential_reader = Some(reader);
         self

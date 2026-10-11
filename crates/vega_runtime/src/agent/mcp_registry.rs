@@ -926,6 +926,16 @@ impl RunCapabilitySnapshot {
         })
     }
 
+    pub(crate) fn with_computer_use(
+        mut self,
+        run: Option<&crate::computer_use::ComputerUseRun>,
+    ) -> Self {
+        if let Some(run) = run {
+            self.definitions.extend(run.definitions());
+        }
+        self
+    }
+
     pub(crate) fn definitions(&self) -> &[ToolDefinition] {
         &self.definitions
     }

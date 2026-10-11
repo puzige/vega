@@ -9,6 +9,10 @@
 pub use crate::automatic_titles::AutomaticTitleRequest;
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
+pub use vega_runtime::computer_use::{
+    Capability, ComputerUseControl, ComputerUseRun, ControlPhase, ControlSnapshot, DesktopTarget,
+    ManagedComponents, Observation, Target,
+};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
