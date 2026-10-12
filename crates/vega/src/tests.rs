@@ -203,7 +203,16 @@ fn r52_load_sensitive_ignores_are_frozen() {
 #[track_caller]
 fn pump_test_app(
     cx: &mut gpui_kit::TestAppContext,
+    ready: impl FnMut(&mut gpui_kit::TestAppContext) -> bool,
+) {
+    pump_test_app_with_diagnostics(cx, ready, |_| String::new());
+}
+
+#[track_caller]
+fn pump_test_app_with_diagnostics(
+    cx: &mut gpui_kit::TestAppContext,
     mut ready: impl FnMut(&mut gpui_kit::TestAppContext) -> bool,
+    diagnostics: impl FnOnce(&mut gpui_kit::TestAppContext) -> String,
 ) {
     for _ in 0..400 {
         cx.executor().advance_clock(DIFF_RESULT_POLL);
@@ -213,7 +222,10 @@ fn pump_test_app(
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("test app did not reach the expected terminal state");
+    panic!(
+        "test app did not reach the expected terminal state: {}",
+        diagnostics(cx)
+    );
 }
 
 fn pending_plan() -> (Store, String) {

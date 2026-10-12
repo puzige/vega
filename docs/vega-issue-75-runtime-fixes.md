@@ -109,3 +109,30 @@ Pause/Stop 仍立即撤epoch并取消在途请求，连接超时或取消仍使c
 原始日志依次为 /tmp/vega-75-browser-wait-red.log、/tmp/vega-75-browser-wait-first.log、/tmp/vega-75-browser-wrapper-red.log、/tmp/vega-75-browser-connect-final.log。独立只读审查未发现新增P1/P2。全量门禁仍在云端。
 
 NOT RUN：本轮版本的真实首次人工连接、浏览器输入、桌面输入、接管恢复。16秒unknown的具体根因不能从已经丢弃的上游正文恢复；更新后的有限分类是下一次验收的证据入口，不等于真实适配通过。0.1.72桌面permissions_missing另由主控按canonical安装和TCC身份重新验收，本轮不放宽预检。
+
+
+## PR311云端阻塞的定向调查（2026-10-12）
+
+云端run38201841191唯一失败为issue67_concurrent_settings_fails_closed_for_both_permissions，2254 passed/1 failed/5 skipped。panic位于agent.rs原719行：释放A/B provider后等待两个权限同时pending，尚未执行打开Settings及拒绝断言。此测试、普通write与权限队列相对本轮基线未改，两CUA能力在fixture中关闭，不能将失败归因于首次浏览器300秒路径。
+
+主控批准最小测试诊断：保留pump_test_app原400轮、虚拟4ms推进与真实5ms等待，保留所有生产及安全断言；只在此等待失败时输出A/B pending/card/active/cancelled、固定tool状态及Settings开关，不输出工具输入或内容。定向执行该用例一次；不循环重跑、不增timeout、不降低并发或改变write合同。若未复现，只报告本次结果和诊断缺口，不声称修复；只有拿到根因证据后才可追加最小同步修复。
+
+
+### CI调查结果与诊断交付
+
+- verified_at_utc: 2026-10-12T04:11:01.221Z
+- 结论：root cause unresolved。一次定向运行未复现，不能据此宣称CI失败已经修复。
+- 诊断补丁仅涉及crates/vega/src/tests.rs及crates/vega/src/tests/agent.rs；两文件按相对路径与字节串联的content_sha256为3fd0174e697a119eb0d259b800b185141e2b85aa1df2f4ef10ac2cf511a72324。
+- 原400轮、每轮GPUI虚拟4ms推进/真实5ms等待、ConcurrentProvider真实5秒gate、并发任务及所有拒绝/零mutation断言均未改变。新增诊断只在原等待耗尽后计算，不影响成功分支。
+
+| 证据 | 原始结果 | 原始日志SHA-256 |
+|---|---|---|
+| 云端run38201841191：cargo nextest run --workspace | Summary [125.191s] 2255 tests run: 2254 passed, 1 failed, 5 skipped；唯一失败在权限入队前置等待，13.089s | 63ed4268ae256d8b95787020cc0fe9c1fca94d33bdc6002c003c16dc737598f9 |
+| 一次定向：cargo nextest run -p vega issue67_concurrent_settings_fails_closed_for_both_permissions | PASS [1.087s]；Summary [1.088s] 1 test run: 1 passed, 255 skipped | bc00be51d5ec364ef95f466ba927daa3d23c82d9736ad2e48d2fafe1d48d1e9e |
+| rustfmt --check --edition 2024（上述两个测试文件）；git diff --check | exit0 | 无 |
+
+原始日志分别为/tmp/vega-75-pr311-ci-failed.log和/tmp/vega-75-pr311-concurrent-repro.log。没有再次执行此用例或旧云端run来重试到绿。
+
+ConcurrentProvider在首文本后进入真实5秒gate，release之前仍有UI与持久化等待，故存在负载敏感前提；但原失败日志没有对应gate deadline panic，不能认定它就是根因。GPUI默认单轮且不重试，亦无证据证明该13秒由多seed迭代产生。后续新head云端若再次失败，将得到A/B的pending/card/active/cancelled、固定tool状态与Settings状态，以区分尚未提议、提前终态、撤权和UI入队方向；拿到证据前不改变生产write或测试同步合同。
+
+独立审查校正：失败诊断的工具状态白名单按真实DDL收口为pending_approval、approved、running、success、failed、rejected、cancelled；并保留absent/query_error/unexpected固定降级值。此校正只影响失败文本，未再次运行测试；原单次PASS记录保持原样。
