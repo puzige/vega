@@ -716,10 +716,63 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
     if mode == 6 {
         controlled_a.release.cancel();
         controlled_b.release.cancel();
-        pump_test_app(cx, |cx| {
-            origin_stream.read_with(cx, |stream, _| stream.has_pending_permission())
-                && draft_stream.read_with(cx, |stream, _| stream.has_pending_permission())
-        });
+        pump_test_app_with_diagnostics(
+            cx,
+            |cx| {
+                origin_stream.read_with(cx, |stream, _| stream.has_pending_permission())
+                    && draft_stream.read_with(cx, |stream, _| stream.has_pending_permission())
+            },
+            |cx| {
+                let state_a = origin_stream.read_with(cx, |stream, _| {
+                    (
+                        stream.has_pending_permission(),
+                        stream.has_active_permission_card(),
+                    )
+                });
+                let state_b = draft_stream.read_with(cx, |stream, _| {
+                    (
+                        stream.has_pending_permission(),
+                        stream.has_active_permission_card(),
+                    )
+                });
+                let active = root.read_with(cx, |root, _| {
+                    (
+                        root.agent_controller.active.contains_key(&origin.id),
+                        root.agent_controller.active.contains_key(&destination.id),
+                    )
+                });
+                let tool_status =
+                    |call_id| match vega_store::tool_calls::find_state(store.conn(), call_id) {
+                        Ok(Some(state)) => match state.status.as_str() {
+                            "pending_approval" => "pending_approval",
+                            "approved" => "approved",
+                            "cancelled" => "cancelled",
+                            "running" => "running",
+                            "success" => "success",
+                            "failed" => "failed",
+                            "rejected" => "rejected",
+                            _ => "unexpected",
+                        },
+                        Ok(None) => "absent",
+                        Err(_) => "query_error",
+                    };
+                let settings = cx.update(|cx| cx.global::<SettingsOpen>().0);
+                format!(
+                    "permission_admission a_pending={} a_card={} a_active={} a_cancelled={} a_tool={} b_pending={} b_card={} b_active={} b_cancelled={} b_tool={} settings_open={}",
+                    state_a.0,
+                    state_a.1,
+                    active.0,
+                    cancel.is_cancelled(),
+                    tool_status("origin-read"),
+                    state_b.0,
+                    state_b.1,
+                    active.1,
+                    cancel_b.is_cancelled(),
+                    tool_status("destination-read"),
+                    settings,
+                )
+            },
+        );
         assert_eq!(
             root.read_with(cx, |root, _| root.agent_controller.active.len()),
             2

@@ -58,3 +58,81 @@
 ### 尚未验证
 
 NOT RUN：本修复版真实桌面追加文本、浏览器表单输入、接管后继续。此前真实 browser_tabs/get_window_state 失败的确切原因尚未确定；本补丁先修复历史显示和诊断丢失，不能据此声明实际适配成功。待发布后用同一授权目标复测；按新 error_class 确定根因后先修订规格，再实施必要适配。
+
+## 第二轮：首次浏览器人工授权期限（2026-10-12）
+
+真机安全诊断已确认首次 browser_tabs(list) 等待用户授权超过受管请求统一45秒期限后，Vega关闭执行器；迟到点击 Allow 会得到已关闭relay的错误。用户和主控批准：仅每个新建浏览器连接的首次 browser_tabs(list) 使用300秒期限。后续目标列表、观察、动作、initialize与其他普通受管请求仍为45秒；Playwright action=5000ms/navigation=30000ms不变。300秒不得由模型指定，不延长到整个client生命周期；重复调用人工连接入口不获得第二次延长期。
+
+Pause/Stop 仍立即撤epoch并取消在途请求，连接超时或取消仍使client失效并回收owned进程。迟到响应不得恢复连接、发布观察或继续派发；超时不自动重试，不扩大浏览器或桌面授权范围。
+
+| ID | 操作 | 预期 | 层级 | 状态 |
+|---|---|---|---|---|
+| BW01 | 首连响应在46秒后、300秒前返回 | 首连成功，旧45秒代码先失败 | 内存MCP+Tokio模拟时钟 | PASS（进程内） |
+| BW02 | 普通请求45秒无回复 | Timeout且client关闭；后续不可复用 | 内存MCP+Tokio模拟时钟 | PASS（进程内） |
+| BW03 | 首连超过300秒且晚回包 | Timeout；晚包不可复活 | 内存MCP+Tokio模拟时钟 | PASS（进程内） |
+| BW04 | 首连等待期间取消，随后晚回包 | Cancelled；client失效，零后续派发 | 内存MCP+Tokio模拟时钟 | PASS（进程内） |
+
+另一次及时选择后的 target_list/unknown 尚不能归因为协议不兼容。仅在固定上游错误外壳与扩展协议证据充分后补充有限分类；不采集原始页面、令牌或profile内容。
+
+
+### 固定 Playwright 错误外壳补充
+
+固定 core commit e8149b8257d32dcf8f72573ecc43e72439da7080 的 extension manifest 为0.4.0，connect.tsx 的 SUPPORTED_PROTOCOL_VERSION 为2，与本次随包组件匹配；此证据不等于真实 attach 成功。顶层 catch、backend formatError 与 Response.serialize 均输出以 ### Error 加换行开头的错误，无证据表明前导空行是已测 unknown 的原因。backend 可合并多个错误，相邻text块以换行拼接，API错误会添加 browserType.connectOverCDP、browser.bind 或 browserContext.newPage 前缀，CDP错误会添加 Protocol error (method): 前缀，后面可以有 Call log。
+
+分类只读取首个text块的错误段首行，剥离固定Error/API前缀与合法CDP方法包装，绝不在后续错误、Call log、stack或页面正文里搜索关键词。匹配精确Chrome附着失败模板时归 attach_failed；No attached tab/No tab found固定错误归 target_unavailable，不认定debugger冲突；合法CDP错误但未知内因归 cdp_command_failed；上游TimeoutError归 timeout。其他继续 unknown。Display/Debug只输出有限分类与固定建议，不保存原始正文、URL、tab/session ID、用户路径或错误哈希。
+
+上游初始 _attachTab 失败可被catch(logUnhandledError)吞掉，因此本补丁不能回溯确定那次16秒错误的根因。browser_tabs内部ensureTab可能新建空白页的既有残余仍按原规格披露，验收必须核对授权目标。
+
+| ID | 操作 | 预期 | 层级 | 状态 |
+|---|---|---|---|---|
+| BW05 | 固定序列化/API/CDP包装的连接及attach错误 | 有限分类，无正文；旧分类器先失败 | runtime fixture | PASS（进程内） |
+| BW06 | error后附Call log/页面/多块内容，含伪造错误关键词 | 仅错误首行决定分类，不提取后文 | runtime fixture | PASS（进程内） |
+
+来源：[MCP server](https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/playwright-core/src/tools/utils/mcp/server.ts)、[Response](https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/playwright-core/src/tools/backend/response.ts)、[Extension连接页](https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/extension/src/ui/connect.tsx)、[Chromium debugger API](https://github.com/chromium/chromium/blob/main/chrome/browser/extensions/api/debugger/debugger_api.cc)。
+
+
+### 第二轮交付证据
+
+- verified_at_utc: 2026-10-12T03:56:08.783Z
+- branch: feat/75-runtime-fixes；基线为已合入#310并发布0.1.72的master。
+- implementation_content_sha256: 1c004bc2507fd47096ed831bd0f1425d91f1f998e66cc372190f69ce3d9b23bf（按managed.rs、backend.rs、diagnostics.rs的仓库相对完整路径与文件字节顺序串联；目录分别为vega_mcp/src及vega_runtime/src/computer_use）。
+- 仅修改受管请求期限、浏览器首次连接接线、有限安全错误分类及本规格；没有UI、权限范围、组件版本、原始日志持久化改动。
+
+| 验证 | 命令或用例 | 原始结果 | 日志SHA-256 |
+|---|---|---|---|
+| 旧期限首次失败 | issue75_browser_connection_wait_accepts_manual_authorization_after_45_seconds | exit100；Summary [0.021s] 1 test run: 0 passed, 1 failed, 57 skipped | b089e1d521584948af80beb2aca9ae6849d1902981ecfc0940118c1c0b7fc1a4 |
+| 期限与取消 | cargo nextest run -p vega_mcp issue75 | exit0；Summary [0.013s] 7 tests run: 7 passed, 54 skipped | 1eb351bc5cade8cc548e097f69331d70ca99caf434deea2ddc3726e02943f4ca |
+| 旧包装分类首次失败 | cargo nextest run -p vega_runtime issue75_browser_error | exit100；Summary [0.020s] 2 tests run: 0 passed, 2 failed, 298 skipped | 17224ce2f6136b9d3c163278d0fb1e51ab79d773179a162933c4955a73ad2dae |
+| 最终本卡回归 | cargo nextest run -p vega_mcp -p vega_runtime -p vega_conversation issue75 | exit0；Summary [2.327s] 34 tests run: 34 passed, 907 skipped | c36a3fc41c2f10ef7618c2053377c365504f375a0ae9ef9e2843b935b9aecea9 |
+| 文本与格式 | git diff --check；rustfmt --check --edition 2024（本轮三个Rust文件） | exit0；无新增代码注释 | 无 |
+
+原始日志依次为 /tmp/vega-75-browser-wait-red.log、/tmp/vega-75-browser-wait-first.log、/tmp/vega-75-browser-wrapper-red.log、/tmp/vega-75-browser-connect-final.log。独立只读审查未发现新增P1/P2。全量门禁仍在云端。
+
+NOT RUN：本轮版本的真实首次人工连接、浏览器输入、桌面输入、接管恢复。16秒unknown的具体根因不能从已经丢弃的上游正文恢复；更新后的有限分类是下一次验收的证据入口，不等于真实适配通过。0.1.72桌面permissions_missing另由主控按canonical安装和TCC身份重新验收，本轮不放宽预检。
+
+
+## PR311云端阻塞的定向调查（2026-10-12）
+
+云端run38201841191唯一失败为issue67_concurrent_settings_fails_closed_for_both_permissions，2254 passed/1 failed/5 skipped。panic位于agent.rs原719行：释放A/B provider后等待两个权限同时pending，尚未执行打开Settings及拒绝断言。此测试、普通write与权限队列相对本轮基线未改，两CUA能力在fixture中关闭，不能将失败归因于首次浏览器300秒路径。
+
+主控批准最小测试诊断：保留pump_test_app原400轮、虚拟4ms推进与真实5ms等待，保留所有生产及安全断言；只在此等待失败时输出A/B pending/card/active/cancelled、固定tool状态及Settings开关，不输出工具输入或内容。定向执行该用例一次；不循环重跑、不增timeout、不降低并发或改变write合同。若未复现，只报告本次结果和诊断缺口，不声称修复；只有拿到根因证据后才可追加最小同步修复。
+
+
+### CI调查结果与诊断交付
+
+- verified_at_utc: 2026-10-12T04:11:01.221Z
+- 结论：root cause unresolved。一次定向运行未复现，不能据此宣称CI失败已经修复。
+- 诊断补丁仅涉及crates/vega/src/tests.rs及crates/vega/src/tests/agent.rs；两文件按相对路径与字节串联的content_sha256为3fd0174e697a119eb0d259b800b185141e2b85aa1df2f4ef10ac2cf511a72324。
+- 原400轮、每轮GPUI虚拟4ms推进/真实5ms等待、ConcurrentProvider真实5秒gate、并发任务及所有拒绝/零mutation断言均未改变。新增诊断只在原等待耗尽后计算，不影响成功分支。
+
+| 证据 | 原始结果 | 原始日志SHA-256 |
+|---|---|---|
+| 云端run38201841191：cargo nextest run --workspace | Summary [125.191s] 2255 tests run: 2254 passed, 1 failed, 5 skipped；唯一失败在权限入队前置等待，13.089s | 63ed4268ae256d8b95787020cc0fe9c1fca94d33bdc6002c003c16dc737598f9 |
+| 一次定向：cargo nextest run -p vega issue67_concurrent_settings_fails_closed_for_both_permissions | PASS [1.087s]；Summary [1.088s] 1 test run: 1 passed, 255 skipped | bc00be51d5ec364ef95f466ba927daa3d23c82d9736ad2e48d2fafe1d48d1e9e |
+| rustfmt --check --edition 2024（上述两个测试文件）；git diff --check | exit0 | 无 |
+
+原始日志分别为/tmp/vega-75-pr311-ci-failed.log和/tmp/vega-75-pr311-concurrent-repro.log。没有再次执行此用例或旧云端run来重试到绿。
+
+ConcurrentProvider在首文本后进入真实5秒gate，release之前仍有UI与持久化等待，故存在负载敏感前提；但原失败日志没有对应gate deadline panic，不能认定它就是根因。GPUI默认单轮且不重试，亦无证据证明该13秒由多seed迭代产生。后续新head云端若再次失败，将得到A/B的pending/card/active/cancelled、固定tool状态与Settings状态，以区分尚未提议、提前终态、撤权和UI入队方向；拿到证据前不改变生产write或测试同步合同。
+
+独立审查校正：失败诊断的工具状态白名单按真实DDL收口为pending_approval、approved、running、success、failed、rejected、cancelled；并保留absent/query_error/unexpected固定降级值。此校正只影响失败文本，未再次运行测试；原单次PASS记录保持原样。

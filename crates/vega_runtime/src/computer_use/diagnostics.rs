@@ -42,6 +42,8 @@ pub(super) enum Class {
     ExtensionMissing,
     ExtensionConnection,
     BrowserMissing,
+    AttachFailed,
+    CdpCommandFailed,
     TargetUnavailable,
     AxUnavailable,
     AxTimeout,
@@ -67,6 +69,8 @@ impl Class {
             Self::ExtensionMissing => "extension_missing",
             Self::ExtensionConnection => "extension_connection",
             Self::BrowserMissing => "browser_missing",
+            Self::AttachFailed => "attach_failed",
+            Self::CdpCommandFailed => "cdp_command_failed",
             Self::TargetUnavailable => "target_unavailable",
             Self::AxUnavailable => "accessibility_unavailable",
             Self::AxTimeout => "accessibility_timeout",
@@ -90,6 +94,12 @@ impl Class {
                 "扩展连接未完成，请检查 Chrome 中的 Playwright 连接选择页。"
             }
             Self::BrowserMissing => "执行器未找到浏览器，请检查 Chrome 是否安装在标准位置。",
+            Self::AttachFailed => {
+                "浏览器未能附着到所选标签页，请检查目标是否可调试及是否已有其他调试连接。"
+            }
+            Self::CdpCommandFailed => {
+                "浏览器调试协议命令失败，请检查扩展连接和所选标签页后重新连接。"
+            }
             Self::PolicyDenied => "执行器范围授权拒绝了请求，请停止后重新选择并授权目标。",
             Self::TargetUnavailable => "执行器无法确认目标，请检查窗口或标签页后重新连接。",
             Self::AxUnavailable | Self::AxTimeout => {
@@ -248,44 +258,101 @@ fn classify(capability: Capability, result: &ManagedResult) -> Class {
             _ => {}
         }
     }
+    if capability == Capability::Browser {
+        return classify_browser(result.text.first().map_or("", String::as_str));
+    }
     for text in &result.text {
         let text = text.strip_prefix("### Error\n").unwrap_or(text);
         let text = text.strip_prefix("Error: ").unwrap_or(text);
-        match capability {
-            Capability::Browser => {
-                if text.starts_with("Playwright Extension not found in \"") {
-                    return Class::ExtensionMissing;
-                }
-                if (text.starts_with("Playwright extension did not connect within ")
-                    && text.contains("s after opening the connect page."))
-                    || text.starts_with("Extension disconnected before initialization: ")
-                    || text == "Extension not connected"
-                {
-                    return Class::ExtensionConnection;
-                }
-                if text
-                    == "\"chrome\" executable not found. Make sure it is installed at a standard location."
-                {
-                    return Class::BrowserMissing;
-                }
-            }
-            Capability::Desktop => {
-                if text.starts_with("AX tree walk for pid=")
-                    && text.contains("did not return within")
-                    && text.contains("timeout_ms budget")
-                {
-                    return Class::AxTimeout;
-                }
-                if text.starts_with("AX tree walk failed:") {
-                    return Class::AxUnavailable;
-                }
-                if text == "No content produced (neither AX tree nor screenshot succeeded)" {
-                    return Class::ObservationUnavailable;
-                }
-            }
+        if text.starts_with("AX tree walk for pid=")
+            && text.contains("did not return within")
+            && text.contains("timeout_ms budget")
+        {
+            return Class::AxTimeout;
+        }
+        if text.starts_with("AX tree walk failed:") {
+            return Class::AxUnavailable;
+        }
+        if text == "No content produced (neither AX tree nor screenshot succeeded)" {
+            return Class::ObservationUnavailable;
         }
     }
     Class::Unknown
+}
+
+fn classify_browser(text: &str) -> Class {
+    let text = text.strip_prefix("### Error\n").unwrap_or(text);
+    let text = text.lines().next().unwrap_or_default();
+    if text.starts_with("TimeoutError: ") {
+        return Class::Timeout;
+    }
+    let mut text = text.strip_prefix("Error: ").unwrap_or(text);
+    for _ in 0..3 {
+        let inner = [
+            "browserType.connectOverCDP: ",
+            "browser.bind: ",
+            "browserContext.newPage: ",
+        ]
+        .into_iter()
+        .find_map(|prefix| text.strip_prefix(prefix));
+        match inner {
+            Some(inner) => text = inner,
+            None => break,
+        }
+    }
+    let protocol = text
+        .strip_prefix("Protocol error (")
+        .and_then(|inner| inner.split_once("): "))
+        .filter(|(method, _)| valid_cdp_method(method));
+    let text = protocol.map_or(text, |(_, message)| message);
+    if text.starts_with("Playwright Extension not found in \"") {
+        return Class::ExtensionMissing;
+    }
+    if (text.starts_with("Playwright extension did not connect within ")
+        && text.contains("s after opening the connect page."))
+        || text.starts_with("Extension disconnected before initialization: ")
+        || text == "Extension not connected"
+    {
+        return Class::ExtensionConnection;
+    }
+    if text == "\"chrome\" executable not found. Make sure it is installed at a standard location."
+    {
+        return Class::BrowserMissing;
+    }
+    if text.starts_with("No attached tab to forward browser-level command: ")
+        || text.starts_with("No tab found for sessionId: ")
+    {
+        return Class::TargetUnavailable;
+    }
+    let existing_debugger = text
+        .strip_prefix("Another debugger is already attached to the tab with id: ")
+        .and_then(|suffix| suffix.strip_suffix('.'))
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()));
+    if existing_debugger
+        || matches!(
+            text,
+            "Cannot attach to this target."
+                | "Cannot access a chrome:// URL"
+                | "Cannot access a chrome-extension:// URL of different extension"
+        )
+    {
+        return Class::AttachFailed;
+    }
+    if protocol.is_some() {
+        Class::CdpCommandFailed
+    } else {
+        Class::Unknown
+    }
+}
+
+fn valid_cdp_method(method: &str) -> bool {
+    method.len() <= 128
+        && method.split_once('.').is_some_and(|(domain, name)| {
+            [domain, name].into_iter().all(|part| {
+                part.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                    && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            })
+        })
 }
 
 #[cfg(test)]
@@ -398,6 +465,98 @@ mod tests {
         let mut result = rejected("SECRET_PAGE", json!({"code":"background_unavailable"}));
         result.is_error = false;
         assert!(checked(Capability::Desktop, Stage::Observe, Ok(result)).is_ok());
+    }
+
+    #[test]
+    fn issue75_browser_error_wrappers_preserve_finite_first_line_diagnostics() {
+        for (text, expected) in [
+            (
+                "### Error\nError: browserType.connectOverCDP: Playwright Extension not found in \"/Users/SECRET_USER\". SECRET_TOKEN",
+                "extension_missing",
+            ),
+            (
+                "### Error\nError: browser.bind: Extension not connected\nCall log:\nSECRET_PAGE",
+                "extension_connection",
+            ),
+            (
+                "### Error\nError: browserType.connectOverCDP: Protocol error (Browser.getVersion): No attached tab to forward browser-level command: Browser.getVersion\nCall log:\nSECRET_TOKEN",
+                "target_unavailable",
+            ),
+            (
+                "### Error\nError: browserContext.newPage: Protocol error (Target.createTarget): Another debugger is already attached to the tab with id: 123456.\nCall log:\nSECRET_PAGE",
+                "attach_failed",
+            ),
+            (
+                "### Error\nError: browserContext.newPage: Protocol error (Target.createTarget): Cannot attach to this target.",
+                "attach_failed",
+            ),
+            (
+                "### Error\nError: Protocol error (Page.enable): No tab found for sessionId: pw-tab-123456",
+                "target_unavailable",
+            ),
+            (
+                "### Error\nError: Protocol error (Target.createTarget): Cannot access a chrome:// URL",
+                "attach_failed",
+            ),
+            (
+                "### Error\nError: Cannot access a chrome-extension:// URL of different extension",
+                "attach_failed",
+            ),
+            (
+                "### Error\nError: browserType.connectOverCDP: Protocol error (Browser.getVersion): SECRET_PAGE",
+                "cdp_command_failed",
+            ),
+            (
+                "### Error\nTimeoutError: browserType.connectOverCDP: SECRET_PAGE",
+                "timeout",
+            ),
+        ] {
+            let error = checked(
+                Capability::Browser,
+                Stage::TargetList,
+                Ok(rejected(text, json!({}))),
+            )
+            .err()
+            .unwrap();
+            for output in [error.to_string(), format!("{error:?}")] {
+                assert!(!output.contains("SECRET"));
+                assert!(!output.contains("123456"));
+                assert!(!output.contains("chrome://"));
+                assert!(!output.contains("/Users/"));
+            }
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("error_class={expected}:")),
+                "{text}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn issue75_browser_error_classification_ignores_logs_and_later_text_blocks() {
+        for text in [
+            "### Error\nError: SECRET_PAGE\nCall log:\nError: Cannot attach to this target.",
+            "### Error\nError: SECRET_PAGE\n\nError: Extension not connected",
+            "### Error\nError: SECRET_PAGE\n### Result\nError: No tab found for sessionId: pw-tab-123456",
+            "### Error\nError: browser.unknownApi: Cannot attach to this target.",
+            "### Error\nError: Protocol error (SECRET METHOD): Cannot attach to this target.",
+            "### Error\nError: Another debugger is already attached to the tab with id: SECRET_TOKEN.",
+        ] {
+            let mut result = rejected(text, json!({}));
+            result.text.push("Error: Extension not connected".into());
+            let error = checked(Capability::Browser, Stage::TargetList, Ok(result))
+                .err()
+                .unwrap();
+            assert!(
+                error.to_string().contains("error_class=unknown:"),
+                "{text}: {error}"
+            );
+            for output in [error.to_string(), format!("{error:?}")] {
+                assert!(!output.contains("SECRET"));
+                assert!(!output.contains("123456"));
+            }
+        }
     }
 
     #[test]

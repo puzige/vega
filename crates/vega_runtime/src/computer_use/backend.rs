@@ -351,7 +351,7 @@ impl Backends {
                             diagnostics::transport(Capability::Browser, Stage::Initialize, error)
                         })?;
                 }
-                let target = browser.current_target(cancel).await?;
+                let target = browser.connect_target(cancel).await?;
                 if let Some(previous) = run.control.target(capability)? {
                     if !same_browser_target(&previous, &target) {
                         return Err(Error::TargetChanged);
@@ -723,6 +723,15 @@ impl Desktop {
 }
 
 impl Browser {
+    async fn connect_target(&mut self, cancel: &CancellationToken) -> Result<Target, Error> {
+        let result = checked(
+            Capability::Browser,
+            Stage::TargetList,
+            self.client.connect_browser_target(cancel).await,
+        )?;
+        parse_browser_target(&result.text.join("\n"), &self.connection)
+            .map_err(|error| diagnostics::context(Capability::Browser, Stage::TargetList, error))
+    }
     async fn current_target(&mut self, cancel: &CancellationToken) -> Result<Target, Error> {
         let result = checked(
             Capability::Browser,
