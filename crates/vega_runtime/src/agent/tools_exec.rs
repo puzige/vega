@@ -1526,8 +1526,7 @@ pub(crate) fn outcome(
             && message.content.starts_with("[External tool observation;")
         {
             message.images.clear();
-            message.content =
-                "External tool observation was not retained; observe again before acting.".into();
+            message.content = crate::computer_use::INVALIDATED_OBSERVATION.into();
         }
     }
     AgentOutcome {

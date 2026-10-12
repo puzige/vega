@@ -79,6 +79,7 @@ pub(crate) fn fixture_observation(
         capture_id: Some(format!("capture-{index}")),
 
         elements: serde_json::json!([]),
+        background_input: background::BackgroundInput::default(),
     }
 }
 
@@ -149,4 +150,78 @@ fn issue75_coordinate_projection_tracks_image_resize_and_rejects_out_of_bounds()
     assert!(observation.coordinates(f64::NAN, 0.0).is_err());
     assert!(!format!("{observation:?}").contains("owned-private-AX"));
     assert!(!format!("{:?}", observation.target).contains("private-title"));
+}
+
+#[test]
+fn issue75_background_live_observation_invalidation_does_not_rewrite_original_success() {
+    let run = ComputerUseRun::new(true, false);
+    let epoch = run.control.begin(Capability::Desktop).unwrap();
+    let mut first = fixture_observation(&run.control, epoch, 0);
+    let mut report = serde_json::json!({
+        "exact_window":{"status":"matched","pid":1,"window_id":2},
+        "routes":[
+            {"route":"accessibility","status":"available"},
+            {"route":"window_pointer","status":"available"},
+            {"route":"pid_keyboard","status":"refused","reason":"same_pid_keyboard_ambiguity"}
+        ]
+    });
+    first.background_input = background::BackgroundInput::from_report(&report, 1, 2);
+    run.control
+        .connected(epoch, Capability::Desktop, first.target.clone())
+        .unwrap();
+    let mut message = crate::ChatMessage::tool_result(&first.call_id, "completed");
+    run.control.publish(first.clone()).unwrap();
+    run.apply_observation(&first.call_id, &mut message);
+    assert!(message.content.contains("owned-private-AX"));
+    assert!(!message.images.is_empty());
+    assert!(
+        message
+            .content
+            .contains("pid_keyboard=refused:same_pid_keyboard_ambiguity")
+    );
+    run.control.discard_observations();
+    run.trim_messages(std::slice::from_mut(&mut message));
+    assert!(message.images.is_empty());
+    assert!(!message.content.contains("pid_keyboard"));
+    assert!(!message.content.contains("same_pid_keyboard_ambiguity"));
+    assert!(!message.content.contains("owned-private-AX"));
+    assert!(message.content.contains("returned successfully"));
+    assert!(message.content.contains("does not mean"));
+    assert!(message.content.contains("fresh observation"));
+    assert!(
+        run.control
+            .observation(Capability::Desktop, &first.id)
+            .is_err()
+    );
+    let mut later = fixture_observation(&run.control, epoch, 1);
+    later.text = "post-action-fixture".into();
+    report["routes"][2] = serde_json::json!({"route":"pid_keyboard","status":"available"});
+    later.background_input = background::BackgroundInput::from_report(&report, 1, 2);
+    let mut later_message = crate::ChatMessage::tool_result(&later.call_id, "completed");
+    run.control.publish(later.clone()).unwrap();
+    run.apply_observation(&later.call_id, &mut later_message);
+    assert!(later_message.content.contains("post-action-fixture"));
+    assert!(!later_message.content.contains("owned-private-AX"));
+    assert!(!later_message.images.is_empty());
+    assert!(later_message.content.contains("pid_keyboard=available"));
+    assert!(
+        !later_message
+            .content
+            .contains("same_pid_keyboard_ambiguity")
+    );
+    let outcome = crate::agent::outcome(
+        Vec::new(),
+        vec![later_message],
+        String::new(),
+        3,
+        1,
+        false,
+        false,
+    );
+    assert_eq!(outcome.messages[0].content, INVALIDATED_OBSERVATION);
+    assert!(outcome.messages[0].images.is_empty());
+    assert!(!outcome.messages[0].content.contains("pid_keyboard"));
+    assert!(!outcome.messages[0].content.contains("post-action-fixture"));
+    run.control.stop();
+    run.control.finish_cleanup();
 }

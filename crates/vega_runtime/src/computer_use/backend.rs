@@ -436,6 +436,7 @@ impl Backends {
             capture_id: None,
 
             elements: Value::Null,
+            background_input: super::background::BackgroundInput::default(),
         };
         match target {
             Target::Desktop(target) => {
@@ -464,6 +465,11 @@ impl Backends {
                 );
                 observation.capture_id = structured["capture_id"].as_str().map(str::to_owned);
                 observation.elements = structured["elements"].clone();
+                observation.background_input = super::background::BackgroundInput::from_report(
+                    &structured["background_input"],
+                    target.pid,
+                    target.window_id,
+                );
                 observation.text = structured["tree_markdown"]
                     .as_str()
                     .unwrap_or("")
@@ -947,8 +953,13 @@ fn map_action(
             if observation.snapshot_id.is_none() {
                 return Err(Error::StaleObservation);
             }
+            let element_token = match args.get("target") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(token)) => Some(token.as_str()),
+                _ => return Err(Error::InvalidAction),
+            };
             let mut value = json!({"target":{"kind":"window","pid":target.pid,"window_id":target.window_id},"delivery_mode":"background"});
-            if let Some(token) = args["target"].as_str() {
+            if let Some(token) = element_token {
                 if !observation.elements.as_array().is_some_and(|elements| {
                     elements
                         .iter()
@@ -961,9 +972,19 @@ fn map_action(
                     return Err(Error::InvalidAction);
                 }
             }
+            if (matches!(action, "hotkey" | "press_key")
+                || (action == "scroll" && element_token.is_none()))
+                && let Some(class) = observation.background_input.keyboard_refusal()
+            {
+                return Err(diagnostics::failure(
+                    Capability::Desktop,
+                    Stage::ActionPreflight,
+                    class,
+                ));
+            }
             let tool = match action {
                 "click" => {
-                    if let Some(token) = args["target"].as_str() {
+                    if let Some(token) = element_token {
                         value["element_token"] = json!(token);
                     } else {
                         let (x, y) = observation.coordinates(
@@ -1339,5 +1360,138 @@ mod tests {
             assert!(!output.contains("SECRET"));
             assert!(!format!("{error:?}").contains("SECRET"));
         }
+    }
+    #[test]
+    fn issue75_background_keyboard_preflight_preserves_ax_routes() {
+        let control = super::super::ComputerUseControl::new();
+        let mut observation = super::super::tests::fixture_observation(&control, 1, 0);
+        observation.elements = json!([{"element_token":"ax-fixture"}]);
+        let report = json!({
+            "exact_window":{"status":"matched","pid":1,"window_id":2},
+            "routes":[
+                {"route":"accessibility","status":"available"},
+                {"route":"window_pointer","status":"available"},
+                {"route":"pid_keyboard","status":"refused","reason":"same_pid_keyboard_ambiguity"}
+            ]
+        });
+        observation.background_input =
+            super::super::background::BackgroundInput::from_report(&report, 1, 2);
+        assert!(
+            observation
+                .model_text()
+                .contains("pid_keyboard=refused:same_pid_keyboard_ambiguity")
+        );
+        for arguments in [
+            json!({"action":"hotkey","key":"cmd+end","target":null}),
+            json!({"action":"hotkey","key":"cmd+end","target":"ax-fixture"}),
+            json!({"action":"press_key","key":"end"}),
+            json!({"action":"scroll","direction":"down","amount":1}),
+        ] {
+            let error = map_action(Capability::Desktop, &observation, &arguments).unwrap_err();
+            let output = error.to_string();
+            assert!(output.contains("stage=action_preflight"), "{output}");
+            assert!(
+                output.contains("error_class=same_pid_keyboard_ambiguity"),
+                "{output}"
+            );
+            assert!(!output.contains("outcome_unknown"));
+        }
+        assert_eq!(
+            map_action(
+                Capability::Desktop,
+                &observation,
+                &json!({"action":"type_text","text":"fixture","target":"ax-fixture"})
+            )
+            .unwrap()
+            .0,
+            "type_text"
+        );
+        assert_eq!(
+            map_action(
+                Capability::Desktop,
+                &observation,
+                &json!({"action":"scroll","direction":"down","amount":1,"target":"ax-fixture"})
+            )
+            .unwrap()
+            .0,
+            "scroll"
+        );
+        for target in [
+            json!(123),
+            json!(true),
+            json!({"token":"ax-fixture"}),
+            json!(["ax-fixture"]),
+        ] {
+            assert!(
+                map_action(
+                    Capability::Desktop,
+                    &observation,
+                    &json!({"action":"scroll","direction":"down","amount":1,"target":target})
+                )
+                .is_err()
+            );
+        }
+        let mut available = report;
+        available["routes"][2] = json!({"route":"pid_keyboard","status":"available"});
+        observation.background_input =
+            super::super::background::BackgroundInput::from_report(&available, 1, 2);
+        assert!(
+            map_action(
+                Capability::Desktop,
+                &observation,
+                &json!({"action":"hotkey","key":"cmd+end"})
+            )
+            .is_ok()
+        );
+        observation.background_input = super::super::background::BackgroundInput::default();
+        assert!(observation.model_text().contains("pid_keyboard=unknown"));
+        assert!(
+            map_action(
+                Capability::Desktop,
+                &observation,
+                &json!({"action":"hotkey","key":"cmd+end"})
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn issue75_background_available_report_never_bypasses_fresh_executor_refusal() {
+        let run = ComputerUseRun::new(true, false);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        let mut observation = super::super::tests::fixture_observation(&run.control, epoch, 0);
+        observation.background_input = super::super::background::BackgroundInput::from_report(
+            &json!({
+                "exact_window":{"status":"matched","pid":1,"window_id":2},
+                "routes":[
+                    {"route":"accessibility","status":"available"},
+                    {"route":"window_pointer","status":"available"},
+                    {"route":"pid_keyboard","status":"available"}
+                ]
+            }),
+            1,
+            2,
+        );
+        assert!(
+            map_action(
+                Capability::Desktop,
+                &observation,
+                &json!({"action":"hotkey","key":"cmd+end"})
+            )
+            .is_ok()
+        );
+        let error = checked(Capability::Desktop, Stage::Action, Ok(ManagedResult {
+            text: vec!["SECRET_REASON".into()], images: Vec::new(),
+            structured: Some(json!({"status":"refused","refusal":{"code":"same_pid_keyboard_ambiguity","reason":"SECRET_REASON"}})),
+            is_error: true,
+        })).err().unwrap();
+        let output = action_unknown(&run, epoch, Capability::Desktop, Stage::Action, error);
+        assert!(output.contains("outcome_unknown"));
+        assert!(output.contains("Do not retry"));
+        assert!(output.contains("error_class=same_pid_keyboard_ambiguity"));
+        assert!(!output.contains("SECRET"));
+        assert!(run.control.check_epoch(epoch).is_err());
+        run.control.stop();
+        run.control.finish_cleanup();
     }
 }
