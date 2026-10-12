@@ -4,6 +4,8 @@
 
 2026-10-12 用户明确要求移除 Vega CUA 内部逐窗口授权，默认可以访问所有桌面与窗口。本条覆盖原 #75 R3/R4/R8/R15、CU03/CU17 及 runtime-fixes 中对桌面逐窗审批、目标切换或恢复重新授权的旧要求。仅修改桌面 CUA，Playwright 调查和方案暂停，其浏览器授权逻辑不变。能力开关仍是用户对 Native 桌面能力的总开关，保留已有显式关闭与配置默认；开启后全部可发现窗口都属于可访问范围，不额外询问。
 
+当前窗口截图降级、观察失败恢复与 live 工具卡行为以[窗口观察修复规格](vega-issue-75-window-observation.md)为准；本文件的目录/目标/接管边界保持。
+
 ## 需求与实现合同
 
 DA1. ComputerObserve 使用严格 schema 的 target_id:string|null、cursor:string|null。target_id 与 cursor 不能同时非空；null/null 枚举真实运行应用和窗口并返回有界目录；每条包含宿主生成的 opaque target_id、应用、窗口标题及真实 PID/window ID 元数据。目录不是授权提示，也不自动选第一项。模型再次调用 ComputerObserve 指定目录中的 target_id，观察该窗口。可重复发现新窗口、明确选择不同应用的窗口。
@@ -115,13 +117,13 @@ DI4. 仅修通用目录元数据及工具说明，不修改 Cua 枚举规则、�
 | DI01 | 上游显示 ChatGPT，bundle com.openai.codex，目标在第201项 | production parser/分页/discover/publish/apply 到 Chat Completions 和 Responses 请求均保留对应身份与同一 call_id | inprocess/codec | PASS |
 | DI02 | helper 无应用记录、空 bundle、1024字节 bundle、1025字节不同后缀身份 | 空/过长返回 null，边界原样，内部身份不截断、不合并窗口；每页有界 | control/parser | PASS |
 | DI03 | 目录选择窗口或暂停/压缩/运行结束 | 旧目录正文和 bundle 从模型消息/返回 outcome 清除，旧 ID 规则不变 | lifecycle/codec | PASS |
-| DI04 | 发布后由 Vega 仅枚举目录 | 模型可同时报告显示名与真实 bundle_id，不用截图证明应用身份 | 真实手测 | NOT RUN |
+| DI04 | 发布后由 Vega 仅枚举目录 | 模型可同时报告显示名与真实 bundle_id，不用截图证明应用身份 | 真实手测 | PASS（0.1.77） |
 
 计划：先保留 DI01/DI02 失败回归，再补目录字段和工具说明；定向 nextest 后独立只读审查，提交给主控做 PR/CI/发布。无需新依赖、DDL 或真实执行器自动测试。回滚可回退本轮提交。
 
 ### 本轮验证证据
 
-主控在 0.1.76 新建仅目录诊断任务，模型列出多个 ChatGPT 窗口但 bundle_id 均为“未提供”，另将 ChatGPT Computer Use 单列。没有选窗、截图或动作。此真机 RED 与独立应用 inventory 的显示名/标识对应一致；不记录真实 PID、窗口 ID 或任务内容。新版真机仍 NOT RUN。
+主控在 0.1.76 新建仅目录诊断任务，模型列出多个 ChatGPT 窗口但 bundle_id 均为“未提供”，另将 ChatGPT Computer Use 单列。没有选窗、截图或动作。此真机 RED 与独立应用 inventory 的显示名/标识对应一致；不记录真实 PID、窗口 ID 或任务内容。后续 0.1.77 DI04 真机 PASS 见本节末尾。
 
 首次自动 RED：
 
@@ -143,4 +145,4 @@ Summary [   2.272s] 43 tests run: 43 passed, 275 skipped
 
 固定上游合同已独立复核：[应用显示名与 bundle 标识分别读取](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/apps/mod.rs#L876)，[窗口枚举及通用筛选](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/windows.rs#L72)。这些路径没有 Codex/OpenAI/宿主 PID 排除；本轮不修改上游行为。目录首次普通投递可到达模型；后续选窗、翻页或压缩淘汰目录仍遵守原合同，本轮不把这一保留限制改作历史持久化。
 
-剩余真实验收 DI04：发布后只枚举目录，确认模型能报告同一条目的显示名及 com.openai.codex；不选窗、不捕获该应用画面、不输入。新版结果尚未执行，不把 fixture/codec 通过表述为真机修复完成。
+DI04 已在 0.1.77 通过真实目录验收：4 个窗口同时包含 application=ChatGPT 与 bundle_id=com.openai.codex，见 [Issue #75 真机记录](https://github.com/puzige/vega/issues/75#issuecomment-6121718891)。没有选窗或捕获该应用画面；后续窗口截图问题独立记录于 [观察修复规格](vega-issue-75-window-observation.md)。

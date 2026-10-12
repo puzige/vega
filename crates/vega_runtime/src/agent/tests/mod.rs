@@ -1125,3 +1125,106 @@ async fn issue75_disabled_desktop_name_cannot_trigger_discovery_from_browser_gra
     assert!(control.status().capability.is_none());
     assert!(outcome.events.iter().any(|event|matches!(event,RuntimeEvent::ToolCallFinished(result) if result.status==RuntimeToolStatus::Rejected)));
 }
+
+#[tokio::test]
+async fn issue75_observation_failure_reaches_next_provider_and_rediscovery() {
+    use crate::computer_use::{Capability, ComputerUseRun, DesktopTarget};
+    for is_error in [false, true] {
+        let dir = tempdir().unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let run = ComputerUseRun::new(true, false);
+        let target = DesktopTarget {
+            selection_id: "selected".into(),
+            application: "Fixture".into(),
+            bundle_id: "org.example.fixture".into(),
+            pid: 1,
+            window_id: 2,
+            title: "Fixture".into(),
+        };
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        run.control
+            .set_windows(epoch, vec![target.clone()])
+            .unwrap();
+        let actions=run.install_desktop_fixture(vec![target],vec![vega_mcp::ManagedResult {
+        text:vec!["PRIVATE_RAW_CAPTURE_ERROR".into()],images:Vec::new(),is_error,
+        structured:Some(serde_json::json!({"code":"px_capture_unavailable","pid":1,"window_id":2,"screenshot_frame_valid":false,
+            "screenshot_error":{"code":"px_capture_unavailable","reason":"PRIVATE_RAW_CAPTURE_ERROR"}})),
+    }]).await;
+        let tool_round = |id: &str, input: serde_json::Value| {
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: id.into(),
+                    name: "ComputerObserve".into(),
+                    input_json: input.to_string(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])]
+        };
+        let provider = MockProvider::new_rounds(vec![
+            tool_round(
+                "failed-observe",
+                serde_json::json!({"target_id":"selected","cursor":null}),
+            ),
+            tool_round(
+                "rediscover",
+                serde_json::json!({"target_id":null,"cursor":null}),
+            ),
+            vec![
+                ScriptStep::text("Capture unavailable; directory refreshed"),
+                ScriptStep::events(vec![ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                }]),
+            ],
+        ]);
+        let mut req = request(vec![ChatMessage::new(ChatRole::User, "fixture")]);
+        req.tool_config = tool_config(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::Confirm,
+            dir.path().to_owned(),
+        )
+        .with_computer_use(Some(run));
+        let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(!outcome.interrupted);
+        assert_eq!(outcome.executed_tool_call_count, 2);
+        assert_eq!(actions.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(outcome.events.iter().any(
+            |event| matches!(event,RuntimeEvent::ToolCallFinished(result)
+        if result.call_id=="failed-observe" && result.status==RuntimeToolStatus::Failed
+        && result.output.contains("error_class=capture_unavailable"))
+        ));
+        assert!(outcome.events.iter().any(
+            |event| matches!(event,RuntimeEvent::ToolCallFinished(result)
+        if result.call_id=="rediscover" && result.status==RuntimeToolStatus::Success)
+        ));
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 3);
+        for request in &requests[1..] {
+            let message = request
+                .messages
+                .iter()
+                .find(|message| message.tool_call_id.as_deref() == Some("failed-observe"))
+                .unwrap();
+            assert!(message.content.contains("error_class=capture_unavailable"));
+            assert!(message.images.is_empty());
+            let chat = crate::openai::build_request_body(request).to_string();
+            let responses = crate::openai::responses::build_body(request)
+                .unwrap()
+                .to_string();
+            for body in [chat, responses] {
+                assert!(body.contains("error_class=capture_unavailable"));
+                assert!(!body.contains("PRIVATE_RAW"));
+            }
+        }
+        assert!(
+            requests[2]
+                .messages
+                .iter()
+                .any(|message| message.content.contains("CuaWindowCatalog"))
+        );
+        assert!(!format!("{:?}", outcome.events).contains("PRIVATE_RAW"));
+    }
+}

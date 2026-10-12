@@ -1,4 +1,5 @@
 mod background;
+mod desktop_observation;
 
 pub(crate) const INVALIDATED_OBSERVATION: &str = "[Earlier tool observation returned successfully, but its payload has since been invalidated and discarded. This placeholder does not mean the original observation was empty or failed, and does not establish whether an earlier action was verified. Obtain a fresh observation before any new action.]";
 mod backend;
@@ -173,7 +174,7 @@ impl ComputerUseRun {
             } else {
                 ""
             };
-            definitions.push(crate::ToolDefinition { name: act.into(), description: format!("{}{background_guidance}", if capability == Capability::Desktop { "Perform one bounded action on the exact target of the latest desktop window observation and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. A desktop directory observation cannot be used for actions. To switch windows, call ComputerObserve with its target_id first. No scripts, file transfers, tab selection or permission changes." } else { "Perform one bounded action on the exact user-authorized target and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. No scripts, file transfers, tab selection or permission changes." }), input_schema: json!({"type":"object","properties":{"observation_id":{"type":"string"},"action":{"type":"string","enum":actions},"target":{"type":["string","null"]},"text":{"type":["string","null"]},"key":{"type":["string","null"]},"url":{"type":["string","null"]},"x":{"type":["number","null"]},"y":{"type":["number","null"]},"direction":{"type":["string","null"],"enum":["up","down","left","right",null]},"amount":{"type":["integer","null"],"minimum":1,"maximum":10}},"required":["observation_id","action","target","text","key","url","x","y","direction","amount"],"additionalProperties":false}), strict: true });
+            definitions.push(crate::ToolDefinition { name: act.into(), description: format!("{}{background_guidance}", if capability == Capability::Desktop { "Perform one bounded action on the exact target of the latest desktop window observation and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. A desktop directory or screenshot-only observation cannot be used for actions. A screenshot-only result supports visual inspection but requires a fresh healthy observation before any input. To switch windows, call ComputerObserve with its target_id first. No scripts, file transfers, tab selection or permission changes." } else { "Perform one bounded action on the exact user-authorized target and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. No scripts, file transfers, tab selection or permission changes." }), input_schema: json!({"type":"object","properties":{"observation_id":{"type":"string"},"action":{"type":"string","enum":actions},"target":{"type":["string","null"]},"text":{"type":["string","null"]},"key":{"type":["string","null"]},"url":{"type":["string","null"]},"x":{"type":["number","null"]},"y":{"type":["number","null"]},"direction":{"type":["string","null"],"enum":["up","down","left","right",null]},"amount":{"type":["integer","null"],"minimum":1,"maximum":10}},"required":["observation_id","action","target","text","key","url","x","y","direction","amount"],"additionalProperties":false}), strict: true });
         }
         definitions
     }
@@ -233,17 +234,8 @@ impl ComputerUseRun {
             .execute(self, name, call_id, arguments, cancel)
             .await;
         if let Err(error) = &result
-            && !(capability == Capability::Desktop && *error == ComputerUseError::TargetChanged)
-            && !matches!(
-                error,
-                ComputerUseError::StaleObservation
-                    | ComputerUseError::InvalidAction
-                    | ComputerUseError::Busy
-                    | ComputerUseError::NotReady
-                    | ComputerUseError::Cancelled
-            )
+            && self.record_failure(name, capability, epoch, *error)
         {
-            self.control.fail(epoch, *error);
             self.cleanup_revoked().await;
         }
         if matches!(
@@ -253,6 +245,54 @@ impl ComputerUseRun {
             self.cleanup_revoked().await;
         }
         result
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn install_desktop_fixture(
+        &self,
+        windows: Vec<DesktopTarget>,
+        results: Vec<vega_mcp::ManagedResult>,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        let actions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.backend
+            .lock()
+            .await
+            .install_fixture(backend::DesktopFixture {
+                windows,
+                results: results.into(),
+                actions: actions.clone(),
+            });
+        actions
+    }
+
+    fn record_failure(
+        &self,
+        name: &str,
+        capability: Capability,
+        epoch: u64,
+        error: ComputerUseError,
+    ) -> bool {
+        if name == "ComputerObserve"
+            && capability == Capability::Desktop
+            && diagnostics::recoverable_observe(error)
+        {
+            return self.control.set_windows(epoch, Vec::new()).is_err();
+        }
+        if !(capability == Capability::Desktop && error == ComputerUseError::TargetChanged)
+            && !matches!(
+                error,
+                ComputerUseError::StaleObservation
+                    | ComputerUseError::InvalidAction
+                    | ComputerUseError::Busy
+                    | ComputerUseError::NotReady
+                    | ComputerUseError::Cancelled
+            )
+        {
+            self.control.fail(epoch, error);
+            true
+        } else {
+            false
+        }
     }
 
     async fn cleanup_revoked(&self) -> bool {

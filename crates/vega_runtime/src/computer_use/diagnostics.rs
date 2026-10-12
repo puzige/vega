@@ -54,7 +54,16 @@ pub(super) enum Class {
     TargetNotCurrent,
     AxUnavailable,
     AxTimeout,
-    ObservationUnavailable,
+    ObservationIdentityMismatch,
+    ScreenshotUnverified,
+    CaptureUnavailable,
+    CaptureFrameMismatch,
+    CaptureBindingFailed,
+    CapturePublicationFailed,
+    AxAppLaunching,
+    AxWindowUnresolved,
+    DegradedUnknown,
+    NoObservationContent,
     StaleObservation,
     BackgroundUnavailable,
     OffSpaceOrAxUnresolved,
@@ -87,7 +96,16 @@ impl Class {
             Self::TargetNotCurrent => "target_not_current",
             Self::AxUnavailable => "accessibility_unavailable",
             Self::AxTimeout => "accessibility_timeout",
-            Self::ObservationUnavailable => "observation_unavailable",
+            Self::ObservationIdentityMismatch => "observation_identity_mismatch",
+            Self::ScreenshotUnverified => "screenshot_unverified",
+            Self::CaptureUnavailable => "capture_unavailable",
+            Self::CaptureFrameMismatch => "capture_frame_mismatch",
+            Self::CaptureBindingFailed => "capture_binding_failed",
+            Self::CapturePublicationFailed => "capture_publication_failed",
+            Self::AxAppLaunching => "ax_app_launching",
+            Self::AxWindowUnresolved => "ax_window_unresolved",
+            Self::DegradedUnknown => "degraded_unknown",
+            Self::NoObservationContent => "no_observation_content",
             Self::StaleObservation => "stale_observation",
             Self::BackgroundUnavailable => "background_unavailable",
             Self::OffSpaceOrAxUnresolved => "off_space_or_ax_unresolved",
@@ -126,9 +144,25 @@ impl Class {
             Self::AxUnavailable | Self::AxTimeout => {
                 "窗口辅助功能观察未完成，请检查目标应用是否响应后重新连接。"
             }
-            Self::ObservationUnavailable | Self::InvalidImage => {
-                "目标观察无法验证，请检查目标窗口或页面后重新连接。"
+            Self::CaptureUnavailable => {
+                "窗口截图暂时无法捕获；本次观察不可用，请检查窗口状态后重新发现并观察。"
             }
+            Self::AxAppLaunching => {
+                "目标应用仍在初始化，辅助功能窗口尚未就绪；请等待应用就绪后重新发现并观察。"
+            }
+            Self::AxWindowUnresolved => {
+                "辅助功能无法确认此窗口的归属；本次观察不可用，请检查目标后重新发现并观察。"
+            }
+            Self::NoObservationContent => {
+                "截图与辅助功能均未返回可用观察；请检查目标后重新发现并观察。"
+            }
+            Self::ObservationIdentityMismatch
+            | Self::ScreenshotUnverified
+            | Self::CaptureFrameMismatch
+            | Self::CaptureBindingFailed
+            | Self::CapturePublicationFailed
+            | Self::DegradedUnknown
+            | Self::InvalidImage => "目标观察无法验证，请检查目标窗口或页面后重新连接。",
             Self::StaleObservation | Self::InvalidCoordinates => {
                 "执行器拒绝了过期或不匹配的观察，请检查目标后重新观察。"
             }
@@ -220,6 +254,22 @@ pub(super) fn context(capability: Capability, stage: Stage, error: Error) -> Err
     failure(capability, stage, class)
 }
 
+pub(super) fn recoverable_observe(error: Error) -> bool {
+    matches!(
+        error,
+        Error::Executor(ExecutorFailure {
+            capability: Capability::Desktop,
+            stage: Stage::Observe,
+            class: Class::CaptureUnavailable
+                | Class::NoObservationContent
+                | Class::AxAppLaunching
+                | Class::AxWindowUnresolved
+                | Class::AxUnavailable
+                | Class::AxTimeout
+        })
+    )
+}
+
 pub(super) fn checked(
     capability: Capability,
     stage: Stage,
@@ -293,9 +343,10 @@ fn classify(capability: Capability, result: &ManagedResult) -> Class {
                 | "capture_target_mismatch"
                 | "capture_frame_mismatch",
             ) => return Class::StaleObservation,
-            Some(
-                "px_capture_unavailable" | "capture_binding_failed" | "capture_publication_failed",
-            ) => return Class::ObservationUnavailable,
+            Some("px_capture_unavailable") => return Class::CaptureUnavailable,
+            Some("px_frame_mismatch") => return Class::CaptureFrameMismatch,
+            Some("capture_binding_failed") => return Class::CaptureBindingFailed,
+            Some("capture_publication_failed") => return Class::CapturePublicationFailed,
             Some("capture_coordinate_invalid") => return Class::InvalidCoordinates,
             _ => {}
         }
@@ -316,7 +367,7 @@ fn classify(capability: Capability, result: &ManagedResult) -> Class {
             return Class::AxUnavailable;
         }
         if text == "No content produced (neither AX tree nor screenshot succeeded)" {
-            return Class::ObservationUnavailable;
+            return Class::NoObservationContent;
         }
     }
     Class::Unknown

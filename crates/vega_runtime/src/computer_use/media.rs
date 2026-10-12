@@ -18,6 +18,7 @@ pub struct Observation {
     pub capability: Capability,
     pub source: ToolObservationSource,
     pub model_image: bool,
+    pub(crate) read_only: bool,
     pub target: Target,
     pub image: Option<ImageAttachment>,
     pub original_width: u32,
@@ -80,7 +81,9 @@ impl Observation {
                 entries.push(projected);
             }
         }
-        let background = if self.source == ToolObservationSource::CuaWindow {
+        let background = if self.read_only {
+            "Input capability: read-only; all actions are disabled for this observation.".into()
+        } else if self.source == ToolObservationSource::CuaWindow {
             self.background_input.model_text()
         } else {
             String::new()

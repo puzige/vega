@@ -499,3 +499,97 @@ fn issue287_codex_acp_tool_projection_is_typed_and_value_free() {
         ToolCardInputProjection::CodexAcp { .. }
     ));
 }
+
+#[test]
+fn issue75_observation_live_audit_reaches_input_and_terminal_cards() {
+    use super::{
+        ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection, ToolResult,
+        tool_card_input_projection, tool_card_result_projection,
+    };
+    for tool in [
+        "ComputerObserve",
+        "ComputerAct",
+        "BrowserObserve",
+        "BrowserAct",
+    ] {
+        let audit = serde_json::json!({"kind":"computer_use","version":1,"action":"observe",
+            "argument_bytes":42,"argument_digest":"a".repeat(64)})
+        .to_string();
+        let call = vega_runtime::RuntimeToolCall {
+            id: format!("{tool}-live"),
+            name: tool.into(),
+            input_json: audit.clone(),
+        };
+        let Some(ConversationEvent::ToolCallProposed { call: projected }) = from_runtime_event(
+            "assistant",
+            &vega_runtime::RuntimeEvent::ToolCallProposed(call.clone()),
+        ) else {
+            panic!("validated computer use proposal must reach the live card");
+        };
+        assert_eq!(projected.id, call.id);
+        assert_eq!(projected.tool, tool);
+        assert_eq!(projected.input_json, audit);
+        let input = tool_card_input_projection(&projected);
+        assert!(matches!(input, ToolCardInputProjection::ComputerUse { .. }));
+        for status in [ToolCallStatus::Success, ToolCallStatus::Failed] {
+            let result = ToolResult {
+                status,
+                output: if status == ToolCallStatus::Success {
+                    "Computer use observation completed".into()
+                } else {
+                    "Tool error: computer use not_dispatched: executor=cua stage=observe error_class=observation_unavailable: 目标观察无法验证，请检查目标窗口或页面后重新连接。".into()
+                },
+                reused: false,
+                exit_code: None,
+                duration_ms: None,
+                truncated: (status == ToolCallStatus::Success).then_some(false),
+                invalid: None,
+            };
+            assert!(matches!(tool_card_result_projection(Some(&input), &result),
+                ToolCardResultProjection::ComputerUse { status: actual, .. } if actual == status));
+        }
+    }
+}
+
+#[test]
+fn issue75_observation_live_audit_rejects_raw_and_unknown_proposals() {
+    let audit = serde_json::json!({"kind":"computer_use","version":1,"action":"observe",
+        "argument_bytes":42,"argument_digest":"a".repeat(64)});
+    let mut extra = audit.clone();
+    extra["raw_value"] = serde_json::json!("PRIVATE_VALUE");
+    for tool in [
+        "ComputerObserve",
+        "ComputerAct",
+        "BrowserObserve",
+        "BrowserAct",
+    ] {
+        for input in [
+            "{}".to_string(),
+            r#"{"target_id":"PRIVATE_TARGET","cursor":null}"#.into(),
+            extra.to_string(),
+        ] {
+            assert!(
+                from_runtime_event(
+                    "assistant",
+                    &vega_runtime::RuntimeEvent::ToolCallProposed(vega_runtime::RuntimeToolCall {
+                        id: "invalid".into(),
+                        name: tool.into(),
+                        input_json: input
+                    })
+                )
+                .is_none()
+            );
+        }
+    }
+    assert!(
+        from_runtime_event(
+            "assistant",
+            &vega_runtime::RuntimeEvent::ToolCallProposed(vega_runtime::RuntimeToolCall {
+                id: "unknown".into(),
+                name: "ComputerUnknown".into(),
+                input_json: audit.to_string()
+            })
+        )
+        .is_none()
+    );
+}

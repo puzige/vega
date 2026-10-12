@@ -684,6 +684,10 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         return crate::agent::valid_skill_call_projection(&call.name, &call.input_json)
             .then_some(projected);
     }
+    if vega_runtime::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
+        return vega_runtime::computer_use::ComputerUseAudit::valid(&call.input_json)
+            .then_some(projected);
+    }
     if call.name.starts_with("mcp_") {
         // The runtime has already replaced raw MCP arguments with this
         // value-free identity. Keep its exact alias binding at the live UI
