@@ -26,7 +26,6 @@ struct Desktop {
     root: PathBuf,
     socket: PathBuf,
     executable: PathBuf,
-    selected: bool,
 }
 struct Browser {
     client: ManagedClient,
@@ -205,10 +204,27 @@ impl Backends {
                 )),
             }
         } else {
+            if capability == Capability::Desktop {
+                let (target_id, cursor) = desktop_observe_arguments(&arguments)?;
+                if let Some(target_id) = target_id {
+                    run.control.select_window(epoch, target_id)?;
+                } else {
+                    let id = self
+                        .discover_desktop(run, epoch, call_id, cursor, cancel)
+                        .await?;
+                    return Ok(format!(
+                        "completed; observation_id={id}; window directory is ephemeral and is not retained in history."
+                    ));
+                }
+            }
             if !arguments.as_object().is_some_and(|object| {
-                object
-                    .keys()
-                    .all(|key| capability == Capability::Browser && key == "include_image")
+                object.keys().all(|key| {
+                    if capability == Capability::Browser {
+                        key == "include_image"
+                    } else {
+                        key == "target_id" || key == "cursor"
+                    }
+                })
             }) {
                 return Err(Error::InvalidAction);
             }
@@ -231,10 +247,7 @@ impl Backends {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         if match capability {
-            Capability::Desktop => self
-                .desktop
-                .as_ref()
-                .is_some_and(|desktop| desktop.selected),
+            Capability::Desktop => self.desktop.is_some(),
             Capability::Browser => {
                 self.browser.is_some() && run.control.target(capability)?.is_some()
             }
@@ -245,48 +258,14 @@ impl Backends {
         let components = ManagedComponents::detect()?;
         match capability {
             Capability::Desktop => {
-                let target = match run.control.target(capability)? {
-                    Some(Target::Desktop(target)) => target,
-                    _ => {
-                        self.desktop = Some(Desktop::spawn(&components, None).await?);
-                        let desktop = self.desktop.as_mut().ok_or(Error::Unavailable)?;
-                        desktop.connect(cancel, false).await?;
-                        let client = desktop.client.as_mut().ok_or(Error::Unavailable)?;
-                        let apps = checked(
-                            Capability::Desktop,
-                            Stage::ListApps,
-                            client.call("list_apps", json!({}), cancel).await,
-                        )?;
-                        let windows = checked(
-                            Capability::Desktop,
-                            Stage::ListWindows,
-                            client.call("list_windows", json!({}), cancel).await,
-                        )?;
-                        let targets =
-                            parse_windows(apps.structured.as_ref(), windows.structured.as_ref())?;
-                        run.control.offer_windows(epoch, targets)?;
-                        await_grant(run, capability, epoch, cancel).await?;
-                        match run.control.target(capability)? {
-                            Some(Target::Desktop(target)) => target,
-                            _ => return Err(Error::NotReady),
-                        }
-                    }
-                };
-                if let Some(desktop) = self.desktop.as_mut()
-                    && !desktop.shutdown().await
-                {
-                    return Err(Error::Unavailable);
-                }
-                self.desktop = None;
-                run.control.check_epoch(epoch)?;
-                self.desktop = Some(Desktop::spawn(&components, Some(&target)).await?);
+                self.desktop = Some(Desktop::spawn(&components).await?);
                 self.desktop
                     .as_mut()
                     .ok_or(Error::Unavailable)?
-                    .connect(cancel, true)
+                    .connect(cancel)
                     .await?;
                 run.control
-                    .connected(epoch, capability, Target::Desktop(target))?;
+                    .connected(epoch, capability, Target::DesktopCatalog)?;
             }
             Capability::Browser => {
                 let root = private_directory()?;
@@ -378,6 +357,15 @@ impl Backends {
             self.refresh_browser_target(run, epoch, cancel, false)
                 .await?;
         }
+        if capability == Capability::Desktop {
+            let windows = self
+                .desktop
+                .as_mut()
+                .ok_or(Error::NotReady)?
+                .windows(cancel)
+                .await?;
+            validate_desktop_windows(&run.control, epoch, &windows)?;
+        }
         if run.control.target(capability)?.is_none() {
             return Err(Error::NotReady);
         }
@@ -406,6 +394,47 @@ impl Backends {
             return Err(Error::TargetChanged);
         }
         run.control.connected(epoch, Capability::Browser, current)
+    }
+
+    async fn discover_desktop(
+        &mut self,
+        run: &ComputerUseRun,
+        epoch: u64,
+        call_id: &str,
+        cursor: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<String, Error> {
+        if cursor.is_none() {
+            let windows = self
+                .desktop
+                .as_mut()
+                .ok_or(Error::NotReady)?
+                .windows(cancel)
+                .await?;
+            run.control.set_windows(epoch, windows)?;
+        }
+        let page = run.control.catalog_page(epoch, cursor)?;
+        let observation = Observation {
+            id: ulid::Ulid::generate().to_string(),
+            run_id: run.control.run_id().into(),
+            call_id: call_id.into(),
+            epoch,
+            capability: Capability::Desktop,
+            source: ToolObservationSource::CuaWindowCatalog,
+            model_image: false,
+            target: Target::DesktopCatalog,
+            image: None,
+            original_width: 0,
+            original_height: 0,
+            text: page.to_string(),
+            snapshot_id: None,
+            capture_id: None,
+            elements: Value::Null,
+            background_input: super::background::BackgroundInput::default(),
+        };
+        let id = observation.id.clone();
+        run.control.publish(observation)?;
+        Ok(id)
     }
 
     async fn observe(
@@ -439,6 +468,7 @@ impl Backends {
             background_input: super::background::BackgroundInput::default(),
         };
         match target {
+            Target::DesktopCatalog => return Err(Error::NotReady),
             Target::Desktop(target) => {
                 let result = checked(Capability::Desktop, Stage::Observe, self.desktop.as_mut().and_then(|desktop| desktop.client.as_mut()).ok_or(Error::NotReady)?.call("get_window_state",json!({"pid":target.pid,"window_id":target.window_id,"include_screenshot":true,"include_accessibility_tree":true,"max_elements":200,"max_depth":12,"max_dimension":1600}),cancel).await)?;
                 let structured = result.structured.ok_or_else(|| {
@@ -546,65 +576,149 @@ impl Backends {
     }
 }
 
+const DESKTOP_TOOLS: &[&str] = &[
+    "check_permissions",
+    "list_apps",
+    "list_windows",
+    "get_window_state",
+    "click",
+    "type_text",
+    "press_key",
+    "hotkey",
+    "scroll",
+];
+
+fn desktop_policy() -> Value {
+    json!({"allow":{"tools":DESKTOP_TOOLS}})
+}
+
+fn desktop_policy_path(root: &Path) -> PathBuf {
+    root.join("policy.yaml")
+}
+
+fn desktop_environment(root: &Path) -> Vec<(OsString, OsString)> {
+    let mut values = environment(root);
+    values.push((
+        "CUA_DRIVER_POLICY_FILE".into(),
+        desktop_policy_path(root).into_os_string(),
+    ));
+    values
+}
+
+fn desktop_daemon_arguments(socket: &Path) -> Vec<OsString> {
+    [
+        "serve",
+        "--embedded",
+        "--host-bundle-id",
+        "ai.vega",
+        "--socket",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .chain([socket.as_os_str().to_owned()])
+    .chain(
+        ["--permission-mode", "standard"]
+            .into_iter()
+            .map(OsString::from),
+    )
+    .collect()
+}
+
+fn desktop_observe_arguments(arguments: &Value) -> Result<(Option<&str>, Option<&str>), Error> {
+    let object = arguments.as_object().ok_or(Error::InvalidAction)?;
+    if object
+        .keys()
+        .any(|key| key != "target_id" && key != "cursor")
+    {
+        return Err(Error::InvalidAction);
+    }
+    let parse = |key| match object.get(key) {
+        Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
+            Ok(Some(value.as_str()))
+        }
+        Some(Value::Null) | None => Ok(None),
+        _ => Err(Error::InvalidAction),
+    };
+    let target = parse("target_id")?;
+    let cursor = parse("cursor")?;
+    if target.is_some() && cursor.is_some() {
+        return Err(Error::InvalidAction);
+    }
+    Ok((target, cursor))
+}
+
+fn validate_desktop_windows(
+    control: &super::ComputerUseControl,
+    epoch: u64,
+    windows: &[DesktopTarget],
+) -> Result<(), Error> {
+    control.check_epoch(epoch)?;
+    let Some(Target::Desktop(target)) = control.target(Capability::Desktop)? else {
+        return Err(Error::NotReady);
+    };
+    if !windows
+        .iter()
+        .any(|window| same_desktop_window(window, &target))
+    {
+        control.discard_observations();
+        control.connected(epoch, Capability::Desktop, Target::DesktopCatalog)?;
+        return Err(Error::TargetChanged);
+    }
+    Ok(())
+}
+
+fn same_desktop_window(left: &DesktopTarget, right: &DesktopTarget) -> bool {
+    left.pid == right.pid && left.window_id == right.window_id && left.bundle_id == right.bundle_id
+}
+
 impl Desktop {
-    async fn spawn(
-        components: &ManagedComponents,
-        target: Option<&DesktopTarget>,
-    ) -> Result<Self, Error> {
+    async fn spawn(components: &ManagedComponents) -> Result<Self, Error> {
         let root = private_directory()?;
         let socket = root.join("driver.sock");
-        let manifest = root.join("capabilities.json");
-        let tools = if target.is_some() {
-            json!([
-                "check_permissions",
-                "get_window_state",
-                "click",
-                "type_text",
-                "press_key",
-                "hotkey",
-                "scroll"
-            ])
-        } else {
-            json!(["list_apps", "list_windows", "check_permissions"])
-        };
-        let desktop = target.map_or_else(||json!({"display":true}),|target|json!({"display":false,"windows":[{"pid":target.pid,"window_id":target.window_id}]}));
-        let policy = json!({"version":3,"expires_after":if target.is_some(){"2h"}else{"5m"},"idle_timeout":if target.is_some(){"15m"}else{"2m"},"allow":{"tools":tools},"resources":{"desktop":desktop}});
+        let policy = desktop_policy_path(&root);
         std::fs::write(
-            &manifest,
-            serde_json::to_vec(&policy).map_err(|_| Error::Unavailable)?,
+            &policy,
+            serde_json::to_vec(&desktop_policy()).map_err(|_| Error::Unavailable)?,
         )
         .map_err(|_| Error::Unavailable)?;
         let daemon = Command::new(&components.cua)
-            .args([
-                "serve",
-                "--embedded",
-                "--host-bundle-id",
-                "ai.vega",
-                "--socket",
-            ])
-            .arg(&socket)
-            .args(["--permission-mode", "bounded", "--capability-manifest"])
-            .arg(&manifest)
-            .arg("--approve-capability-manifest")
+            .args(desktop_daemon_arguments(&socket))
             .env_clear()
-            .envs(environment(&root))
+            .envs(desktop_environment(&root))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|_| Error::Unavailable)?;
+            .map_err(|_| {
+                let _ = std::fs::remove_dir_all(&root);
+                Error::Unavailable
+            })?;
         Ok(Self {
             daemon,
             client: None,
             root,
             socket,
             executable: components.cua.clone(),
-            selected: false,
         })
     }
 
-    async fn connect(&mut self, cancel: &CancellationToken, selected: bool) -> Result<(), Error> {
+    async fn windows(&mut self, cancel: &CancellationToken) -> Result<Vec<DesktopTarget>, Error> {
+        let client = self.client.as_mut().ok_or(Error::Unavailable)?;
+        let apps = checked(
+            Capability::Desktop,
+            Stage::ListApps,
+            client.call("list_apps", json!({}), cancel).await,
+        )?;
+        let windows = checked(
+            Capability::Desktop,
+            Stage::ListWindows,
+            client.call("list_windows", json!({}), cancel).await,
+        )?;
+        parse_windows(apps.structured.as_ref(), windows.structured.as_ref())
+    }
+
+    async fn connect(&mut self, cancel: &CancellationToken) -> Result<(), Error> {
         let ready = async {
             for _ in 0..100 {
                 if self
@@ -623,19 +737,6 @@ impl Desktop {
             Err(Error::Unavailable)
         };
         tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled),result=ready=>result? }
-        let tools: &[&str] = if selected {
-            &[
-                "check_permissions",
-                "get_window_state",
-                "click",
-                "type_text",
-                "press_key",
-                "hotkey",
-                "scroll",
-            ]
-        } else {
-            &["list_apps", "list_windows", "check_permissions"]
-        };
         self.client = Some(
             ManagedClient::spawn(server(
                 self.executable.clone(),
@@ -656,12 +757,12 @@ impl Desktop {
         self.client
             .as_mut()
             .ok_or(Error::Unavailable)?
-            .initialize("2025-06-18", tools, cancel)
+            .initialize("2025-06-18", DESKTOP_TOOLS, cancel)
             .await
             .map_err(|error| {
                 diagnostics::transport(Capability::Desktop, Stage::Initialize, error)
             })?;
-        if selected {
+        {
             let client = self.client.as_ref().ok_or(Error::Unavailable)?;
             client
                 .require_properties("get_window_state", &["pid", "window_id", "max_dimension"])
@@ -690,7 +791,6 @@ impl Desktop {
                 .await,
         )?;
         validate_permissions(permissions)?;
-        self.selected = selected;
         Ok(())
     }
 
@@ -797,7 +897,14 @@ fn parse_windows(
         .and_then(|value| value["windows"].as_array())
         .ok_or(Error::Protocol)?;
     let mut result = Vec::new();
-    for window in windows.iter().take(200) {
+    if windows.len() > 4096 || apps.len() > 4096 {
+        return Err(diagnostics::failure(
+            Capability::Desktop,
+            Stage::ListWindows,
+            Class::LimitExceeded,
+        ));
+    }
+    for window in windows {
         let Some(pid) = window["pid"]
             .as_u64()
             .and_then(|pid| u32::try_from(pid).ok())
@@ -811,25 +918,20 @@ fn parse_windows(
         else {
             continue;
         };
-        let Some(app) = apps
+        let app = apps
             .iter()
-            .find(|app| app["pid"].as_u64() == Some(u64::from(pid)))
-        else {
-            continue;
-        };
-        let bundle_id = app["bundle_id"].as_str().unwrap_or("");
-        if bundle_id == "ai.vega" || bundle_id.is_empty() {
-            continue;
-        }
+            .find(|app| app["pid"].as_u64() == Some(u64::from(pid)));
+        let bundle_id = app.and_then(|app| app["bundle_id"].as_str()).unwrap_or("");
         result.push(DesktopTarget {
             selection_id: ulid::Ulid::generate().to_string(),
-            application: app["name"]
-                .as_str()
+            application: app
+                .and_then(|app| app["name"].as_str())
+                .or_else(|| window["app_name"].as_str())
                 .unwrap_or("Application")
                 .chars()
                 .take(100)
                 .collect(),
-            bundle_id: bundle_id.into(),
+            bundle_id: bundle_id.to_owned(),
             pid,
             window_id,
             title: window["title"]
@@ -1493,5 +1595,129 @@ mod tests {
         assert!(run.control.check_epoch(epoch).is_err());
         run.control.stop();
         run.control.finish_cleanup();
+    }
+    #[test]
+    fn issue75_desktop_access_standard_policy_and_discovery_contract() {
+        let args = desktop_daemon_arguments(Path::new("/owned/driver.sock"));
+        assert!(args.windows(2).any(|pair| pair
+            == [
+                OsString::from("--permission-mode"),
+                OsString::from("standard")
+            ]));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.to_string_lossy().contains("manifest") || arg == "unrestricted")
+        );
+        let root = Path::new("/owned");
+        let policy_path = desktop_policy_path(root);
+        assert_eq!(policy_path.extension().unwrap(), "yaml");
+        assert!(
+            desktop_environment(root)
+                .iter()
+                .any(|(name, value)| name == "CUA_DRIVER_POLICY_FILE"
+                    && value == policy_path.as_os_str())
+        );
+        assert!(
+            !desktop_environment(root)
+                .iter()
+                .any(|(name, _)| name == "CUA_DRIVER_CAPABILITY_MANIFEST")
+        );
+        let policy = desktop_policy();
+        assert_eq!(policy.as_object().unwrap().len(), 1);
+        assert_eq!(policy["allow"]["tools"], json!(DESKTOP_TOOLS));
+        assert!(!DESKTOP_TOOLS.contains(&"shell"));
+        assert!(!DESKTOP_TOOLS.contains(&"launch_app"));
+        let apps = json!({"apps":[{"pid":1,"name":"Vega","bundle_id":"ai.vega"},{"pid":2,"name":"External","bundle_id":"fixture.other"}]});
+        let windows = json!({"windows":[{"pid":1,"window_id":10,"title":"First"},{"pid":2,"window_id":11,"title":"Second"}]});
+        let parsed = parse_windows(Some(&apps), Some(&windows)).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[1].window_id, 11);
+        let refreshed = parse_windows(Some(&apps), Some(&windows)).unwrap();
+        assert_ne!(parsed[0].selection_id, refreshed[0].selection_id);
+        assert!(same_desktop_window(&parsed[0], &refreshed[0]));
+        assert!(!same_desktop_window(&parsed[0], &refreshed[1]));
+        assert!(desktop_observe_arguments(&json!({"target_id":"one","cursor":"two"})).is_err());
+        assert!(desktop_observe_arguments(&json!({"pid":2})).is_err());
+        assert!(desktop_observe_arguments(&json!({"target_id":4})).is_err());
+        assert_eq!(
+            desktop_observe_arguments(&json!({"target_id":null,"cursor":null})).unwrap(),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn issue75_desktop_access_missing_window_invalidates_without_fallback() {
+        let control = super::super::ComputerUseControl::new();
+        let epoch = control.begin(Capability::Desktop).unwrap();
+        let target = DesktopTarget {
+            selection_id: "first".into(),
+            application: "Fixture".into(),
+            bundle_id: "fixture".into(),
+            pid: 1,
+            window_id: 2,
+            title: "Window".into(),
+        };
+        control.set_windows(epoch, vec![target.clone()]).unwrap();
+        control.select_window(epoch, "first").unwrap();
+        assert_eq!(
+            validate_desktop_windows(&control, epoch, std::slice::from_ref(&target)),
+            Ok(())
+        );
+        let mut replacement = target.clone();
+        replacement.pid = 3;
+        assert_eq!(
+            validate_desktop_windows(&control, epoch, &[replacement]),
+            Err(Error::TargetChanged)
+        );
+        assert_eq!(
+            control.target(Capability::Desktop).unwrap(),
+            Some(Target::DesktopCatalog)
+        );
+        assert_eq!(
+            control.select_window(epoch, "first"),
+            Err(Error::StaleObservation)
+        );
+        assert_eq!(control.status().phase, super::super::ControlPhase::Running);
+        control.set_windows(epoch, vec![target]).unwrap();
+        control.select_window(epoch, "first").unwrap();
+        assert_eq!(
+            validate_desktop_windows(&control, epoch, &[]),
+            Err(Error::TargetChanged)
+        );
+        control.stop();
+        assert_eq!(
+            validate_desktop_windows(&control, epoch, &[]),
+            Err(Error::Cancelled)
+        );
+        control.finish_cleanup();
+    }
+
+    #[test]
+    fn issue75_desktop_access_discovers_helper_owned_windows() {
+        let apps = json!({"apps":[]});
+        let windows = json!({"windows":[{"pid":123,"window_id":456,"app_name":"Open and Save Panel","title":"Open"}]});
+        let targets = parse_windows(Some(&apps), Some(&windows)).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].pid, 123);
+        assert_eq!(targets[0].window_id, 456);
+        assert_eq!(targets[0].application, "Open and Save Panel");
+        assert_eq!(targets[0].bundle_id, "");
+    }
+
+    #[test]
+    fn issue75_desktop_access_catalog_cannot_dispatch_action() {
+        let control = super::super::ComputerUseControl::new();
+        let mut observation = super::super::tests::fixture_observation(&control, 1, 0);
+        observation.target = Target::DesktopCatalog;
+        observation.source = ToolObservationSource::CuaWindowCatalog;
+        assert!(
+            map_action(
+                Capability::Desktop,
+                &observation,
+                &json!({"action":"type_text","text":"fixture","target":null})
+            )
+            .is_err()
+        );
     }
 }

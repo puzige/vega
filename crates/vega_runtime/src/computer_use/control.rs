@@ -26,7 +26,6 @@ pub struct ControlSnapshot {
     pub capability: Option<Capability>,
     pub epoch: u64,
     pub target_label: String,
-    pub windows: Vec<DesktopTarget>,
     pub browser_target: Option<Target>,
     pub error: Option<ComputerUseError>,
     pub observations: Vec<Observation>,
@@ -37,6 +36,8 @@ struct State {
     capability: Option<Capability>,
     epoch: u64,
     windows: Vec<DesktopTarget>,
+    directory_started: Option<Instant>,
+    next_cursor: Option<(String, usize)>,
     browser_target: Option<Target>,
     desktop: Option<Target>,
     browser: Option<Target>,
@@ -73,6 +74,8 @@ impl ComputerUseControl {
                 capability: None,
                 epoch: 1,
                 windows: Vec::new(),
+                directory_started: None,
+                next_cursor: None,
                 browser_target: None,
                 desktop: None,
                 browser: None,
@@ -110,7 +113,6 @@ impl ComputerUseControl {
             capability: state.capability,
             epoch: state.epoch,
             target_label: state.target_label.clone(),
-            windows: state.windows.clone(),
             browser_target: state.browser_target.clone(),
             error: state.error,
             observations: if include_media {
@@ -138,6 +140,8 @@ impl ComputerUseControl {
             state.action_cancel.cancel();
             state.observations.clear();
             state.windows.clear();
+            state.directory_started = None;
+            state.next_cursor = None;
             state.browser_target = None;
             state.phase = phase;
         }
@@ -163,37 +167,99 @@ impl ComputerUseControl {
         Ok(())
     }
 
-    pub fn approve_window(
+    pub(crate) fn select_window(
         &self,
         expected_epoch: u64,
-        selection_id: &str,
+        target_id: &str,
     ) -> Result<(), ComputerUseError> {
         let mut state = self
             .0
             .state
             .lock()
             .map_err(|_| ComputerUseError::Unavailable)?;
-        if state.phase != ControlPhase::AwaitingApproval
-            || state.capability != Some(Capability::Desktop)
-            || state.epoch != expected_epoch
+        if state.epoch != expected_epoch
+            || state.action_cancel.is_cancelled()
+            || state.phase != ControlPhase::Running
         {
             return Err(ComputerUseError::NotReady);
+        }
+        if state
+            .directory_started
+            .is_none_or(|started| started.elapsed().as_secs() >= 60)
+        {
+            return Err(ComputerUseError::StaleObservation);
         }
         let window = state
             .windows
             .iter()
-            .find(|window| window.selection_id == selection_id)
+            .find(|window| window.selection_id == target_id)
             .cloned()
-            .ok_or(ComputerUseError::TargetChanged)?;
+            .ok_or(ComputerUseError::StaleObservation)?;
+        state
+            .observations
+            .retain(|item| item.capability != Capability::Desktop);
         state.target_label = window.label();
         state.desktop = Some(Target::Desktop(window));
-        state.grant_started[0] = Some(Instant::now());
-        state.last_used[0] = state.grant_started[0];
-        state.windows.clear();
-        state.phase = ControlPhase::Running;
+        state.capability = Some(Capability::Desktop);
         drop(state);
         self.notify();
         Ok(())
+    }
+
+    pub(crate) fn catalog_page(
+        &self,
+        epoch: u64,
+        cursor: Option<&str>,
+    ) -> Result<serde_json::Value, ComputerUseError> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| ComputerUseError::Unavailable)?;
+        if state.epoch != epoch
+            || state.action_cancel.is_cancelled()
+            || state.phase != ControlPhase::Running
+        {
+            return Err(ComputerUseError::Cancelled);
+        }
+        if state
+            .directory_started
+            .is_none_or(|started| started.elapsed().as_secs() >= 60)
+        {
+            return Err(ComputerUseError::StaleObservation);
+        }
+        let start = match cursor {
+            None => 0,
+            Some(cursor) => state
+                .next_cursor
+                .as_ref()
+                .filter(|(expected, _)| expected == cursor)
+                .map(|(_, offset)| *offset)
+                .ok_or(ComputerUseError::StaleObservation)?,
+        };
+        let mut page = Vec::new();
+        let mut bytes = 0;
+        for window in state.windows.iter().skip(start).take(200) {
+            let entry = serde_json::json!({"target_id":window.selection_id,"application":window.application,"title":window.title,"pid":window.pid,"window_id":window.window_id});
+            bytes += entry.to_string().len();
+            if bytes > 60 * 1024 {
+                break;
+            }
+            page.push(entry);
+        }
+        let end = start + page.len();
+        state.next_cursor =
+            (end < state.windows.len()).then(|| (ulid::Ulid::generate().to_string(), end));
+        let next = state.next_cursor.as_ref().map(|(cursor, _)| cursor.clone());
+        state
+            .observations
+            .retain(|item| item.capability != Capability::Desktop);
+        state.desktop = Some(Target::DesktopCatalog);
+        state.target_label = Target::DesktopCatalog.label();
+        let result = serde_json::json!({"windows":page,"next_cursor":next,"instruction":"Use ComputerObserve with target_id from this directory and cursor:null before any ComputerAct. A directory observation cannot authorize an action. Refresh with target_id:null,cursor:null after stale errors."});
+        drop(state);
+        self.notify();
+        Ok(result)
     }
 
     pub fn approve_browser(
@@ -270,7 +336,7 @@ impl ComputerUseControl {
         Ok(epoch)
     }
 
-    pub(crate) fn offer_windows(
+    pub(crate) fn set_windows(
         &self,
         epoch: u64,
         windows: Vec<DesktopTarget>,
@@ -285,8 +351,15 @@ impl ComputerUseControl {
             return Err(ComputerUseError::Cancelled);
         }
         state.windows = windows;
+        state.directory_started = Some(Instant::now());
+        state.next_cursor = None;
+        state
+            .observations
+            .retain(|item| item.capability != Capability::Desktop);
+        state.desktop = Some(Target::DesktopCatalog);
+        state.target_label = Target::DesktopCatalog.label();
         state.capability = Some(Capability::Desktop);
-        state.phase = ControlPhase::AwaitingApproval;
+        state.phase = ControlPhase::Running;
         drop(state);
         self.notify();
         Ok(())
@@ -346,8 +419,10 @@ impl ComputerUseControl {
             .lock()
             .map_err(|_| ComputerUseError::Unavailable)?;
         let index = usize::from(capability == Capability::Browser);
-        if state.grant_started[index].is_some_and(|started| started.elapsed().as_secs() >= 7200)
-            || state.last_used[index].is_some_and(|used| used.elapsed().as_secs() >= 900)
+        if capability == Capability::Browser
+            && (state.grant_started[index]
+                .is_some_and(|started| started.elapsed().as_secs() >= 7200)
+                || state.last_used[index].is_some_and(|used| used.elapsed().as_secs() >= 900))
         {
             return Err(ComputerUseError::GrantExpired);
         }
@@ -403,6 +478,13 @@ impl ComputerUseControl {
         {
             return Err(ComputerUseError::Cancelled);
         }
+        let target = match observation.capability {
+            Capability::Desktop => &state.desktop,
+            Capability::Browser => &state.browser,
+        };
+        if target.as_ref() != Some(&observation.target) {
+            return Err(ComputerUseError::StaleObservation);
+        }
         state.last_used[usize::from(observation.capability == Capability::Browser)] =
             Some(Instant::now());
         state
@@ -452,6 +534,9 @@ impl ComputerUseControl {
     pub(crate) fn discard_observations(&self) {
         if let Ok(mut state) = self.0.state.lock() {
             state.observations.clear();
+            state.windows.clear();
+            state.directory_started = None;
+            state.next_cursor = None;
         }
         self.notify();
     }
@@ -466,6 +551,9 @@ impl ComputerUseControl {
                 return;
             }
             state.observations.clear();
+            state.windows.clear();
+            state.directory_started = None;
+            state.next_cursor = None;
             if state.phase != ControlPhase::Pausing {
                 state.desktop = None;
                 state.browser = None;
@@ -504,6 +592,9 @@ impl ComputerUseControl {
             state.epoch = state.epoch.saturating_add(1);
             state.action_cancel.cancel();
             state.observations.clear();
+            state.windows.clear();
+            state.directory_started = None;
+            state.next_cursor = None;
             state.desktop = None;
             state.browser = None;
             state.phase = ControlPhase::Failed;
@@ -539,7 +630,55 @@ impl Drop for Inner {
 mod tests {
     use super::*;
     #[test]
-    fn issue75_granting_browser_does_not_renew_desktop_expiry() {
+    fn issue75_desktop_access_directory_expiry_size_and_failure_cleanup() {
+        let control = ComputerUseControl::new();
+        let epoch = control.begin(Capability::Desktop).unwrap();
+        let windows = (0..201)
+            .map(|index| DesktopTarget {
+                selection_id: format!("target-{index}"),
+                application: "应".repeat(100),
+                bundle_id: String::new(),
+                pid: 1,
+                window_id: index,
+                title: "窗".repeat(200),
+            })
+            .collect();
+        control.set_windows(epoch, windows).unwrap();
+        let mut cursor = None;
+        let mut count = 0;
+        loop {
+            let page = control.catalog_page(epoch, cursor.as_deref()).unwrap();
+            assert!(page.to_string().len() <= 64 * 1024);
+            count += page["windows"].as_array().unwrap().len();
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(count, 201);
+        control.0.state.lock().unwrap().directory_started =
+            Some(Instant::now() - std::time::Duration::from_secs(61));
+        assert_eq!(
+            control.select_window(epoch, "target-200"),
+            Err(ComputerUseError::StaleObservation)
+        );
+        assert_eq!(
+            control.catalog_page(epoch, None),
+            Err(ComputerUseError::StaleObservation)
+        );
+        assert_eq!(control.status().phase, ControlPhase::Running);
+        control.fail(epoch, ComputerUseError::Permissions);
+        {
+            let state = control.0.state.lock().unwrap();
+            assert!(state.windows.is_empty());
+            assert!(state.directory_started.is_none());
+            assert!(state.next_cursor.is_none());
+        }
+        control.finish_cleanup();
+    }
+
+    #[test]
+    fn issue75_desktop_access_has_no_window_grant_expiry() {
         let control = ComputerUseControl::new();
         let epoch = control.begin(Capability::Desktop).unwrap();
         let target = DesktopTarget {
@@ -550,8 +689,8 @@ mod tests {
             window_id: 2,
             title: "Window".into(),
         };
-        control.offer_windows(epoch, vec![target]).unwrap();
-        control.approve_window(epoch, "choice").unwrap();
+        control.set_windows(epoch, vec![target]).unwrap();
+        control.select_window(epoch, "choice").unwrap();
         control.0.state.lock().unwrap().grant_started[0] =
             Some(Instant::now() - std::time::Duration::from_secs(7201));
         let browser = Target::Browser {
@@ -562,11 +701,17 @@ mod tests {
         };
         control.offer_browser(epoch, browser.clone()).unwrap();
         control.approve_browser(epoch, &browser).unwrap();
+        assert!(matches!(
+            control.target(Capability::Desktop).unwrap(),
+            Some(Target::Desktop(_))
+        ));
+        assert_eq!(control.target(Capability::Browser).unwrap(), Some(browser));
+        control.0.state.lock().unwrap().last_used[1] =
+            Some(Instant::now() - std::time::Duration::from_secs(901));
         assert_eq!(
-            control.target(Capability::Desktop),
+            control.target(Capability::Browser),
             Err(ComputerUseError::GrantExpired)
         );
-        assert_eq!(control.target(Capability::Browser).unwrap(), Some(browser));
         control.stop();
         control.finish_cleanup();
     }

@@ -95,7 +95,6 @@ pub(crate) enum ComputerUseAction {
     Pause,
     Resume,
     Stop,
-    Window(String),
     Browser(Target),
     Details,
 }
@@ -151,11 +150,6 @@ impl VegaWindow {
             ComputerUseAction::Stop => {
                 control.stop();
                 self.cancel_agent_for_thread(&owner.thread_id, cx);
-            }
-            ComputerUseAction::Window(selection)
-                if status.phase == ControlPhase::AwaitingApproval =>
-            {
-                let _ = control.approve_window(owner.epoch, selection);
             }
             ComputerUseAction::Browser(target)
                 if status.phase == ControlPhase::AwaitingApproval =>
@@ -270,7 +264,7 @@ impl VegaWindow {
         let phase = match status.phase {
             ControlPhase::Disconnected => "待连接",
             ControlPhase::Connecting => "正在连接",
-            ControlPhase::AwaitingApproval => "等待授权",
+            ControlPhase::AwaitingApproval => "等待标签页授权",
             ControlPhase::Running => "正在操控",
             ControlPhase::Pausing => "正在交还控制，请稍候…",
             ControlPhase::Paused => "已接管",
@@ -376,7 +370,7 @@ impl VegaWindow {
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child("本任务可观察并操作你选择的窗口或标签页，可随时接管或停止。"),
+                    .child("本任务可观察并操作你选择的标签页，可随时接管或停止。"),
             );
             let mut choices = div()
                 .id("computer-use-targets")
@@ -386,15 +380,6 @@ impl VegaWindow {
                 .flex()
                 .flex_col()
                 .gap_2();
-            for (index, target) in status.windows.iter().enumerate() {
-                choices = choices.child(self.computer_use_button(
-                    format!("computer-use-window-{index}"),
-                    &format!("授权窗口：{}", target.label()),
-                    &owner,
-                    ComputerUseAction::Window(target.selection_id.clone()),
-                    cx,
-                ));
-            }
             if let Some(target) = status.browser_target {
                 choices = choices.child(self.computer_use_button(
                     "computer-use-browser-approve",

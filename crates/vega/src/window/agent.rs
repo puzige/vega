@@ -887,7 +887,6 @@ impl VegaWindow {
                                         status.phase,
                                         status.epoch,
                                         status.target_label,
-                                        status.windows,
                                         status.browser_target,
                                         status.error,
                                     )

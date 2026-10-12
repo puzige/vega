@@ -291,8 +291,8 @@ impl SettingsView {
         settings_group(colors)
             .child(section_title("Native · 电脑与浏览器", colors.text_primary))
             .child(div().mt_2().text_size(px(Typography::METADATA)).text_color(colors.text_secondary)
-                .child("开启后用于新运行。每次操控仍需选择并授权窗口或标签页；可随时接管或停止。需要 macOS 14 或更新版本。"))
-            .child(settings_field("settings-desktop-use", "电脑操控", Some("仅授权的单个窗口".into()),
+                .child("开启后用于新运行。电脑操控可发现并切换所有可访问窗口；浏览器仍需选择并授权标签页。可随时接管或停止。需要 macOS 14 或更新版本。"))
+            .child(settings_field("settings-desktop-use", "电脑操控", Some("所有可访问桌面窗口，后台输入受系统能力限制".into()),
                 self.native_agent_button("settings-desktop-use-toggle", if self.config.agent.desktop_use_enabled { "已开启" } else { "已关闭" }, NativeAgentAction::Desktop, self.provider_management.saving, cx), colors))
             .child(settings_field("settings-browser-use", "浏览器操控", Some("使用已登录的 Chrome 标签页".into()),
                 self.native_agent_button("settings-browser-use-toggle", if self.config.agent.browser_use_enabled { "已开启" } else { "已关闭" }, NativeAgentAction::Browser, self.provider_management.saving, cx), colors))
