@@ -19,7 +19,16 @@ use vega_mcp::{LocalServer, ManagedClient};
 pub(super) struct Backends {
     desktop: Option<Desktop>,
     browser: Option<Browser>,
+    #[cfg(test)]
+    fixture: Option<DesktopFixture>,
 }
+#[cfg(test)]
+pub(super) struct DesktopFixture {
+    pub windows: Vec<DesktopTarget>,
+    pub results: std::collections::VecDeque<vega_mcp::ManagedResult>,
+    pub actions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
 struct Desktop {
     daemon: Child,
     client: Option<ManagedClient>,
@@ -103,6 +112,52 @@ fn action_unknown(
 }
 
 impl Backends {
+    #[cfg(test)]
+    pub(super) fn install_fixture(&mut self, fixture: DesktopFixture) {
+        self.fixture = Some(fixture);
+    }
+
+    async fn desktop_windows(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<DesktopTarget>, Error> {
+        #[cfg(test)]
+        if let Some(fixture) = &self.fixture {
+            return Ok(fixture.windows.clone());
+        }
+        self.desktop
+            .as_mut()
+            .ok_or(Error::NotReady)?
+            .windows(cancel)
+            .await
+    }
+
+    async fn desktop_call(
+        &mut self,
+        name: &str,
+        args: Value,
+        cancel: &CancellationToken,
+    ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
+        #[cfg(test)]
+        if let Some(fixture) = &mut self.fixture {
+            if name != "get_window_state" {
+                fixture
+                    .actions
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            return fixture
+                .results
+                .pop_front()
+                .ok_or(vega_mcp::McpError::InvalidMessage);
+        }
+        self.desktop
+            .as_mut()
+            .and_then(|desktop| desktop.client.as_mut())
+            .ok_or(vega_mcp::McpError::Transport)?
+            .call(name, args, cancel)
+            .await
+    }
+
     pub(super) async fn execute(
         &mut self,
         run: &ComputerUseRun,
@@ -144,14 +199,7 @@ impl Backends {
             run.control.check_epoch(epoch)?;
             run.control.discard_observations();
             let dispatched = match capability {
-                Capability::Desktop => {
-                    self.desktop
-                        .as_mut()
-                        .and_then(|desktop| desktop.client.as_mut())
-                        .ok_or(Error::NotReady)?
-                        .call(tool, mapped, cancel)
-                        .await
-                }
+                Capability::Desktop => self.desktop_call(tool, mapped, cancel).await,
                 Capability::Browser => {
                     self.browser
                         .as_mut()
@@ -246,6 +294,15 @@ impl Backends {
         epoch: u64,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        #[cfg(test)]
+        if capability == Capability::Desktop && self.fixture.is_some() {
+            if run.control.target(capability)?.is_none() {
+                run.control.begin(capability)?;
+                run.control
+                    .connected(epoch, capability, Target::DesktopCatalog)?;
+            }
+            return Ok(());
+        }
         if match capability {
             Capability::Desktop => self.desktop.is_some(),
             Capability::Browser => {
@@ -358,12 +415,7 @@ impl Backends {
                 .await?;
         }
         if capability == Capability::Desktop {
-            let windows = self
-                .desktop
-                .as_mut()
-                .ok_or(Error::NotReady)?
-                .windows(cancel)
-                .await?;
+            let windows = self.desktop_windows(cancel).await?;
             validate_desktop_windows(&run.control, epoch, &windows)?;
         }
         if run.control.target(capability)?.is_none() {
@@ -405,12 +457,7 @@ impl Backends {
         cancel: &CancellationToken,
     ) -> Result<String, Error> {
         if cursor.is_none() {
-            let windows = self
-                .desktop
-                .as_mut()
-                .ok_or(Error::NotReady)?
-                .windows(cancel)
-                .await?;
+            let windows = self.desktop_windows(cancel).await?;
             run.control.set_windows(epoch, windows)?;
         }
         let page = run.control.catalog_page(epoch, cursor)?;
@@ -422,6 +469,7 @@ impl Backends {
             capability: Capability::Desktop,
             source: ToolObservationSource::CuaWindowCatalog,
             model_image: false,
+            read_only: false,
             target: Target::DesktopCatalog,
             image: None,
             original_width: 0,
@@ -456,6 +504,7 @@ impl Backends {
             capability,
             source: ToolObservationSource::CuaWindow,
             model_image: include_image,
+            read_only: false,
             target: target.clone(),
             image: None,
             original_width: 0,
@@ -470,47 +519,8 @@ impl Backends {
         match target {
             Target::DesktopCatalog => return Err(Error::NotReady),
             Target::Desktop(target) => {
-                let result = checked(Capability::Desktop, Stage::Observe, self.desktop.as_mut().and_then(|desktop| desktop.client.as_mut()).ok_or(Error::NotReady)?.call("get_window_state",json!({"pid":target.pid,"window_id":target.window_id,"include_screenshot":true,"include_accessibility_tree":true,"max_elements":200,"max_depth":12,"max_dimension":1600}),cancel).await)?;
-                let structured = result.structured.ok_or_else(|| {
-                    diagnostics::failure(Capability::Desktop, Stage::Observe, Class::Protocol)
-                })?;
-                if structured["pid"].as_u64() != Some(u64::from(target.pid))
-                    || structured["window_id"].as_u64() != Some(u64::from(target.window_id))
-                    || structured["screenshot_frame_valid"] != true
-                    || structured
-                        .get("degraded")
-                        .is_some_and(|value| value != &Value::Bool(false) && !value.is_null())
-                {
-                    return Err(diagnostics::failure(
-                        Capability::Desktop,
-                        Stage::Observe,
-                        Class::ObservationUnavailable,
-                    ));
-                }
-                observation.snapshot_id = Some(
-                    structured["snapshot_id"]
-                        .as_str()
-                        .ok_or(Error::StaleObservation)?
-                        .into(),
-                );
-                observation.capture_id = structured["capture_id"].as_str().map(str::to_owned);
-                observation.elements = structured["elements"].clone();
-                observation.background_input = super::background::BackgroundInput::from_report(
-                    &structured["background_input"],
-                    target.pid,
-                    target.window_id,
-                );
-                observation.text = structured["tree_markdown"]
-                    .as_str()
-                    .unwrap_or("")
-                    .chars()
-                    .take(65536)
-                    .collect();
-                let image = result.images.into_iter().next().ok_or(Error::Image)?;
-                let (image, width, height) = decode_image(image)?;
-                observation.image = Some(image);
-                observation.original_width = width;
-                observation.original_height = height;
+                let result = self.desktop_call("get_window_state",json!({"pid":target.pid,"window_id":target.window_id,"include_screenshot":true,"include_accessibility_tree":true,"max_elements":200,"max_depth":12,"max_dimension":1600}),cancel).await.map_err(|error| diagnostics::transport(Capability::Desktop, Stage::Observe, error))?;
+                super::desktop_observation::apply(&mut observation, &target, result)?;
             }
             Target::Browser { .. } => {
                 let browser = self.browser.as_mut().ok_or(Error::NotReady)?;
@@ -1022,6 +1032,9 @@ fn map_action(
     observation: &Observation,
     args: &Value,
 ) -> Result<(&'static str, Value), Error> {
+    if observation.read_only {
+        return Err(Error::InvalidAction);
+    }
     let object = args.as_object().ok_or(Error::InvalidAction)?;
     if object.keys().any(|key| {
         !matches!(
@@ -1859,5 +1872,173 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[tokio::test]
+    async fn issue75_observation_read_only_blocks_all_actions_before_dispatch() {
+        let run = ComputerUseRun::new(true, false);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        let mut observation = super::super::tests::fixture_observation(&run.control, epoch, 0);
+        observation.read_only = true;
+        observation.elements = json!([{"element_token":"fixture"}]);
+        let Target::Desktop(target) = observation.target.clone() else {
+            panic!()
+        };
+        let actions = run.install_desktop_fixture(vec![target], Vec::new()).await;
+        run.control
+            .connected(epoch, Capability::Desktop, observation.target.clone())
+            .unwrap();
+        run.control.publish(observation.clone()).unwrap();
+        for mut args in [
+            json!({"action":"click","x":1,"y":1}),
+            json!({"action":"click","target":"fixture"}),
+            json!({"action":"type_text","target":"fixture","text":"fixture"}),
+            json!({"action":"press_key","key":"end"}),
+            json!({"action":"hotkey","key":"cmd+end"}),
+            json!({"action":"scroll","target":"fixture","direction":"down","amount":1}),
+        ] {
+            args["observation_id"] = json!(observation.id);
+            assert_eq!(
+                run.execute(
+                    "ComputerAct",
+                    "readonly-action",
+                    args,
+                    &CancellationToken::new()
+                )
+                .await,
+                Err(Error::InvalidAction)
+            );
+            assert_eq!(actions.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+        observation.read_only = false;
+        assert!(
+            map_action(
+                Capability::Desktop,
+                &observation,
+                &json!({"action":"click","x":1,"y":1})
+            )
+            .is_ok()
+        );
+        run.control.stop();
+        run.control.finish_cleanup();
+    }
+
+    #[tokio::test]
+    async fn issue75_observation_action_postcheck_failure_stays_unknown_without_retry() {
+        let run = ComputerUseRun::new(true, false);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        let observation = super::super::tests::fixture_observation(&run.control, epoch, 0);
+        let Target::Desktop(target) = observation.target.clone() else {
+            panic!()
+        };
+        run.control
+            .connected(epoch, Capability::Desktop, observation.target.clone())
+            .unwrap();
+        run.control.publish(observation.clone()).unwrap();
+        let actions = run
+            .install_desktop_fixture(
+                vec![target],
+                vec![
+                    vega_mcp::ManagedResult {
+                        text: Vec::new(),
+                        images: Vec::new(),
+                        structured: None,
+                        is_error: false,
+                    },
+                    vega_mcp::ManagedResult {
+                        text: vec!["PRIVATE_CAPTURE_REASON".into()],
+                        images: Vec::new(),
+                        structured: Some(json!({"code":"px_capture_unavailable"})),
+                        is_error: true,
+                    },
+                ],
+            )
+            .await;
+        let outcome = run
+            .execute(
+                "ComputerAct",
+                "action",
+                json!({"action":"click","x":1,"y":1,
+            "observation_id":observation.id}),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(outcome.starts_with("outcome_unknown"));
+        assert!(outcome.contains("Do not retry"));
+        assert!(!outcome.contains("PRIVATE"));
+        assert_eq!(actions.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            run.control.status().phase,
+            super::super::ControlPhase::Failed
+        );
+        assert!(run.wait_ready(&CancellationToken::new()).await.is_err());
+        assert!(run.control.snapshot().observations.is_empty());
+        run.control.stop();
+        run.control.finish_cleanup();
+    }
+    #[tokio::test]
+    async fn issue75_observation_mcp_error_cannot_hide_conflicting_metadata() {
+        for (patch, class) in [
+            (
+                json!({"pid":9,"window_id":2}),
+                Class::ObservationIdentityMismatch,
+            ),
+            (
+                json!({"screenshot_frame_valid":false,"screenshot_error":{"code":"px_frame_mismatch"}}),
+                Class::CaptureFrameMismatch,
+            ),
+            (
+                json!({"screenshot_frame_valid":null}),
+                Class::ScreenshotUnverified,
+            ),
+            (
+                json!({"degraded":true,"degraded_reason":"PRIVATE_UNKNOWN"}),
+                Class::DegradedUnknown,
+            ),
+        ] {
+            let run = ComputerUseRun::new(true, false);
+            let epoch = run.control.begin(Capability::Desktop).unwrap();
+            let observation = super::super::tests::fixture_observation(&run.control, epoch, 0);
+            let Target::Desktop(target) = observation.target.clone() else {
+                panic!()
+            };
+            run.control
+                .set_windows(epoch, vec![target.clone()])
+                .unwrap();
+            let mut structured = json!({"code":"px_capture_unavailable"});
+            for (key, value) in patch.as_object().unwrap() {
+                structured[key] = value.clone();
+            }
+            run.install_desktop_fixture(
+                vec![target],
+                vec![vega_mcp::ManagedResult {
+                    text: vec!["PRIVATE_ERROR".into()],
+                    images: Vec::new(),
+                    structured: Some(structured),
+                    is_error: true,
+                }],
+            )
+            .await;
+            let error = run
+                .execute(
+                    "ComputerObserve",
+                    "error",
+                    json!({"target_id":"fixture","cursor":null}),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error,
+                diagnostics::failure(Capability::Desktop, Stage::Observe, class)
+            );
+            assert_eq!(
+                run.control.status().phase,
+                super::super::ControlPhase::Failed
+            );
+            assert!(!error.to_string().contains("PRIVATE"));
+            run.control.stop();
+            run.control.finish_cleanup();
+        }
     }
 }

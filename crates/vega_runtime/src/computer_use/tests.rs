@@ -63,6 +63,7 @@ pub(crate) fn fixture_observation(
         capability: Capability::Desktop,
         source: ToolObservationSource::CuaWindow,
         model_image: true,
+        read_only: false,
         target: Target::Desktop(DesktopTarget {
             selection_id: "fixture".into(),
             application: "Fixture".into(),
@@ -345,4 +346,152 @@ fn issue75_desktop_access_directory_is_ephemeral_and_not_an_action_frame() {
     assert!(run.control.catalog_page(epoch, None).is_err());
     run.control.stop();
     run.control.finish_cleanup();
+}
+
+#[tokio::test]
+async fn issue75_observation_recoverable_failure_clears_binding_and_keeps_run_ready() {
+    let run = ComputerUseRun::new(true, false);
+    let epoch = run.control.begin(Capability::Desktop).unwrap();
+    let observation = fixture_observation(&run.control, epoch, 0);
+    let Target::Desktop(target) = observation.target.clone() else {
+        panic!()
+    };
+    run.control
+        .set_windows(epoch, vec![target.clone()])
+        .unwrap();
+    run.control
+        .select_window(epoch, &target.selection_id)
+        .unwrap();
+    run.control.publish(observation.clone()).unwrap();
+    let error = diagnostics::failure(
+        Capability::Desktop,
+        diagnostics::Stage::Observe,
+        diagnostics::Class::AxUnavailable,
+    );
+    assert!(!run.record_failure("ComputerObserve", Capability::Desktop, epoch, error));
+    assert_eq!(run.control.status().phase, ControlPhase::Running);
+    assert_eq!(
+        run.control.target(Capability::Desktop).unwrap(),
+        Some(Target::DesktopCatalog)
+    );
+    assert!(
+        run.control
+            .observation(Capability::Desktop, &observation.id)
+            .is_err()
+    );
+    assert!(
+        run.control
+            .select_window(epoch, &target.selection_id)
+            .is_err()
+    );
+    assert!(run.wait_ready(&CancellationToken::new()).await.is_ok());
+    run.control
+        .set_windows(epoch, vec![target.clone()])
+        .unwrap();
+    run.control
+        .select_window(epoch, &target.selection_id)
+        .unwrap();
+    run.control
+        .publish(fixture_observation(&run.control, epoch, 1))
+        .unwrap();
+    run.control.stop();
+    run.control.finish_cleanup();
+}
+
+#[tokio::test]
+async fn issue75_observation_recovery_never_revives_revoked_or_fatal_runs() {
+    use diagnostics::{Class, Stage, failure};
+    for (name, capability, stage, class) in [
+        (
+            "ComputerAct",
+            Capability::Desktop,
+            Stage::Observe,
+            Class::CaptureUnavailable,
+        ),
+        (
+            "BrowserObserve",
+            Capability::Browser,
+            Stage::Observe,
+            Class::CaptureUnavailable,
+        ),
+        (
+            "ComputerObserve",
+            Capability::Desktop,
+            Stage::Observe,
+            Class::CaptureFrameMismatch,
+        ),
+        (
+            "ComputerObserve",
+            Capability::Desktop,
+            Stage::Observe,
+            Class::ObservationIdentityMismatch,
+        ),
+        (
+            "ComputerObserve",
+            Capability::Desktop,
+            Stage::Observe,
+            Class::DegradedUnknown,
+        ),
+        (
+            "ComputerObserve",
+            Capability::Desktop,
+            Stage::Observe,
+            Class::Protocol,
+        ),
+        (
+            "ComputerObserve",
+            Capability::Desktop,
+            Stage::Permissions,
+            Class::PermissionsMissing,
+        ),
+        (
+            "ComputerObserve",
+            Capability::Desktop,
+            Stage::Observe,
+            Class::PolicyDenied,
+        ),
+    ] {
+        let run = ComputerUseRun::new(true, true);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        run.control
+            .connected(epoch, Capability::Desktop, Target::DesktopCatalog)
+            .unwrap();
+        assert!(run.record_failure(name, capability, epoch, failure(capability, stage, class)));
+        assert_eq!(run.control.status().phase, ControlPhase::Failed);
+        assert_eq!(
+            run.wait_ready(&CancellationToken::new()).await,
+            Err(ComputerUseError::Cancelled)
+        );
+        run.control.stop();
+        run.control.finish_cleanup();
+    }
+    for stop in [false, true] {
+        let run = ComputerUseRun::new(true, false);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        run.control
+            .connected(epoch, Capability::Desktop, Target::DesktopCatalog)
+            .unwrap();
+        if stop {
+            run.control.stop();
+        } else {
+            run.control.pause();
+        }
+        let before = run.control.status();
+        run.record_failure(
+            "ComputerObserve",
+            Capability::Desktop,
+            epoch,
+            failure(
+                Capability::Desktop,
+                Stage::Observe,
+                Class::CaptureUnavailable,
+            ),
+        );
+        let after = run.control.status();
+        assert_eq!(after.phase, before.phase);
+        assert_eq!(after.epoch, before.epoch);
+        assert!(run.control.snapshot().observations.is_empty());
+        run.control.stop();
+        run.control.finish_cleanup();
+    }
 }

@@ -661,3 +661,60 @@ async fn issue112_external_mutations_mount_real_permission_queue(cx: &mut TestAp
         assert!(!has_active_permission(window, cx));
     }
 }
+
+#[gpui_kit::test]
+async fn issue75_observation_live_events_keep_success_and_failure_cards(cx: &mut TestAppContext) {
+    use crate::tool_card::ToolActivityState;
+    init_permission_test(cx);
+    let (window, queue) = open_permission_stream(cx);
+    for tool in [
+        "ComputerObserve",
+        "ComputerAct",
+        "BrowserObserve",
+        "BrowserAct",
+    ] {
+        for status in [ToolCallStatus::Success, ToolCallStatus::Failed] {
+            let call_id = format!("{tool}-{status:?}");
+            let event = ConversationEvent::ToolCallProposed {
+                call: ToolCall {
+                    id: call_id.clone(),
+                    tool: tool.into(),
+                    input_json:
+                        serde_json::json!({"kind":"computer_use","version":1,"action":"observe",
+                        "argument_bytes":42,"argument_digest":"a".repeat(64)})
+                        .to_string(),
+                },
+            };
+            window.update(cx,|stream,_,cx| {
+                stream.apply_event(event,cx);
+                stream.apply_event(ConversationEvent::ToolCallApproved {call_id:call_id.clone(),
+                    approval:vega_conversation::types::Approval::Once},cx);
+                stream.apply_event(ConversationEvent::ToolCallRunning {call_id:call_id.clone()},cx);
+                stream.apply_event(ConversationEvent::ToolCallFinished {call_id:call_id.clone(),
+                    result:ToolResult {status,
+                        output:if status==ToolCallStatus::Success {"completed".into()} else {
+                            "Tool error: computer use not_dispatched: executor=cua stage=observe error_class=capture_unavailable: 窗口截图暂时不可用。".into()},
+                        reused:false,exit_code:None,duration_ms:None,
+                        truncated:(status==ToolCallStatus::Success).then_some(false),invalid:None,
+                    }},cx);
+            }).unwrap();
+            let (state, text) = window
+                .update(cx, |stream, _, cx| {
+                    let card = stream.tool_cards[&call_id].read(cx);
+                    (card.activity_state(), card.visible_text())
+                })
+                .unwrap();
+            assert_eq!(
+                state,
+                if status == ToolCallStatus::Success {
+                    ToolActivityState::Success
+                } else {
+                    ToolActivityState::Failed
+                }
+            );
+            assert!(!text.contains("工具结果损坏"), "{text}");
+        }
+    }
+    assert!(!queue.has_pending());
+    assert!(!has_active_permission(window, cx));
+}

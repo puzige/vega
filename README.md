@@ -52,7 +52,9 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-70-tool-activity-delivery.md](docs/vega-issue-70-tool-activity-delivery.md) | #70 测试先行矩阵、门禁与原生验收记录 |
 | [vega-issue-74-skills.md](docs/vega-issue-74-skills.md) | #74 Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
 | [vega-issue-74-skills-delivery.md](docs/vega-issue-74-skills-delivery.md) | #74 测试先行验收矩阵（均未运行） |
-| [vega-issue-75-computer-browser-use.md](docs/vega-issue-75-computer-browser-use.md) | #75 受管 macOS 单窗、浏览器单标签与用户接管规格 |
+| [vega-issue-75-computer-browser-use.md](docs/vega-issue-75-computer-browser-use.md) | #75 受管 macOS 桌面、浏览器单标签与用户接管规格 |
+| [vega-issue-75-desktop-access.md](docs/vega-issue-75-desktop-access.md) | #75 全窗口访问与应用目录身份 |
+| [vega-issue-75-window-observation.md](docs/vega-issue-75-window-observation.md) | #75 只读截图、观察失败恢复与 live 工具卡修复 |
 | [vega-issue-75-computer-browser-delivery.md](docs/vega-issue-75-computer-browser-delivery.md) | #75 定向回归、协议限制与用户手测记录 |
 | [vega-issue-81-remove-pi-agent.md](docs/vega-issue-81-remove-pi-agent.md) | #81 移除 Pi Agent 凭据导入并保留 Provider 设置与通用 Skills 导入 |
 | [vega-issue-81-remove-pi-agent-delivery.md](docs/vega-issue-81-remove-pi-agent-delivery.md) | #81 定向验收、规格更新和未完成门禁记录 |
