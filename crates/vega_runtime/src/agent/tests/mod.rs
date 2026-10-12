@@ -1120,7 +1120,8 @@ async fn issue75_disabled_desktop_name_cannot_trigger_discovery_from_browser_gra
         .await
         .unwrap();
     assert_eq!(outcome.executed_tool_call_count, 0);
-    assert!(control.status().windows.is_empty());
+    assert!(control.snapshot().observations.is_empty());
+    assert!(control.status().target_label.is_empty());
     assert!(control.status().capability.is_none());
     assert!(outcome.events.iter().any(|event|matches!(event,RuntimeEvent::ToolCallFinished(result) if result.status==RuntimeToolStatus::Rejected)));
 }

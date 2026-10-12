@@ -1,5 +1,7 @@
 # Issue #75 — macOS Computer Use 与 Browser Use
 
+> 当前桌面行为以[全窗口访问用户覆盖裁决](vega-issue-75-desktop-access.md)为准：启用后模型可发现/切换所有窗口，无 Vega 逐窗口审批。本文旧逐窗授权段落保留为历史；浏览器合同未改，Playwright 调查暂停。
+
 状态：2026-10-12 用户授权自动选型与实装；本规格先于实现冻结。关联 [Issue #75](https://github.com/puzige/vega/issues/75)。
 
 ## 1. 目标与选型

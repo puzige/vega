@@ -173,7 +173,11 @@ impl std::fmt::Display for ExecutorFailure {
             "executor={executor} stage={} error_class={}: {}",
             self.stage.label(),
             self.class.code(),
-            self.class.guidance()
+            if self.capability == Capability::Desktop && self.class == Class::PolicyDenied {
+                "执行器工具策略拒绝了请求，请检查组件安装与受管策略。"
+            } else {
+                self.class.guidance()
+            }
         )
     }
 }

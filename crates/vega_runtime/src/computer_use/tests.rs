@@ -13,20 +13,20 @@ fn issue75_takeover_waits_for_cleanup_and_keeps_single_lease() {
         window_id: 9,
         title: "Owned".into(),
     };
-    a.offer_windows(epoch, vec![target]).unwrap();
-    a.approve_window(epoch, "choice").unwrap();
+    a.set_windows(epoch, vec![target]).unwrap();
+    a.select_window(epoch, "choice").unwrap();
     a.pause();
     assert_eq!(a.resume(a.status().epoch), Err(ComputerUseError::NotReady));
     assert_eq!(b.begin(Capability::Browser), Err(ComputerUseError::Busy));
     assert_eq!(
-        a.approve_window(epoch, "choice"),
+        a.select_window(epoch, "choice"),
         Err(ComputerUseError::NotReady)
     );
     a.finish_cleanup();
     a.resume(a.status().epoch).unwrap();
     assert!(a.check_epoch(epoch).is_err());
     assert_eq!(
-        a.approve_window(epoch, "choice"),
+        a.select_window(epoch, "choice"),
         Err(ComputerUseError::NotReady)
     );
     a.stop();
@@ -222,6 +222,127 @@ fn issue75_background_live_observation_invalidation_does_not_rewrite_original_su
     assert!(outcome.messages[0].images.is_empty());
     assert!(!outcome.messages[0].content.contains("pid_keyboard"));
     assert!(!outcome.messages[0].content.contains("post-action-fixture"));
+    run.control.stop();
+    run.control.finish_cleanup();
+}
+
+#[test]
+fn issue75_desktop_access_explicit_discovery_schema() {
+    let run = ComputerUseRun::new(true, false);
+    let definition = run
+        .definitions()
+        .into_iter()
+        .find(|tool| tool.name == "ComputerObserve")
+        .unwrap();
+    assert_eq!(
+        definition.input_schema["properties"]["target_id"]["type"],
+        json!(["string", "null"])
+    );
+    assert_eq!(
+        definition.input_schema["required"],
+        json!(["target_id", "cursor"])
+    );
+    assert!(!definition.description.contains("user selects and grants"));
+}
+
+#[test]
+fn issue75_desktop_access_discovery_does_not_require_approval() {
+    let control = ComputerUseControl::new();
+    let epoch = control.begin(Capability::Desktop).unwrap();
+    let Target::Desktop(target) = fixture_observation(&control, epoch, 0).target else {
+        panic!("fixture target")
+    };
+    control.set_windows(epoch, vec![target]).unwrap();
+    assert_eq!(control.status().phase, ControlPhase::Running);
+    control.stop();
+    control.finish_cleanup();
+}
+
+#[test]
+fn issue75_desktop_access_pages_all_windows_and_invalidates_cross_window_frames() {
+    let run = ComputerUseRun::new(true, false);
+    let epoch = run.control.begin(Capability::Desktop).unwrap();
+    let windows = (0..450)
+        .map(|index| DesktopTarget {
+            selection_id: format!("target-{index}"),
+            application: format!("App-{index}"),
+            bundle_id: format!("fixture.{index}"),
+            pid: index + 1,
+            window_id: index + 2,
+            title: format!("Title-{index}"),
+        })
+        .collect();
+    run.control.set_windows(epoch, windows).unwrap();
+    let first = run.control.catalog_page(epoch, None).unwrap();
+    assert_eq!(first["windows"].as_array().unwrap().len(), 200);
+    let cursor = first["next_cursor"].as_str().unwrap().to_owned();
+    let second = run.control.catalog_page(epoch, Some(&cursor)).unwrap();
+    assert_eq!(second["windows"][0]["target_id"], "target-200");
+    assert!(run.control.catalog_page(epoch, Some(&cursor)).is_err());
+    let third = run
+        .control
+        .catalog_page(epoch, second["next_cursor"].as_str())
+        .unwrap();
+    assert_eq!(third["windows"].as_array().unwrap().len(), 50);
+    assert!(third["next_cursor"].is_null());
+    run.control.select_window(epoch, "target-0").unwrap();
+    let mut old = fixture_observation(&run.control, epoch, 0);
+    old.target = run.control.target(Capability::Desktop).unwrap().unwrap();
+    run.control.publish(old.clone()).unwrap();
+    run.control.select_window(epoch, "target-449").unwrap();
+    assert!(
+        run.control
+            .observation(Capability::Desktop, &old.id)
+            .is_err()
+    );
+    assert!(run.control.publish(old).is_err());
+    let current = run.control.target(Capability::Desktop).unwrap().unwrap();
+    assert!(
+        matches!(current, Target::Desktop(window) if window.pid == 450 && window.window_id == 451)
+    );
+    run.control.pause();
+    assert!(run.control.set_windows(epoch, Vec::new()).is_err());
+    assert!(run.control.select_window(epoch, "target-449").is_err());
+    assert!(run.control.resume(run.control.status().epoch).is_err());
+    run.control.finish_cleanup();
+    run.control.resume(run.control.status().epoch).unwrap();
+    let later = run.control.begin(Capability::Desktop).unwrap();
+    run.control.set_windows(later, Vec::new()).unwrap();
+    assert_eq!(run.control.status().phase, ControlPhase::Running);
+    assert!(run.control.select_window(later, "target-449").is_err());
+    assert!(run.control.catalog_page(later, Some(&cursor)).is_err());
+    assert!(
+        run.control.catalog_page(later, None).unwrap()["windows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    run.control.stop();
+    assert!(run.control.catalog_page(later, None).is_err());
+    run.control.finish_cleanup();
+}
+
+#[test]
+fn issue75_desktop_access_directory_is_ephemeral_and_not_an_action_frame() {
+    let run = ComputerUseRun::new(true, false);
+    let epoch = run.control.begin(Capability::Desktop).unwrap();
+    let mut observation = fixture_observation(&run.control, epoch, 1);
+    observation.target = Target::DesktopCatalog;
+    observation.source = ToolObservationSource::CuaWindowCatalog;
+    observation.image = None;
+    observation.model_image = false;
+    observation.text = "private-window-directory".into();
+    run.control.set_windows(epoch, Vec::new()).unwrap();
+    run.control.publish(observation.clone()).unwrap();
+    let mut message =
+        crate::ChatMessage::tool_result(&observation.call_id, "durable directory summary");
+    run.apply_observation(&observation.call_id, &mut message);
+    assert!(message.content.contains("private-window-directory"));
+    assert!(message.images.is_empty());
+    run.invalidate_observations();
+    run.trim_messages(std::slice::from_mut(&mut message));
+    assert!(!message.content.contains("private-window-directory"));
+    assert!(run.control.catalog_page(epoch, None).is_err());
     run.control.stop();
     run.control.finish_cleanup();
 }
