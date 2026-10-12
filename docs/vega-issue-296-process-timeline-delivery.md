@@ -133,3 +133,29 @@ Summary [   1.039s] 170 tests run: 170 passed, 543 skipped
 适用旧测试按新规格更新角色/宽度/行高/箭头/颜色与阶段选择器；保留逐字符layout、内部空行、工具详情限高滚动、字节复制、真实焦点/hover、权限和导航业务断言。历史统一详情锚点fixture改选Step5，以确保缩小字体后的目标后方仍有足够滚动空间，目标索引/像素偏移的原精确断言保留。
 
 用户手测补充：与六张参考图并排检查纯计时横线、正文列/气泡/左刻度、摘要文字后箭头、阶段展开直接工具行；确认hover不出现整行灰底。分别体验阶段展开→工具展开→阶段收起→回Composer→Final，以及选字/回看/阶段键盘焦点→Final→退出阅读。阶段summary/raw多行源、长思考尾随与手动回看、最终重开工具输出、历史锚点与权限/产物都应可达。原生ink间距与字形抗锯齿作为待验证项记录，不声称全部像素已通过。
+
+## 首轮 CI 反馈与修复
+
+`412f214` 的云端全量 Nextest 结果为2313项运行、2301通过、12失败、5跳过，Clippy通过。原始日志 `~/Workspace/artifacts/vega-296-process-timeline/ci-first-failure.log` 的 SHA-256 为 `bca3a1732813f6170ff89c60308a06e7b9fc81351eab8423ec0c6d7628723c1d`。
+
+其中一项是生产回归：两条 Markdown 表格渲染路径错误地随新字号把最小列宽降为108。本轮恢复既有 `Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH` 的120下限；四列480、单元格对齐、换行和局部横向滚动原断言保持不变，13.5会话字号保留。十项是新规格替代的旧显示契约：七项工具颜色，以及 thinking-only 阶段入口、导航10px节距、正文736与Composer768共享中轴。工具时长的实际文字宽度检查同步新字号，箭头断言同步6px邻接间距与12px宽度；原时长、复制、安全、焦点、导航和布局边界断言保留。
+
+另一项双任务权限测试在 Settings 打开前等待两张权限卡时超时，日志表明B任务已提前终态；未获得足以确认根因的错误类别。本轮只为该测试的超时分支补充固定 `RunFailureKind` 标签、白名单assistant状态、response数量/类型布尔值及最后run各phase的类型化状态，不输出错误正文、请求/运行ID或完整metrics。不改生产权限/存储行为，400轮与5ms等待、并发gate、拒绝与零文件写入断言全部保留。本地单次定向通过，属于未复现，不能认定该并发问题已修复；后续若云端再次失败可据新增诊断定位。
+
+修复首轮定向日志 `ci-fixes-first.log` 为23项中22通过、1失败，剩余失败是旧8px间距与右端箭头断言。其 SHA-256 为 `abd0d2f0aea1879286738fd9260464f0fe6830223ce441021a10893f063de7e6`，失败证据保留。
+
+最终定向命令：
+
+```sh
+cargo nextest run -p vega -p vega_ui -E 'test(/i61_v3_thinking_only_completion/) | test(/issue72_loaded_alpha_rail_click/) | test(/r45_composer_centering/) | test(/issue70_/) | test(/tool_activity_leading_visual/) | test(/issue59_/) | test(/issue67_concurrent_settings_fails_closed_for_both_permissions/)'
+cargo fmt -p vega -p vega_ui -p vega_theme --check
+git diff --check
+```
+
+`~/Workspace/artifacts/vega-296-process-timeline/ci-fixes-green.log`：
+
+```text
+Summary [  34.171s] 24 tests run: 24 passed, 917 skipped
+```
+
+SHA-256：`0c1e37bc3724380256bd526db829dca68ec73b4766c8436d5d76d0af337a7405`。fmt与diff检查通过；仅保留已有 `block v0.1.6` future-incompatibility 警告。没有本地重跑workspace全量或Clippy，完整门禁由下一轮云端CI验证。独立只读审查未发现新增阻塞问题；本次24项与前述170项分别覆盖CI反馈及视觉/行为矩阵，不替代原生像素手测。

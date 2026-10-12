@@ -155,11 +155,11 @@ fn body_text_width(
                 .text_system()
                 .shape_line(
                     text.clone().into(),
-                    px(Typography::BODY),
+                    px(Typography::CONVERSATION),
                     &[TextRun {
                         len: text.len(),
                         font,
-                        color: colors.text_secondary.into(),
+                        color: colors.conversation_tool.into(),
                         background_color: None,
                         underline: None,
                         strikethrough: None,
@@ -276,7 +276,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         assert!(card.live_elapsed_active());
         let colors = theme(cx).colors;
         assert!(matches!(card.leading_icon(), Icon::Terminal));
-        assert_eq!(card.leading_icon_color(&colors), colors.text_secondary);
+        assert_eq!(card.leading_icon_color(&colors), colors.conversation_tool);
     });
 
     cx.executor().advance_clock(Duration::from_secs(1));
@@ -409,7 +409,7 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
         assert!(matches!(group.read(cx).leading_icon(cx), Icon::Terminal));
         assert_eq!(
             group.read(cx).leading_icon_color(cx, &colors),
-            colors.text_secondary
+            colors.conversation_tool
         );
         assert!(!stream.tool_cards["read"].read(cx).live_elapsed_active());
     });
@@ -515,7 +515,7 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
         assert!(!card.visible_text().contains(&command));
         let colors = theme(cx).colors;
         assert!(matches!(card.leading_icon(), Icon::Terminal));
-        assert_eq!(card.leading_icon_color(&colors), colors.text_secondary);
+        assert_eq!(card.leading_icon_color(&colors), colors.conversation_tool);
     });
 
     stream.update(cx, |stream, cx| {
@@ -546,18 +546,24 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
         terminal_duration.size.width >= body_text_width(window, "· 1.2 秒".into(), cx),
         "terminal duration must retain its intrinsic width"
     );
-    assert_eq!(terminal_duration.left() - terminal_title.right(), px(8.));
-    assert_eq!(running_duration.left() - title.right(), px(8.));
+    assert_eq!(
+        terminal_duration.left() - terminal_title.right(),
+        px(Layout::CONVERSATION_INLINE_GAP)
+    );
+    assert_eq!(
+        running_duration.left() - title.right(),
+        px(Layout::CONVERSATION_INLINE_GAP)
+    );
     assert_eq!(
         terminal_chevron.size.width,
-        px(Layout::DISCLOSURE_TRAILING_SLOT)
+        px(Layout::CONVERSATION_CHEVRON_SIZE)
     );
     let terminal_row = bounds(window, "tool-activity-child-0", cx);
-    assert!(
-        (terminal_row.right() - terminal_chevron.right() - px(Layout::DISCLOSURE_PADDING_X + 1.))
-            .abs()
-            < px(1.)
+    assert_eq!(
+        terminal_chevron.left() - terminal_duration.right(),
+        px(Layout::CONVERSATION_INLINE_GAP)
     );
+    assert!(terminal_chevron.right() <= terminal_row.right());
     stream.read_with(cx, |stream, cx| {
         assert_eq!(
             stream.tool_cards["long-running"].read(cx).visible_text(),
@@ -716,7 +722,7 @@ async fn issue70_t70_1_single_shell_is_one_surface_free_compact_row(cx: &mut Tes
         "successful Shell keeps its category icon instead of Check"
     );
     assert_eq!(
-        leading_icon_color, colors.text_secondary,
+        leading_icon_color, colors.conversation_tool,
         "successful Shell leading icon stays neutral"
     );
     let row = bounds(window, "tool-activity-single-row", cx);
@@ -782,7 +788,7 @@ async fn issue70_t70_2_adjacent_mixed_tools_share_one_collapsed_item(cx: &mut Te
         );
         assert_eq!(
             group.leading_icon_color(cx, &colors),
-            colors.text_secondary,
+            colors.conversation_tool,
             "aggregate leading icon stays neutral"
         );
         assert_eq!(
@@ -1187,7 +1193,7 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
         );
         assert_eq!(
             group.read(cx).leading_icon_color(cx, &colors),
-            colors.text_secondary,
+            colors.conversation_tool,
             "failed group leading icon stays neutral"
         );
         assert!(
@@ -1201,7 +1207,7 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
             stream.tool_cards["second"]
                 .read(cx)
                 .leading_icon_color(&colors),
-            colors.text_secondary,
+            colors.conversation_tool,
             "failed child leading icon stays neutral"
         );
         assert_eq!(

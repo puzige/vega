@@ -1274,7 +1274,7 @@ mod tests {
             );
             assert_eq!(
                 card.leading_icon_color(&LIGHT),
-                LIGHT.text_secondary,
+                LIGHT.conversation_tool,
                 "leading icon must stay neutral for {status:?}"
             );
         }

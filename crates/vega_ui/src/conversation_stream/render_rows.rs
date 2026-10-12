@@ -845,7 +845,7 @@ fn render_table_selectable(
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
         .w_full()
-        .min_w(px(8. * Typography::CONVERSATION * columns as f32))
+        .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
         .flex_shrink_0()
         .flex()
         .flex_col();
@@ -1158,7 +1158,7 @@ fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> Any
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
         .w_full()
-        .min_w(px(8. * Typography::CONVERSATION * columns as f32))
+        .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
         .flex_shrink_0()
         .flex()
         .flex_col();
