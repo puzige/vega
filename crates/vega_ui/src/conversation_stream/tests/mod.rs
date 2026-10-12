@@ -34,6 +34,7 @@ mod issue151_latest_activity;
 mod issue296_desktop_ui;
 mod issue296_hierarchy_v2;
 mod issue296_phases;
+mod issue296_process_timeline;
 mod issue296_single_activity;
 mod issue64_context_usage;
 mod issue70_tool_activity;
@@ -456,4 +457,46 @@ fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext
         .expect("single process header");
     visual.simulate_click(header.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
+}
+
+fn confirm_test_final(
+    stream: &mut ConversationStream,
+    message_id: &str,
+    cx: &mut Context<ConversationStream>,
+) {
+    let start = stream
+        .entries
+        .iter()
+        .zip(&stream.entry_identities)
+        .filter_map(|(entry, identity)| {
+            if identity.message_id.as_deref() == Some(message_id) {
+                match entry {
+                    StreamEntry::Assistant { copy, .. } => Some(copy.original_text().len()),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        })
+        .sum();
+    stream.close_active_segment_before_tool();
+    stream.apply_event(
+        ConversationEvent::TextDelta {
+            message_id: message_id.into(),
+            delta: "Final answer.".into(),
+        },
+        cx,
+    );
+    stream.apply_event(
+        ConversationEvent::AssistantResponseCompleted {
+            message_id: message_id.into(),
+            response: vega_conversation::types::AssistantResponseMetadata {
+                response_id: "test-final".into(),
+                text_start_bytes: start,
+                text_end_bytes: start + "Final answer.".len(),
+                kind: vega_conversation::types::AssistantResponseKind::Final,
+            },
+        },
+        cx,
+    );
 }

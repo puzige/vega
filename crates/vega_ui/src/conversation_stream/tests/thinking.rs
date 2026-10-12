@@ -147,7 +147,7 @@ async fn i61_thinking_blocks_follow_real_event_order_and_expand(cx: &mut TestApp
     });
     open_run_details(window, cx);
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("run-activity-content").is_some());
+    assert!(visual.debug_bounds("run-timeline-segment-0").is_some());
     assert!(visual.debug_bounds("thinking-block").is_some());
     assert!(visual.debug_bounds("thinking-content").is_none());
     let toggle = visual

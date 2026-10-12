@@ -21,6 +21,7 @@ pub(crate) enum RunActivityChild {
 
 struct RunActivitySegment {
     children: Vec<RunActivityChild>,
+    focus: FocusHandle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -151,15 +152,17 @@ impl RunActivityGroup {
     }
 
     pub(crate) fn settle_final(&mut self, reading: bool, cx: &mut Context<Self>) {
-        if !self.collapse_pending {
+        if !self.collapse_pending || reading || self.manually_expanded {
             return;
         }
         self.collapse_pending = false;
-        if !reading && !self.manually_expanded {
-            self.expanded = false;
-            self.body_in_details = true;
-        }
+        self.expanded = false;
+        self.body_in_details = true;
         cx.notify();
+    }
+
+    pub(crate) fn process_in_details(&self) -> bool {
+        self.final_confirmed && self.body_in_details
     }
 
     pub(crate) fn invalidate_final(&mut self, cx: &mut Context<Self>) {
@@ -201,26 +204,29 @@ impl RunActivityGroup {
         self.manually_expanded
             || self.focus.contains_focused(window, cx)
             || self.segments.iter().any(|segment| {
-                segment.children.iter().any(|child| match child {
-                    RunActivityChild::Thinking(card) => card.read(cx).expanded,
-                    RunActivityChild::Tool(card) => card.read(cx).is_expanded(),
-                    RunActivityChild::ToolGroup(group) => {
-                        group.read(cx).expanded()
-                            || group
-                                .read(cx)
-                                .children()
-                                .iter()
-                                .any(|card| card.read(cx).is_expanded())
-                    }
-                    RunActivityChild::Artifact(_) => false,
-                })
+                segment.focus.contains_focused(window, cx)
+                    || segment.children.iter().any(|child| match child {
+                        RunActivityChild::Thinking(card) => card.read(cx).expanded,
+                        RunActivityChild::Tool(card) => card.read(cx).is_expanded(),
+                        RunActivityChild::ToolGroup(group) => {
+                            group.read(cx).expanded()
+                                || group
+                                    .read(cx)
+                                    .children()
+                                    .iter()
+                                    .any(|card| card.read(cx).is_expanded())
+                        }
+                        RunActivityChild::Artifact(_) => false,
+                    })
             })
     }
 
     fn visible_segment_children(&self, segment: usize, _cx: &App) -> Vec<RunActivityChild> {
         self.segment_children(segment)
             .into_iter()
-            .filter(|child| matches!(child, RunActivityChild::Artifact(_)))
+            .filter(|child| {
+                !self.process_in_details() || matches!(child, RunActivityChild::Artifact(_))
+            })
             .collect()
     }
 
@@ -338,6 +344,7 @@ impl RunActivityGroup {
     pub(crate) fn start_segment(&mut self, cx: &mut Context<Self>) -> usize {
         self.segments.push(RunActivitySegment {
             children: Vec::new(),
+            focus: cx.focus_handle(),
         });
         cx.notify();
         self.segments.len() - 1
@@ -539,11 +546,8 @@ impl RunActivityGroup {
                 height += Layout::PROCESS_ITEM_GAP;
             }
             height += Self::estimated_child_height(child, width, cx);
-            if height >= Layout::TOOL_GROUP_MAX_HEIGHT {
-                break;
-            }
         }
-        height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
+        height
     }
 
     pub(crate) fn estimated_child_height(child: &RunActivityChild, width: f32, cx: &App) -> f32 {
@@ -596,7 +600,7 @@ impl RunActivityGroup {
     pub(crate) fn toggle_expanded(&mut self, cx: &mut Context<Self>) {
         self.expanded = !self.expanded;
         self.manually_expanded = self.expanded;
-        if !self.expanded && self.final_confirmed {
+        if self.final_confirmed {
             self.body_in_details = true;
         }
         cx.notify();
@@ -729,7 +733,7 @@ impl RunActivityGroup {
     }
 
     pub(crate) fn render(group: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
-        let details = if group.read(cx).expanded {
+        let details = if group.read(cx).expanded && group.read(cx).process_in_details() {
             group
                 .read(cx)
                 .children()
@@ -767,7 +771,8 @@ impl RunActivityGroup {
             colors.text_secondary
         };
         let epoch = group_ref.animation_epoch;
-        let can_expand = group_ref.has_children() || !group_ref.process_copies.is_empty();
+        let can_expand = group_ref.process_in_details()
+            && (group_ref.has_children() || !group_ref.process_copies.is_empty());
         let scroll = group_ref.scroll.clone();
         let focus = group_ref.focus.clone();
         let clock = group.downgrade();
@@ -968,11 +973,10 @@ impl RunActivityGroup {
         if children.is_empty() {
             return div().h_0().into_any_element();
         }
-        div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
+        let focus = group.read(cx).segments[segment_index].focus.clone();
+        render_rows::process_surface(&theme(cx).colors)
+            .debug_selector(move || format!("run-timeline-segment-{segment_index}"))
+            .track_focus(&focus)
             .children(
                 children
                     .into_iter()

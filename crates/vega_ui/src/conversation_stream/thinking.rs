@@ -450,7 +450,9 @@ impl ConversationStream {
                 }
                 return;
             }
-            self.close_active_segment_before_tool();
+            if self.active_response_start.is_none() || self.active_segment_has_text {
+                self.close_active_segment_before_tool();
+            }
             let Some((group, segment)) = self.ensure_live_run_activity_segment(message_id, cx)
             else {
                 return;

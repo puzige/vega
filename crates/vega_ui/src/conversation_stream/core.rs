@@ -105,6 +105,7 @@ pub struct ConversationStream {
     pub(crate) active_run_activity_segment: Option<usize>,
     pub(crate) active_agent_sequence: Option<i64>,
     pub(crate) active_segment_ordinal: usize,
+    pub(crate) active_response_start: Option<usize>,
     /// Whether the current Markdown segment contains text; a tool boundary
     /// may leave the active run without a segment until the next text delta.
     pub(crate) active_segment_has_text: bool,
@@ -463,6 +464,7 @@ impl ConversationStream {
             active_run_activity_segment: None,
             active_agent_sequence: None,
             active_segment_ordinal: 0,
+            active_response_start: None,
             active_thinking: None,
             thinking_bytes: 0,
             thinking_blocks: 0,

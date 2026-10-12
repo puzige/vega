@@ -233,6 +233,8 @@ async fn issue146_long_run_activity_is_bounded_and_keeps_its_scroll_position(
             cx,
         );
     });
+    stream.update(cx, |stream, cx| confirm_test_final(stream, "bounded", cx));
+    cx.run_until_parked();
     let group = stream.read_with(cx, |stream, _| run_group(stream, "bounded"));
     group.update(cx, |group, cx| {
         group.reveal(cx);

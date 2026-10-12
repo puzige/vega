@@ -706,3 +706,99 @@ fn issue296_single_activity_folded_commentary_reopens_with_original_selection_an
         Some("Alpha你好 😀")
     );
 }
+
+#[gpui_kit::test]
+fn issue296_timeline_t06_real_selection_clear_and_composer_focus_release_final(
+    cx: &mut TestAppContext,
+) {
+    use vega_conversation::types::{AssistantResponseKind, AssistantResponseMetadata};
+    selection::SELECTION_RUN_LAYOUTS.with_borrow_mut(Vec::clear);
+    let (stream, mut visual) = open_empty_selection_harness(cx);
+    let process = "Review Alpha你好 😀 result.";
+    selection::SELECTION_TARGET_LAYOUT
+        .with_borrow_mut(|target| *target = Some((process.into(), None)));
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "selection-run".into(),
+                seq: 1,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "selection-run".into(),
+                delta: process.into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::AssistantResponseCompleted {
+                message_id: "selection-run".into(),
+                response: AssistantResponseMetadata {
+                    response_id: "process".into(),
+                    text_start_bytes: 0,
+                    text_end_bytes: process.len(),
+                    kind: AssistantResponseKind::Commentary,
+                },
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "selection-run".into(),
+                delta: "Final.".into(),
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let layout = selection::SELECTION_TARGET_LAYOUT.with_borrow_mut(|target| {
+        target
+            .take()
+            .and_then(|(_, layout)| layout)
+            .expect("commentary selection layout")
+    });
+    drag(
+        &mut visual,
+        text_point(&layout, process.find("Alpha").unwrap(), false),
+        text_point(&layout, process.find(" result").unwrap(), true),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(gpui_kit::base::TextSelection::selected_text),
+        "Alpha你好 😀"
+    );
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::AssistantResponseCompleted {
+                message_id: "selection-run".into(),
+                response: AssistantResponseMetadata {
+                    response_id: "final".into(),
+                    text_start_bytes: process.len(),
+                    text_end_bytes: process.len() + 6,
+                    kind: AssistantResponseKind::Final,
+                },
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        assert!(!stream.process_entry_hidden(1, cx))
+    });
+    assert_eq!(
+        visual.update(gpui_kit::base::TextSelection::selected_text),
+        "Alpha你好 😀"
+    );
+    visual.update(gpui_kit::base::TextSelection::clear);
+    visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        assert!(stream.process_entry_hidden(1, cx));
+        let StreamEntry::Assistant { copy, .. } = &stream.entries[1] else {
+            panic!("process")
+        };
+        assert_eq!(copy.original_text(), process);
+    });
+}

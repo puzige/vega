@@ -358,6 +358,7 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
             );
         }
     });
+    stream.update(cx, |stream, cx| confirm_test_final(stream, "run", cx));
     open_run_details(window, cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -576,6 +577,7 @@ async fn issue296_disclosure_focus_rings_do_not_move_icons_or_labels(cx: &mut Te
             );
         }
     });
+    stream.update(cx, |stream, cx| confirm_test_final(stream, "run", cx));
     open_run_details(window, cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);

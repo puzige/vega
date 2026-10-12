@@ -18,7 +18,9 @@ fn begin(stream: &mut ConversationStream, cx: &mut Context<ConversationStream>) 
 }
 
 #[gpui_kit::test]
-async fn issue296_single_activity_default_hides_operations_and_keeps_body(cx: &mut TestAppContext) {
+async fn issue296_single_activity_default_shows_inline_operations_and_keeps_body(
+    cx: &mut TestAppContext,
+) {
     let (window, stream, _) = open_controller_stream(cx, "single-default");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -53,8 +55,8 @@ async fn issue296_single_activity_default_hides_operations_and_keeps_body(cx: &m
     cx.run_until_parked();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("run-activity-toggle").is_some());
-    assert!(visual.debug_bounds("thinking-toggle").is_none());
-    assert!(visual.debug_bounds("tool-activity-single-row").is_none());
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    assert!(visual.debug_bounds("tool-activity-single-row").is_some());
     stream.read_with(&visual, |stream, cx| {
         assert_eq!(
             stream
@@ -320,22 +322,19 @@ async fn issue296_single_activity_history_is_ordered_and_never_crosses_runs(
             cx,
         );
         let group = &stream.run_activity_groups["single"];
-        let history = stream
-            .run_details(group, cx)
+        let history = group
+            .read(cx)
+            .children()
             .into_iter()
-            .map(|(_, detail)| match detail {
-                phase::RunDetail::Operation(RunActivityChild::Thinking(card)) => {
-                    card.read(cx).text.clone()
-                }
-                phase::RunDetail::Operation(RunActivityChild::Tool(_)) => "tool".into(),
+            .map(|detail| match detail {
+                RunActivityChild::Thinking(card) => card.read(cx).text.clone(),
+                RunActivityChild::Tool(_) => "tool".into(),
                 _ => panic!("unexpected detail"),
             })
             .collect::<Vec<_>>();
         assert_eq!(history, ["first", "tool", "second", "tool"]);
         assert_eq!(
-            stream
-                .run_details(&stream.run_activity_groups["next"], cx)
-                .len(),
+            stream.run_activity_groups["next"].read(cx).children().len(),
             1
         );
         assert_eq!(
@@ -561,6 +560,14 @@ async fn issue296_single_activity_visible_artifact_anchor_stays_outside_details(
         assert_eq!(offset.offset_in_item, px(12.));
         assert!(!stream.list.is_following_tail());
     });
+    stream.update(cx, |stream, cx| {
+        assert!(!stream.restore_process_anchor(&tool_anchor, cx));
+        assert!(stream.restore_scroll_anchor(&tool_anchor));
+        assert!(!stream.run_activity_groups["single"].read(cx).expanded());
+        stream.resume_tail(cx);
+        confirm_test_final(stream, "single", cx);
+    });
+    cx.run_until_parked();
     stream.update(cx, |stream, cx| {
         assert!(stream.restore_process_anchor(&tool_anchor, cx));
         assert!(stream.run_activity_groups["single"].read(cx).expanded());

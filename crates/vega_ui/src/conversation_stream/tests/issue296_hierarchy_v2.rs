@@ -224,7 +224,7 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
     visual.simulate_click(header.center(), Modifiers::default());
     visual.run_until_parked();
     let surface = visual
-        .debug_bounds("run-activity-content")
+        .debug_bounds("run-timeline-segment-0")
         .expect("segment");
     let thinking = visual
         .debug_bounds("thinking-toggle")
@@ -233,24 +233,24 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
         .debug_bounds("tool-activity-single-row")
         .expect("tool row");
     assert_eq!(tool.top() - thinking.bottom(), px(4.));
-    assert_eq!(thinking.left(), surface.left());
+    assert_eq!(
+        thinking.left(),
+        surface.left() + px(Layout::PROCESS_PADDING_X)
+    );
     assert_eq!(tool.left(), thinking.left());
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
-        assert_eq!(geometry.entry_heights[0], 28. + 4. + 28. + 4. + 28.);
-        assert_eq!(geometry.entry_heights[1], 0.);
+        assert_eq!(geometry.entry_heights[0], 28.);
+        assert_eq!(geometry.entry_heights[1], 28. + 4. + 28.);
     });
     visual.simulate_click(tool.center(), Modifiers::default());
     visual.run_until_parked();
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
-        assert_eq!(
-            geometry.entry_heights[0],
-            28. + 4. + 28. + 4. + 28. + 4. + 98.
-        );
-        assert_eq!(geometry.entry_heights[1], 0.);
+        assert_eq!(geometry.entry_heights[1], 28. + 4. + 28. + 4. + 98.);
+        assert_eq!(geometry.entry_heights[0], 28.);
         stream.apply_event(
             ConversationEvent::TextDelta {
                 message_id: "run".into(),
