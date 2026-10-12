@@ -31,6 +31,7 @@ mod issue146_run_activity;
 mod issue147_markdown_selection;
 mod issue148_long_session_scroll;
 mod issue151_latest_activity;
+mod issue296_codex_stream;
 mod issue296_desktop_ui;
 mod issue296_hierarchy_v2;
 mod issue296_phases;

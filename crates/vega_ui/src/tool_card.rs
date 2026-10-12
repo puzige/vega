@@ -1,6 +1,5 @@
 //! Audited tool-call activities over strict `vega_conversation` projections.
 
-use crate::interaction::InteractionExt;
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
@@ -413,7 +412,7 @@ impl ToolCard {
 
     pub(crate) fn estimated_height(&self) -> f32 {
         let detail_rows = self.row_count().saturating_sub(1);
-        Layout::DISCLOSURE_HEADER_HEIGHT
+        Layout::CONVERSATION_TOOL_HEIGHT
             + if detail_rows > 0 {
                 Layout::PROCESS_ITEM_GAP
                     + (detail_rows as f32 * ROW_HEIGHT + Layout::TOOL_DETAIL_PADDING * 2.)
@@ -458,6 +457,7 @@ impl ToolCard {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn activity_action_name(&self) -> String {
         let named = match &self.input {
             Some(ToolCardInputProjection::ComputerUse { action, .. }) => {
@@ -484,6 +484,7 @@ impl ToolCard {
         self.activity_category().action_phrase().to_owned()
     }
 
+    #[cfg(test)]
     pub(crate) fn call_status(&self) -> ToolCallStatus {
         self.status
     }
@@ -509,7 +510,7 @@ impl ToolCard {
     }
 
     pub(crate) fn leading_icon_color(&self, colors: &ThemeColors) -> gpui_kit::Rgba {
-        colors.text_secondary
+        colors.conversation_tool
     }
 
     /// Content rendered by the card, used by leak-focused tests.
@@ -594,21 +595,16 @@ impl ToolCard {
                 if expanded { "收起" } else { "展开" }
             ))
             .tab_stop(expandable)
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .focus_visible(move |row| row.border_color(colors.accent))
+            .focus_visible(move |row| row.bg(colors.bg_hover))
             .debug_selector(move || debug_selector.clone())
-            .h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
-            .text_size(px(Typography::BODY))
-            .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+            .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+            .text_size(px(Typography::CONVERSATION))
+            .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
             .w_full()
             .min_w_0()
             .flex()
             .items_center()
-            .gap_2()
-            .px(px(Layout::DISCLOSURE_PADDING_X))
-            .rounded(px(Layout::DISCLOSURE_RADIUS))
-            .interactive(colors, expandable, false)
+            .gap(px(Layout::CONVERSATION_INLINE_GAP))
             .on_key_down(move |event, _, cx| {
                 if expandable && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                     keyboard_card.update(cx, |card, cx| {
@@ -637,7 +633,11 @@ impl ToolCard {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(crate::icons::icon(leading_icon, leading_icon_color)),
+                    .child(crate::icons::sized_icon(
+                        leading_icon,
+                        leading_icon_color,
+                        Layout::ICON_SIZE,
+                    )),
             )
             .child(
                 div()
@@ -645,8 +645,8 @@ impl ToolCard {
                     .min_w_0()
                     .flex_shrink(1.)
                     .truncate()
-                    .text_size(px(Typography::BODY))
-                    .text_color(colors.text_secondary)
+                    .text_size(px(Typography::CONVERSATION))
+                    .text_color(colors.conversation_tool)
                     .child(title),
             )
             .when_some(trailing_duration, |row, duration| {
@@ -655,13 +655,12 @@ impl ToolCard {
                         .debug_selector(move || duration_selector.clone())
                         .flex_shrink_0()
                         .whitespace_nowrap()
-                        .text_size(px(Typography::BODY))
-                        .text_color(colors.text_secondary)
+                        .text_size(px(Typography::CONVERSATION))
+                        .text_color(colors.conversation_tool)
                         .child(format!("· {duration}")),
                 )
             })
-            .child(div().flex_1().min_w_0())
-            .child(crate::disclosure::chevron(
+            .child(crate::disclosure::inline_chevron(
                 disclosure_group,
                 chevron_selector,
                 &focus,

@@ -168,22 +168,9 @@ impl ConversationStream {
                 self.measured_entry_heights
                     .get(&identity.key)
                     .copied()
-                    .unwrap_or_else(|| {
-                        (match entry {
-                            StreamEntry::RunActivity { group } => {
-                                self.estimated_run_height(group, cx)
-                            }
-                            _ => estimate_entry_height(entry, cx, self.workspace_width),
-                        }) + if self
-                            .assistant_role_rows
-                            .get(index)
-                            .copied()
-                            .unwrap_or(false)
-                        {
-                            Layout::ASSISTANT_ROLE_HEIGHT
-                        } else {
-                            0.
-                        }
+                    .unwrap_or_else(|| match entry {
+                        StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx),
+                        _ => estimate_entry_height(entry, cx, self.workspace_width),
                     })
             })
             .collect::<Vec<_>>();
@@ -299,7 +286,16 @@ impl ConversationStream {
         }
         self.message_anchor_window_start = self.message_anchor_window_start.min(max_start);
         let start = self.message_anchor_window_start;
-        let rail_height = count as f32 * Layout::MESSAGE_ANCHOR_HIT_HEIGHT;
+        let available_width = self
+            .workspace_width
+            .unwrap_or_else(|| f32::from(window.viewport_size().width));
+        let content_width = (available_width - 2. * Layout::CONVERSATION_PADDING)
+            .clamp(1., Layout::CONVERSATION_MAX_WIDTH);
+        let rail_left = ((available_width - content_width) / 2.
+            - Layout::CONVERSATION_MARKER_OFFSET
+            - Layout::CONVERSATION_NAVIGATION_GUTTER / 2.)
+            .max(Layout::MESSAGE_ANCHOR_LEFT_INSET);
+        let rail_height = count as f32 * Layout::CONVERSATION_MARKER_PITCH;
         let rail_top = ((geometry.viewport_height - rail_height) / 2.).max(0.);
         let colors = theme(cx).colors;
         let selected = selected_index.and_then(|index| geometry.anchors.get(index));
@@ -308,7 +304,7 @@ impl ConversationStream {
                 .unwrap_or(start)
                 .saturating_sub(start)
                 .min(count - 1) as f32
-                * Layout::MESSAGE_ANCHOR_HIT_HEIGHT;
+                * Layout::CONVERSATION_MARKER_PITCH;
             let available_width = self
                 .workspace_width
                 .unwrap_or_else(|| f32::from(window.viewport_size().width));
@@ -323,7 +319,7 @@ impl ConversationStream {
             );
             div()
                 .absolute()
-                .left(px(Layout::CONVERSATION_PADDING))
+                .left(px(rail_left + Layout::CONVERSATION_NAVIGATION_GUTTER + 4.))
                 .top(px((rail_top + offset).min(
                     (geometry.viewport_height - Layout::MESSAGE_ANCHOR_PREVIEW_HEIGHT).max(0.),
                 )))
@@ -339,7 +335,7 @@ impl ConversationStream {
             .tab_stop(true)
             .track_focus(&self.message_anchor_focus)
             .absolute()
-            .left(px(Layout::MESSAGE_ANCHOR_LEFT_INSET))
+            .left(px(rail_left))
             .top(gpui_kit::relative(0.5))
             .mt(px(-rail_height / 2.))
             .w(px(Layout::CONVERSATION_NAVIGATION_GUTTER))
@@ -358,11 +354,11 @@ impl ConversationStream {
                     let delta = f32::from(
                         event
                             .delta
-                            .pixel_delta(px(Layout::MESSAGE_ANCHOR_HIT_HEIGHT))
+                            .pixel_delta(px(Layout::CONVERSATION_MARKER_PITCH))
                             .y,
                     );
                     if delta != 0. {
-                        let step = (delta.abs() / Layout::MESSAGE_ANCHOR_HIT_HEIGHT)
+                        let step = (delta.abs() / Layout::CONVERSATION_MARKER_PITCH)
                             .ceil()
                             .max(1.) as usize;
                         this.message_anchor_window_start = if delta < 0. {
@@ -440,7 +436,7 @@ impl ConversationStream {
                             .debug_selector(move || format!("message-anchor-item-{id}"))
                             .aria_label(anchor_preview_label(anchor))
                             .w_full()
-                            .h(px(Layout::MESSAGE_ANCHOR_HIT_HEIGHT))
+                            .h(px(Layout::CONVERSATION_MARKER_PITCH))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
@@ -474,14 +470,13 @@ impl ConversationStream {
                                     .w(px(if selected {
                                         Layout::MESSAGE_ANCHOR_ACTIVE_SIZE
                                     } else {
-                                        Layout::MESSAGE_ANCHOR_MARKER_SIZE
+                                        Layout::CONVERSATION_MARKER_WIDTH
                                     }))
                                     .h(px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH))
-                                    .rounded_full()
                                     .bg(if selected {
                                         colors.text_secondary
                                     } else {
-                                        colors.border_subtle
+                                        colors.conversation_marker
                                     }),
                             )
                     }),
@@ -536,9 +531,9 @@ fn render_message_anchor_preview(
         }))
         .on_scroll_wheel(
             cx.listener(|this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
-                let delta = event
-                    .delta
-                    .pixel_delta(px(Typography::MESSAGE_LINE_HEIGHT * Typography::MESSAGE));
+                let delta = event.delta.pixel_delta(px(
+                    Typography::CONVERSATION_LINE_HEIGHT * Typography::CONVERSATION
+                ));
                 this.list.scroll_by(-delta.y);
                 cx.stop_propagation();
                 cx.notify();
@@ -632,10 +627,10 @@ pub(super) fn estimate_entry_height(
 ) -> f32 {
     let text_width = workspace_width
         .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
-        .unwrap_or(Layout::CONTENT_MAX_WIDTH)
-        .clamp(1., Layout::CONTENT_MAX_WIDTH);
-    let line_height = Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT;
-    let chars_per_line = (text_width / (Typography::MESSAGE * 0.56)).max(12.0) as usize;
+        .unwrap_or(Layout::CONVERSATION_MAX_WIDTH)
+        .clamp(1., Layout::CONVERSATION_MAX_WIDTH);
+    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    let chars_per_line = (text_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
     match entry {
         StreamEntry::RunActivity { group } => group.read(cx).estimated_header_height(),
         StreamEntry::RunActivitySegment { group, segment } => {
@@ -648,9 +643,10 @@ pub(super) fn estimate_entry_height(
         StreamEntry::Tool { card } => card.read(cx).estimated_height(),
         StreamEntry::ToolGroup { group } => group.read(cx).estimated_height(cx),
         StreamEntry::User { lines, .. } => {
-            let bubble_width = text_width * Layout::USER_MESSAGE_MAX_WIDTH_RATIO - 24.;
+            let bubble_width = text_width * Layout::CONVERSATION_USER_RATIO
+                - 2. * Layout::CONVERSATION_USER_PADDING;
             let user_chars_per_line =
-                (bubble_width / (Typography::MESSAGE * 0.56)).max(12.0) as usize;
+                (bubble_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
             let rows = lines
                 .iter()
                 .filter(|line| matches!(line.kind, LineKind::UserLine { .. }))
@@ -665,10 +661,40 @@ pub(super) fn estimate_entry_height(
                 .sum::<usize>();
             rows.max(1) as f32 * line_height
                 + Layout::USER_MESSAGE_PADDING_TOP
-                + Layout::MESSAGE_PADDING_BOTTOM
+                + Layout::CONVERSATION_USER_BOTTOM
                 + 16.
         }
         StreamEntry::Assistant { model, failure, .. } => {
+            let lines = model
+                .committed_lines
+                .iter()
+                .chain(&model.pending_lines)
+                .collect::<Vec<_>>();
+            let list_blocks = lines
+                .iter()
+                .filter(|line| line.kind == LineKind::ListItem)
+                .map(|line| line.block_id)
+                .collect::<HashSet<_>>();
+            let gaps = lines
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    let previous = index.checked_sub(1).map(|index| lines[index]);
+                    if line.kind == LineKind::Code
+                        && previous.is_some_and(|previous| {
+                            previous.kind == LineKind::Code && previous.block_id == line.block_id
+                        })
+                    {
+                        return 0.;
+                    }
+                    render_rows::markdown_block_gap(
+                        previous,
+                        line,
+                        list_blocks.contains(&line.block_id),
+                        previous.is_some_and(|line| list_blocks.contains(&line.block_id)),
+                    )
+                })
+                .sum::<f32>();
             let rows = model
                 .committed_lines
                 .iter()
@@ -683,9 +709,7 @@ pub(super) fn estimate_entry_height(
                 })
                 .sum::<usize>()
                 + usize::from(failure.is_some());
-            rows.max(1) as f32 * line_height
-                + Layout::ASSISTANT_MESSAGE_PADDING_TOP
-                + Layout::MESSAGE_PADDING_BOTTOM
+            rows.max(1) as f32 * line_height + Layout::CONVERSATION_BODY_TOP + gaps
         }
         StreamEntry::UserImages { .. } => 128.0,
         StreamEntry::Summary { card }

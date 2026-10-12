@@ -22,7 +22,7 @@
 4. [`vega_theme`](../crates/vega_theme/src/lib.rs) 与实际 controller 是当前实现事实。新数值未进入共享 token、行为未验证前，不得称为已落地。
 5. 旧任务的“允许重启”“自动合并”“验收通过”等记录不延续为本轮授权。当前按用户最新“按照spec执行”授权推进。
 
-> 最新过程展示契约见[工具时间线与最终收起](vega-issue-296-process-timeline.md)：运行中工具按发生顺序展示在对应说明后，可信最终回复后将过程统一收进可展开入口。取代[上一版单一入口](vega-issue-296-single-activity.md)把运行工具集中到顶部的规则；继续保留时长邻近标签、右侧 hover/focus 箭头、正文与安全提示外显及阅读保护。
+> 最新信息流视觉契约见[Codex截图对齐](vega-issue-296-codex-stream-parity.md)，行为契约见[工具时间线与最终收起](vega-issue-296-process-timeline.md)：运行时说明与阶段/工具按序，Final后统一收起。顶部纯计时与细分隔线，阶段箭头紧跟标题且仅hover/focus出现；不显示Vega角色行。取代上一版顶部集中工具与箭头整行靠右规则，正文、安全项与阅读保护保留。
 
 ## 2. 设计原则
 

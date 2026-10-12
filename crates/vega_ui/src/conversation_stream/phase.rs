@@ -180,8 +180,8 @@ impl ConversationStream {
         let width = self
             .workspace_width
             .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
-            .unwrap_or(Layout::CONTENT_MAX_WIDTH)
-            .clamp(1., Layout::CONTENT_MAX_WIDTH)
+            .unwrap_or(Layout::CONVERSATION_MAX_WIDTH)
+            .clamp(1., Layout::CONVERSATION_MAX_WIDTH)
             - 2. * Layout::PROCESS_PADDING_X;
         let details = self.run_details(group, cx);
         if details.is_empty() {
@@ -260,6 +260,17 @@ impl ConversationStream {
         else {
             return false;
         };
+        if let StreamEntry::RunActivitySegment { group, segment } = &self.entries[index]
+            && !group.read(cx).process_in_details()
+            && group.update(cx, |group, cx| group.reveal_segment(*segment, cx))
+        {
+            self.list.remeasure_items(index..index + 1);
+            self.list.scroll_to(gpui_kit::ListOffset {
+                item_ix: index,
+                offset_in_item: px(anchor.offset_in_item_px),
+            });
+            return true;
+        }
         if let StreamEntry::RunActivitySegment { group, segment } = &self.entries[index]
             && group
                 .read(cx)

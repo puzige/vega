@@ -3,18 +3,51 @@ use gpui_kit::{TextAlign, point};
 
 pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> AnyElement {
     let colors = theme(cx).colors;
+    styled_text(
+        text,
+        epoch,
+        Typography::BODY,
+        Layout::DISCLOSURE_HEADER_HEIGHT,
+        colors.text_tertiary,
+        colors.text_primary,
+        window,
+    )
+}
+
+pub(crate) fn stage_text(text: String, epoch: Instant, window: &Window, cx: &App) -> AnyElement {
+    let colors = theme(cx).colors;
+    styled_text(
+        text,
+        epoch,
+        Typography::CONVERSATION,
+        Layout::CONVERSATION_TOOL_HEIGHT,
+        colors.conversation_stage,
+        colors.bg_base,
+        window,
+    )
+}
+
+fn styled_text(
+    text: String,
+    epoch: Instant,
+    font_size: f32,
+    height: f32,
+    base_color: Rgba,
+    highlight: Rgba,
+    window: &Window,
+) -> AnyElement {
     let font = window.text_style().font();
     let base = TextRun {
         len: text.len(),
         font: font.clone(),
-        color: colors.text_tertiary.into(),
+        color: base_color.into(),
         background_color: None,
         underline: None,
         strikethrough: None,
     };
     let line = window.text_system().shape_line(
         text.clone().into(),
-        px(Typography::BODY),
+        px(font_size),
         std::slice::from_ref(&base),
         None,
     );
@@ -33,7 +66,7 @@ pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> A
             if width > bounds.size.width + px(1.) {
                 let ellipsis = window.text_system().shape_line(
                     "…".into(),
-                    px(Typography::BODY),
+                    px(font_size),
                     &[TextRun {
                         len: "…".len(),
                         ..base.clone()
@@ -55,8 +88,8 @@ pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> A
                     } else {
                         0.
                     };
-                    let a = colors.text_tertiary;
-                    let b = colors.text_primary;
+                    let a = base_color;
+                    let b = highlight;
                     TextRun {
                         len: ch.len_utf8(),
                         color: Rgba {
@@ -78,10 +111,9 @@ pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> A
                     colors: runs.iter().map(|run| run.color).collect(),
                 });
             }
-            let shaped =
-                window
-                    .text_system()
-                    .shape_line(shown.into(), px(Typography::BODY), &runs, None);
+            let shaped = window
+                .text_system()
+                .shape_line(shown.into(), px(font_size), &runs, None);
             let _ = shaped.paint(
                 point(bounds.left(), bounds.top()),
                 bounds.size.height,
@@ -97,7 +129,7 @@ pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> A
     )
     .w(width)
     .max_w_full()
-    .h(px(Layout::DISCLOSURE_HEADER_HEIGHT));
+    .h(px(height));
     div()
         .id("thinking-shimmer")
         .min_w_0()

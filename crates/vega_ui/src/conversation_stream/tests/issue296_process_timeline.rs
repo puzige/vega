@@ -318,7 +318,7 @@ async fn issue296_timeline_t06_temporary_reading_releases_pending_collapse(
                 focused = visual.update(|window, cx| {
                     window.painted_quads().iter().any(|quad| {
                         quad.bounds == bounds.scale(window.scale_factor())
-                            && quad.border_color == theme(cx).colors.accent.into()
+                            && quad.background.as_solid() == Some(theme(cx).colors.bg_hover.into())
                     })
                 });
                 if focused {

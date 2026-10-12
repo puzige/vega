@@ -29,7 +29,7 @@ fn issue78_user_bubble_hugs_text_and_wraps_within_column(cx: &mut TestAppContext
                 "bubble must align to column right: {bubble:?}"
             );
             assert!(
-                f32::from(bubble.size.width) <= width * 0.8 + 1.,
+                f32::from(bubble.size.width) <= width * 0.7 + 1.,
                 "bubble capped at 80%: {bubble:?}"
             );
             let layouts = render_rows::USER_TEXT_LAYOUTS.with_borrow_mut(std::mem::take);
@@ -53,8 +53,8 @@ fn issue78_user_bubble_hugs_text_and_wraps_within_column(cx: &mut TestAppContext
                         .position_for_index(offset)
                         .expect("every character remains laid out");
                     assert!(
-                        position.x >= bubble.left() + px(12.)
-                            && position.x <= bubble.right() - px(12.) + px(1.),
+                        position.x >= bubble.left() + px(16.)
+                            && position.x <= bubble.right() - px(16.) + px(1.),
                         "glyph outside bubble: {position:?} {bubble:?}"
                     );
                     assert!(
@@ -73,7 +73,7 @@ fn issue78_user_bubble_hugs_text_and_wraps_within_column(cx: &mut TestAppContext
             } else if index == 1 {
                 assert!(
                     (f32::from(bubble.size.height - short_height)
-                        - 2. * Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT)
+                        - 2. * Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
                         .abs()
                         < 1.,
                     "internal blank line preserved"
@@ -135,8 +135,8 @@ fn issue78_bubble_paints_theme_color_and_radius(cx: &mut TestAppContext) {
             visual.update(|window, _| (window.painted_quads(), window.scale_factor()));
         let painted = quads
             .iter()
-            .find(|quad| quad.background.as_solid() == Some(colors.brand_soft.into()))
-            .expect("brand_soft painted bubble");
+            .find(|quad| quad.background.as_solid() == Some(colors.conversation_bubble.into()))
+            .expect("conversation painted bubble");
         assert!((painted.bounds.size.width.0 / scale - f32::from(bubble.size.width)).abs() < 1.);
         assert!((painted.corner_radii.top_left.0 / scale - 16.).abs() < 1.);
         let layouts = render_rows::USER_TEXT_LAYOUTS.with_borrow_mut(std::mem::take);

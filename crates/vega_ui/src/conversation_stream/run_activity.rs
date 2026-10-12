@@ -1,6 +1,6 @@
 use super::*;
-use crate::interaction::InteractionExt;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
+#[cfg(test)]
 use vega_conversation::types::ToolCallStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,8 @@ pub(crate) enum RunActivityChild {
 }
 
 struct RunActivitySegment {
+    expanded: bool,
+    manually_expanded: bool,
     children: Vec<RunActivityChild>,
     focus: FocusHandle,
 }
@@ -203,21 +205,23 @@ impl RunActivityGroup {
     pub(crate) fn reading(&self, window: &Window, cx: &App) -> bool {
         self.manually_expanded
             || self.focus.contains_focused(window, cx)
-            || self.segments.iter().any(|segment| {
-                segment.focus.contains_focused(window, cx)
-                    || segment.children.iter().any(|child| match child {
-                        RunActivityChild::Thinking(card) => card.read(cx).expanded,
-                        RunActivityChild::Tool(card) => card.read(cx).is_expanded(),
-                        RunActivityChild::ToolGroup(group) => {
-                            group.read(cx).expanded()
-                                || group
-                                    .read(cx)
-                                    .children()
-                                    .iter()
-                                    .any(|card| card.read(cx).is_expanded())
-                        }
-                        RunActivityChild::Artifact(_) => false,
-                    })
+            || self.segments.iter().enumerate().any(|(index, segment)| {
+                segment.manually_expanded
+                    || segment.focus.contains_focused(window, cx)
+                    || ((self.stage_thinking(index).is_none() || segment.expanded)
+                        && segment.children.iter().any(|child| match child {
+                            RunActivityChild::Thinking(card) => card.read(cx).expanded,
+                            RunActivityChild::Tool(card) => card.read(cx).is_expanded(),
+                            RunActivityChild::ToolGroup(group) => {
+                                group.read(cx).expanded()
+                                    || group
+                                        .read(cx)
+                                        .children()
+                                        .iter()
+                                        .any(|card| card.read(cx).is_expanded())
+                            }
+                            RunActivityChild::Artifact(_) => false,
+                        }))
             })
     }
 
@@ -343,6 +347,8 @@ impl RunActivityGroup {
 
     pub(crate) fn start_segment(&mut self, cx: &mut Context<Self>) -> usize {
         self.segments.push(RunActivitySegment {
+            expanded: false,
+            manually_expanded: false,
             children: Vec::new(),
             focus: cx.focus_handle(),
         });
@@ -358,6 +364,9 @@ impl RunActivityGroup {
     ) {
         cx.observe(&card, |_, _, cx| cx.notify()).detach();
         if let Some(segment) = self.segments.get_mut(segment) {
+            if segment.expanded {
+                card.update(cx, |card, cx| card.set_expanded(true, cx));
+            }
             segment.children.push(RunActivityChild::Thinking(card));
         }
         cx.notify();
@@ -539,6 +548,38 @@ impl RunActivityGroup {
     }
 
     pub(crate) fn estimated_segment_height(&self, segment: usize, width: f32, cx: &App) -> f32 {
+        if let Some(title_card) = self.stage_thinking(segment) {
+            let mut height = Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT;
+            for child in self.segment_children(segment) {
+                height += match child {
+                    RunActivityChild::Artifact(card) => {
+                        card.read(cx).row_count() as f32 * ROW_HEIGHT + 12.
+                    }
+                    RunActivityChild::Tool(card) if self.segments[segment].expanded => {
+                        card.read(cx).estimated_height()
+                    }
+                    RunActivityChild::ToolGroup(group) if self.segments[segment].expanded => group
+                        .read(cx)
+                        .children()
+                        .iter()
+                        .map(|card| card.read(cx).estimated_height())
+                        .sum(),
+                    RunActivityChild::Thinking(card)
+                        if self.segments[segment].expanded
+                            && (card != title_card || card.read(cx).has_stage_content()) =>
+                    {
+                        card.read(cx).estimated_source_height(width)
+                            + if card.read(cx).truncated {
+                                Typography::METADATA * Typography::BODY_LINE_HEIGHT
+                            } else {
+                                0.
+                            }
+                    }
+                    _ => 0.,
+                };
+            }
+            return height;
+        }
         let children = self.visible_segment_children(segment, cx);
         let mut height = 0.;
         for (index, child) in children.iter().enumerate() {
@@ -560,7 +601,9 @@ impl RunActivityGroup {
     }
 
     pub(crate) fn estimated_header_height(&self) -> f32 {
-        Layout::DISCLOSURE_HEADER_HEIGHT
+        Layout::CONVERSATION_CLOCK_HEIGHT
+            + Layout::CONVERSATION_DIVIDER_GAP
+            + Layout::CONVERSATION_DIVIDER_HEIGHT
     }
 
     fn child_row_count(child: &RunActivityChild, cx: &App) -> usize {
@@ -622,13 +665,15 @@ impl RunActivityGroup {
         duration
             .map(|value| format!("{status} {}", format_run_clock(value)))
             .unwrap_or_else(|| match self.status {
-                RunActivityStatus::Running => "Working".into(),
+                RunActivityStatus::Running if self.waiting_for_user => "等待确认".into(),
+                RunActivityStatus::Running => "运行中".into(),
                 RunActivityStatus::Completed => "已完成".into(),
                 RunActivityStatus::Failed => "已失败".into(),
                 RunActivityStatus::Interrupted => "已停止".into(),
             })
     }
 
+    #[cfg(test)]
     fn activity_presentation(&self, cx: &App) -> (String, crate::icons::Icon, bool) {
         use crate::icons::Icon;
         use crate::tool_card::ToolActivityState;
@@ -756,21 +801,13 @@ impl RunActivityGroup {
         let colors = theme(cx).colors;
         let group_ref = group.read(cx);
         let expanded = group_ref.expanded;
-        let (label, glyph, shimmering) = group_ref.activity_presentation(cx);
-        let clock_label = (!group_ref.terminal).then(|| {
-            let label = group_ref.label();
-            label
-                .strip_prefix("等待确认 · ")
-                .unwrap_or(&label)
-                .to_owned()
-        });
+        let label = group_ref.label();
         let exception = group_ref.exception_label(cx);
         let status_color = if group_ref.status == RunActivityStatus::Failed {
             colors.danger
         } else {
-            colors.text_secondary
+            colors.conversation_clock
         };
-        let epoch = group_ref.animation_epoch;
         let can_expand = group_ref.process_in_details()
             && (group_ref.has_children() || !group_ref.process_copies.is_empty());
         let scroll = group_ref.scroll.clone();
@@ -793,22 +830,17 @@ impl RunActivityGroup {
                 "{label}，{}本轮过程",
                 if expanded { "收起" } else { "展开" }
             ))
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .focus_visible(move |row| row.border_color(colors.accent))
+            .focus_visible(move |row| row.bg(colors.bg_hover))
             .debug_selector(|| "run-activity-toggle".to_string())
             .relative()
             .w_full()
-            .h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
-            .text_size(px(Typography::BODY))
-            .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+            .h(px(Layout::CONVERSATION_CLOCK_HEIGHT))
+            .text_size(px(Typography::CONVERSATION))
+            .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
             .min_w_0()
             .flex()
             .items_center()
-            .gap_2()
-            .px(px(Layout::DISCLOSURE_PADDING_X))
-            .rounded(px(Layout::DISCLOSURE_RADIUS))
-            .interactive(colors, can_expand, false)
+            .gap(px(Layout::CONVERSATION_INLINE_GAP))
             .on_key_down(move |event, _, cx| {
                 if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                     keyboard_toggle.update(cx, RunActivityGroup::toggle_expanded);
@@ -825,38 +857,13 @@ impl RunActivityGroup {
             })
             .child(
                 div()
-                    .debug_selector(|| "run-activity-icon".into())
-                    .size(px(Layout::ICON_SIZE))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(crate::icons::icon(glyph, status_color)),
-            )
-            .child(
-                div()
                     .debug_selector(|| "run-activity-status".into())
                     .min_w_0()
                     .flex_shrink(1.)
                     .truncate()
                     .text_color(status_color)
-                    .child(if shimmering {
-                        shimmer::text(label, epoch, window, cx)
-                    } else {
-                        div().child(label).into_any_element()
-                    }),
+                    .child(label),
             )
-            .when_some(clock_label, |row, label| {
-                row.child(
-                    div()
-                        .debug_selector(|| "run-activity-clock".into())
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_tertiary)
-                        .child(format!("· {label}")),
-                )
-            })
             .when_some(exception, |row, label| {
                 row.child(
                     div()
@@ -868,8 +875,7 @@ impl RunActivityGroup {
                         .child(label),
                 )
             })
-            .child(div().flex_1().min_w_0())
-            .child(crate::disclosure::chevron(
+            .child(crate::disclosure::inline_chevron(
                 disclosure_group,
                 "run-activity-chevron".into(),
                 &header_focus,
@@ -893,7 +899,16 @@ impl RunActivityGroup {
                 .inset_0(),
             );
         render_rows::process_surface(&colors)
+            .gap_0()
             .child(header)
+            .child(
+                div()
+                    .debug_selector(|| "run-activity-divider".into())
+                    .mt(px(Layout::CONVERSATION_DIVIDER_GAP))
+                    .h(px(Layout::CONVERSATION_DIVIDER_HEIGHT))
+                    .w_full()
+                    .bg(colors.conversation_divider),
+            )
             .when(expanded && !details.is_empty(), |column| {
                 column.child(
                     div()
@@ -963,6 +978,55 @@ impl RunActivityGroup {
         }
     }
 
+    fn stage_thinking(&self, segment: usize) -> Option<Entity<ThinkingBlock>> {
+        if self.process_in_details() {
+            return None;
+        }
+        self.segments
+            .get(segment)?
+            .children
+            .iter()
+            .rev()
+            .find_map(|child| match child {
+                RunActivityChild::Thinking(card) => Some(card.clone()),
+                _ => None,
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn segment_expanded(&self, segment: usize) -> bool {
+        self.segments[segment].expanded
+    }
+
+    pub(crate) fn reveal_segment(&mut self, segment: usize, cx: &mut Context<Self>) -> bool {
+        if self.stage_thinking(segment).is_none() {
+            return false;
+        }
+        let state = &mut self.segments[segment];
+        if !state.expanded {
+            state.expanded = true;
+            for child in &state.children {
+                if let RunActivityChild::Thinking(card) = child {
+                    card.update(cx, |card, cx| card.set_expanded(true, cx));
+                }
+            }
+            cx.notify();
+        }
+        true
+    }
+
+    fn toggle_segment(&mut self, segment: usize, cx: &mut Context<Self>) {
+        let state = &mut self.segments[segment];
+        state.expanded = !state.expanded;
+        state.manually_expanded = state.expanded;
+        for child in &state.children {
+            if let RunActivityChild::Thinking(card) = child {
+                card.update(cx, |card, cx| card.set_expanded(state.expanded, cx));
+            }
+        }
+        cx.notify();
+    }
+
     pub(crate) fn render_segment(
         group: Entity<Self>,
         segment_index: usize,
@@ -973,15 +1037,120 @@ impl RunActivityGroup {
         if children.is_empty() {
             return div().h_0().into_any_element();
         }
-        let focus = group.read(cx).segments[segment_index].focus.clone();
-        render_rows::process_surface(&theme(cx).colors)
+        let colors = theme(cx).colors;
+        let state = group.read(cx);
+        let focus = state.segments[segment_index].focus.clone();
+        let thinking = state.stage_thinking(segment_index);
+        let expanded = state.segments[segment_index].expanded;
+        let shimmering = !state.terminal
+            && !state.waiting_for_user
+            && state.phase == RunPhase::Thinking
+            && thinking.is_some()
+            && state.current_thinking == thinking;
+        let epoch = state.animation_epoch;
+        let mut rows = Vec::new();
+        if let Some(card) = &thinking {
+            let title = card.read(cx).title().to_owned();
+            let disclosure_group: gpui_kit::SharedString =
+                format!("run-stage-{}-{segment_index}", group.entity_id()).into();
+            let header_focus = crate::disclosure::focus(disclosure_group.clone(), window, cx);
+            let toggle = group.clone();
+            let click_focus = header_focus.clone();
+            let keyboard = group.clone();
+            rows.push(
+                div()
+                    .id(("run-stage-toggle", segment_index))
+                    .debug_selector(move || format!("run-stage-toggle-{segment_index}"))
+                    .group(disclosure_group.clone())
+                    .track_focus(&header_focus)
+                    .tab_stop(true)
+                    .aria_expanded(expanded)
+                    .aria_label(format!(
+                        "{title}，{}阶段过程",
+                        if expanded { "收起" } else { "展开" }
+                    ))
+                    .focus_visible(move |row| row.bg(colors.bg_hover))
+                    .w_full()
+                    .min_w_0()
+                    .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+                    .text_size(px(Typography::CONVERSATION))
+                    .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+                    .text_color(colors.conversation_stage)
+                    .flex()
+                    .items_center()
+                    .gap(px(Layout::CONVERSATION_INLINE_GAP))
+                    .cursor_pointer()
+                    .on_mouse_up(MouseButton::Left, move |_: &MouseUpEvent, window, cx| {
+                        click_focus.focus(window, cx);
+                        toggle.update(cx, |group, cx| group.toggle_segment(segment_index, cx))
+                    })
+                    .on_key_down(move |event, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            keyboard
+                                .update(cx, |group, cx| group.toggle_segment(segment_index, cx));
+                            cx.stop_propagation();
+                        }
+                    })
+                    .child(
+                        div()
+                            .debug_selector(move || format!("run-stage-title-{segment_index}"))
+                            .min_w_0()
+                            .flex_shrink(1.)
+                            .truncate()
+                            .child(if shimmering {
+                                shimmer::stage_text(title, epoch, window, cx)
+                            } else {
+                                div().child(title).into_any_element()
+                            }),
+                    )
+                    .child(crate::disclosure::inline_chevron(
+                        disclosure_group,
+                        format!("run-stage-chevron-{segment_index}"),
+                        &header_focus,
+                        expanded,
+                        true,
+                        colors,
+                        window,
+                    ))
+                    .into_any_element(),
+            );
+        }
+        let mut tool_index = 0;
+        for child in children {
+            if thinking.is_none() || matches!(child, RunActivityChild::Artifact(_)) {
+                rows.push(Self::render_child(child, window, cx));
+            } else if expanded {
+                let cards = match child {
+                    RunActivityChild::Thinking(card) => {
+                        if thinking.as_ref() != Some(&card) || card.read(cx).has_stage_content() {
+                            rows.push(ThinkingBlock::render_stage_content(card, cx));
+                        }
+                        Vec::new()
+                    }
+                    RunActivityChild::Tool(card) => vec![card],
+                    RunActivityChild::ToolGroup(group) => group.read(cx).children(),
+                    RunActivityChild::Artifact(_) => Vec::new(),
+                };
+                for card in cards {
+                    rows.push(ToolCard::render(
+                        card,
+                        format!("run-stage-tool-{segment_index}-{tool_index}"),
+                        false,
+                        window,
+                        cx,
+                    ));
+                    tool_index += 1;
+                }
+            }
+        }
+        render_rows::process_surface(&colors)
+            .gap_0()
+            .when(thinking.is_some(), |surface| {
+                surface.pt(px(Layout::CONVERSATION_STAGE_TOP))
+            })
             .debug_selector(move || format!("run-timeline-segment-{segment_index}"))
             .track_focus(&focus)
-            .children(
-                children
-                    .into_iter()
-                    .map(|child| Self::render_child(child, window, cx)),
-            )
+            .children(rows)
             .into_any_element()
     }
 }

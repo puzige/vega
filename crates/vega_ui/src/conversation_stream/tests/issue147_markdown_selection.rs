@@ -27,7 +27,7 @@ fn open_selection_harness(
     open_stream_harness(cx, stream)
 }
 
-fn open_empty_selection_harness(
+pub(super) fn open_empty_selection_harness(
     cx: &mut TestAppContext,
 ) -> (Entity<ConversationStream>, VisualTestContext) {
     let stream = new_selection_stream(cx);
@@ -451,7 +451,8 @@ fn inline_highlight_case(
         text,
     );
     if text == "inline_code" && range.start > 0 {
-        let code_background = visual.update(|_, cx| vega_theme::theme(cx).colors.code_bg.into());
+        let code_background =
+            visual.update(|_, cx| vega_theme::theme(cx).colors.conversation_code.into());
         assert_range_background(
             &mut visual,
             &layout,
@@ -528,8 +529,8 @@ fn issue296_v3_markdown_mixed_blocks_use_semantic_gaps_and_preserve_copy(cx: &mu
         .debug_bounds("markdown-block-6")
         .expect("table block");
     assert_eq!(heading.line_layouts()[0].font_size(), px(22.));
-    assert_eq!(paragraph.line_layouts()[0].font_size(), px(15.));
-    assert!((f32::from(paragraph.line_height()) - 24.75).abs() <= 0.5);
+    assert_eq!(paragraph.line_layouts()[0].font_size(), px(13.5));
+    assert!((f32::from(paragraph.line_height()) - 23.).abs() <= 0.5);
     assert_eq!(
         heading.bounds().top() - paragraph.bounds().bottom(),
         px(24.)
@@ -556,7 +557,7 @@ fn issue296_v3_markdown_mixed_blocks_use_semantic_gaps_and_preserve_copy(cx: &mu
     assert_eq!(table_block.top() - code_surface.bottom(), px(16.));
     assert_eq!(table.bounds().top() - table_block.top(), px(8.));
     assert_eq!(table.bounds().left() - table_block.left(), px(12.));
-    assert_eq!(table.line_layouts()[0].font_size(), px(15.));
+    assert_eq!(table.line_layouts()[0].font_size(), px(13.5));
     let last = layout_for("Value");
     drag(
         &mut visual,

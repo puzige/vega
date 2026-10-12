@@ -153,6 +153,61 @@ impl ThinkingBlock {
         }
     }
 
+    pub(crate) fn source_text(&self) -> String {
+        if self.text.trim().is_empty() || !self.summary_has_content {
+            return self.visible_text().to_owned();
+        }
+        format!("{}\n\n{}", self.text, self.summary)
+    }
+
+    pub(crate) fn has_stage_content(&self) -> bool {
+        !self.text.trim().is_empty()
+            || (self.summary_has_content && self.summary.trim() != self.title())
+    }
+
+    pub(crate) fn render_stage_content(card: Entity<Self>, cx: &mut App) -> AnyElement {
+        let colors = theme(cx).colors;
+        card.update(cx, |card, _| card.expanded_rendered = true);
+        let state = card.read(cx);
+        let scroll = state.scroll.clone();
+        let text = state.source_text();
+        let selector = format!("run-stage-source-{}", card.entity_id());
+        let truncated = state.truncated;
+        div()
+            .relative()
+            .debug_selector(move || selector.clone())
+            .w_full()
+            .min_w_0()
+            .child(
+                div()
+                    .id(("stage-thinking-content", card.entity_id()))
+                    .debug_selector(|| "stage-thinking-content".into())
+                    .w_full()
+                    .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
+                    .overflow_x_hidden()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
+                    .pr(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER))
+                    .text_size(px(Typography::CONVERSATION))
+                    .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+                    .text_color(colors.text_secondary)
+                    .child(gpui_kit::base::SelectableText::new(
+                        ("stage-thinking-text", card.entity_id()),
+                        text,
+                    )),
+            )
+            .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
+            .when(truncated, |body| {
+                body.child(
+                    div()
+                        .text_size(px(Typography::METADATA))
+                        .child("思考内容已达显示上限"),
+                )
+            })
+            .into_any_element()
+    }
+
     #[cfg(test)]
     pub(crate) fn scroll_handle(&self) -> ScrollHandle {
         self.scroll.clone()
@@ -185,38 +240,36 @@ impl ThinkingBlock {
         1 + usize::from(self.expanded) + usize::from(self.truncated)
     }
 
-    pub(crate) fn estimated_height(&self, width: f32) -> f32 {
-        let chars_per_line = ((width - 2. * Layout::DISCLOSURE_PADDING_X).max(1.)
-            / (Typography::MESSAGE * 0.56))
+    pub(crate) fn estimated_source_height(&self, width: f32) -> f32 {
+        let chars_per_line = ((width - Layout::DISCLOSURE_SCROLLBAR_GUTTER).max(1.)
+            / (Typography::CONVERSATION * 0.56))
             .max(1.) as usize;
-        let content_height = if self.expanded {
-            let max_lines = (Layout::DISCLOSURE_CONTENT_MAX_HEIGHT
-                / (Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT))
-                .ceil() as usize;
-            let mut completed_lines = 0;
-            let mut line_width: usize = 0;
-            for ch in self.visible_text().chars() {
-                if ch == '\n' {
-                    completed_lines += line_width.div_ceil(chars_per_line).max(1);
-                    line_width = 0;
-                } else {
-                    line_width += display_width(ch.encode_utf8(&mut [0; 4]));
-                }
-                if completed_lines + line_width.div_ceil(chars_per_line) >= max_lines {
-                    completed_lines = max_lines;
-                    line_width = 0;
-                    break;
-                }
+        let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+        let max_lines = (Layout::DISCLOSURE_CONTENT_MAX_HEIGHT / line_height).ceil() as usize;
+        let mut lines = 0;
+        let mut chars = 0usize;
+        for ch in self.source_text().chars() {
+            if ch == '\n' {
+                lines += chars.div_ceil(chars_per_line).max(1);
+                chars = 0usize;
+            } else {
+                chars += display_width(ch.encode_utf8(&mut [0; 4]));
             }
-            let lines = (completed_lines + line_width.div_ceil(chars_per_line)).max(1);
-            Layout::PROCESS_ITEM_GAP
-                + (lines as f32 * Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT)
-                    .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
-        } else {
-            0.
-        };
+            if lines + chars.div_ceil(chars_per_line) >= max_lines {
+                return Layout::DISCLOSURE_CONTENT_MAX_HEIGHT;
+            }
+        }
+        ((lines + chars.div_ceil(chars_per_line)).max(1) as f32 * line_height)
+            .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+    }
+
+    pub(crate) fn estimated_height(&self, width: f32) -> f32 {
         Layout::DISCLOSURE_HEADER_HEIGHT
-            + content_height
+            + if self.expanded {
+                Layout::PROCESS_ITEM_GAP + self.estimated_source_height(width)
+            } else {
+                0.
+            }
             + if self.truncated {
                 Layout::PROCESS_ITEM_GAP + Typography::METADATA * Typography::BODY_LINE_HEIGHT
             } else {
@@ -373,12 +426,14 @@ impl Render for ThinkingBlock {
                                 .min_w_0()
                                 .pl(px(Layout::DISCLOSURE_PADDING_X))
                                 .pr(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER))
-                                .text_size(px(Typography::MESSAGE))
-                                .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
+                                .text_size(px(Typography::CONVERSATION))
+                                .line_height(gpui_kit::relative(
+                                    Typography::CONVERSATION_LINE_HEIGHT,
+                                ))
                                 .text_color(colors.text_secondary)
                                 .child(gpui_kit::base::SelectableText::new(
                                     "thinking-text",
-                                    self.visible_text().to_owned(),
+                                    self.source_text(),
                                 )),
                         )
                         .child(crate::tool_card::disclosure_scrollbar(&self.scroll, cx)),
@@ -462,7 +517,6 @@ impl ConversationStream {
                 group.append_thinking(segment, card.clone(), cx)
             });
             self.thinking_blocks += 1;
-            card.update(cx, |card, cx| card.set_expanded(false, cx));
             self.active_thinking = Some(card);
         }
         if let Some(card) = &self.active_thinking {

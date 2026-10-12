@@ -1704,7 +1704,7 @@ impl Render for ConversationStream {
                             .debug_selector(|| "conversation-column".into())
                             .min_w_0()
                             .w_full()
-                            .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                            .max_w(px(Layout::CONVERSATION_MAX_WIDTH))
                             .mx_auto()
                             .when(!self.entries.is_empty(), |body| body.h_full())
                             .child(body),

@@ -42,21 +42,19 @@ async fn issue296_reading_column_and_navigation_do_not_compete(cx: &mut TestAppC
                 .expect("list");
             let composer = visual.debug_bounds("composer-shell").expect("composer");
             let rail = visual.debug_bounds("message-anchor-rail").expect("rail");
-            assert_eq!(
-                list.left(),
-                composer.left(),
-                "rail must not consume the reading column"
-            );
-            assert_eq!(list.right(), composer.right());
-            assert_eq!(column.size.width, px((width - 64.).min(768.)));
+            assert_eq!(list.center().x, composer.center().x, "shared reading axis");
+            assert_eq!(column.size.width, px((width - 64.).min(736.)));
             assert_eq!(rail.size.width, px(24.));
-            assert_eq!(rail.size.height, px(144.));
-            assert_eq!(rail.left(), px(4.));
+            assert_eq!(rail.size.height, px(90.));
+            assert_eq!(rail.center().x, (list.left() - px(54.)).max(px(16.)));
             assert!((f32::from(rail.center().y - list.center().y)).abs() < 1.);
             assert!(rail.right() <= list.left());
             let (quads, scale) =
                 visual.update(|window, _| (window.painted_quads(), window.scale_factor()));
-            for (side, color) in [(8., colors.border_subtle), (16., colors.text_secondary)] {
+            for (side, color) in [
+                (6., colors.conversation_marker),
+                (16., colors.text_secondary),
+            ] {
                 assert!(
                     quads.iter().any(|quad| {
                         (quad.bounds.size.width.as_f32() / scale - side).abs() < 0.1
@@ -168,16 +166,23 @@ async fn issue296_process_headers_share_the_control_rhythm(cx: &mut TestAppConte
     open_run_details(window, cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    for (selector, icon_selector) in [
-        ("run-activity-toggle", "run-activity-icon"),
-        ("thinking-toggle", "thinking-icon"),
-    ] {
-        let header = visual.debug_bounds(selector).expect("process header");
-        let icon = visual.debug_bounds(icon_selector).expect("process icon");
-        assert_eq!(header.size.height, px(28.), "{selector}");
-        assert_eq!(icon.size, size(px(16.), px(16.)));
-        assert_eq!(icon.center().y, header.center().y);
-    }
+    assert_eq!(
+        visual
+            .debug_bounds("run-activity-toggle")
+            .unwrap()
+            .size
+            .height,
+        px(23.)
+    );
+    assert_eq!(
+        visual
+            .debug_bounds("run-stage-toggle-0")
+            .unwrap()
+            .size
+            .height,
+        px(25.)
+    );
+    assert!(visual.debug_bounds("run-activity-icon").is_none());
     stream.update(&mut visual, |stream, cx| {
         for id in ["one", "two"] {
             stream.apply_event(
@@ -190,21 +195,18 @@ async fn issue296_process_headers_share_the_control_rhythm(cx: &mut TestAppConte
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("tool-activity-child-0").is_none());
-    let group = visual
-        .debug_bounds("tool-activity-group-toggle")
-        .expect("collapsed tool group");
-    visual.simulate_click(group.center(), Modifiers::default());
+    let stage = visual
+        .debug_bounds("run-stage-toggle-0")
+        .expect("collapsed stage");
+    visual.simulate_click(stage.center(), Modifiers::default());
     visual.run_until_parked();
     for (selector, icon_selector) in [
-        ("run-activity-toggle", "run-activity-icon"),
-        ("tool-activity-group-toggle", "tool-activity-group-icon"),
-        ("tool-activity-child-0", "tool-activity-child-0-icon"),
+        ("run-stage-tool-0-0", "run-stage-tool-0-0-icon"),
+        ("run-stage-tool-0-1", "run-stage-tool-0-1-icon"),
     ] {
         let header = visual.debug_bounds(selector).expect("tool process header");
-        let icon = visual
-            .debug_bounds(icon_selector)
-            .expect("tool process icon");
-        assert_eq!(header.size.height, px(28.), "{selector}");
+        let icon = visual.debug_bounds(icon_selector).expect("tool icon");
+        assert_eq!(header.size.height, px(25.));
         assert_eq!(icon.size, size(px(16.), px(16.)));
         assert_eq!(icon.center().y, header.center().y);
     }
@@ -297,11 +299,11 @@ fn issue296_message_rhythm_matches_for_selected_and_plain_renderers(cx: &mut Tes
         let bubble = visual.debug_bounds("user-message-bubble").expect("bubble");
         let assistant = visual.debug_bounds("assistant-message").expect("assistant");
         assert_eq!(bubble.top() - user.top(), px(24.));
-        assert_eq!(user.bottom() - bubble.bottom(), px(16.));
+        assert_eq!(user.bottom() - bubble.bottom(), px(48.));
         assert_eq!(assistant.top(), user.bottom());
         assert!(
             (f32::from(assistant.size.height)
-                - (24. + Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT))
+                - (16. + Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT))
                 .abs()
                 < 1.
         );
@@ -409,7 +411,11 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
             visual.run_until_parked();
             advance_interaction(&mut visual);
             assert!(
-                has_hover_surface(&mut visual, row, colors.bg_hover),
+                has_hover_surface(&mut visual, row, colors.bg_hover)
+                    == matches!(
+                        selector,
+                        "thinking-toggle" | "composer-model" | "composer-permission-status"
+                    ),
                 "{selector} hover feedback"
             );
             if let Some(chevron) = chevron {
@@ -590,7 +596,7 @@ async fn issue296_disclosure_focus_rings_do_not_move_icons_or_labels(cx: &mut Te
     let selectors = [
         (
             "run-activity-toggle",
-            "run-activity-icon",
+            "run-activity-status",
             "run-activity-status",
         ),
         ("thinking-toggle", "thinking-icon", "thinking-title"),
@@ -626,7 +632,8 @@ async fn issue296_disclosure_focus_rings_do_not_move_icons_or_labels(cx: &mut Te
             assert_eq!(visual.debug_bounds(label), Some(before[index].2));
             let receives_focus = quads.iter().any(|quad| {
                 quad.bounds == before[index].0.scale(scale)
-                    && quad.border_color == vega_theme::LIGHT.accent.into()
+                    && (quad.border_color == vega_theme::LIGHT.accent.into()
+                        || quad.background.as_solid() == Some(vega_theme::LIGHT.bg_hover.into()))
             });
             if receives_focus {
                 let chevron = [

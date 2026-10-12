@@ -1747,7 +1747,7 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
     let body = bounds(window, "tool-activity-group", cx);
     let header = bounds(window, "tool-activity-group-toggle", cx);
     let content = bounds(window, "tool-activity-group-content", cx);
-    assert_eq!(header.size.height, px(Layout::DISCLOSURE_HEADER_HEIGHT));
+    assert_eq!(header.size.height, px(Layout::CONVERSATION_TOOL_HEIGHT));
     assert_eq!(header.top(), body.top());
     assert_eq!(
         content.top(),
@@ -1760,7 +1760,7 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
         header.size.height + px(Layout::PROCESS_ITEM_GAP) + content.size.height
     );
     assert!(
-        body.size.height <= px(320. + Layout::DISCLOSURE_HEADER_HEIGHT + Layout::PROCESS_ITEM_GAP),
+        body.size.height <= px(320. + Layout::CONVERSATION_TOOL_HEIGHT + Layout::PROCESS_ITEM_GAP),
         "group: {:?}",
         body.size.height
     );
