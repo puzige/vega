@@ -2809,6 +2809,7 @@ async fn a7_first_submit_provider_quota_failure_is_visible_and_durable(
     assert!(!visible.contains(SENTINEL));
     assert!(!visible.contains("本地凭据缺失"));
     f.bounds("assistant-run-failure", cx);
+    assert!(f.absent("conversation-controller-error", cx));
     assert_eq!(f.thread_rows(), 1, "post-start failure retains its task");
     let store = f.store();
     let (status, content): (String, String) = store
@@ -2866,6 +2867,7 @@ async fn a7_provider_http_failure_uses_safe_fallback(cx: &mut gpui_kit::TestAppC
     assert!(!visible.contains("PRIVATE_PROVIDER_BODY_SENTINEL"));
     assert!(!visible.contains("额度不足"));
     f.bounds("assistant-run-failure", cx);
+    assert!(f.absent("conversation-controller-error", cx));
 }
 
 /// A7-03: an out-of-order error is not allowed to terminate or annotate the
@@ -2921,6 +2923,7 @@ async fn a7_foreign_runtime_error_cannot_mark_current_turn(cx: &mut gpui_kit::Te
     assert!(visible.contains("运行环境"));
     assert!(!visible.contains("PRIVATE_RUNTIME_SENTINEL"));
     f.bounds("assistant-run-failure", cx);
+    assert!(f.absent("conversation-controller-error", cx));
 }
 
 /// #60 supersedes A7's price readiness gate: the unpriced first message

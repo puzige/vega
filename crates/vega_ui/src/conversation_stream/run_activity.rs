@@ -234,6 +234,10 @@ impl RunActivityGroup {
             .collect()
     }
 
+    pub(crate) fn status(&self) -> RunActivityStatus {
+        self.status
+    }
+
     pub(crate) fn expanded(&self) -> bool {
         self.expanded
     }
@@ -750,33 +754,6 @@ impl RunActivityGroup {
         (summary.unwrap_or("Thinking").to_owned(), Icon::Bot, true)
     }
 
-    pub(crate) fn exception_label(&self, cx: &App) -> Option<&'static str> {
-        use crate::tool_card::ToolActivityState;
-        let state = self
-            .children()
-            .into_iter()
-            .flat_map(|child| match child {
-                RunActivityChild::Tool(card) => vec![card],
-                RunActivityChild::ToolGroup(group) => group.read(cx).children(),
-                _ => Vec::new(),
-            })
-            .map(|card| card.read(cx).activity_state())
-            .filter(|state| {
-                matches!(
-                    state,
-                    ToolActivityState::Failed
-                        | ToolActivityState::Rejected
-                        | ToolActivityState::Cancelled
-                )
-            })
-            .max_by_key(|state| state.priority());
-        state.map(|state| match state {
-            ToolActivityState::Failed => "含失败操作",
-            ToolActivityState::Rejected => "含已拒绝操作",
-            _ => "含已取消操作",
-        })
-    }
-
     pub(crate) fn render(group: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
         let details = if group.read(cx).expanded && group.read(cx).process_in_details() {
             group
@@ -802,12 +779,7 @@ impl RunActivityGroup {
         let group_ref = group.read(cx);
         let expanded = group_ref.expanded;
         let label = group_ref.label();
-        let exception = group_ref.exception_label(cx);
-        let status_color = if group_ref.status == RunActivityStatus::Failed {
-            colors.danger
-        } else {
-            colors.conversation_clock
-        };
+        let status_color = colors.conversation_clock;
         let can_expand = group_ref.process_in_details()
             && (group_ref.has_children() || !group_ref.process_copies.is_empty());
         let scroll = group_ref.scroll.clone();
@@ -864,17 +836,6 @@ impl RunActivityGroup {
                     .text_color(status_color)
                     .child(label),
             )
-            .when_some(exception, |row, label| {
-                row.child(
-                    div()
-                        .debug_selector(|| "run-activity-exception".into())
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.danger)
-                        .child(label),
-                )
-            })
             .child(crate::disclosure::inline_chevron(
                 disclosure_group,
                 "run-activity-chevron".into(),

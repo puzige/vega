@@ -80,6 +80,7 @@ impl ConversationStream {
             }
             _ => {
                 self.skill_projection = None;
+                self.controller_runtime_error = None;
                 self.controller_error = Some("Skills 来源已变化，请刷新后重试".into());
             }
         }
@@ -188,9 +189,11 @@ impl ConversationStream {
     pub fn finish_skill_mutation(&mut self, success: bool, cx: &mut Context<Self>) {
         self.skill_mutation_pending = false;
         if success {
+            self.controller_runtime_error = None;
             self.controller_error = None;
             self.request_skill_projection(cx);
         } else {
+            self.controller_runtime_error = None;
             self.controller_error = Some("Skill 授权或文件已变化，请刷新审阅后重试".into());
             cx.notify();
         }
@@ -199,10 +202,12 @@ impl ConversationStream {
     pub fn finish_submitted_skill_pin(&mut self, success: bool, cx: &mut Context<Self>) {
         if success {
             self.skill_intent = None;
+            self.controller_runtime_error = None;
             self.controller_error = None;
             self.request_skill_projection(cx);
         } else {
             self.reject_composer_submission(cx);
+            self.controller_runtime_error = None;
             self.controller_error =
                 Some("Skill 授权或文件已变化；请刷新审阅后重试，消息尚未发送".into());
             cx.notify();

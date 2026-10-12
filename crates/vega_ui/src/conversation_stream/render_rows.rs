@@ -62,7 +62,7 @@ pub(crate) fn context_compaction_label(
 /// summary item 的自然高度). Per-frame: clone-only element assembly from
 /// cached materialization — no markdown re-materialization here (P3).
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
-    render_entry_internal(entry, window, cx, None)
+    render_entry_internal(entry, window, cx, None, false)
 }
 
 pub(crate) fn render_entry_with_selection(
@@ -71,18 +71,18 @@ pub(crate) fn render_entry_with_selection(
     cx: &mut App,
     focus: &FocusHandle,
 ) -> AnyElement {
-    render_entry_internal(entry, window, cx, Some(focus))
+    render_entry_internal(entry, window, cx, Some(focus), false)
 }
 
 pub(crate) fn render_stream_entry(
     entry: &StreamEntry,
     index: usize,
-    _show_role: bool,
+    suppress_run_notices: bool,
     window: &mut Window,
     cx: &mut App,
     focus: &FocusHandle,
 ) -> AnyElement {
-    let body = render_entry_with_selection(entry, window, cx, focus);
+    let body = render_entry_internal(entry, window, cx, Some(focus), suppress_run_notices);
     if !matches!(entry, StreamEntry::Assistant { .. }) {
         return body;
     }
@@ -118,6 +118,7 @@ fn render_entry_internal(
     window: &mut Window,
     cx: &mut App,
     focus: Option<&FocusHandle>,
+    suppress_run_notices: bool,
 ) -> AnyElement {
     let colors = theme(cx).colors;
     match entry {
@@ -178,9 +179,22 @@ fn render_entry_internal(
             ..
         } => {
             if let Some(focus) = focus {
-                selectable_markdown_message(model, *failure, copy, focus, &colors, window, cx)
+                selectable_markdown_message(
+                    model,
+                    failure.filter(|_| !suppress_run_notices),
+                    copy,
+                    focus,
+                    &colors,
+                    window,
+                    cx,
+                )
             } else {
-                message_with_copy(markdown_item(model, *failure, &colors), copy, false, colors)
+                message_with_copy(
+                    markdown_item(model, failure.filter(|_| !suppress_run_notices), &colors),
+                    copy,
+                    false,
+                    colors,
+                )
             }
         }
         StreamEntry::Tool { card } => {
@@ -243,6 +257,7 @@ fn render_entry_internal(
                 PlanCard::render_row(card.clone(), row, window, cx)
             })
         }
+        StreamEntry::Summary { .. } if suppress_run_notices => div().h_0().into_any_element(),
         StreamEntry::Summary { card } => match card.read(cx).summary().outcome {
             vega_conversation::types::TaskSummaryOutcome::Completed => div()
                 .h_0()

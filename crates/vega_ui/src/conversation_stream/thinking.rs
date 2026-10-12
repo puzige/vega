@@ -1,6 +1,5 @@
 //! Bounded, memory-only reasoning content, separate from answer Markdown.
 use super::*;
-use crate::interaction::InteractionExt;
 
 // Match the runtime's delta/turn/run byte ceilings, with an additional bound
 // on retained block count. The view budget is not reset between messages.
@@ -264,7 +263,7 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn estimated_height(&self, width: f32) -> f32 {
-        Layout::DISCLOSURE_HEADER_HEIGHT
+        Layout::CONVERSATION_TOOL_HEIGHT
             + if self.expanded {
                 Layout::PROCESS_ITEM_GAP + self.estimated_source_height(width)
             } else {
@@ -325,9 +324,7 @@ impl Render for ThinkingBlock {
                     .track_focus(&self.focus)
                     .aria_expanded(self.expanded)
                     .tab_stop(true)
-                    .border_1()
-                    .border_color(gpui_kit::transparent_black())
-                    .focus_visible(move |row| row.border_color(colors.accent))
+                    .focus_visible(move |row| row.bg(colors.bg_hover))
                     .debug_selector(|| "thinking-toggle".into())
                     .aria_label(format!(
                         "{}，展开或收起思考过程",
@@ -339,15 +336,13 @@ impl Render for ThinkingBlock {
                     ))
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
-                    .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .px(px(Layout::DISCLOSURE_PADDING_X))
+                    .gap(px(Layout::CONVERSATION_INLINE_GAP))
+                    .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+                    .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
                     .rounded(px(Layout::DISCLOSURE_RADIUS))
                     .cursor_pointer()
-                    .interactive(colors, true, false)
-                    .text_size(px(Typography::BODY))
-                    .text_color(colors.text_secondary)
+                    .text_size(px(Typography::CONVERSATION))
+                    .text_color(colors.conversation_tool)
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -375,14 +370,14 @@ impl Render for ThinkingBlock {
                             .justify_center()
                             .child(crate::icons::icon(
                                 crate::icons::Icon::Bot,
-                                colors.text_secondary,
+                                colors.conversation_tool,
                             )),
                     )
                     .child(
                         div()
                             .debug_selector(|| "thinking-title".into())
                             .min_w_0()
-                            .flex_1()
+                            .flex_shrink(1.)
                             .truncate()
                             .child(if let Some(epoch) = self.shimmer_epoch {
                                 shimmer::text(

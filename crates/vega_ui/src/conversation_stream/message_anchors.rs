@@ -156,6 +156,12 @@ impl ConversationStream {
         cx: &App,
         fallback_viewport_height: f32,
     ) -> MessageAnchorGeometry {
+        let notices = self.run_notice_projection(cx);
+        let notice_width = self
+            .workspace_width
+            .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
+            .unwrap_or(Layout::CONVERSATION_MAX_WIDTH)
+            .clamp(1., Layout::CONVERSATION_MAX_WIDTH);
         let entry_heights = self
             .entries
             .iter()
@@ -170,8 +176,8 @@ impl ConversationStream {
                     .copied()
                     .unwrap_or_else(|| match entry {
                         StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx),
-                        _ => estimate_entry_height(entry, cx, self.workspace_width),
-                    })
+                        _ => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()),
+                    } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
             .collect::<Vec<_>>();
         let total_height = entry_heights.iter().sum::<f32>();
@@ -720,5 +726,25 @@ pub(super) fn estimate_entry_height(
         }
         StreamEntry::ContextCompaction { .. } | StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),
+    }
+}
+
+pub(crate) fn estimate_stream_entry_height(
+    entry: &StreamEntry,
+    cx: &App,
+    width: Option<f32>,
+    owned: bool,
+) -> f32 {
+    if !owned {
+        return estimate_entry_height(entry, cx, width);
+    }
+    match entry {
+        StreamEntry::Summary { .. } => 0.,
+        StreamEntry::Assistant {
+            failure: Some(_), ..
+        } => (estimate_entry_height(entry, cx, width)
+            - Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+            .max(0.),
+        _ => estimate_entry_height(entry, cx, width),
     }
 }

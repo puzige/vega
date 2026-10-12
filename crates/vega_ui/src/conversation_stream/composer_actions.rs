@@ -270,6 +270,7 @@ impl ConversationStream {
         self.actions.terminal_cancelled = None;
         self.actions.menu = false;
         self.actions.slash = None;
+        self.controller_runtime_error = None;
         self.controller_error = None;
         self.mcp_warning = None;
         cx.notify();

@@ -403,7 +403,11 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
             );
             if let Some(chevron) = chevron {
                 assert!(
-                    !issue296_single_activity::chevron_painted(&mut visual, chevron),
+                    issue296_single_activity::chevron_painted(&mut visual, chevron)
+                        == matches!(
+                            selector,
+                            "run-activity-toggle" | "tool-activity-group-toggle"
+                        ),
                     "{selector} resting"
                 );
             }
@@ -412,10 +416,7 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
             advance_interaction(&mut visual);
             assert!(
                 has_hover_surface(&mut visual, row, colors.bg_hover)
-                    == matches!(
-                        selector,
-                        "thinking-toggle" | "composer-model" | "composer-permission-status"
-                    ),
+                    == matches!(selector, "composer-model" | "composer-permission-status"),
                 "{selector} hover feedback"
             );
             if let Some(chevron) = chevron {
@@ -434,7 +435,11 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
             );
             if let Some(chevron) = chevron {
                 assert!(
-                    !issue296_single_activity::chevron_painted(&mut visual, chevron),
+                    issue296_single_activity::chevron_painted(&mut visual, chevron)
+                        == matches!(
+                            selector,
+                            "run-activity-toggle" | "tool-activity-group-toggle"
+                        ),
                     "{selector} left"
                 );
             }
