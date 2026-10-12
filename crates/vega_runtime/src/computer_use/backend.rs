@@ -730,18 +730,14 @@ impl Browser {
             self.client.connect_browser_target(cancel).await,
         )?;
         parse_browser_target(&result.text.join("\n"), &self.connection)
-            .map_err(|error| diagnostics::context(Capability::Browser, Stage::TargetList, error))
     }
     async fn current_target(&mut self, cancel: &CancellationToken) -> Result<Target, Error> {
         let result = checked(
             Capability::Browser,
             Stage::TargetList,
-            self.client
-                .call("browser_tabs", json!({"action":"list"}), cancel)
-                .await,
+            self.client.current_browser_target(cancel).await,
         )?;
         parse_browser_target(&result.text.join("\n"), &self.connection)
-            .map_err(|error| diagnostics::context(Capability::Browser, Stage::TargetList, error))
     }
     fn clear_output(&self) -> Result<(), Error> {
         let entries = std::fs::read_dir(&self.root).map_err(|_| Error::Unavailable)?;
@@ -842,37 +838,64 @@ fn parse_windows(
 }
 
 fn parse_browser_target(text: &str, connection: &str) -> Result<Target, Error> {
-    let rows: Vec<_> = text.lines().filter(|line| line.starts_with("- ")).collect();
+    let failure = |class| diagnostics::failure(Capability::Browser, Stage::TargetParse, class);
+    if text.is_empty() || text == "No open tabs. Navigate to a URL to create one." {
+        return Err(failure(Class::TargetCount));
+    }
+    if text.contains('\r') {
+        return Err(failure(Class::TargetFormat));
+    }
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let line = line
+            .strip_prefix("- ")
+            .ok_or_else(|| failure(Class::TargetFormat))?;
+        let (index, rest) = line
+            .split_once(':')
+            .ok_or_else(|| failure(Class::TargetFormat))?;
+        if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(failure(Class::TargetFormat));
+        }
+        let index = index
+            .parse::<u32>()
+            .map_err(|_| failure(Class::TargetFormat))?;
+        rows.push((index, rest));
+    }
     if rows.len() != 1 {
-        return Err(Error::BrowserExtension);
+        return Err(failure(Class::TargetCount));
     }
-    let mut current = None;
-    for line in rows {
-        let line = line.strip_prefix("- ").ok_or(Error::Protocol)?;
-        let (index, rest) = line.split_once(':').ok_or(Error::Protocol)?;
-        let index = index.parse::<u32>().map_err(|_| Error::Protocol)?;
-        if index != 0 {
-            return Err(Error::TargetChanged);
-        }
-        if let Some(rest) = rest.strip_prefix(" (current) [") {
-            let (title, url) = rest.split_once("](").ok_or(Error::Protocol)?;
-            let url = url.strip_suffix(')').ok_or(Error::TargetChanged)?;
-            if current.is_some()
-                || title.contains(['[', ']', '\n', '\r'])
-                || url.contains(['(', ')', '\n', '\r'])
-                || !safe_url(url)
-            {
-                return Err(Error::TargetChanged);
-            }
-            current = Some(Target::Browser {
-                connection: connection.into(),
-                index,
-                title: title.into(),
-                url: url.into(),
-            });
-        }
+    let (index, rest) = rows[0];
+    if index != 0 {
+        return Err(failure(Class::TargetUnavailable));
     }
-    current.ok_or(Error::BrowserExtension)
+    let rest = rest.strip_prefix(" (current) [").ok_or_else(|| {
+        failure(if rest.starts_with(" [") {
+            Class::TargetNotCurrent
+        } else {
+            Class::TargetFormat
+        })
+    })?;
+    if rest.ends_with(" [crashed]") {
+        return Err(failure(Class::TargetUnavailable));
+    }
+    let (title, url) = rest
+        .split_once("](")
+        .ok_or_else(|| failure(Class::TargetFormat))?;
+    let url = url
+        .strip_suffix(')')
+        .ok_or_else(|| failure(Class::TargetFormat))?;
+    if title.contains(['[', ']']) || url.contains(['(', ')']) {
+        return Err(failure(Class::TargetFormat));
+    }
+    if !safe_url(url) {
+        return Err(failure(Class::TargetUnavailable));
+    }
+    Ok(Target::Browser {
+        connection: connection.to_owned(),
+        index,
+        title: title.to_owned(),
+        url: url.to_owned(),
+    })
 }
 
 fn same_browser_target(a: &Target, b: &Target) -> bool {
@@ -1239,13 +1262,7 @@ mod tests {
 
     #[test]
     fn issue75_browser_tab_parser_rejects_ambiguous_or_privileged_targets() {
-        assert!(
-            parse_browser_target(
-                "### Result\n- 0: (current) [Inbox](https://example.com/)",
-                "a"
-            )
-            .is_ok()
-        );
+        assert!(parse_browser_target("- 0: (current) [Inbox](https://example.com/)", "a").is_ok());
         assert!(
             parse_browser_target(
                 "- 0: (current) [A](https://a.test)\n- 1: (current) [B](https://b.test)",
@@ -1257,5 +1274,70 @@ mod tests {
         assert!(parse_browser_target("- 0: (current) [New tab](about:blank)", "a").is_err());
         assert!(!safe_url("javascript:alert(1)"));
         assert!(!safe_url("file:///tmp/private"));
+    }
+    #[test]
+    fn issue75_browser_raw_target_parser_rejects_wrappers_and_unparsed_content() {
+        let row = "- 0: (current) [Form](https://example.com/form)";
+        assert!(parse_browser_target(row, "connection").is_ok());
+        for text in [
+            format!("### Result\n{row}"),
+            format!(
+                "### Result\n{row}\n### Page\n- Page URL: https://example.com/form\n- Page Title: Form"
+            ),
+            format!("### Result\n{row}\n### Events\n- New console entries: secret/path"),
+            format!("{row}\nSECRET_EXTRA_CONTENT"),
+            format!("SECRET_PREFIX\n{row}"),
+            format!("{row}\n\n"),
+        ] {
+            assert!(parse_browser_target(&text, "connection").is_err());
+        }
+    }
+
+    #[test]
+    fn issue75_browser_raw_target_parser_reports_safe_parse_classes() {
+        for (text, class) in [
+            ("", "target_count"),
+            (
+                "No open tabs. Navigate to a URL to create one.",
+                "target_count",
+            ),
+            (
+                "- 0: (current) [SECRET_TITLE](https://example.com/SECRET_TOKEN)\n- 1: [Second](https://example.com/other)",
+                "target_count",
+            ),
+            (
+                "- 0: [SECRET_TITLE](https://example.com/SECRET_TOKEN)",
+                "target_not_current",
+            ),
+            (
+                "- SECRET_INDEX: (current) [SECRET_TITLE](https://example.com/SECRET_TOKEN)",
+                "target_format",
+            ),
+            (
+                "- 0: (current) [SECRET_TITLE](https://example.com/SECRET_TOKEN)\nSECRET_INPUT",
+                "target_format",
+            ),
+            (
+                "- 0: (current) [SECRET_TITLE](https://example.com/SECRET_TOKEN) [crashed]",
+                "target_unavailable",
+            ),
+            (
+                "- 0: (current) [SECRET_TITLE](chrome://SECRET_TOKEN)",
+                "target_unavailable",
+            ),
+            (
+                "- 1: (current) [SECRET_TITLE](https://example.com/SECRET_TOKEN)",
+                "target_unavailable",
+            ),
+        ] {
+            let error = parse_browser_target(text, "SECRET_CONNECTION").unwrap_err();
+            let error = diagnostics::context(Capability::Browser, Stage::TargetList, error);
+            let output = error.to_string();
+            assert!(output.contains("executor=playwright"), "{output}");
+            assert!(output.contains("stage=target_parse"), "{output}");
+            assert!(output.contains(&format!("error_class={class}")), "{output}");
+            assert!(!output.contains("SECRET"));
+            assert!(!format!("{error:?}").contains("SECRET"));
+        }
     }
 }

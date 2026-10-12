@@ -8,6 +8,7 @@ pub(super) enum Stage {
     ListApps,
     ListWindows,
     TargetList,
+    TargetParse,
     Observe,
     Screenshot,
     Action,
@@ -21,6 +22,7 @@ impl Stage {
             Self::ListApps => "list_apps",
             Self::ListWindows => "list_windows",
             Self::TargetList => "target_list",
+            Self::TargetParse => "target_parse",
             Self::Observe => "observe",
             Self::Screenshot => "screenshot",
             Self::Action => "action",
@@ -45,6 +47,9 @@ pub(super) enum Class {
     AttachFailed,
     CdpCommandFailed,
     TargetUnavailable,
+    TargetCount,
+    TargetFormat,
+    TargetNotCurrent,
     AxUnavailable,
     AxTimeout,
     ObservationUnavailable,
@@ -72,6 +77,9 @@ impl Class {
             Self::AttachFailed => "attach_failed",
             Self::CdpCommandFailed => "cdp_command_failed",
             Self::TargetUnavailable => "target_unavailable",
+            Self::TargetCount => "target_count",
+            Self::TargetFormat => "target_format",
+            Self::TargetNotCurrent => "target_not_current",
             Self::AxUnavailable => "accessibility_unavailable",
             Self::AxTimeout => "accessibility_timeout",
             Self::ObservationUnavailable => "observation_unavailable",
@@ -102,6 +110,11 @@ impl Class {
             }
             Self::PolicyDenied => "执行器范围授权拒绝了请求，请停止后重新选择并授权目标。",
             Self::TargetUnavailable => "执行器无法确认目标，请检查窗口或标签页后重新连接。",
+            Self::TargetCount => {
+                "执行器没有返回唯一标签页，请保持连接范围内只有所选目标后重新连接。"
+            }
+            Self::TargetFormat => "执行器目标列表格式无法验证，请检查组件版本后重新连接。",
+            Self::TargetNotCurrent => "执行器未确认所选标签页为当前目标，请重新连接并选择目标。",
             Self::AxUnavailable | Self::AxTimeout => {
                 "窗口辅助功能观察未完成，请检查目标应用是否响应后重新连接。"
             }
