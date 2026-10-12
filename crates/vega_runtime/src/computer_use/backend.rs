@@ -1,6 +1,8 @@
 use super::{
     Capability, ComputerUseError as Error, ComputerUseRun, DesktopTarget, ManagedComponents,
-    Observation, Target, ToolObservationSource, media::decode_image,
+    Observation, Target, ToolObservationSource,
+    diagnostics::{self, Class, Stage, checked},
+    media::decode_image,
 };
 use serde_json::{Value, json};
 use std::{
@@ -11,7 +13,7 @@ use std::{
 };
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
-use vega_mcp::{LocalServer, ManagedClient, ManagedResult};
+use vega_mcp::{LocalServer, ManagedClient};
 
 #[derive(Default)]
 pub(super) struct Backends {
@@ -65,12 +67,40 @@ fn server(executable: PathBuf, args: Vec<String>, root: &Path) -> LocalServer {
     }
 }
 
-fn checked(result: ManagedResult) -> Result<ManagedResult, Error> {
-    if result.is_error {
-        Err(Error::Rejected)
-    } else {
-        Ok(result)
+fn validate_permissions(result: vega_mcp::ManagedResult) -> Result<(), Error> {
+    let value = result.structured.ok_or_else(|| {
+        diagnostics::failure(Capability::Desktop, Stage::Permissions, Class::Protocol)
+    })?;
+    match (
+        value["accessibility"].as_bool(),
+        value["screen_recording"].as_bool(),
+    ) {
+        (Some(true), Some(true)) => Ok(()),
+        (Some(_), Some(_)) => Err(diagnostics::failure(
+            Capability::Desktop,
+            Stage::Permissions,
+            Class::PermissionsMissing,
+        )),
+        _ => Err(diagnostics::failure(
+            Capability::Desktop,
+            Stage::Permissions,
+            Class::Protocol,
+        )),
     }
+}
+
+fn action_unknown(
+    run: &ComputerUseRun,
+    epoch: u64,
+    capability: Capability,
+    stage: Stage,
+    error: Error,
+) -> String {
+    let error = diagnostics::context(capability, stage, error);
+    run.control.fail(epoch, error);
+    format!(
+        "outcome_unknown: the action may have been dispatched. Do not retry. The user must inspect the target. {error}"
+    )
 }
 
 impl Backends {
@@ -132,25 +162,32 @@ impl Backends {
                         .await
                 }
             };
-            let result = match dispatched {
-                Ok(result) if !result.is_error => result,
-                _ => {
-                    run.control.fail(epoch, Error::Rejected);
-                    return Ok("outcome_unknown: the action may have been dispatched. Do not retry. The connection has been revoked; the user must inspect the target.".into());
+            let result = match checked(capability, Stage::Action, dispatched) {
+                Ok(result) => result,
+                Err(error) => {
+                    return Ok(action_unknown(run, epoch, capability, Stage::Action, error));
                 }
             };
             drop(result);
             if run.control.check_epoch(epoch).is_err() {
-                return Ok("outcome_unknown: control was revoked while the action was in flight. Do not retry.".into());
+                return Ok(action_unknown(
+                    run,
+                    epoch,
+                    capability,
+                    Stage::Action,
+                    Error::Cancelled,
+                ));
             }
             if capability == Capability::Browser
-                && self
-                    .refresh_browser_target(run, epoch, cancel, true)
-                    .await
-                    .is_err()
+                && let Err(error) = self.refresh_browser_target(run, epoch, cancel, true).await
             {
-                run.control.fail(epoch, Error::TargetChanged);
-                return Ok("outcome_unknown: action dispatched but the selected tab changed or could not be verified. Do not retry; reconnect the extension to one target tab.".into());
+                return Ok(action_unknown(
+                    run,
+                    epoch,
+                    capability,
+                    Stage::TargetList,
+                    error,
+                ));
             }
             match self
                 .observe(run, capability, epoch, call_id, include_image, cancel)
@@ -159,10 +196,13 @@ impl Backends {
                 Ok(id) => Ok(format!(
                     "completed; observation_id={id}; observation images and page data are ephemeral and are not retained in history."
                 )),
-                Err(_) => {
-                    run.control.fail(epoch, Error::Rejected);
-                    Ok("outcome_unknown: action dispatched but its resulting observation could not be verified. Do not retry.".into())
-                }
+                Err(error) => Ok(action_unknown(
+                    run,
+                    epoch,
+                    capability,
+                    Stage::Observe,
+                    error,
+                )),
             }
         } else {
             if !arguments.as_object().is_some_and(|object| {
@@ -213,16 +253,14 @@ impl Backends {
                         desktop.connect(cancel, false).await?;
                         let client = desktop.client.as_mut().ok_or(Error::Unavailable)?;
                         let apps = checked(
-                            client
-                                .call("list_apps", json!({}), cancel)
-                                .await
-                                .map_err(|_| Error::Protocol)?,
+                            Capability::Desktop,
+                            Stage::ListApps,
+                            client.call("list_apps", json!({}), cancel).await,
                         )?;
                         let windows = checked(
-                            client
-                                .call("list_windows", json!({}), cancel)
-                                .await
-                                .map_err(|_| Error::Protocol)?,
+                            Capability::Desktop,
+                            Stage::ListWindows,
+                            client.call("list_windows", json!({}), cancel).await,
                         )?;
                         let targets =
                             parse_windows(apps.structured.as_ref(), windows.structured.as_ref())?;
@@ -294,7 +332,9 @@ impl Backends {
                         cancel,
                     )
                     .await
-                    .map_err(|_| Error::BrowserExtension)?;
+                    .map_err(|error| {
+                        diagnostics::transport(Capability::Browser, Stage::Initialize, error)
+                    })?;
                 for (name, properties) in [
                     ("browser_click", &["target"][..]),
                     ("browser_type", &["target", "text", "submit"][..]),
@@ -307,7 +347,9 @@ impl Backends {
                     browser
                         .client
                         .require_properties(name, properties)
-                        .map_err(|_| Error::Protocol)?;
+                        .map_err(|error| {
+                            diagnostics::transport(Capability::Browser, Stage::Initialize, error)
+                        })?;
                 }
                 let target = browser.current_target(cancel).await?;
                 if let Some(previous) = run.control.target(capability)? {
@@ -397,8 +439,10 @@ impl Backends {
         };
         match target {
             Target::Desktop(target) => {
-                let result = checked(self.desktop.as_mut().and_then(|desktop| desktop.client.as_mut()).ok_or(Error::NotReady)?.call("get_window_state",json!({"pid":target.pid,"window_id":target.window_id,"include_screenshot":true,"include_accessibility_tree":true,"max_elements":200,"max_depth":12,"max_dimension":1600}),cancel).await.map_err(|_| Error::Permissions)?)?;
-                let structured = result.structured.ok_or(Error::Protocol)?;
+                let result = checked(Capability::Desktop, Stage::Observe, self.desktop.as_mut().and_then(|desktop| desktop.client.as_mut()).ok_or(Error::NotReady)?.call("get_window_state",json!({"pid":target.pid,"window_id":target.window_id,"include_screenshot":true,"include_accessibility_tree":true,"max_elements":200,"max_depth":12,"max_dimension":1600}),cancel).await)?;
+                let structured = result.structured.ok_or_else(|| {
+                    diagnostics::failure(Capability::Desktop, Stage::Observe, Class::Protocol)
+                })?;
                 if structured["pid"].as_u64() != Some(u64::from(target.pid))
                     || structured["window_id"].as_u64() != Some(u64::from(target.window_id))
                     || structured["screenshot_frame_valid"] != true
@@ -406,7 +450,11 @@ impl Backends {
                         .get("degraded")
                         .is_some_and(|value| value != &Value::Bool(false) && !value.is_null())
                 {
-                    return Err(Error::TargetChanged);
+                    return Err(diagnostics::failure(
+                        Capability::Desktop,
+                        Stage::Observe,
+                        Class::ObservationUnavailable,
+                    ));
                 }
                 observation.snapshot_id = Some(
                     structured["snapshot_id"]
@@ -431,6 +479,8 @@ impl Backends {
             Target::Browser { .. } => {
                 let browser = self.browser.as_mut().ok_or(Error::NotReady)?;
                 let snapshot = checked(
+                    Capability::Browser,
+                    Stage::Observe,
                     browser
                         .client
                         .call(
@@ -438,10 +488,11 @@ impl Backends {
                             json!({"depth":12,"boxes":false}),
                             cancel,
                         )
-                        .await
-                        .map_err(|_| Error::BrowserExtension)?,
+                        .await,
                 )?;
                 let screenshot = checked(
+                    Capability::Browser,
+                    Stage::Screenshot,
                     browser
                         .client
                         .call(
@@ -449,8 +500,7 @@ impl Backends {
                             json!({"type":"png","scale":"css","fullPage":false}),
                             cancel,
                         )
-                        .await
-                        .map_err(|_| Error::BrowserExtension)?,
+                        .await,
                 )?;
                 browser.clear_output()?;
                 observation.source = ToolObservationSource::PlaywrightTab;
@@ -593,26 +643,36 @@ impl Desktop {
                 ],
                 &self.root,
             ))
-            .map_err(|_| Error::Protocol)?,
+            .map_err(|error| {
+                diagnostics::transport(Capability::Desktop, Stage::Initialize, error)
+            })?,
         );
         self.client
             .as_mut()
             .ok_or(Error::Unavailable)?
             .initialize("2025-06-18", tools, cancel)
             .await
-            .map_err(|_| Error::Protocol)?;
+            .map_err(|error| {
+                diagnostics::transport(Capability::Desktop, Stage::Initialize, error)
+            })?;
         if selected {
             let client = self.client.as_ref().ok_or(Error::Unavailable)?;
             client
                 .require_properties("get_window_state", &["pid", "window_id", "max_dimension"])
-                .map_err(|_| Error::Protocol)?;
+                .map_err(|error| {
+                    diagnostics::transport(Capability::Desktop, Stage::Initialize, error)
+                })?;
             for name in ["click", "type_text", "press_key", "hotkey", "scroll"] {
                 client
                     .require_properties(name, &["target", "delivery_mode"])
-                    .map_err(|_| Error::Protocol)?;
+                    .map_err(|error| {
+                        diagnostics::transport(Capability::Desktop, Stage::Initialize, error)
+                    })?;
             }
         }
         let permissions = checked(
+            Capability::Desktop,
+            Stage::Permissions,
             self.client
                 .as_mut()
                 .ok_or(Error::Unavailable)?
@@ -621,14 +681,9 @@ impl Desktop {
                     json!({"prompt":false,"probe_direct_capture":false}),
                     cancel,
                 )
-                .await
-                .map_err(|_| Error::Permissions)?,
+                .await,
         )?;
-        if !permissions.structured.is_some_and(|value| {
-            value["accessibility"] == true && value["screen_recording"] == true
-        }) {
-            return Err(Error::Permissions);
-        }
+        validate_permissions(permissions)?;
         self.selected = selected;
         Ok(())
     }
@@ -670,12 +725,14 @@ impl Desktop {
 impl Browser {
     async fn current_target(&mut self, cancel: &CancellationToken) -> Result<Target, Error> {
         let result = checked(
+            Capability::Browser,
+            Stage::TargetList,
             self.client
                 .call("browser_tabs", json!({"action":"list"}), cancel)
-                .await
-                .map_err(|_| Error::BrowserExtension)?,
+                .await,
         )?;
         parse_browser_target(&result.text.join("\n"), &self.connection)
+            .map_err(|error| diagnostics::context(Capability::Browser, Stage::TargetList, error))
     }
     fn clear_output(&self) -> Result<(), Error> {
         let entries = std::fs::read_dir(&self.root).map_err(|_| Error::Unavailable)?;
@@ -991,6 +1048,86 @@ fn map_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vega_mcp::ManagedResult;
+    #[test]
+    fn issue75_runtime_fixes_unknown_executor_errors_keep_safe_diagnostics() {
+        let result = ManagedResult {
+            text: vec!["SECRET_PAGE /Users/private token=SECRET_TOKEN permission arbitrary".into()],
+            images: Vec::new(),
+            structured: Some(json!({"reason":"SECRET_INPUT"})),
+            is_error: true,
+        };
+        let error = checked(Capability::Browser, Stage::TargetList, Ok(result))
+            .err()
+            .unwrap();
+        let output = error.to_string();
+        assert!(output.contains("executor=playwright"), "{output}");
+        assert!(output.contains("stage=target_list"), "{output}");
+        assert!(output.contains("error_class=unknown"), "{output}");
+        assert!(!output.contains("SECRET"));
+        assert!(!format!("{error:?}").contains("SECRET"));
+    }
+
+    #[test]
+    fn issue75_runtime_fixes_action_failure_keeps_unknown_and_does_not_restore_revoked_epoch() {
+        let run = ComputerUseRun::new(true, false);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        run.control.pause();
+        let output = action_unknown(
+            &run,
+            epoch,
+            Capability::Desktop,
+            Stage::Action,
+            diagnostics::failure(
+                Capability::Desktop,
+                Stage::Action,
+                Class::BackgroundUnavailable,
+            ),
+        );
+        assert!(output.starts_with("outcome_unknown:"));
+        assert!(output.contains("Do not retry"));
+        assert!(output.contains("executor=cua stage=action error_class=background_unavailable"));
+        assert_eq!(
+            run.control.status().phase,
+            super::super::ControlPhase::Pausing
+        );
+        assert!(run.control.check_epoch(epoch).is_err());
+        assert!(run.control.snapshot().observations.is_empty());
+        run.control.stop();
+        run.control.finish_cleanup();
+    }
+
+    #[test]
+    fn issue75_runtime_fixes_permissions_require_explicit_valid_booleans() {
+        for (structured, expected) in [
+            (
+                json!({"accessibility":false,"screen_recording":true}),
+                Some("permissions_missing"),
+            ),
+            (
+                json!({"accessibility":"false","screen_recording":true}),
+                Some("protocol"),
+            ),
+            (json!({"accessibility":true,"screen_recording":true}), None),
+        ] {
+            let result = ManagedResult {
+                text: vec!["SECRET_RAW".into()],
+                structured: Some(structured),
+                images: Vec::new(),
+                is_error: false,
+            };
+            let actual = validate_permissions(result);
+            if let Some(expected) = expected {
+                let output = actual.unwrap_err().to_string();
+                assert!(output.contains("executor=cua stage=permissions"));
+                assert!(output.contains(&format!("error_class={expected}:")));
+                assert!(!output.contains("SECRET"));
+            } else {
+                assert!(actual.is_ok());
+            }
+        }
+    }
+
     #[test]
     fn issue75_driver_action_maps_only_typed_window_target_and_original_png_coordinates() {
         let control = super::super::ComputerUseControl::new();

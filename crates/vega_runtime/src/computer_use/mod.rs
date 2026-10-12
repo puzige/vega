@@ -1,10 +1,12 @@
 mod backend;
 mod components;
 mod control;
+mod diagnostics;
 mod media;
 
 pub use components::ManagedComponents;
 pub use control::{ComputerUseControl, ControlPhase, ControlSnapshot};
+pub use diagnostics::ExecutorFailure;
 pub use media::{Observation, ToolObservationSource};
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +32,8 @@ impl Capability {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ComputerUseError {
+    #[error("{0}")]
+    Executor(ExecutorFailure),
     #[error("电脑操控组件不可用，请检查安装")]
     Unavailable,
     #[error("组件缺失，请重新安装 Vega；开发环境先运行组件准备命令")]

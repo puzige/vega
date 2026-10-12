@@ -728,7 +728,11 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
             reused: true,
             exit_code: call.exit_code,
             duration_ms: call.duration_ms.and_then(|ms| u64::try_from(ms).ok()),
-            truncated: (call.tool == "codex_acp" && status == ToolCallStatus::Success)
+            truncated: (matches!(
+                input,
+                ToolCardInputProjection::CodexAcp { .. }
+                    | ToolCardInputProjection::ComputerUse { .. }
+            ) && status == ToolCallStatus::Success)
                 .then_some(false),
             invalid: None,
         };
