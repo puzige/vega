@@ -1146,7 +1146,7 @@ async fn issue75_observation_failure_reaches_next_provider_and_rediscovery() {
             .set_windows(epoch, vec![target.clone()])
             .unwrap();
         let actions=run.install_desktop_fixture(vec![target],vec![vega_mcp::ManagedResult {
-        text:vec!["PRIVATE_RAW_CAPTURE_ERROR".into()],images:Vec::new(),is_error:false,
+        text:vec!["PRIVATE_RAW_CAPTURE_ERROR".into()],images:Vec::new(),is_error,
         structured:Some(serde_json::json!({"code":"px_capture_unavailable","pid":1,"window_id":2,"screenshot_frame_valid":false,
             "screenshot_error":{"code":"px_capture_unavailable","reason":"PRIVATE_RAW_CAPTURE_ERROR"}})),
     }]).await;

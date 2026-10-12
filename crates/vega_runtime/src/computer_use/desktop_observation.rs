@@ -128,6 +128,12 @@ pub(super) fn apply(
         }
         true
     } else {
+        if structured
+            .get("screenshot_error")
+            .is_some_and(|error| !error.is_null())
+        {
+            return Err(failure(Class::ScreenshotUnverified));
+        }
         false
     };
     let read_only = match structured.get("degraded") {
@@ -304,6 +310,98 @@ mod tests {
             apply(&mut observation, &target, response),
             Err(failure(Class::CaptureFrameMismatch))
         );
+    }
+
+    #[tokio::test]
+    async fn issue75_observation_conflicting_capture_metadata_never_publishes_or_dispatches() {
+        for is_error in [false, true] {
+            for degraded in [false, true] {
+                for screenshot_error in [
+                    json!({"code":"px_frame_mismatch","message":"PRIVATE_REASON"}),
+                    json!({"code":"px_capture_unavailable","message":"PRIVATE_REASON"}),
+                    json!({"code":"PRIVATE_UNKNOWN"}),
+                    json!({}),
+                    json!(""),
+                    json!(false),
+                ] {
+                    let run = super::super::ComputerUseRun::new(true, false);
+                    let epoch = run.control.begin(Capability::Desktop).unwrap();
+                    let observation =
+                        super::super::tests::fixture_observation(&run.control, epoch, 0);
+                    let super::super::Target::Desktop(target) = observation.target else {
+                        panic!()
+                    };
+                    run.control
+                        .set_windows(epoch, vec![target.clone()])
+                        .unwrap();
+                    let mut response = result();
+                    response.is_error = is_error;
+                    let structured = response.structured.as_mut().unwrap();
+                    structured["code"] = json!("px_capture_unavailable");
+                    structured["degraded"] = json!(degraded);
+                    structured["screenshot_error"] = screenshot_error.clone();
+                    let actions = run
+                        .install_desktop_fixture(vec![target], vec![response])
+                        .await;
+                    let observed = run
+                        .execute(
+                            "ComputerObserve",
+                            "conflicting-frame",
+                            json!({"target_id":"fixture","cursor":null}),
+                            &tokio_util::sync::CancellationToken::new(),
+                        )
+                        .await;
+                    assert_eq!(
+                        observed,
+                        Err(failure(Class::ScreenshotUnverified)),
+                        "is_error={is_error} degraded={degraded} error={screenshot_error}"
+                    );
+                    assert_eq!(
+                        run.control.status().phase,
+                        super::super::ControlPhase::Failed
+                    );
+                    assert!(run.control.snapshot().observations.is_empty());
+                    let mut message =
+                        crate::ChatMessage::tool_result("conflicting-frame", "failed");
+                    run.apply_observation("conflicting-frame", &mut message);
+                    assert!(message.images.is_empty());
+                    assert!(!message.content.contains("PRIVATE"));
+                    assert!(
+                        run.execute(
+                            "ComputerAct",
+                            "after-conflicting-frame",
+                            json!({"action":"click","x":1,"y":1,"observation_id":"frame-0"}),
+                            &tokio_util::sync::CancellationToken::new(),
+                        )
+                        .await
+                        .is_err()
+                    );
+                    assert_eq!(actions.load(std::sync::atomic::Ordering::SeqCst), 0);
+                    run.control.stop();
+                    run.control.finish_cleanup();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issue75_observation_null_screenshot_error_keeps_verified_content() {
+        let control = super::super::ComputerUseControl::new();
+        for degraded in [false, true] {
+            let mut observation = super::super::tests::fixture_observation(&control, 1, 0);
+            let super::super::Target::Desktop(target) = observation.target.clone() else {
+                panic!()
+            };
+            let mut response = result();
+            let structured = response.structured.as_mut().unwrap();
+            structured["degraded"] = json!(degraded);
+            structured["screenshot_error"] = Value::Null;
+            apply(&mut observation, &target, response).unwrap();
+            assert!(observation.image.is_some());
+            assert_eq!(observation.read_only, degraded);
+            assert_eq!(observation.snapshot_id.as_deref(), Some("snapshot"));
+            assert_eq!(observation.capture_id.as_deref(), Some("capture"));
+        }
     }
 
     #[test]

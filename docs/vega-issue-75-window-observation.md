@@ -26,7 +26,7 @@ OF2. 不改变历史/图像寿命，不保留额外截图、输入或窗口正�
 
 OF4. Cua degraded=true 仅当 degraded_reason 与 0.34 固定 ax_tree_empty 完整字面值完全一致、elements 为空数组、精确 pid/window_id、screenshot_frame_valid=true、非空有界 snapshot_id/capture_id 及解码成功的有效图像同时成立时，发布 screenshot-only 观察。固定说明 AX 不可用，本观察只读；针对该桌面观察的所有 ComputerAct（坐标、键盘、AX等）在 dispatch 前拒绝。不能用任意前缀、任意 degraded reason 或无绑定图像通行。下一次健康 Observe 才获得正常动作能力；不延长旧观察寿命。
 
-OF5. app_launching/window_unresolved 降级仅识别固定上游模板与数值字段，并要求精确目标身份；不发布其图片/AX。截图捕获不可用或没有观察内容同样不发布。身份与明确帧失败优先于 AX 降级分类；已知捕获不可用不得掩盖未知降级。MCP is_error=true 的明确身份/帧/未知降级冲突也先检查，再进行有限错误分类；缺少可选元数据的正常错误仍只依据固定错误码分类。未知降级、身份不符、frame mismatch/缺少有效性证明、缺失绑定、坏图、协议/策略/权限均保持失败关闭。新增固定分类区分 observation_identity_mismatch、screenshot_unverified、capture_unavailable、capture_frame_mismatch、capture_binding_failed、capture_publication_failed、ax_app_launching、ax_window_unresolved、degraded_unknown、no_observation_content，不输出上游正文。
+OF5. app_launching/window_unresolved 降级仅识别固定上游模板与数值字段，并要求精确目标身份；不发布其图片/AX。截图捕获不可用或没有观察内容同样不发布。身份与明确帧失败优先于 AX 降级分类；已知捕获不可用不得掩盖未知降级。screenshot_frame_valid=true 只有在 screenshot_error 缺失或 null 时才允许发布；与任何非 null 截图错误并存均为 fatal screenshot_unverified，在普通返回与 MCP is_error=true 路径一致，图像不得发布，ComputerAct 零派发。MCP is_error=true 的明确身份/帧/未知降级冲突也先检查，再进行有限错误分类；缺少可选元数据的正常错误仍只依据固定错误码分类。未知降级、身份不符、frame mismatch/缺少有效性证明、缺失绑定、坏图、协议/策略/权限均保持失败关闭。新增固定分类区分 observation_identity_mismatch、screenshot_unverified、capture_unavailable、capture_frame_mismatch、capture_binding_failed、capture_publication_failed、ax_app_launching、ax_window_unresolved、degraded_unknown、no_observation_content，不输出上游正文。
 
 OF6. 仅直接 ComputerObserve 的固定可恢复类 capture_unavailable/no_observation_content/ax_app_launching/ax_window_unresolved/accessibility_unavailable/accessibility_timeout 可交还模型：清空桌面当前目标、目录和全部旧桌面观察，回到可发现目录的 Running；lease 与连接保持，调用结果仍 Failed、没有自动重试、没有假成功、没有自动 Cancelled。新的显式目录/选窗 Observe 可继续。Act 的后验 Observe 不适用；未知/identity/frame/协议/策略/权限失败仍终止运行，已发动作仍 Unknown 且不重试。取消或 epoch 变化优先，恢复处理不能复活停止/接管状态。
 
@@ -71,7 +71,7 @@ Summary [   0.018s] 1 test run: 0 passed, 1 failed, 327 skipped
 - /tmp/vega-75-observation-combined-red.log：fb9fc5c2a22e780bb74e370e95f810e100cca107b0359114a71eaa4d18a59829
 - /tmp/vega-75-observation-mcp-red.log：5686fabcc85c853bd50dc4e04de3c936852ddff176d1d84a215148034a7b3d47
 
-最终定向 GREEN：
+首轮定向 GREEN（收尾矛盾元数据补丁前）：
 
 ```text
 cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui issue75
@@ -79,6 +79,32 @@ Summary [   2.499s] 59 tests run: 59 passed, 1512 skipped
 ```
 
 日志 /tmp/vega-75-observation-final-verified.log，SHA256 ffc1483b127bc1004e1b3af7722be46fc1b3de6596e2436f19c281665e3b7945。修改文件 rustfmt --check 与 git diff --check 通过，无新增代码注释；未跑本地 workspace 全量，云端门禁由主控执行。
+
+### 收尾矛盾元数据补丁验证（2026-10-12）
+
+追加 RED 的实际唯一用例为 computer_use::desktop_observation::tests::issue75_observation_conflicting_capture_metadata_never_publishes_or_dispatches。该日志未留存完整 filter argv，不据此编造执行命令；原始 footer 为：
+
+```text
+Summary [   0.024s] 1 test run: 0 passed, 1 failed, 329 skipped
+```
+
+RED 在 screenshot_frame_valid=true 与非 null px_frame_mismatch 同时返回时错误发布观察，断言因此失败；不是编译失败。日志 /tmp/vega-75-observation-contradiction-red.log，SHA256 b3bc936c70d09afc42a42de615ebdf3c9d5b1c4c71780ca4f63b89009ef68822。已补普通返回路径的冲突检查，与 MCP is_error 路径一致。新增组合用例覆盖两种 is_error、健康/空 AX、六种非 null screenshot_error，均不发布图片且 Act 零派发；另一个用例确认 null 错误时已有健康/只读图像合同保持。完整 run_agent 用例修正 fixture 为循环变量 is_error，实际覆盖 false/true 两条恢复分支。
+
+收尾定向 GREEN：
+
+```text
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui issue75
+Summary [   2.367s] 61 tests run: 61 passed, 1512 skipped
+```
+
+日志 /tmp/vega-75-observation-contradiction-green.log，SHA256 bbe9f8dffbf5586bba54179a481bbd3450c8b6cf44de6fb429f66eece33a5624，存档时间 2026-10-12 12:44:51 UTC（Asia/Shanghai 20:44:51）。新增 conflicting_capture_metadata、null_screenshot_error 及完整 run_agent 恢复用例在该日志均为 PASS。RED 的 is_error 未使用变量警告已消失；GREEN 仍保留既有第三方 block v0.1.6 的 future-incompatibility 提示，不能表述为绝对无编译警告。
+
+收尾核对时间 2026-10-12T13:58:32.035Z；分支 feat/75-runtime-fixes，HEAD 4fd551e7，fetch 后 origin/master 与 merge-base 均为 6c4ce2fd，无基线漂移。两个修改的 Rust 文件更新时间早于上述 GREEN 存档，核对后未修改代码。收尾代码补丁 SHA256（git diff HEAD -- crates/vega_runtime/src/computer_use/desktop_observation.rs crates/vega_runtime/src/agent/tests/mod.rs）：25f4a7c72378e4e588c8acecfe5dafc4eb633fa91957b22c134bd1e32409f2fe。文件内容身份：
+
+- crates/vega_runtime/src/computer_use/desktop_observation.rs：b9f3ea7aa0c6a880b796c01a969738ee49365454b746cc127d021ee7c0692d16
+- crates/vega_runtime/src/agent/tests/mod.rs：7918e568f3be56bdaec50cfbe1f733361389c757d3c50ae7092b5b6122c22a32
+
+两个 Rust 文件的 rustfmt --edition 2024 --config skip_children=true --check 与 git diff --check 均 exit 0；没有重复跑同一批定向测试，没有跑本地全量，云端 CI、合并、发布和 TextEdit 真机验收由主控继续。
 
 OF01/02/09：安全 live 转换覆盖四工具，GPUI 真实卡片事件链覆盖成功/失败，既有持久历史回读覆盖 success/failed/rejected。OF04–06：固定上游模板、合法 PNG、只读图像进入 live 消息、所有 ComputerAct 经真实 execute 路径底层派发计数为零、健康新观察替换旧观察。OF07：完整 run_agent 使用仅替代外部执行器边界的进程内 fixture，分别覆盖 is_error false/true 捕获失败；第一工具为 Failed，下一 provider 轮显式重新发现成功，第三轮正常 final，结果不是 interrupted。Chat Completions 与 Responses wire 均保留固定失败和后续目录，没有原始错误或图像泄露。OF08：Act 后验失败仅派发一次并保持 outcome_unknown/Failed，身份、帧、协议、权限、未知和政策错误保持 fatal；暂停/停止的晚到恢复不复活。
 
