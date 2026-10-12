@@ -1596,6 +1596,146 @@ mod tests {
         run.control.stop();
         run.control.finish_cleanup();
     }
+    #[tokio::test]
+    async fn issue75_catalog_identity_reaches_both_provider_protocols() {
+        let run = ComputerUseRun::new(true, false);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        let apps = json!({"apps":[
+            {"pid":1,"name":"Fixture","bundle_id":"org.example.fixture"},
+            {"pid":2,"name":"ChatGPT","bundle_id":"com.openai.codex"}
+        ]});
+        let windows = json!({"windows":(0..201).map(|index| json!({
+            "pid":if index == 200 {2} else {1},
+            "window_id":index + 1,
+            "title":"Fixture window"
+        })).collect::<Vec<_>>()});
+        let targets = parse_windows(Some(&apps), Some(&windows)).unwrap();
+        let selected = targets[200].selection_id.clone();
+        run.control.set_windows(epoch, targets).unwrap();
+        let first = run.control.catalog_page(epoch, None).unwrap();
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let mut backend = Backends::default();
+        backend
+            .discover_desktop(
+                &run,
+                epoch,
+                "directory-page-2",
+                Some(cursor),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let mut message = crate::ChatMessage::tool_result("directory-page-2", "completed");
+        run.apply_observation("directory-page-2", &mut message);
+        let mut request = crate::ChatRequest {
+            model: "fixture".into(),
+            messages: vec![
+                crate::ChatMessage::assistant_with_tools(
+                    "",
+                    vec![crate::ChatToolCall {
+                        id: "directory-page-2".into(),
+                        name: "ComputerObserve".into(),
+                        input_json: json!({"target_id":null,"cursor":cursor}).to_string(),
+                    }],
+                ),
+                message,
+            ],
+            ..Default::default()
+        };
+        run.trim_messages(&mut request.messages);
+        let chat = crate::openai::build_request_body(&request);
+        assert_eq!(chat["messages"][1]["role"], "tool");
+        assert_eq!(chat["messages"][1]["tool_call_id"], "directory-page-2");
+        let content = chat["messages"][1]["content"].as_str().unwrap();
+        assert!(content.contains("ChatGPT"));
+        assert!(content.contains("com.openai.codex"));
+        assert!(content.contains("CuaWindowCatalog"));
+        assert!(!content.contains("org.example.fixture"));
+        assert!(request.messages[1].images.is_empty());
+        let responses = crate::openai::responses::build_body(&request).unwrap();
+        let output = responses["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "function_call_output")
+            .unwrap();
+        assert_eq!(output["call_id"], "directory-page-2");
+        assert_eq!(output["output"], content);
+        run.control.select_window(epoch, &selected).unwrap();
+        let Some(Target::Desktop(target)) = run.control.target(Capability::Desktop).unwrap() else {
+            panic!("selected desktop target");
+        };
+        assert_eq!(target.bundle_id, "com.openai.codex");
+        run.trim_messages(&mut request.messages);
+        assert_eq!(
+            request.messages[1].content,
+            super::super::INVALIDATED_OBSERVATION
+        );
+        assert!(
+            !crate::openai::build_request_body(&request)
+                .to_string()
+                .contains("com.openai.codex")
+        );
+        assert!(
+            !crate::openai::responses::build_body(&request)
+                .unwrap()
+                .to_string()
+                .contains("com.openai.codex")
+        );
+        let outcome = crate::agent::outcome(
+            Vec::new(),
+            request.messages,
+            String::new(),
+            1,
+            1,
+            false,
+            false,
+        );
+        assert!(
+            !outcome
+                .messages
+                .iter()
+                .any(|message| message.content.contains("com.openai.codex"))
+        );
+        run.control.stop();
+        run.control.finish_cleanup();
+    }
+
+    #[test]
+    fn issue75_catalog_identity_bounds_keep_full_internal_identity() {
+        let boundary = "é".repeat(512);
+        let long_a = format!("{boundary}a");
+        let long_b = format!("{boundary}b");
+        let apps = json!({"apps":[
+            {"pid":1,"name":"Boundary","bundle_id":boundary},
+            {"pid":2,"name":"Long A","bundle_id":long_a},
+            {"pid":3,"name":"Long B","bundle_id":long_b},
+            {"pid":4,"name":"Empty","bundle_id":""}
+        ]});
+        let windows = json!({"windows":(1..=5).map(|pid| json!({
+            "pid":pid,"window_id":pid,"app_name":"Helper","title":"Fixture"
+        })).collect::<Vec<_>>()});
+        let targets = parse_windows(Some(&apps), Some(&windows)).unwrap();
+        assert_eq!(targets.len(), 5);
+        assert_eq!(targets[1].bundle_id, long_a);
+        assert_eq!(targets[2].bundle_id, long_b);
+        let mut other_identity = targets[1].clone();
+        other_identity.bundle_id = targets[2].bundle_id.clone();
+        assert!(!same_desktop_window(&targets[1], &other_identity));
+        let control = super::super::ComputerUseControl::new();
+        let epoch = control.begin(Capability::Desktop).unwrap();
+        control.set_windows(epoch, targets).unwrap();
+        let page = control.catalog_page(epoch, None).unwrap();
+        assert!(page.to_string().len() <= 64 * 1024);
+        assert_eq!(page["windows"][0]["bundle_id"], boundary);
+        for item in page["windows"].as_array().unwrap().iter().skip(1) {
+            assert_eq!(item.get("bundle_id"), Some(&Value::Null));
+        }
+        assert_eq!(page["windows"][4]["application"], "Helper");
+        control.stop();
+        control.finish_cleanup();
+    }
+
     #[test]
     fn issue75_desktop_access_standard_policy_and_discovery_contract() {
         let args = desktop_daemon_arguments(Path::new("/owned/driver.sock"));

@@ -240,7 +240,9 @@ impl ComputerUseControl {
         let mut page = Vec::new();
         let mut bytes = 0;
         for window in state.windows.iter().skip(start).take(200) {
-            let entry = serde_json::json!({"target_id":window.selection_id,"application":window.application,"title":window.title,"pid":window.pid,"window_id":window.window_id});
+            let bundle_id = (!window.bundle_id.is_empty() && window.bundle_id.len() <= 1024)
+                .then_some(window.bundle_id.as_str());
+            let entry = serde_json::json!({"target_id":window.selection_id,"application":window.application,"bundle_id":bundle_id,"title":window.title,"pid":window.pid,"window_id":window.window_id});
             bytes += entry.to_string().len();
             if bytes > 60 * 1024 {
                 break;

@@ -93,3 +93,54 @@ Summary [   2.375s] 48 tests run: 48 passed, 1104 skipped
 两位独立只读审查者分别核验状态/生命周期和固定 Cua 上游合同。已修辅助进程窗口发现缺口、终态目录清理与描述准确性。上游 daemon 在 registry 调用前执行独立 policy，proxy 检查不替代 daemon；此为固定源码证据，并非本次真实执行器测试。
 
 真机待测：更新后 TCC 归属、standard+policy 启动、发现其他应用/Space及辅助进程窗口、明确选择与跨窗口输入、接管恢复无窗口授权、关闭目标后的拒绝与重新发现。后台键盘在同进程多窗口下仍可能被上游拒绝，不承诺前台回落或任意光标定位。
+
+## 目录应用身份修复（2026-10-12）
+
+### 证据与范围
+
+0.1.76 真机已完成桌面多窗口发现/观察、TextEdit type_text 和接管恢复无逐窗审批。后续用户指定 Codex 时，模型表示目录存在 ChatGPT 但没有名为 Codex 的应用。主控的独立应用列表返回 displayName=ChatGPT、id=com.openai.codex、isRunning=true。代码已证实 DesktopTarget 保留 bundle_id，而 catalog_page 投影仅有 application/title/pid/window_id/target_id；显示名与用户常用名称不同时，模型失去区分应用的稳定元数据。这是明确的通用信息缺口；没有读取此前原始目录，不宣称已经唯一证明每次失败都来自此处。
+
+DI1. 每个目录项增加 bundle_id:string|null。上游已提供、非空且 UTF-8 长度不超过 1024 字节时原样投影；缺失或超长返回 null，不截断成另一身份、不虚构应用别名。内部完整 bundle_id 仍用于窗口身份比较。辅助进程缺少应用记录时保持合法 pid/window_id 与 app_name，不丢项。
+
+DI2. bundle_id 计入既有每页 64 KiB 预算；分页、opaque target_id、60 秒时效、目标验证及停止/接管边界均不变。工具描述要求结合 application/title/bundle_id 识别目标；显示名可能与用户常用名不同，bundle_id=null 表示不可用，不能从显示名缺乏精确字符串匹配就断言应用不存在。所有元数据仍是不可信外部数据。
+
+DI3. 目录只在当前运行有界保留；选择窗口后的目录观察淘汰、暂停/压缩/停止失效保持原合同。bundle_id 不进入新增持久化字段、日志或审计正文，不为了诊断延长内容寿命。原始页面、截图、输入和令牌均不收集。
+
+DI4. 仅修通用目录元数据及工具说明，不修改 Cua 枚举规则、系统权限、后台输入、Playwright 或 UI 权限。真机只需通过 Vega 的目录结果确认显示名与 bundle_id 的对应；不需要观察或截图 Codex，也不得用其他执行通道绕过当前工具拒绝访问该应用的限制。
+
+### 先行验收矩阵
+
+| ID | 操作 | 预期 | 层级 | 状态 |
+|---|---|---|---|---|
+| DI01 | 上游显示 ChatGPT，bundle com.openai.codex，目标在第201项 | production parser/分页/discover/publish/apply 到 Chat Completions 和 Responses 请求均保留对应身份与同一 call_id | inprocess/codec | PASS |
+| DI02 | helper 无应用记录、空 bundle、1024字节 bundle、1025字节不同后缀身份 | 空/过长返回 null，边界原样，内部身份不截断、不合并窗口；每页有界 | control/parser | PASS |
+| DI03 | 目录选择窗口或暂停/压缩/运行结束 | 旧目录正文和 bundle 从模型消息/返回 outcome 清除，旧 ID 规则不变 | lifecycle/codec | PASS |
+| DI04 | 发布后由 Vega 仅枚举目录 | 模型可同时报告显示名与真实 bundle_id，不用截图证明应用身份 | 真实手测 | NOT RUN |
+
+计划：先保留 DI01/DI02 失败回归，再补目录字段和工具说明；定向 nextest 后独立只读审查，提交给主控做 PR/CI/发布。无需新依赖、DDL 或真实执行器自动测试。回滚可回退本轮提交。
+
+### 本轮验证证据
+
+主控在 0.1.76 新建仅目录诊断任务，模型列出多个 ChatGPT 窗口但 bundle_id 均为“未提供”，另将 ChatGPT Computer Use 单列。没有选窗、截图或动作。此真机 RED 与独立应用 inventory 的显示名/标识对应一致；不记录真实 PID、窗口 ID 或任务内容。新版真机仍 NOT RUN。
+
+首次自动 RED：
+
+```text
+cargo nextest run -p vega_runtime issue75_catalog_identity
+Summary [   0.022s] 2 tests run: 0 passed, 2 failed, 316 skipped
+```
+
+原始日志 /tmp/vega-75-catalog-identity-red.log，SHA256 5f49c49c66caff91e1293db4cfaeb32117209d6474919a9793222f96517a5dcf。两项分别在实际请求正文缺少 bundle_id、目录缺少 1024 字节边界身份处失败，保留旧实现行为证据。
+
+最终定向 GREEN：
+
+```text
+cargo nextest run -p vega_runtime issue75
+Summary [   2.272s] 43 tests run: 43 passed, 275 skipped
+```
+
+原始日志 /tmp/vega-75-catalog-identity-green.log，SHA256 05853663efe3d0b9f1c954df1a7daa254e7bb49608853569ee33c6a66188e5a9。2026-10-12 09:19 UTC / 17:19 Asia/Shanghai，代码 diff SHA256 68c4cfd3f47c8e278e7c22ad09b1a2585fcc266c8c1db98e721549b3290c03b0。只跑本卡定向测试；修改文件 rustfmt --check、git diff --check 通过，无新增代码注释。主控与独立只读审查均未发现剩余阻断。
+
+固定上游合同已独立复核：[应用显示名与 bundle 标识分别读取](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/apps/mod.rs#L876)，[窗口枚举及通用筛选](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/windows.rs#L72)。这些路径没有 Codex/OpenAI/宿主 PID 排除；本轮不修改上游行为。目录首次普通投递可到达模型；后续选窗、翻页或压缩淘汰目录仍遵守原合同，本轮不把这一保留限制改作历史持久化。
+
+剩余真实验收 DI04：发布后只枚举目录，确认模型能报告同一条目的显示名及 com.openai.codex；不选窗、不捕获该应用画面、不输入。新版结果尚未执行，不把 fixture/codec 通过表述为真机修复完成。
