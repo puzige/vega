@@ -110,11 +110,7 @@ impl ConversationStream {
     pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
         let was_empty = self.entries.is_empty();
         self.ensure_entry_identities();
-        let mut anchor = self.scroll_anchor_snapshot();
-        let old_first_role = self
-            .assistant_role_rows
-            .iter()
-            .position(|has_role| *has_role);
+        let anchor = self.scroll_anchor_snapshot();
         let (mut hydrated, mut hydrated_identities) =
             self.hydrate_history_entries(page.entries, cx);
         let prepended_entries = hydrated.len();
@@ -124,18 +120,6 @@ impl ConversationStream {
         self.entry_identities = hydrated_identities;
         self.list_prepend(prepended_entries);
         if prepended_entries > 0 {
-            if let Some(index) = old_first_role.map(|index| index + prepended_entries)
-                && !self.assistant_role_rows[index]
-            {
-                if let Some(identity) = self.entry_identities.get(index) {
-                    self.measured_entry_heights.remove(&identity.key);
-                    if anchor.identity.as_deref() == Some(identity.key.as_str()) {
-                        anchor.offset_in_item_px =
-                            (anchor.offset_in_item_px - Layout::ASSISTANT_ROLE_HEIGHT).max(0.);
-                    }
-                }
-                self.list.remeasure_items(index..index + 1);
-            }
             if let Some((_, index)) = &mut self.active_agent_message
                 && *index != usize::MAX
             {
@@ -184,6 +168,8 @@ impl ConversationStream {
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
         let mut assistant_segments: HashMap<String, usize> = HashMap::new();
+        let response_boundaries = phase::history_response_boundaries(&history_entries);
+        let mut assistant_offsets = HashMap::<String, usize>::new();
         let activity_runs: HashSet<_> = history_entries
             .iter()
             .filter_map(|entry| match entry {
@@ -276,23 +262,49 @@ impl ConversationStream {
                     let segment = assistant_segments.entry(message_id.clone()).or_default();
                     let segment_ordinal = *segment;
                     *segment += 1;
-                    let mut stream = MarkdownStream::new();
-                    stream.append(&content);
-                    stream.finish();
-                    let mut model = StreamModel::default();
-                    model.sync(&stream.snapshot(), &self.counters);
-                    hydrated.push(StreamEntry::Assistant {
-                        copy: MessageCopy::new(&content),
-                        stream: Box::new(stream),
-                        model,
-                        failure: (status == vega_conversation::history::AssistantStatus::Failed)
-                            .then_some(RunFailureKind::Persisted),
-                    });
-                    hydrated_identities.push(self.durable_entry_identity(
-                        &message_id,
-                        &format!("assistant-text-{segment_ordinal}"),
-                        Some(seq),
-                    ));
+                    let offset = assistant_offsets.entry(message_id.clone()).or_default();
+                    let start = *offset;
+                    *offset += content.len();
+                    let mut boundaries = response_boundaries
+                        .get(&message_id)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|boundary| *boundary > start && *boundary < *offset)
+                        .map(|boundary| boundary - start)
+                        .collect::<Vec<_>>();
+                    boundaries.push(content.len());
+                    let mut part_start = 0;
+                    for part_end in boundaries {
+                        let part = &content[part_start..part_end];
+                        let mut stream = MarkdownStream::new();
+                        stream.append(part);
+                        stream.finish();
+                        let mut model = StreamModel::default();
+                        model.sync(&stream.snapshot(), &self.counters);
+                        hydrated.push(StreamEntry::Assistant {
+                            copy: MessageCopy::new(part),
+                            stream: Box::new(stream),
+                            model,
+                            failure: (status
+                                == vega_conversation::history::AssistantStatus::Failed)
+                                .then_some(RunFailureKind::Persisted),
+                        });
+                        let key = if part_start == 0 {
+                            format!("assistant-text-{segment_ordinal}")
+                        } else {
+                            format!(
+                                "assistant-text-{segment_ordinal}-response-{}",
+                                start + part_start
+                            )
+                        };
+                        hydrated_identities.push(self.durable_entry_identity(
+                            &message_id,
+                            &key,
+                            Some(seq),
+                        ));
+                        part_start = part_end;
+                    }
                 }
                 HistoryEntry::Plan {
                     seq,
@@ -571,7 +583,9 @@ impl ConversationStream {
         else {
             return false;
         };
-        if let Some(group) = self.run_activity_groups.get(message_id) {
+        if let Some(group) = self.run_activity_groups.get(message_id)
+            && group.read(cx).process_in_details()
+        {
             group.update(cx, |group, cx| group.reveal_detail(0, 0., cx));
         }
         self.list.pause_following_tail();
@@ -634,6 +648,7 @@ impl ConversationStream {
         self.active_run_activity = None;
         self.active_run_activity_segment = None;
         self.active_segment_ordinal = 0;
+        self.active_response_start = None;
         self.active_segment_has_text = false;
         self.active_thinking = None;
         self.thinking_bytes = 0;
@@ -1115,6 +1130,7 @@ impl ConversationStream {
                     .insert(message_id.clone(), group.clone());
                 self.active_run_activity = Some((message_id.clone(), group.clone()));
                 self.active_segment_ordinal = 0;
+                self.active_response_start = None;
                 self.active_agent_sequence = i64::try_from(seq).ok();
                 self.active_run_activity_segment = None;
                 self.ensure_live_run_activity_header(
@@ -1166,7 +1182,17 @@ impl ConversationStream {
                     self.list_append(index);
                     let identity = self.durable_entry_identity(
                         &message_id,
-                        &format!("assistant-text-{}", self.active_segment_ordinal),
+                        &self
+                            .active_response_start
+                            .map(|start| {
+                                format!(
+                                    "assistant-text-{}-response-{start}",
+                                    self.active_segment_ordinal
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                format!("assistant-text-{}", self.active_segment_ordinal)
+                            }),
                         if self.active_segment_ordinal == 0 {
                             self.active_agent_sequence
                         } else {
@@ -1392,6 +1418,7 @@ impl ConversationStream {
             .filter(|(_, index)| *index != usize::MAX);
         self.active_segment_has_text = false;
         self.active_segment_ordinal = 0;
+        self.active_response_start = None;
         self.active_agent_sequence = None;
         self.active_run_activity_segment = None;
         if self
@@ -1413,7 +1440,11 @@ impl ConversationStream {
             return;
         };
         let index = *index;
+        let response_closed = self.active_response_start.take().is_some();
         if index == usize::MAX {
+            if response_closed {
+                self.active_segment_ordinal = self.active_segment_ordinal.saturating_add(1);
+            }
             return;
         }
         if self.active_segment_has_text {
@@ -1432,6 +1463,13 @@ impl ConversationStream {
             *active_index = usize::MAX;
         }
         self.active_segment_has_text = false;
+    }
+
+    pub(crate) fn close_active_segment_at_response(&mut self, end: usize) {
+        let ordinal = self.active_segment_ordinal;
+        self.close_active_segment_before_tool();
+        self.active_segment_ordinal = ordinal;
+        self.active_response_start = Some(end);
     }
 
     fn append_empty_terminal_segment(&mut self) {
@@ -1498,8 +1536,21 @@ impl ConversationStream {
         cx: &App,
     ) -> bool {
         match entry {
-            StreamEntry::RunActivity { group } => group.read(cx).contains_tool(card, cx),
-            StreamEntry::RunActivitySegment { .. } => false,
+            StreamEntry::RunActivity { group } => {
+                group.read(cx).process_in_details() && group.read(cx).contains_tool(card, cx)
+            }
+            StreamEntry::RunActivitySegment { group, segment } => {
+                !group.read(cx).process_in_details()
+                    && group
+                        .read(cx)
+                        .segment_children(*segment)
+                        .iter()
+                        .any(|child| match child {
+                            RunActivityChild::Tool(owned) => owned == card,
+                            RunActivityChild::ToolGroup(group) => group.read(cx).contains(card),
+                            _ => false,
+                        })
+            }
             StreamEntry::Tool { card: owned } => owned == card,
             StreamEntry::ToolGroup { group } => group.read(cx).contains(card),
             _ => false,
@@ -1509,11 +1560,7 @@ impl ConversationStream {
     pub(crate) fn tool_entry_index(&self, card: &Entity<ToolCard>, cx: &App) -> Option<usize> {
         self.entries
             .iter()
-            .position(|entry| {
-                matches!(entry, StreamEntry::RunActivity { group } if group.read(cx).contains_tool(card, cx))
-                    || matches!(entry, StreamEntry::Tool { card: owned } if owned == card)
-                    || matches!(entry, StreamEntry::ToolGroup { group } if group.read(cx).contains(card))
-            })
+            .position(|entry| Self::tool_entry_contains(entry, card, cx))
     }
 
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {

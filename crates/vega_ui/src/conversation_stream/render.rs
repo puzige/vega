@@ -1534,6 +1534,7 @@ impl Render for ConversationStream {
             });
         }
 
+        let final_presentation = cx.entity().downgrade();
         let mut message_anchor_preview = None;
         let mut message_anchor_rail_overlay = None;
         let mut message_anchor_preview_in_lane = false;
@@ -1587,6 +1588,7 @@ impl Render for ConversationStream {
                             div()
                                 .id("conversation-message-list")
                                 .debug_selector(|| "conversation-message-list".into())
+                                .relative()
                                 .min_w_0()
                                 .flex_1()
                                 .h_full()
@@ -1635,6 +1637,18 @@ impl Render for ConversationStream {
                                     )
                                     .h_full()
                                     .w_full(),
+                                )
+                                .child(
+                                    gpui_kit::canvas(
+                                        |_, _, _| (),
+                                        move |_, _, window, cx| {
+                                            let _ = final_presentation.update(cx, |stream, cx| {
+                                                stream.settle_final_presentation(window, cx)
+                                            });
+                                        },
+                                    )
+                                    .absolute()
+                                    .inset_0(),
                                 ),
                         ),
                 )
@@ -1690,7 +1704,7 @@ impl Render for ConversationStream {
                             .debug_selector(|| "conversation-column".into())
                             .min_w_0()
                             .w_full()
-                            .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                            .max_w(px(Layout::CONVERSATION_MAX_WIDTH))
                             .mx_auto()
                             .when(!self.entries.is_empty(), |body| body.h_full())
                             .child(body),

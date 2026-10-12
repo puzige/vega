@@ -3411,10 +3411,16 @@ mod tests {
             (f32::from(panel.left()) + f32::from(rail.left())) / 2.0,
             "composer centers on the conversation column with the rail open",
         );
+        let body = shell_bounds(window, "conversation-column", cx);
         assert_close(
-            composer.size.width,
-            f32::from(shell_bounds(window, "conversation-column", cx).size.width),
-            "composer width matches the body column with the rail open",
+            body.center().x,
+            f32::from(composer.center().x),
+            "body and composer share an axis with the rail open",
+        );
+        assert_close(
+            body.size.width,
+            f32::from(composer.size.width).min(Layout::CONVERSATION_MAX_WIDTH),
+            "body uses its conversation width cap",
         );
         assert!(
             f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT,
@@ -3434,10 +3440,21 @@ mod tests {
             Layout::COMPOSER_MAX_WIDTH,
             "composer width cap without the rail",
         );
+        let body = shell_bounds(window, "conversation-column", cx);
         assert_close(
-            composer.size.width,
-            f32::from(shell_bounds(window, "conversation-column", cx).size.width),
-            "composer width matches the body column without the rail",
+            body.center().x,
+            f32::from(composer.center().x),
+            "body and composer share an axis without the rail",
+        );
+        assert_close(
+            body.size.width,
+            Layout::CONVERSATION_MAX_WIDTH,
+            "body width cap without the rail",
+        );
+        assert_close(
+            body.left() - composer.left(),
+            16.,
+            "body aligns with the composer inset",
         );
 
         // Opening the right dock re-centers and never overlaps the pane.

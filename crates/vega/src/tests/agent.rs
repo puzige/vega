@@ -162,6 +162,86 @@ async fn issue67_concurrent_settings_fails_closed_for_both_permissions(
     issue67_concurrent_scenario(cx, 6).await;
 }
 
+fn issue67_safe_controller_failure(message: Option<&str>) -> &'static str {
+    use vega_conversation::types::RunFailureKind;
+    let Some(message) = message else {
+        return "none";
+    };
+    [
+        (RunFailureKind::ProviderQuota, "ProviderQuota"),
+        (
+            RunFailureKind::ProviderAuthorization,
+            "ProviderAuthorization",
+        ),
+        (RunFailureKind::ProviderRateLimited, "ProviderRateLimited"),
+        (RunFailureKind::ProviderTransport, "ProviderTransport"),
+        (RunFailureKind::Runtime, "Runtime"),
+        (
+            RunFailureKind::CredentialExposureBlocked,
+            "CredentialExposureBlocked",
+        ),
+        (RunFailureKind::ContextOverLimit, "ContextOverLimit"),
+        (RunFailureKind::Persisted, "Persisted"),
+    ]
+    .into_iter()
+    .find_map(|(kind, label)| (message == kind.message()).then_some(label))
+    .unwrap_or("other")
+}
+
+fn issue67_safe_store_diagnostics(store: &vega_store::Store, thread_id: &str) -> String {
+    use vega_store::run_diagnostics::{self, DiagnosticPhase};
+    let message = store.conn().query_row(
+        "WITH latest AS (SELECT id, status FROM messages WHERE thread_id = ?1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1) SELECT COALESCE((SELECT status FROM latest), 'absent'), (SELECT COUNT(*) FROM assistant_responses JOIN latest ON message_id = latest.id), EXISTS(SELECT 1 FROM assistant_responses JOIN latest ON message_id = latest.id WHERE kind = 'commentary'), EXISTS(SELECT 1 FROM assistant_responses JOIN latest ON message_id = latest.id WHERE kind = 'final')",
+        [thread_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, bool>(2)?, row.get::<_, bool>(3)?)),
+    );
+    let message = match message {
+        Ok((status, count, commentary, final_response)) => {
+            let status = match status.as_str() {
+                "streaming" => "streaming",
+                "done" => "done",
+                "interrupted" => "interrupted",
+                "failed" => "failed",
+                "absent" => "absent",
+                _ => "unexpected",
+            };
+            format!(
+                "status={status} responses={count} commentary={commentary} final={final_response}"
+            )
+        }
+        Err(_) => "message_query_error".into(),
+    };
+    let phases = match run_diagnostics::read_by_thread(store.conn(), thread_id) {
+        Ok(events) => match events.last() {
+            Some(last) => [
+                DiagnosticPhase::Run,
+                DiagnosticPhase::PrimaryModel,
+                DiagnosticPhase::ContextSummary,
+                DiagnosticPhase::Tool,
+            ]
+            .into_iter()
+            .map(|phase| {
+                match events.iter().rev().find(|event| {
+                    event.event.run_id == last.event.run_id && event.event.phase == phase
+                }) {
+                    Some(event) => format!(
+                        "{phase:?}:{:?}/{:?}/{:?}",
+                        event.event.state,
+                        event.event.failure_code,
+                        event.event.metrics.stop_reason
+                    ),
+                    None => format!("{phase:?}:absent"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+            None => "absent".into(),
+        },
+        Err(_) => "diagnostic_query_error".into(),
+    };
+    format!("{message} phases={phases}")
+}
+
 struct ConcurrentProvider {
     inner: Arc<vega_runtime::MockProvider>,
     entered: std::sync::Mutex<Option<mpsc::SyncSender<()>>>,
@@ -757,8 +837,14 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
                         Err(_) => "query_error",
                     };
                 let settings = cx.update(|cx| cx.global::<SettingsOpen>().0);
+                let failure_a = origin_stream.read_with(cx, |stream, _| {
+                    issue67_safe_controller_failure(stream.controller_error_message().as_deref())
+                });
+                let failure_b = draft_stream.read_with(cx, |stream, _| {
+                    issue67_safe_controller_failure(stream.controller_error_message().as_deref())
+                });
                 format!(
-                    "permission_admission a_pending={} a_card={} a_active={} a_cancelled={} a_tool={} b_pending={} b_card={} b_active={} b_cancelled={} b_tool={} settings_open={}",
+                    "permission_admission a_pending={} a_card={} a_active={} a_cancelled={} a_tool={} b_pending={} b_card={} b_active={} b_cancelled={} b_tool={} settings_open={} a_failure={} b_failure={} a_store=[{}] b_store=[{}]",
                     state_a.0,
                     state_a.1,
                     active.0,
@@ -770,6 +856,10 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
                     cancel_b.is_cancelled(),
                     tool_status("destination-read"),
                     settings,
+                    failure_a,
+                    failure_b,
+                    issue67_safe_store_diagnostics(&store, &origin.id),
+                    issue67_safe_store_diagnostics(&store, &destination.id),
                 )
             },
         );

@@ -41,6 +41,14 @@ const fn rgba_alpha(hex: u32, a: f32) -> Rgba {
 /// shipped palettes are [`LIGHT`] and [`DARK`].
 #[derive(Debug, Clone, Copy)]
 pub struct ThemeColors {
+    pub conversation_marker: Rgba,
+    pub conversation_clock: Rgba,
+    pub conversation_stage: Rgba,
+    pub conversation_tool: Rgba,
+    pub conversation_divider: Rgba,
+    pub conversation_code: Rgba,
+    pub conversation_bubble: Rgba,
+    pub conversation_user: Rgba,
     /// Main content area background.
     pub bg_base: Rgba,
     /// Sidebar background.
@@ -110,6 +118,15 @@ pub struct ThemeColors {
 
 /// Light palette (UI spec §2, "Light" column).
 pub const LIGHT: ThemeColors = ThemeColors {
+    conversation_marker: rgba(0xD2D3D3FF),
+    conversation_clock: rgba(0x8E8F90FF),
+    conversation_stage: rgba(0xA7A8A9FF),
+    conversation_tool: rgba(0x767778FF),
+    conversation_divider: rgba(0xEDEDEDFF),
+    conversation_code: rgba(0xE9EAEAFF),
+    conversation_bubble: rgba(0xE8F3FEFF),
+    conversation_user: rgba(0x0C264AFF),
+
     bg_base: rgba(0xFFFFFFFF),
     bg_sidebar: rgba(0xFAF9F9FF),
     bg_elevated: rgba(0xFFFFFFFF),
@@ -144,6 +161,15 @@ pub const LIGHT: ThemeColors = ThemeColors {
 
 /// Dark palette (UI spec §2, "Dark" column).
 pub const DARK: ThemeColors = ThemeColors {
+    conversation_marker: rgba(0x383838FF),
+    conversation_clock: rgba(0xABABABFF),
+    conversation_stage: rgba(0x828282FF),
+    conversation_tool: rgba(0xABABABFF),
+    conversation_divider: rgba(0x383838FF),
+    conversation_code: rgba(0x262626FF),
+    conversation_bubble: rgba(0x203247FF),
+    conversation_user: rgba(0xEDEDEDFF),
+
     bg_base: rgba(0x202020FF),
     bg_sidebar: rgba(0x191919FF),
     bg_elevated: rgba(0x2A2A2AFF),
@@ -270,6 +296,8 @@ pub fn theme(cx: &App) -> &Theme {
 pub struct Typography;
 
 impl Typography {
+    pub const CONVERSATION: f32 = 13.5;
+    pub const CONVERSATION_LINE_HEIGHT: f32 = 23.0 / Self::CONVERSATION;
     /// Settings page title from R8 reference.
     pub const SETTINGS_TITLE: f32 = 20.0;
     /// Body text: 13px (§3 "正文字体 …13px/1.55 行高").
@@ -325,6 +353,22 @@ impl Motion {
 pub struct Layout;
 
 impl Layout {
+    pub const CONVERSATION_MAX_WIDTH: f32 = 736.0;
+    pub const CONVERSATION_CLOCK_HEIGHT: f32 = 23.0;
+    pub const CONVERSATION_DIVIDER_GAP: f32 = 4.5;
+    pub const CONVERSATION_DIVIDER_HEIGHT: f32 = 1.0;
+    pub const CONVERSATION_BODY_TOP: f32 = 16.0;
+    pub const CONVERSATION_PARAGRAPH_GAP: f32 = 15.5;
+    pub const CONVERSATION_STAGE_TOP: f32 = 24.0;
+    pub const CONVERSATION_TOOL_HEIGHT: f32 = 25.0;
+    pub const CONVERSATION_MARKER_WIDTH: f32 = 6.0;
+    pub const CONVERSATION_MARKER_PITCH: f32 = 10.0;
+    pub const CONVERSATION_MARKER_OFFSET: f32 = 54.0;
+    pub const CONVERSATION_CHEVRON_SIZE: f32 = 12.0;
+    pub const CONVERSATION_INLINE_GAP: f32 = 6.0;
+    pub const CONVERSATION_USER_RATIO: f32 = 0.7;
+    pub const CONVERSATION_USER_PADDING: f32 = 16.0;
+    pub const CONVERSATION_USER_BOTTOM: f32 = 48.0;
     pub const ICON_SIZE: f32 = 16.0;
     pub const CONTEXT_USAGE_SIZE: f32 = 28.0;
     pub const CONTEXT_USAGE_WIDTH: f32 = 320.0;
@@ -649,6 +693,32 @@ pub fn terminal_indexed_color(index: u8) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue296_conversation_tokens_preserve_shared_palette() {
+        assert_eq!(u32::from(LIGHT.conversation_clock), 0x8E8F90FF);
+        assert_eq!(u32::from(LIGHT.conversation_stage), 0xA7A8A9FF);
+        assert_eq!(u32::from(LIGHT.conversation_tool), 0x767778FF);
+        assert_eq!(u32::from(LIGHT.conversation_divider), 0xEDEDEDFF);
+        assert_eq!(u32::from(LIGHT.conversation_code), 0xE9EAEAFF);
+        assert_eq!(u32::from(LIGHT.conversation_bubble), 0xE8F3FEFF);
+        assert_eq!(u32::from(LIGHT.conversation_user), 0x0C264AFF);
+        assert_eq!(u32::from(LIGHT.conversation_marker), 0xD2D3D3FF);
+        assert_eq!(DARK.conversation_clock, DARK.text_secondary);
+        assert_eq!(DARK.conversation_stage, DARK.text_tertiary);
+        assert_eq!(DARK.conversation_marker, DARK.border_subtle);
+        assert_eq!(DARK.conversation_divider, DARK.border_subtle);
+        assert_eq!(DARK.conversation_bubble, DARK.brand_soft);
+        assert_eq!(DARK.conversation_code, DARK.code_bg);
+        assert_eq!(Typography::CONVERSATION, 13.5);
+        assert_eq!(
+            Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT,
+            23.
+        );
+        assert_eq!(Layout::CONVERSATION_MAX_WIDTH, 736.);
+        assert_eq!(Layout::CONTENT_MAX_WIDTH, 768.);
+        assert_eq!(Layout::COMPOSER_MAX_WIDTH, 768.);
+    }
 
     #[test]
     fn dark_tokens_match_ui_spec_table() {

@@ -9,17 +9,76 @@ pub(crate) struct RunResponses {
 }
 
 impl RunResponses {
-    pub(crate) fn push(&mut self, response: AssistantResponseMetadata) {
+    pub(crate) fn push(&mut self, response: AssistantResponseMetadata) -> bool {
         if let Some(existing) = self
             .responses
             .iter()
             .find(|item| item.response_id == response.response_id)
         {
             self.invalid |= existing != &response;
-            return;
+            return false;
         }
         self.responses.push(response);
+        true
     }
+
+    fn validated(&self, text: &str) -> Option<&[AssistantResponseMetadata]> {
+        if self.invalid {
+            return None;
+        }
+        let mut end = 0;
+        let mut final_seen = false;
+        for response in &self.responses {
+            if !response.is_valid_for(text) || response.text_start_bytes < end || final_seen {
+                return None;
+            }
+            end = response.text_end_bytes;
+            final_seen = response.kind == AssistantResponseKind::Final;
+        }
+        Some(&self.responses)
+    }
+}
+
+pub(crate) fn history_response_boundaries(entries: &[HistoryEntry]) -> HashMap<String, Vec<usize>> {
+    let mut texts = HashMap::<String, String>::new();
+    let mut responses = HashMap::<String, RunResponses>::new();
+    for entry in entries {
+        match entry {
+            HistoryEntry::AssistantText {
+                message_id,
+                content,
+                ..
+            } => texts
+                .entry(message_id.clone())
+                .or_default()
+                .push_str(content),
+            HistoryEntry::AssistantResponseMetadata {
+                message_id,
+                response,
+                ..
+            } => {
+                responses
+                    .entry(message_id.clone())
+                    .or_default()
+                    .push(response.clone());
+            }
+            _ => {}
+        }
+    }
+    responses
+        .into_iter()
+        .filter_map(|(message_id, responses)| {
+            let text = texts.get(&message_id)?;
+            let mut boundaries = responses
+                .validated(text)?
+                .iter()
+                .flat_map(|response| [response.text_start_bytes, response.text_end_bytes])
+                .collect::<Vec<_>>();
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            Some((message_id, boundaries))
+        })
+        .collect()
 }
 
 pub(crate) fn process_copies(
@@ -28,9 +87,6 @@ pub(crate) fn process_copies(
     entries: &[StreamEntry],
     identities: &[StreamEntryIdentity],
 ) -> Option<HashSet<u64>> {
-    if responses.invalid {
-        return None;
-    }
     let mut text = String::new();
     let mut copies = Vec::new();
     for (entry, identity) in entries.iter().zip(identities) {
@@ -45,19 +101,11 @@ pub(crate) fn process_copies(
             copies.push((copy.id, start, text.len()));
         }
     }
-    let mut end = 0;
-    let mut final_start = None;
-    for response in &responses.responses {
-        if !response.is_valid_for(&text) || response.text_start_bytes < end || final_start.is_some()
-        {
-            return None;
-        }
-        end = response.text_end_bytes;
-        if response.kind == AssistantResponseKind::Final {
-            final_start = Some(response.text_start_bytes);
-        }
-    }
-    let final_start = final_start?;
+    let responses = responses.validated(&text)?;
+    let final_start = responses
+        .iter()
+        .find(|response| response.kind == AssistantResponseKind::Final)?
+        .text_start_bytes;
     if copies
         .iter()
         .any(|(_, start, end)| *start < final_start && *end > final_start)
@@ -69,12 +117,20 @@ pub(crate) fn process_copies(
             .into_iter()
             .filter_map(|(id, start, end)| {
                 (end <= final_start
-                    && responses.responses.iter().any(|response| {
-                        response.kind == AssistantResponseKind::Commentary
-                            && response.text_start_bytes <= start
-                            && response.text_end_bytes >= end
-                    }))
-                .then_some(id)
+                    && responses
+                        .iter()
+                        .filter(|response| response.kind == AssistantResponseKind::Commentary)
+                        .fold(start, |covered, response| {
+                            if response.text_start_bytes <= covered
+                                && response.text_end_bytes > covered
+                            {
+                                response.text_end_bytes
+                            } else {
+                                covered
+                            }
+                        })
+                        >= end)
+                    .then_some(id)
             })
             .collect(),
     )
@@ -91,6 +147,9 @@ impl ConversationStream {
         group: &Entity<RunActivityGroup>,
         cx: &App,
     ) -> Vec<(usize, RunDetail)> {
+        if !group.read(cx).process_in_details() {
+            return Vec::new();
+        }
         let mut details = Vec::new();
         for (index, entry) in self.entries.iter().enumerate() {
             match entry {
@@ -121,8 +180,8 @@ impl ConversationStream {
         let width = self
             .workspace_width
             .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
-            .unwrap_or(Layout::CONTENT_MAX_WIDTH)
-            .clamp(1., Layout::CONTENT_MAX_WIDTH)
+            .unwrap_or(Layout::CONVERSATION_MAX_WIDTH)
+            .clamp(1., Layout::CONVERSATION_MAX_WIDTH)
             - 2. * Layout::PROCESS_PADDING_X;
         let details = self.run_details(group, cx);
         if details.is_empty() {
@@ -202,6 +261,17 @@ impl ConversationStream {
             return false;
         };
         if let StreamEntry::RunActivitySegment { group, segment } = &self.entries[index]
+            && !group.read(cx).process_in_details()
+            && group.update(cx, |group, cx| group.reveal_segment(*segment, cx))
+        {
+            self.list.remeasure_items(index..index + 1);
+            self.list.scroll_to(gpui_kit::ListOffset {
+                item_ix: index,
+                offset_in_item: px(anchor.offset_in_item_px),
+            });
+            return true;
+        }
+        if let StreamEntry::RunActivitySegment { group, segment } = &self.entries[index]
             && group
                 .read(cx)
                 .segment_children(*segment)
@@ -254,7 +324,8 @@ impl ConversationStream {
             return;
         }
         let responses = self.run_responses.entry(message_id.to_owned()).or_default();
-        responses.push(response);
+        let closes_response = response.kind == AssistantResponseKind::Commentary;
+        let inserted = responses.push(response);
         let copies = process_copies(message_id, responses, &self.entries, &self.entry_identities);
         if let Some(group) = self.run_activity_groups.get(message_id) {
             group.update(cx, |group, cx| {
@@ -269,6 +340,30 @@ impl ConversationStream {
                     group.invalidate_final(cx);
                 }
             });
+        }
+        if inserted && closes_response && !responses.invalid {
+            let text = self
+                .entries
+                .iter()
+                .zip(&self.entry_identities)
+                .filter_map(|(entry, identity)| {
+                    if identity.message_id.as_deref() != Some(message_id) {
+                        return None;
+                    }
+                    match entry {
+                        StreamEntry::Assistant { copy, .. } => Some(copy.original_text()),
+                        _ => None,
+                    }
+                })
+                .collect::<String>();
+            if responses.validated(&text).is_some()
+                && responses
+                    .responses
+                    .last()
+                    .is_some_and(|response| response.text_end_bytes == text.len())
+            {
+                self.close_active_segment_at_response(text.len());
+            }
         }
     }
 
@@ -298,16 +393,15 @@ impl ConversationStream {
         for group in groups {
             let reading = !self.list.is_following_tail() || self.selection_focus.is_focused(window)
                 || group.read(cx).reading(window, cx)
-                || self.entries.iter().any(|entry| matches!(entry, StreamEntry::Assistant { copy, .. } if copy.has_selected_text()));
-            let anchor = self.scroll_anchor_snapshot();
+                || self.entries.iter().any(|entry| matches!(entry, StreamEntry::Assistant { copy, .. } if group.read(cx).owns_process_copy(copy.id) && copy.has_selected_text()));
+            if reading {
+                continue;
+            }
             group.update(cx, |group, cx| group.settle_final(reading, cx));
             for index in 0..self.entries.len() {
                 if self.process_entry_hidden(index, cx) {
                     self.invalidate_item(Some(index));
                 }
-            }
-            if reading {
-                self.restore_scroll_anchor(&anchor);
             }
         }
     }

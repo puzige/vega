@@ -29,14 +29,7 @@ async fn issue296_v2_replacing_loaded_history_rebuilds_role_boundaries(cx: &mut 
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert_eq!(
-        visual
-            .debug_bounds("assistant-role-0")
-            .expect("replacement role")
-            .size
-            .height,
-        px(20.)
-    );
+    assert!(visual.debug_bounds("assistant-role-0").is_none());
     assert!(visual.debug_bounds("assistant-role-1").is_none());
 }
 
@@ -80,7 +73,7 @@ async fn issue296_v2_history_prepend_keeps_reading_body_at_same_pixel(cx: &mut T
     assert_eq!(after.size, before.size);
     let restored = stream.read_with(&visual, |stream, _| stream.scroll_anchor_snapshot());
     assert_eq!(restored.identity, anchor.identity);
-    assert_eq!(restored.offset_in_item_px, anchor.offset_in_item_px - 20.);
+    assert_eq!(restored.offset_in_item_px, anchor.offset_in_item_px);
     assert!(!restored.following_tail);
     assert!(visual.debug_bounds("assistant-role-1").is_none());
 }
@@ -112,12 +105,12 @@ async fn issue296_v2_prepend_inside_role_clamps_to_body_start(cx: &mut TestAppCo
     visual.run_until_parked();
     let after = stream.read_with(&visual, |stream, _| stream.scroll_anchor_snapshot());
     assert_eq!(after.identity, before.identity);
-    assert_eq!(after.offset_in_item_px, 0.);
+    assert_eq!(after.offset_in_item_px, 10.);
     let body = visual.debug_bounds("assistant-body-1").expect("same body");
     let list = visual
         .debug_bounds("conversation-message-list")
         .expect("list");
-    assert_eq!(body.top(), list.top());
+    assert_eq!(body.top(), list.top() - px(10.));
 }
 
 #[gpui_kit::test]
@@ -195,16 +188,16 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
             .expect("initial thinking")
             .size
             .height,
-        px(28.)
+        px(28.5)
     );
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         assert_eq!(
             stream.message_anchor_geometry(cx, 600.).entry_heights[0],
-            28.
+            28.5
         );
         stream.apply_event(
-            ConversationEvent::ThinkingDelta {
+            ConversationEvent::SummaryDelta {
                 message_id: "run".into(),
                 delta: "Inspecting".into(),
             },
@@ -219,38 +212,36 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
     });
     visual.run_until_parked();
     let header = visual
-        .debug_bounds("run-activity-toggle")
+        .debug_bounds("run-stage-toggle-0")
         .expect("single header");
     visual.simulate_click(header.center(), Modifiers::default());
     visual.run_until_parked();
     let surface = visual
-        .debug_bounds("run-activity-content")
+        .debug_bounds("run-timeline-segment-0")
         .expect("segment");
     let thinking = visual
-        .debug_bounds("thinking-toggle")
+        .debug_bounds("run-stage-toggle-0")
         .expect("thinking row");
-    let tool = visual
-        .debug_bounds("tool-activity-single-row")
-        .expect("tool row");
-    assert_eq!(tool.top() - thinking.bottom(), px(4.));
-    assert_eq!(thinking.left(), surface.left());
+    let tool = visual.debug_bounds("run-stage-tool-0-0").expect("tool row");
+    assert_eq!(tool.top() - thinking.bottom(), px(0.));
+    assert_eq!(
+        thinking.left(),
+        surface.left() + px(Layout::PROCESS_PADDING_X)
+    );
     assert_eq!(tool.left(), thinking.left());
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
-        assert_eq!(geometry.entry_heights[0], 28. + 4. + 28. + 4. + 28.);
-        assert_eq!(geometry.entry_heights[1], 0.);
+        assert_eq!(geometry.entry_heights[0], 28.5);
+        assert_eq!(geometry.entry_heights[1], 24. + 25. + 25.);
     });
     visual.simulate_click(tool.center(), Modifiers::default());
     visual.run_until_parked();
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
-        assert_eq!(
-            geometry.entry_heights[0],
-            28. + 4. + 28. + 4. + 28. + 4. + 98.
-        );
-        assert_eq!(geometry.entry_heights[1], 0.);
+        assert_eq!(geometry.entry_heights[1], 24. + 25. + 25. + 4. + 98.);
+        assert_eq!(geometry.entry_heights[0], 28.5);
         stream.apply_event(
             ConversationEvent::TextDelta {
                 message_id: "run".into(),
@@ -262,7 +253,7 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
         let geometry = stream.message_anchor_geometry(cx, 600.);
         assert_eq!(
             *geometry.entry_heights.last().expect("assistant height"),
-            20. + 8. + 16. + Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT
+            16. + Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT
         );
     });
     visual.run_until_parked();
@@ -301,10 +292,7 @@ async fn issue296_v2_roles_follow_real_user_turns_without_changing_copy(cx: &mut
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     for selector in ["assistant-role-0", "assistant-role-3", "assistant-role-6"] {
-        let role = visual
-            .debug_bounds(selector)
-            .expect("first assistant in each real turn has a role");
-        assert_eq!(role.size.height, px(20.));
+        assert!(visual.debug_bounds(selector).is_none());
     }
     for selector in [
         "assistant-role-1",
@@ -366,7 +354,7 @@ async fn issue296_v2_process_surface_preserves_segment_order(cx: &mut TestAppCon
     let header = visual
         .debug_bounds("run-activity-group")
         .expect("process header");
-    assert_eq!(header.size.height, px(28.));
+    assert_eq!(header.size.height, px(28.5));
     assert!(visual.update(|window, cx| {
         let colors = theme(cx).colors;
         !window.painted_quads().iter().any(|quad| {

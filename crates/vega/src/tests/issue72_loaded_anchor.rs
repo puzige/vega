@@ -222,7 +222,7 @@ fn selected_marker(visual: &mut VisualTestContext, selector: &'static str) -> Po
         .debug_bounds(selector)
         .expect("selected stable message anchor");
     assert_eq!(rail.size.width, px(Layout::CONVERSATION_NAVIGATION_GUTTER));
-    assert_eq!(target.size.height, px(Layout::MESSAGE_ANCHOR_HIT_HEIGHT));
+    assert_eq!(target.size.height, px(Layout::CONVERSATION_MARKER_PITCH));
     assert!(rail.contains(&target.center()));
     let quads = visual.update(|window, cx| {
         (

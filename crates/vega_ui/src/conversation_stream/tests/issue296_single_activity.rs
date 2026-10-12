@@ -18,7 +18,9 @@ fn begin(stream: &mut ConversationStream, cx: &mut Context<ConversationStream>) 
 }
 
 #[gpui_kit::test]
-async fn issue296_single_activity_default_hides_operations_and_keeps_body(cx: &mut TestAppContext) {
+async fn issue296_single_activity_default_shows_inline_operations_and_keeps_body(
+    cx: &mut TestAppContext,
+) {
     let (window, stream, _) = open_controller_stream(cx, "single-default");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -53,8 +55,8 @@ async fn issue296_single_activity_default_hides_operations_and_keeps_body(cx: &m
     cx.run_until_parked();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("run-activity-toggle").is_some());
-    assert!(visual.debug_bounds("thinking-toggle").is_none());
-    assert!(visual.debug_bounds("tool-activity-single-row").is_none());
+    assert!(visual.debug_bounds("run-stage-toggle-0").is_some());
+    assert!(visual.debug_bounds("tool-activity-single-row").is_some());
     stream.read_with(&visual, |stream, cx| {
         assert_eq!(
             stream
@@ -108,8 +110,12 @@ async fn issue296_single_activity_tool_chevron_uses_right_slot(cx: &mut TestAppC
     let chevron = visual
         .debug_bounds("tool-activity-single-row-chevron")
         .expect("chevron slot");
-    assert_eq!(chevron.size.width, px(24.));
-    assert!((row.right() - chevron.right() - px(Layout::DISCLOSURE_PADDING_X + 1.)).abs() < px(1.));
+    assert_eq!(chevron.size.width, px(12.));
+    let title = visual
+        .debug_bounds("tool-activity-single-row-title")
+        .unwrap();
+    assert_eq!(chevron.left() - title.right(), px(6.));
+    assert!(chevron.right() < row.right());
 }
 
 fn finish_tool(id: &str) -> ConversationEvent {
@@ -320,22 +326,19 @@ async fn issue296_single_activity_history_is_ordered_and_never_crosses_runs(
             cx,
         );
         let group = &stream.run_activity_groups["single"];
-        let history = stream
-            .run_details(group, cx)
+        let history = group
+            .read(cx)
+            .children()
             .into_iter()
-            .map(|(_, detail)| match detail {
-                phase::RunDetail::Operation(RunActivityChild::Thinking(card)) => {
-                    card.read(cx).text.clone()
-                }
-                phase::RunDetail::Operation(RunActivityChild::Tool(_)) => "tool".into(),
+            .map(|detail| match detail {
+                RunActivityChild::Thinking(card) => card.read(cx).text.clone(),
+                RunActivityChild::Tool(_) => "tool".into(),
                 _ => panic!("unexpected detail"),
             })
             .collect::<Vec<_>>();
         assert_eq!(history, ["first", "tool", "second", "tool"]);
         assert_eq!(
-            stream
-                .run_details(&stream.run_activity_groups["next"], cx)
-                .len(),
+            stream.run_activity_groups["next"].read(cx).children().len(),
             1
         );
         assert_eq!(
@@ -432,7 +435,7 @@ async fn issue296_single_activity_hidden_body_anchor_restores_inside_its_only_de
         let group = &stream.run_activity_groups["restored"];
         let details = stream.run_details(group, cx);
         let (detail_index, (source, _)) = details.iter().enumerate().find(|(_, (_, detail))| match detail {
-            phase::RunDetail::Assistant(index) => matches!(&stream.entries[*index], StreamEntry::Assistant { copy, .. } if copy.original_text().starts_with("Step 8:")),
+            phase::RunDetail::Assistant(index) => matches!(&stream.entries[*index], StreamEntry::Assistant { copy, .. } if copy.original_text().starts_with("Step 5:")),
             _ => false,
         }).expect("target commentary");
         assert!(stream.process_entry_hidden(*source, cx));
@@ -562,6 +565,14 @@ async fn issue296_single_activity_visible_artifact_anchor_stays_outside_details(
         assert!(!stream.list.is_following_tail());
     });
     stream.update(cx, |stream, cx| {
+        assert!(!stream.restore_process_anchor(&tool_anchor, cx));
+        assert!(stream.restore_scroll_anchor(&tool_anchor));
+        assert!(!stream.run_activity_groups["single"].read(cx).expanded());
+        stream.resume_tail(cx);
+        confirm_test_final(stream, "single", cx);
+    });
+    cx.run_until_parked();
+    stream.update(cx, |stream, cx| {
         assert!(stream.restore_process_anchor(&tool_anchor, cx));
         assert!(stream.run_activity_groups["single"].read(cx).expanded());
     });
@@ -596,17 +607,20 @@ async fn issue296_single_activity_narrow_summary_preserves_clock_and_right_slot(
         visual.run_until_parked();
         let row = visual.debug_bounds("run-activity-toggle").expect("header");
         let slot = visual.debug_bounds("run-activity-chevron").expect("slot");
-        let clock = visual.debug_bounds("run-activity-clock").expect("clock");
-        let title = visual.debug_bounds("run-activity-status").expect("title");
-        let icon = visual.debug_bounds("run-activity-icon").expect("icon");
-        assert_eq!(row.size.height, px(Layout::DISCLOSURE_HEADER_HEIGHT));
-        assert_eq!(slot.size.width, px(Layout::DISCLOSURE_TRAILING_SLOT));
-        assert!(title.right() <= clock.left());
-        assert!(clock.right() <= slot.left());
-        assert!(
-            (slot.right() - row.right() + px(Layout::DISCLOSURE_PADDING_X + 1.)).abs() < px(1.)
-        );
-        assert_eq!(row.center().y, icon.center().y);
+        let title = visual
+            .debug_bounds("run-activity-status")
+            .expect("clock title");
+        let stage = visual.debug_bounds("run-stage-toggle-0").expect("stage");
+        let stage_title = visual.debug_bounds("run-stage-title-0").expect("summary");
+        let stage_slot = visual
+            .debug_bounds("run-stage-chevron-0")
+            .expect("stage slot");
+        assert_eq!(row.size.height, px(23.));
+        assert_eq!(slot.size.width, px(12.));
+        assert!(title.right() <= slot.left());
+        assert_eq!(stage_slot.left() - stage_title.right(), px(6.));
+        assert!(stage_slot.right() <= stage.right());
+        assert!(visual.debug_bounds("run-activity-icon").is_none());
         visual.update(|_, cx| {
             assert!(
                 cx.global::<shimmer::PaintProbe>()

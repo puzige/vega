@@ -77,7 +77,7 @@ pub(crate) fn render_entry_with_selection(
 pub(crate) fn render_stream_entry(
     entry: &StreamEntry,
     index: usize,
-    show_role: bool,
+    _show_role: bool,
     window: &mut Window,
     cx: &mut App,
     focus: &FocusHandle,
@@ -86,25 +86,11 @@ pub(crate) fn render_stream_entry(
     if !matches!(entry, StreamEntry::Assistant { .. }) {
         return body;
     }
-    let colors = theme(cx).colors;
     div()
         .w_full()
         .min_w_0()
         .flex()
         .flex_col()
-        .when(show_role, |entry| {
-            entry.child(
-                div()
-                    .debug_selector(move || format!("assistant-role-{index}"))
-                    .h(px(Layout::ASSISTANT_ROLE_HEIGHT))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child("Vega"),
-            )
-        })
         .child(
             div()
                 .debug_selector(move || format!("assistant-body-{index}"))
@@ -349,8 +335,7 @@ pub(crate) fn markdown_item(
         .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
-        .pt(px(Layout::ASSISTANT_MESSAGE_PADDING_TOP))
-        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
+        .pt(px(Layout::CONVERSATION_BODY_TOP))
         .flex()
         .flex_col()
         .children(markdown_blocks(model, colors, |line| {
@@ -416,14 +401,14 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
     USER_TEXT_LAYOUTS.with_borrow_mut(Vec::clear);
     let mut body = div()
         .debug_selector(|| "user-message-bubble".into())
-        .max_w(gpui_kit::relative(Layout::USER_MESSAGE_MAX_WIDTH_RATIO))
-        .bg(colors.brand_soft)
+        .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
+        .bg(colors.conversation_bubble)
         .rounded(px(Layout::USER_MESSAGE_RADIUS))
-        .text_size(px(Typography::MESSAGE))
-        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
-        .px_3()
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+        .px(px(Layout::CONVERSATION_USER_PADDING))
         .py_2()
-        .text_color(colors.text_primary)
+        .text_color(colors.conversation_user)
         .flex()
         .flex_col();
     for line in lines {
@@ -450,7 +435,7 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
         .flex_shrink_0()
         .debug_selector(|| "user-message".into())
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
-        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
+        .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
         .flex_col()
         .items_end()
@@ -460,7 +445,7 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
 
 /// One blank user-message line's natural box: exactly one body line height.
 fn user_line_height() -> Pixels {
-    px(Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT)
+    px(Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
 }
 
 fn selectable_user_message(
@@ -475,14 +460,14 @@ fn selectable_user_message(
     let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
     let mut body = div()
         .debug_selector(|| "user-message-bubble".into())
-        .max_w(gpui_kit::relative(Layout::USER_MESSAGE_MAX_WIDTH_RATIO))
-        .bg(colors.brand_soft)
+        .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
+        .bg(colors.conversation_bubble)
         .rounded(px(Layout::USER_MESSAGE_RADIUS))
-        .text_size(px(Typography::MESSAGE))
-        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
-        .px_3()
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+        .px(px(Layout::CONVERSATION_USER_PADDING))
         .py_2()
-        .text_color(colors.text_primary)
+        .text_color(colors.conversation_user)
         .flex()
         .flex_col();
     let mut visible_line = false;
@@ -512,7 +497,7 @@ fn selectable_user_message(
         .flex_shrink_0()
         .debug_selector(|| "user-message".into())
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
-        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
+        .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
         .flex_col()
         .items_end()
@@ -536,8 +521,7 @@ fn selectable_markdown_message(
         .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
-        .pt(px(Layout::ASSISTANT_MESSAGE_PADDING_TOP))
-        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
+        .pt(px(Layout::CONVERSATION_BODY_TOP))
         .flex()
         .flex_col();
     let mut previous: Option<(u64, LineKind)> = None;
@@ -647,7 +631,7 @@ fn markdown_blocks(
     blocks
 }
 
-fn markdown_block_gap(
+pub(crate) fn markdown_block_gap(
     previous: Option<&StreamLine>,
     current: &StreamLine,
     in_list: bool,
@@ -670,7 +654,7 @@ fn markdown_block_gap(
             LineKind::Code | LineKind::ListItem | LineKind::Table | LineKind::Quote => {
                 Layout::MARKDOWN_BLOCK_GAP
             }
-            _ => Layout::MARKDOWN_PARAGRAPH_GAP,
+            _ => Layout::CONVERSATION_PARAGRAPH_GAP,
         }
     };
     let before = match current.kind {
@@ -713,8 +697,8 @@ fn render_line_selectable(
     let item = div()
         .when(line.kind != LineKind::Code, |item| item.w_full())
         .flex_shrink_0()
-        .text_size(px(Typography::MESSAGE))
-        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
         .text_color(colors.text_primary);
     match line.kind {
         LineKind::Spacer => item.py(px(6.0)).into_any_element(),
@@ -858,8 +842,8 @@ fn render_table_selectable(
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
     let mut body = div()
-        .text_size(px(Typography::MESSAGE))
-        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
         .w_full()
         .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
         .flex_shrink_0()
@@ -930,8 +914,8 @@ fn render_table_selectable(
 /// (ui-spec §3), window default family, caller's color.
 pub(crate) fn message_run_style(color: Rgba) -> TextStyle {
     TextStyle {
-        font_size: AbsoluteLength::Pixels(px(Typography::MESSAGE)),
-        line_height: DefiniteLength::Fraction(Typography::MESSAGE_LINE_HEIGHT),
+        font_size: AbsoluteLength::Pixels(px(Typography::CONVERSATION)),
+        line_height: DefiniteLength::Fraction(Typography::CONVERSATION_LINE_HEIGHT),
         color: color.into(),
         ..TextStyle::default()
     }
@@ -952,9 +936,9 @@ pub(crate) fn code_run_style(color: Rgba) -> TextStyle {
 /// User echo body style: card text at the sidebar tier.
 fn user_body_style(colors: &ThemeColors) -> TextStyle {
     TextStyle {
-        font_size: AbsoluteLength::Pixels(px(Typography::MESSAGE)),
-        line_height: DefiniteLength::Fraction(Typography::MESSAGE_LINE_HEIGHT),
-        color: colors.text_primary.into(),
+        font_size: AbsoluteLength::Pixels(px(Typography::CONVERSATION)),
+        line_height: DefiniteLength::Fraction(Typography::CONVERSATION_LINE_HEIGHT),
+        color: colors.conversation_user.into(),
         ..TextStyle::default()
     }
 }
@@ -997,7 +981,7 @@ pub(crate) fn apply_span_style(style: &mut TextStyle, span: SpanStyle, colors: &
         SpanStyle::Code => {
             style.font_family = MONOFONT.into();
             style.font_size = AbsoluteLength::Pixels(px(Typography::CODE));
-            style.background_color = Some(colors.code_bg.into());
+            style.background_color = Some(colors.conversation_code.into());
         }
         SpanStyle::Link => {
             style.underline = Some(UnderlineStyle::default());
@@ -1025,7 +1009,7 @@ pub(crate) fn heading_style(level: u8) -> (f32, FontWeight) {
         1 => (Typography::MARKDOWN_H1, Typography::HEADING_PAGE_WEIGHT),
         2 => (Typography::MARKDOWN_H2, Typography::HEADING_PAGE_WEIGHT),
         3 => (Typography::MARKDOWN_H3, Typography::HEADING_BLOCK_WEIGHT),
-        _ => (Typography::MESSAGE, Typography::HEADING_CARD_WEIGHT),
+        _ => (Typography::CONVERSATION, Typography::HEADING_CARD_WEIGHT),
     }
 }
 
@@ -1049,8 +1033,8 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
     let item = div()
         .when(line.kind != LineKind::Code, |item| item.w_full())
         .flex_shrink_0()
-        .text_size(px(Typography::MESSAGE))
-        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
         .text_color(colors.text_primary);
     match line.kind {
         LineKind::Spacer => item.py(px(6.0)).into_any_element(),
@@ -1171,8 +1155,8 @@ fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> Any
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
     let mut body = div()
-        .text_size(px(Typography::MESSAGE))
-        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
         .w_full()
         .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
         .flex_shrink_0()

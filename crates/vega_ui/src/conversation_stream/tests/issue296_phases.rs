@@ -147,13 +147,26 @@ async fn issue296_phase_final_preserves_manual_reading_focus_and_selection(
 ) {
     for mode in ["manual", "backscroll", "selection", "focus"] {
         let (window, stream, _) = open_controller_stream(cx, &format!("issue296-phase-{mode}"));
-        stream.update(cx, begin);
+        stream.update(cx, |stream, cx| {
+            if mode == "backscroll" {
+                stream.apply_history_page(
+                    hydration_page(
+                        (1..40)
+                            .map(|index| hydration_user(index, "Earlier request"))
+                            .collect(),
+                        None,
+                    ),
+                    cx,
+                );
+            }
+            begin(stream, cx);
+        });
         cx.run_until_parked();
         let focus = stream.update(cx, |stream, cx| {
             let group = stream.run_activity_groups["run"].clone();
             match mode {
                 "manual" => group.update(cx, |group, cx| group.reveal(cx)),
-                "backscroll" => stream.list.pause_following_tail(),
+                "backscroll" => stream.list.scroll_by(px(-600.)),
                 "selection" => {
                     let StreamEntry::Assistant { copy, .. } = &stream.entries[1] else {
                         panic!("assistant")
@@ -164,6 +177,17 @@ async fn issue296_phase_final_preserves_manual_reading_focus_and_selection(
             }
             group.read(cx).test_focus()
         });
+        if mode == "selection" {
+            window
+                .update(cx, |view, window, cx| {
+                    view.stream
+                        .read(cx)
+                        .selection_focus
+                        .clone()
+                        .focus(window, cx)
+                })
+                .unwrap();
+        }
         if mode == "focus" {
             window
                 .update(cx, |_, window, cx| focus.unwrap().focus(window, cx))

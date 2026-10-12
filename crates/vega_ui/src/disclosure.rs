@@ -62,3 +62,54 @@ pub(crate) fn chevron(
         )
         .into_any_element()
 }
+
+pub(crate) fn inline_chevron(
+    group: SharedString,
+    selector: String,
+    focus: &FocusHandle,
+    expanded: bool,
+    enabled: bool,
+    colors: ThemeColors,
+    window: &Window,
+) -> AnyElement {
+    #[cfg(test)]
+    let probe_selector = format!("{selector}-paint");
+    let glyph = div().relative().child(crate::icons::sized_icon(
+        if expanded {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        },
+        colors.conversation_tool,
+        Layout::CONVERSATION_CHEVRON_SIZE,
+    ));
+    #[cfg(test)]
+    let glyph = glyph.child(
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size(px(1.))
+            .bg(gpui_kit::rgba(0x12fe34ff))
+            .debug_selector(move || probe_selector.clone()),
+    );
+    div()
+        .debug_selector(move || selector.clone())
+        .size(px(Layout::CONVERSATION_CHEVRON_SIZE))
+        .flex_shrink_0()
+        .child(
+            div()
+                .opacity(
+                    if enabled && focus.is_focused(window) && window.last_input_was_keyboard() {
+                        1.
+                    } else {
+                        0.
+                    },
+                )
+                .when(enabled, |glyph| {
+                    glyph.group_hover(group, |style| style.opacity(1.))
+                })
+                .child(glyph),
+        )
+        .into_any_element()
+}

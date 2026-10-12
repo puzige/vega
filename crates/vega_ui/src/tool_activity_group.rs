@@ -1,6 +1,5 @@
 //! UI-only grouping for adjacent audited tool calls.
 
-use crate::interaction::InteractionExt;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Entity, MouseButton, MouseUpEvent, ScrollHandle, div, px,
@@ -101,7 +100,7 @@ impl ToolActivityGroup {
 
     pub(crate) fn estimated_height(&self, cx: &App) -> f32 {
         if !self.expanded || self.children.is_empty() {
-            return Layout::DISCLOSURE_HEADER_HEIGHT;
+            return Layout::CONVERSATION_TOOL_HEIGHT;
         }
         let mut height = 0.;
         for (index, card) in self.children.iter().enumerate() {
@@ -113,7 +112,7 @@ impl ToolActivityGroup {
                 break;
             }
         }
-        Layout::DISCLOSURE_HEADER_HEIGHT
+        Layout::CONVERSATION_TOOL_HEIGHT
             + Layout::PROCESS_ITEM_GAP
             + height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
     }
@@ -215,21 +214,16 @@ impl ToolActivityGroup {
                     if expanded { "收起" } else { "展开" }
                 ))
                 .tab_stop(true)
-                .border_1()
-                .border_color(gpui_kit::transparent_black())
-                .focus_visible(move |row| row.border_color(colors.accent))
+                .focus_visible(move |row| row.bg(colors.bg_hover))
                 .debug_selector(|| "tool-activity-group-toggle".to_string())
-                .h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
-                .text_size(px(Typography::BODY))
-                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+                .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+                .text_size(px(Typography::CONVERSATION))
+                .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
                 .w_full()
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap_2()
-                .px(px(Layout::DISCLOSURE_PADDING_X))
-                .rounded(px(Layout::DISCLOSURE_RADIUS))
-                .interactive(colors, true, false)
+                .gap(px(Layout::CONVERSATION_INLINE_GAP))
                 .on_key_down(move |event, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         keyboard_group.update(cx, ToolActivityGroup::toggle_expanded);
@@ -248,7 +242,11 @@ impl ToolActivityGroup {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(crate::icons::icon(icon, icon_color)),
+                        .child(crate::icons::sized_icon(
+                            icon,
+                            icon_color,
+                            Layout::ICON_SIZE,
+                        )),
                 )
                 .child(
                     div()
@@ -256,12 +254,11 @@ impl ToolActivityGroup {
                         .min_w_0()
                         .flex_shrink(1.)
                         .truncate()
-                        .text_size(px(Typography::BODY))
-                        .text_color(colors.text_secondary)
+                        .text_size(px(Typography::CONVERSATION))
+                        .text_color(colors.conversation_tool)
                         .child(summary),
                 )
-                .child(div().flex_1().min_w_0())
-                .child(crate::disclosure::chevron(
+                .child(crate::disclosure::inline_chevron(
                     disclosure_group,
                     "tool-activity-group-chevron".into(),
                     &focus,

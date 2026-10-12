@@ -168,18 +168,18 @@ fn icon_name(kind: Icon) -> IconName {
     }
 }
 
-fn kit_icon(kind: Icon, color: Rgba) -> AnyElement {
+fn kit_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
     KitIcon::new(icon_name(kind))
-        .with_size(px(Layout::ICON_SIZE))
+        .with_size(px(size))
         .text_color(color)
         .flex_shrink_0()
         .into_any_element()
 }
 
-fn inline_icon(data: &'static [u8], color: Rgba) -> AnyElement {
+fn inline_icon(data: &'static [u8], color: Rgba, size: f32) -> AnyElement {
     svg()
         .data(data)
-        .size(px(Layout::ICON_SIZE))
+        .size(px(size))
         .flex_shrink_0()
         .text_color(color)
         .into_any_element()
@@ -187,23 +187,27 @@ fn inline_icon(data: &'static [u8], color: Rgba) -> AnyElement {
 
 /// Paints a 16px icon in the caller's semantic text color.
 pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
+    sized_icon(kind, color, Layout::ICON_SIZE)
+}
+
+pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
     let glyph = match kind {
-        Icon::Chart => inline_icon(CHART_SVG, color),
-        Icon::Plug => inline_icon(PLUG_SVG, color),
-        Icon::Blocks => inline_icon(BLOCKS_SVG, color),
-        Icon::Pin => inline_icon(PIN_SVG, color),
-        Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color),
-        Icon::Summary => inline_icon(SUMMARY_SVG, color),
-        Icon::DockMove => inline_icon(DOCK_MOVE_SVG, color),
-        Icon::Hand => inline_icon(HAND_SVG, color),
-        Icon::Shield => inline_icon(SHIELD_SVG, color),
-        Icon::GitBranch => inline_icon(GIT_BRANCH_SVG, color),
-        Icon::TextSelect => inline_icon(TEXT_SELECT_SVG, color),
-        Icon::Help => inline_icon(HELP_SVG, color),
-        _ => kit_icon(kind, color),
+        Icon::Chart => inline_icon(CHART_SVG, color, size),
+        Icon::Plug => inline_icon(PLUG_SVG, color, size),
+        Icon::Blocks => inline_icon(BLOCKS_SVG, color, size),
+        Icon::Pin => inline_icon(PIN_SVG, color, size),
+        Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color, size),
+        Icon::Summary => inline_icon(SUMMARY_SVG, color, size),
+        Icon::DockMove => inline_icon(DOCK_MOVE_SVG, color, size),
+        Icon::Hand => inline_icon(HAND_SVG, color, size),
+        Icon::Shield => inline_icon(SHIELD_SVG, color, size),
+        Icon::GitBranch => inline_icon(GIT_BRANCH_SVG, color, size),
+        Icon::TextSelect => inline_icon(TEXT_SELECT_SVG, color, size),
+        Icon::Help => inline_icon(HELP_SVG, color, size),
+        _ => kit_icon(kind, color, size),
     };
     gpui_kit::div()
-        .size(px(Layout::ICON_SIZE))
+        .size(px(size))
         .flex_shrink_0()
         .flex()
         .items_center()

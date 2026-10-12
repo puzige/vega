@@ -196,7 +196,7 @@ async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
     assert_eq!(stream.read_with(cx, activity_expansion), [false, false]);
 
     open_run_details(window, cx);
-    click(window, "thinking-toggle", cx);
+    click(window, "run-stage-toggle-0", cx);
     assert_eq!(
         stream.read_with(cx, activity_expansion),
         [true, false],
@@ -305,7 +305,7 @@ async fn issue151_v3_manual_expansion_survives_text_segments(cx: &mut TestAppCon
     );
 
     open_run_details(window, cx);
-    click(window, "thinking-toggle", cx);
+    click(window, "run-stage-toggle-0", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [true]);
 
     stream.update(cx, |stream, cx| {
@@ -336,14 +336,14 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", "第一段"), cx);
     });
-    assert!(!mounted(window, "thinking-content", cx));
+    assert!(!mounted(window, "stage-thinking-content", cx));
     open_run_details(window, cx);
-    click(window, "thinking-toggle", cx);
-    assert!(mounted(window, "thinking-content", cx));
+    click(window, "run-stage-toggle-0", cx);
+    assert!(mounted(window, "stage-thinking-content", cx));
 
-    click(window, "thinking-toggle", cx);
+    click(window, "run-stage-toggle-0", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [false]);
-    assert!(!mounted(window, "thinking-content", cx));
+    assert!(!mounted(window, "stage-thinking-content", cx));
 
     stream.update(cx, |stream, cx| {
         stream.apply_event(thinking("m", "第二段"), cx);
@@ -354,7 +354,7 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
         [false],
         "more deltas of the same unit must not re-open a user-collapsed unit"
     );
-    assert!(!mounted(window, "thinking-content", cx));
+    assert!(!mounted(window, "stage-thinking-content", cx));
 }
 
 #[gpui_kit::test]
