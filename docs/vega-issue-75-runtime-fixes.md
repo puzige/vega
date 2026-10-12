@@ -136,3 +136,43 @@ NOT RUN：本轮版本的真实首次人工连接、浏览器输入、桌面输�
 ConcurrentProvider在首文本后进入真实5秒gate，release之前仍有UI与持久化等待，故存在负载敏感前提；但原失败日志没有对应gate deadline panic，不能认定它就是根因。GPUI默认单轮且不重试，亦无证据证明该13秒由多seed迭代产生。后续新head云端若再次失败，将得到A/B的pending/card/active/cancelled、固定tool状态与Settings状态，以区分尚未提议、提前终态、撤权和UI入队方向；拿到证据前不改变生产write或测试同步合同。
 
 独立审查校正：失败诊断的工具状态白名单按真实DDL收口为pending_approval、approved、running、success、failed、rejected、cancelled；并保留absent/query_error/unexpected固定降级值。此校正只影响失败文本，未再次运行测试；原单次PASS记录保持原样。
+
+
+## 第三轮：浏览器目标列表 raw 合同（2026-10-12）
+
+0.1.73 真机在全新、未被其他自动化附着的原生 Chrome 标签上及时完成扩展选择后，BrowserObserve 约22秒返回 executor=playwright stage=target_list error_class=unknown，尚未出现 Vega 目标授权，也没有动作。已丢弃的响应不能回溯，不能唯一确认本次失败来自上游 isError 还是成功结果解析。
+
+固定 Playwright core e8149b8257d32dcf8f72573ecc43e72439da7080 的 browser_tabs 默认成功输出为 Markdown Result 章节；Response.serialize 还可以追加 Page、Events、Modal state。旧解析器扫描整个文本所有以“- ”开头的行，将合法元信息当作额外标签后拒绝，并把 BrowserExtension 归为 unknown。tabs handler 已先采样 headerSnapshot，故 Page 不是每次首连必有；这是已确认的兼容缺陷，不是对22秒真机失败根因的追认。Extension 0.4 初始仅将 selectedTab 发送给本 relay，后续 popup 或用户拖入连接组才可扩展目标；不能用挑第一个标签来规避唯一目标限制。
+
+仅首次连接及后续校验的 browser_tabs(action=list) 固定发送 _meta.raw=true，使用官方 backend raw 参数。固定 Response raw 过滤仅保留 Error/Result/WebMCP tools/Snapshot；list 不生成后两类，成功只包含完整标签列表，Page/Events/Modal 元信息不会混入。错误仍经过 isError 有限分类。模型不能配置 raw、tab索引或连接范围。
+
+解析完整 raw 结果，不过滤或忽略额外非标签行：只接受唯一规范 index0/current 的安全 http(s) 标签；拒绝多行伪造标题、多个标签、无 current、畸形行、受限URL与其他多余内容。成功响应的解析失败独立记为 stage=target_parse，有限 class 为 target_count、target_format、target_not_current 或既有 target_unavailable；不保存计数、标题、URL、原始文本、路径或令牌。isError 仍是 target_list，可据此区分上游拒绝与本地成功响应解析失败。
+
+首次连接300秒、普通调用45秒、取消后毒化及晚包丢弃、epoch撤权、owned清理、未知动作禁止重试全部保持。
+
+| ID | 操作 | 预期 | 层级 | 状态 |
+|---|---|---|---|---|
+| BT01 | 首连/后续目标列表请求 | 固定raw=true；只改变列表序列化，不改变权限 | 内存MCP/调用接线 | PASS（进程内） |
+| BT02 | 官方raw成功行与附加页面/事件外壳 | 唯一完整raw成功；带外壳或其他行拒绝，不能静默挑选 | runtime fixture | PASS（进程内） |
+| BT03 | 多目标、无current、畸形/伪造/受限目标 | target_parse有限分类，无私有正文 | runtime fixture | PASS（进程内） |
+| BT04 | 首连300秒/普通45秒/取消晚包 | 既有期限和失效合同不变 | 内存MCP+模拟时钟 | PASS（进程内） |
+
+来源：[backend raw参数](https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/playwright-core/src/tools/backend/browserBackend.ts)、[Response过滤和序列化](https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/playwright-core/src/tools/backend/response.ts)、[tabs](https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/playwright-core/src/tools/backend/tabs.ts)、[扩展初始所选标签](https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/extension/src/connectedTabGroup.ts)、[扩展事件范围](https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/extension/src/relayConnection.ts)。
+
+
+### 第三轮交付证据
+
+- verified_at_utc: 2026-10-12T06:18:27.283Z
+- branch: feat/75-runtime-fixes；基线 f8b7690e（已合入#311并发布0.1.73）。
+- 改动为受管浏览器列表raw参数与普通校验专用方法、完整raw解析与有限target_parse诊断；未修改UI、权限、组件版本、动作派发或原始错误持久化。
+- 独立只读审查未发现新增P1/P2；主控复核同意。
+
+| 验证 | 精确命令 | 原始结果 | 日志SHA-256 |
+|---|---|---|---|
+| 旧代码首次失败 | cargo nextest run -p vega_mcp -p vega_runtime -E 'test(issue75_browser_raw_target) \| test(issue75_browser_connection_wait_accepts_manual_authorization_after_45_seconds)' | exit100；Summary [0.023s] 3 tests run: 0 passed, 3 failed, 360 skipped | b16b3fa6c7c37fb0e852a48e6f63fdf206a8ac61739b113e4dad15771ff8ccca |
+| 修复后本卡回归 | cargo nextest run -p vega_mcp -p vega_runtime -p vega_conversation issue75 | exit0；Summary [2.895s] 36 tests run: 36 passed, 907 skipped | 664100716a849fbf0a7f263fb841bd9d148dc313168376936a5072f2da86a270 |
+| 定向格式与文本 | rustfmt --check --edition 2024 crates/vega_mcp/src/managed.rs crates/vega_runtime/src/computer_use/backend.rs crates/vega_runtime/src/computer_use/diagnostics.rs；git diff --check | exit0；无新增代码注释 | 无 |
+
+原始日志为 /tmp/vega-75-browser-raw-red.log 和 /tmp/vega-75-browser-raw-green.log。测试是内存协议及进程内业务回归，没有启动浏览器或桌面执行器；全量门禁交给云端。
+
+NOT RUN：本修复版真实扩展选择后出现Vega目标授权、观察及表单输入。22秒unknown的实际分支仍未唯一确认；下轮target_list代表上游调用失败，target_parse代表成功响应未满足目标合同，二者均不记录私有正文。桌面hotkey/background_unavailable另按固定Cua合同调查，本提交不改变该路径。

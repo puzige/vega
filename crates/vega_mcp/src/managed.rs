@@ -156,9 +156,21 @@ impl ManagedClient {
         self.browser_connection_started = true;
         self.call_with_timeout(
             "browser_tabs",
-            json!({"action":"list"}),
+            json!({"action":"list","_meta":{"raw":true}}),
             cancel,
             BROWSER_CONNECTION_TIMEOUT,
+        )
+        .await
+    }
+
+    pub async fn current_browser_target(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<ManagedResult, McpError> {
+        self.call(
+            "browser_tabs",
+            json!({"action":"list","_meta":{"raw":true}}),
+            cancel,
         )
         .await
     }
@@ -379,7 +391,7 @@ mod tests {
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(
                 request["params"],
-                json!({"name":"browser_tabs","arguments":{"action":"list"}})
+                json!({"name":"browser_tabs","arguments":{"action":"list","_meta":{"raw":true}}})
             );
             tokio::time::sleep(Duration::from_secs(46)).await;
             let _ = server
@@ -415,6 +427,10 @@ mod tests {
             server.read_line(&mut line).await.unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["id"], 2);
+            assert_eq!(
+                request["params"],
+                json!({"name":"browser_tabs","arguments":{"action":"list","_meta":{"raw":true}}})
+            );
             tokio::time::sleep(Duration::from_secs(46)).await;
             let _ = server
                 .get_mut()
@@ -432,17 +448,13 @@ mod tests {
             ));
             let start = tokio::time::Instant::now();
             assert!(matches!(
-                client
-                    .call("browser_tabs", json!({"action":"list"}), &cancel)
-                    .await,
+                client.current_browser_target(&cancel).await,
                 Err(McpError::Timeout)
             ));
             assert_eq!(start.elapsed(), Duration::from_secs(45));
             assert!(client.closed);
             assert!(matches!(
-                client
-                    .call("browser_tabs", json!({"action":"list"}), &cancel)
-                    .await,
+                client.current_browser_target(&cancel).await,
                 Err(McpError::Transport)
             ));
             assert_eq!(client.next_id, 3);
@@ -479,9 +491,7 @@ mod tests {
             assert_eq!(start.elapsed(), Duration::from_secs(300));
             assert!(client.closed);
             assert!(matches!(
-                client
-                    .call("browser_tabs", json!({"action":"list"}), &cancel)
-                    .await,
+                client.current_browser_target(&cancel).await,
                 Err(McpError::Transport)
             ));
             assert_eq!(client.next_id, 2);
