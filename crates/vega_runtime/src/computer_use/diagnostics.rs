@@ -12,6 +12,7 @@ pub(super) enum Stage {
     Observe,
     Screenshot,
     Action,
+    ActionPreflight,
 }
 
 impl Stage {
@@ -26,6 +27,7 @@ impl Stage {
             Self::Observe => "observe",
             Self::Screenshot => "screenshot",
             Self::Action => "action",
+            Self::ActionPreflight => "action_preflight",
         }
     }
 }
@@ -55,12 +57,15 @@ pub(super) enum Class {
     ObservationUnavailable,
     StaleObservation,
     BackgroundUnavailable,
+    OffSpaceOrAxUnresolved,
+    MinimizedOrHiddenWindow,
+    SamePidKeyboardAmbiguity,
     InvalidCoordinates,
     InvalidImage,
 }
 
 impl Class {
-    fn code(self) -> &'static str {
+    pub(super) fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::Transport => "transport",
@@ -85,6 +90,9 @@ impl Class {
             Self::ObservationUnavailable => "observation_unavailable",
             Self::StaleObservation => "stale_observation",
             Self::BackgroundUnavailable => "background_unavailable",
+            Self::OffSpaceOrAxUnresolved => "off_space_or_ax_unresolved",
+            Self::MinimizedOrHiddenWindow => "minimized_or_hidden_window",
+            Self::SamePidKeyboardAmbiguity => "same_pid_keyboard_ambiguity",
             Self::InvalidCoordinates => "invalid_coordinates",
             Self::InvalidImage => "invalid_image",
         }
@@ -126,6 +134,15 @@ impl Class {
             }
             Self::BackgroundUnavailable => {
                 "目标不支持本次后台定向操作，请手动完成；Vega 不会改用前台或全屏输入。"
+            }
+            Self::OffSpaceOrAxUnresolved => {
+                "目标窗口的辅助功能归属无法确认，请检查目标所在空间并重新观察。"
+            }
+            Self::MinimizedOrHiddenWindow => {
+                "目标可见性无法确认，可能隐藏、最小化或状态不可读；请检查目标并重新观察。"
+            }
+            Self::SamePidKeyboardAmbiguity => {
+                "同一应用存在其他键盘目标，执行器无法保证输入落在所选窗口；请检查窗口后重新观察。"
             }
             Self::Cancelled => "执行通道已取消，请检查目标；已派发动作不能自动重试。",
             Self::Protocol | Self::LimitExceeded => {
@@ -212,6 +229,16 @@ pub(super) fn checked(
     }
 }
 
+pub(super) fn background_refusal(code: &str) -> Option<Class> {
+    match code {
+        "off_space_or_ax_unresolved" => Some(Class::OffSpaceOrAxUnresolved),
+        "minimized_or_hidden_window" => Some(Class::MinimizedOrHiddenWindow),
+        "same_pid_keyboard_ambiguity" => Some(Class::SamePidKeyboardAmbiguity),
+        "window_not_found" | "owner_pid_mismatch" => Some(Class::TargetUnavailable),
+        _ => None,
+    }
+}
+
 fn classify(capability: Capability, result: &ManagedResult) -> Class {
     if capability == Capability::Desktop
         && let Some(structured) = result.structured.as_ref()
@@ -224,6 +251,9 @@ fn classify(capability: Capability, result: &ManagedResult) -> Class {
                     .then(|| structured["refusal"]["code"].as_str())
                     .flatten()
             });
+        if let Some(class) = code.and_then(background_refusal) {
+            return class;
+        }
         match code {
             Some(
                 "window_id_not_found"
@@ -248,12 +278,7 @@ fn classify(capability: Capability, result: &ManagedResult) -> Class {
                 | "protected_resource_scope_stale"
                 | "authorization_host_failed",
             ) => return Class::PolicyDenied,
-            Some(
-                "background_unavailable"
-                | "off_space_or_ax_unresolved"
-                | "minimized_or_hidden_window"
-                | "same_pid_keyboard_ambiguity",
-            ) => return Class::BackgroundUnavailable,
+            Some("background_unavailable") => return Class::BackgroundUnavailable,
             Some(
                 "stale_element_token"
                 | "screenshot_context_missing"
@@ -597,5 +622,24 @@ mod tests {
             .err(),
             Some(Error::Cancelled)
         );
+    }
+    #[test]
+    fn issue75_background_fixed_refusals_keep_distinct_safe_classes() {
+        for code in [
+            "off_space_or_ax_unresolved",
+            "minimized_or_hidden_window",
+            "same_pid_keyboard_ambiguity",
+        ] {
+            let error = checked(Capability::Desktop, Stage::Action, Ok(ManagedResult {
+                text: vec!["SECRET_INPUT SECRET_PAGE".into()],
+                images: Vec::new(),
+                structured: Some(serde_json::json!({"status":"refused","refusal":{"code":code,"reason":"SECRET_REASON","escalation":"SECRET_PATH"}})),
+                is_error: true,
+            })).err().unwrap();
+            let output = error.to_string();
+            assert!(output.contains(&format!("error_class={code}")), "{output}");
+            assert!(!output.contains("SECRET"));
+            assert!(!format!("{error:?}").contains("SECRET"));
+        }
     }
 }

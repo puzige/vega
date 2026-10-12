@@ -176,3 +176,56 @@ ConcurrentProvider在首文本后进入真实5秒gate，release之前仍有UI与
 原始日志为 /tmp/vega-75-browser-raw-red.log 和 /tmp/vega-75-browser-raw-green.log。测试是内存协议及进程内业务回归，没有启动浏览器或桌面执行器；全量门禁交给云端。
 
 NOT RUN：本修复版真实扩展选择后出现Vega目标授权、观察及表单输入。22秒unknown的实际分支仍未唯一确认；下轮target_list代表上游调用失败，target_parse代表成功响应未满足目标合同，二者均不记录私有正文。桌面hotkey/background_unavailable另按固定Cua合同调查，本提交不改变该路径。
+
+
+## 第四轮：后台输入能力与观察失效语义（2026-10-12）
+
+0.1.73真机在刷新TCC后已得到 ComputerObserve success，hotkey第一次动作被拒为outcome_unknown/background_unavailable，未重试。独立新授权的type_text成功，原生AX确认测试种子保留并追加测试marker；之后Observe成功。此证据不能说明全部后台输入不可用，也不能回溯确定已被聚合的hotkey拒绝子类。
+
+固定Cua0.34的hotkey/press_key先通过GenericKey窗口gate；gate不读取具体按键，没有Cmd+End/Ctrl+End组合黑名单。type_text在精确元素场景可走AX语义路径，带元素scroll也可用AX/wheel；无元素的scroll走GenericKey。get_window_state的background_input是观察时能力报告，动作仍重新采集事实并检查。
+
+仅投影固定accessibility/window_pointer/pid_keyboard三条route，验证exact_window.status=matched及pid/window_id与所选目标一致。status仅接受available/refused；refused.reason仅接受固定window_not_found、owner_pid_mismatch、off_space_or_ax_unresolved、minimized_or_hidden_window、same_pid_keyboard_ambiguity。缺失、畸形、重复route、未知reason或目标不匹配统一为unknown；不保存整个上游report、reason正文或escalation。报告只活在当前有界观察内，不持久化；available只表明观察时可用。
+
+最新观察中pid_keyboard明确已知refused时，hotkey、press_key和无元素target的scroll在派发前返回安全not_dispatched，stage=action_preflight。type_text及带元素scroll不因该route拒绝而被一刀切；仍由固定Cua检查实际语义路径。unknown不伪装成available，继续依赖执行器fresh gate；available也绝不绕过fresh gate。状态改善后必须重新Observe，旧观察不能永久覆盖新报告。上游调用已经进入dispatch后，无论同一拒绝码、未知错误或取消，仍为outcome_unknown并禁止自动重试；不做前台fallback或调整window授权范围。
+
+诊断将三个已有聚合码off_space_or_ax_unresolved、minimized_or_hidden_window、same_pid_keyboard_ambiguity精分成同名有限class；保留generic background_unavailable。提示不得把AX未解析误说成TCC缺失，不把可见性无法证明误说成确已最小化。只输出固定code和建议，不保存原始reason、按键或页面内容。
+
+Observe live链路静态核验通过：完成时apply_observation投影当前AX/图像，随后进入provider请求；Act前失效、同能力新观察、compaction会淘汰旧观察。成功状态不保证某个插入位置的语义可验证，也不能据后验占位倒推原调用为空。统一trim_messages/outcome占位文案为“原观察成功返回但现已失效；占位不证明当时为空/失败，也不追认先前动作已验证；新动作需新观察”。不声称此前一定发给provider，不保留旧正文或延长图像寿命。
+
+| ID | 操作 | 预期 | 层级 | 状态 |
+|---|---|---|---|---|
+| BG01 | 三种固定后台拒绝码含私有正文 | 不同有限class、无正文；旧分类先失败 | runtime fixture | PASS（进程内） |
+| BG02 | 官方报告available/refused/缺失/畸形/错目标 | 有限三route投影；未知不变available | runtime fixture | PASS（进程内） |
+| BG03 | pid_keyboard拒绝下hotkey/press_key/无target scroll | 派发前拒绝；同route下type_text/带target scroll仍可映射 | runtime fixture | PASS（进程内） |
+| BG04 | available后上游拒绝、取消 | fresh拒绝保持outcome_unknown、禁止重试 | runtime fixture | PASS（进程内） |
+| BG05 | Observe→Act失效→后验Observe | 首次live有AX/图像；旧内容清空且占位不追认失败；新观察独立生效 | 进程内投影 | PASS（进程内） |
+
+来源：[后台事实判定及报告](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/cua-driver-core/src/background_input.rs#L183)、[报告生成](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs#L715)、[hotkey](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/tools/hotkey.rs#L275)、[press_key](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/tools/press_key.rs#L315)、[type_text AX语义路径](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs#L811)、[scroll GenericKey路径](https://github.com/trycua/cua/blob/cua-driver-rs-v0.34.0/libs/cua-driver/rust/crates/platform-macos/src/tools/scroll.rs#L585)。
+
+
+### 第四轮修复前的独立真机证据（主控记录）
+
+0.1.73桌面路径已实测：接管后UI依次进入“正在交还控制”“已接管”；点击继续后本轮正常结束。随后新Observe要求重新授权同一测试窗口并成功。测试人员仅用AX选区接口准备文末光标，未写入marker；Vega再次Observe重新授权、一次type_text成功并返回后验观察。主控以原生AX和截图独立确认三行测试内容依次为VEGA-CU75-TARGET、VEGA-CU75-TYPE-ONLY、VEGA-CU75-RESUMED，无覆盖、未保存。此证据验证限定测试目标内输入、接管及恢复，不声称Vega已能自主任意定位插入点。
+
+raw列表PR312云端run38212100607为2257 passed、5 skipped，已squash为6f59d6156bb1d8e22c74e06c3ca57927b8973d17；发布run38212626569。以上真机结论属于0.1.73及人工光标准备场景，不作为本第四轮新预检的真机通过证据。
+
+独立审查补充：Desktop action 的target先验证为string或null（缺省视作null），再验证元素token归属。数字、对象、数组、布尔值一律派发前InvalidAction；无元素scroll按已验证token是否存在判断，不能用原始JSON的is_null绕过后台预检。增加畸形target回归，保留首次失败证据。
+
+
+### 第四轮自动验证与交付
+
+- verified_at_utc: 2026-10-12T06:36:16.301Z
+- 生产范围：runtime后台route有限投影/键盘预检、三种固定拒绝码、模型工具指导及两个观察失效出口；没有UI/权限/组件/前台回退改动。
+- 独立审查提出的非string target绕过已先复现再修复，复审无剩余P1/P2；旧route失效、新available替换和outcome清图像/正文也已验证。
+
+| 验证 | 精确命令 | 原始结果 | 日志SHA-256 |
+|---|---|---|---|
+| 旧聚合/占位失败 | cargo nextest run -p vega_runtime issue75_background | exit100；Summary [0.021s] 2 tests run: 0 passed, 2 failed, 302 skipped | db64002c0c022c8fe5ba6386343dda7d2f17bb8eee5c23d2c6f64f8e71d551d3 |
+| 无预检失败 | cargo nextest run -p vega_runtime issue75_background_keyboard_preflight | exit100；Summary [0.021s] 1 test run: 0 passed, 1 failed, 306 skipped | bc45a2dd9075b649c76b3cbb3ae2f48bc08745d07022950809d4f6d6e7093a3c |
+| 畸形target绕过失败 | 同上 | exit100；Summary [0.021s] 1 test run: 0 passed, 1 failed, 306 skipped | db5606ccc9ad4c14ac3d1e533998f96f7461bf468e9e4f449caf8d48b25ce270 |
+| 最终本卡回归 | cargo nextest run -p vega_runtime -p vega_mcp -p vega_conversation issue75 | exit0；Summary [2.530s] 41 tests run: 41 passed, 907 skipped | 8b8f7e213a730ea7832d474ff96dad5a147b1735165789f912de1bcd0f377f46 |
+| 文本/格式 | git diff --check；rustfmt --check --edition 2024（本轮7个Rust文件） | exit0；无新增代码注释 | 无 |
+
+日志依次为/tmp/vega-75-background-red.log、/tmp/vega-75-background-preflight-red.log、/tmp/vega-75-background-target-red.log、/tmp/vega-75-background-verified.log。首次测试编译曾因ManagedResult无Debug而无法使用unwrap_err，已改为err().unwrap；原编译输出另存/tmp/vega-75-background-red-compile.log（SHA-256 b68c9f569e181bde74fb0ff35ff4973dfa41ab26a44db0bb8008222471567a90），不把编译错误算作业务缺陷复现。所有测试为进程内，没有真实执行器或UI动作。
+
+NOT RUN：本第四轮版本的后台route指引/预拒及可用hotkey真实执行。旧hotkey失败的原始子码已被聚合，不能从本修复追认它属于哪种拒绝。已派发后的拒绝仍保持outcome_unknown；未修改缓存寿命或保存旧观察。全量门禁交给后续云端PR check。

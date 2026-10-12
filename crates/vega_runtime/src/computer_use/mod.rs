@@ -1,3 +1,6 @@
+mod background;
+
+pub(crate) const INVALIDATED_OBSERVATION: &str = "[Earlier tool observation returned successfully, but its payload has since been invalidated and discarded. This placeholder does not mean the original observation was empty or failed, and does not establish whether an earlier action was verified. Obtain a fresh observation before any new action.]";
 mod backend;
 mod components;
 mod control;
@@ -163,7 +166,12 @@ impl ComputerUseRun {
                     json!(["click", "type_text", "press_key", "navigate", "scroll"])
                 }
             };
-            definitions.push(crate::ToolDefinition { name: act.into(), description: "Perform one bounded action on the exact user-authorized target and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. No scripts, file transfers, tab selection or permission changes.".into(), input_schema: json!({"type":"object","properties":{"observation_id":{"type":"string"},"action":{"type":"string","enum":actions},"target":{"type":["string","null"]},"text":{"type":["string","null"]},"key":{"type":["string","null"]},"url":{"type":["string","null"]},"x":{"type":["number","null"]},"y":{"type":["number","null"]},"direction":{"type":["string","null"],"enum":["up","down","left","right",null]},"amount":{"type":["integer","null"],"minimum":1,"maximum":10}},"required":["observation_id","action","target","text","key","url","x","y","direction","amount"],"additionalProperties":false}), strict: true });
+            let background_guidance = if capability == Capability::Desktop {
+                " Consult the latest background input routes. If pid_keyboard is refused, do not use hotkey or press_key; scroll requires an element target. Element-targeted type_text and scroll may use AX semantics. A successful observation does not by itself verify the caret or selection; verify the intended insertion target before typing."
+            } else {
+                ""
+            };
+            definitions.push(crate::ToolDefinition { name: act.into(), description: format!("Perform one bounded action on the exact user-authorized target and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. No scripts, file transfers, tab selection or permission changes.{background_guidance}"), input_schema: json!({"type":"object","properties":{"observation_id":{"type":"string"},"action":{"type":"string","enum":actions},"target":{"type":["string","null"]},"text":{"type":["string","null"]},"key":{"type":["string","null"]},"url":{"type":["string","null"]},"x":{"type":["number","null"]},"y":{"type":["number","null"]},"direction":{"type":["string","null"],"enum":["up","down","left","right",null]},"amount":{"type":["integer","null"],"minimum":1,"maximum":10}},"required":["observation_id","action","target","text","key","url","x","y","direction","amount"],"additionalProperties":false}), strict: true });
         }
         definitions
     }
@@ -347,7 +355,7 @@ impl ComputerUseRun {
                 && message.content.starts_with("[External tool observation;")
             {
                 message.images.clear();
-                message.content = "[External tool observation discarded. Image and page data were not retained. Observe again before acting.]".into();
+                message.content = INVALIDATED_OBSERVATION.into();
             }
         }
     }
