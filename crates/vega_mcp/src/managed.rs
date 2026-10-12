@@ -10,6 +10,8 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_MANAGED_FRAME: usize = 12 * 1024 * 1024;
 const MAX_TEXT: usize = 256 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+const BROWSER_CONNECTION_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct ManagedImage {
     pub bytes: Vec<u8>,
@@ -29,6 +31,7 @@ pub struct ManagedClient {
     next_id: u64,
     tools: HashMap<String, Value>,
     closed: bool,
+    browser_connection_started: bool,
 }
 
 impl ManagedClient {
@@ -57,6 +60,7 @@ impl ManagedClient {
             next_id: 1,
             tools: HashMap::new(),
             closed: false,
+            browser_connection_started: false,
         })
     }
 
@@ -138,15 +142,44 @@ impl ManagedClient {
         arguments: Value,
         cancel: &CancellationToken,
     ) -> Result<ManagedResult, McpError> {
+        self.call_with_timeout(name, arguments, cancel, REQUEST_TIMEOUT)
+            .await
+    }
+
+    pub async fn connect_browser_target(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<ManagedResult, McpError> {
+        if self.browser_connection_started {
+            return Err(McpError::InvalidConfig);
+        }
+        self.browser_connection_started = true;
+        self.call_with_timeout(
+            "browser_tabs",
+            json!({"action":"list"}),
+            cancel,
+            BROWSER_CONNECTION_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn call_with_timeout(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<ManagedResult, McpError> {
         if !self.tools.contains_key(name) {
             return Err(McpError::UnsupportedResult);
         }
         crate::wire::checked_arguments(&arguments)?;
         let value = self
-            .request(
+            .request_with_timeout(
                 "tools/call",
                 json!({"name":name,"arguments":arguments}),
                 cancel,
+                timeout,
             )
             .await?;
         parse_result(value)
@@ -157,6 +190,17 @@ impl ManagedClient {
         method: &str,
         params: Value,
         cancel: &CancellationToken,
+    ) -> Result<Value, McpError> {
+        self.request_with_timeout(method, params, cancel, REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn request_with_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: &CancellationToken,
+        timeout: Duration,
     ) -> Result<Value, McpError> {
         if self.closed {
             return Err(McpError::Transport);
@@ -212,7 +256,7 @@ impl ManagedClient {
                 return value.get("result").cloned().ok_or(McpError::InvalidMessage);
             }
         };
-        let result = tokio::select! { biased; _ = cancel.cancelled() => Err(McpError::Cancelled), result = tokio::time::timeout(Duration::from_secs(45), exchange) => result.unwrap_or(Err(McpError::Timeout)) };
+        let result = tokio::select! { biased; _ = cancel.cancelled() => Err(McpError::Cancelled), result = tokio::time::timeout(timeout, exchange) => result.unwrap_or(Err(McpError::Timeout)) };
         if result.is_err() {
             self.shutdown().await;
         }
@@ -317,7 +361,178 @@ mod tests {
             next_id: 1,
             tools: HashMap::new(),
             closed: false,
+            browser_connection_started: false,
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn issue75_browser_connection_wait_accepts_manual_authorization_after_45_seconds() {
+        let (stream, server) = tokio::io::duplex(4096);
+        let mut client = fixture(stream);
+        client
+            .tools
+            .insert("browser_tabs".into(), json!({"type":"object"}));
+        let server = async move {
+            let mut server = BufReader::new(server);
+            let mut line = String::new();
+            server.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(
+                request["params"],
+                json!({"name":"browser_tabs","arguments":{"action":"list"}})
+            );
+            tokio::time::sleep(Duration::from_secs(46)).await;
+            let _ = server
+                .get_mut()
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n")
+                .await;
+        };
+        let cancel = CancellationToken::new();
+        let start = tokio::time::Instant::now();
+        let (result, _) = tokio::join!(client.connect_browser_target(&cancel), server);
+        assert!(result.is_ok());
+        assert!(!client.closed);
+        assert!(start.elapsed() >= Duration::from_secs(46));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn issue75_browser_connection_extension_is_once_and_later_calls_timeout_at_45_seconds() {
+        let (stream, server) = tokio::io::duplex(4096);
+        let mut client = fixture(stream);
+        client
+            .tools
+            .insert("browser_tabs".into(), json!({"type":"object"}));
+        let server = async move {
+            let mut server = BufReader::new(server);
+            let mut line = String::new();
+            server.read_line(&mut line).await.unwrap();
+            server
+                .get_mut()
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n")
+                .await
+                .unwrap();
+            line.clear();
+            server.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["id"], 2);
+            tokio::time::sleep(Duration::from_secs(46)).await;
+            let _ = server
+                .get_mut()
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}\n")
+                .await;
+            line.clear();
+            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
+        };
+        let calls = async {
+            let cancel = CancellationToken::new();
+            assert!(client.connect_browser_target(&cancel).await.is_ok());
+            assert!(matches!(
+                client.connect_browser_target(&cancel).await,
+                Err(McpError::InvalidConfig)
+            ));
+            let start = tokio::time::Instant::now();
+            assert!(matches!(
+                client
+                    .call("browser_tabs", json!({"action":"list"}), &cancel)
+                    .await,
+                Err(McpError::Timeout)
+            ));
+            assert_eq!(start.elapsed(), Duration::from_secs(45));
+            assert!(client.closed);
+            assert!(matches!(
+                client
+                    .call("browser_tabs", json!({"action":"list"}), &cancel)
+                    .await,
+                Err(McpError::Transport)
+            ));
+            assert_eq!(client.next_id, 3);
+        };
+        tokio::join!(calls, server);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn issue75_browser_connection_deadline_discards_late_reply() {
+        let (stream, server) = tokio::io::duplex(4096);
+        let mut client = fixture(stream);
+        client
+            .tools
+            .insert("browser_tabs".into(), json!({"type":"object"}));
+        let server = async move {
+            let mut server = BufReader::new(server);
+            let mut line = String::new();
+            server.read_line(&mut line).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(301)).await;
+            let _ = server
+                .get_mut()
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n")
+                .await;
+            line.clear();
+            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
+        };
+        let calls = async {
+            let cancel = CancellationToken::new();
+            let start = tokio::time::Instant::now();
+            assert!(matches!(
+                client.connect_browser_target(&cancel).await,
+                Err(McpError::Timeout)
+            ));
+            assert_eq!(start.elapsed(), Duration::from_secs(300));
+            assert!(client.closed);
+            assert!(matches!(
+                client
+                    .call("browser_tabs", json!({"action":"list"}), &cancel)
+                    .await,
+                Err(McpError::Transport)
+            ));
+            assert_eq!(client.next_id, 2);
+        };
+        tokio::join!(calls, server);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn issue75_browser_connection_cancel_discards_late_reply() {
+        let (stream, server) = tokio::io::duplex(4096);
+        let mut client = fixture(stream);
+        client
+            .tools
+            .insert("browser_tabs".into(), json!({"type":"object"}));
+        let cancel = CancellationToken::new();
+        let signal = cancel.clone();
+        let server = async move {
+            let mut server = BufReader::new(server);
+            let mut line = String::new();
+            server.read_line(&mut line).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            signal.cancel();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let _ = server
+                .get_mut()
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n")
+                .await;
+            line.clear();
+            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
+        };
+        let calls = async {
+            let start = tokio::time::Instant::now();
+            assert!(matches!(
+                client.connect_browser_target(&cancel).await,
+                Err(McpError::Cancelled)
+            ));
+            assert_eq!(start.elapsed(), Duration::from_secs(10));
+            assert!(client.closed);
+            assert!(matches!(
+                client
+                    .call(
+                        "browser_tabs",
+                        json!({"action":"list"}),
+                        &CancellationToken::new()
+                    )
+                    .await,
+                Err(McpError::Transport)
+            ));
+            assert_eq!(client.next_id, 2);
+        };
+        tokio::join!(calls, server);
     }
 
     #[tokio::test]
