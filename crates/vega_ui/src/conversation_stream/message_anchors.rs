@@ -156,6 +156,13 @@ impl ConversationStream {
         cx: &App,
         fallback_viewport_height: f32,
     ) -> MessageAnchorGeometry {
+        let notices = self.run_notice_projection(cx);
+        let stage_top_insets = self.stage_top_insets(cx);
+        let notice_width = self
+            .workspace_width
+            .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
+            .unwrap_or(Layout::CONVERSATION_MAX_WIDTH)
+            .clamp(1., Layout::CONVERSATION_MAX_WIDTH);
         let entry_heights = self
             .entries
             .iter()
@@ -170,8 +177,9 @@ impl ConversationStream {
                     .copied()
                     .unwrap_or_else(|| match entry {
                         StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx),
-                        _ => estimate_entry_height(entry, cx, self.workspace_width),
-                    })
+                        StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
+                        _ => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()),
+                    } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
             .collect::<Vec<_>>();
         let total_height = entry_heights.iter().sum::<f32>();
@@ -630,7 +638,6 @@ pub(super) fn estimate_entry_height(
         .unwrap_or(Layout::CONVERSATION_MAX_WIDTH)
         .clamp(1., Layout::CONVERSATION_MAX_WIDTH);
     let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
-    let chars_per_line = (text_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
     match entry {
         StreamEntry::RunActivity { group } => group.read(cx).estimated_header_height(),
         StreamEntry::RunActivitySegment { group, segment } => {
@@ -665,51 +672,9 @@ pub(super) fn estimate_entry_height(
                 + 16.
         }
         StreamEntry::Assistant { model, failure, .. } => {
-            let lines = model
-                .committed_lines
-                .iter()
-                .chain(&model.pending_lines)
-                .collect::<Vec<_>>();
-            let list_blocks = lines
-                .iter()
-                .filter(|line| line.kind == LineKind::ListItem)
-                .map(|line| line.block_id)
-                .collect::<HashSet<_>>();
-            let gaps = lines
-                .iter()
-                .enumerate()
-                .map(|(index, line)| {
-                    let previous = index.checked_sub(1).map(|index| lines[index]);
-                    if line.kind == LineKind::Code
-                        && previous.is_some_and(|previous| {
-                            previous.kind == LineKind::Code && previous.block_id == line.block_id
-                        })
-                    {
-                        return 0.;
-                    }
-                    render_rows::markdown_block_gap(
-                        previous,
-                        line,
-                        list_blocks.contains(&line.block_id),
-                        previous.is_some_and(|line| list_blocks.contains(&line.block_id)),
-                    )
-                })
-                .sum::<f32>();
-            let rows = model
-                .committed_lines
-                .iter()
-                .chain(&model.pending_lines)
-                .map(|line| {
-                    let chars = line
-                        .spans
-                        .iter()
-                        .map(|span| display_width(&span.text))
-                        .sum::<usize>();
-                    chars.div_ceil(chars_per_line).max(1)
-                })
-                .sum::<usize>()
-                + usize::from(failure.is_some());
-            rows.max(1) as f32 * line_height + Layout::CONVERSATION_BODY_TOP + gaps
+            estimate_markdown_height(model, text_width)
+                + Layout::CONVERSATION_BODY_TOP
+                + if failure.is_some() { line_height } else { 0. }
         }
         StreamEntry::UserImages { .. } => 128.0,
         StreamEntry::Summary { card }
@@ -720,5 +685,74 @@ pub(super) fn estimate_entry_height(
         }
         StreamEntry::ContextCompaction { .. } | StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),
+    }
+}
+
+pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
+    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    let chars_per_line = (width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
+    let lines = model
+        .committed_lines
+        .iter()
+        .chain(&model.pending_lines)
+        .collect::<Vec<_>>();
+    let list_blocks = lines
+        .iter()
+        .filter(|line| line.kind == LineKind::ListItem)
+        .map(|line| line.block_id)
+        .collect::<HashSet<_>>();
+    let gaps = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let previous = index.checked_sub(1).map(|index| lines[index]);
+            if line.kind == LineKind::Code
+                && previous.is_some_and(|previous| {
+                    previous.kind == LineKind::Code && previous.block_id == line.block_id
+                })
+            {
+                return 0.;
+            }
+            render_rows::markdown_block_gap(
+                previous,
+                line,
+                list_blocks.contains(&line.block_id),
+                previous.is_some_and(|line| list_blocks.contains(&line.block_id)),
+            )
+        })
+        .sum::<f32>();
+    let rows = model
+        .committed_lines
+        .iter()
+        .chain(&model.pending_lines)
+        .map(|line| {
+            let chars = line
+                .spans
+                .iter()
+                .map(|span| display_width(&span.text))
+                .sum::<usize>();
+            chars.div_ceil(chars_per_line).max(1)
+        })
+        .sum::<usize>();
+    rows as f32 * line_height + gaps
+}
+
+pub(crate) fn estimate_stream_entry_height(
+    entry: &StreamEntry,
+    cx: &App,
+    width: Option<f32>,
+    owned: bool,
+) -> f32 {
+    if !owned {
+        return estimate_entry_height(entry, cx, width);
+    }
+    match entry {
+        StreamEntry::Summary { .. } => 0.,
+        StreamEntry::Assistant {
+            failure: Some(_), ..
+        } => (estimate_entry_height(entry, cx, width)
+            - Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+            .max(0.),
+        _ => estimate_entry_height(entry, cx, width),
     }
 }

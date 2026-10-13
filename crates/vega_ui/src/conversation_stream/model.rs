@@ -727,6 +727,11 @@ impl MessageCopy {
         self.invalidate_selection();
     }
 
+    pub(crate) fn replace_text(&self, text: &str) {
+        *self.text.borrow_mut() = text.to_owned();
+        self.invalidate_selection();
+    }
+
     pub(crate) fn selection_scope(&self) -> gpui_kit::base::TextSelectionScopeId {
         self.selection_scope
     }

@@ -14,6 +14,7 @@ impl ConversationStream {
     /// a provider request.
     pub fn apply_approved_not_started(&mut self, cx: &mut Context<Self>) {
         self.approved_not_started = true;
+        self.controller_runtime_error = None;
         self.controller_error = Some("已批准计划尚未执行；恢复入口待补充".into());
         cx.notify();
     }
@@ -631,6 +632,8 @@ impl ConversationStream {
         }
         self.entries.clear();
         self.assistant_role_rows.clear();
+        self.run_notices.clear();
+        self.controller_runtime_error = None;
         self.entry_identities.clear();
         self.measured_entry_heights.clear();
         self.message_anchor_hovered = None;
@@ -1372,11 +1375,14 @@ impl ConversationStream {
                         }) = self.entries.get_mut(*entry_index)
                     {
                         *active_failure = Some(failure);
+                        self.run_failures.insert(message_id.clone(), failure);
+                        self.controller_runtime_error = Some((message_id.clone(), failure));
                         self.controller_error = Some(failure.message());
                     }
                     self.record_composer_terminal(&message_id, false);
                     self.finish_agent_message(&message_id, cx);
                 } else {
+                    self.controller_runtime_error = None;
                     self.controller_error = Some(failure.message());
                     if let Some((message_id, _)) = self.active_agent_message.clone() {
                         self.finish_agent_message(&message_id, cx);

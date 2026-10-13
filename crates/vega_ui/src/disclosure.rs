@@ -49,7 +49,10 @@ pub(crate) fn chevron(
         .child(
             div()
                 .opacity(
-                    if enabled && focus.is_focused(window) && window.last_input_was_keyboard() {
+                    if enabled
+                        && (expanded
+                            || (focus.is_focused(window) && window.last_input_was_keyboard()))
+                    {
                         1.
                     } else {
                         0.
@@ -100,7 +103,10 @@ pub(crate) fn inline_chevron(
         .child(
             div()
                 .opacity(
-                    if enabled && focus.is_focused(window) && window.last_input_was_keyboard() {
+                    if enabled
+                        && (expanded
+                            || (focus.is_focused(window) && window.last_input_was_keyboard()))
+                    {
                         1.
                     } else {
                         0.

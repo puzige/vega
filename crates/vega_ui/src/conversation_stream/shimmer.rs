@@ -6,8 +6,8 @@ pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> A
     styled_text(
         text,
         epoch,
-        Typography::BODY,
-        Layout::DISCLOSURE_HEADER_HEIGHT,
+        Typography::CONVERSATION,
+        Layout::CONVERSATION_TOOL_HEIGHT,
         colors.text_tertiary,
         colors.text_primary,
         window,

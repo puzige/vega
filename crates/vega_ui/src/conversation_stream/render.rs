@@ -179,16 +179,21 @@ impl ConversationStream {
             .when(self.utility_bar_visible(cx), |column| {
                 column.child(self.render_composer_utility_bar(window, cx))
             })
-            .children(self.controller_error.clone().map(|error| {
-                div()
-                    .debug_selector(|| "conversation-controller-error".to_string())
-                    .w_full()
-                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                    .mx_auto()
-                    .mt_1()
-                    .mb_2()
-                    .child(render_rows::status_notice(error, colors.danger, &colors))
-            }))
+            .children(
+                self.controller_error
+                    .clone()
+                    .filter(|_| !self.controller_error_is_run_notice())
+                    .map(|error| {
+                        div()
+                            .debug_selector(|| "conversation-controller-error".to_string())
+                            .w_full()
+                            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                            .mx_auto()
+                            .mt_1()
+                            .mb_2()
+                            .child(render_rows::status_notice(error, colors.danger, &colors))
+                    }),
+            )
             .child(
                 div()
                     .debug_selector(|| "composer-shell".into())
@@ -1494,7 +1499,6 @@ impl Render for ConversationStream {
             self.actions.restore_focus = false;
             self.focus_composer(window, cx);
         }
-        self.settle_final_presentation(window, cx);
         let render_t0 = Instant::now();
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
@@ -1510,6 +1514,9 @@ impl Render for ConversationStream {
             model.sync(&snapshot, &self.counters);
             self.invalidate_item(Some(*index));
         }
+        self.settle_final_presentation(window, cx);
+        self.refresh_run_notices(cx);
+        let stage_top_insets = self.stage_top_insets(cx);
 
         // 2) 顶部水合请求（S8-T45/C7）：视口到达顶部且仍存在更早历史时，
         //    向 app 层请求上一页（typed 投影返回后 splice 前插，页边界保
@@ -1614,19 +1621,36 @@ impl Render for ConversationStream {
                                                             window,
                                                             cx,
                                                         ),
+                                                        Some(StreamEntry::RunActivitySegment { group, segment }) => RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx),
                                                         Some(entry) => render_stream_entry(
                                                             entry,
                                                             index,
-                                                            this.assistant_role_rows
+                                                            this.entry_identities
                                                                 .get(index)
-                                                                .copied()
-                                                                .unwrap_or(false),
+                                                                .is_some_and(|identity| {
+                                                                    identity.message_id.is_some()
+                                                                }),
                                                             window,
                                                             cx,
                                                             &this.selection_focus,
                                                         ),
                                                         None => div().into_any_element(),
                                                     }
+                                                };
+                                                let item = if let Some(notice) =
+                                                    this.run_notices.get(&index)
+                                                {
+                                                    div()
+                                                        .w_full()
+                                                        .min_w_0()
+                                                        .flex_shrink_0()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .child(item)
+                                                        .child(notice.render(&theme(cx).colors))
+                                                        .into_any_element()
+                                                } else {
+                                                    item
                                                 };
                                                 this.counters.record_row_callback(
                                                     row_t0.elapsed().as_nanos(),

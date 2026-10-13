@@ -223,7 +223,7 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
         .debug_bounds("run-stage-toggle-0")
         .expect("thinking row");
     let tool = visual.debug_bounds("run-stage-tool-0-0").expect("tool row");
-    assert_eq!(tool.top() - thinking.bottom(), px(0.));
+    assert_eq!(tool.top() - thinking.bottom(), px(25.));
     assert_eq!(
         thinking.left(),
         surface.left() + px(Layout::PROCESS_PADDING_X)
@@ -233,14 +233,14 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
         assert_eq!(geometry.entry_heights[0], 28.5);
-        assert_eq!(geometry.entry_heights[1], 24. + 25. + 25.);
+        assert_eq!(geometry.entry_heights[1], 16. + 25. + 25. + 25.);
     });
     visual.simulate_click(tool.center(), Modifiers::default());
     visual.run_until_parked();
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
-        assert_eq!(geometry.entry_heights[1], 24. + 25. + 25. + 4. + 98.);
+        assert_eq!(geometry.entry_heights[1], 16. + 25. + 25. + 25. + 4. + 98.);
         assert_eq!(geometry.entry_heights[0], 28.5);
         stream.apply_event(
             ConversationEvent::TextDelta {
@@ -249,6 +249,23 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
             },
             cx,
         );
+        stream.measured_entry_heights.clear();
+        let geometry = stream.message_anchor_geometry(cx, 600.);
+        assert_eq!(
+            *geometry
+                .entry_heights
+                .last()
+                .expect("unsynchronized assistant"),
+            0.
+        );
+        assert!(matches!(
+            stream.entries.last(),
+            Some(StreamEntry::Assistant { model, copy, .. })
+                if model.row_count() == 0 && copy.original_text() == "Plain answer"
+        ));
+    });
+    visual.run_until_parked();
+    stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
         assert_eq!(

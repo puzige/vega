@@ -346,6 +346,7 @@ mod phase;
 mod render;
 mod render_rows;
 mod run_activity;
+mod run_notice;
 mod shimmer;
 use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod selection;

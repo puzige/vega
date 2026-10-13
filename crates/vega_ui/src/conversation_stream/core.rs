@@ -135,6 +135,9 @@ pub struct ConversationStream {
     pub(crate) approved_not_started: bool,
     pub(crate) trusted_action_busy: bool,
     pub(crate) controller_error: Option<String>,
+    pub(crate) controller_runtime_error: Option<(String, RunFailureKind)>,
+    pub(crate) run_failures: HashMap<String, RunFailureKind>,
+    pub(crate) run_notices: HashMap<usize, super::run_notice::RunNotice>,
     /// Nonfatal run-start MCP omission. Kept separate so a provider failure
     /// cannot overwrite it or be overwritten by it.
     pub(crate) mcp_warning: Option<String>,
@@ -486,6 +489,9 @@ impl ConversationStream {
             approved_not_started: false,
             trusted_action_busy: false,
             controller_error: None,
+            controller_runtime_error: None,
+            run_notices: HashMap::new(),
+            run_failures: HashMap::new(),
             mcp_warning: None,
             file_selector: FileSelectorModel::default(),
             file_snapshot: FileIndexSnapshot::default(),
@@ -784,6 +790,7 @@ impl ConversationStream {
             }
             self.thread = thread;
             self.acknowledge_mode_action(cx);
+            self.controller_runtime_error = None;
             self.controller_error = None;
             cx.notify();
         }
@@ -1001,6 +1008,7 @@ impl ConversationStream {
         }
         self.thread = projected;
         self.composer_defaults.model = model.to_owned();
+        self.controller_runtime_error = None;
         self.controller_error = None;
         cx.notify();
     }
@@ -1026,17 +1034,20 @@ impl ConversationStream {
     /// selected state.
     pub fn apply_controller_error(&mut self, cx: &mut Context<Self>) {
         self.actions.pending_mode = None;
+        self.controller_runtime_error = None;
         self.controller_error = Some("操作未保存，请重试".into());
         cx.notify();
     }
 
     pub fn apply_codex_route_error(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        self.controller_runtime_error = None;
         self.controller_error = Some(message.into());
         cx.notify();
     }
 
     /// Keeps the exact in-flight submission intact when a duplicate send arrives.
     pub fn apply_agent_busy(&mut self, cx: &mut Context<Self>) {
+        self.controller_runtime_error = None;
         self.controller_error = Some("此对话正在执行，请等待完成或停止当前任务".into());
         cx.notify();
     }
@@ -1044,6 +1055,7 @@ impl ConversationStream {
     /// Rejects request preparation while preserving the draft for credential repair.
     pub fn apply_credential_error(&mut self, cx: &mut Context<Self>) {
         self.reject_composer_submission(cx);
+        self.controller_runtime_error = None;
         self.controller_error =
             Some("本地凭据缺失或无法读取，请在设置中重新填写 API Key 后重试".into());
         cx.notify();
@@ -1058,6 +1070,7 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         self.reject_composer_submission(cx);
+        self.controller_runtime_error = None;
         self.controller_error = Some(failure.message());
         cx.notify();
     }
@@ -1308,6 +1321,7 @@ impl ConversationStream {
         // is a completed round trip, so leaving a level mounted would strand
         // the user on a layer whose selection is already applied.
         self.model_picker_level = ModelPickerLevel::Closed;
+        self.controller_runtime_error = None;
         self.controller_error = None;
         cx.notify();
     }
@@ -1334,6 +1348,7 @@ impl ConversationStream {
         }
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
+        self.controller_runtime_error = None;
         self.controller_error = Some("模型选择保存失败，请重试".into());
         cx.notify();
     }
@@ -1497,6 +1512,7 @@ impl ConversationStream {
 
     /// Displays a bounded provider/runner failure after durable preparation.
     pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
+        self.controller_runtime_error = None;
         self.controller_error = Some("执行未完成，可安全重试".into());
         // S7-T39: run-scoped estimate state never survives a failure path.
         self.meter.end_run();
@@ -1524,6 +1540,19 @@ impl ConversationStream {
     /// Projects a terminal runtime/provider failure after app refresh. Unlike
     /// a preparation rejection, this run already has durable message rows.
     pub fn apply_agent_runtime_error(&mut self, failure: RunFailureKind, cx: &mut Context<Self>) {
+        self.apply_agent_runtime_error_for(None, failure, cx);
+    }
+
+    pub fn apply_agent_runtime_error_for(
+        &mut self,
+        message_id: Option<&str>,
+        failure: RunFailureKind,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = message_id {
+            self.run_failures.insert(id.to_owned(), failure);
+        }
+        self.controller_runtime_error = message_id.map(|id| (id.to_owned(), failure));
         self.controller_error = Some(failure.message());
         self.meter.end_run();
         cx.notify();
@@ -1537,6 +1566,7 @@ impl ConversationStream {
         code: FileReferenceFailureCode,
         cx: &mut Context<Self>,
     ) {
+        self.controller_runtime_error = None;
         self.controller_error = Some(code.message().into());
         self.meter.end_run();
         cx.notify();

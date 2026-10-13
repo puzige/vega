@@ -919,6 +919,7 @@ impl VegaWindow {
                             pending_user_content: pending_user,
                             pending_approved_instruction,
                             terminal_failure,
+                            terminal_message_id,
                             mcp_unavailable,
                             ..
                         } = *finished_run;
@@ -936,8 +937,9 @@ impl VegaWindow {
                             Err(error) => Err(error.clone()),
                         };
                         let mut recovery_projected = approved_not_started;
+                        let mut display_stream = stream.clone();
                         if let Ok(refresh) = refresh {
-                            let display_stream = if let Some(current_stream) =
+                            display_stream = if let Some(current_stream) =
                                 this.current_cached_stream_for_thread(&thread_id, cx)
                             {
                                 cx.set_global(OpenedThread(Some(refresh.thread.clone())));
@@ -986,9 +988,13 @@ impl VegaWindow {
                             && reference_failure.is_none()
                             && !credential_failure
                         {
-                            stream.update(cx, |stream, cx| {
+                            display_stream.update(cx, |stream, cx| {
                                 if let Some(failure) = terminal_failure {
-                                    stream.apply_agent_runtime_error(failure, cx);
+                                    stream.apply_agent_runtime_error_for(
+                                        terminal_message_id.as_deref(),
+                                        failure,
+                                        cx,
+                                    );
                                 } else {
                                     stream.apply_agent_error(cx);
                                 }
@@ -1541,7 +1547,11 @@ impl VegaWindow {
                         } else if !success && !cancelled {
                             if let Some(failure) = finished_run.terminal_failure {
                                 display_stream.update(cx, |stream, cx| {
-                                    stream.apply_agent_runtime_error(failure, cx)
+                                    stream.apply_agent_runtime_error_for(
+                                        finished_run.terminal_message_id.as_deref(),
+                                        failure,
+                                        cx,
+                                    )
                                 });
                             } else {
                                 display_stream.update(cx, ConversationStream::apply_agent_error);

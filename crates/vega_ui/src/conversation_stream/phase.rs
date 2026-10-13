@@ -157,7 +157,10 @@ impl ConversationStream {
                     group: owner,
                     segment,
                 } if owner == group => {
-                    for child in group.read(cx).segment_children(*segment) {
+                    for child in RunActivityGroup::compact_children(
+                        group.read(cx).segment_children(*segment),
+                        cx,
+                    ) {
                         if !matches!(child, RunActivityChild::Artifact(_)) {
                             details.push((index, RunDetail::Operation(child)));
                         }
@@ -170,6 +173,48 @@ impl ConversationStream {
             }
         }
         details
+    }
+
+    pub(crate) fn stage_top_insets(&self, cx: &App) -> HashMap<usize, f32> {
+        let mut previous_clock = HashMap::new();
+        let mut insets = HashMap::new();
+        for (index, entry) in self.entries.iter().enumerate() {
+            if self.process_entry_hidden(index, cx) {
+                continue;
+            }
+            let Some(owner) = self
+                .entry_identities
+                .get(index)
+                .and_then(|identity| identity.message_id.as_ref())
+            else {
+                continue;
+            };
+            match entry {
+                StreamEntry::RunActivity { .. } => {
+                    previous_clock.insert(owner, true);
+                }
+                StreamEntry::RunActivitySegment { group, segment } => {
+                    if group.read(cx).segment_row_count(*segment, cx) == 0 {
+                        continue;
+                    }
+                    insets.insert(
+                        index,
+                        if previous_clock.get(owner) == Some(&true) {
+                            Layout::CONVERSATION_BODY_TOP
+                        } else {
+                            Layout::CONVERSATION_STAGE_TOP
+                        },
+                    );
+                    previous_clock.insert(owner, false);
+                }
+                StreamEntry::Assistant { model, .. } if model.row_count() == 0 => {}
+                StreamEntry::Summary { .. } => {}
+                _ => {
+                    previous_clock.insert(owner, false);
+                }
+            }
+        }
+        insets
     }
 
     pub(crate) fn estimated_run_height(&self, group: &Entity<RunActivityGroup>, cx: &App) -> f32 {
@@ -199,9 +244,8 @@ impl ConversationStream {
                     self.workspace_width,
                 ),
             })
-            .sum::<f32>()
-            + Layout::PROCESS_ITEM_GAP * details.len().saturating_sub(1) as f32;
-        header + Layout::PROCESS_ITEM_GAP + height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
+            .sum::<f32>();
+        header + height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
     }
 
     pub(crate) fn render_run_details(
@@ -213,10 +257,15 @@ impl ConversationStream {
         let details = if group.read(cx).expanded() {
             self.run_details(&group, cx)
                 .into_iter()
-                .map(|(_, detail)| match detail {
-                    RunDetail::Operation(child) => {
-                        RunActivityGroup::render_child(child, window, cx)
-                    }
+                .enumerate()
+                .map(|(detail_index, (_, detail))| match detail {
+                    RunDetail::Operation(child) => gpui_kit::div()
+                        .w_full()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .debug_selector(move || format!("run-detail-row-{detail_index}"))
+                        .child(RunActivityGroup::render_child(child, window, cx))
+                        .into_any_element(),
                     RunDetail::Assistant(index) => {
                         let selector = match &self.entries[index] {
                             StreamEntry::Assistant { copy, .. } => {
@@ -370,12 +419,16 @@ impl ConversationStream {
     pub(crate) fn process_entry_hidden(&self, index: usize, cx: &App) -> bool {
         let Some(StreamEntry::Assistant {
             copy,
+            model,
             failure: None,
             ..
         }) = self.entries.get(index)
         else {
             return false;
         };
+        if model.row_count() == 0 {
+            return true;
+        }
         self.entry_identities
             .get(index)
             .and_then(|identity| identity.message_id.as_ref())
