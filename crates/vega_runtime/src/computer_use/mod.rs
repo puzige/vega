@@ -301,7 +301,7 @@ impl ComputerUseRun {
         if self.desktop_enabled {
             definitions.push(crate::ToolDefinition {
                 name: "ComputerScreenshot".into(),
-                description: "Capture and deliver a screenshot of one exact window from the current desktop directory directly as an image attachment in this conversation. Use this for screenshot requests instead of ComputerObserve or shell commands. Does not require an accessibility tree and never grants input authority. Only target_id from the current ComputerObserve directory is accepted. Successful delivery returns an artifact_id; the image is already displayed and saved in this conversation. Unchanged pixels from the same window reuse its latest delivered artifact; do not capture again to verify delivery. Continue only remaining requested work, or answer when all requested images are delivered. At most four new screenshots per run.".into(),
+                description: "Capture and deliver a screenshot of one exact window from the current desktop directory directly as an image attachment in this conversation. Use this for screenshots together with reading visible text, describing or comparing the returned images: each result supplies a named window image for the model and a delivered attachment for the user. Capture up to two windows in one batch, then answer from both images; no preliminary window Observe is needed. Use ComputerObserve only when input or exact accessibility fields are needed, or visible text is unreadable. Do not use shell commands. Does not require an accessibility tree and never grants input authority. Only target_id from the current ComputerObserve directory is accepted. Successful delivery returns an artifact_id; the image is already displayed and saved in this conversation. Unchanged pixels from the same window reuse its latest delivered artifact; do not capture again to verify delivery. Continue only remaining requested work, or answer when all requested images are delivered. At most four new screenshots per run.".into(),
                 input_schema: json!({"type":"object","properties":{"target_id":{"type":"string"}},"required":["target_id"],"additionalProperties":false}),
                 strict: true,
             });
@@ -732,15 +732,8 @@ impl ComputerUseRun {
                 observation.model_text()
             };
             if receipt.is_none() && matches!(observation.target, Target::Desktop(_)) {
-                let target_id = self.control.screenshot_target(&observation);
-                let next_step = if target_id.is_some() {
-                    "computer_screenshot"
-                } else {
-                    "refresh_directory_once"
-                };
-                message.content.push_str(&format!(
-                    "\nScreenshot target: {}",
-                    json!({"target_id":target_id,"next_step":next_step})
+                message.content.push_str(&screenshot_target_text(
+                    self.control.screenshot_target(&observation),
                 ));
             }
             message.images = if observation.model_image {
@@ -754,7 +747,20 @@ impl ComputerUseRun {
     pub(crate) fn trim_messages(&self, messages: &mut [crate::ChatMessage]) {
         let current = self.control.snapshot().observations;
         let reads = self.batch_reads();
+        let evidence = self.text_evidence();
         for message in messages {
+            if message.role == crate::ChatRole::Tool
+                && message.content.starts_with("[External tool observation;")
+                && let Some(observation) = current
+                    .iter()
+                    .find(|item| message.tool_call_id.as_deref() == Some(&item.call_id))
+                && matches!(observation.target, Target::Desktop(_))
+            {
+                message.content = observation.model_text();
+                message.content.push_str(&screenshot_target_text(
+                    self.control.screenshot_target(observation),
+                ));
+            }
             if message.role == crate::ChatRole::Tool
                 && message
                     .tool_call_id
@@ -766,10 +772,16 @@ impl ComputerUseRun {
                     .find(|read| message.tool_call_id.as_deref() == Some(&read.call_id))
                 {
                     message.content = self.model_receipt(&read.call_id).map_or_else(
-                        || read.content.clone(),
+                        || self.read_model_text(read, false),
                         |receipt| format!("{receipt}\n{}", read.content),
                     );
                     message.images = read.images.clone();
+                } else if let Some(read) = evidence
+                    .iter()
+                    .find(|read| message.tool_call_id.as_deref() == Some(&read.call_id))
+                {
+                    message.content = self.read_model_text(read, true);
+                    message.images.clear();
                 } else if let Some(receipt) = message
                     .tool_call_id
                     .as_deref()
@@ -844,6 +856,18 @@ pub(crate) fn redact_ephemeral_messages(messages: &mut [crate::ChatMessage]) {
 
 fn screenshot_receipt(call_id: &str) -> String {
     screenshot_receipt_value(call_id, false).to_string()
+}
+
+fn screenshot_target_text(target_id: Option<String>) -> String {
+    let next_step = if target_id.is_some() {
+        "computer_screenshot"
+    } else {
+        "refresh_directory_once"
+    };
+    format!(
+        "\nScreenshot target: {}",
+        json!({"target_id":target_id,"next_step":next_step})
+    )
 }
 
 fn screenshot_receipt_value(call_id: &str, unchanged: bool) -> Value {

@@ -2156,7 +2156,12 @@ where
         }
 
         if let Some(run) = &tool_config.computer_use {
-            run.begin_model_batch(&attempt_id);
+            run.begin_model_batch(
+                &attempt_id,
+                prepared_calls
+                    .iter()
+                    .all(|prepared| prepared.call().name == "ComputerScreenshot"),
+            );
         }
         for prepared in prepared_calls {
             let call = prepared.call().clone();

@@ -1,3 +1,5 @@
+mod text_delivery;
+
 use super::*;
 use crate::computer_use::{ComputerUseRun, ControlPhase, DesktopTarget};
 use serde_json::{Value, json};
@@ -134,7 +136,7 @@ async fn issue75_batch_projection_two_observations_reach_exactly_one_provider_re
     assert!(!a.content.contains("observation_id:"));
     assert!(!a.content.contains("element_token"));
     assert!(!a.content.contains("edit-2"));
-    assert!(!a.content.contains("fixture-2"));
+    assert!(a.content.contains("\"target_id\":\"fixture-2\""));
     assert_eq!(a.images.len(), 1);
     assert!(b.content.contains("BODY-3") && b.content.contains("observation_id:"));
     assert_eq!(b.images.len(), 1);
