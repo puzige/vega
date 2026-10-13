@@ -165,10 +165,18 @@ impl ToolActivityGroup {
     }
 
     pub(crate) fn leading_icon(&self, cx: &App) -> Icon {
-        self.children
-            .first()
-            .map(|card| card.read(cx).leading_icon())
-            .unwrap_or_else(|| ToolActivityCategory::Other.icon())
+        let mut icons = self
+            .children
+            .iter()
+            .map(|card| card.read(cx).leading_icon());
+        let Some(first) = icons.next() else {
+            return Icon::Wrench;
+        };
+        if icons.all(|icon| icon == first) {
+            first
+        } else {
+            Icon::Wrench
+        }
     }
 
     pub(crate) fn leading_icon_color(&self, cx: &App, colors: &ThemeColors) -> gpui_kit::Rgba {
@@ -312,5 +320,67 @@ impl ToolActivityGroup {
             .gap(px(Layout::PROCESS_ITEM_GAP))
             .children(rows)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::TestAppContext;
+    use vega_conversation::types::{Approval, ToolCall, ToolCallStatus, ToolResult};
+
+    #[gpui_kit::test]
+    async fn issue296_computer_action_groups_use_current_icons(cx: &mut TestAppContext) {
+        let card = |action: &str, cx: &mut TestAppContext| {
+            let call = ToolCall {
+                id: action.into(),
+                tool: if action == "screenshot" { "ComputerScreenshot" } else { "ComputerObserve" }.into(),
+                input_json: serde_json::json!({"kind":"computer_use", "version":1, "action":action, "argument_bytes":2, "argument_digest":"a".repeat(64)}).to_string(),
+            };
+            cx.new(|_| ToolCard::proposed(&call))
+        };
+        let first = card("observe", cx);
+        let second = card("observe", cx);
+        let screenshot = card("screenshot", cx);
+        let empty = ToolActivityGroup {
+            children: Vec::new(),
+            expanded: false,
+            scroll: ScrollHandle::new(),
+        };
+        cx.update(|cx| assert_eq!(empty.leading_icon(cx), Icon::Wrench));
+        let group = cx.new(|_| ToolActivityGroup::new(first.clone(), second.clone()));
+        group.read_with(cx, |group, cx| {
+            assert_eq!(group.leading_icon(cx), Icon::Monitor)
+        });
+        first.update(cx, |card, cx| {
+            assert!(card.apply_approved(Approval::Once));
+            assert!(card.apply_running(cx));
+        });
+        group.read_with(cx, |group, cx| {
+            assert_eq!(group.leading_icon(cx), Icon::Monitor)
+        });
+        let mixed = ToolActivityGroup::new(first, screenshot.clone());
+        cx.update(|cx| {
+            assert_eq!(mixed.leading_icon(cx), Icon::Wrench);
+            assert_eq!(screenshot.read(cx).leading_icon(), Icon::Camera);
+        });
+        second.update(cx, |card, _| {
+            assert!(card.apply_approved(Approval::Once));
+            assert!(!card.apply_finished(&ToolResult {
+                status: ToolCallStatus::Success,
+                output: "PRIVATE_OUTPUT".into(),
+                reused: false,
+                exit_code: Some(0),
+                duration_ms: None,
+                truncated: Some(false),
+                invalid: None,
+            }));
+            assert_eq!(card.leading_icon(), Icon::Wrench);
+            assert!(!card.visible_text().contains("PRIVATE_OUTPUT"));
+        });
+        group.read_with(cx, |group, cx| {
+            assert_eq!(group.leading_icon(cx), Icon::Wrench);
+            assert_eq!(group.aggregate_state(cx), ToolActivityState::Failed);
+        });
     }
 }

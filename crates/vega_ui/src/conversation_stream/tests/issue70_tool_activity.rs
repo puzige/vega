@@ -407,7 +407,7 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
     stream.read_with(cx, |stream, cx| {
         let colors = theme(cx).colors;
         let group = group(stream, cx);
-        assert!(matches!(group.read(cx).leading_icon(cx), Icon::Terminal));
+        assert_eq!(group.read(cx).leading_icon(cx), Icon::Wrench);
         assert_eq!(
             group.read(cx).leading_icon_color(cx, &colors),
             colors.conversation_tool
@@ -783,10 +783,7 @@ async fn issue70_t70_2_adjacent_mixed_tools_share_one_collapsed_item(cx: &mut Te
         );
         assert_eq!(group.row_count(cx), 1);
         let colors = theme(cx).colors;
-        assert!(
-            matches!(group.leading_icon(cx), Icon::Document),
-            "mixed group follows its first Read child category instead of success state"
-        );
+        assert_eq!(group.leading_icon(cx), Icon::Wrench);
         assert_eq!(
             group.leading_icon_color(cx, &colors),
             colors.conversation_tool,
@@ -1362,6 +1359,19 @@ async fn issue70_t70_6_hydration_matches_live_and_reopen_resets_expansion(cx: &m
         live.read_with(cx, entry_shapes),
         hydrated.read_with(cx, entry_shapes)
     );
+    for stream in [&live, &hydrated] {
+        stream.read_with(cx, |stream, cx| {
+            for (id, expected) in [
+                ("read", Icon::BookOpen),
+                ("glob", Icon::Folder),
+                ("shell", Icon::Terminal),
+                ("grep", Icon::Search),
+            ] {
+                assert_eq!(stream.tool_cards[id].read(cx).leading_icon(), expected);
+            }
+            assert_eq!(group(stream, cx).read(cx).leading_icon(cx), Icon::Wrench);
+        });
+    }
     let live_text = live.read_with(cx, activity_texts);
     let hydrated_text = hydrated.read_with(cx, activity_texts);
     assert_eq!(live_text, hydrated_text);

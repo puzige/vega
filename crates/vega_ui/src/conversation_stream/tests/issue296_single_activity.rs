@@ -160,7 +160,7 @@ async fn issue296_single_activity_tracks_real_parallel_states_and_discards_old_s
         stream.apply_event(ConversationEvent::ToolCallProposed { call: bash_call("pending", "pwd") }, cx);
         assert_eq!(group.read(cx).test_activity_label(cx), "正在运行命令、读取文件");
         stream.apply_event(finish_tool("shell"), cx);
-        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::Document, false) if label == "正在读取文件"));
+        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::BookOpen, false) if label == "正在读取文件"));
         stream.apply_event(finish_tool("read"), cx);
         assert_eq!(group.read(cx).test_activity_label(cx), "等待确认");
         for id in ["pending", "queued"] { stream.apply_event(finish_tool(id), cx); }

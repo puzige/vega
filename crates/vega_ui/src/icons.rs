@@ -16,7 +16,7 @@ use crate::interaction::{Interaction, InteractionExt};
 use vega_theme::Layout;
 
 /// The small set of functional symbols shared by Vega's native chrome.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
     Copy,
     Search,
@@ -53,6 +53,14 @@ pub enum Icon {
     Warning,
     Help,
     Document,
+    BookOpen,
+    Pencil,
+    Wrench,
+    Monitor,
+    Camera,
+    MousePointer,
+    Keyboard,
+    Globe,
     Summary,
     /// Selection marker for menu rows (R62 R8/R10).
     Check,
@@ -85,6 +93,12 @@ const SUMMARY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
 const CHART_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16M8 16v-5m5 5V7m5 9V3"/></svg>"#;
 const PLUG_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v5m6-5v5M7 8h10v4a5 5 0 0 1-10 0V8Zm5 9v4"/></svg>"#;
 const BLOCKS_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/><path d="M14 6.5h7m-3.5-3.5v7"/></svg>"#;
+const PENCIL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l4 4M4 16 16 4a2.83 2.83 0 0 1 4 4L8 20l-5 1 1-5Z"/></svg>"#;
+const WRENCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94L14.7 6.3Z"/></svg>"#;
+const MONITOR_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>"#;
+const CAMERA_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3"/></svg>"#;
+const MOUSE_POINTER_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 7.07 17 2.51-7.39L20 10.07 3 3Z"/></svg>"#;
+const KEYBOARD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M8 15h8"/></svg>"#;
 
 const HELP_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>"#;
 
@@ -152,6 +166,8 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Terminal => IconName::SquareTerminal,
         Icon::Warning => IconName::TriangleAlert,
         Icon::Document => IconName::FileText,
+        Icon::BookOpen => IconName::BookOpen,
+        Icon::Globe => IconName::Globe,
         Icon::Check => IconName::Check,
         Icon::Chart
         | Icon::Plug
@@ -160,6 +176,12 @@ fn icon_name(kind: Icon) -> IconName {
         | Icon::Summary
         | Icon::DockMove
         | Icon::Help
+        | Icon::Pencil
+        | Icon::Wrench
+        | Icon::Monitor
+        | Icon::Camera
+        | Icon::MousePointer
+        | Icon::Keyboard
         | Icon::Hand
         | Icon::Shield
         | Icon::TextSelect => {
@@ -204,6 +226,12 @@ pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
         Icon::GitBranch => inline_icon(GIT_BRANCH_SVG, color, size),
         Icon::TextSelect => inline_icon(TEXT_SELECT_SVG, color, size),
         Icon::Help => inline_icon(HELP_SVG, color, size),
+        Icon::Pencil => inline_icon(PENCIL_SVG, color, size),
+        Icon::Wrench => inline_icon(WRENCH_SVG, color, size),
+        Icon::Monitor => inline_icon(MONITOR_SVG, color, size),
+        Icon::Camera => inline_icon(CAMERA_SVG, color, size),
+        Icon::MousePointer => inline_icon(MOUSE_POINTER_SVG, color, size),
+        Icon::Keyboard => inline_icon(KEYBOARD_SVG, color, size),
         _ => kit_icon(kind, color, size),
     };
     gpui_kit::div()
