@@ -158,6 +158,10 @@ async fn run_activity_entries_contribute_geometry_without_duplicating_message_an
 
     let (anchors, activity_indices, entry_heights) = stream.read_with(cx, |stream, cx| {
         let geometry = stream.message_anchor_geometry(cx, 800.0);
+        assert_eq!(
+            stream.stage_top_insets(cx)[&2],
+            Layout::CONVERSATION_STAGE_TOP
+        );
         (
             stream
                 .message_anchor_projections()
@@ -191,7 +195,7 @@ async fn run_activity_entries_contribute_geometry_without_duplicating_message_an
     assert_eq!(entry_heights.len(), 5);
     assert_eq!(
         [entry_heights[0], entry_heights[2], entry_heights[3]],
-        [28.5, 25., 28.5]
+        [28.5, 25. + Layout::CONVERSATION_STAGE_TOP, 28.5]
     );
     assert!(entry_heights[1] > 0. && entry_heights[4] > 0.);
 }

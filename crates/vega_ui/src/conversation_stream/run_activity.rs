@@ -632,10 +632,16 @@ impl RunActivityGroup {
                 .sum::<f32>();
             return top + Layout::CONVERSATION_TOOL_HEIGHT + details;
         }
-        self.visible_segment_children(segment, cx)
+        let children = self.visible_segment_children(segment, cx);
+        let tool_leads = matches!(
+            children.first(),
+            Some(RunActivityChild::Tool(_) | RunActivityChild::ToolGroup(_))
+        );
+        children
             .iter()
             .map(|child| Self::estimated_child_height(child, width, cx))
-            .sum()
+            .sum::<f32>()
+            + if tool_leads { top } else { 0. }
     }
 
     pub(crate) fn estimated_child_height(child: &RunActivityChild, width: f32, cx: &App) -> f32 {
@@ -1076,6 +1082,10 @@ impl RunActivityGroup {
         if children.is_empty() {
             return div().h_0().into_any_element();
         }
+        let tool_leads = matches!(
+            children.first(),
+            Some(RunActivityChild::Tool(_) | RunActivityChild::ToolGroup(_))
+        );
         let colors = theme(cx).colors;
         let state = group.read(cx);
         let focus = state.segments[segment_index].focus.clone();
@@ -1256,7 +1266,9 @@ impl RunActivityGroup {
         };
         render_rows::process_surface(&colors)
             .gap_0()
-            .when(thinking.is_some(), |surface| surface.pt(px(top)))
+            .when(thinking.is_some() || tool_leads, |surface| {
+                surface.pt(px(top))
+            })
             .debug_selector(move || format!("run-timeline-segment-{segment_index}"))
             .track_focus(&focus)
             .child(content)
