@@ -2,6 +2,8 @@
 
 2026-10-13 用户追加：Vega 表格中的代码底色厚重、换行拥挤，要求参考所附 Codex 正文截图。第一张是行内代码而非 fenced code。本轮依据截图可见形态形成 Vega 自有实现，不读取第三方 bundle 内部 CSS、组件或资产，不发布原始截图及会话。
 
+2026-10-13 追加：用户要求行内代码左右留白，[padding 契约](vega-issue-296-inline-code-padding.md)替代本页 C02 的贴字宽度；其余样式、表格与复制契约保留。
+
 ## 已核实的原因与范围
 
 - `render_rows::apply_span_style` 的 Code 背景交给 GPUI run background，实际铺满行盒且为直角。`TextRun` 不带独立字号，所以写入 Code 的字号不决定单个 run 的字形大小；现正文实际为 `Typography::CONVERSATION = 13.5`、行高 23。

@@ -743,6 +743,7 @@ pub(crate) struct MessageCopy {
     selection_handle: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
     selection_generation: std::rc::Rc<std::cell::Cell<u64>>,
     selected_text: std::rc::Rc<std::cell::RefCell<Option<(u64, String)>>>,
+    local_selection_range: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
     visible_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     selection_subscriptions: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Subscription>>>,
 }
@@ -757,6 +758,7 @@ impl MessageCopy {
             selection_handle: std::rc::Rc::new(std::cell::RefCell::new(None)),
             selection_generation: std::rc::Rc::new(std::cell::Cell::new(0)),
             selected_text: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            local_selection_range: std::rc::Rc::new(std::cell::RefCell::new(None)),
             visible_text: std::rc::Rc::new(std::cell::RefCell::new(None)),
             selection_subscriptions: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
@@ -811,6 +813,7 @@ impl MessageCopy {
         handle.focus_with(move |window, cx| focus.focus(window, cx), cx);
         let selected = self.selected_text.clone();
         let generation = self.selection_generation.clone();
+        let local_range = self.local_selection_range.clone();
         let subscription = handle.subscribe(
             move |event, _| {
                 if matches!(
@@ -819,6 +822,7 @@ impl MessageCopy {
                         | gpui_kit::base::TextSelectionEvent::Cleared
                 ) {
                     *selected.borrow_mut() = None;
+                    *local_range.borrow_mut() = None;
                     generation.set(generation.get().wrapping_add(1));
                 }
             },
@@ -848,6 +852,15 @@ impl MessageCopy {
         self.selection_generation
             .set(self.selection_generation.get().wrapping_add(1));
         *self.selected_text.borrow_mut() = None;
+        *self.local_selection_range.borrow_mut() = None;
+    }
+
+    pub(super) fn local_selection_range(&self) -> Option<std::ops::Range<usize>> {
+        self.local_selection_range.borrow().clone()
+    }
+
+    pub(super) fn set_local_selection_range(&self, range: std::ops::Range<usize>) {
+        *self.local_selection_range.borrow_mut() = Some(range);
     }
 
     pub(crate) fn has_selected_text(&self) -> bool {
