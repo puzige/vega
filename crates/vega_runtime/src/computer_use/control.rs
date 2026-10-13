@@ -579,6 +579,34 @@ impl ComputerUseControl {
             .ok_or(ComputerUseError::StaleObservation)
     }
 
+    pub(crate) fn consume_observations(&self) {
+        if let Ok(mut state) = self.0.state.lock() {
+            state.observations.clear();
+        }
+        self.notify();
+    }
+
+    pub(crate) fn screenshot_target(&self, observation: &Observation) -> Option<String> {
+        let state = self.0.state.lock().ok()?;
+        if state.epoch != observation.epoch
+            || state.phase != ControlPhase::Running
+            || state.action_cancel.is_cancelled()
+            || state
+                .directory_started
+                .is_none_or(|started| started.elapsed().as_secs() >= 60)
+        {
+            return None;
+        }
+        let Target::Desktop(target) = &observation.target else {
+            return None;
+        };
+        state
+            .windows
+            .iter()
+            .find(|window| *window == target)
+            .map(|window| window.selection_id.clone())
+    }
+
     pub(crate) fn discard_observations(&self) {
         if let Ok(mut state) = self.0.state.lock() {
             state.observations.clear();
@@ -762,5 +790,58 @@ mod tests {
         );
         control.stop();
         control.finish_cleanup();
+    }
+    #[test]
+    fn issue75_successful_reads_screenshot_reference_never_renews_expired_or_revoked_directory() {
+        let run = super::super::ComputerUseRun::new(true, false);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        let observation = super::super::tests::fixture_observation(&run.control, epoch, 0);
+        let Target::Desktop(target) = observation.target.clone() else {
+            panic!()
+        };
+        run.control.set_windows(epoch, vec![target]).unwrap();
+        run.control.select_window(epoch, "fixture").unwrap();
+        run.control.publish(observation.clone()).unwrap();
+        let started = run.control.0.state.lock().unwrap().directory_started;
+        assert_eq!(
+            run.control.screenshot_target(&observation).as_deref(),
+            Some("fixture")
+        );
+        run.control.consume_observations();
+        assert_eq!(
+            run.control.0.state.lock().unwrap().directory_started,
+            started
+        );
+        assert_eq!(
+            run.control.screenshot_target(&observation).as_deref(),
+            Some("fixture")
+        );
+        run.control.publish(observation.clone()).unwrap();
+        run.control.0.state.lock().unwrap().directory_started =
+            Some(Instant::now() - std::time::Duration::from_secs(61));
+        let mut message = crate::ChatMessage::tool_result(&observation.call_id, "completed");
+        run.apply_observation(&observation.call_id, &mut message);
+        assert!(message.content.contains("refresh_directory_once"));
+        let reference = message
+            .content
+            .lines()
+            .find_map(|line| line.strip_prefix("Screenshot target: "))
+            .unwrap();
+        let reference: serde_json::Value = serde_json::from_str(reference).unwrap();
+        assert!(reference["target_id"].is_null());
+        assert_eq!(
+            run.control.select_window(epoch, "fixture"),
+            Err(ComputerUseError::StaleObservation)
+        );
+        run.control.discard_observations();
+        assert!(run.control.screenshot_target(&observation).is_none());
+        assert!(run.control.0.state.lock().unwrap().windows.is_empty());
+        run.control.pause();
+        assert!(run.control.screenshot_target(&observation).is_none());
+        run.control.finish_cleanup();
+        run.control.resume(run.control.status().epoch).unwrap();
+        assert!(run.control.screenshot_target(&observation).is_none());
+        run.control.stop();
+        run.control.finish_cleanup();
     }
 }

@@ -268,7 +268,7 @@ impl Backends {
                     .await?;
             }
             run.control.check_epoch(epoch)?;
-            run.control.discard_observations();
+            run.control.consume_observations();
             let dispatched = match capability {
                 Capability::Desktop => self.desktop_call(tool, mapped, cancel).await,
                 Capability::Browser => {
@@ -393,7 +393,7 @@ impl Backends {
                     observation.image.ok_or(Error::Image)?,
                     observation.epoch,
                 )?;
-                return Ok(json!({"status":"delivered","artifact_id":format!("screenshot:{call_id}"),"delivery":"conversation_image_attachment","saved_in_history":true,"read_only":true}).to_string());
+                return Ok(super::screenshot_receipt(call_id));
             }
             Ok(format!(
                 "completed; observation_id={id}; observation images and page data are ephemeral and are not retained in history."

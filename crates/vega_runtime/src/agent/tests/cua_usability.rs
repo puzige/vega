@@ -300,14 +300,30 @@ async fn issue75_usability_full_run_directory_success_does_not_reset_ax_failure_
             RuntimePermissionMode::FullAccess,
             dir.path().to_owned(),
         )
-        .with_computer_use(Some(run));
+        .with_computer_use(Some(run.clone()));
         let cancel = CancellationToken::new();
         let stop = cancel.clone();
+        let refreshed_run = run.clone();
+        let mut refresh_generation = 0;
         let outcome = run_agent_with_sink(&provider, &tools, req, cancel, move |event| {
             if stop_at_limit && matches!(event, RuntimeEvent::ToolCallFinished(ref result) if result.output.contains("no_progress")) { stop.cancel(); }
-            async { Ok(()) }
+            let refreshed = if matches!(&event, RuntimeEvent::ToolCallFinished(result) if result.call_id.starts_with("observe-")) {
+                refresh_generation += 1;
+                let mut target = fixture_window();
+                target.title = format!("Owned directory update {refresh_generation}");
+                Some(target)
+            } else { None };
+            let refreshed_run = refreshed_run.clone();
+            async move {
+                if let Some(target) = refreshed {
+                    refreshed_run.set_desktop_targets_fixture(vec![target]).await;
+                }
+                Ok(())
+            }
         }).await.unwrap();
         assert_eq!(provider.requests().len(), 6);
+        assert_eq!(outcome.events.iter().filter(|event|matches!(event,RuntimeEvent::ToolCallFinished(result) if result.call_id.starts_with("observe-"))).count(),3);
+        assert!(outcome.events.iter().any(|event|matches!(event,RuntimeEvent::ToolCallFinished(result) if result.call_id=="observe-2" && result.output.contains("no_progress"))));
         assert_eq!(actions.load(Ordering::SeqCst), 0);
         assert_eq!(
             outcome

@@ -1,12 +1,13 @@
 use super::{ComputerUseError, Observation, Target};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Default)]
 pub(super) struct ProgressGuard {
     failures: HashMap<String, u8>,
     actions: HashMap<String, (String, u8)>,
+    reads: VecDeque<(String, ReadState, u8)>,
     stopped: bool,
 }
 
@@ -69,6 +70,137 @@ fn state(observation: &Observation) -> Option<String> {
     ))
 }
 
+#[derive(PartialEq)]
+struct Pixels {
+    width: u32,
+    height: u32,
+    columns: Vec<[u8; 32]>,
+}
+
+impl Pixels {
+    fn new(observation: &Observation) -> Option<Self> {
+        let image = image::load_from_memory(observation.image.as_ref()?.bytes())
+            .ok()?
+            .to_rgba8();
+        let mut columns = vec![Sha256::new(); image.width() as usize];
+        for (x, _, pixel) in image.enumerate_pixels() {
+            columns[x as usize].update(pixel.0);
+        }
+        Some(Self {
+            width: image.width(),
+            height: image.height(),
+            columns: columns
+                .into_iter()
+                .map(|column| column.finalize().into())
+                .collect(),
+        })
+    }
+
+    fn only_caret_changed(&self, other: &Self) -> bool {
+        if self.width != other.width || self.height != other.height {
+            return false;
+        }
+        let mut changed = self
+            .columns
+            .iter()
+            .zip(&other.columns)
+            .enumerate()
+            .filter_map(|(index, (a, b))| (a != b).then_some(index));
+        let Some(first) = changed.next() else {
+            return true;
+        };
+        changed.next_back().unwrap_or(first) - first < 4
+    }
+}
+
+enum ReadState {
+    Catalog(String),
+    Window {
+        elements: String,
+        pixels: Option<Pixels>,
+        text_input: bool,
+    },
+}
+
+impl ReadState {
+    fn new(observation: &Observation) -> Option<(String, Self)> {
+        match &observation.target {
+            Target::DesktopCatalog => {
+                let page: Value = serde_json::from_str(&observation.text).ok()?;
+                let windows = page["windows"].as_array()?;
+                let mut identities = windows
+                    .iter()
+                    .map(|window| format!("{}:{}", window["pid"], window["window_id"]))
+                    .collect::<Vec<_>>();
+                identities.sort();
+                let key = format!("catalog:{}", digest(identities.join(",").as_bytes()));
+                let mut entries = windows
+                    .iter()
+                    .map(|window| stable(window).to_string())
+                    .collect::<Vec<_>>();
+                entries.sort();
+                Some((key, Self::Catalog(digest(entries.join("\n").as_bytes()))))
+            }
+            Target::Desktop(target) => {
+                let elements = stable(&observation.elements);
+                let pixels = Pixels::new(observation);
+                if pixels.is_none()
+                    && !elements
+                        .as_array()
+                        .is_some_and(|entries| !entries.is_empty())
+                {
+                    return None;
+                }
+                let text_input = elements.as_array().is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        matches!(
+                            entry["role"].as_str(),
+                            Some("AXTextArea" | "AXTextField" | "AXSearchField")
+                        )
+                    })
+                });
+                Some((
+                    format!("window:{}:{}", target.pid, target.window_id),
+                    Self::Window {
+                        elements: digest(elements.to_string().as_bytes()),
+                        pixels,
+                        text_input,
+                    },
+                ))
+            }
+            Target::Browser { .. } => None,
+        }
+    }
+
+    fn equivalent(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Catalog(a), Self::Catalog(b)) => a == b,
+            (
+                Self::Window {
+                    elements: a,
+                    pixels: pa,
+                    text_input: ta,
+                },
+                Self::Window {
+                    elements: b,
+                    pixels: pb,
+                    text_input: tb,
+                },
+            ) => {
+                a == b
+                    && (pa == pb
+                        || (*ta
+                            && *tb
+                            && pa
+                                .as_ref()
+                                .zip(pb.as_ref())
+                                .is_some_and(|(a, b)| a.only_caret_changed(b))))
+            }
+            _ => false,
+        }
+    }
+}
+
 impl Attempt {
     pub(super) fn new(
         name: &str,
@@ -117,6 +249,23 @@ impl Attempt {
 }
 
 impl ProgressGuard {
+    fn record_read(&mut self, key: String, state: ReadState, baseline: u8) -> bool {
+        let prior = self
+            .reads
+            .iter()
+            .position(|(target, _, _)| target == &key)
+            .and_then(|index| self.reads.remove(index));
+        let count = match prior {
+            Some((_, previous, count)) if previous.equivalent(&state) => count.saturating_add(1),
+            _ => baseline,
+        };
+        if self.reads.len() >= 64 {
+            self.reads.pop_front();
+        }
+        self.reads.push_back((key, state, count));
+        count >= 3
+    }
+
     pub(super) fn stopped(&self) -> bool {
         self.stopped
     }
@@ -152,6 +301,15 @@ impl ProgressGuard {
             self.stopped = *count >= 3;
             return self.stopped;
         }
+        if attempt.operation == "ComputerScreenshot" {
+            self.reads.clear();
+        } else if attempt.operation == "ComputerObserve"
+            && let Some((key, state)) = after.and_then(ReadState::new)
+            && self.record_read(key, state, 1)
+        {
+            self.stopped = true;
+            return true;
+        }
         let Some(after) =
             after.filter(|observation| matches!(observation.target, Target::Desktop(_)))
         else {
@@ -165,6 +323,12 @@ impl ProgressGuard {
         };
         if attempt.state.is_none() || attempt.state != state(after) {
             self.actions.remove(&attempt.target);
+            if attempt.state.is_some() {
+                self.reads.clear();
+                if let Some((key, state)) = ReadState::new(after) {
+                    self.record_read(key, state, 0);
+                }
+            }
             return false;
         }
         if self.actions.len() >= 64 && !self.actions.contains_key(&attempt.target) {

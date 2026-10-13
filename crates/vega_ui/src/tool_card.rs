@@ -796,12 +796,24 @@ impl ToolCard {
                 },
                 name.as_deref().unwrap_or("未知")
             ),
-            (Some(ToolCardInputProjection::ComputerUse { tool, action }), _) => format!(
-                "{} {} · {}{}",
-                generic_verb("操控", self.activity_state(), self.status),
-                if tool.starts_with("Computer") { "电脑" } else { "浏览器" }, action,
-                if self.approval == Some(Approval::Once) { " · 本次操控授权" } else { "" }
-            ),
+            (Some(ToolCardInputProjection::ComputerUse { tool, action }), _) => {
+                let verb = match tool.as_str() {
+                    "ComputerObserve" | "BrowserObserve" => "观察",
+                    "ComputerScreenshot" => "截图",
+                    _ => "操控",
+                };
+                format!(
+                    "{} {} · {}{}",
+                    generic_verb(verb, self.activity_state(), self.status),
+                    if tool.starts_with("Computer") { "电脑" } else { "浏览器" },
+                    action,
+                    if verb == "操控" && self.approval == Some(Approval::Once) {
+                        " · 本次操控授权"
+                    } else {
+                        ""
+                    }
+                )
+            }
             (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => format!(
                 "{} {} · server {}",
                 generic_verb("调用", self.activity_state(), self.status),
@@ -1262,6 +1274,44 @@ mod tests {
             duration_ms: None,
             truncated: None,
             invalid: None,
+        }
+    }
+
+    #[test]
+    fn issue75_readonly_tool_cards_distinguish_observation_screenshot_and_input() {
+        for (tool, action, verb, surface, authorized) in [
+            ("ComputerObserve", "observe", "观察", "电脑", false),
+            ("BrowserObserve", "observe", "观察", "浏览器", false),
+            ("ComputerScreenshot", "screenshot", "截图", "电脑", false),
+            ("ComputerAct", "type_text", "操控", "电脑", true),
+            ("BrowserAct", "click", "操控", "浏览器", true),
+        ] {
+            for status in [
+                ToolCallStatus::Running,
+                ToolCallStatus::Success,
+                ToolCallStatus::Rejected,
+            ] {
+                let mut card = ToolCard::hydrated(
+                    Some(ToolCardInputProjection::ComputerUse {
+                        tool: tool.into(),
+                        action: action.into(),
+                    }),
+                    status,
+                    None,
+                    None,
+                );
+                card.approval = Some(Approval::Once);
+                card.refresh_summary();
+                let text = card.visible_text();
+                assert!(
+                    text.contains(&format!(
+                        "{} {surface}",
+                        generic_verb(verb, card.activity_state(), status)
+                    )),
+                    "{tool}: {text}"
+                );
+                assert_eq!(text.contains("本次操控授权"), authorized, "{tool}: {text}");
+            }
         }
     }
 
