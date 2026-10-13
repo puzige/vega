@@ -1225,7 +1225,6 @@ impl ConversationStream {
                     .on_action(cx.listener(Self::on_model_next))
                     .on_action(cx.listener(Self::on_model_close))
                     .min_w_0()
-                    .max_w(px(if self.compact_workspace { 98. } else { 150. }))
                     .flex_shrink_1()
                     .truncate()
                     .px_2()
@@ -1255,8 +1254,9 @@ impl ConversationStream {
                             .gap_1()
                             .child(
                                 div()
+                                    .debug_selector(|| "composer-model-label".into())
                                     .min_w_0()
-                                    .flex_1()
+                                    .flex_shrink_1()
                                     .truncate()
                                     .child(current.to_owned()),
                             )
