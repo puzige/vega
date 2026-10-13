@@ -1,3 +1,5 @@
+pub const SUPERSEDED_CONTROL_OUTPUT: &str = r#"{"status":"superseded","executed":false,"reason":"control_epoch_changed","next_step":"refresh_directory_once_then_replan_remaining_work","delivered_images":"preserved","retry_dispatched_actions":false}"#;
+
 mod background;
 mod batch;
 mod desktop_observation;
@@ -55,6 +57,8 @@ pub enum ComputerUseError {
     NotReady,
     #[error("操作已取消；已派发动作的结果可能未知")]
     Cancelled,
+    #[error("接管前的待执行请求已撤销，请刷新目标后重新规划")]
+    Superseded,
     #[error("目标已变化或关闭，请重新发现或连接")]
     TargetChanged,
     #[error("观察已过期，请重新观察后再操作")]
@@ -148,6 +152,7 @@ impl ComputerUseError {
                 Some("target_id"),
             ),
             Self::ObservationBudget { executed } => return json!({"code":"observation_budget_exceeded","executed":executed,"deferred":true,"retryable":true,"next_step":"use_current_results_then_request_remaining_windows"}).to_string(),
+            Self::Superseded => return SUPERSEDED_CONTROL_OUTPUT.into(),
             Self::NoProgress => ("no_progress", false, "stop_and_report", None),
             Self::ScreenshotLimit => ("screenshot_limit", false, "stop_and_report", None),
             Self::Executor(error) => return error.feedback(),
@@ -321,6 +326,7 @@ impl ComputerUseRun {
         &self,
         name: &str,
         arguments: &Value,
+        epoch: u64,
         cancel: &CancellationToken,
     ) -> Result<(), ComputerUseError> {
         let capability = Self::tool_capability(name).ok_or(ComputerUseError::InvalidAction)?;
@@ -328,16 +334,37 @@ impl ComputerUseRun {
             return Err(ComputerUseError::NotReady);
         }
         self.wait_ready(cancel).await?;
-        let epoch = self.control.status().epoch;
-        let token = self.control.action_token(epoch)?;
+        self.check_request_epoch(epoch, cancel)?;
+        let token = match self.control.action_token(epoch) {
+            Ok(token) => token,
+            Err(error) => {
+                self.check_request_epoch(epoch, cancel)?;
+                return Err(error);
+            }
+        };
         let result = tokio::select! { biased;
             _ = cancel.cancelled() => { self.control.stop(); Err(ComputerUseError::Cancelled) },
-            result = async { self.backend.lock().await.authorize(self, name, arguments, epoch, &token).await } => result,
+            result = async {
+                let mut backend = self.backend.lock().await;
+                self.check_request_epoch(epoch, cancel)?;
+                backend.authorize(self, name, arguments, epoch, &token).await
+            } => result,
         };
+        if matches!(
+            result,
+            Err(ComputerUseError::Cancelled | ComputerUseError::NotReady)
+        ) && let Err(error) = self.check_request_epoch(epoch, cancel)
+        {
+            self.cleanup_revoked().await;
+            return Err(error);
+        }
         if let Err(error) = result {
             if !matches!(
                 error,
-                ComputerUseError::Busy | ComputerUseError::Cancelled | ComputerUseError::NotReady
+                ComputerUseError::Busy
+                    | ComputerUseError::Cancelled
+                    | ComputerUseError::NotReady
+                    | ComputerUseError::Superseded
             ) {
                 self.control.fail(epoch, error);
             }
@@ -346,6 +373,7 @@ impl ComputerUseRun {
         result
     }
 
+    #[cfg(test)]
     pub(crate) async fn execute(
         &self,
         name: &str,
@@ -353,12 +381,30 @@ impl ComputerUseRun {
         arguments: Value,
         cancel: &CancellationToken,
     ) -> Result<String, ComputerUseError> {
+        self.execute_at(
+            name,
+            call_id,
+            arguments,
+            self.control.status().epoch,
+            cancel,
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_at(
+        &self,
+        name: &str,
+        call_id: &str,
+        arguments: Value,
+        epoch: u64,
+        cancel: &CancellationToken,
+    ) -> Result<String, ComputerUseError> {
         let capability = Self::tool_capability(name).ok_or(ComputerUseError::InvalidAction)?;
         if !self.enabled(capability) {
             return Err(ComputerUseError::NotReady);
         }
         self.wait_ready(cancel).await?;
-        let epoch = self.control.status().epoch;
+        self.check_request_epoch(epoch, cancel)?;
         if capability == Capability::Desktop && self.no_progress() {
             return Err(ComputerUseError::NoProgress);
         }
@@ -373,12 +419,15 @@ impl ComputerUseRun {
             .and_then(|id| self.control.window_target(id))
             .or_else(|| previous.as_ref().map(|item| item.target.clone()));
         let attempt = progress::Attempt::new(name, &arguments, target.as_ref(), previous.as_ref());
-        let mut result = self
-            .backend
-            .lock()
-            .await
-            .execute(self, name, call_id, arguments, cancel)
+        let mut backend = self.backend.lock().await;
+        self.check_request_epoch(epoch, cancel)?;
+        let mut result = backend
+            .execute(self, epoch, name, call_id, arguments, cancel)
             .await;
+        drop(backend);
+        if result == Err(ComputerUseError::Superseded) {
+            return result;
+        }
         if capability == Capability::Desktop {
             let after = self
                 .control
@@ -413,6 +462,38 @@ impl ComputerUseRun {
             self.cleanup_revoked().await;
         }
         result
+    }
+
+    pub(super) fn check_request_epoch(
+        &self,
+        epoch: u64,
+        cancel: &CancellationToken,
+    ) -> Result<(), ComputerUseError> {
+        let status = self.control.status();
+        if cancel.is_cancelled()
+            || matches!(
+                status.phase,
+                ControlPhase::Stopping | ControlPhase::Stopped | ControlPhase::Failed
+            )
+        {
+            Err(ComputerUseError::Cancelled)
+        } else if status.epoch != epoch {
+            Err(ComputerUseError::Superseded)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn ready_model_epoch(&self) -> Option<u64> {
+        let status = self.control.status();
+        matches!(
+            status.phase,
+            ControlPhase::Disconnected
+                | ControlPhase::Connecting
+                | ControlPhase::AwaitingApproval
+                | ControlPhase::Running
+        )
+        .then_some(status.epoch)
     }
 
     pub(crate) fn no_progress(&self) -> bool {
@@ -582,6 +663,8 @@ impl ComputerUseRun {
                 actions: actions.clone(),
                 calls: Vec::new(),
                 permissions: vec![json!({"accessibility":true,"screen_recording":true})].into(),
+                #[cfg(test)]
+                permission_gate: None,
             });
         actions
     }
@@ -591,6 +674,19 @@ impl ComputerUseRun {
         if let Some(fixture) = &mut self.backend.lock().await.fixture {
             fixture.permissions = permissions.into();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn gate_desktop_permission_check(
+        &self,
+        after: usize,
+    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        if let Some(fixture) = &mut self.backend.lock().await.fixture {
+            fixture.permission_gate = Some((after, entered.clone(), release.clone()));
+        }
+        (entered, release)
     }
 
     #[cfg(test)]

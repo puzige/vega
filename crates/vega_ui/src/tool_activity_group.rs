@@ -156,6 +156,7 @@ impl ToolActivityGroup {
             .collect::<Vec<_>>()
             .join("、");
         match self.aggregate_state(cx) {
+            ToolActivityState::Superseded => "接管后未执行".into(),
             ToolActivityState::Success => format!("已{actions}"),
             ToolActivityState::Active => format!("正在处理：{actions}"),
             ToolActivityState::Rejected => format!("存在已拒绝的调用：{actions}"),
@@ -382,5 +383,92 @@ mod tests {
             assert_eq!(group.leading_icon(cx), Icon::Wrench);
             assert_eq!(group.aggregate_state(cx), ToolActivityState::Failed);
         });
+    }
+    #[gpui_kit::test]
+    async fn issue75_resume_refresh_cancelled_receipt_is_neutral_live_and_in_history_groups(
+        cx: &mut TestAppContext,
+    ) {
+        let call=ToolCall{id:"capture".into(),tool:"ComputerScreenshot".into(),input_json:serde_json::json!({"kind":"computer_use","version":1,"action":"screenshot","argument_bytes":2,"argument_digest":"a".repeat(64)}).to_string()};
+        let result = ToolResult {
+            status: ToolCallStatus::Cancelled,
+            output: vega_conversation::types::SUPERSEDED_CONTROL_OUTPUT.into(),
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            invalid: None,
+        };
+        let live = cx.new(|_| ToolCard::proposed(&call));
+        live.update(cx, |card, cx| {
+            assert!(card.apply_approved(Approval::Once));
+            assert!(card.apply_running(cx));
+            assert!(card.apply_finished(&result));
+            assert_eq!(card.activity_state(), ToolActivityState::Superseded);
+            assert!(card.visible_text().contains("接管后未执行"));
+            assert!(!card.visible_text().contains("工具结果损坏"));
+            for colors in [vega_theme::LIGHT, vega_theme::DARK] {
+                assert_eq!(
+                    card.activity_state().terminal_color(&colors),
+                    colors.text_secondary
+                );
+            }
+        });
+        let input = vega_conversation::types::tool_card_input_projection(&call);
+        let projected =
+            vega_conversation::types::tool_card_result_projection(Some(&input), &result);
+        let restored = cx.new(|_| {
+            ToolCard::hydrated(
+                Some(input),
+                ToolCallStatus::Cancelled,
+                Some(Approval::Once),
+                Some(projected),
+            )
+        });
+        let group = ToolActivityGroup::new(live, restored.clone());
+        cx.update(|cx| {
+            assert_eq!(
+                restored.read(cx).activity_state(),
+                ToolActivityState::Superseded
+            );
+            assert_eq!(group.aggregate_state(cx), ToolActivityState::Superseded);
+            assert!(!group.aggregate_summary(cx).contains("失败"));
+            assert!(group.aggregate_summary(cx).contains("接管后未执行"));
+        });
+        for (status, output, expected) in [
+            (
+                ToolCallStatus::Failed,
+                "outcome_unknown: inspect before retrying",
+                ToolActivityState::Failed,
+            ),
+            (
+                ToolCallStatus::Rejected,
+                "Tool error: denied",
+                ToolActivityState::Rejected,
+            ),
+            (
+                ToolCallStatus::Cancelled,
+                vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT,
+                ToolActivityState::Cancelled,
+            ),
+        ] {
+            let input = vega_conversation::types::tool_card_input_projection(&call);
+            let result = ToolResult {
+                status,
+                output: output.into(),
+                ..result.clone()
+            };
+            let projected =
+                vega_conversation::types::tool_card_result_projection(Some(&input), &result);
+            let card = cx.new(|_| {
+                ToolCard::hydrated(Some(input), status, Some(Approval::Once), Some(projected))
+            });
+            let mixed = ToolActivityGroup::new(restored.clone(), card);
+            cx.update(|cx| {
+                assert_eq!(mixed.aggregate_state(cx), expected);
+                if expected == ToolActivityState::Failed {
+                    assert!(mixed.aggregate_summary(cx).contains("失败"));
+                }
+            });
+        }
     }
 }

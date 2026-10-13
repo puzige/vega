@@ -683,6 +683,16 @@ pub fn tool_card_result_projection(
     };
     match input {
         ToolCardInputProjection::ComputerUse { .. } => {
+            let superseded = result.output.len() <= 2048
+                && serde_json::from_str::<serde_json::Value>(&result.output)
+                    .ok()
+                    .is_some_and(|value| value["status"] == "superseded");
+            if superseded
+                && (result.output != vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT
+                    || result.status != ToolCallStatus::Cancelled)
+            {
+                return ToolCardResultProjection::Corrupt;
+            }
             if !is_terminal(result.status)
                 || result.exit_code.is_some()
                 || result.duration_ms.is_some()

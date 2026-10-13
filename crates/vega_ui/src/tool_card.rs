@@ -66,6 +66,7 @@ impl ToolActivityCategory {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolActivityState {
+    Superseded,
     Success,
     Active,
     Cancelled,
@@ -76,11 +77,12 @@ pub(crate) enum ToolActivityState {
 impl ToolActivityState {
     pub(crate) const fn priority(self) -> u8 {
         match self {
-            Self::Success => 0,
-            Self::Active => 1,
-            Self::Cancelled => 2,
-            Self::Rejected => 3,
-            Self::Failed => 4,
+            Self::Superseded => 0,
+            Self::Success => 1,
+            Self::Active => 2,
+            Self::Cancelled => 3,
+            Self::Rejected => 4,
+            Self::Failed => 5,
         }
     }
 
@@ -88,7 +90,7 @@ impl ToolActivityState {
         match self {
             Self::Success => colors.success,
             Self::Cancelled | Self::Rejected | Self::Failed => colors.danger,
-            Self::Active => colors.text_secondary,
+            Self::Active | Self::Superseded => colors.text_secondary,
         }
     }
 }
@@ -496,6 +498,16 @@ impl ToolCard {
     }
 
     pub(crate) fn activity_state(&self) -> ToolActivityState {
+        if self.status == ToolCallStatus::Cancelled
+            && matches!(
+                &self.input,
+                Some(ToolCardInputProjection::ComputerUse { .. })
+            )
+            && self.approval == Some(Approval::Once)
+            && matches!(&self.result, Some(ToolCardResultProjection::ComputerUse { output, .. }) if output == vega_conversation::types::SUPERSEDED_CONTROL_OUTPUT)
+        {
+            return ToolActivityState::Superseded;
+        }
         if self.bash_exit_failed() || matches!(self.result, Some(ToolCardResultProjection::Corrupt))
         {
             return ToolActivityState::Failed;
@@ -797,6 +809,9 @@ impl ToolCard {
                 name.as_deref().unwrap_or("未知")
             ),
             (Some(ToolCardInputProjection::ComputerUse { tool, action }), _) => {
+                if self.activity_state() == ToolActivityState::Superseded {
+                    return "接管后未执行".into();
+                }
                 let verb = match tool.as_str() {
                     "ComputerObserve" | "BrowserObserve" => "观察",
                     "ComputerScreenshot" => "截图",
@@ -869,6 +884,7 @@ impl ToolCard {
 
     fn build_bash_summary(&self, include_duration: bool) -> String {
         let mut summary = match self.activity_state() {
+            ToolActivityState::Superseded => "接管后未执行",
             ToolActivityState::Success => "已运行命令",
             ToolActivityState::Active => {
                 if self.status == ToolCallStatus::PendingApproval {
@@ -929,6 +945,7 @@ impl ToolCard {
 
     fn terminal_footer(&self) -> String {
         let mut footer = match self.activity_state() {
+            ToolActivityState::Superseded => "接管后未执行".to_string(),
             ToolActivityState::Success => "已完成".to_string(),
             ToolActivityState::Active => {
                 if self.status == ToolCallStatus::PendingApproval {
@@ -1026,6 +1043,7 @@ fn invalid_action(tool: InvalidToolKind) -> &'static str {
 
 fn generic_verb(action: &'static str, state: ToolActivityState, status: ToolCallStatus) -> String {
     match state {
+        ToolActivityState::Superseded => "接管后未执行".to_string(),
         ToolActivityState::Success => format!("已{action}"),
         ToolActivityState::Active if status == ToolCallStatus::PendingApproval => {
             format!("等待批准{action}")
@@ -1052,6 +1070,7 @@ fn readonly_summary(
         ReadOnlyToolKind::Grep => "搜索内容",
     };
     match state {
+        ToolActivityState::Superseded => "接管后未执行".to_string(),
         ToolActivityState::Success => format!("已{action}"),
         ToolActivityState::Active if status == ToolCallStatus::PendingApproval => {
             format!("等待{action}")

@@ -10,6 +10,7 @@ pub(crate) enum PreparedRuntimeCall {
         call: RuntimeToolCall,
         arguments: Value,
         run: crate::computer_use::ComputerUseRun,
+        epoch: u64,
     },
     Readonly(RuntimeToolCall),
     InvalidRead(RuntimeToolCall),
@@ -93,6 +94,24 @@ impl PreparedRuntimeCall {
             | Self::Edit { call, .. }
             | Self::Bash { call, .. } => call,
             Self::Skill { call, .. } => call,
+        }
+    }
+
+    pub(crate) async fn superseded_after_wait(&self, cancel: &CancellationToken) -> bool {
+        if let Self::ComputerUse { run, epoch, .. } = self {
+            run.wait_ready(cancel).await.is_ok()
+                && run.check_request_epoch(*epoch, cancel)
+                    == Err(crate::computer_use::ComputerUseError::Superseded)
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn bind_computer_use_epoch(&mut self, expected: Option<u64>) {
+        if let Self::ComputerUse { epoch, .. } = self
+            && let Some(expected) = expected
+        {
+            *epoch = expected;
         }
     }
 
@@ -235,6 +254,7 @@ pub(crate) fn prepare_runtime_call(
                 PreparedRuntimeCall::ComputerUse {
                     call,
                     arguments,
+                    epoch: run.control.status().epoch,
                     run,
                 }
             }
@@ -629,6 +649,7 @@ pub(crate) async fn authorize_call(
             call,
             run,
             arguments,
+            epoch,
         } => {
             if config.run_mode != RuntimeRunMode::Execute
                 || config.permission_mode == RuntimePermissionMode::ReadOnly
@@ -641,7 +662,7 @@ pub(crate) async fn authorize_call(
                     Some(run_mode_denial()),
                 )));
             }
-            match run.authorize(&call.name, arguments, cancel).await {
+            match run.authorize(&call.name, arguments, *epoch, cancel).await {
                 Ok(()) => Ok(Authorization::Approved {
                     audit: RuntimeApprovalAudit {
                         decision: RuntimeApprovalDecision::Once,
@@ -651,6 +672,14 @@ pub(crate) async fn authorize_call(
                     },
                     remember_rule: None,
                 }),
+                Err(crate::computer_use::ComputerUseError::Superseded) => {
+                    Ok(Authorization::Terminal(terminal_result(
+                        call,
+                        crate::computer_use::SUPERSEDED_CONTROL_OUTPUT.into(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    )))
+                }
                 Err(error) => Ok(Authorization::Terminal(terminal_result(
                     call,
                     format!(
@@ -1171,7 +1200,11 @@ pub(crate) async fn execute_prepared_waiting(
             call,
             arguments,
             run,
-        } => match run.execute(&call.name, &call.id, arguments, cancel).await {
+            epoch,
+        } => match run
+            .execute_at(&call.name, &call.id, arguments, epoch, cancel)
+            .await
+        {
             Ok(output) => {
                 let failed = output.starts_with("outcome_unknown:");
                 let mut result = terminal_result(
@@ -1189,6 +1222,15 @@ pub(crate) async fn execute_prepared_waiting(
                 }
                 (result, cancel.is_cancelled())
             }
+            Err(crate::computer_use::ComputerUseError::Superseded) => (
+                terminal_result(
+                    &call,
+                    crate::computer_use::SUPERSEDED_CONTROL_OUTPUT.into(),
+                    RuntimeToolStatus::Cancelled,
+                    None,
+                ),
+                cancel.is_cancelled(),
+            ),
             Err(error) => (
                 terminal_result(
                     &call,

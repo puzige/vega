@@ -1149,6 +1149,9 @@ pub(crate) fn validate_runtime_terminal(
             RuntimeToolStatus::Rejected | RuntimeToolStatus::Failed
         ) && result.truncated.is_some()
         || result.status == RuntimeToolStatus::Success && result.truncated.is_none()
+        || vega_runtime::computer_use::ComputerUseRun::tool_capability(&state.tool).is_some()
+            && result.output == vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT
+            && result.truncated.is_some()
         || result.status == RuntimeToolStatus::Cancelled
             && state.tool == "bash"
             && result.truncated.is_some()
