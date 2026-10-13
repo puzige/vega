@@ -340,3 +340,165 @@ cargo nextest run -p vega_runtime \
 ```
 
 2个修改Rust文件格式与diff检查通过（`/tmp/vega-75-delivery-progress-interleaved-act-checks.log`）。未重跑不变跨层/UI矩阵，既有132项、19项和全部RED证据独立保留。
+
+## 接管菜单在运行结束时保持稳定（2026-10-13，0.1.87 真机回归）
+
+takeover-87-01：用户打开“+”后任务完成，接管末项消失，底部锚定的菜单缩短一行，添加图片移动到旧接管位置；随后抬起鼠标触发了原生选图框。主控已取消且未选文件。本节仅修复已有临时菜单，不新增常驻入口、占位或运行时功能，不改签名、schema、截图与持久化逻辑。
+
+MS1. 每次打开“+”时固定该次可见条目、顺序及身份。菜单开启期间，Running→终态、暂停/恢复、control替换或模型/后端状态变化不能增删或重排这些条目；当前不可用的接管项保留相同行盒、使用现有禁用颜色及就近帮助，鼠标/Enter零动作。关闭后销毁快照，重开重新计算；结束后不显示接管项且无空白占位，添加图片正常可用。几何沿用现有共享行高32px：原菜单N行高H，动态删除一行会变H−32并让底部相邻项上/下移32；修复中同一次打开保持N和H不变，不增加新尺寸token。
+
+MS2. 接管快照绑定原ComputerUseControl、当时epoch、当前assistant消息身份和control投影generation，派发前重新校验当前仍是该身份且Running、epoch未变化。同一control的连续clone投影不是替换，须以共享实例身份比较保持已开菜单有效；Some/None切换或真正不同实例即使epoch相同也使旧菜单失效，撤下再装回原实例不能复活。只对捕获的control调用pause_at，禁止在回调执行时读取另一个control的最新epoch。每次菜单开关隔离其generation；鼠标按下和抬起须属于同一菜单项，旧菜单回调不能在关闭、重开或后续run中触发新接管/选图。菜单行的语义分派不得仅依赖变化后的索引。
+
+MS3. 复用原对话内暂停/继续和任务停止路径。仍只有用户主动打开“+”时才看到接管；正常截图无新菜单、通知或底栏。既有模式/权限/文件引用、slash过滤、键盘导航与图片导入行为保持。变更仅UI临时状态，无存储迁移，回滚可恢复原UI实现但会重新引入该误点风险。
+
+| ID | 前置/操作 | 预期 | 证据层级 | 状态 |
+|---|---|---|---|---|
+| MS01 | Running打开菜单→完成→点击旧接管坐标 | 接管和添加图片边界不变；接管禁用，无选图框/新动作 | 生产GPUI | PASS（进程内） |
+| MS02 | 接管行按下→运行完成→原位置抬起 | 不误派发添加图片，无暂停已结束任务 | 生产GPUI | PASS（进程内） |
+| MS03 | 键盘高亮接管→完成→Enter | 高亮身份和布局不变，禁用项零动作 | 生产GPUI | PASS（进程内） |
+| MS04 | 原control/epoch失效，旧点击或回调遇后续run/新菜单 | 后续run保持Running，不受旧回调影响；有效新菜单仍可接管 | 生产GPUI | PASS（进程内） |
+| MS05 | 关闭并重开已结束菜单，点添加图片 | 无接管/空白占位，原生选图可用，取消不新增附件 | 生产GPUI | PASS（进程内） |
+| MS07 | 流式event batch连续投影同一个control clone | 已开菜单接管保持有效；不同实例/撤下再装回仍失效 | 生产GPUI | PASS（进程内） |
+| MS06 | 现有接管/继续、模式/权限、slash与图片导入回归 | 所属对话行为和原有授权/输入/停止合同保持 | 生产GPUI | PASS（进程内） |
+
+实施顺序：保留生产事件驱动的RED，冻结菜单快照及接管身份，按原共享控件状态绘制，再跑本卡菜单/CUA与受影响Composer/附件定向回归、修改文件格式和diff检查。本地不跑全仓门禁、不调用真实driver/应用UI或数据库；新版真实菜单时序由主控发布后复测。
+
+### MS 本轮结果与失败保留
+
+5项新生产GPUI用例覆盖MS01–MS05：完成后旧坐标不触发选图、鼠标按下/抬起间完成零动作、键盘高亮身份保持且Enter不操作、旧菜单不暂停替换control或后续run、关闭重开后添加图片仍使用原生选择器。旧control仍Running但投影被替换/重新装回时，旧菜单也不复活；新菜单则可以正常接管。失效行保持原32px边界，点击后回焦composer，Esc可关闭，不会新增常驻占位。MS06原有接管继续、模式/权限、slash、图片导入及浮层互斥/关闭均通过。
+
+| 阶段 | 实际结果与原因 | 原始日志 |
+|---|---|---|
+| 菜单时序RED | 0 PASS / 3 FAIL：完成后点击与按抬时序误开选图，键盘高亮接管行消失 | `/tmp/vega-75-menu-stability-red.log` |
+| 旧身份RED | 0 PASS / 2 FAIL：旧菜单暂停替换control，旧mouse-down在新run重开后的mouse-up暂停新run | `/tmp/vega-75-menu-stability-owner-red.log` |
+| 首轮修复 | 3 PASS / 2 FAIL：失效项点击后composer丢焦，Esc未关闭，随后“+”关闭而非重开菜单 | `/tmp/vega-75-menu-stability-first.log` |
+| 失效项回焦修复 | 5/5 PASS | `/tmp/vega-75-menu-stability-second.log` |
+| 受影响定向矩阵 | 33/33 PASS，704 skipped | `/tmp/vega-75-menu-stability-final.log` |
+
+最终run ID为 `026f5cc7-e9c0-4c77-bd08-c429b452d917`，原始日志SHA-256为 `6d6562265e1cdb67fc4ad588227ad4d996c8ae2cb6d2d87785eb0100d225eea7`；完整executable/cwd/argv在 `/tmp/vega-75-menu-stability-final-argv.json`。命令：
+
+```sh
+cargo nextest run -p vega_ui \
+  -E 'test(issue75_menu_stability) | test(issue75_usability_takeover) | test(conversation_stream::tests::composer_actions::) | test(conversation_stream::tests::attachments::) | test(conversation_stream::tests::utility_menu_coordination::) | test(conversation_stream::tests::r68_popup_dismiss::)'
+```
+
+4个修改Rust文件的格式与git diff检查通过，原始命令/退出码为 `/tmp/vega-75-menu-stability-checks.log`。所有RED/GREEN日志、hash、分支/基线、源码内容摘要保存在 `/tmp/vega-75-menu-stability-evidence.json`。以上仅为进程内生产GPUI，不是用户Mac系统操作或新版真机通过；主控负责云端门禁、发布与真实时序复测。
+
+生产接线复审补充：每个event batch会重投影同一个control clone，不能将它当作替换。新增MS07先得到1项RED（点击后仍Running而非Pausing）；修复以Arc共享实例身份比较，连续同实例保持菜单有效，真正替换/撤下重装继续使旧菜单失效。受影响原矩阵加新增项 **34/34 PASS**、704 skipped，run `34acc4ad-8943-44f7-b8e9-0c3db52eb26a`。RED日志 `/tmp/vega-75-menu-stability-projection-red.log`，SHA-256 `f899355574fc0db2ade0922f1192cf92e5090ac77c2e15706820ffe60b33983f`；GREEN日志 `/tmp/vega-75-menu-stability-projection-verified.log`，SHA-256 `72df47aaad6365f5037f21fd28f2b86a1e2a970fe43bd57f356dc9632d63ef56`。完整命令为同名前缀 `-argv.json`，没有运行全仓门禁。
+
+## 同批次多窗口读取的一次性模型投影（2026-10-13，0.1.87 真机回归）
+
+takeover-87-02：同一模型响应要求读取两个窗口，A已成功，但发布B会按原单目标动作合同移除A；每工具trim随即清除A正文和图片，下一次模型实际没有同时收到两份内容。已交付2张图片不能完成用户的文字读取/比较任务，暂停后重复读取最终触发no_progress。修复仅补临时模型投影，不扩大旧观察的输入有效性、不改UI/权限/持久化或预算。
+
+BP1. 每次模型工具批次建立有界的一次性读取投影（每条沿用65536字符正文、200个AX标签和16KiB标签投影；总缓存文字最多2×(65536×4+16KiB+8KiB)，图像沿用全请求2张/8MiB），绑定本ComputerUseRun、当时epoch、模型attempt/batch和call_id。已验证的窗口Observe/截图结果在同批后续窗口发布前保存；批次中较早的结果以明确只读方式提供窗口归属、正文和图像，去除可调用的observation/element/snapshot/capture/target引用，不进入control.observations或增加动作权限。最新窗口B继续按既有合同可操作，旧A的ComputerAct仍拒绝。
+
+BP2. 只保留到该批完成后的下一次实际provider请求；最后wait_ready及事件sink返回后重新校验epoch/取消状态再构造请求，禁止已clone的旧snapshot跨越暂停。构造并消费后立即清除较早结果，下一请求仅保留当前有效观察/已ACK的有限交付事实。输入实际消费、显式invalidate、暂停/epoch变化、compaction、取消/错误退出和AgentOutcome都清除临时批次数据。暂停后不恢复原像素/输入引用，已经durable ACK的截图仍保持真实delivered。
+
+BP3. 整个模型请求保持最多2张工具图/8MiB，包含既有工具图。调用前按已知图数和字节余量准入：不能容纳下一张的读取不执行，回执为有限observation_budget_exceeded、executed:false、deferred:true，并指引先使用已有结果再请求剩余窗口。实际捕获编码大小在调用前未知；若执行后仍超实际字节预算，回执必须如实executed:true，不能谎称not_dispatched或Success后静默丢正文。实际预算检查优先在ScreenshotDelivered durable ACK前完成；失败不新增附件，未ACK捕获立即退出新交付名额；既有附件与ACK不受影响。若重复捕获已复用旧ACK，即使当前模型图超额，仍返回delivered/unchanged并附有限model_projection错误、去除本次pixels，不能将已交付事实改成失败。不增加压缩上限或放宽原预算。
+
+BP4. 模型输入仍为当次原始参数，事件/历史审计和压缩出口仍脱敏；临时只读投影标记外部不可信数据，保持call_id配对，生产图片校验和两种provider请求构造均覆盖。内置skill v4明确图片交付和文字读取是不同请求项：只有全部要求完成才结束；在下一模型轮使用同批只读结果完成描述/比较，不能把它们当作新的输入授权。预算deferred后分批继续，不为确认附件而重复截图。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| BP01 | 目录→同批Observe A/B→下一模型→后续请求 | 下一请求同时有A/B正文和2图；A只读无可调用引用，B有效；再下一请求A已清理 | PASS（进程内） |
+| BP02 | 同批Observe A/截图B，随后对旧A和最新B输入 | A文字可读、B交付ACK保留；旧A拒绝，最新B按原只读/可操作合同；真实输入消费清除旧投影 | PASS（进程内） |
+| BP03 | 批中及实际发送前暂停/恢复，或取消 | 无旧epoch正文/图越界、既有ACK保留；取消无后续provider | PASS（进程内） |
+| BP04 | 2图、3图、8MiB边界及既有工具图 | 容量内完整可见；第3图执行前deferred；实际字节超限真实标executed且在截图ACK前拒绝 | PASS（进程内） |
+| BP05 | 请求构造、compaction/outcome/错误出口 | 两种provider配对和图片校验通过；持久/压缩出口无窗口正文/引用/像素 | PASS（进程内） |
+
+先生产RED，再修改有界投影与最后发送边界；不改control单目标有效性、不加依赖/schema、不调用真机driver。仅跑本卡受影响定向矩阵，原菜单及此前所有失败证据保留；主控负责新版自然图文/接管真机验收。
+
+### BP 本轮结果与原始失败保留
+
+15项生产运行链回归通过：同批Observe A/B与Observe A/截图B均完整进入下一provider请求，A明确只读且无observation/element/target输入引用、包含窗口归属与正文；后续请求A的正文/图已清除。旧A的真实ComputerAct仍拒绝，当前B可正确输入并得到已变化状态；非CUA读取与无图目录不错误消耗图slots。暂停在批中或primary Started事件sink均清除旧epoch原文/图，已ACK的图片仍有delivered；取消不再调用后续provider，sink错误与压缩也清理临时数据。
+
+预算回归覆盖既有工具图、2图/8MiB边界：第三图在派发前返回executed:false/deferred，下一批正常完成剩余窗口；未知编码大小超额如实executed:true，未ACK捕获不占新交付名额。四个不同窗口的预算失败后第五个合法窗口仍成功交付；复用已ACK图片遇模型图预算不足时仍返回Success/delivered/unchanged和明确projection受限，不创建重复附件。所有实际请求均通过production图片校验及Chat Completions/Responses构造与call_id配对；没有发送真实HTTP。
+
+| 阶段 | 实际结果与原因 | 原始日志 |
+|---|---|---|
+| 初始夹具编译 | 3项接口误用：test-support可见性、Diagnostic事件名、Outcome字段，修正为现有接口 | `/tmp/vega-75-batch-projection-fixture-compile.log` |
+| 生产RED | 0 PASS / 4 FAIL：A正文丢失、图文结果不全、第三图仍派发、暂停后旧pixels越过实际发送 | `/tmp/vega-75-batch-projection-red.log` |
+| 核心修复 | 4/4 PASS | `/tmp/vega-75-batch-projection-first.log` |
+| 预算夹具编译 | ToolCall应为现有ChatToolCall，修正后再运行RED | `/tmp/vega-75-batch-projection-budget-fixture-compile.log` |
+| 预算RED | 0 PASS / 2 FAIL：已ACK事实被改成Failed；未ACK捕获仍占交付名额 | `/tmp/vega-75-batch-projection-budget-red.log` |
+| 边界夹具编译 | 测试误访私有batch_reads，改为公开生产终态/请求/隐私边界断言 | `/tmp/vega-75-batch-projection-boundary-fixture-compile.log` |
+| 扩展矩阵 | 8 PASS / 1 FAIL：批中接管后未刷新目录的旧调用，fixture预期target_expired但原合同为control_unavailable且未派发 | `/tmp/vega-75-batch-projection-second.log` |
+| 暂停反馈诊断 | 保留1项FAIL全文，确认真实有限code后精确断言control_unavailable；不改变生产拒绝合同 | `/tmp/vega-75-batch-projection-pause-diagnostic.log` |
+| 恢复夹具编译 | ManagedResult无Clone，改为分别构造四个不同目标及最后合法结果 | `/tmp/vega-75-batch-projection-recovery-fixture-compile.log` |
+| BP定向矩阵 | 15/15 PASS，371 skipped | `/tmp/vega-75-batch-projection-third.log` |
+| 本卡跨层矩阵 | 155/155 PASS，1814 skipped | `/tmp/vega-75-batch-projection-final.log` |
+
+初始4项RED日志SHA-256：`bb1d4ff32f30e69d1ded41cf27337d5c10ba80cbc4d8a133f1db1c7bf8a1b463`；预算2项RED日志SHA-256：`87f5c5adc30cbda948a3dd1b26d2ce4f2da85b4f7018a96730effbb37607196b`。最终155项run ID：`dc57006d-34c5-4ada-902e-e08f0ce9b361`，日志SHA-256：`e24ccd11ac0ac3d84c375f0d87f460d0365c945024542a5e1762825de03a65c5`。每阶段完整executable/cwd/argv均保存在同名前缀`-argv.json`；最终命令：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire)'
+```
+
+内置skill v4通过quick_validate；初次Homebrew Python缺少yaml模块的环境错误原样保留，随后复用已缓存uv/PyYAML离线完成，无网络安装。修改文件格式及git diff检查结果、skill hash、所有RED/GREEN日志hash和最终提交身份汇总于`/tmp/vega-75-batch-projection-evidence.json`。本轮无schema/依赖/权限放宽，无新的常驻UI。以上为进程内生产链，菜单及图文读取真机验收仍由主控发布后执行，不以155项通过代替自然任务顺畅完成。
+
+### PR #328 合并前更新至统一右侧预览
+
+旧HEAD `5fe688903ee0632372d4a2d6e36822a777b301bd` 的云端 `38354525137` 已通过2429/2429（5 skipped），fmt/Clippy/required均成功。原始日志 `/tmp/vega-75-menu-read-ci.log` SHA-256为 `4f177e19a5d249b46e774e96ff7fcd64efbee7aabf117a440864fd5e873b7882`；该结果仅对应旧基线，不代替变基后的云端门禁。
+
+重新fetch后无冲突变基至 `cefb2f1e74797303a2924da821ce534f023d6ae8`（PR #327）。保留上游右侧Workspace图片预览及SV3替代说明；MS/BP两提交的生产代码与测试补丁在range-diff中均等价，无新增实现或断言修改。变基后的实际请求/附件/菜单与右侧预览组合复验：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire) | test(issue296_image_preview)'
+```
+
+**167/167 PASS**，1814 skipped，exit0；run ID `776d16f4-997f-4749-836d-932bdee3a3f4`。原始日志 `/tmp/vega-75-menu-read-rebased.log`，SHA-256 `cb725623a3c0ec17908eb742475b2f1043737f89b32c2fdbb72f49bcd47651e0`；完整executable/cwd/argv和测试时HEAD在同名前缀 `-argv.json`。右侧预览测试涵盖来源/历史替换、非模态焦点/窄窗、精确原图保存与迟到picker、受控打开适配、阅读锚点及错误/生命周期；旧SV3模态断言按上游契约替换，不恢复原居中弹层。
+
+13个本卡修改Rust文件的定向rustfmt和完整提交diff检查通过，记录于 `/tmp/vega-75-menu-read-rebased-checks.log`。原range-diff为 `/tmp/vega-75-menu-read-rebased-range-diff.log`；所有旧RED、155项及云端结果保留，最终提交身份追加至 `/tmp/vega-75-batch-projection-evidence.json`。未运行本地全量、Clippy、真实driver/UI/数据库；主控在固定变基提交上重新跑云端门禁，再继续发布真机验收。
+
+## 并发模型回应落库在工具审批前失败（PR #328 云端回归）
+
+云端run `38356254186` 在2441项中2440通过、1失败（另5 skipped），唯一失败为原 `issue67_concurrent_settings_fails_closed_for_both_permissions`。两个任务均已PrimaryModel成功/ToolUse，但回应分段数为0、工具行不存在并Runtime失败；本地原用例也复现一个任务同位置失败、另一个正常pending_approval。原日志未保存SQLite扩展码，不能将本轮CI的确切错误预先断言为某个锁错误。
+
+生产窄路径为模型完成后、工具提案前的 `AssistantResponseCompleted`：`record_assistant_response` 先读owner与现有分段，再写回应元数据，当前DEFERRED事务可能在WAL并发writer下升级失败。以下先用同一公开生产函数与受控第二连接锁定该缺陷；不延长busy_timeout、不增加重试、不放宽回应owner/状态/正文/UTF-8范围/顺序/幂等校验，不扩大为全store事务重构。
+
+PA1. 回应元数据写入在读取owner前取得写事务，等待既有有界SQLite写锁；等待后读取最新owner，终态或正文不匹配仍拒绝，不将过时快照写入。保留既有原子提交与幂等语义。
+PA2. 自动回归用独立临时数据库、第二连接持有实际writer和单次busy-handler握手；不靠sleep碰撞或循环重跑。正常并发写入后回应成功且归属正确；并发结束本消息后等待者返回false且零回应元数据。原Issue67完整权限/设置关闭/无文件写入断言保持。
+PA3. 生产修改仅限该必要持久化函数；无UI/权限/schema/依赖变化。本卡CUA批次、截图ACK/取消、预览和相关权限回归须继续通过。保留云端与本地原失败、确定性RED及全部后续结果；明确区分确定性同路径缺陷与缺少底层码的CI事实。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| PA01 | 另一连接持有writer；公开回应落库函数竞争写锁；握手后释放 | 等待后精确写入一次，peer写入和正文不丢失 | PASS（进程内） |
+| PA02 | writer将同owner置终态，回应落库等待后重读 | 返回false，终态保留，零新分段 | PASS（进程内） |
+| PA03 | 原Issue67并发确认权限与相关生命周期/本卡矩阵 | 双审批真实入场，Settings关闭两项均rejected且无文件写入；原CUA/预览合同保持 | PASS（进程内） |
+
+### PA 本轮结果与证据边界
+
+生产修改仅 `record_assistant_response` 的一行事务模式：使用现有 `Transaction::new_unchecked(..., Immediate)`，owner和已有分段读取继续在事务内，所有早退/提交与校验逻辑不变。确定性夹具用另一连接实际持有writer、单次busy-handler通道握手并释放，不用延迟碰撞或测试重试；旧代码两项均立即 `DatabaseBusy / extended_code=5`，修复后等待并写入正确回应，或等待后发现owner已interrupted而返回false/零分段。
+
+这确认的是同一生产函数的并发读后写缺陷。原CI和原Issue67本地失败都没有底层SQLite码，只能确认相同阶段形态，不能追溯宣称它们已经证实是code5或BUSY_SNAPSHOT。CI原始日志 `/tmp/vega-75-menu-read-rebased-ci-failed.log` SHA-256 `3fa0155dea02bc9c714a30722c31a045b572f5ccf12dcfd3ccadd163b2ab03ee`，未覆盖或删除。
+
+| 阶段 | 结果 | 原始日志及SHA-256 |
+|---|---|---|
+| 原Issue67本地复现 | 0/1 PASS；A相同phase失败、B正常pending_approval，未改原断言 | `/tmp/vega-75-permission-admission-first.log` · `f0c05d7c9e34237d6d8536a04763939719651f38d1c40264b7eb562dea26cbd7` |
+| 受控writer RED | 0/2 PASS；两项有限SQLite码均5 | `/tmp/vega-75-permission-admission-red.log` · `ace7d6415ac4ef8832872d4990651673e95d191b6809cb5ef2344c703976d1fc` |
+| 存储修复/原分段回归 | 4/4 PASS | `/tmp/vega-75-permission-admission-store-green.log` · `7297fd2d048b81d5e489fe80c0ef8ad8b8d52200d3dad89f5c583aabfd40e9a3` |
+| 最终跨层定向组合 | 186/186 PASS，1954 skipped；原Issue67设置双审批3.871s通过 | `/tmp/vega-75-permission-admission-final.log` · `e1bb094a116a023500d09536702fb1f9cc3cbd3153c249ad0fd587e3611ce539` |
+
+最终run ID `9f22370c-4824-4f38-a66f-03795d8587af`，exit0；原7项并发生命周期、回应分段/持久历史、CUA/批次/截图ACK/取消和右侧预览均在原断言下通过。完整executable/cwd/argv均为各日志同名前缀 `-argv.json`，最终命令：
+
+```sh
+cargo nextest run -p vega_store -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire) | test(issue296_image_preview) | test(issue67_concurrent) | test(issue67_response_writer) | test(issue296_response) | test(response_phases::)'
+```
+
+两处修改Rust文件定向格式和diff检查通过，命令/结果为 `/tmp/vega-75-permission-admission-checks.log`。身份、各阶段日志/退出码/run ID/摘要与全部原始失败汇总于 `/tmp/vega-75-permission-admission-evidence.json`。无本地全量/Clippy/网络测试、真实UI/driver/应用数据库操作；旧155/167项及MS/BP所有RED证据保留。新固定提交须由主控重新通过云端门禁。
+
+### PR #330 导航布局前移后的集成复验
+
+旧HEAD `a670c9e002bea9139b2fffc0134f5f96b2652e76` 的云端run `38358464741` 已通过2443/2443、5 skipped，fmt/Clippy/required均成功。原始日志 `/tmp/vega-75-menu-read-final-ci.log` SHA-256 `6f388210f056e8edd0aeeeb846928a529b5ef3c836a2fee49135b47918108520`。合并前master前移至 `d1956e352811c04d9c1bd4d71aefbeb103dd1c30`（PR #330消息导航贴pane边缘）；再次fetch后无冲突变基，三个原补丁range-diff均等价，保留上游导航/侧栏与右侧图片预览行为。
+
+本次无生产或测试更改，不重复RED与未变化Store/runtime矩阵；仅验证受影响App/UI上的本卡CUA、预览、并发权限及新导航/拖拽组合：
+
+```sh
+cargo nextest run -p vega -p vega_ui \
+  -E 'test(issue75) | test(issue67_concurrent) | test(issue296_image_preview) | test(issue296_visual_v08) | test(issue296_navigation_pane_edge) | test(issue296_sidebar_boundary) | test(issue296_reading_column) | test(issue72_message_anchor_navigation) | test(r21_sidebar_drag)'
+```
+
+**62/62 PASS**、946 skipped、exit0；run `7c1b94f7-9749-44b7-a142-184448f90d30`。原始日志 `/tmp/vega-75-navigation-rebased.log`，SHA-256 `c0259e2e0951e39282d29d24d94850a81286e0909dee6ecd8d11b69a381d30d9`；完整命令/cwd/测试时HEAD在同名前缀 `-argv.json`。15个本卡修改Rust文件定向格式和提交diff检查通过，记录于 `/tmp/vega-75-navigation-rebased-checks.log`；等价range-diff为 `/tmp/vega-75-navigation-rebased-range-diff.log`。最终身份另记 `/tmp/vega-75-navigation-rebased-evidence.json`，既有186项、所有RED及两轮云端证据保留；本轮仅追加本段记录，不改变旧结果。变基后的固定提交仍须重新通过云端严格门禁。

@@ -35,7 +35,7 @@ pub fn record_assistant_response(
     if response.message_id != message_id || !response.valid_for(content) {
         return Ok(false);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let owner = find(&tx, message_id)?;
     if !owner.is_some_and(|owner| {
         owner.role == "assistant" && owner.status == "streaming" && owner.content == content

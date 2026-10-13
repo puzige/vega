@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 
 pub const NAME: &str = "vega-cua";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 const DOCUMENT: &str = include_str!("vega-cua/SKILL.md");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
