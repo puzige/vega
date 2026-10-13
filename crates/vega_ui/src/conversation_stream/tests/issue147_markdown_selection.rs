@@ -803,3 +803,480 @@ fn issue296_timeline_t06_real_selection_clear_and_composer_focus_release_final(
         assert_eq!(copy.original_text(), process);
     });
 }
+
+struct InlineReadView {
+    model: StreamModel,
+    colors: vega_theme::ThemeColors,
+}
+
+impl Render for InlineReadView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(markdown_item(&self.model, None, &self.colors))
+    }
+}
+
+fn inline_layout_view(
+    cx: &mut TestAppContext,
+    source: &str,
+    selectable: bool,
+    palette: vega_theme::Theme,
+) -> VisualTestContext {
+    cx.update(gpui_kit::init);
+    if selectable {
+        let (_, mut visual) = open_selection_harness(cx, assistant_entry(source));
+        visual.update(|_, cx| cx.set_global(palette));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        visual
+    } else {
+        let StreamEntry::Assistant { model, .. } = assistant_entry(source) else {
+            unreachable!()
+        };
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|_| InlineReadView {
+                    model,
+                    colors: palette.colors,
+                })
+            })
+            .unwrap()
+        });
+        VisualTestContext::from_window(window.into(), cx)
+    }
+}
+
+#[gpui_kit::test]
+fn issue296_inline_t01_code_background_is_thin_and_rounded(cx: &mut TestAppContext) {
+    for palette in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
+        for selectable in [true, false] {
+            let mut visual =
+                inline_layout_view(cx, "中文 `inline_code`，继续🙂。", selectable, palette);
+            visual.simulate_resize(size(px(800.), px(600.)));
+            visual.run_until_parked();
+            let (scale, quads) =
+                visual.update(|window, _| (window.scale_factor(), window.painted_quads()));
+            let backgrounds = quads
+                .iter()
+                .filter(|quad| {
+                    quad.background.as_solid() == Some(palette.colors.conversation_code.into())
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(backgrounds.len(), 1);
+            let background = backgrounds[0];
+            assert_eq!(background.bounds.size.height, px(17.5).scale(scale));
+            for corner in [
+                background.corner_radii.top_left,
+                background.corner_radii.top_right,
+                background.corner_radii.bottom_left,
+                background.corner_radii.bottom_right,
+            ] {
+                assert_eq!(corner, px(4.).scale(scale));
+            }
+            if selectable {
+                let layout = layout_for("中文 inline_code，继续🙂。");
+                let start = layout.position_for_index("中文 ".len()).unwrap();
+                let end = layout.position_for_index("中文 inline_code".len()).unwrap();
+                assert_eq!(layout.line_height(), px(23.));
+                assert!((background.bounds.left() - start.x.scale(scale)).0.abs() <= 0.5);
+                assert!((background.bounds.right() - end.x.scale(scale)).0.abs() <= 0.5);
+                assert!(
+                    (background.bounds.top() - (start.y + px(2.75)).scale(scale))
+                        .0
+                        .abs()
+                        <= 0.5
+                );
+                assert_eq!(layout.line_layouts()[0].font_size(), px(13.5));
+            }
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn issue296_inline_t03_tables_allocate_width_to_long_content(cx: &mut TestAppContext) {
+    let source = format!(
+        "| 文件 | 改动 |\n|---|---|\n| `a.rs` | {} |\n| `b.rs` | 短说明 |\n",
+        "中文说明与 `identifier` 混排。".repeat(8)
+    );
+    let StreamEntry::Assistant { model, .. } = assistant_entry(&source) else {
+        unreachable!()
+    };
+    let table = model
+        .committed_lines
+        .iter()
+        .find_map(|line| line.table.clone())
+        .unwrap();
+    for selectable in [true, false] {
+        let mut visual = inline_layout_view(cx, &source, selectable, vega_theme::Theme::light());
+        for width in [800., 520.] {
+            visual.simulate_resize(size(px(width), px(1000.)));
+            visual.run_until_parked();
+            let first = visual.debug_bounds("markdown-table-1-0-0-0").unwrap();
+            let second = visual.debug_bounds("markdown-table-1-0-0-1").unwrap();
+            assert!(second.size.width > first.size.width * 2.);
+            let viewport = visual.debug_bounds("markdown-table-1-0").unwrap();
+            let expected_widths = table.column_widths(f32::from(viewport.size.width));
+            let scale = visual.update(|window, _| window.scale_factor());
+            for (actual, expected) in [first, second].iter().zip(expected_widths) {
+                assert!(
+                    (f32::from(actual.size.width) - expected).abs() * scale <= 1.0,
+                    "actual={} expected={expected} selectable={selectable} width={width}",
+                    f32::from(actual.size.width)
+                );
+            }
+            for row in 1..=2 {
+                for (column, expected) in [first, second].into_iter().enumerate() {
+                    let actual = visual
+                        .debug_bounds(Box::leak(
+                            format!("markdown-table-1-0-{row}-{column}").into_boxed_str(),
+                        ))
+                        .unwrap();
+                    assert_eq!(actual.left(), expected.left());
+                    assert_eq!(actual.right(), expected.right());
+                    assert!(actual.size.width >= px(120.));
+                }
+            }
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn issue296_inline_t02_wrapped_code_preserves_ranges_and_copy(cx: &mut TestAppContext) {
+    let identifier = "long_identifier_".repeat(14);
+    let source = format!("前文🙂，`{identifier}`，`尾部` **强调** [链接](https://example.com)");
+    let visible = format!("前文🙂，{identifier}，尾部 强调 链接");
+    let first = "前文🙂，".len().."前文🙂，".len() + identifier.len();
+    let second = first.end + "，".len()..first.end + "，尾部".len();
+    let (stream, mut visual) = open_selection_harness(cx, assistant_entry(&source));
+    visual.simulate_resize(size(px(380.), px(1000.)));
+    visual.run_until_parked();
+    let layout = layout_for(&visible);
+    let lines = layout.line_layouts();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].wrap_boundaries.len() >= 3);
+    let (scale, quads, color) = visual.update(|window, cx| {
+        (
+            window.scale_factor(),
+            window.painted_quads(),
+            theme(cx).colors.conversation_code,
+        )
+    });
+    let backgrounds = quads
+        .iter()
+        .filter(|quad| quad.background.as_solid() == Some(color.into()))
+        .collect::<Vec<_>>();
+    let mut code_lines = std::collections::BTreeSet::new();
+    for (index, ch) in visible.char_indices() {
+        let end = index + ch.len_utf8();
+        let point = layout.position_for_index(end).unwrap();
+        let advance = lines[0].unwrapped_layout.x_for_index(end)
+            - lines[0].unwrapped_layout.x_for_index(index);
+        let midpoint = Point::new(point.x - advance / 2., point.y + px(11.5)).scale(scale);
+        let is_code = first.contains(&index) || second.contains(&index);
+        assert_eq!(
+            backgrounds
+                .iter()
+                .any(|quad| quad.bounds.contains(&midpoint)),
+            is_code,
+            "glyph {index}: {ch}"
+        );
+        if is_code {
+            code_lines.insert((if first.contains(&index) { 0 } else { 1 }, point.y));
+        }
+    }
+    assert_eq!(backgrounds.len(), code_lines.len());
+    for background in backgrounds {
+        assert_eq!(background.bounds.size.height, px(17.5).scale(scale));
+        assert_eq!(background.corner_radii.top_left, px(4.).scale(scale));
+    }
+    for range in [first.clone(), first.start + 5..first.end - 3] {
+        drag(
+            &mut visual,
+            text_point(&layout, range.start, false),
+            text_point(&layout, range.end, true),
+        );
+        visual.run_until_parked();
+        assert_eq!(
+            visual.update(gpui_kit::base::TextSelection::selected_text),
+            visible[range.clone()]
+        );
+        visual.simulate_keystrokes("cmd-c");
+        assert_eq!(
+            visual.read_from_clipboard().unwrap().text().unwrap(),
+            visible[range]
+        );
+    }
+    stream.read_with(&visual, |stream, _| {
+        assert!(matches!(&stream.entries[0], StreamEntry::Assistant { copy, .. } if copy.original_text() == source));
+    });
+}
+
+#[gpui_kit::test]
+fn issue296_inline_t02_center_and_right_table_backgrounds_follow_wrapped_glyphs(
+    cx: &mut TestAppContext,
+) {
+    let left = "center_identifier_".repeat(6);
+    let right = "right_identifier_".repeat(6);
+    let source = format!("| C | R |\n|:---:|---:|\n| `{left}`。 | `{right}`！ |\n");
+    let (_, mut visual) = open_selection_harness(cx, assistant_entry(&source));
+    visual.simulate_resize(size(px(500.), px(1000.)));
+    visual.run_until_parked();
+    let (scale, quads, color) = visual.update(|window, cx| {
+        (
+            window.scale_factor(),
+            window.painted_quads(),
+            theme(cx).colors.conversation_code,
+        )
+    });
+    let backgrounds = quads
+        .iter()
+        .filter(|quad| quad.background.as_solid() == Some(color.into()))
+        .collect::<Vec<_>>();
+    let mut expected = 0;
+    for (text, punctuation, selector, centered) in [
+        (&left, "。", "markdown-table-1-0-1-0", true),
+        (&right, "！", "markdown-table-1-0-1-1", false),
+    ] {
+        let visible = format!("{text}{punctuation}");
+        let layout = layout_for(&visible);
+        let cell = visual.debug_bounds(selector).unwrap();
+        let line = &layout.line_layouts()[0];
+        assert!(line.wrap_boundaries.len() > 1);
+        let mut start = 0;
+        for (row, end) in line
+            .wrap_boundaries
+            .iter()
+            .map(|boundary| line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index)
+            .chain(std::iter::once(visible.len()))
+            .enumerate()
+        {
+            let width =
+                line.unwrapped_layout.x_for_index(end) - line.unwrapped_layout.x_for_index(start);
+            let remaining = cell.size.width - px(24.) - width;
+            let x = cell.left() + px(12.) + if centered { remaining / 2. } else { remaining };
+            if start < text.len() {
+                let right = x + line.unwrapped_layout.x_for_index(end.min(text.len()))
+                    - line.unwrapped_layout.x_for_index(start);
+                let y = cell.top() + px(8. + 23. * row as f32 + 2.75);
+                assert!(backgrounds.iter().any(
+                    |quad| (quad.bounds.left() - x.scale(scale)).0.abs() <= 0.5
+                        && (quad.bounds.right() - right.scale(scale)).0.abs() <= 0.5
+                        && (quad.bounds.top() - y.scale(scale)).0.abs() <= 0.5
+                ));
+                expected += 1;
+            }
+            start = end;
+        }
+    }
+    assert_eq!(backgrounds.len(), expected);
+}
+
+#[gpui_kit::test]
+fn issue296_inline_t04_table_estimates_update_and_measured_anchor_survives_resize(
+    cx: &mut TestAppContext,
+) {
+    let mut markdown = MarkdownStream::new();
+    let counters = StreamCounters::default();
+    let mut model = StreamModel::default();
+    markdown.append("| 文件 | 描述 |\n|---|---|\n| a.rs | 短 |\n");
+    model.sync(&markdown.snapshot(), &counters);
+    let initial = model
+        .pending_lines
+        .iter()
+        .find_map(|line| line.table.clone())
+        .unwrap();
+    assert_eq!(initial.column_widths(736.), vec![368., 368.]);
+    markdown.append(&format!("| b.rs | {} |\n", "中".repeat(100)));
+    model.sync(&markdown.snapshot(), &counters);
+    let updated = model
+        .pending_lines
+        .iter()
+        .find_map(|line| line.table.clone())
+        .unwrap();
+    assert!(!Arc::ptr_eq(&initial, &updated));
+    assert!(updated.column_widths(736.)[1] > 590.);
+    assert!(!model.sync(&markdown.snapshot(), &counters));
+    assert!(Arc::ptr_eq(
+        &updated,
+        model
+            .pending_lines
+            .iter()
+            .find_map(|line| line.table.as_ref())
+            .unwrap()
+    ));
+    markdown.finish();
+    model.sync(&markdown.snapshot(), &counters);
+    assert_eq!(
+        message_anchors::estimate_markdown_height(&model, 736.),
+        5. * 23. + 3. * 17.
+    );
+    assert_eq!(
+        message_anchors::estimate_markdown_height(&model, 320.),
+        12. * 23. + 3. * 17.
+    );
+    let source = format!(
+        "| 文件 | 描述 |\n|---|---|\n| a.rs | 短 |\n| b.rs | {} |\n",
+        "中".repeat(100)
+    );
+    let (stream, mut visual) = open_selection_harness(cx, assistant_entry(&source));
+    stream.update(&mut visual, |stream, cx| {
+        stream
+            .entries
+            .push(assistant_entry(&"Tail paragraph.\n\n".repeat(40)));
+        stream.list_append(1);
+        stream.list.scroll_to(gpui_kit::ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+    });
+    let mut previous_height = px(0.);
+    for width in [800., 384.] {
+        visual.simulate_resize(size(px(width), px(300.)));
+        visual.run_until_parked();
+        let table_bounds = visual.debug_bounds("markdown-table-1-0").unwrap();
+        assert!(table_bounds.size.height > previous_height);
+        previous_height = table_bounds.size.height;
+        let anchor = stream.update(&mut visual, |stream, cx| {
+            stream.capture_visible_entry_heights();
+            let actual = stream.list.bounds_for_item(0).unwrap().size.height;
+            assert_eq!(
+                stream.message_anchor_geometry(cx, 300.).entry_heights[0],
+                f32::from(actual)
+            );
+            let anchor = ThreadScrollAnchor {
+                identity: Some(stream.entry_identities[0].key.clone()),
+                message_id: stream.entry_identities[0].message_id.clone(),
+                offset_in_item_px: 35.,
+                following_tail: false,
+            };
+            assert!(stream.restore_scroll_anchor(&anchor));
+            cx.notify();
+            anchor
+        });
+        visual.run_until_parked();
+        stream.read_with(&visual, |stream, _| {
+            let restored = stream.scroll_anchor_snapshot();
+            assert_eq!(restored.identity, anchor.identity);
+            assert_eq!(restored.offset_in_item_px, 35.);
+            assert!(!restored.following_tail);
+            assert!(matches!(&stream.entries[0], StreamEntry::Assistant { copy, .. } if copy.original_text() == source));
+        });
+    }
+    let nested_source = format!(
+        "- Intro\n\n{}",
+        source
+            .lines()
+            .map(|line| format!("  {line}\n"))
+            .collect::<String>()
+    );
+    let nested_entry = assistant_entry(&nested_source);
+    let StreamEntry::Assistant {
+        model: nested_model,
+        ..
+    } = &nested_entry
+    else {
+        unreachable!()
+    };
+    let nested_table = nested_model
+        .committed_lines
+        .iter()
+        .find_map(|line| line.table.clone())
+        .unwrap();
+    assert_eq!(
+        message_anchors::estimate_markdown_height(nested_model, 320.),
+        message_anchors::estimate_markdown_height(&model, 296.) + 23. + 8.
+    );
+    let (nested_stream, mut nested_visual) = open_selection_harness(cx, nested_entry);
+    nested_visual.simulate_resize(size(px(384.), px(1000.)));
+    nested_visual.run_until_parked();
+    let viewport = nested_visual.debug_bounds("markdown-table-1-0").unwrap();
+    assert_eq!(viewport.size.width, px(296.));
+    let widths = nested_table.column_widths(296.);
+    let scale = nested_visual.update(|window, _| window.scale_factor());
+    for (selector, expected) in ["markdown-table-1-0-1-0", "markdown-table-1-0-1-1"]
+        .into_iter()
+        .zip(widths)
+    {
+        assert!(
+            (f32::from(nested_visual.debug_bounds(selector).unwrap().size.width) - expected).abs()
+                * scale
+                <= 1.0
+        );
+    }
+    let first_source = format!("- {}", source.replace('\n', "\n  "));
+    let first_entry = assistant_entry(&first_source);
+    let StreamEntry::Assistant {
+        model: first_model, ..
+    } = &first_entry
+    else {
+        unreachable!()
+    };
+    assert!(
+        first_model
+            .committed_lines
+            .iter()
+            .any(|line| line.kind == LineKind::ListItem && line.table.is_some())
+    );
+    assert_eq!(
+        message_anchors::estimate_markdown_height(first_model, 320.),
+        message_anchors::estimate_markdown_height(&model, 320.)
+    );
+    nested_stream.update(&mut nested_visual, |stream, cx| {
+        stream.entries[0] = first_entry;
+        stream.invalidate_item(Some(0));
+        cx.notify();
+    });
+    nested_visual.run_until_parked();
+    assert_eq!(
+        nested_visual
+            .debug_bounds("markdown-table-1-0")
+            .unwrap()
+            .size
+            .width,
+        px(320.)
+    );
+}
+
+struct NarrowInlineView;
+
+impl Render for NarrowInlineView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let style = TextStyle {
+            font_family: MONOFONT.into(),
+            background_color: Some(vega_theme::Theme::light().colors.conversation_code.into()),
+            ..TextStyle::default()
+        };
+        div()
+            .size_full()
+            .text_size(px(10.))
+            .line_height(px(23.))
+            .child(inline_code::styled_text("x".into(), vec![style.to_run(1)]))
+    }
+}
+
+#[gpui_kit::test]
+fn issue296_inline_t01_narrow_fragment_clamps_rounding(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (_, visual) = cx.add_window_view(|_, _| NarrowInlineView);
+    visual.run_until_parked();
+    let (scale, quads) = visual.update(|window, _| (window.scale_factor(), window.painted_quads()));
+    let color = vega_theme::Theme::light().colors.conversation_code;
+    let backgrounds = quads
+        .iter()
+        .filter(|quad| quad.background.as_solid() == Some(color.into()))
+        .collect::<Vec<_>>();
+    assert_eq!(backgrounds.len(), 1);
+    assert_eq!(backgrounds[0].bounds.size.width, px(6.).scale(scale));
+    assert_eq!(backgrounds[0].bounds.size.height, px(14.).scale(scale));
+    let corners = backgrounds[0].corner_radii;
+    for radius in [
+        corners.top_left,
+        corners.top_right,
+        corners.bottom_left,
+        corners.bottom_right,
+    ] {
+        assert_eq!(radius, px(3.).scale(scale));
+    }
+}

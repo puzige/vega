@@ -32,7 +32,7 @@ fn table_preserves_cells_and_alignment_without_text_padding() {
             },
         ]],
     });
-    let lines = flatten_nodes(7, &[node], BlockOrigin::Committed);
+    let lines = flatten_nodes(7, std::slice::from_ref(&node), BlockOrigin::Committed);
     // I59 replaces the old padded-string table contract with real cells.
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].kind, LineKind::Table);
@@ -52,6 +52,23 @@ fn table_preserves_cells_and_alignment_without_text_padding() {
         })
         .collect();
     assert_eq!(text, [vec!["列A", "B"], vec!["1", "数据"]]);
+    let RenderNode::Table(mut physical) = node else {
+        unreachable!()
+    };
+    physical.rows = vec![vec![
+        TableCell {
+            spans: vec![Inline::Text("A\n\nB".into())],
+        },
+        TableCell { spans: Vec::new() },
+    ]];
+    let model = StreamModel {
+        pending_lines: flatten_nodes(7, &[RenderNode::Table(physical)], BlockOrigin::Pending),
+        ..StreamModel::default()
+    };
+    assert_eq!(
+        message_anchors::estimate_markdown_height(&model, 240.),
+        4. * 23. + 2. * 17.
+    );
 }
 
 const ISSUE59_TABLE: &str = "| # | 问题 | 选项 | 建议 |\n\
@@ -209,7 +226,8 @@ fn issue119_streamed_and_replayed_inline_content_reaches_markdown_renderer(
 
 #[gpui_kit::test]
 fn issue59_real_table_cells_align_wrap_and_stay_inside_local_scroll(cx: &mut TestAppContext) {
-    let model = issue59_model(vec![ISSUE59_TABLE.into()]);
+    let cjk = "中文长内容需要在单元格内部换行，不能破坏表头和表体的列边界。";
+    let model = issue59_model(vec![ISSUE59_TABLE.replace(cjk, &cjk.repeat(3))]);
     // The first block is assigned id 1 by the production streaming parser.
     assert_eq!(model.committed_lines[0].block_id, 1);
     let (_view, visual) = cx.add_window_view(|_, _| TableView(model));

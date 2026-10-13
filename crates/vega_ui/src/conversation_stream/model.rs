@@ -214,6 +214,35 @@ pub(crate) struct StreamTable {
     pub ordinal: usize,
     pub alignments: Vec<TableAlignment>,
     pub rows: Vec<Vec<Vec<StreamSpan>>>,
+    column_width_units: Vec<usize>,
+}
+
+impl StreamTable {
+    pub(super) fn column_weights(&self) -> Vec<f32> {
+        self.column_width_units
+            .iter()
+            .map(|units| {
+                let demand = (*units as f32 * Typography::CONVERSATION * 0.56
+                    + 2.0 * Layout::MARKDOWN_TABLE_PADDING_X)
+                    .clamp(
+                        Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH,
+                        Layout::MARKDOWN_TABLE_COLUMN_DEMAND_CAP,
+                    );
+                (demand - Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH).max(Typography::CONVERSATION)
+            })
+            .collect()
+    }
+
+    pub(super) fn column_widths(&self, available: f32) -> Vec<f32> {
+        let weights = self.column_weights();
+        let total: f32 = weights.iter().sum();
+        let extra =
+            (available - weights.len() as f32 * Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH).max(0.0);
+        weights
+            .into_iter()
+            .map(|weight| Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH + extra * weight / total)
+            .collect()
+    }
 }
 
 impl StreamLine {
@@ -466,7 +495,7 @@ pub(crate) fn flatten_table(block_id: u64, table: &TableBlock, out: &mut Vec<Str
         return;
     }
     let columns = table.header.len();
-    let rows = std::iter::once(&table.header)
+    let rows: Vec<Vec<Vec<StreamSpan>>> = std::iter::once(&table.header)
         .chain(table.rows.iter())
         .map(|row| {
             (0..columns)
@@ -478,6 +507,20 @@ pub(crate) fn flatten_table(block_id: u64, table: &TableBlock, out: &mut Vec<Str
                     coalesce(spans)
                 })
                 .collect()
+        })
+        .collect();
+    let column_width_units = (0..columns)
+        .map(|column| {
+            rows.iter()
+                .map(|row| {
+                    let text: String = row[column].iter().map(|span| span.text.as_str()).collect();
+                    text.split('\n')
+                        .map(display_width)
+                        .max()
+                        .unwrap_or_default()
+                })
+                .max()
+                .unwrap_or_default()
         })
         .collect();
     let mut line = StreamLine::new(block_id, LineKind::Table);
@@ -493,6 +536,7 @@ pub(crate) fn flatten_table(block_id: u64, table: &TableBlock, out: &mut Vec<Str
             })
             .collect(),
         rows,
+        column_width_units,
     }));
     out.push(line);
 }
