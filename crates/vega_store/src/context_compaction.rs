@@ -1250,7 +1250,7 @@ fn load_source_inner(
 
 fn load_messages(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<MessageRow>> {
     let (count, content_bytes): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(length(CAST(content AS BLOB))), 0) \
+        "SELECT COUNT(*), COALESCE(SUM(length(CAST(COALESCE((SELECT p.model_content FROM pending_messages p WHERE p.thread_id = messages.thread_id AND p.id = messages.id AND messages.role = 'user' AND p.state = 'delivered'), content) AS BLOB))), 0) \
          FROM messages WHERE thread_id = ?1",
         [thread_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1259,7 +1259,7 @@ fn load_messages(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<Mes
         return Err(source_too_large());
     }
     let mut statement = conn.prepare(
-        "SELECT id, thread_id, seq, role, kind, content, status, created_at, \
+        "SELECT id, thread_id, seq, role, kind, COALESCE((SELECT p.model_content FROM pending_messages p WHERE p.thread_id = messages.thread_id AND p.id = messages.id AND messages.role = 'user' AND p.state = 'delivered'), content), status, created_at, \
                 plan_status, plan_review_note, plan_reviewed_at \
          FROM messages WHERE thread_id = ?1 ORDER BY seq, id",
     )?;

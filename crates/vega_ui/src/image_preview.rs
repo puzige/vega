@@ -178,6 +178,10 @@ impl ImagePreview {
     }
 
     pub fn thumbnail(view: &Entity<Self>, cx: &App) -> AnyElement {
+        Self::thumbnail_sized(view, Layout::ATTACHMENT_THUMBNAIL, cx)
+    }
+
+    pub(crate) fn thumbnail_sized(view: &Entity<Self>, size: f32, cx: &App) -> AnyElement {
         let colors = theme(cx).colors;
         let state = view.read(cx);
         let click = view.clone();
@@ -189,8 +193,7 @@ impl ImagePreview {
             .tab_stop(true)
             .aria_label(format!("预览 {}", state.name))
             .relative()
-            .w(px(Layout::ATTACHMENT_THUMBNAIL))
-            .h(px(Layout::ATTACHMENT_THUMBNAIL))
+            .size(px(size))
             .cursor_pointer()
             .rounded_md()
             .hover(move |s| s.border_1().border_color(colors.text_secondary))

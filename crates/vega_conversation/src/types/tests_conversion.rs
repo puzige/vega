@@ -593,3 +593,38 @@ fn issue75_observation_live_audit_rejects_raw_and_unknown_proposals() {
         .is_none()
     );
 }
+
+#[test]
+fn issue299_delivered_user_input_does_not_change_usage_or_start_a_meter_round() {
+    let mut meter = ConversationMeter::default();
+    meter.restore(super::RestoredUsage {
+        tokens: 42,
+        cost: Some(Microcents(12)),
+    });
+    let delivered = ConversationEvent::PendingMessageDelivered {
+        pending_id: "queued-user".into(),
+        message_id: "queued-user".into(),
+        seq: 2,
+        content: "new user input".into(),
+        images: Vec::new(),
+    };
+    let baseline = meter.snapshot();
+    assert!(!meter.apply(&delivered));
+    assert!(!meter.apply(&ConversationEvent::TextDelta {
+        message_id: "not-started".into(),
+        delta: "ignored".into(),
+    }));
+    assert_eq!(meter.snapshot(), baseline);
+    meter.apply(&ConversationEvent::MessageStarted {
+        message_id: "assistant".into(),
+        seq: 3,
+    });
+    meter.apply(&ConversationEvent::TextDelta {
+        message_id: "assistant".into(),
+        delta: "streaming output".into(),
+    });
+    let streaming = meter.snapshot();
+    assert!(streaming.provisional);
+    assert!(!meter.apply(&delivered));
+    assert_eq!(meter.snapshot(), streaming);
+}

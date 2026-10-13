@@ -700,11 +700,32 @@ async fn issue296_v2_notes_are_cached_markdown_collapsed_and_keyboard_reachable(
             .update(cx, |_, window, cx| {
                 let navigation = view.read(cx).section_focuses[4].clone();
                 window.focus(&navigation, cx);
-                for _ in 0..12 {
-                    window.focus_next(cx);
-                }
             })
             .expect("notes toggle keyboard path");
+        let mut reached_notes = false;
+        for _ in 0..24 {
+            cx.simulate_keystrokes(window.into(), "tab");
+            cx.run_until_parked();
+            let toggle = VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("updater-notes-toggle")
+                .expect("notes toggle retained during keyboard navigation");
+            let focused_notes = window
+                .update(cx, |_, window, cx| {
+                    window.painted_quads().iter().any(|quad| {
+                        quad.bounds == toggle.scale(window.scale_factor())
+                            && quad.border_color == theme(cx).colors.accent.into()
+                    })
+                })
+                .expect("painted notes toggle focus");
+            if focused_notes {
+                reached_notes = true;
+                break;
+            }
+        }
+        assert!(
+            reached_notes,
+            "notes toggle reachable with visible keyboard focus"
+        );
         cx.simulate_keystrokes(window.into(), "space");
         cx.run_until_parked();
         assert!(!view.read_with(cx, |view, _| view.updater_notes_open));

@@ -561,6 +561,7 @@ impl VegaWindow {
     /// pricing/uniqueness projection; it never changes the current thread's
     /// durable model or emits an R1 acknowledgement.
     pub(crate) fn on_settings_saved(&mut self, cx: &mut Context<Self>) {
+        self.load_running_message_default(cx);
         if self.reasoning_save_pending.is_some() {
             // The reasoning worker owns the independent authority until its
             // exact ack. Do not invalidate it or start a catalog worker whose

@@ -272,6 +272,7 @@ impl ConversationStream {
     /// bottom-row mode dropdown, and R62 R7 brought the permission picker
     /// back as a real popover, so it belongs in this list.
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
+        self.pending_ui.menu = None;
         self.context_control.open = false;
         self.context_usage_open = false;
         self.context_usage_dismissed = true;
@@ -444,6 +445,35 @@ impl ConversationStream {
         ];
         controls.push(self.context_usage_focus.clone());
         controls.push(self.model_focus.clone());
+        if self.actions.running && self.can_submit_message(cx) {
+            controls.push(self.pending_ui.send_focus.clone());
+        }
+        if self.pending_queue.paused
+            && !self.pending_queue.messages.is_empty()
+            && !self.actions.running
+            && self.pending_controls_enabled()
+        {
+            controls.push(self.pending_ui.resume_focus.clone());
+        }
+        if self.pending_ui.recovered_edit.is_some() && self.pending_draft_is_empty(cx) {
+            controls.push(self.pending_ui.recover_focus.clone());
+        }
+        if self.pending_controls_enabled() {
+            for message in &self.pending_queue.messages {
+                if let Some(item) = self.pending_ui.items.get(&message.id) {
+                    controls.extend(
+                        item.images
+                            .iter()
+                            .take(1)
+                            .map(|image| image.view.read(cx).thumbnail_focus()),
+                    );
+                    if self.actions.running && message.behavior == PendingMessageBehavior::Queue {
+                        controls.push(item.focus[0].clone());
+                    }
+                    controls.extend(item.focus[1..].iter().cloned());
+                }
+            }
+        }
         if self.actions.running || self.composer_submit_pending {
             controls.push(self.action_focus[1].clone());
         }

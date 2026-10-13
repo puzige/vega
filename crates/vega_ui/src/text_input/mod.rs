@@ -76,6 +76,7 @@ pub struct TextInput {
     image_paste: bool,
     focus_handle: FocusHandle,
     content: SharedString,
+    content_revision: u64,
     placeholder: SharedString,
     masked: bool,
     /// Multi-line mode (S3-T18 Composer): Enter inserts `\n`, paste keeps

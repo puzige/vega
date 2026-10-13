@@ -126,6 +126,19 @@ impl fmt::Debug for RuntimeExactRule {
     }
 }
 
+#[derive(Clone)]
+pub struct RuntimeSteeringInput {
+    pub original_content: String,
+    pub user_message_seq: i64,
+    pub id: String,
+    pub assistant_message_id: String,
+    pub message: ChatMessage,
+}
+
+pub trait RuntimeSteeringSource: Send + Sync {
+    fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>>;
+}
+
 /// Headless tool and permission facts for one task.
 #[derive(Clone)]
 pub struct RuntimeToolConfig {
@@ -144,6 +157,7 @@ pub struct RuntimeToolConfig {
     /// Maximum number of agentic turns (provider round-trips) in this run.
     /// `0` means unlimited. Set from `[agent] turn_limit` in config.toml.
     pub turn_limit: usize,
+    steering_source: Option<Arc<dyn RuntimeSteeringSource>>,
     mcp_candidates: Vec<McpCandidate>,
     skills: Option<RuntimeSkillConfig>,
     computer_use: Option<crate::computer_use::ComputerUseRun>,
@@ -171,6 +185,7 @@ impl RuntimeToolConfig {
             checkpoint_root,
             exact_rules,
             turn_limit: 0,
+            steering_source: None,
             mcp_candidates: Vec::new(),
             skills: None,
             computer_use: None,
@@ -189,6 +204,11 @@ impl RuntimeToolConfig {
             self.run_mode == RuntimeRunMode::Execute
                 && self.permission_mode != RuntimePermissionMode::ReadOnly
         });
+        self
+    }
+
+    pub fn with_steering_source(mut self, source: Arc<dyn RuntimeSteeringSource>) -> Self {
+        self.steering_source = Some(source);
         self
     }
 
@@ -696,6 +716,7 @@ pub enum RuntimeEvent {
         attempt: u32,
         max_retries: u32,
     },
+    SteeringAccepted(RuntimeSteeringInput),
     BuiltinSkillActivated(crate::computer_use::guide::BuiltinSkillActivation),
     ScreenshotDelivered {
         call_id: String,
@@ -921,6 +942,7 @@ impl fmt::Debug for RuntimeEvent {
                 .debug_tuple("ContextAccountingUpdated")
                 .field(decision)
                 .finish(),
+            Self::SteeringAccepted(_) => formatter.write_str("SteeringAccepted"),
             Self::Finished(reason) => formatter.debug_tuple("Finished").field(reason).finish(),
             Self::Interrupted => formatter.write_str("Interrupted"),
             Self::Error(_) => formatter.write_str("Error([redacted])"),

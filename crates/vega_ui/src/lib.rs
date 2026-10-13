@@ -77,6 +77,41 @@ pub fn init(cx: &mut App) {
             Some("Composer"),
         ),
         KeyBinding::new(
+            "enter",
+            conversation_stream::ActivatePendingMessageControl,
+            Some("PendingMessageControl"),
+        ),
+        KeyBinding::new(
+            "space",
+            conversation_stream::ActivatePendingMessageControl,
+            Some("PendingMessageControl"),
+        ),
+        KeyBinding::new(
+            "escape",
+            conversation_stream::ClosePendingMessageMenu,
+            Some("PendingMessageMenu"),
+        ),
+        KeyBinding::new(
+            "tab",
+            conversation_stream::NextPendingMessageMenuItem,
+            Some("PendingMessageMenu"),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            conversation_stream::NextPendingMessageMenuItem,
+            Some("PendingMessageMenu"),
+        ),
+        KeyBinding::new(
+            "up",
+            conversation_stream::NextPendingMessageMenuItem,
+            Some("PendingMessageMenu"),
+        ),
+        KeyBinding::new(
+            "down",
+            conversation_stream::NextPendingMessageMenuItem,
+            Some("PendingMessageMenu"),
+        ),
+        KeyBinding::new(
             "shift-tab",
             conversation_stream::PreviousComposerControl,
             Some("Composer"),

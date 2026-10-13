@@ -44,6 +44,7 @@ mod issue296_single_activity;
 mod issue296_sticky_disclosure;
 mod issue296_stream_block_spacing;
 mod issue296_stream_polish;
+mod issue299_pending_messages;
 mod issue350_network_retry;
 mod issue64_context_usage;
 mod issue70_tool_activity;

@@ -379,6 +379,9 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
         root.agent_controller.active.insert(
             failure_thread.id.clone(),
             ActiveAgentRun {
+                queue_generation: "fixture-run".into(),
+                queue_delivery: None,
+                queue_ready: false,
                 generation: 7,
                 thread_id: failure_thread.id.clone(),
                 stream: failure_stream.clone(),

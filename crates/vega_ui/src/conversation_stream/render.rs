@@ -150,16 +150,7 @@ impl ConversationStream {
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
-        let can_send = !self.actions.running
-            && !self.context_operation_busy()
-            && self.actions.pending_mode.is_none()
-            && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
-            && !self.attachment_import_pending
-            && !self.composer_submit_pending
-            && !self.approved_not_started
-            && !self.trusted_action_busy
-            && !self.skill_mutation_pending
-            && self.model_selection_pending.is_none();
+        let can_send = self.can_submit_message(cx);
         div()
             .debug_selector(|| "composer-wrapper".into())
             .px(px(Layout::CONVERSATION_PADDING))
@@ -193,6 +184,14 @@ impl ConversationStream {
                             .mb_2()
                             .child(render_rows::status_notice(error, colors.danger, &colors))
                     }),
+            )
+            .when(self.thread.backend == TaskBackend::Native, |column| {
+                column.child(self.render_pending_status(cx))
+            })
+            .when(
+                self.thread.backend == TaskBackend::Native
+                    && !self.pending_queue.messages.is_empty(),
+                |column| column.child(self.render_pending_queue(cx)),
             )
             .child(
                 div()
@@ -290,6 +289,13 @@ impl ConversationStream {
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_model_controls(window, cx))
                             })
+                            .when(
+                                self.actions.running
+                                    && self.thread.backend == TaskBackend::Native
+                                    && (!self.input.read(cx).text().is_empty()
+                                        || !self.attachments.is_empty()),
+                                |row| row.child(self.render_running_send(can_send, cx)),
+                            )
                             .when(
                                 self.actions.running || self.composer_submit_pending,
                                 |row| row.child(self.render_composer_stop(cx)),
@@ -1479,6 +1485,7 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_pending_focus(window, cx);
         if !self.context_usage_focus.contains_focused(window, cx) {
             self.context_usage_dismissed = false;
         }
@@ -1751,6 +1758,7 @@ impl Render for ConversationStream {
             })
             .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))
+            .children(self.render_pending_menu(cx))
             .into_any_element();
         counters.record_render(render_t0);
         element

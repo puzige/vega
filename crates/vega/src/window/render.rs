@@ -222,6 +222,10 @@ impl Render for VegaWindow {
                                     }
                                 }
                                 self.stream_view = Some((thread.id.clone(), view.clone()));
+                                if !draft_route {
+                                    self.load_pending_queue(view.clone(), thread.id.clone(), cx);
+                                }
+                                self.load_running_message_default(cx);
                             }
                             // A8-01: the same draft id intentionally keeps
                             // the same stream (and Composer input/focus), but
@@ -341,6 +345,13 @@ impl Render for VegaWindow {
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.submit_composer(stream.clone(), request, cx);
                             })
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &PendingQueueRequested, cx| {
+                                    this.pending_queue_requested(stream.clone(), request, cx)
+                                },
+                            )
                             .detach();
                             cx.subscribe(
                                 &view,

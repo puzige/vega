@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::atomic::*;
 use std::sync::*;
@@ -156,6 +156,9 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
 }
 
 pub(crate) struct ActiveAgentRun {
+    pub(crate) queue_generation: String,
+    pub(crate) queue_delivery: Option<PendingMessage>,
+    pub(crate) queue_ready: bool,
     pub(crate) generation: u64,
     pub(crate) thread_id: String,
     pub(crate) stream: Entity<ConversationStream>,
@@ -362,6 +365,13 @@ pub(crate) enum PricingWorkerKind {
 
 #[derive(Default)]
 pub(crate) struct AppAgentController {
+    pub(crate) queue_streams: HashMap<String, Entity<ConversationStream>>,
+    pub(crate) queue_dispatches: HashMap<String, String>,
+    pub(crate) queue_continue: HashMap<String, bool>,
+    pub(crate) queue_delivered: HashSet<String>,
+    pub(crate) queue_operations: HashMap<String, u64>,
+    next_queue_operation: u64,
+    pub(crate) running_message_default_generation: u64,
     pub(crate) file_read_states: HashMap<String, vega_tools::ReadState>,
     pub(crate) next_generation: u64,
     pub(crate) active: HashMap<String, ActiveAgentRun>,
@@ -370,6 +380,24 @@ pub(crate) struct AppAgentController {
 }
 
 impl AppAgentController {
+    pub(crate) fn begin_queue_operation(&mut self, thread_id: &str) -> Option<u64> {
+        if self.queue_operations.contains_key(thread_id) {
+            return None;
+        }
+        self.next_queue_operation = self.next_queue_operation.checked_add(1)?;
+        let operation = self.next_queue_operation;
+        self.queue_operations.insert(thread_id.into(), operation);
+        Some(operation)
+    }
+
+    pub(crate) fn finish_queue_operation(&mut self, thread_id: &str, operation: u64) -> bool {
+        if self.queue_operations.get(thread_id) != Some(&operation) {
+            return false;
+        }
+        self.queue_operations.remove(thread_id);
+        true
+    }
+
     pub(crate) fn active_stream_for_thread(
         &self,
         thread_id: &str,
@@ -377,6 +405,7 @@ impl AppAgentController {
         self.active
             .get(thread_id)
             .map(|active| active.stream.clone())
+            .or_else(|| self.queue_streams.get(thread_id).cloned())
     }
 
     pub(crate) fn request_active_cancel(&self, thread_id: &str) {
@@ -419,7 +448,7 @@ impl AppAgentController {
         pending_user_content: Option<String>,
         pending_approved_instruction: Option<String>,
     ) -> Option<(u64, tokio_util::sync::CancellationToken)> {
-        if self.active.contains_key(&thread_id) {
+        if self.active.contains_key(&thread_id) || self.queue_operations.contains_key(&thread_id) {
             return None;
         }
         self.next_generation = self.next_generation.checked_add(1)?;
@@ -428,6 +457,9 @@ impl AppAgentController {
         self.active.insert(
             thread_id.clone(),
             ActiveAgentRun {
+                queue_generation: ulid::Ulid::generate().to_string(),
+                queue_delivery: None,
+                queue_ready: false,
                 generation,
                 thread_id,
                 stream,
@@ -482,6 +514,19 @@ impl AppAgentController {
         stream: &Entity<ConversationStream>,
         event: &ConversationEvent,
     ) {
+        if self.matches(generation, thread_id, stream)
+            && let Some(active) = self.active.get_mut(thread_id)
+        {
+            match event {
+                ConversationEvent::MessageStarted { .. }
+                | ConversationEvent::Interrupted { .. }
+                | ConversationEvent::Error { .. } => active.queue_ready = false,
+                ConversationEvent::MessageFinished { stop_reason, .. } => {
+                    active.queue_ready = *stop_reason == ConversationStopReason::End
+                }
+                _ => {}
+            }
+        }
         let (message_id, failure) = match event {
             ConversationEvent::MessageFinished { message_id, .. }
             | ConversationEvent::Interrupted { message_id, .. } => (Some(message_id), None),
@@ -704,6 +749,7 @@ pub(crate) fn run_agent_worker(
         title_notifications,
         None,
         vega_tools::ReadState::default(),
+        None,
         provider_override,
         worker_start_probe,
     );
@@ -731,6 +777,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     title_notifications: Option<mpsc::Sender<()>>,
     mcp_service: Option<vega_conversation::McpServerSettingsService>,
     file_read_state: vega_tools::ReadState,
+    queue_context: Option<PendingRunContext>,
     #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
     #[cfg(test)] worker_start_probe: Arc<AgentWorkerStartProbe>,
 ) {
@@ -750,7 +797,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             Some(executor) => tools.with_bash_test_executor(executor.clone()),
             None => tools,
         };
-        let store = Store::open(database_path).map_err(|_| ())?;
+        let store = Store::open(&database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
         // Resolve provider identity once, before constructing the provider and
         // before entering the runtime. The resulting FrozenReasoning is moved
@@ -929,155 +976,177 @@ pub(crate) fn run_agent_worker_with_mcp(
                     ))
                 })
         };
-        let result =
-            match run {
-                PendingAgentRun::UserMessage(submission) => {
-                    let content = submission.content;
-                    // #65 R2: freeze only composer text, before expanding referenced files.
-                    let title_source = content.clone();
-                    // A2-12: resolve `@path` tokens against the project root and
-                    // inject the referenced file contents ahead of the user text
-                    // (bounded: 8 files, 16 KiB each, 48 KiB total). A failure is
-                    // fail-closed: no provider is constructed and no request is
-                    // started with the unresolved user text.
-                    let refs = match vega_tools::reference::resolve_bounded_references(
-                        &project_path,
-                        &content,
-                        vega_tools::reference::REFERENCE_MAX_FILES,
-                        vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
-                        vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
-                    ) {
-                        Ok(refs) => refs,
-                        Err(error) => {
-                            reference_failure = Some(map_reference_failure(&error));
-                            return Err(());
-                        }
-                    };
-                    let content = if refs.is_empty() {
+        let steering_source = queue_context.as_ref().map(|context| {
+            Arc::new(
+                vega_conversation::pending_messages::QueueSteeringSource::new(
+                    database_path.clone(),
+                    project_path.clone(),
+                    thread.id.clone(),
+                    context.generation.clone(),
+                    owner_credential_reader.clone(),
+                    cancel.clone(),
+                ),
+            ) as Arc<dyn vega_runtime::RuntimeSteeringSource>
+        });
+        let pending_message_id = queue_context.and_then(|context| context.message_id);
+        let result = match run {
+            PendingAgentRun::UserMessage(submission) => {
+                let content = submission.content;
+                // #65 R2: freeze only composer text, before expanding referenced files.
+                let title_source = content.clone();
+                // A2-12: resolve `@path` tokens against the project root and
+                // inject the referenced file contents ahead of the user text
+                // (bounded: 8 files, 16 KiB each, 48 KiB total). A failure is
+                // fail-closed: no provider is constructed and no request is
+                // started with the unresolved user text.
+                let refs = match vega_tools::reference::resolve_bounded_references(
+                    &project_path,
+                    &content,
+                    vega_tools::reference::REFERENCE_MAX_FILES,
+                    vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
+                    vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
+                ) {
+                    Ok(refs) => refs,
+                    Err(error) => {
+                        reference_failure = Some(map_reference_failure(&error));
+                        return Err(());
+                    }
+                };
+                let content = if refs.is_empty() {
+                    content
+                } else {
+                    format!(
+                        "{}\n\n{}",
+                        vega_tools::reference::render_reference_block(&refs),
                         content
-                    } else {
-                        format!(
-                            "{}\n\n{}",
-                            vega_tools::reference::render_reference_block(&refs),
-                            content
-                        )
-                    };
-                    let provider = guard_provider(make_provider()?);
-                    let automatic_title = title_notifications.map(|notifications| {
-                        vega_conversation::types::AutomaticTitleRequest::new(
-                            &title_source,
-                            provider.clone(),
-                            tokio_util::sync::CancellationToken::new(),
-                            notifications,
-                        )
-                    });
-                    // local credential storage access is synchronous. A route cancellation while
-                    // it was waiting must not start a late durable/network run.
-                    if cancel.is_cancelled() {
-                        return Err(());
-                    }
-                    let mcp_servers = match &mcp_service {
-                    Some(service) => runtime.block_on(async {
-                        tokio::select! {
-                            biased;
-                            _ = cancel.cancelled() => Err(()),
-                            readiness = service.ready_for_run() => readiness.map_err(|_| ()),
-                        }
-                    }).map(|readiness| {
-                        if !readiness.unavailable.is_empty() {
-                            let _ = sender.send(AgentUpdate::McpUnavailable(readiness.unavailable));
-                        }
-                        readiness.ready_servers
-                    })?,
-                    None => Vec::new(),
-                };
-                    let mcp_servers = mcp_servers
-                        .into_iter()
-                        .map(|server| {
-                            let server = server.with_known_credentials(
-                                provider_known_credential.clone().into_iter().collect(),
-                            );
-                            match (
-                                provider_known_credential.as_ref(),
-                                &provider_credential_reader,
-                            ) {
-                                (Some(_), Some(reader)) => {
-                                    server.with_known_credentials_reader(reader.clone())
-                                }
-                                _ => server,
-                            }
-                        })
-                        .collect();
-                    if cancel.is_cancelled() {
-                        return Err(());
-                    }
-                    runtime.block_on(
-                        vega_conversation::agent::run_thread_task_with_images_reasoning_and_mcp(
-                            &store,
-                            provider.as_ref(),
-                            &tools,
-                            &thread.id,
-                            &content,
-                            SYSTEM_PROMPT,
-                            cancel,
-                            &permission_queue,
-                            event_sink,
-                            vega_conversation::agent::PersistenceActorConfig::default()
-                                .with_automatic_title(automatic_title)
-                                .with_turn_limit(turn_limit)
-                                .with_computer_use(computer_use.clone())
-                                .with_owner_credential_reader(owner_credential_reader.clone()),
-                            None,
-                            pricing_catalog,
-                            Some(reasoning),
-                            submission.images,
-                            mcp_servers,
-                        ),
                     )
-                }
-                PendingAgentRun::ApprovedPlan(instruction_message_id) => {
-                    let provider = guard_provider(make_provider()?);
-                    // local credential storage access is synchronous. A route cancellation while
-                    // it was waiting must not start a late durable/network run.
-                    if cancel.is_cancelled() {
-                        return Err(());
-                    }
-                    let mcp_servers = match &mcp_service {
-                    Some(service) => runtime.block_on(async {
-                        tokio::select! {
-                            biased;
-                            _ = cancel.cancelled() => Err(()),
-                            readiness = service.ready_for_run() => readiness.map_err(|_| ()),
-                        }
-                    }).map(|readiness| {
-                        if !readiness.unavailable.is_empty() {
-                            let _ = sender.send(AgentUpdate::McpUnavailable(readiness.unavailable));
-                        }
-                        readiness.ready_servers
-                    })?,
-                    None => Vec::new(),
                 };
-                    let mcp_servers = mcp_servers
-                        .into_iter()
-                        .map(|server| {
-                            let server = server.with_known_credentials(
-                                provider_known_credential.clone().into_iter().collect(),
-                            );
-                            match (
-                                provider_known_credential.as_ref(),
-                                &provider_credential_reader,
-                            ) {
-                                (Some(_), Some(reader)) => {
-                                    server.with_known_credentials_reader(reader.clone())
-                                }
-                                _ => server,
+                let provider = guard_provider(make_provider()?);
+                let automatic_title = title_notifications.map(|notifications| {
+                    vega_conversation::types::AutomaticTitleRequest::new(
+                        &title_source,
+                        provider.clone(),
+                        tokio_util::sync::CancellationToken::new(),
+                        notifications,
+                    )
+                });
+                // local credential storage access is synchronous. A route cancellation while
+                // it was waiting must not start a late durable/network run.
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                let mcp_servers = match &mcp_service {
+                    Some(service) => runtime
+                        .block_on(async {
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => Err(()),
+                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
                             }
                         })
-                        .collect();
-                    if cancel.is_cancelled() {
-                        return Err(());
-                    }
-                    runtime.block_on(
+                        .map(|readiness| {
+                            if !readiness.unavailable.is_empty() {
+                                let _ =
+                                    sender.send(AgentUpdate::McpUnavailable(readiness.unavailable));
+                            }
+                            readiness.ready_servers
+                        })?,
+                    None => Vec::new(),
+                };
+                let mcp_servers = mcp_servers
+                    .into_iter()
+                    .map(|server| {
+                        let server = server.with_known_credentials(
+                            provider_known_credential.clone().into_iter().collect(),
+                        );
+                        match (
+                            provider_known_credential.as_ref(),
+                            &provider_credential_reader,
+                        ) {
+                            (Some(_), Some(reader)) => {
+                                server.with_known_credentials_reader(reader.clone())
+                            }
+                            _ => server,
+                        }
+                    })
+                    .collect();
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                runtime.block_on(
+                    vega_conversation::agent::run_thread_task_with_images_reasoning_and_mcp(
+                        &store,
+                        provider.as_ref(),
+                        &tools,
+                        &thread.id,
+                        &content,
+                        SYSTEM_PROMPT,
+                        cancel,
+                        &permission_queue,
+                        event_sink,
+                        vega_conversation::agent::PersistenceActorConfig::default()
+                            .with_automatic_title(automatic_title)
+                            .with_turn_limit(turn_limit)
+                            .with_computer_use(computer_use.clone())
+                            .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_pending_input(
+                                pending_message_id.clone(),
+                                steering_source.clone(),
+                            ),
+                        None,
+                        pricing_catalog,
+                        Some(reasoning),
+                        submission.images,
+                        mcp_servers,
+                    ),
+                )
+            }
+            PendingAgentRun::ApprovedPlan(instruction_message_id) => {
+                let provider = guard_provider(make_provider()?);
+                // local credential storage access is synchronous. A route cancellation while
+                // it was waiting must not start a late durable/network run.
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                let mcp_servers = match &mcp_service {
+                    Some(service) => runtime
+                        .block_on(async {
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => Err(()),
+                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                            }
+                        })
+                        .map(|readiness| {
+                            if !readiness.unavailable.is_empty() {
+                                let _ =
+                                    sender.send(AgentUpdate::McpUnavailable(readiness.unavailable));
+                            }
+                            readiness.ready_servers
+                        })?,
+                    None => Vec::new(),
+                };
+                let mcp_servers = mcp_servers
+                    .into_iter()
+                    .map(|server| {
+                        let server = server.with_known_credentials(
+                            provider_known_credential.clone().into_iter().collect(),
+                        );
+                        match (
+                            provider_known_credential.as_ref(),
+                            &provider_credential_reader,
+                        ) {
+                            (Some(_), Some(reader)) => {
+                                server.with_known_credentials_reader(reader.clone())
+                            }
+                            _ => server,
+                        }
+                    })
+                    .collect();
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                runtime.block_on(
                     vega_conversation::agent::run_approved_plan_task_with_pricing_reasoning_and_mcp(
                         &store,
                         provider.as_ref(),
@@ -1093,12 +1162,16 @@ pub(crate) fn run_agent_worker_with_mcp(
                         mcp_servers,
                         vega_conversation::agent::PersistenceActorConfig::default()
                             .with_turn_limit(turn_limit)
-                                .with_computer_use(computer_use.clone())
-                            .with_owner_credential_reader(owner_credential_reader.clone()),
+                            .with_computer_use(computer_use.clone())
+                            .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_pending_input(
+                                pending_message_id.clone(),
+                                steering_source.clone(),
+                            ),
                     ),
                 )
-                }
-            };
+            }
+        };
         if let Some(run) = &computer_use {
             runtime.block_on(run.shutdown());
         }

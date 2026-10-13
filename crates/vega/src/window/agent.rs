@@ -676,6 +676,7 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         if !self.owns_stream_request(&stream, thread_id, cx)
+            && !self.owns_pending_dispatch(&stream, thread_id, cx)
             && !self
                 .agent_controller
                 .pending_review
@@ -684,7 +685,14 @@ impl VegaWindow {
         {
             return;
         }
-        if crate::updater::installing() || self.agent_controller.active.contains_key(thread_id) {
+        if crate::updater::installing()
+            || self.agent_controller.active.contains_key(thread_id)
+            || self
+                .agent_controller
+                .queue_operations
+                .contains_key(thread_id)
+            || stream.read(cx).pending_queue().busy
+        {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         }
@@ -774,6 +782,27 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         };
+        let pending_id = self.agent_controller.queue_dispatches.remove(thread_id);
+        let queue_delivery = pending_id.as_ref().and_then(|id| {
+            stream
+                .read(cx)
+                .pending_queue()
+                .messages
+                .iter()
+                .find(|message| &message.id == id)
+                .cloned()
+        });
+        let queue_context = self
+            .agent_controller
+            .active
+            .get_mut(thread_id)
+            .map(|active| {
+                active.queue_delivery = queue_delivery;
+                PendingRunContext {
+                    generation: active.queue_generation.clone(),
+                    message_id: pending_id,
+                }
+            });
         // R8: an accepted run is mirrored into the app-wide thread liveness
         // projection immediately, so the sidebar row lights up while the
         // worker is still preparing its first durable message.
@@ -833,6 +862,7 @@ impl VegaWindow {
                     Some(title_sender),
                     mcp_settings,
                     file_read_state,
+                    queue_context,
                     #[cfg(test)]
                     provider_override,
                     #[cfg(test)]
@@ -916,6 +946,10 @@ impl VegaWindow {
                         }
                         let cancelled = stream
                             .update(cx, |stream, cx| stream.finish_composer_run(cancelled, cx));
+                        let mut queue_ready = success
+                            && !cancelled
+                            && finished_run.queue_ready
+                            && !stream.read(cx).permission_queue().has_pending();
                         let ActiveAgentRun {
                             pending_user_content: pending_user,
                             pending_approved_instruction,
@@ -940,6 +974,10 @@ impl VegaWindow {
                         let mut recovery_projected = approved_not_started;
                         let mut display_stream = stream.clone();
                         if let Ok(refresh) = refresh {
+                            queue_ready &= !refresh
+                                .plans
+                                .iter()
+                                .any(|plan| plan.status == PlanStatus::Pending);
                             display_stream = if let Some(current_stream) =
                                 this.current_cached_stream_for_thread(&thread_id, cx)
                             {
@@ -1009,9 +1047,12 @@ impl VegaWindow {
                                 stream.apply_mcp_unavailable(&mcp_unavailable, cx)
                             });
                         }
+                        let queue_ready =
+                            queue_ready && !recovery_projected && pending_review.is_none();
                         if let Some(pending) = pending_review {
                             this.finish_owned_plan_review(pending.stream, &pending.request, cx);
                         }
+                        this.finish_pending_run(&thread_id, &display_stream, queue_ready, cx);
                         this.resume_deferred_message_location(&thread_id, cx);
                         false
                     })
@@ -1037,6 +1078,12 @@ impl VegaWindow {
         if (request.content.is_empty() && request.images.is_empty())
             || !self.owns_stream_request(&stream, &request.thread_id, cx)
         {
+            return;
+        }
+        if stream.read(cx).task_backend() == TaskBackend::Native
+            && request.pending_behavior.is_some()
+        {
+            self.enqueue_composer(stream, request, cx);
             return;
         }
         if self

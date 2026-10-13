@@ -1181,6 +1181,15 @@ impl ConversationStream {
             } => {
                 self.retry_response(&message_id, text_start_bytes, attempt, max_retries, cx);
             }
+            ConversationEvent::PendingMessageDelivered {
+                pending_id,
+                message_id,
+                seq,
+                content,
+                images,
+            } => {
+                self.append_pending_user(&pending_id, &message_id, seq, &content, images, cx);
+            }
             ConversationEvent::MessageStarted { message_id, seq } => {
                 if self.active_agent_message.is_some() {
                     self.apply_controller_error(cx);

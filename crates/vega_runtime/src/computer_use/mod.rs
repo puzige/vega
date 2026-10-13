@@ -899,7 +899,7 @@ impl ComputerUseRun {
     }
 }
 
-pub(crate) fn redact_ephemeral_messages(messages: &mut [crate::ChatMessage]) {
+pub fn redact_ephemeral_messages(messages: &mut [crate::ChatMessage]) {
     let screenshots = messages
         .iter()
         .flat_map(|message| &message.tool_calls)

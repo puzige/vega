@@ -496,6 +496,12 @@ impl Layout {
     pub const COMPOSER_RADIUS: f32 = 20.0;
     /// Minimum height of the primary composer shell.
     pub const COMPOSER_MIN_HEIGHT: f32 = 100.0;
+    pub const PENDING_MESSAGE_INSET: f32 = 16.0;
+    pub const PENDING_MESSAGE_ROW_HEIGHT: f32 = 36.0;
+    pub const PENDING_MESSAGE_OVERLAP: f32 = 8.0;
+    pub const PENDING_MESSAGE_RADIUS: f32 = 16.0;
+    pub const PENDING_MESSAGE_THUMBNAIL: f32 = 24.0;
+    pub const PENDING_MESSAGE_VISIBLE_ROWS: usize = 3;
     /// Issue 63: bounded attachment preview, shared by draft and user turn.
     pub const ATTACHMENT_THUMBNAIL: f32 = 72.0;
     /// R59 R5: maximum height of a composer model-picker floating layer.

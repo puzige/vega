@@ -33,6 +33,7 @@ where
         run_id,
         root_attempt_id,
     } = context;
+    let mut message_id = message_id.to_owned();
     let mut pending_text = Vec::new();
     let mut pending_text_bytes = 0usize;
     let mut batch_deadline = None;
@@ -108,7 +109,7 @@ where
         } else if let RuntimeEvent::TextDelta(delta) = &event {
             streamed_content.push_str(delta);
             pending_text_bytes = pending_text_bytes.saturating_add(delta.len());
-            if let Some(converted) = from_runtime_event(message_id, &event) {
+            if let Some(converted) = from_runtime_event(&message_id, &event) {
                 pending_text.push(converted);
             }
             if pending_text_bytes >= TEXT_BATCH_MAX_BYTES {
@@ -160,6 +161,37 @@ where
                         .await
                     {
                         Ok(()) => {
+                            if let RuntimeEvent::SteeringAccepted(input) = &event {
+                                let transitioned = [
+                                    ConversationEvent::MessageFinished {
+                                        message_id: message_id.clone(),
+                                        stop_reason: crate::types::ConversationStopReason::End,
+                                        execution_duration_ms: None,
+                                    },
+                                    ConversationEvent::PendingMessageDelivered {
+                                        pending_id: input.id.clone(),
+                                        message_id: input.id.clone(),
+                                        seq: input.user_message_seq as u64,
+                                        content: input.original_content.clone(),
+                                        images: input.message.images.clone(),
+                                    },
+                                    ConversationEvent::MessageStarted {
+                                        message_id: input.assistant_message_id.clone(),
+                                        seq: input.user_message_seq.saturating_add(1) as u64,
+                                    },
+                                    ConversationEvent::RunStarted {
+                                        message_id: input.assistant_message_id.clone(),
+                                        started_at: run_started_at,
+                                    },
+                                ];
+                                message_id = input.assistant_message_id.clone();
+                                streamed_content.clear();
+                                response_start = None;
+                                for converted in transitioned {
+                                    event_sink(&converted)?;
+                                    events.push(converted);
+                                }
+                            }
                             record_tool_lifecycle(
                                 diagnostics,
                                 thread_id,
@@ -183,7 +215,7 @@ where
                                 event_sink(&output)?;
                                 events.push(output);
                             }
-                            if let Some(converted) = from_runtime_event(message_id, &event) {
+                            if let Some(converted) = from_runtime_event(&message_id, &event) {
                                 let converted = with_terminal_execution_duration(
                                     converted,
                                     execution_duration_ms,
@@ -387,6 +419,69 @@ pub(crate) fn persist_runtime_event(
             .map_err(|error| persistence_actor_error(error.to_string()))?;
         }
         RuntimeEvent::AssistantResponseStarted { .. } => {}
+        RuntimeEvent::SteeringAccepted(input) => {
+            let tx = store.immediate_transaction()?;
+            if !vega_store::pending_messages::mark_delivered(&tx, thread_id, &input.id)? {
+                return Err(persistence_actor_error("pending message already delivered"));
+            }
+            ensure_message_updated(
+                messages::finish_streaming_in_transaction(
+                    &tx,
+                    message_id,
+                    streamed_content,
+                    "done",
+                    execution_duration_ms,
+                )?,
+                message_id,
+            )?;
+            vega_store::pending_messages::preserve_model_input(
+                &tx,
+                thread_id,
+                &input.id,
+                &input.message.content,
+            )?;
+            let seq = messages::next_seq(&tx, thread_id)?;
+            if seq != input.user_message_seq {
+                return Err(persistence_actor_error("pending message order changed"));
+            }
+            for (id, role, content, status, seq) in [
+                (
+                    &input.id,
+                    "user",
+                    input.original_content.as_str(),
+                    "done",
+                    seq,
+                ),
+                (
+                    &input.assistant_message_id,
+                    "assistant",
+                    "",
+                    "streaming",
+                    seq.saturating_add(1),
+                ),
+            ] {
+                messages::insert(
+                    &tx,
+                    &messages::MessageRow {
+                        id: id.clone(),
+                        thread_id: thread_id.into(),
+                        seq,
+                        role: role.into(),
+                        kind: "text".into(),
+                        content: content.into(),
+                        status: status.into(),
+                        created_at: now_ms(),
+                        plan_status: None,
+                        plan_review_note: None,
+                        plan_reviewed_at: None,
+                    },
+                )?;
+            }
+            for (ordinal, image) in input.message.images.iter().enumerate() {
+                vega_store::image_attachments::insert(&tx, &input.id, ordinal, image.bytes())?;
+            }
+            tx.commit()?;
+        }
         RuntimeEvent::BuiltinSkillActivated(activation) => {
             vega_store::computer_use_delivery::activate_builtin(
                 store.conn(),

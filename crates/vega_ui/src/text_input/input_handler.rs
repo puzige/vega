@@ -60,6 +60,7 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| self.selected_range.clone());
         let range = self.clamp_range(range);
 
+        self.content_revision = self.content_revision.wrapping_add(1);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -84,6 +85,7 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| self.selected_range.clone());
         let range = self.clamp_range(range);
 
+        self.content_revision = self.content_revision.wrapping_add(1);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();

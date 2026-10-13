@@ -555,6 +555,8 @@ pub async fn run_thread_task_with_images_reasoning_and_mcp<F>(
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
+    let mut actor_config = actor_config;
+    actor_config.steering_cancel = Some(cancel.clone());
     crate::attachments::validate_images(&images)
         .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
     if persisted_user_message_id.is_some() && !images.is_empty() {
@@ -564,6 +566,7 @@ where
     }
     let user_message_id = persisted_user_message_id
         .clone()
+        .or_else(|| actor_config.pending_message_id.clone())
         .unwrap_or_else(|| ulid::Ulid::generate().to_string());
     let assistant_message_id = ulid::Ulid::generate().to_string();
     let database_path = match store.database_path() {
@@ -836,6 +839,14 @@ where
     if let Some(watch) = skill_watch {
         let _ = watch.await;
     }
+    let final_assistant_message_id = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            ConversationEvent::MessageStarted { message_id, .. } => Some(message_id.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| prepared.assistant_message_id.clone());
     let outcome = match (processor_result, runtime_result) {
         (Ok(()), Ok(outcome)) => {
             let (state, failure_code) = if outcome.interrupted {
@@ -878,7 +889,7 @@ where
                 let error = Arc::new(error);
                 forward_pipeline_error(
                     &mut event_sink,
-                    Some(prepared.assistant_message_id.clone()),
+                    Some(final_assistant_message_id.clone()),
                     error.clone(),
                 );
                 return Err(ConversationError::Runtime(error));
@@ -918,7 +929,7 @@ where
             diagnostics.close().await;
             forward_pipeline_error_with_duration(
                 &mut event_sink,
-                Some(prepared.assistant_message_id.clone()),
+                Some(final_assistant_message_id.clone()),
                 error.clone(),
                 Some(execution_duration_ms),
             );
@@ -958,7 +969,7 @@ where
     }
     Ok(ConversationRun {
         user_message_id: prepared.user_message_id,
-        assistant_message_id: prepared.assistant_message_id,
+        assistant_message_id: final_assistant_message_id,
         events,
         content: outcome.final_text,
         interrupted: outcome.interrupted,

@@ -1,0 +1,292 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use futures::{FutureExt, future::BoxFuture};
+use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+use vega_runtime::{ChatMessage, ChatRole, RuntimeSteeringInput, RuntimeSteeringSource, VegaError};
+use vega_store::{Store, pending_messages as rows};
+
+use crate::types::{ConversationError, ImageAttachment, PendingMessage, PendingMessageBehavior};
+
+#[derive(Serialize, Deserialize)]
+struct StoredSubmission {
+    content: String,
+    images: Vec<Vec<u8>>,
+}
+
+fn failure() -> ConversationError {
+    ConversationError::Store("待处理消息保存失败，请重试".into())
+}
+
+pub fn enqueue(
+    store: &Store,
+    message: &PendingMessage,
+) -> Result<Vec<PendingMessage>, ConversationError> {
+    enqueue_cached(store, message, &[])
+}
+
+pub fn enqueue_cached(
+    store: &Store,
+    message: &PendingMessage,
+    cached: &[PendingMessage],
+) -> Result<Vec<PendingMessage>, ConversationError> {
+    crate::attachments::validate_images(&message.images).map_err(|_| failure())?;
+    let payload = serde_json::to_string(&StoredSubmission {
+        content: message.content.clone(),
+        images: message
+            .images
+            .iter()
+            .map(|image| image.bytes().to_vec())
+            .collect(),
+    })
+    .map_err(|_| failure())?;
+    if message.content.is_empty() && message.images.is_empty() {
+        return Err(failure());
+    }
+    let tx = store.immediate_transaction().map_err(|_| failure())?;
+    if rows::count(&tx, &message.thread_id).map_err(|_| failure())? >= 64 {
+        return Err(ConversationError::Store(
+            "待处理消息已满，请先移除或处理队列".into(),
+        ));
+    }
+    rows::insert(
+        &tx,
+        &rows::PendingMessageRow {
+            id: message.id.clone(),
+            thread_id: message.thread_id.clone(),
+            ordinal: 0,
+            behavior: message.behavior.as_str().into(),
+            generation: message.generation.clone(),
+            payload,
+            created_at: now_ms(),
+        },
+    )
+    .map_err(|_| failure())?;
+    let mut accepted = cached.to_vec();
+    accepted.push(message.clone());
+    let projection = load_cached_conn(&tx, &message.thread_id, &accepted)?;
+    tx.commit().map_err(|_| failure())?;
+    Ok(projection)
+}
+
+pub fn load(store: &Store, thread_id: &str) -> Result<Vec<PendingMessage>, ConversationError> {
+    load_cached(store, thread_id, &[])
+}
+
+pub fn load_cached(
+    store: &Store,
+    thread_id: &str,
+    cached: &[PendingMessage],
+) -> Result<Vec<PendingMessage>, ConversationError> {
+    let tx = store
+        .conn()
+        .unchecked_transaction()
+        .map_err(|_| failure())?;
+    let projection = load_cached_conn(&tx, thread_id, cached)?;
+    tx.commit().map_err(|_| failure())?;
+    Ok(projection)
+}
+
+fn load_cached_conn(
+    conn: &vega_store::Connection,
+    thread_id: &str,
+    cached: &[PendingMessage],
+) -> Result<Vec<PendingMessage>, ConversationError> {
+    rows::list_metadata(conn, thread_id)
+        .map_err(|_| failure())?
+        .into_iter()
+        .map(|metadata| {
+            if let Some(previous) = cached
+                .iter()
+                .find(|message| message.id == metadata.id && message.thread_id == thread_id)
+            {
+                let mut message = previous.clone();
+                message.generation = metadata.generation;
+                message.behavior = match metadata.behavior.as_str() {
+                    "queue" => PendingMessageBehavior::Queue,
+                    "steer" => PendingMessageBehavior::Steer,
+                    _ => return Err(failure()),
+                };
+                return Ok(message);
+            }
+            let row = rows::find(conn, thread_id, &metadata.id)
+                .map_err(|_| failure())?
+                .ok_or_else(failure)?;
+            decode(row)
+        })
+        .collect()
+}
+
+pub fn remove(
+    store: &Store,
+    thread_id: &str,
+    id: &str,
+) -> Result<PendingMessage, ConversationError> {
+    let tx = store.immediate_transaction().map_err(|_| failure())?;
+    let row = rows::find(&tx, thread_id, id)
+        .map_err(|_| failure())?
+        .ok_or_else(failure)?;
+    let message = decode(row)?;
+    if !rows::remove(&tx, thread_id, id).map_err(|_| failure())? {
+        return Err(ConversationError::Store("消息正在交付，请稍后重试".into()));
+    }
+    tx.commit().map_err(|_| failure())?;
+    Ok(message)
+}
+
+pub fn promote(
+    store: &Store,
+    thread_id: &str,
+    id: &str,
+    generation: &str,
+) -> Result<(), ConversationError> {
+    if !rows::promote(store.conn(), thread_id, id, generation).map_err(|_| failure())? {
+        return Err(failure());
+    }
+    Ok(())
+}
+
+pub fn recover(store: &Store, thread_id: &str) -> Result<Vec<PendingMessage>, ConversationError> {
+    recover_cached(store, thread_id, &[])
+}
+
+pub fn recover_cached(
+    store: &Store,
+    thread_id: &str,
+    cached: &[PendingMessage],
+) -> Result<Vec<PendingMessage>, ConversationError> {
+    rows::release_claims(store.conn(), thread_id).map_err(|_| failure())?;
+    load_cached(store, thread_id, cached)
+}
+
+pub(crate) fn decode(row: rows::PendingMessageRow) -> Result<PendingMessage, ConversationError> {
+    let payload: StoredSubmission = serde_json::from_str(&row.payload).map_err(|_| failure())?;
+    let images = payload
+        .images
+        .into_iter()
+        .map(ImageAttachment::from_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| failure())?;
+    crate::attachments::validate_images(&images).map_err(|_| failure())?;
+    let behavior = match row.behavior.as_str() {
+        "queue" => PendingMessageBehavior::Queue,
+        "steer" => PendingMessageBehavior::Steer,
+        _ => return Err(failure()),
+    };
+    Ok(PendingMessage {
+        id: row.id,
+        thread_id: row.thread_id,
+        generation: row.generation,
+        behavior,
+        content: payload.content,
+        images,
+    })
+}
+
+pub struct QueueSteeringSource {
+    database: PathBuf,
+    workspace: PathBuf,
+    thread_id: String,
+    generation: String,
+    credentials: vega_runtime::CredentialReader,
+    cancel: CancellationToken,
+}
+
+impl QueueSteeringSource {
+    pub fn new(
+        database: PathBuf,
+        workspace: PathBuf,
+        thread_id: String,
+        generation: String,
+        credentials: vega_runtime::CredentialReader,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self {
+            database,
+            workspace,
+            thread_id,
+            generation,
+            credentials,
+            cancel,
+        }
+    }
+}
+
+impl RuntimeSteeringSource for QueueSteeringSource {
+    fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>> {
+        let database = self.database.clone();
+        let workspace = self.workspace.clone();
+        let thread_id = self.thread_id.clone();
+        let generation = self.generation.clone();
+        let credentials = Arc::clone(&self.credentials);
+        let cancel = self.cancel.clone();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let store = Store::open(database)?;
+                let tx = store.immediate_transaction()?;
+                let row = rows::next_steer(&tx, &thread_id, &generation)?;
+                let Some(row) = row else {
+                    return Ok(None);
+                };
+                let message = decode(row).map_err(|_| runtime_failure())?;
+                let refs = vega_tools::reference::resolve_bounded_references(
+                    &workspace,
+                    &message.content,
+                    vega_tools::reference::REFERENCE_MAX_FILES,
+                    vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
+                    vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
+                )
+                .map_err(|_| runtime_failure())?;
+                let original_content = message.content.clone();
+                let content = if refs.is_empty() {
+                    message.content
+                } else {
+                    format!(
+                        "{}\n\n{}",
+                        vega_tools::reference::render_reference_block(&refs),
+                        message.content
+                    )
+                };
+                let values = credentials().map_err(|_| VegaError::CredentialExposureBlocked)?;
+                if vega_runtime::contains_sensitive_credential(&content, &values) {
+                    return Err(VegaError::CredentialExposureBlocked);
+                }
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
+                if !rows::claim_steer(&tx, &thread_id, &message.id, &generation)? {
+                    return Ok(None);
+                }
+                let seq = vega_store::messages::next_seq(&tx, &thread_id)?;
+                tx.commit()?;
+                let mut chat = ChatMessage::new(ChatRole::User, content);
+                chat.images = message.images;
+                Ok(Some(RuntimeSteeringInput {
+                    original_content,
+                    id: message.id,
+                    assistant_message_id: ulid::Ulid::generate().to_string(),
+                    user_message_seq: seq,
+                    message: chat,
+                }))
+            })
+            .await
+            .map_err(|_| runtime_failure())?
+        }
+        .boxed()
+    }
+}
+
+fn runtime_failure() -> VegaError {
+    VegaError::Io(std::io::Error::other(
+        "待处理消息准备失败，请取回编辑后重试",
+    ))
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|value| i64::try_from(value.as_millis()).ok())
+        .unwrap_or(0)
+}

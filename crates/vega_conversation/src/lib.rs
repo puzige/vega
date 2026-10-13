@@ -54,3 +54,5 @@ pub use git_workspace::{
     FixtureGitCommand, GitCommandFixture, GitTestCommandExecutor, GitTestCommandGuard,
     fixture_git_command, register_git_test_executor,
 };
+
+pub mod pending_messages;

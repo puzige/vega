@@ -56,6 +56,8 @@
 //! thread constructs empty entries; restarting clears the conversation.
 
 mod attachments;
+mod pending_messages;
+pub use pending_messages::{PendingQueueAction, PendingQueueRequested, RunningMessageDefault};
 pub mod bench;
 mod computer_use;
 mod network_retry;
@@ -79,10 +81,11 @@ use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
-    MeterSnapshot, PermissionMode, Plan, ProviderPreflightFailure, ReasoningChoice,
-    ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunFailureKind, RunUsageEstimator,
-    SkillComposerMutation, SkillComposerProjection, SkillSelectionIntent, TaskBackend,
-    TaskCostSummary, Thread, ThreadMode,
+    MeterSnapshot, PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan,
+    ProviderPreflightFailure, ReasoningChoice, ReasoningProfileProjection, ReasoningSupport,
+    RestoredUsage, RunFailureKind, RunUsageEstimator, SkillComposerMutation,
+    SkillComposerProjection, SkillSelectionIntent, TaskBackend, TaskCostSummary, Thread,
+    ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -128,6 +131,9 @@ actions!(
         StopComposer,
         NextComposerControl,
         PreviousComposerControl,
+        ActivatePendingMessageControl,
+        ClosePendingMessageMenu,
+        NextPendingMessageMenuItem,
         CopySelectedText
     ]
 );
@@ -186,6 +192,7 @@ pub struct TaskBackendSelectionRequested {
 /// Composer submission routed to the application controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposerSubmitted {
+    pub pending_behavior: Option<PendingMessageBehavior>,
     pub images: Vec<ImageAttachment>,
     pub thread_id: String,
     pub content: String,
