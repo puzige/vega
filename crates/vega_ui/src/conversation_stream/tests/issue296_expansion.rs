@@ -418,7 +418,7 @@ async fn issue296_expansion_p06_empty_prose_keeps_first_stage_and_copy(cx: &mut 
 }
 
 #[gpui_kit::test]
-async fn issue296_expansion_p07_first_render_moves_notice_after_new_text(cx: &mut TestAppContext) {
+async fn issue296_expansion_p07_first_render_keeps_only_terminal_notice(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "expansion-first-render");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -469,12 +469,37 @@ async fn issue296_expansion_p07_first_render_moves_notice_after_new_text(cx: &mu
             &stream.entries[index],
             StreamEntry::Assistant { model, .. } if model.row_count() > 0
         ));
-        assert_eq!(
-            stream.run_notices.keys().copied().collect::<Vec<_>>(),
-            [index]
+        assert!(stream.run_notices.is_empty());
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("run-notice-expansion").is_none());
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::Error {
+                message_id: Some("expansion".into()),
+                error: Arc::new(std::io::Error::other("PRIVATE_RUNTIME_SENTINEL").into()),
+                execution_duration_ms: Some(100),
+            },
+            cx,
         );
     });
     visual.run_until_parked();
+    let notice = visual.debug_bounds("run-notice-expansion").unwrap();
+    stream.read_with(&visual, |stream, cx| {
+        assert_eq!(stream.run_notices.len(), 1);
+        let (index, terminal) = stream.run_notices.iter().next().unwrap();
+        assert_eq!(terminal.text(), RunFailureKind::Runtime.message());
+        assert_eq!(terminal.message_id, "expansion");
+        assert!(matches!(&stream.entries[*index], StreamEntry::Assistant { copy, failure: Some(RunFailureKind::Runtime), .. } if copy.original_text() == "New visible body."));
+        assert_eq!(stream.tool_cards["rejected"].read(cx).activity_state(), crate::tool_card::ToolActivityState::Rejected);
+    });
+    let body = visual.debug_bounds("assistant-body-2").unwrap();
+    assert!(notice.top() >= body.bottom());
+    assert!(
+        visual
+            .debug_bounds("conversation-controller-error")
+            .is_none()
+    );
 }
 
 #[gpui_kit::test]

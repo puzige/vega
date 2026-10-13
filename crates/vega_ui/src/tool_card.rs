@@ -554,6 +554,7 @@ impl ToolCard {
     /// The resting compact row copy, without any disclosed detail rows. #151
     /// opens the newest unit's detail by default, so elapsed-copy assertions
     /// read this instead of [`Self::visible_text`].
+    #[cfg(test)]
     pub(crate) fn compact_visible_text(&self) -> String {
         self.summary.clone()
     }

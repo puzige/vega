@@ -1,12 +1,10 @@
 use super::*;
-use crate::tool_card::ToolActivityState;
 use vega_conversation::types::TaskSummaryOutcome;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum RunNoticeKind {
     Failure(RunFailureKind),
     Interrupted,
-    Tool { text: String, failed: bool },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -20,15 +18,14 @@ impl RunNotice {
         match &self.kind {
             RunNoticeKind::Failure(failure) => failure.message(),
             RunNoticeKind::Interrupted => "已中断".into(),
-            RunNoticeKind::Tool { text, .. } => text.clone(),
         }
     }
 
     pub(crate) fn render(&self, colors: &ThemeColors) -> AnyElement {
         let message_id = self.message_id.clone();
         let color = match self.kind {
-            RunNoticeKind::Failure(_) | RunNoticeKind::Tool { failed: true, .. } => colors.danger,
-            _ => colors.warning,
+            RunNoticeKind::Failure(_) => colors.danger,
+            RunNoticeKind::Interrupted => colors.warning,
         };
         gpui_kit::div()
             .debug_selector(move || format!("run-notice-{message_id}"))
@@ -69,7 +66,6 @@ impl RunNotice {
 struct RunNoticeSource {
     failure: Option<RunFailureKind>,
     status: Option<RunActivityStatus>,
-    tool: Option<RunNoticeKind>,
     tail: Option<usize>,
     end: usize,
 }
@@ -133,38 +129,6 @@ impl ConversationStream {
                 }
                 _ => {}
             }
-            let children = match entry {
-                StreamEntry::RunActivitySegment { group, segment } => {
-                    group.read(cx).segment_children(*segment)
-                }
-                StreamEntry::Tool { card } => vec![RunActivityChild::Tool(card.clone())],
-                StreamEntry::ToolGroup { group } => {
-                    vec![RunActivityChild::ToolGroup(group.clone())]
-                }
-                _ => Vec::new(),
-            };
-            for child in children {
-                let cards = match child {
-                    RunActivityChild::Tool(card) => vec![card],
-                    RunActivityChild::ToolGroup(group) => group.read(cx).children(),
-                    _ => Vec::new(),
-                };
-                for card in cards {
-                    let card = card.read(cx);
-                    let state = card.activity_state();
-                    if matches!(
-                        state,
-                        ToolActivityState::Failed
-                            | ToolActivityState::Rejected
-                            | ToolActivityState::Cancelled
-                    ) {
-                        source.tool = Some(RunNoticeKind::Tool {
-                            text: card.compact_visible_text(),
-                            failed: state == ToolActivityState::Failed,
-                        });
-                    }
-                }
-            }
         }
         for (message_id, failure) in &self.run_failures {
             if let Some(source) = sources.get_mut(message_id) {
@@ -182,7 +146,7 @@ impl ConversationStream {
                             Some(RunNoticeKind::Failure(RunFailureKind::Persisted))
                         }
                         Some(RunActivityStatus::Interrupted) => Some(RunNoticeKind::Interrupted),
-                        _ => source.tool,
+                        _ => None,
                     }
                 }?;
                 Some((source.tail?, RunNotice { message_id, kind }))

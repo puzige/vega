@@ -164,65 +164,97 @@ async fn issue296_polish_p02_expanded_stage_arrow_survives_mouse_leave(cx: &mut 
 }
 
 #[gpui_kit::test]
-async fn issue296_polish_p03_latest_tool_issue_is_a_single_tail_notice(cx: &mut TestAppContext) {
+async fn issue296_polish_p03_tool_issues_stay_in_process_without_tail_notice(
+    cx: &mut TestAppContext,
+) {
     let (window, stream, _) = open_controller_stream(cx, "polish-notice");
-    stream.update(cx, |stream, cx| {
-        start(stream, "polish", cx);
-        tool(stream, "failed", ToolCallStatus::Failed, cx);
-        tool(stream, "rejected", ToolCallStatus::Rejected, cx);
-        tool(stream, "success", ToolCallStatus::Success, cx);
-        confirm_test_final(stream, "polish", cx);
-    });
+    stream.update(cx, |stream, cx| start(stream, "polish", cx));
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("run-activity-exception").is_none());
-    let notice = visual
-        .debug_bounds("run-notice-polish")
-        .expect("latest issue at run tail");
-    let final_body = visual.debug_bounds("assistant-body-2").unwrap();
-    assert!(notice.top() >= final_body.bottom());
-    click(&mut visual, "run-activity-toggle");
-    assert!(visual.debug_bounds("run-notice-polish").is_some());
-    stream.read_with(&visual, |stream, cx| {
-        assert_eq!(
-            stream.tool_cards["failed"].read(cx).activity_state(),
-            crate::tool_card::ToolActivityState::Failed
-        );
-        assert_eq!(
-            stream.tool_cards["rejected"].read(cx).activity_state(),
-            crate::tool_card::ToolActivityState::Rejected
-        );
-        assert_eq!(stream.run_notices.len(), 1);
-        assert_eq!(
-            stream.run_notices.values().next().unwrap().text(),
-            stream.tool_cards["rejected"]
-                .read(cx)
-                .compact_visible_text()
-        );
-        assert!(
-            !stream
-                .run_notices
-                .values()
-                .next()
-                .unwrap()
-                .text()
-                .contains("synthetic output")
-        );
-    });
+    for (id, status, state) in [
+        (
+            "failed",
+            ToolCallStatus::Failed,
+            crate::tool_card::ToolActivityState::Failed,
+        ),
+        (
+            "rejected",
+            ToolCallStatus::Rejected,
+            crate::tool_card::ToolActivityState::Rejected,
+        ),
+        (
+            "cancelled",
+            ToolCallStatus::Cancelled,
+            crate::tool_card::ToolActivityState::Cancelled,
+        ),
+    ] {
+        stream.update(&mut visual, |stream, cx| tool(stream, id, status, cx));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("run-notice-polish").is_none());
+        assert!(visual.debug_bounds("run-activity-exception").is_none());
+        stream.read_with(&visual, |stream, cx| {
+            assert!(stream.run_notices.is_empty());
+            assert_eq!(
+                stream.run_activity_groups["polish"].read(cx).status(),
+                RunActivityStatus::Running
+            );
+            assert_eq!(stream.tool_cards[id].read(cx).activity_state(), state);
+            assert!(
+                !stream.tool_cards[id]
+                    .read(cx)
+                    .compact_visible_text()
+                    .contains("synthetic output")
+            );
+        });
+    }
     stream.update(&mut visual, |stream, cx| {
-        tool(stream, "cancelled", ToolCallStatus::Cancelled, cx);
-        tool(stream, "later-success", ToolCallStatus::Success, cx);
+        thinking(stream, "polish", cx);
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "polish".into(),
+                delta: "Continuing after tool results.".into(),
+            },
+            cx,
+        );
+        tool(stream, "success", ToolCallStatus::Success, cx);
+        confirm_test_final(stream, "polish", cx);
+        stream.apply_event(
+            ConversationEvent::MessageFinished {
+                message_id: "polish".into(),
+                stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: Some(100),
+            },
+            cx,
+        );
     });
     visual.run_until_parked();
-    stream.read_with(&visual, |stream, cx| {
-        assert_eq!(stream.run_notices.len(), 1);
+    assert!(visual.debug_bounds("run-notice-polish").is_none());
+    assert!(visual.debug_bounds("run-activity-content").is_none());
+    click(&mut visual, "run-activity-toggle");
+    assert!(visual.debug_bounds("run-activity-content").is_some());
+    assert!(visual.debug_bounds("run-notice-polish").is_none());
+    stream.update(&mut visual, |stream, cx| {
+        assert!(stream.run_notices.is_empty());
         assert_eq!(
-            stream.run_notices.values().next().unwrap().text(),
-            stream.tool_cards["cancelled"]
-                .read(cx)
-                .compact_visible_text()
+            stream.run_activity_groups["polish"].read(cx).status(),
+            RunActivityStatus::Completed
         );
+        for (id, state) in [
+            ("failed", crate::tool_card::ToolActivityState::Failed),
+            ("rejected", crate::tool_card::ToolActivityState::Rejected),
+            ("cancelled", crate::tool_card::ToolActivityState::Cancelled),
+            ("success", crate::tool_card::ToolActivityState::Success),
+        ] {
+            let card = &stream.tool_cards[id];
+            assert_eq!(card.read(cx).activity_state(), state);
+            card.update(cx, |card, cx| card.set_expanded(true, cx));
+            assert!(card.read(cx).visible_text().contains("synthetic output"));
+        }
     });
+    visual.run_until_parked();
+    click(&mut visual, "run-activity-toggle");
+    assert!(visual.debug_bounds("run-activity-content").is_none());
+    assert!(visual.debug_bounds("run-notice-polish").is_none());
 }
 
 #[gpui_kit::test]
@@ -366,6 +398,87 @@ fn summary_for(id: &str, outcome: TaskSummaryOutcome) -> TaskCostSummary {
         duration_ms: None,
         tool_count: 0,
         cache_hit_percent: None,
+    }
+}
+
+#[gpui_kit::test]
+async fn issue296_terminal_notices_history_requires_run_terminal_evidence(cx: &mut TestAppContext) {
+    use vega_conversation::history::AssistantStatus;
+    for (name, status, expected) in [
+        ("tool-only", None, None),
+        ("done", Some(AssistantStatus::Done), None),
+        (
+            "failed",
+            Some(AssistantStatus::Failed),
+            Some(RunFailureKind::Persisted.message()),
+        ),
+        (
+            "interrupted",
+            Some(AssistantStatus::Interrupted),
+            Some("已中断".to_string()),
+        ),
+    ] {
+        let (window, stream, _) = open_controller_stream(cx, name);
+        stream.update(cx, |stream, cx| {
+            let mut entries = [
+                ToolCallStatus::Failed,
+                ToolCallStatus::Rejected,
+                ToolCallStatus::Cancelled,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, status)| HistoryEntry::Tool {
+                seq: index as i64 + 1,
+                message_id: "history-notice".into(),
+                call_id: format!("tool-{index}"),
+                status,
+                approval: Some(Approval::Once),
+                input: Some(ToolCardInputProjection::ReadOnly {
+                    tool: ReadOnlyToolKind::Read,
+                    permission_path: None,
+                }),
+                result: Some(ToolCardResultProjection::ReadOnly {
+                    status,
+                    output: format!("Synthetic tool output {index}."),
+                    reused: false,
+                }),
+            })
+            .collect::<Vec<_>>();
+            if let Some(status) = status {
+                entries.push(history_body(
+                    "history-notice",
+                    4,
+                    "Original recovered body.",
+                    status,
+                ));
+            }
+            stream.apply_history_page(hydration_page(entries, None), cx);
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert_eq!(
+            visual.debug_bounds("run-notice-history-notice").is_some(),
+            expected.is_some()
+        );
+        stream.update(&mut visual, |stream, cx| {
+            let notices = stream.run_notice_projection(cx);
+            assert_eq!(notices.len(), usize::from(expected.is_some()));
+            if let Some(expected) = &expected {
+                let notice = notices.values().next().unwrap();
+                assert_eq!(notice.message_id, "history-notice");
+                assert_eq!(&notice.text(), expected);
+            }
+            for (index, state) in [crate::tool_card::ToolActivityState::Failed, crate::tool_card::ToolActivityState::Rejected, crate::tool_card::ToolActivityState::Cancelled].into_iter().enumerate() {
+                let card = &stream.tool_cards[&format!("tool-{index}")];
+                assert_eq!(card.read(cx).activity_state(), state);
+                card.update(cx, |card, cx| card.set_expanded(true, cx));
+                assert!(card.read(cx).visible_text().contains(&format!("Synthetic tool output {index}.")));
+            }
+            if status.is_some() {
+                assert!(stream.entries.iter().any(|entry| matches!(entry, StreamEntry::Assistant { copy, .. } if copy.original_text() == "Original recovered body.")));
+            }
+        });
+        visual.run_until_parked();
     }
 }
 
@@ -635,9 +748,7 @@ async fn issue296_polish_p02_both_helpers_disabled_even_expanded_hovered_focused
 }
 
 #[gpui_kit::test]
-async fn issue296_polish_p05_notice_moves_tail_without_changing_source_anchor(
-    cx: &mut TestAppContext,
-) {
+async fn issue296_polish_p05_no_tool_notice_preserves_source_anchor(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "polish-anchor");
     stream.update(cx, |stream, cx| {
         start(stream, "polish", cx);
@@ -646,9 +757,10 @@ async fn issue296_polish_p05_notice_moves_tail_without_changing_source_anchor(
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let old = stream.read_with(&visual, |stream, _| {
-        *stream.run_notices.keys().next().unwrap()
+        assert!(stream.run_notices.is_empty());
+        stream.entries.len() - 1
     });
-    let old_notice = visual.debug_bounds("run-notice-polish").unwrap();
+    assert!(visual.debug_bounds("run-notice-polish").is_none());
     stream.update(&mut visual, |stream, cx| {
         stream.capture_visible_entry_heights();
         stream.apply_event(
@@ -660,16 +772,14 @@ async fn issue296_polish_p05_notice_moves_tail_without_changing_source_anchor(
         );
     });
     visual.run_until_parked();
-    let notice = visual.debug_bounds("run-notice-polish").unwrap();
-    assert!(notice.top() > old_notice.top());
+    assert!(visual.debug_bounds("run-notice-polish").is_none());
     let (body, anchor) = stream.read_with(&visual, |stream, cx| {
-        assert_eq!(stream.run_notices.len(), 1);
-        assert!(!stream.run_notices.contains_key(&old));
-        let index = *stream.run_notices.keys().next().unwrap();
+        assert!(stream.run_notices.is_empty());
+        let index = stream.entries.len() - 1;
         assert!(index > old);
         assert_eq!(
-            stream.run_notices[&index].text(),
-            stream.tool_cards["problem"].read(cx).compact_visible_text()
+            stream.tool_cards["problem"].read(cx).activity_state(),
+            crate::tool_card::ToolActivityState::Failed
         );
         (
             index,
@@ -681,10 +791,11 @@ async fn issue296_polish_p05_notice_moves_tail_without_changing_source_anchor(
             },
         )
     });
-    let body_bounds = visual
-        .debug_bounds(Box::leak(format!("assistant-body-{body}").into_boxed_str()))
-        .unwrap();
-    assert!(notice.top() >= body_bounds.bottom());
+    assert!(
+        visual
+            .debug_bounds(Box::leak(format!("assistant-body-{body}").into_boxed_str()))
+            .is_some()
+    );
     stream.update(&mut visual, |stream, cx| {
         let before = stream.entry_identities[body].key.clone();
         stream.apply_task_summary(summary_for("polish", TaskSummaryOutcome::Completed), cx);
@@ -693,8 +804,7 @@ async fn issue296_polish_p05_notice_moves_tail_without_changing_source_anchor(
     });
     visual.run_until_parked();
     stream.read_with(&visual, |stream, _| {
-        assert_eq!(stream.run_notices.len(), 1);
-        assert!(!stream.run_notices.contains_key(&body));
+        assert!(stream.run_notices.is_empty());
         assert!(stream.entry_identities.iter().any(|identity| Some(&identity.key) == anchor.identity.as_ref()));
         assert!(matches!(&stream.entries[body], StreamEntry::Assistant { copy, .. } if copy.original_text() == "New source body.\n\n".repeat(40)));
     });
