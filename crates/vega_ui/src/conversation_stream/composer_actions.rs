@@ -445,13 +445,7 @@ impl ConversationStream {
         ];
         controls.push(self.context_usage_focus.clone());
         controls.push(self.model_focus.clone());
-        if self.actions.running || self.composer_submit_pending {
-            controls.push(self.action_focus[1].clone());
-        }
-        if self.actions.running
-            && self.thread.backend == TaskBackend::Native
-            && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
-        {
+        if self.actions.running && self.can_submit_message(cx) {
             controls.push(self.pending_ui.send_focus.clone());
         }
         if self.pending_queue.paused
@@ -479,6 +473,9 @@ impl ConversationStream {
                     controls.extend(item.focus[1..].iter().cloned());
                 }
             }
+        }
+        if self.actions.running || self.composer_submit_pending {
+            controls.push(self.action_focus[1].clone());
         }
         controls.extend(
             self.active_skill_focuses

@@ -168,32 +168,33 @@ impl ConversationStream {
         .detach();
     }
 
+    pub(crate) fn can_submit_message(&self, cx: &App) -> bool {
+        (!self.actions.running || self.thread.backend == TaskBackend::Native)
+            && !self.pending_queue.busy
+            && !self.context_operation_busy()
+            && self.actions.pending_mode.is_none()
+            && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
+            && !self.attachment_import_pending
+            && !self.composer_submit_pending
+            && !self.approved_not_started
+            && !self.trusted_action_busy
+            && !self.skill_mutation_pending
+            && self.model_selection_pending.is_none()
+    }
+
     /// Requests a durable turn. Draft/history/user echo remain untouched until
     /// the controller observes durable `MessageStarted` for this exact run.
     /// An in-flight model selection (R1) also blocks submit: the next send
     /// must run on either the old or the new authoritative model, never a
     /// value that raced the durable write.
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
-        if (self.actions.running && self.thread.backend != TaskBackend::Native)
-            || self.pending_queue.busy
-            || self.context_operation_busy()
-            || self.attachment_import_pending
-            || self.actions.pending_mode.is_some()
-            || self.composer_submit_pending
-            || self.approved_not_started
-            || self.trusted_action_busy
-            || self.skill_mutation_pending
-            || self.model_selection_pending.is_some()
-        {
+        if !self.can_submit_message(cx) {
             return;
         }
         // 提交即收起 `@file` 建议下拉并取消当前索引 owner；解析阶段
         // 仍由 app 在 provider 构造前执行。
         self.close_file_selector_and_cancel(cx);
         let text = self.input.read(cx).text().to_string();
-        if text.is_empty() && self.attachments.is_empty() {
-            return;
-        }
         self.composer_submit_pending = true;
         self.pending_submission_revision = self
             .actions

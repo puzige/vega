@@ -73,6 +73,7 @@ enum PendingControlAction {
 struct PendingButton {
     id: String,
     label: &'static str,
+    description: Option<&'static str>,
     glyph: Icon,
     focus: FocusHandle,
     enabled: bool,
@@ -275,6 +276,7 @@ impl ConversationStream {
         let PendingButton {
             id,
             label,
+            description,
             glyph,
             focus,
             enabled,
@@ -288,6 +290,9 @@ impl ConversationStream {
             .debug_selector(move || selector.clone())
             .role(Role::Button)
             .aria_label(label)
+            .when_some(description, |element, description| {
+                element.aria_description(description)
+            })
             .key_context("PendingMessageControl")
             .track_focus(&focus)
             .tab_stop(enabled)
@@ -313,7 +318,7 @@ impl ConversationStream {
                     .cursor_pointer()
                     .hover(move |style| style.bg(colors.bg_hover))
             })
-            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
+            .tooltip(move |_, cx| crate::icons::tooltip(description.unwrap_or(label), cx))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -349,6 +354,7 @@ impl ConversationStream {
                     PendingMessageBehavior::Queue => "排队发送",
                     PendingMessageBehavior::Steer => "插话",
                 },
+                description: None,
                 glyph: Icon::ArrowUp,
                 focus: self.pending_ui.send_focus.clone(),
                 enabled: can_send,
@@ -378,6 +384,7 @@ impl ConversationStream {
                     PendingButton {
                         id: "pending-resume".into(),
                         label: "继续队列",
+                        description: None,
                         glyph: Icon::Queue,
                         focus: self.pending_ui.resume_focus.clone(),
                         enabled: !self.actions.running && self.pending_controls_enabled(),
@@ -398,6 +405,7 @@ impl ConversationStream {
                     PendingButton {
                         id: "pending-recover-edit".into(),
                         label: "继续编辑",
+                        description: (!can_restore).then_some("请先发送或清空当前草稿"),
                         glyph: Icon::Pencil,
                         focus: self.pending_ui.recover_focus.clone(),
                         enabled: can_restore,
@@ -408,10 +416,7 @@ impl ConversationStream {
                 )
                 .w_auto()
                 .px_2()
-                .child("继续编辑")
-                .when(!can_restore, |element| {
-                    element.aria_description("请先发送或清空当前草稿")
-                });
+                .child("继续编辑");
             let preview = if message.content.is_empty() {
                 "图片".to_string()
             } else {
@@ -480,11 +485,19 @@ impl ConversationStream {
                     let steer_enabled = enabled
                         && self.actions.running
                         && message.behavior == PendingMessageBehavior::Queue;
+                    let steer_description = if !self.actions.running {
+                        Some("当前没有运行中的任务，请继续队列")
+                    } else if message.behavior == PendingMessageBehavior::Steer {
+                        Some("该消息已安排插话")
+                    } else {
+                        None
+                    };
                     let steer = self
                         .pending_button(
                             PendingButton {
                                 id: format!("pending-steer-{id}"),
                                 label: "插话",
+                                description: steer_description,
                                 glyph: Icon::Steer,
                                 focus: item.focus[0].clone(),
                                 enabled: steer_enabled,
@@ -497,26 +510,12 @@ impl ConversationStream {
                         )
                         .w_auto()
                         .px_1()
-                        .child("插话")
-                        .when(!self.actions.running, |element| {
-                            element
-                                .aria_description("当前没有运行中的任务，请继续队列")
-                                .tooltip(|_, cx| {
-                                    crate::icons::tooltip("当前没有运行中的任务，请继续队列", cx)
-                                })
-                        })
-                        .when(
-                            message.behavior == PendingMessageBehavior::Steer,
-                            |element| {
-                                element
-                                    .aria_description("该消息已安排插话")
-                                    .tooltip(|_, cx| crate::icons::tooltip("该消息已安排插话", cx))
-                            },
-                        );
+                        .child("插话");
                     let remove = self.pending_button(
                         PendingButton {
                             id: format!("pending-remove-{id}"),
                             label: "删除消息",
+                            description: None,
                             glyph: Icon::Trash,
                             focus: item.focus[1].clone(),
                             enabled,
@@ -532,6 +531,7 @@ impl ConversationStream {
                             PendingButton {
                                 id: format!("pending-more-{id}"),
                                 label: "消息选项",
+                                description: None,
                                 glyph: Icon::More,
                                 focus: item.focus[2].clone(),
                                 enabled,
@@ -741,6 +741,7 @@ impl ConversationStream {
                 PendingButton {
                     id: "pending-menu-edit".into(),
                     label: "编辑消息",
+                    description: (!editable).then_some(edit_reason),
                     glyph: Icon::Pencil,
                     focus: self.pending_ui.menu_focus[0].clone(),
                     enabled: enabled && editable,
@@ -756,22 +757,17 @@ impl ConversationStream {
             .py_1()
             .justify_start()
             .tab_stop(true)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .min_w_0()
-                    .child("编辑消息")
-                    .when(!editable, |element| {
-                        element.child(
-                            div()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_tertiary)
-                                .child(edit_reason),
-                        )
-                    }),
-            )
-            .when(!editable, |element| element.aria_description(edit_reason));
+            .child(div().flex().flex_col().min_w_0().child("编辑消息").when(
+                !editable,
+                |element| {
+                    element.child(
+                        div()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_tertiary)
+                            .child(edit_reason),
+                    )
+                },
+            ));
         let toggle_label =
             if Self::default_running_message_behavior(cx) == PendingMessageBehavior::Queue {
                 "关闭排队"
@@ -783,6 +779,7 @@ impl ConversationStream {
                 PendingButton {
                     id: "pending-menu-toggle".into(),
                     label: toggle_label,
+                    description: None,
                     glyph: Icon::Queue,
                     focus: self.pending_ui.menu_focus[1].clone(),
                     enabled,

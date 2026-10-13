@@ -347,6 +347,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
             "mcp_servers",
             "messages",
             "model_context_policies",
+            "pending_messages",
             "permissions",
             "projects",
             "run_diagnostic_events",

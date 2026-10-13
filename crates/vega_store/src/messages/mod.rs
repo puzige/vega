@@ -116,8 +116,20 @@ pub fn finish_streaming(
     status: &str,
     execution_duration_ms: Option<i64>,
 ) -> Result<usize, rusqlite::Error> {
-    validate_terminal_duration(status, execution_duration_ms)?;
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let updated = finish_streaming_in_transaction(&tx, id, content, status, execution_duration_ms)?;
+    tx.commit()?;
+    Ok(updated)
+}
+
+pub fn finish_streaming_in_transaction(
+    tx: &Transaction<'_>,
+    id: &str,
+    content: &str,
+    status: &str,
+    execution_duration_ms: Option<i64>,
+) -> Result<usize, rusqlite::Error> {
+    validate_terminal_duration(status, execution_duration_ms)?;
     let updated = tx.execute(
         "UPDATE messages SET content = ?1, status = ?2 WHERE id = ?3 AND status = 'streaming'",
         params![content, status, id],
@@ -131,7 +143,6 @@ pub fn finish_streaming(
             params![id, duration],
         )?;
     }
-    tx.commit()?;
     Ok(updated)
 }
 

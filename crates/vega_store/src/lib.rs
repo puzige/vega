@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_thirty_one_tables() {
+    fn migrate_creates_exactly_the_thirty_two_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -296,6 +296,7 @@ mod tests {
                 "mcp_servers",
                 "messages",
                 "model_context_policies",
+                "pending_messages",
                 "permissions",
                 "projects",
                 "run_diagnostic_events",
@@ -555,7 +556,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 31);
+        assert_eq!(tables, 32);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
@@ -646,7 +647,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 31);
+        assert_eq!(tables, 32);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {

@@ -186,6 +186,7 @@ where
                                 ];
                                 message_id = input.assistant_message_id.clone();
                                 streamed_content.clear();
+                                response_start = None;
                                 for converted in transitioned {
                                     event_sink(&converted)?;
                                     events.push(converted);
@@ -424,7 +425,7 @@ pub(crate) fn persist_runtime_event(
                 return Err(persistence_actor_error("pending message already delivered"));
             }
             ensure_message_updated(
-                messages::finish_streaming(
+                messages::finish_streaming_in_transaction(
                     &tx,
                     message_id,
                     streamed_content,

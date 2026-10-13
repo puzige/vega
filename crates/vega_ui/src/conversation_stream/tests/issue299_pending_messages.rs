@@ -178,6 +178,61 @@ async fn issue299_running_enter_follows_default_and_ack_preserves_later_draft(
 }
 
 #[gpui_kit::test]
+async fn issue299_running_send_focus_keeps_stop_adjacent_and_skips_pending_send(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue299");
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+    let captured = stopped.clone();
+    cx.update(|cx| {
+        cx.subscribe(&stream, move |_, event: &ComposerStopRequested, _| {
+            captured.lock().unwrap().push(event.thread_id.clone());
+        })
+        .detach();
+    });
+    stream.update(cx, |stream, cx| {
+        stream.begin_composer_run(cx);
+        stream
+            .input
+            .update(cx, |input, cx| input.set_text("retained draft", cx));
+    });
+    focus_composer(window, &stream, cx);
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    window
+        .update(cx, |_, window, cx| {
+            assert!(stream.read(cx).action_focus[1].is_focused(window));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    window
+        .update(cx, |_, window, cx| {
+            assert!(stream.read(cx).pending_ui.send_focus.is_focused(window));
+        })
+        .unwrap();
+    focus_composer(window, &stream, cx);
+    cx.simulate_keystrokes(window.into(), "cmd-enter");
+    assert!(stream.read_with(cx, |stream, _| stream.composer_submit_pending));
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    window
+        .update(cx, |_, window, cx| {
+            assert!(stream.read(cx).action_focus[1].is_focused(window));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    window
+        .update(cx, |_, window, cx| {
+            assert!(stream.read(cx).model_focus.is_focused(window));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "tab enter");
+    assert_eq!(*stopped.lock().unwrap(), ["issue299"]);
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_owned()),
+        "retained draft"
+    );
+}
+
+#[gpui_kit::test]
 async fn issue299_pending_actions_keep_stable_ids_and_menu_restores_focus(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue299");
     let events = capture_queue(&stream, cx);
@@ -464,7 +519,8 @@ async fn issue299_paused_queue_requires_explicit_resume_and_codex_has_no_queue_c
     assert!(events.lock().unwrap().is_empty());
     window
         .update(cx, |_, window, cx| {
-            stream.read(cx).pending_ui.resume_focus.focus(window, cx)
+            let resume_focus = stream.read(cx).pending_ui.resume_focus.clone();
+            resume_focus.focus(window, cx);
         })
         .unwrap();
     cx.simulate_keystrokes(window.into(), "space");

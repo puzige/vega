@@ -586,8 +586,8 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
     assert_eq!(
-        user_version, 18,
-        "all eighteen ordered migrations are applied"
+        user_version, 19,
+        "all nineteen ordered migrations are applied"
     );
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
@@ -613,6 +613,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "mcp_servers",
             "messages",
             "model_context_policies",
+            "pending_messages",
             "permissions",
             "projects",
             "run_diagnostic_events",
@@ -631,7 +632,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "token_usage",
             "tool_calls",
         ],
-        "exactly the twenty-nine authorized tables"
+        "exactly the thirty-two authorized tables"
     );
     Ok(())
 }

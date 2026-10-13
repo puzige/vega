@@ -42,12 +42,23 @@ async fn issue299_multiple_steers_persist_causal_history_and_reference_snapshot(
         ["answer-a", "answer-b", "answer-c"]
             .into_iter()
             .map(|text| {
-                vec![
+                let mut steps = Vec::new();
+                if text == "answer-b" {
+                    steps.extend([
+                        ScriptStep::text("discarded response tail"),
+                        ScriptStep::events(vec![ProviderEvent::RetryScheduled {
+                            attempt: 1,
+                            max_retries: 5,
+                        }]),
+                    ]);
+                }
+                steps.extend([
                     ScriptStep::text(text),
                     ScriptStep::events(vec![ProviderEvent::Done {
                         stop_reason: StopReason::End,
                     }]),
-                ]
+                ]);
+                steps
             })
             .collect(),
     );
@@ -88,6 +99,32 @@ async fn issue299_multiple_steers_persist_causal_history_and_reference_snapshot(
         ]
     );
     assert!(rows.iter().all(|message| message.status == "done"));
+    let retries = run
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ConversationEvent::ResponseRetrying {
+                message_id,
+                text_start_bytes,
+                ..
+            } => Some((message_id.as_str(), *text_start_bytes)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(retries, [(rows[3].id.as_str(), 0)]);
+    let page =
+        messages::page_before(store.conn(), "thread-1", messages::PageCursor::Head, 50).unwrap();
+    assert_eq!(page.assistant_responses.len(), 3);
+    for (response, assistant) in page
+        .assistant_responses
+        .iter()
+        .zip(rows.iter().filter(|message| message.role == "assistant"))
+    {
+        assert_eq!(response.message_id, assistant.id);
+        assert_eq!(response.text_start_bytes, 0);
+        assert_eq!(response.text_end_bytes, assistant.content.len());
+        assert_eq!(response.kind, "final");
+    }
     assert!(
         crate::pending_messages::load(&store, "thread-1")
             .unwrap()
@@ -121,6 +158,148 @@ async fn issue299_multiple_steers_persist_causal_history_and_reference_snapshot(
             .filter(|event| matches!(event, ConversationEvent::PendingMessageDelivered { .. }))
             .count(),
         2
+    );
+}
+
+#[tokio::test]
+async fn issue299_steer_insert_failure_rolls_back_delivery_and_preserves_response() {
+    let (store, dir, project_id) = setup();
+    let prior = messages::MessageRow {
+        id: "old-assistant".into(),
+        thread_id: "thread-1".into(),
+        seq: 1,
+        role: "assistant".into(),
+        kind: "text".into(),
+        content: "answer-a".into(),
+        status: "streaming".into(),
+        created_at: 1,
+        plan_status: None,
+        plan_review_note: None,
+        plan_reviewed_at: None,
+    };
+    messages::insert(store.conn(), &prior).unwrap();
+    let response = messages::AssistantResponseRow {
+        message_id: prior.id.clone(),
+        response_id: "old-response".into(),
+        text_start_bytes: 0,
+        text_end_bytes: prior.content.len(),
+        kind: "final".into(),
+    };
+    assert!(
+        messages::record_assistant_response(store.conn(), &prior.id, &prior.content, &response)
+            .unwrap()
+    );
+    crate::pending_messages::enqueue(
+        &store,
+        &queued("pending-b", PendingMessageBehavior::Steer, "continue"),
+    )
+    .unwrap();
+    let source = crate::pending_messages::QueueSteeringSource::new(
+        store.database_path().unwrap().into(),
+        dir.path().into(),
+        "thread-1".into(),
+        "run-1".into(),
+        Arc::new(|| Ok(Vec::new())),
+        CancellationToken::new(),
+    );
+    let mut input = vega_runtime::RuntimeSteeringSource::take(&source)
+        .await
+        .unwrap()
+        .unwrap();
+    input.assistant_message_id = prior.id.clone();
+    let original_pending = vega_store::pending_messages::find(store.conn(), "thread-1", &input.id)
+        .unwrap()
+        .unwrap();
+    let mut next_tool_seq = 0;
+    let error = persist_runtime_event(
+        &store,
+        &project_id,
+        "thread-1",
+        &prior.id,
+        "mock-model",
+        false,
+        &prior.content,
+        &mut next_tool_seq,
+        &RuntimeEvent::SteeringAccepted(input.clone()),
+        Some(24),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, VegaError::Store(error) if error.to_string() == "UNIQUE constraint failed: messages.id")
+    );
+    assert_eq!(
+        messages::find(store.conn(), &prior.id).unwrap(),
+        Some(prior.clone())
+    );
+    assert!(messages::find(store.conn(), &input.id).unwrap().is_none());
+    let pending: (String, String, Option<String>) = store
+        .conn()
+        .query_row(
+            "SELECT state, payload, model_content FROM pending_messages WHERE id = ?1",
+            [&input.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(pending, ("claimed".into(), original_pending.payload, None));
+    let durations: i64 = store
+        .conn()
+        .query_row("SELECT COUNT(*) FROM assistant_run_durations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(durations, 0);
+    let response_count: i64 = store
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM assistant_responses WHERE message_id = ?1",
+            [&prior.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(response_count, 1);
+    input.assistant_message_id = "new-assistant".into();
+    persist_runtime_event(
+        &store,
+        &project_id,
+        "thread-1",
+        &prior.id,
+        "mock-model",
+        false,
+        &prior.content,
+        &mut next_tool_seq,
+        &RuntimeEvent::SteeringAccepted(input.clone()),
+        Some(24),
+    )
+    .unwrap();
+    let page =
+        messages::page_before(store.conn(), "thread-1", messages::PageCursor::Head, 50).unwrap();
+    assert_eq!(page.assistant_responses, [response]);
+    assert_eq!(page.execution_durations_ms.get(&prior.id), Some(&24));
+    assert_eq!(
+        messages::find(store.conn(), &prior.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "done"
+    );
+    assert_eq!(
+        messages::find(store.conn(), &input.id)
+            .unwrap()
+            .unwrap()
+            .content,
+        "continue"
+    );
+    assert_eq!(
+        messages::find(store.conn(), &input.assistant_message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "streaming"
+    );
+    assert!(
+        crate::pending_messages::load(&store, "thread-1")
+            .unwrap()
+            .is_empty()
     );
 }
 

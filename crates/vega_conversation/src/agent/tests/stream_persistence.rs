@@ -217,6 +217,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "mcp_servers",
             "messages",
             "model_context_policies",
+            "pending_messages",
             "permissions",
             "projects",
             "run_diagnostic_events",

@@ -67,3 +67,14 @@ Codex ACP 仍维持现有新建任务能力边界，不新增运行中 existing-
 3. Stop、模型失败、输出 / 轮数上限后确认队列暂停，移除 / 编辑 / 显式继续均可恢复；退出重开后队列仍保留且不自动发送。
 4. 取回编辑 ACK 前继续输入新草稿，确认原消息由恢复入口保留，不覆盖新草稿；删除失败不产生可再次发送的副本。
 5. 设置及队列菜单切换「排队 / 插话」，确认重开应用后默认持久化，既有待发项语义不变；检查键盘 Enter、Shift+Enter、Tab、Escape、IME 组合输入及浅深主题。
+
+## CI run 38413105839 后端修复
+
+云端本轮 Clippy 通过；Nextest 共 2513 项，2488 通过、25 失败。本节记录后端负责的 18 项失败根因修复，其余 UI / 设置 / 焦点问题由 UI agent 独立修复后集成。以下修改尚待下一次 PR Check 验证。
+
+- `vega/src/tests/controller-git-fixtures.json` 为 9 个 `tests-composer_actions-pending_messages-*` 测试登记既有 replay fixture。复用来源为 `tests-composer_actions-r11_composer_stream_stop_retains_partial_and_next_draft` 的同一组 5 条进程内初始化回执；没有新增真实 Git 执行或放宽 mock 验证。
+- `vega_store/src/lib.rs`、`vega_conversation/src/agent/tests/stream_persistence.rs`、`vega_conversation/tests/{s7_acceptance_e2e,todo_e2e}.rs` 将精确 schema 断言更新为包含 `pending_messages` 的 32 张表、19 个 migration。保留完整名单和精确数量校验，未修改迁移。
+- `vega_store/src/messages/mod.rs` 提供只在调用者事务内执行的 `finish_streaming_in_transaction`，既有 `finish_streaming` 包装仍自行开启并提交事务；`vega_conversation/src/agent/events.rs` 的插话交付使用前者，消除嵌套 `BEGIN IMMEDIATE`，保持待发确认、旧 assistant 收尾、执行耗时、新 user / assistant 插入同事务提交。
+- `vega_conversation/src/agent/tests/pending_messages.rs` 新增真实生产持久化入口的失败 / 重试回归，明确注入第二条 INSERT 的主键冲突，断言 pending claim / payload、旧 assistant / response 保留、耗时与新 user 全回滚，重试后完整交付。连续插话测试补充三个 assistant response 的归属和从零开始的文本偏移断言。
+
+本轮实际本地检查：重新 `git fetch origin` 后本分支与远端差异为 `0 0`；7 个变更 Rust 文件 `rustfmt --check --edition 2024 --config skip_children=true` 和 `git diff --check` 均退出码 0。Python 标准库 SQLite 应用全部 19 个 migration，确认 32 张表、4 处测试精确名单与实际 schema 完全一致、`integrity_check = ok`；JSON 校验确认 9 个测试名均有既有的 5 步 replay 配置。独立 context-test agent 也用同一迁移集验证了外层事务提交和主键冲突回滚。未运行任何本地 Rust 编译或测试。

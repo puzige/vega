@@ -150,17 +150,7 @@ impl ConversationStream {
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
-        let can_send = (!self.actions.running || self.thread.backend == TaskBackend::Native)
-            && !self.pending_queue.busy
-            && !self.context_operation_busy()
-            && self.actions.pending_mode.is_none()
-            && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
-            && !self.attachment_import_pending
-            && !self.composer_submit_pending
-            && !self.approved_not_started
-            && !self.trusted_action_busy
-            && !self.skill_mutation_pending
-            && self.model_selection_pending.is_none();
+        let can_send = self.can_submit_message(cx);
         div()
             .debug_selector(|| "composer-wrapper".into())
             .px(px(Layout::CONVERSATION_PADDING))

@@ -12,11 +12,7 @@ fn mount(
         cx.set_global(RunningMessageDefault::default());
         crate::init(cx);
     });
-    let view = cx.new(|cx| {
-        let mut view = SettingsView::from_path(Some(path), cx);
-        view.section = 0;
-        view
-    });
+    let view = cx.new(|cx| SettingsView::from_path(Some(path), cx));
     let root = view.clone();
     let window = cx
         .update(|cx| {
@@ -39,6 +35,7 @@ fn mount(
         })
         .unwrap();
     cx.run_until_parked();
+    click(window, "settings-nav-general", cx);
     (view, window)
 }
 
