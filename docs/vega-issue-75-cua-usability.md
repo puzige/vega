@@ -451,3 +451,54 @@ cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
 **167/167 PASS**，1814 skipped，exit0；run ID `776d16f4-997f-4749-836d-932bdee3a3f4`。原始日志 `/tmp/vega-75-menu-read-rebased.log`，SHA-256 `cb725623a3c0ec17908eb742475b2f1043737f89b32c2fdbb72f49bcd47651e0`；完整executable/cwd/argv和测试时HEAD在同名前缀 `-argv.json`。右侧预览测试涵盖来源/历史替换、非模态焦点/窄窗、精确原图保存与迟到picker、受控打开适配、阅读锚点及错误/生命周期；旧SV3模态断言按上游契约替换，不恢复原居中弹层。
 
 13个本卡修改Rust文件的定向rustfmt和完整提交diff检查通过，记录于 `/tmp/vega-75-menu-read-rebased-checks.log`。原range-diff为 `/tmp/vega-75-menu-read-rebased-range-diff.log`；所有旧RED、155项及云端结果保留，最终提交身份追加至 `/tmp/vega-75-batch-projection-evidence.json`。未运行本地全量、Clippy、真实driver/UI/数据库；主控在固定变基提交上重新跑云端门禁，再继续发布真机验收。
+
+## 并发模型回应落库在工具审批前失败（PR #328 云端回归）
+
+云端run `38356254186` 在2441项中2440通过、1失败（另5 skipped），唯一失败为原 `issue67_concurrent_settings_fails_closed_for_both_permissions`。两个任务均已PrimaryModel成功/ToolUse，但回应分段数为0、工具行不存在并Runtime失败；本地原用例也复现一个任务同位置失败、另一个正常pending_approval。原日志未保存SQLite扩展码，不能将本轮CI的确切错误预先断言为某个锁错误。
+
+生产窄路径为模型完成后、工具提案前的 `AssistantResponseCompleted`：`record_assistant_response` 先读owner与现有分段，再写回应元数据，当前DEFERRED事务可能在WAL并发writer下升级失败。以下先用同一公开生产函数与受控第二连接锁定该缺陷；不延长busy_timeout、不增加重试、不放宽回应owner/状态/正文/UTF-8范围/顺序/幂等校验，不扩大为全store事务重构。
+
+PA1. 回应元数据写入在读取owner前取得写事务，等待既有有界SQLite写锁；等待后读取最新owner，终态或正文不匹配仍拒绝，不将过时快照写入。保留既有原子提交与幂等语义。
+PA2. 自动回归用独立临时数据库、第二连接持有实际writer和单次busy-handler握手；不靠sleep碰撞或循环重跑。正常并发写入后回应成功且归属正确；并发结束本消息后等待者返回false且零回应元数据。原Issue67完整权限/设置关闭/无文件写入断言保持。
+PA3. 生产修改仅限该必要持久化函数；无UI/权限/schema/依赖变化。本卡CUA批次、截图ACK/取消、预览和相关权限回归须继续通过。保留云端与本地原失败、确定性RED及全部后续结果；明确区分确定性同路径缺陷与缺少底层码的CI事实。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| PA01 | 另一连接持有writer；公开回应落库函数竞争写锁；握手后释放 | 等待后精确写入一次，peer写入和正文不丢失 | PASS（进程内） |
+| PA02 | writer将同owner置终态，回应落库等待后重读 | 返回false，终态保留，零新分段 | PASS（进程内） |
+| PA03 | 原Issue67并发确认权限与相关生命周期/本卡矩阵 | 双审批真实入场，Settings关闭两项均rejected且无文件写入；原CUA/预览合同保持 | PASS（进程内） |
+
+### PA 本轮结果与证据边界
+
+生产修改仅 `record_assistant_response` 的一行事务模式：使用现有 `Transaction::new_unchecked(..., Immediate)`，owner和已有分段读取继续在事务内，所有早退/提交与校验逻辑不变。确定性夹具用另一连接实际持有writer、单次busy-handler通道握手并释放，不用延迟碰撞或测试重试；旧代码两项均立即 `DatabaseBusy / extended_code=5`，修复后等待并写入正确回应，或等待后发现owner已interrupted而返回false/零分段。
+
+这确认的是同一生产函数的并发读后写缺陷。原CI和原Issue67本地失败都没有底层SQLite码，只能确认相同阶段形态，不能追溯宣称它们已经证实是code5或BUSY_SNAPSHOT。CI原始日志 `/tmp/vega-75-menu-read-rebased-ci-failed.log` SHA-256 `3fa0155dea02bc9c714a30722c31a045b572f5ccf12dcfd3ccadd163b2ab03ee`，未覆盖或删除。
+
+| 阶段 | 结果 | 原始日志及SHA-256 |
+|---|---|---|
+| 原Issue67本地复现 | 0/1 PASS；A相同phase失败、B正常pending_approval，未改原断言 | `/tmp/vega-75-permission-admission-first.log` · `f0c05d7c9e34237d6d8536a04763939719651f38d1c40264b7eb562dea26cbd7` |
+| 受控writer RED | 0/2 PASS；两项有限SQLite码均5 | `/tmp/vega-75-permission-admission-red.log` · `ace7d6415ac4ef8832872d4990651673e95d191b6809cb5ef2344c703976d1fc` |
+| 存储修复/原分段回归 | 4/4 PASS | `/tmp/vega-75-permission-admission-store-green.log` · `7297fd2d048b81d5e489fe80c0ef8ad8b8d52200d3dad89f5c583aabfd40e9a3` |
+| 最终跨层定向组合 | 186/186 PASS，1954 skipped；原Issue67设置双审批3.871s通过 | `/tmp/vega-75-permission-admission-final.log` · `e1bb094a116a023500d09536702fb1f9cc3cbd3153c249ad0fd587e3611ce539` |
+
+最终run ID `9f22370c-4824-4f38-a66f-03795d8587af`，exit0；原7项并发生命周期、回应分段/持久历史、CUA/批次/截图ACK/取消和右侧预览均在原断言下通过。完整executable/cwd/argv均为各日志同名前缀 `-argv.json`，最终命令：
+
+```sh
+cargo nextest run -p vega_store -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire) | test(issue296_image_preview) | test(issue67_concurrent) | test(issue67_response_writer) | test(issue296_response) | test(response_phases::)'
+```
+
+两处修改Rust文件定向格式和diff检查通过，命令/结果为 `/tmp/vega-75-permission-admission-checks.log`。身份、各阶段日志/退出码/run ID/摘要与全部原始失败汇总于 `/tmp/vega-75-permission-admission-evidence.json`。无本地全量/Clippy/网络测试、真实UI/driver/应用数据库操作；旧155/167项及MS/BP所有RED证据保留。新固定提交须由主控重新通过云端门禁。
+
+### PR #330 导航布局前移后的集成复验
+
+旧HEAD `a670c9e002bea9139b2fffc0134f5f96b2652e76` 的云端run `38358464741` 已通过2443/2443、5 skipped，fmt/Clippy/required均成功。原始日志 `/tmp/vega-75-menu-read-final-ci.log` SHA-256 `6f388210f056e8edd0aeeeb846928a529b5ef3c836a2fee49135b47918108520`。合并前master前移至 `d1956e352811c04d9c1bd4d71aefbeb103dd1c30`（PR #330消息导航贴pane边缘）；再次fetch后无冲突变基，三个原补丁range-diff均等价，保留上游导航/侧栏与右侧图片预览行为。
+
+本次无生产或测试更改，不重复RED与未变化Store/runtime矩阵；仅验证受影响App/UI上的本卡CUA、预览、并发权限及新导航/拖拽组合：
+
+```sh
+cargo nextest run -p vega -p vega_ui \
+  -E 'test(issue75) | test(issue67_concurrent) | test(issue296_image_preview) | test(issue296_visual_v08) | test(issue296_navigation_pane_edge) | test(issue296_sidebar_boundary) | test(issue296_reading_column) | test(issue72_message_anchor_navigation) | test(r21_sidebar_drag)'
+```
+
+**62/62 PASS**、946 skipped、exit0；run `7c1b94f7-9749-44b7-a142-184448f90d30`。原始日志 `/tmp/vega-75-navigation-rebased.log`，SHA-256 `c0259e2e0951e39282d29d24d94850a81286e0909dee6ecd8d11b69a381d30d9`；完整命令/cwd/测试时HEAD在同名前缀 `-argv.json`。15个本卡修改Rust文件定向格式和提交diff检查通过，记录于 `/tmp/vega-75-navigation-rebased-checks.log`；等价range-diff为 `/tmp/vega-75-navigation-rebased-range-diff.log`。最终身份另记 `/tmp/vega-75-navigation-rebased-evidence.json`，既有186项、所有RED及两轮云端证据保留；本轮仅追加本段记录，不改变旧结果。变基后的固定提交仍须重新通过云端严格门禁。
