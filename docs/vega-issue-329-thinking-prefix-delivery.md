@@ -6,11 +6,11 @@
 
 | ID | 需求/风险 | 前置状态 | 操作 | 预期可观察结果 | 层级 | 证据 | 状态 |
 |---|---|---|---|---|---|---|---|
-| T1 | content-only 标题不明 | 正在流式且仅有 thinking content | 追加两段普通文本及新标题 | `Thinking ·` 固定，预览变化 | GPUI | 定向测试 | 待测 |
-| T2 | summary 优先级 | 已有 content 预览 | 追加 summary，再追加 content | 前缀不变，预览改为 summary 并保持 | GPUI | 定向测试 | 待测 |
-| T3 | 空态伪标题 | 有思考事件但预览不可读 | 发送空白/不完整 Markdown/围栏 | 只显示 `Thinking`，无空分隔符 | 单元/GPUI | 定向测试 | 待测 |
-| T4 | 长文本截断 | 中英文长段落 | 跨 delta 追加文本 | 总长 ≤96 标量，尾部内容可更新 | 单元/GPUI | 定向测试 | 待测 |
-| T5 | 交互与归属回归 | 思考相邻工具、正文或运行终止 | 收起/展开、检查原文和历史恢复 | 原文不变；无思考时无行；交互不回退 | GPUI | 定向测试 | 待测 |
+| T1 | content-only 标题不明 | 正在流式且仅有 thinking content | 追加两段普通文本及新标题 | `Thinking ·` 固定，预览变化 | GPUI | `issue329_thinking_prefix_tracks_content_and_summary` | 通过 |
+| T2 | summary 优先级 | 已有 content 预览 | 追加 summary，再追加 content | 前缀不变，预览改为 summary 并保持 | GPUI | 同 T1；原文断言 | 通过 |
+| T3 | 空态伪标题 | 有思考事件但预览不可读 | 发送空白/不完整 Markdown/围栏 | 只显示 `Thinking`，无空分隔符 | GPUI | `issue329_empty_preview_has_only_fixed_label` | 通过 |
+| T4 | 长文本截断 | 中英文长段落 | 跨 delta 追加文本 | 总长 ≤96 标量，尾部内容可更新 | GPUI | `issue329_thinking_prefix_respects_unicode_limit_and_latest_tail` | 通过 |
+| T5 | 交互与归属回归 | 思考相邻工具、正文或运行终止 | 收起/展开、检查原文和历史恢复 | 原文不变；无思考时无行；交互不回退 | GPUI | T1 展开原文；思考模块 15/15 与活动状态 12/12 | 部分：历史恢复未单独重跑 |
 | T6 | 真实应用 | 合并后的 master 应用 | 用户用真实模型手测流式阶段 | 前缀稳定、动态更新、最终收起 | 原生手测 | 用户反馈 | 待用户手测 |
 
 ## 实现计划
@@ -24,4 +24,17 @@
 
 ## 验证记录
 
-待实现后填写。真实 provider 与原生 UI 暂不标记通过。
+- 新增 3 项回归后、实现前：`cargo nextest run -p vega_ui issue329_` 退出码 100，3 项均失败。分别检出缺少固定前缀、不可读预览仍显示「思考过程」、长标题未给前缀留预算。
+- 实现与审查修订后：`cargo nextest run -p vega_ui issue329_` 退出码 0，原始输出摘录：
+
+```text
+    Starting 3 tests across 1 binary (731 tests skipped)
+        PASS [   0.112s] (1/3) vega_ui conversation_stream::tests::thinking::issue329_thinking_prefix_respects_unicode_limit_and_latest_tail
+        PASS [   0.141s] (2/3) vega_ui conversation_stream::tests::thinking::issue329_thinking_prefix_tracks_content_and_summary
+        PASS [   0.178s] (3/3) vega_ui conversation_stream::tests::thinking::issue329_empty_preview_has_only_fixed_label
+     Summary [   0.180s] 3 tests run: 3 passed, 731 skipped
+```
+
+- 相关回归：`cargo nextest run -p vega_ui conversation_stream::tests::thinking::` 退出码 0，15/15；`cargo nextest run -p vega_ui issue296_single_activity_` 退出码 0，12/12。只覆盖进程内行为，不代表真实模型或原生像素验收。
+- PR #332 首轮云端 Clippy 通过，Nextest 在 2,425 项中有 2,424 项通过、1 项失败：#296 shimmer 测试仍断言旧文案 `Reviewing changes`，实际为本卡要求的 `Thinking · Reviewing changes`。修订该旧断言后，`cargo nextest run -p vega_ui issue296_run_clock_and_shimmer_stop_when_not_painted_or_terminal` 退出码 0，1/1；`cargo nextest run -p vega_ui issue329_` 退出码 0，3/3。最终云端门禁以 PR check 结果为准。
+- 代码格式、diff 空白与新增代码注释检查通过；未跑本地全量门禁。真实 provider 与原生 UI 等待用户在合并后的 master 手测。
