@@ -80,10 +80,12 @@ async fn issue63_paste_image_only_submit_reject_and_ack_preserve_new_identical_i
         s.reject_composer_submission(cx);
     });
     assert_eq!(stream.read_with(cx, |s, _| s.attachments.len()), 1);
+    let source = stream.read_with(cx, |s, _| s.attachments[0].1.view.clone());
     stream.update(cx, |s, cx| s.submit_message(cx));
     paste(window, &stream, cx);
     assert_eq!(stream.read_with(cx, |s, _| s.attachments.len()), 2);
     stream.update(cx, |s, cx| s.accept_composer_submission("", cx));
+    assert!(!stream.read_with(cx, |s, cx| s.owns_image_preview(&source, cx)));
     assert_eq!(stream.read_with(cx, |s, _| s.attachments.len()), 1);
     assert_eq!(
         stream.read_with(cx, |s, _| s

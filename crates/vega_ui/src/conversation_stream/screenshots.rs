@@ -45,54 +45,16 @@ fn screenshot_image(
 }
 
 pub(crate) struct ScreenshotCard {
-    image: attachments::ImagePreview,
-    saving: bool,
-    preview_open: bool,
-    status: Option<&'static str>,
-    thumbnail_focus: FocusHandle,
+    pub(super) image: attachments::ImagePreview,
     save_focus: FocusHandle,
-    preview_focus: FocusHandle,
-    preview_save_focus: FocusHandle,
-    preview_close_focus: FocusHandle,
 }
 
-struct ScreenshotOpened;
-
-impl EventEmitter<ScreenshotOpened> for ScreenshotCard {}
-
 impl ScreenshotCard {
-    fn pending(image: ImageAttachment, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(image: ImageAttachment, name: String, cx: &mut Context<Self>) -> Self {
         Self {
-            image: attachments::ImagePreview {
-                image,
-                preview: Default::default(),
-            },
-            saving: false,
-            preview_open: false,
-            status: None,
-            thumbnail_focus: cx.focus_handle(),
-            save_focus: cx.focus_handle(),
-            preview_focus: cx.focus_handle(),
-            preview_save_focus: cx.focus_handle(),
-            preview_close_focus: cx.focus_handle(),
+            image: attachments::ImagePreview::new(image, name, cx),
+            save_focus: cx.focus_handle().tab_stop(true),
         }
-    }
-
-    pub(crate) fn new(image: ImageAttachment, cx: &mut Context<Self>) -> Self {
-        let card = Self::pending(image, cx);
-        let pending = card.image.image.clone();
-        cx.spawn(async move |this, cx| {
-            let ready = cx
-                .background_executor()
-                .spawn(async move { attachments::ImagePreview::new(pending) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.image = ready;
-                cx.notify();
-            });
-        })
-        .detach();
-        card
     }
 
     fn thumbnail_size(&self) -> (f32, f32) {
@@ -107,66 +69,21 @@ impl ScreenshotCard {
         )
     }
 
-    fn open_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.preview_open = true;
-        self.preview_focus.focus(window, cx);
-        cx.emit(ScreenshotOpened);
-        cx.notify();
-    }
-
-    fn close_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.preview_open = false;
-        self.thumbnail_focus.focus(window, cx);
-        cx.notify();
+    fn open_preview(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.image.view.update(cx, |view, cx| {
+            view.action(crate::image_preview::ImagePreviewAction::Open, cx)
+        });
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        if self.saving {
-            return;
-        }
-        let extension = match self.image.image.mime_type() {
-            "image/jpeg" => "jpg",
-            "image/webp" => "webp",
-            _ => "png",
-        };
-        let directory = std::env::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
-        let picked =
-            cx.prompt_for_new_path(&directory, Some(&format!("Vega-screenshot.{extension}")));
-        self.saving = true;
-        self.status = None;
-        let image = self.image.image.clone();
-        cx.spawn(async move |this, cx| {
-            let result = match picked.await {
-                Ok(Ok(Some(path))) => Some(
-                    cx.background_executor()
-                        .spawn(async move {
-                            vega_conversation::attachments::save_screenshot(&image, &path)
-                        })
-                        .await
-                        .is_ok(),
-                ),
-                Ok(Ok(None)) => None,
-                _ => Some(false),
-            };
-            let _ = this.update(cx, |this, cx| {
-                this.saving = false;
-                this.status = result.map(|success| {
-                    if success {
-                        "截图已保存"
-                    } else {
-                        "保存失败，请选择新的文件名重试"
-                    }
-                });
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
+        self.image.view.update(cx, |view, cx| {
+            view.action(crate::image_preview::ImagePreviewAction::SaveInline, cx)
+        });
     }
 
     fn save_button(&self, preview: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = if self.saving {
+        let label = if self.image.view.read(cx).busy() {
             "保存中…"
         } else {
             "保存图片"
@@ -186,19 +103,17 @@ impl ScreenshotCard {
             }
             .into()
         })
-        .track_focus(if preview {
-            &self.preview_save_focus
-        } else {
-            &self.save_focus
-        })
+        .track_focus(&self.save_focus)
         .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
-        .when(self.saving, |button| button.opacity(0.5))
+        .when(self.image.view.read(cx).busy(), |button| {
+            button.opacity(0.5)
+        })
         .into_any_element()
     }
 
     fn header_caption(&self, width: f32, cx: &App) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = self.status.unwrap_or("");
+        let label = self.image.view.read(cx).status().unwrap_or("");
         div()
             .id("screenshot-caption")
             .flex_1()
@@ -206,14 +121,14 @@ impl ScreenshotCard {
             .truncate()
             .text_size(px(Typography::METADATA))
             .text_color(colors.text_secondary)
-            .when_some(self.status, |caption, status| {
+            .when_some(self.image.view.read(cx).status(), |caption, status| {
                 caption
                     .debug_selector(|| "screenshot-save-status".into())
                     .aria_label(status)
                     .tooltip(move |_, cx| crate::icons::tooltip(status, cx))
             })
             .when(width >= Layout::SCREENSHOT_LABEL_MIN_WIDTH, |caption| {
-                caption.child(if self.status.is_some() {
+                caption.child(if self.image.view.read(cx).status().is_some() {
                     if label.starts_with("保存失败") {
                         "保存失败".into()
                     } else {
@@ -228,7 +143,8 @@ impl ScreenshotCard {
                 })
             })
             .when(
-                width < Layout::SCREENSHOT_LABEL_MIN_WIDTH && self.status.is_some(),
+                width < Layout::SCREENSHOT_LABEL_MIN_WIDTH
+                    && self.image.view.read(cx).status().is_some(),
                 |caption| {
                     caption.child(crate::icons::icon(
                         if label.starts_with("保存失败") {
@@ -263,114 +179,6 @@ impl ScreenshotCard {
             })
             .into_any_element()
     }
-
-    fn render_preview(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let close = icon_button(
-            Icon::Close,
-            "关闭预览",
-            colors,
-            cx.listener(|this, _, window, cx| this.close_preview(window, cx)),
-        )
-        .size(px(Layout::SCREENSHOT_CONTROL_SIZE))
-        .track_focus(&self.preview_close_focus)
-        .debug_selector(|| "screenshot-preview-close".into())
-        .focus_visible(move |style| style.border_1().border_color(colors.brand_primary));
-        gpui_kit::deferred(
-            div()
-                .id("screenshot-preview")
-                .debug_selector(|| "screenshot-preview".into())
-                .track_focus(&self.preview_focus)
-                .absolute()
-                .inset_0()
-                .p(px(Layout::SCREENSHOT_PREVIEW_MARGIN))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(colors.bg_sidebar.opacity(0.85))
-                .occlude()
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        this.close_preview(window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_key_down(
-                    cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                        match event.keystroke.key.as_str() {
-                            "escape" => this.close_preview(window, cx),
-                            "tab" => {
-                                let on_save = this.preview_save_focus.is_focused(window);
-                                let on_close = this.preview_close_focus.is_focused(window);
-                                let next =
-                                    if on_save || (!on_close && event.keystroke.modifiers.shift) {
-                                        &this.preview_close_focus
-                                    } else {
-                                        &this.preview_save_focus
-                                    };
-                                next.focus(window, cx);
-                            }
-                            _ => return,
-                        }
-                        cx.stop_propagation();
-                    }),
-                )
-                .child(
-                    div()
-                        .debug_selector(|| "screenshot-preview-panel".into())
-                        .size_full()
-                        .max_w(px(Layout::SCREENSHOT_PREVIEW_MAX_WIDTH))
-                        .max_h(px(Layout::SCREENSHOT_PREVIEW_MAX_HEIGHT))
-                        .min_w_0()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .rounded(px(Layout::SCREENSHOT_RADIUS))
-                        .bg(colors.bg_base)
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .overflow_hidden()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            div()
-                                .h(px(Layout::SCREENSHOT_HEADER_HEIGHT))
-                                .flex_shrink_0()
-                                .px_1()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .bg(colors.bg_elevated)
-                                .rounded_t(
-                                    px(Layout::SCREENSHOT_RADIUS - Layout::SCREENSHOT_BORDER),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(px(Typography::METADATA))
-                                        .text_color(colors.text_secondary)
-                                        .child(self.status.unwrap_or("截图预览")),
-                                )
-                                .child(self.save_button(true, cx))
-                                .child(close),
-                        )
-                        .child(
-                            div()
-                                .relative()
-                                .flex_1()
-                                .min_h_0()
-                                .child(self.image_content(true, cx)),
-                        ),
-                ),
-        )
-        .with_priority(3)
-        .into_any_element()
-    }
 }
 
 impl Render for ScreenshotCard {
@@ -404,7 +212,7 @@ impl Render for ScreenshotCard {
                     .id("screenshot-expand")
                     .debug_selector(|| "screenshot-expand".into())
                     .aria_label("查看截图大图")
-                    .track_focus(&self.thumbnail_focus)
+                    .track_focus(&self.image.view.read(cx).thumbnail_focus())
                     .tab_stop(true)
                     .w_full()
                     .aspect_ratio(width / height)
@@ -423,7 +231,10 @@ impl Render for ScreenshotCard {
                         }),
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.open_preview(window, cx)))
-                    .child(self.image_content(false, cx)),
+                    .child(self.image_content(false, cx))
+                    .child(crate::image_preview::ImagePreview::thumbnail_tracker(
+                        &self.image.view,
+                    )),
             )
     }
 }
@@ -434,50 +245,25 @@ impl ConversationStream {
         image: ImageAttachment,
         cx: &mut Context<Self>,
     ) -> Entity<ScreenshotCard> {
-        let card = cx.new(|cx| ScreenshotCard::new(image, cx));
-        cx.subscribe(&card, |this, card, _: &ScreenshotOpened, cx| {
-            if this.entries.iter().any(
-                |entry| matches!(entry, StreamEntry::Screenshot { card: owned } if owned == &card),
-            ) {
-                if let Some(previous) = this.screenshot_preview.replace(card.clone())
-                    && previous != card
-                {
-                    previous.update(cx, |previous, _| previous.preview_open = false);
-                }
+        let ordinal = self
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry, StreamEntry::Screenshot { .. }))
+            .count()
+            + 1;
+        let name = attachments::image_name("截图", ordinal, &image);
+        let card = cx.new(|cx| ScreenshotCard::new(image, name, cx));
+        let view = card.read(cx).image.view.clone();
+        self.observe_image(&view, cx);
+        cx.observe(&view, {
+            let card = card.downgrade();
+            move |_, _, cx| {
+                let _ = card.update(cx, |_, cx| cx.notify());
                 cx.notify();
             }
         })
         .detach();
-        cx.observe(&card, |this, card, cx| {
-            let index = this.entries.iter().position(
-                |entry| matches!(entry, StreamEntry::Screenshot { card: owned } if owned == &card),
-            );
-            if this.screenshot_preview.as_ref() == Some(&card) && !card.read(cx).preview_open {
-                this.screenshot_preview = None;
-            }
-            this.invalidate_item(index);
-            cx.notify();
-        })
-        .detach();
         card
-    }
-
-    pub(crate) fn render_screenshot_preview(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let card = self.screenshot_preview.clone()?;
-        let owned = self.entries.iter().any(
-            |entry| matches!(entry, StreamEntry::Screenshot { card: owned } if owned == &card),
-        );
-        if !owned {
-            self.screenshot_preview = None;
-            card.update(cx, |card, _| card.preview_open = false);
-            self.selection_focus.focus(window, cx);
-            return None;
-        }
-        Some(card.update(cx, |card, cx| card.render_preview(cx)))
     }
 }
 
@@ -500,10 +286,13 @@ mod tests {
             include_bytes!("tests/fixtures/screenshot-landscape.png").to_vec(),
         )
         .unwrap();
-        let preview = attachments::ImagePreview::new(image);
+        let pixels = Arc::new(gpui_kit::Image::from_bytes(
+            gpui_kit::ImageFormat::Png,
+            image.bytes().to_vec(),
+        ));
         let mut element = screenshot_image(
-            preview.preview.get().unwrap().clone(),
-            (preview.image.width(), preview.image.height()),
+            pixels,
+            (image.width(), image.height()),
             false,
             vega_theme::Theme::light().colors,
         );
@@ -526,7 +315,19 @@ mod tests {
             include_bytes!("tests/fixtures/screenshot-landscape.png").to_vec(),
         )
         .unwrap();
-        let card = cx.new(|cx| ScreenshotCard::pending(image.clone(), cx));
+        let card = cx.new(|cx| {
+            let view = cx.new(|cx| {
+                crate::image_preview::ImagePreview::pending(image.clone(), "截图-1.png".into(), cx)
+            });
+            ScreenshotCard {
+                image: attachments::ImagePreview {
+                    image: image.clone(),
+                    preview: view.read(cx).pixels(),
+                    view,
+                },
+                save_focus: cx.focus_handle().tab_stop(true),
+            }
+        });
         let root = card.clone();
         let window = cx.update(|cx| {
             cx.open_window(Default::default(), |_, cx| cx.new(|_| CardHarness(root)))
@@ -538,27 +339,45 @@ mod tests {
         let before = visual.debug_bounds("assistant-screenshot").unwrap();
         let image_before = visual.debug_bounds("screenshot-expand").unwrap();
         assert!(visual.debug_bounds("screenshot-loading").is_some());
+        let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = actions.clone();
+        let source = card.read_with(cx, |card, _| card.image.view.clone());
+        cx.update(|cx| {
+            cx.subscribe(
+                &source,
+                move |_, action: &crate::image_preview::ImagePreviewAction, _| {
+                    captured.borrow_mut().push(*action)
+                },
+            )
+            .detach()
+        });
+        visual.update(|window, cx| card.read(cx).save_focus.clone().focus(window, cx));
+        visual.simulate_keystrokes("space");
+        assert!(matches!(
+            actions.borrow().last(),
+            Some(crate::image_preview::ImagePreviewAction::SaveInline)
+        ));
         visual.update(|window, cx| {
-            let focus = card.read(cx).save_focus.clone();
-            focus.focus(window, cx);
+            card.read(cx)
+                .image
+                .view
+                .read(cx)
+                .thumbnail_focus()
+                .focus(window, cx)
         });
         visual.simulate_keystrokes("space");
-        assert!(
-            cx.did_prompt_for_new_path(),
-            "thumbnail save is keyboard accessible while loading"
-        );
-        cx.simulate_new_path_selection(|_| None);
-        cx.run_until_parked();
-        assert!(visual.update(|window, cx| card.read(cx).save_focus.is_focused(window)));
-
-        visual.update(|window, cx| {
-            let focus = card.read(cx).thumbnail_focus.clone();
-            focus.focus(window, cx);
-        });
-        visual.simulate_keystrokes("space");
-        assert!(card.read_with(&visual, |card, _| card.preview_open));
+        assert!(matches!(
+            actions.borrow().last(),
+            Some(crate::image_preview::ImagePreviewAction::Open)
+        ));
         card.update(&mut visual, |card, cx| {
-            card.image = attachments::ImagePreview::new(image);
+            card.image
+                .preview
+                .set(Arc::new(gpui_kit::Image::from_bytes(
+                    gpui_kit::ImageFormat::Png,
+                    image.bytes().to_vec(),
+                )))
+                .unwrap();
             cx.notify();
         });
         visual.run_until_parked();

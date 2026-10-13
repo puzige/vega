@@ -1499,6 +1499,7 @@ impl Render for ConversationStream {
             self.actions.restore_focus = false;
             self.focus_composer(window, cx);
         }
+        self.reset_image_visibility(cx);
         let render_t0 = Instant::now();
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
@@ -1746,7 +1747,6 @@ impl Render for ConversationStream {
             })
             .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))
-            .children(self.render_screenshot_preview(window, cx))
             .into_any_element();
         counters.record_render(render_t0);
         element

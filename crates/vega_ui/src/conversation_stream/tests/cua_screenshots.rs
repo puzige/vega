@@ -1,5 +1,5 @@
 use super::*;
-use gpui_kit::{ScrollDelta, ScrollWheelEvent, VisualTestContext, point, size};
+use gpui_kit::{VisualTestContext, point, size};
 
 fn picture(name: &str) -> ImageAttachment {
     let bytes: &[u8] = match name {
@@ -158,158 +158,42 @@ async fn issue75_screenshot_card_wraps_actual_thumbnail_instead_of_full_conversa
 }
 
 #[gpui_kit::test]
-async fn issue75_screenshot_image_opens_root_preview_without_changing_chat_geometry(
+async fn issue75_screenshot_requests_shared_preview_without_covering_conversation(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "screenshot-preview");
     deliver(&stream, picture("landscape"), cx);
-    for width in [1100.0, 360.0] {
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        visual.simulate_resize(size(px(width), px(850.0)));
-        visual.run_until_parked();
-        let before = visual.debug_bounds("assistant-screenshot").unwrap();
-        let trigger = visual.debug_bounds("screenshot-expand").unwrap();
-        visual.simulate_click(trigger.center(), Default::default());
-        visual.run_until_parked();
-        let panel = visual.debug_bounds("screenshot-preview-panel").unwrap();
-        assert!(visual.debug_bounds("screenshot-preview").is_some());
-        assert_eq!(visual.debug_bounds("assistant-screenshot").unwrap(), before);
-        assert!(panel.left() >= px(24.0) && panel.right() <= px(width - 24.0));
-        assert!(panel.size.width <= px(960.0) && panel.size.height <= px(720.0));
-        let colors = visual.update(|_, cx| theme(cx).colors);
-        let (quads, scale) =
-            visual.update(|window, _| (window.painted_quads(), window.scale_factor()));
-        assert!(
-            quads.iter().any(|quad| {
-                (quad.bounds.size.width.as_f32() / scale - f32::from(panel.size.width - px(2.0)))
-                    .abs()
-                    < 1.0
-                    && (quad.bounds.size.height.as_f32() / scale - 32.0).abs() < 1.0
-                    && quad.background.as_solid() == Some(colors.bg_elevated.into())
-                    && (quad.corner_radii.top_left.as_f32() / scale - 7.0).abs() < 0.1
-                    && (quad.corner_radii.top_right.as_f32() / scale - 7.0).abs() < 0.1
-            }),
-            "preview header paints its own inset top corners"
-        );
-        visual.simulate_keystrokes("escape");
-        assert!(visual.debug_bounds("screenshot-preview").is_none());
-        visual.simulate_keystrokes("enter");
-        assert!(
-            visual.debug_bounds("screenshot-preview").is_some(),
-            "Escape returns focus to thumbnail"
-        );
-        visual.simulate_keystrokes("escape space");
-        assert!(
-            visual.debug_bounds("screenshot-preview").is_some(),
-            "Space opens focused thumbnail"
-        );
-        visual.simulate_keystrokes("tab");
-        let save_focus = visual.update(|window, cx| window.focused(cx));
-        visual.simulate_keystrokes("tab");
-        let close_focus = visual.update(|window, cx| window.focused(cx));
-        assert_ne!(save_focus, close_focus);
-        visual.simulate_keystrokes("tab");
-        assert_eq!(visual.update(|window, cx| window.focused(cx)), save_focus);
-        visual.simulate_keystrokes("shift-tab");
-        assert_eq!(visual.update(|window, cx| window.focused(cx)), close_focus);
-        visual.simulate_keystrokes("space");
-        assert!(
-            visual.debug_bounds("screenshot-preview").is_none(),
-            "keyboard close"
-        );
-        let (quads, scale) =
-            visual.update(|window, _| (window.painted_quads(), window.scale_factor()));
-        assert!(
-            quads.iter().any(|quad| {
-                (quad.bounds.size.width.as_f32() / scale - f32::from(trigger.size.width)).abs()
-                    < 1.0
-                    && quad.border_color == colors.brand_primary.into()
-                    && (quad.border_widths.top.as_f32() / scale - 1.0).abs() < 0.1
-            }),
-            "return focus has a visible border on the image target"
-        );
-        visual.simulate_keystrokes("enter");
-        let backdrop = visual.debug_bounds("screenshot-preview").unwrap();
-        visual.simulate_click(
-            backdrop.origin + point(px(4.0), px(4.0)),
-            Default::default(),
-        );
-        visual.run_until_parked();
-        assert!(
-            visual.debug_bounds("screenshot-preview").is_none(),
-            "outside click closes"
-        );
-        visual.simulate_keystrokes("space");
-        assert!(
-            visual.debug_bounds("screenshot-preview").is_some(),
-            "outside close returns focus"
-        );
-        visual.simulate_keystrokes("escape");
-    }
-}
-
-#[gpui_kit::test]
-async fn issue75_screenshot_preview_blocks_background_scroll_and_disappears_with_owner(
-    cx: &mut TestAppContext,
-) {
-    let (window, stream, _) = open_controller_stream(cx, "screenshot-owner");
-    let mut entries: Vec<_> = (2..35)
-        .map(|seq| hydration_user(seq, "Earlier conversation line."))
-        .collect();
-    entries.push(screenshot_history("landscape", "last"));
-    stream.update(cx, |stream, cx| {
-        stream.apply_history_page(hydration_page(entries, None), cx)
+    let requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(&stream, move |_, request: &ImagePreviewRequested, _| {
+            captured
+                .borrow_mut()
+                .push((request.image.clone(), request.action));
+        })
+        .detach()
     });
-    cx.run_until_parked();
-    click(window, "screenshot-expand", cx);
-    let before = stream.read_with(cx, |stream, _| stream.list.logical_scroll_top());
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    let list = visual.debug_bounds("conversation-message-list").unwrap();
-    visual.simulate_event(ScrollWheelEvent {
-        position: list.center(),
-        delta: ScrollDelta::Pixels(point(px(0.0), px(250.0))),
-        ..Default::default()
-    });
-    visual.run_until_parked();
-    let after = stream.read_with(&visual, |stream, _| stream.list.logical_scroll_top());
-    assert_eq!(before.item_ix, after.item_ix);
-    assert_eq!(before.offset_in_item, after.offset_in_item);
-    let composer_add = visual.debug_bounds("composer-add").unwrap();
-    visual.simulate_click(composer_add.center(), Default::default());
-    visual.run_until_parked();
-    assert!(
-        visual.debug_bounds("composer-action-images").is_none(),
-        "preview must not activate covered composer control"
-    );
-    if visual.debug_bounds("screenshot-preview").is_some() {
-        visual.simulate_keystrokes("escape");
-    }
-    visual.simulate_click(composer_add.center(), Default::default());
-    visual.run_until_parked();
-    assert!(
-        visual.debug_bounds("composer-action-images").is_some(),
-        "same click activates composer after preview closes"
-    );
-    visual.simulate_click(composer_add.center(), Default::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("composer-action-images").is_none());
-    visual.simulate_event(ScrollWheelEvent {
-        position: list.center(),
-        delta: ScrollDelta::Pixels(point(px(0.0), px(250.0))),
-        ..Default::default()
-    });
-    visual.run_until_parked();
-    let moved = stream.read_with(&visual, |stream, _| stream.list.logical_scroll_top());
-    assert!(
-        before.item_ix != moved.item_ix || before.offset_in_item != moved.offset_in_item,
-        "same wheel moves list after preview closes"
-    );
-    stream.update(cx, |stream, cx| {
-        stream.list.scroll_to_end();
-        cx.notify();
-    });
-    cx.run_until_parked();
+    let before = visual.debug_bounds("assistant-screenshot").unwrap();
     click(window, "screenshot-expand", cx);
+    let image = requests.borrow().last().unwrap().0.clone();
+    assert_eq!(
+        image.read_with(cx, |image, _| image.image().clone()),
+        picture("landscape")
+    );
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("screenshot-preview").is_none());
+    assert_eq!(visual.debug_bounds("assistant-screenshot").unwrap(), before);
+    visual.update(|window, cx| image.read(cx).thumbnail_focus().focus(window, cx));
+    visual.simulate_keystrokes("enter space");
+    assert_eq!(requests.borrow().len(), 3);
+    assert!(
+        requests
+            .borrow()
+            .iter()
+            .all(|(source, action)| source == &image
+                && matches!(action, crate::image_preview::ImagePreviewAction::Open))
+    );
     stream.update(cx, |stream, cx| {
         assert!(stream.replace_history_window(
             hydration_page(vec![hydration_user(80, "Different page")], None),
@@ -317,107 +201,5 @@ async fn issue75_screenshot_preview_blocks_background_scroll_and_disappears_with
             cx
         ));
     });
-    cx.run_until_parked();
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("screenshot-preview").is_none());
-    assert!(stream.read_with(&visual, |stream, _| stream.screenshot_preview.is_none()));
-    assert!(visual.update(|window, cx| stream.read(cx).selection_focus.is_focused(window)));
-}
-
-#[gpui_kit::test]
-async fn issue75_screenshot_history_multiple_images_keep_save_identity_and_native_outcomes(
-    cx: &mut TestAppContext,
-) {
-    let (window, stream, _) = open_controller_stream(cx, "screenshot-multiple");
-    stream.update(cx, |stream, cx| {
-        stream.apply_history_page(
-            hydration_page(
-                vec![
-                    screenshot_history("landscape", "first"),
-                    screenshot_history("portrait", "second"),
-                ],
-                None,
-            ),
-            cx,
-        )
-    });
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
-    visual.simulate_resize(size(px(1100.0), px(1100.0)));
-    visual.run_until_parked();
-    click(window, "screenshot-save", cx);
-    assert!(
-        cx.did_prompt_for_new_path(),
-        "card icon opens native picker"
-    );
-    cx.simulate_new_path_selection(|_| None);
-    cx.run_until_parked();
-    let temp = tempfile::tempdir().unwrap();
-    for (index, name) in ["landscape", "portrait"].into_iter().enumerate() {
-        let bounds = stream.read_with(&visual, |stream, _| {
-            stream.list.bounds_for_item(index).unwrap()
-        });
-        visual.simulate_click(
-            bounds.origin + point(px(20.0), px(65.0)),
-            Default::default(),
-        );
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("screenshot-preview").is_some());
-        visual.simulate_keystrokes("tab enter");
-        assert!(cx.did_prompt_for_new_path());
-        cx.simulate_new_path_selection(|parent| {
-            assert_ne!(parent, std::path::Path::new("/"));
-            None
-        });
-        cx.run_until_parked();
-        click(window, "screenshot-preview-save", cx);
-        assert!(cx.did_prompt_for_new_path());
-        click(window, "screenshot-preview-save", cx);
-        let saved = temp.path().join(format!("{name}.png"));
-        cx.simulate_new_path_selection(|_| Some(saved.clone()));
-        cx.run_until_parked();
-        assert_eq!(std::fs::read(&saved).unwrap(), picture(name).bytes());
-        assert_eq!(
-            stream.read_with(cx, |stream, _| stream
-                .list
-                .bounds_for_item(index)
-                .unwrap()
-                .size
-                .height),
-            bounds.size.height,
-            "saving in preview must not grow the underlying conversation row"
-        );
-        assert!(
-            !cx.did_prompt_for_new_path(),
-            "busy activation must not open another picker"
-        );
-        click(window, "screenshot-preview-save", cx);
-        cx.simulate_new_path_selection(|_| Some(saved.clone()));
-        cx.run_until_parked();
-        assert_eq!(
-            std::fs::read(&saved).unwrap(),
-            picture(name).bytes(),
-            "failed overwrite keeps original intact"
-        );
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert!(
-            visual.debug_bounds("screenshot-save-status").is_some(),
-            "native save failure stays by its card"
-        );
-        visual.simulate_keystrokes("escape");
-    }
-    click(window, "screenshot-expand", cx);
-    let next = cx.new(|cx| ConversationStream::new(permission_thread(), cx));
-    window
-        .update(cx, |root, _, cx| {
-            root.stream = next;
-            cx.notify();
-        })
-        .unwrap();
-    cx.run_until_parked();
-    assert!(
-        VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("screenshot-preview")
-            .is_none(),
-        "thread switch unmounts preview"
-    );
+    assert!(!stream.read_with(cx, |stream, cx| stream.owns_image_preview(&image, cx)));
 }

@@ -8,6 +8,7 @@ const MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT: f32 = 480.;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum TabKey {
     Diff,
+    Image,
     Terminal(u64),
     File(u64),
     Artifact(ArtifactCardId),
@@ -52,6 +53,53 @@ pub(super) struct Workspace {
 }
 
 impl VegaWindow {
+    pub(super) fn show_image_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_workspace_route(cx);
+        self.workspace.close(&TabKey::Image);
+        self.workspace.open(TabKey::Image);
+        if self.workspace_available_width(window, cx) < MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH {
+            self.image_preview
+                .previous_maximized
+                .get_or_insert(self.workspace.maximized);
+            self.workspace.maximized = [true, false];
+        } else if self.workspace.maximized[1] {
+            self.image_preview
+                .previous_maximized
+                .get_or_insert(self.workspace.maximized);
+            self.workspace.maximized = [false, false];
+        }
+        self.workspace_focus(0, window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn remove_image_workspace(&mut self) {
+        self.workspace.close(&TabKey::Image);
+        if let Some(previous) = self.image_preview.previous_maximized.take() {
+            self.workspace.maximized = previous;
+        }
+    }
+
+    pub(super) fn restore_image_workspace_size(&mut self, window: &Window, cx: &App) {
+        if self.workspace_available_width(window, cx) >= MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH {
+            if self
+                .image_preview
+                .previous_maximized
+                .is_some_and(|previous| previous[1])
+            {
+                self.workspace.maximized = [false, false];
+            } else if self.image_preview.previous_maximized.is_some() {
+                if let Some(previous) = self.image_preview.previous_maximized.take() {
+                    self.workspace.maximized = previous;
+                }
+            }
+        } else if self.workspace.selected[0] == Some(TabKey::Image) && !self.workspace.hidden[0] {
+            self.image_preview
+                .previous_maximized
+                .get_or_insert(self.workspace.maximized);
+            self.workspace.maximized = [true, false];
+        }
+    }
+
     pub(super) fn workspace_has_terminals(&self) -> bool {
         !self.workspace.terminals.is_empty()
     }
@@ -295,7 +343,7 @@ impl VegaWindow {
         self.workspace
             .tabs
             .iter()
-            .any(|(key, _)| matches!(key, TabKey::Artifact(_) | TabKey::File(_)))
+            .any(|(key, _)| matches!(key, TabKey::Artifact(_) | TabKey::File(_) | TabKey::Image))
     }
 
     /// Whether the current project's most recent terminal tab is actually
@@ -517,7 +565,7 @@ impl VegaWindow {
             .tabs
             .iter()
             .rev()
-            .find(|(key, _)| matches!(key, TabKey::Artifact(_) | TabKey::File(_)))
+            .find(|(key, _)| matches!(key, TabKey::Artifact(_) | TabKey::File(_) | TabKey::Image))
             .cloned()
         {
             if let TabKey::File(id) = key
@@ -551,6 +599,10 @@ impl VegaWindow {
             }
             TabKey::Diff => self.diff_controller.close(),
             TabKey::Artifact(_) => {}
+            TabKey::Image => {
+                self.close_image_preview(window, cx);
+                return;
+            }
         }
         self.workspace_focus(index, window, cx);
         cx.notify();
@@ -586,7 +638,7 @@ impl VegaWindow {
         cx.notify();
     }
 
-    fn workspace_focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn workspace_focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((_, stream)) = &self.stream_view {
             stream.update(cx, |stream, cx| stream.focus_composer(window, cx));
         }
@@ -594,6 +646,12 @@ impl VegaWindow {
 
     fn workspace_label(&self, key: &TabKey, cx: &App) -> String {
         match key {
+            TabKey::Image => self
+                .image_preview
+                .active
+                .as_ref()
+                .map(|active| active.image.read(cx).name().to_owned())
+                .unwrap_or_default(),
             TabKey::Diff => "Review".into(),
             TabKey::Terminal(id) => format!("终端 {id}"),
             TabKey::File(id) => self
@@ -614,6 +672,7 @@ impl VegaWindow {
 
     fn workspace_tab_icon(key: &TabKey) -> Icon {
         match key {
+            TabKey::Image => Icon::Camera,
             TabKey::Diff | TabKey::File(_) => Icon::Document,
             TabKey::Terminal(_) => Icon::Terminal,
             TabKey::Artifact(_) => Icon::Summary,
@@ -694,6 +753,11 @@ impl VegaWindow {
 
     fn workspace_focus(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let focus = match self.workspace.selected[index].as_ref() {
+            Some(TabKey::Image) => self
+                .image_preview
+                .active
+                .as_ref()
+                .map(|active| active.image.read(cx).focus_handle(cx)),
             Some(TabKey::File(id)) => self
                 .workspace
                 .files
@@ -1217,6 +1281,7 @@ impl VegaWindow {
                     },
                     colors,
                     cx.listener(move |this, _, window, cx| {
+                        this.image_preview.previous_maximized = None;
                         this.workspace.maximized[index] = !this.workspace.maximized[index];
                         this.workspace.reveal_tabs[index] = true;
                         this.workspace_focus(index, window, cx);
@@ -1260,6 +1325,11 @@ impl VegaWindow {
             .child(strip)
             .child(actions);
         let body = match selected {
+            Some(TabKey::Image) => self
+                .image_preview
+                .active
+                .as_ref()
+                .map(|active| active.image.clone().into_any_element()),
             Some(TabKey::File(id)) => self
                 .workspace
                 .files
@@ -1329,6 +1399,7 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.sync_image_preview(window, cx);
         if self.workspace.composer_focus_pending {
             self.workspace_focus_composer(window, cx);
             self.workspace.composer_focus_pending = false;
@@ -2321,6 +2392,110 @@ mod tests {
             34.0,
             "terminal→right center distance",
         );
+    }
+
+    #[gpui_kit::test]
+    async fn issue296_image_preview_screenshot_opens_right_workspace(cx: &mut TestAppContext) {
+        use vega_conversation::types::{ConversationEvent, ImageAttachment};
+        let repo = tempfile::tempdir().unwrap();
+        let store = vega_store::Store::open(":memory:").unwrap();
+        store.migrate().unwrap();
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().unwrap(),
+            "image preview",
+            None,
+        )
+        .unwrap();
+        let thread =
+            vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
+                .unwrap();
+        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        let root = cx.new(VegaWindow::new);
+        let view = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(1403.), px(860.)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| view,
+            )
+            .unwrap()
+        });
+        cx.run_until_parked();
+        let stream = root.read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+        let image = ImageAttachment::from_bytes(
+            include_bytes!(
+                "../../../vega_ui/src/conversation_stream/tests/fixtures/screenshot-landscape.png"
+            )
+            .to_vec(),
+        )
+        .unwrap();
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "preview-message".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::ScreenshotDelivered {
+                    message_id: "preview-message".into(),
+                    call_id: "preview-shot".into(),
+                    image,
+                },
+                cx,
+            );
+        });
+        shell_click(window, "screenshot-expand", cx);
+        assert!(
+            !shell_absent(window, "image-preview", cx),
+            "displayed screenshot must open the shared right preview"
+        );
+        assert!(
+            shell_absent(window, "screenshot-preview", cx),
+            "the conversation is not covered by a modal"
+        );
+        assert!(root.read_with(cx, |root, _| root.workspace.tabs.len() == 1));
+        let image = root.read_with(cx, |root, _| {
+            root.image_preview.active.as_ref().unwrap().image.clone()
+        });
+        root.update(cx, |root, cx| {
+            root.workspace.tabs.push((TabKey::Diff, true));
+            root.workspace.selected[1] = Some(TabKey::Diff);
+            root.workspace.maximized = [false, true];
+            cx.notify();
+        });
+        cx.run_until_parked();
+        image.update(cx, |image, cx| {
+            image.action(vega_ui::image_preview::ImagePreviewAction::Open, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            root.read_with(cx, |root, _| root.workspace.maximized),
+            [false, false]
+        );
+        let preview = shell_bounds(window, "image-preview", cx);
+        let composer = shell_bounds(window, "composer-shell", cx);
+        assert!(
+            composer.right() <= preview.left(),
+            "wide viewport suppresses bottom fullscreen while keeping chat alongside the image"
+        );
+        window
+            .update(cx, |root, window, cx| root.close_image_preview(window, cx))
+            .unwrap();
+        assert_eq!(
+            root.read_with(cx, |root, _| root.workspace.maximized),
+            [false, true]
+        );
+        assert!(root.read_with(cx, |root, _| {
+            root.workspace.tabs.contains(&(TabKey::Diff, true))
+        }));
     }
 
     /// R46 §2.1: the three slots are a window-level trailing cluster, so every

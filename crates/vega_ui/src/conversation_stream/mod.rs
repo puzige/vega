@@ -163,6 +163,11 @@ const INJECT_RATE: usize = 500;
 /// viewport as content changes (ui-spec §4.4).
 const COMPOSER_ROWS: usize = 1;
 
+pub struct ImagePreviewRequested {
+    pub image: Entity<crate::image_preview::ImagePreview>,
+    pub action: crate::image_preview::ImagePreviewAction,
+}
+
 /// Typed settings request emitted upward; persistence remains in conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadSettingsRequested {

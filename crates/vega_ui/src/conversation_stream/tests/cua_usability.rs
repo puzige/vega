@@ -70,26 +70,7 @@ async fn issue75_usability_screenshot_stays_visible_outside_folded_process_and_r
     let expand = visual.debug_bounds("screenshot-expand").unwrap();
     visual.simulate_click(expand.center(), Default::default());
     visual.run_until_parked();
-    let save = visual.debug_bounds("screenshot-preview-save").unwrap();
-    visual.simulate_click(save.center(), Default::default());
-    visual.run_until_parked();
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection(|parent| {
-        assert_ne!(parent, std::path::Path::new("/"));
-        None
-    });
-    cx.run_until_parked();
-    let save = VisualTestContext::from_window(window.into(), cx)
-        .debug_bounds("screenshot-preview-save")
-        .unwrap();
-    VisualTestContext::from_window(window.into(), cx)
-        .simulate_click(save.center(), Default::default());
-    cx.run_until_parked();
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("screenshot.png");
-    cx.simulate_new_path_selection(|_| Some(path.clone()));
-    cx.run_until_parked();
-    assert_eq!(std::fs::read(path).unwrap(), picture().bytes());
+    assert!(visual.debug_bounds("screenshot-preview").is_none());
     assert!(
         VisualTestContext::from_window(window.into(), cx)
             .debug_bounds("computer-use-control-bar")

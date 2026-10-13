@@ -238,9 +238,14 @@ impl ConversationStream {
             .retain(|(id, _)| !submitted.iter().any(|(sent, _)| sent == id));
         if !submitted.is_empty() {
             let index = self.entries.len();
-            self.entries.push(StreamEntry::UserImages {
-                images: submitted.into_iter().map(|(_, image)| image).collect(),
-            });
+            let images = self.history_image_previews(
+                submitted
+                    .into_iter()
+                    .map(|(_, image)| image.image)
+                    .collect(),
+                cx,
+            );
+            self.entries.push(StreamEntry::UserImages { images });
             self.list_append(index);
         }
         cx.notify();

@@ -96,9 +96,13 @@ fn issue78_image_entry_aligns_right(cx: &mut TestAppContext) {
     )
     .expect("valid image");
     let entry = StreamEntry::UserImages {
-        images: vec![crate::conversation_stream::attachments::ImagePreview::new(
-            image,
-        )],
+        images: vec![cx.update(|cx| {
+            crate::conversation_stream::attachments::ImagePreview::new(
+                image,
+                "图片-1.png".into(),
+                cx,
+            )
+        })],
     };
     let (_, visual) = cx.add_window_view(|_, _| EntryView(entry));
     visual.simulate_resize(gpui_kit::size(px(600.), px(600.)));

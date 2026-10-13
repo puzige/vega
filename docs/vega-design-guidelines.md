@@ -130,6 +130,7 @@ hover 不是唯一操作路径；focus、菜单打开和上下文菜单提供等
 - Settings footer 收紧外层，按钮本体圆角与内距不变。顶部搜索、前进后退、原生 traffic lights 与拖拽区保留。
 - 全局尾部三个窗口控制仍由窗口管理；保留 [R46](vega-r46-window-anchored-shell-slots.md) 的 104px 预留与动作语义。
 - Environment 默认折叠，宽窄切换、Workspace Dock/最大化、终端焦点与 PTY 身份保持 [#141](vega-issue-141-environment-default-collapsed.md)、[R44](vega-r44-terminal-panel-logic.md) 的契约。
+- 2026-10-13 用户追加的[图片右侧预览](vega-issue-296-image-preview.md)统一现有图片入口：点击进入Workspace，文件名、打开方式、保存操作就近呈现；替代截图居中模态，保留原图与来源生命周期。
 - 空间不足时先收起次级文案、用溢出菜单或垂直表单；不能截掉主操作或让整窗口承担局部内容滚动。
 
 ## 11. Settings
