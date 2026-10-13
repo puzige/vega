@@ -84,3 +84,11 @@ cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
 本地生产路径 fixture 证明单窗目录+截图为 2 次工具/3 个 provider 轮次，两窗为 3 次工具/3 个轮次，均零输入；交替目录与 AX 失败在第三次失败结束；无变化点击第三次派发后停止，真实视口变化不误停。存储回归覆盖重复事件幂等、跨线程拒绝、注入写入失败、取消与旧 epoch、数据库重新打开、下一轮不回喂和删除清理。GPUI 回归实际渲染并点击折叠后的截图展开/保存、现有 + 菜单接管/对话继续、浏览器待批和任务停止；Ready 先于 MessageStarted 的生产 ingress 也保持本轮提示可达，后续新回合清除旧提示。
 
 这些均为进程内受控 fixture，不代表真机通过。U09–U11、PR 云端全量门禁和发布后真机耗时/正确性，由主控继续执行和补充。未读取受限应用捕获内容，未用真实 driver 代替用户测试。
+
+### PR #320 首次云端反馈修复
+
+HEAD 98aa8aba 的 Clippy 在 `Backends::observe` 报 8/7 参数；原始诊断保留于 `/tmp/vega-75-usability-ci-clippy-first.log`。将观察选项归为 `CaptureMode::Observe { include_image }` 和 `CaptureMode::Screenshot`，截图模式固定携带图片且只读，避免两个独立布尔值形成无意义组合；参数恢复 7 个，不添加 lint allow 或改动门禁。
+
+受影响 runtime 回归 `cargo nextest run -p vega_runtime -E 'test(issue75)'`：69/69 PASS，275 项按范围跳过；run `d848b231-9886-4fe2-b15d-4d9d4c526f21`，原始输出 `/tmp/vega-75-usability-ci-fix-tests.log`，SHA-256 `8043daf8f3314757db73edf6c9314a9bbc80d01d881b167d21fcc409f84803e6`。仅修改的 backend.rs 已通过 rustfmt 与 diff 检查；云端 Clippy 是否通过须以新提交的 PR gate 为准。
+
+针对已确认云端诊断，额外复验受影响包：`cargo clippy -p vega_runtime --all-targets -- -D warnings` 通过，exit 0；原始记录 `/tmp/vega-75-usability-ci-fix-clippy.log`。未运行本地 workspace 全量门禁。

@@ -30,6 +30,11 @@ pub(super) struct DesktopFixture {
     pub calls: Vec<(String, Value)>,
 }
 
+enum CaptureMode {
+    Observe { include_image: bool },
+    Screenshot,
+}
+
 struct Desktop {
     daemon: Child,
     client: Option<ManagedClient>,
@@ -252,8 +257,7 @@ impl Backends {
                     capability,
                     epoch,
                     call_id,
-                    include_image,
-                    false,
+                    CaptureMode::Observe { include_image },
                     cancel,
                 )
                 .await
@@ -315,8 +319,11 @@ impl Backends {
                     capability,
                     epoch,
                     call_id,
-                    include_image,
-                    screenshot,
+                    if screenshot {
+                        CaptureMode::Screenshot
+                    } else {
+                        CaptureMode::Observe { include_image }
+                    },
                     cancel,
                 )
                 .await?;
@@ -539,10 +546,13 @@ impl Backends {
         capability: Capability,
         epoch: u64,
         call_id: &str,
-        include_image: bool,
-        screenshot_only: bool,
+        mode: CaptureMode,
         cancel: &CancellationToken,
     ) -> Result<String, Error> {
+        let (include_image, screenshot_only) = match mode {
+            CaptureMode::Observe { include_image } => (include_image, false),
+            CaptureMode::Screenshot => (true, true),
+        };
         self.validate_target(run, capability, epoch, cancel).await?;
         let target = run.control.target(capability)?.ok_or(Error::NotReady)?;
         let mut observation = Observation {
