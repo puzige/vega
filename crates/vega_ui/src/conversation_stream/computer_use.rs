@@ -13,6 +13,14 @@ impl ConversationStream {
             self.computer_use_notice_generation =
                 self.computer_use_notice_generation.wrapping_add(1);
         }
+        let same_control = match (&self.computer_use_control, &control) {
+            (Some(current), Some(next)) => current.same_instance(next),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_control {
+            self.actions.invalidate_computer_takeover();
+        }
         self.computer_use_control = control;
         cx.notify();
     }

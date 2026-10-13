@@ -65,6 +65,10 @@ impl std::fmt::Debug for ComputerUseControl {
 }
 
 impl ComputerUseControl {
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn new() -> Self {
         let (changed, _) = watch::channel(0);
         Self(Arc::new(Inner {

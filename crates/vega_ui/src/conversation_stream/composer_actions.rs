@@ -2,6 +2,7 @@
 use super::*;
 use crate::interaction::InteractionExt;
 use gpui_kit::Focusable;
+use vega_conversation::types::{ComputerUseControl, ControlPhase};
 
 /// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
 /// Labels come from [`mode_command`], so the menu and the parser cannot drift.
@@ -177,9 +178,21 @@ impl ComposerActionRow {
     }
 }
 
+#[derive(Clone)]
+struct ComposerTakeover {
+    control: ComputerUseControl,
+    epoch: u64,
+    message_id: String,
+    control_generation: u64,
+}
+
 #[derive(Default)]
 pub(crate) struct ComposerActions {
     menu: bool,
+    menu_rows: Vec<ComposerActionRow>,
+    menu_generation: u64,
+    control_generation: u64,
+    takeover: Option<ComposerTakeover>,
     slash: Option<String>,
     dismissed: Option<String>,
     highlight: usize,
@@ -191,6 +204,17 @@ pub(crate) struct ComposerActions {
 }
 
 impl ComposerActions {
+    fn close_menu(&mut self) {
+        self.menu = false;
+        self.menu_rows.clear();
+        self.takeover = None;
+        self.menu_generation = self.menu_generation.wrapping_add(1);
+    }
+
+    pub(super) fn invalidate_computer_takeover(&mut self) {
+        self.control_generation = self.control_generation.wrapping_add(1);
+    }
+
     pub(crate) fn visible(&self) -> bool {
         self.menu || self.slash.is_some()
     }
@@ -253,7 +277,7 @@ impl ConversationStream {
         self.context_usage_dismissed = true;
         self.context_usage_trigger_hovered = false;
         self.context_usage_tooltip_hovered = false;
-        self.actions.menu = false;
+        self.actions.close_menu();
         self.actions.slash = None;
         self.model_picker_level = ModelPickerLevel::Closed;
         self.permission_picker_open = false;
@@ -268,7 +292,7 @@ impl ConversationStream {
         self.actions.running = true;
         self.actions.stopping = false;
         self.actions.terminal_cancelled = None;
-        self.actions.menu = false;
+        self.actions.close_menu();
         self.actions.slash = None;
         self.controller_runtime_error = None;
         self.controller_error = None;
@@ -335,7 +359,7 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         if input.read(cx).is_composing() {
-            self.actions.menu = false;
+            self.actions.close_menu();
             self.actions.slash = None;
             cx.notify();
             return;
@@ -369,6 +393,24 @@ impl ConversationStream {
         let open = !self.actions.menu;
         self.close_composer_popovers(cx);
         self.actions.menu = open;
+        if open {
+            self.actions.menu_rows = self.actions.rows(self.thread.backend);
+            self.actions.takeover = self.computer_use_control.as_ref().and_then(|control| {
+                let status = control.status();
+                let (message_id, _) = self.active_agent_message.as_ref()?;
+                (status.phase == ControlPhase::Running).then(|| ComposerTakeover {
+                    control: control.clone(),
+                    epoch: status.epoch,
+                    message_id: message_id.clone(),
+                    control_generation: self.actions.control_generation,
+                })
+            });
+            if self.actions.takeover.is_some() {
+                self.actions
+                    .menu_rows
+                    .push(ComposerActionRow::ComputerTakeover);
+            }
+        }
         self.actions.highlight = 0;
         self.focus_composer(window, cx);
         cx.notify();
@@ -385,7 +427,7 @@ impl ConversationStream {
             return;
         }
         self.actions.dismissed = Some(self.input.read(cx).text().to_owned());
-        self.actions.menu = false;
+        self.actions.close_menu();
         self.actions.slash = None;
         cx.stop_propagation();
         cx.notify();
@@ -494,23 +536,57 @@ impl ConversationStream {
         let Some(row) = self.composer_action_rows().get(index).copied() else {
             return;
         };
+        self.select_composer_row(row, window, cx);
+    }
+
+    fn composer_takeover_enabled(&self) -> bool {
+        self.actions.takeover.as_ref().is_some_and(|takeover| {
+            let status = takeover.control.status();
+            self.actions.menu
+                && self.actions.control_generation == takeover.control_generation
+                && self.computer_use_control.is_some()
+                && self
+                    .active_agent_message
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == &takeover.message_id)
+                && status.phase == ControlPhase::Running
+                && status.epoch == takeover.epoch
+        })
+    }
+
+    fn select_composer_row(
+        &mut self,
+        row: ComposerActionRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.input.read(cx).is_composing() {
+            return;
+        }
         match row {
             ComposerActionRow::ComputerTakeover => {
-                self.actions.menu = false;
-                if let Some(control) = &self.computer_use_control {
-                    let _ = control.pause_at(control.status().epoch);
+                if !self.composer_takeover_enabled() {
+                    self.focus_composer(window, cx);
+                    cx.notify();
+                    return;
                 }
-                self.focus_composer(window, cx);
-                cx.notify();
+                let Some(takeover) = self.actions.takeover.clone() else {
+                    return;
+                };
+                if takeover.control.pause_at(takeover.epoch).is_ok() {
+                    self.actions.close_menu();
+                    self.focus_composer(window, cx);
+                    cx.notify();
+                }
             }
             ComposerActionRow::AddImages => {
-                self.actions.menu = false;
+                self.actions.close_menu();
                 self.pick_images(cx);
             }
             ComposerActionRow::FileReference => self.insert_file_reference_token(window, cx),
             ComposerActionRow::Mode(mode) => self.select_composer_mode(mode, window, cx),
             ComposerActionRow::Permission(mode) => {
-                self.actions.menu = false;
+                self.actions.close_menu();
                 self.actions.slash = None;
                 self.request_permission_mode(mode, cx);
                 self.focus_composer(window, cx);
@@ -522,7 +598,7 @@ impl ConversationStream {
     /// `@` reference row: close the menu and start the bounded file selector
     /// exactly as the previous positional implementation did.
     fn insert_file_reference_token(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.actions.menu = false;
+        self.actions.close_menu();
         let draft = self.input.read(cx).text();
         let separator = if draft.is_empty() || draft.ends_with(char::is_whitespace) {
             ""
@@ -556,7 +632,7 @@ impl ConversationStream {
             let remainder = original[prefix.len()..].to_owned();
             self.actions.pending_mode = Some((mode, original, remainder));
         }
-        self.actions.menu = false;
+        self.actions.close_menu();
         self.actions.slash = None;
         if self.thread.mode == mode {
             self.acknowledge_mode_action(cx);
@@ -586,20 +662,18 @@ impl ConversationStream {
     }
 
     fn composer_action_rows(&self) -> Vec<ComposerActionRow> {
-        let mut rows = self.actions.rows(self.thread.backend);
-        if self.actions.menu
-            && self.computer_use_control.as_ref().is_some_and(|control| {
-                control.status().phase == vega_conversation::types::ControlPhase::Running
-            })
-        {
-            rows.push(ComposerActionRow::ComputerTakeover);
+        if self.actions.menu {
+            self.actions.menu_rows.clone()
+        } else {
+            self.actions.rows(self.thread.backend)
         }
-        rows
     }
 
     pub(crate) fn render_composer_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let rows = self.composer_action_rows();
+        let generation = self.actions.menu_generation;
+        let menu = self.actions.menu;
         let mut children = Vec::with_capacity(rows.len() + 1);
         for (index, row) in rows.iter().enumerate() {
             // One separator between the thread-mode commands and the
@@ -615,13 +689,16 @@ impl ConversationStream {
                 );
             }
             let highlighted = self.actions.highlight == index;
+            let enabled =
+                *row != ComposerActionRow::ComputerTakeover || self.composer_takeover_enabled();
             let selected = row.is_selected(&self.thread);
             let label = row.label();
             let row = *row;
             children.push(
                 div()
-                    .id(("composer-action", index))
+                    .id(format!("composer-action-{generation}-{index}"))
                     .debug_selector(move || row.selector().to_string())
+                    .aria_label(label)
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .px_2()
                     .flex()
@@ -629,27 +706,36 @@ impl ConversationStream {
                     .gap_1()
                     .rounded_md()
                     .text_size(px(Typography::SIDEBAR))
-                    .text_color(
-                        if matches!(
-                            row,
-                            ComposerActionRow::Permission(PermissionMode::FullAccess)
-                        ) {
-                            colors.warning
-                        } else if selected || highlighted {
-                            colors.brand_primary
-                        } else {
-                            colors.text_primary
-                        },
-                    )
+                    .text_color(if !enabled {
+                        colors.text_tertiary
+                    } else if matches!(
+                        row,
+                        ComposerActionRow::Permission(PermissionMode::FullAccess)
+                    ) {
+                        colors.warning
+                    } else if selected || highlighted {
+                        colors.brand_primary
+                    } else {
+                        colors.text_primary
+                    })
                     .when(highlighted, |row| row.bg(colors.bg_active))
-                    .cursor_pointer()
-                    .hover(move |row| row.bg(colors.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.select_composer_action(index, window, cx);
-                        }),
-                    )
+                    .when(enabled, |row| {
+                        row.cursor_pointer()
+                            .hover(move |row| row.bg(colors.bg_hover))
+                    })
+                    .when(!enabled, |row| {
+                        row.aria_label("接管电脑操作，已失效").tooltip(|_, cx| {
+                            crate::icons::tooltip("这项接管已失效，请关闭并重新打开菜单", cx)
+                        })
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.actions.menu_generation == generation
+                            && this.actions.menu == menu
+                            && this.composer_action_rows().contains(&row)
+                        {
+                            this.select_composer_row(row, window, cx);
+                        }
+                    }))
                     // Fixed-width marker column: every label starts on the
                     // same x, with or without a check.
                     .child(

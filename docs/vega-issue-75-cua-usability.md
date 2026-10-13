@@ -340,3 +340,48 @@ cargo nextest run -p vega_runtime \
 ```
 
 2个修改Rust文件格式与diff检查通过（`/tmp/vega-75-delivery-progress-interleaved-act-checks.log`）。未重跑不变跨层/UI矩阵，既有132项、19项和全部RED证据独立保留。
+
+## 接管菜单在运行结束时保持稳定（2026-10-13，0.1.87 真机回归）
+
+takeover-87-01：用户打开“+”后任务完成，接管末项消失，底部锚定的菜单缩短一行，添加图片移动到旧接管位置；随后抬起鼠标触发了原生选图框。主控已取消且未选文件。本节仅修复已有临时菜单，不新增常驻入口、占位或运行时功能，不改签名、schema、截图与持久化逻辑。
+
+MS1. 每次打开“+”时固定该次可见条目、顺序及身份。菜单开启期间，Running→终态、暂停/恢复、control替换或模型/后端状态变化不能增删或重排这些条目；当前不可用的接管项保留相同行盒、使用现有禁用颜色及就近帮助，鼠标/Enter零动作。关闭后销毁快照，重开重新计算；结束后不显示接管项且无空白占位，添加图片正常可用。几何沿用现有共享行高32px：原菜单N行高H，动态删除一行会变H−32并让底部相邻项上/下移32；修复中同一次打开保持N和H不变，不增加新尺寸token。
+
+MS2. 接管快照绑定原ComputerUseControl、当时epoch、当前assistant消息身份和control投影generation，派发前重新校验当前仍是该身份且Running、epoch未变化。同一control的连续clone投影不是替换，须以共享实例身份比较保持已开菜单有效；Some/None切换或真正不同实例即使epoch相同也使旧菜单失效，撤下再装回原实例不能复活。只对捕获的control调用pause_at，禁止在回调执行时读取另一个control的最新epoch。每次菜单开关隔离其generation；鼠标按下和抬起须属于同一菜单项，旧菜单回调不能在关闭、重开或后续run中触发新接管/选图。菜单行的语义分派不得仅依赖变化后的索引。
+
+MS3. 复用原对话内暂停/继续和任务停止路径。仍只有用户主动打开“+”时才看到接管；正常截图无新菜单、通知或底栏。既有模式/权限/文件引用、slash过滤、键盘导航与图片导入行为保持。变更仅UI临时状态，无存储迁移，回滚可恢复原UI实现但会重新引入该误点风险。
+
+| ID | 前置/操作 | 预期 | 证据层级 | 状态 |
+|---|---|---|---|---|
+| MS01 | Running打开菜单→完成→点击旧接管坐标 | 接管和添加图片边界不变；接管禁用，无选图框/新动作 | 生产GPUI | PASS（进程内） |
+| MS02 | 接管行按下→运行完成→原位置抬起 | 不误派发添加图片，无暂停已结束任务 | 生产GPUI | PASS（进程内） |
+| MS03 | 键盘高亮接管→完成→Enter | 高亮身份和布局不变，禁用项零动作 | 生产GPUI | PASS（进程内） |
+| MS04 | 原control/epoch失效，旧点击或回调遇后续run/新菜单 | 后续run保持Running，不受旧回调影响；有效新菜单仍可接管 | 生产GPUI | PASS（进程内） |
+| MS05 | 关闭并重开已结束菜单，点添加图片 | 无接管/空白占位，原生选图可用，取消不新增附件 | 生产GPUI | PASS（进程内） |
+| MS07 | 流式event batch连续投影同一个control clone | 已开菜单接管保持有效；不同实例/撤下再装回仍失效 | 生产GPUI | PASS（进程内） |
+| MS06 | 现有接管/继续、模式/权限、slash与图片导入回归 | 所属对话行为和原有授权/输入/停止合同保持 | 生产GPUI | PASS（进程内） |
+
+实施顺序：保留生产事件驱动的RED，冻结菜单快照及接管身份，按原共享控件状态绘制，再跑本卡菜单/CUA与受影响Composer/附件定向回归、修改文件格式和diff检查。本地不跑全仓门禁、不调用真实driver/应用UI或数据库；新版真实菜单时序由主控发布后复测。
+
+### MS 本轮结果与失败保留
+
+5项新生产GPUI用例覆盖MS01–MS05：完成后旧坐标不触发选图、鼠标按下/抬起间完成零动作、键盘高亮身份保持且Enter不操作、旧菜单不暂停替换control或后续run、关闭重开后添加图片仍使用原生选择器。旧control仍Running但投影被替换/重新装回时，旧菜单也不复活；新菜单则可以正常接管。失效行保持原32px边界，点击后回焦composer，Esc可关闭，不会新增常驻占位。MS06原有接管继续、模式/权限、slash、图片导入及浮层互斥/关闭均通过。
+
+| 阶段 | 实际结果与原因 | 原始日志 |
+|---|---|---|
+| 菜单时序RED | 0 PASS / 3 FAIL：完成后点击与按抬时序误开选图，键盘高亮接管行消失 | `/tmp/vega-75-menu-stability-red.log` |
+| 旧身份RED | 0 PASS / 2 FAIL：旧菜单暂停替换control，旧mouse-down在新run重开后的mouse-up暂停新run | `/tmp/vega-75-menu-stability-owner-red.log` |
+| 首轮修复 | 3 PASS / 2 FAIL：失效项点击后composer丢焦，Esc未关闭，随后“+”关闭而非重开菜单 | `/tmp/vega-75-menu-stability-first.log` |
+| 失效项回焦修复 | 5/5 PASS | `/tmp/vega-75-menu-stability-second.log` |
+| 受影响定向矩阵 | 33/33 PASS，704 skipped | `/tmp/vega-75-menu-stability-final.log` |
+
+最终run ID为 `026f5cc7-e9c0-4c77-bd08-c429b452d917`，原始日志SHA-256为 `6d6562265e1cdb67fc4ad588227ad4d996c8ae2cb6d2d87785eb0100d225eea7`；完整executable/cwd/argv在 `/tmp/vega-75-menu-stability-final-argv.json`。命令：
+
+```sh
+cargo nextest run -p vega_ui \
+  -E 'test(issue75_menu_stability) | test(issue75_usability_takeover) | test(conversation_stream::tests::composer_actions::) | test(conversation_stream::tests::attachments::) | test(conversation_stream::tests::utility_menu_coordination::) | test(conversation_stream::tests::r68_popup_dismiss::)'
+```
+
+4个修改Rust文件的格式与git diff检查通过，原始命令/退出码为 `/tmp/vega-75-menu-stability-checks.log`。所有RED/GREEN日志、hash、分支/基线、源码内容摘要保存在 `/tmp/vega-75-menu-stability-evidence.json`。以上仅为进程内生产GPUI，不是用户Mac系统操作或新版真机通过；主控负责云端门禁、发布与真实时序复测。
+
+生产接线复审补充：每个event batch会重投影同一个control clone，不能将它当作替换。新增MS07先得到1项RED（点击后仍Running而非Pausing）；修复以Arc共享实例身份比较，连续同实例保持菜单有效，真正替换/撤下重装继续使旧菜单失效。受影响原矩阵加新增项 **34/34 PASS**、704 skipped，run `34acc4ad-8943-44f7-b8e9-0c3db52eb26a`。RED日志 `/tmp/vega-75-menu-stability-projection-red.log`，SHA-256 `f899355574fc0db2ade0922f1192cf92e5090ac77c2e15706820ffe60b33983f`；GREEN日志 `/tmp/vega-75-menu-stability-projection-verified.log`，SHA-256 `72df47aaad6365f5037f21fd28f2b86a1e2a970fe43bd57f356dc9632d63ef56`。完整命令为同名前缀 `-argv.json`，没有运行全仓门禁。
