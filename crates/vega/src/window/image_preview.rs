@@ -184,25 +184,17 @@ impl VegaWindow {
                     self.close_image_preview(window, cx);
                 }
             }
-            ImagePreviewAction::Save | ImagePreviewAction::SaveInline => {
-                let pane = if matches!(request.action, ImagePreviewAction::Save) {
-                    let Some(active) = self
-                        .image_preview
-                        .active
-                        .as_ref()
-                        .filter(|active| active.image == image)
-                    else {
-                        return;
-                    };
-                    Some(active.generation)
-                } else {
-                    self.image_preview
-                        .active
-                        .as_ref()
-                        .filter(|active| active.image == image)
-                        .map(|active| active.generation)
+            ImagePreviewAction::Save => {
+                let Some(generation) = self
+                    .image_preview
+                    .active
+                    .as_ref()
+                    .filter(|active| active.image == image)
+                    .map(|active| active.generation)
+                else {
+                    return;
                 };
-                self.save_preview_image(stream, image, pane, cx);
+                self.save_preview_image(stream, image, Some(generation), cx);
             }
             ImagePreviewAction::DismissApplications => {
                 self.cancel_image_operation(cx);
@@ -411,13 +403,7 @@ impl VegaWindow {
                 }
                 this.image_preview.operation = None;
                 image.update(cx, |view, cx| {
-                    view.finish(
-                        Some(match result {
-                            Ok(()) => "已交给所选应用打开",
-                            Err(error) => error.message(),
-                        }),
-                        cx,
-                    )
+                    view.finish(result.err().map(|error| error.message()), cx)
                 });
             });
         })

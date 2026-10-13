@@ -268,9 +268,7 @@ async fn issue296_image_preview_workspace_nonmodal_focus_and_narrow_fallback(
 }
 
 #[gpui_kit::test]
-async fn issue296_image_preview_saves_exact_bytes_shared_busy_and_late_picker(
-    cx: &mut TestAppContext,
-) {
+async fn issue296_image_preview_saves_exact_bytes_busy_and_late_picker(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let temp = tempfile::tempdir().unwrap();
     for portrait in [false, true] {
@@ -282,19 +280,21 @@ async fn issue296_image_preview_saves_exact_bytes_shared_busy_and_late_picker(
             ));
         });
         let before = bounds(&f, "assistant-screenshot", cx);
-        click(&f, "screenshot-save", cx);
-        assert!(
-            cx.did_prompt_for_new_path(),
-            "inline save works without opening a pane"
-        );
+        assert!(absent(&f, "screenshot-save", cx));
+        click(&f, "screenshot-expand", cx);
+        let image = active(&f, cx);
+        click(&f, "image-preview-save", cx);
+        assert!(cx.did_prompt_for_new_path());
         cx.simulate_new_path_selection(|parent| {
             assert_ne!(parent, std::path::Path::new("/"));
             None
         });
         cx.run_until_parked();
-        click(&f, "screenshot-expand", cx);
+        assert_eq!(image.read_with(cx, |view, _| view.status()), None);
+        assert!(!image.read_with(cx, |view, _| view.busy()));
         f.window
             .update(cx, |_, window, cx| {
+                image.read(cx).focus_handle(cx).focus(window, cx);
                 window.focus_next(cx);
                 window.focus_next(cx);
             })
@@ -304,14 +304,15 @@ async fn issue296_image_preview_saves_exact_bytes_shared_busy_and_late_picker(
             cx.did_prompt_for_new_path(),
             "pane save is reachable by keyboard while using the native picker"
         );
-        click(&f, "screenshot-save", cx);
+        assert!(image.read_with(cx, |view, _| view.busy()));
+        click(&f, "image-preview-save", cx);
         let saved = temp.path().join(format!("{portrait}.png"));
         cx.simulate_new_path_selection(|_| Some(saved.clone()));
         cx.run_until_parked();
         assert_eq!(std::fs::read(&saved).unwrap(), picture(portrait).bytes());
         assert!(
             !cx.did_prompt_for_new_path(),
-            "card and pane share one pending operation"
+            "repeated save uses one pending operation"
         );
         assert_eq!(
             bounds(&f, "assistant-screenshot", cx).size.height,
@@ -324,8 +325,9 @@ async fn issue296_image_preview_saves_exact_bytes_shared_busy_and_late_picker(
         assert!(
             active(&f, cx).read_with(cx, |view, _| view.status().unwrap().starts_with("保存失败"))
         );
-        assert!(!absent(&f, "screenshot-save-status", cx));
-        click(&f, "screenshot-save", cx);
+        assert!(!absent(&f, "image-preview-status", cx));
+        assert!(absent(&f, "screenshot-save-status", cx));
+        click(&f, "image-preview-save", cx);
         let image = active(&f, cx);
         f.window
             .update(cx, |_, window, cx| {
@@ -338,17 +340,18 @@ async fn issue296_image_preview_saves_exact_bytes_shared_busy_and_late_picker(
         cx.run_until_parked();
         assert!(
             !late.exists(),
-            "closing the matching preview fences an inline picker before writing"
+            "closing the matching preview fences the picker before writing"
         );
     }
 }
 
 struct FakeProcess {
     ready: bool,
+    success: bool,
 }
 impl native::ImageProcess for FakeProcess {
     fn poll(&mut self) -> Result<Option<bool>, native::ImageOpenError> {
-        Ok(self.ready.then_some(true))
+        Ok(self.ready.then_some(self.success))
     }
     fn cancel(&mut self) {}
 }
@@ -357,6 +360,7 @@ struct FakeSystem {
     calls: Arc<Mutex<Vec<Vec<OsString>>>>,
     paths: Arc<Mutex<Vec<PathBuf>>>,
     ready: bool,
+    success: bool,
 }
 impl native::ImageSystem for FakeSystem {
     fn applications(
@@ -375,7 +379,10 @@ impl native::ImageSystem for FakeSystem {
         args: &[OsString],
     ) -> Result<Box<dyn native::ImageProcess>, native::ImageOpenError> {
         self.calls.lock().unwrap().push(args.to_vec());
-        Ok(Box::new(FakeProcess { ready: self.ready }))
+        Ok(Box::new(FakeProcess {
+            ready: self.ready,
+            success: self.success,
+        }))
     }
 }
 
@@ -391,6 +398,7 @@ async fn issue296_image_preview_open_with_real_controller_and_owned_export(
             calls: calls.clone(),
             paths: paths.clone(),
             ready: true,
+            success: true,
         })
     });
     f.stream.update(cx, |stream, cx| {
@@ -438,10 +446,11 @@ async fn issue296_image_preview_open_with_real_controller_and_owned_export(
         ]]
     );
     let image = active(&f, cx);
-    assert_eq!(
-        image.read_with(cx, |view, _| view.status()),
-        Some("已交给所选应用打开")
-    );
+    assert_eq!(image.read_with(cx, |view, _| view.status()), None);
+    assert!(!image.read_with(cx, |view, _| view.busy()));
+    assert!(absent(&f, "image-preview-status", cx));
+    assert!(absent(&f, "image-preview-applications", cx));
+    assert!(absent(&f, "screenshot-save-status", cx));
     cx.simulate_keystrokes(f.window.into(), "escape");
     assert!(
         absent(&f, "image-preview", cx),
@@ -477,7 +486,64 @@ async fn issue296_image_preview_open_with_real_controller_and_owned_export(
 }
 
 #[gpui_kit::test]
-async fn issue296_image_preview_task_roundtrip_fences_inline_picker(cx: &mut TestAppContext) {
+async fn issue296_image_preview_open_failure_stays_visible_and_success_clears_status(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    f.stream.update(cx, |stream, cx| {
+        stream.apply_history_page(page(vec![screenshot(false, "open-error")]), cx)
+    });
+    click(&f, "screenshot-expand", cx);
+    let image = active(&f, cx);
+    let card = bounds(&f, "assistant-screenshot", cx);
+    for (ready, success, error) in [
+        (true, false, native::ImageOpenError::Launch),
+        (false, true, native::ImageOpenError::TimedOut),
+    ] {
+        f.root.update(cx, |root, _| {
+            root.image_preview.timeout = std::time::Duration::ZERO;
+            root.image_preview.system = Arc::new(FakeSystem {
+                calls: calls.clone(),
+                paths: paths.clone(),
+                ready,
+                success,
+            });
+        });
+        let before = calls.lock().unwrap().len();
+        click(&f, "image-preview-open-with", cx);
+        click(&f, "image-preview-app-0", cx);
+        assert_eq!(calls.lock().unwrap().len(), before + 1);
+        assert_eq!(
+            image.read_with(cx, |view, _| view.status()),
+            Some(error.message())
+        );
+        assert!(!image.read_with(cx, |view, _| view.busy()));
+        assert!(!absent(&f, "image-preview-status", cx));
+        assert!(absent(&f, "image-preview-applications", cx));
+        assert_eq!(bounds(&f, "assistant-screenshot", cx), card);
+        f.root.update(cx, |root, _| {
+            root.image_preview.system = Arc::new(FakeSystem {
+                calls: calls.clone(),
+                paths: paths.clone(),
+                ready: true,
+                success: true,
+            });
+        });
+        click(&f, "image-preview-open-with", cx);
+        click(&f, "image-preview-app-0", cx);
+        assert_eq!(calls.lock().unwrap().len(), before + 2);
+        assert_eq!(image.read_with(cx, |view, _| view.status()), None);
+        assert!(!image.read_with(cx, |view, _| view.busy()));
+        assert!(absent(&f, "image-preview-status", cx));
+        assert!(absent(&f, "image-preview-applications", cx));
+        assert_eq!(bounds(&f, "assistant-screenshot", cx), card);
+    }
+}
+
+#[gpui_kit::test]
+async fn issue296_image_preview_task_roundtrip_fences_picker(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let (thread, other) = cx.update(|cx| {
         let thread = cx
@@ -499,9 +565,10 @@ async fn issue296_image_preview_task_roundtrip_fences_inline_picker(cx: &mut Tes
     f.stream.update(cx, |stream, cx| {
         stream.apply_history_page(page(vec![screenshot(false, "route")]), cx)
     });
-    click(&f, "screenshot-save", cx);
+    click(&f, "screenshot-expand", cx);
+    click(&f, "image-preview-save", cx);
     assert!(cx.did_prompt_for_new_path());
-    assert!(absent(&f, "image-preview", cx));
+    let image = active(&f, cx);
     cx.update(|cx| cx.set_global(vega_ui::sidebar::OpenedThread(Some(other))));
     cx.run_until_parked();
     cx.update(|cx| cx.set_global(vega_ui::sidebar::OpenedThread(Some(thread))));
@@ -515,7 +582,9 @@ async fn issue296_image_preview_task_roundtrip_fences_inline_picker(cx: &mut Tes
     cx.simulate_new_path_selection(|_| Some(destination.clone()));
     cx.run_until_parked();
     assert!(!destination.exists());
-    assert!(absent(&f, "screenshot-save-status", cx));
+    assert_eq!(image.read_with(cx, |view, _| view.status()), None);
+    assert!(!image.read_with(cx, |view, _| view.busy()));
+    assert!(absent(&f, "image-preview", cx));
     f.root.update(cx, |root, _| root.window_terminal_cleanup());
 }
 
@@ -640,6 +709,8 @@ async fn issue296_image_preview_empty_failed_menu_and_window_retirement(cx: &mut
                 "无法查询打开方式，请保存到本地后打开"
             })
         );
+        assert!(!absent(&f, "image-preview-status", cx));
+        assert!(!active(&f, cx).read_with(cx, |view, _| view.busy()));
         click(&f, "image-preview-save", cx);
         assert!(cx.did_prompt_for_new_path());
         cx.simulate_new_path_selection(|_| None);

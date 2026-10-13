@@ -10,7 +10,6 @@ use crate::icons::{Icon, icon, icon_button};
 pub enum ImagePreviewAction {
     Open,
     Save,
-    SaveInline,
     Applications,
     DismissApplications,
     ChooseApplication(usize),
