@@ -87,10 +87,8 @@ impl VegaWindow {
                 .is_some_and(|previous| previous[1])
             {
                 self.workspace.maximized = [false, false];
-            } else if self.image_preview.previous_maximized.is_some() {
-                if let Some(previous) = self.image_preview.previous_maximized.take() {
-                    self.workspace.maximized = previous;
-                }
+            } else if let Some(previous) = self.image_preview.previous_maximized.take() {
+                self.workspace.maximized = previous;
             }
         } else if self.workspace.selected[0] == Some(TabKey::Image) && !self.workspace.hidden[0] {
             self.image_preview

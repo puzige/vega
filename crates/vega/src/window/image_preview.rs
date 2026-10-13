@@ -258,7 +258,7 @@ impl VegaWindow {
                 })
                 .unwrap_or(false);
             if !current {
-                let _ = image.update(cx, |view, cx| view.finish(None, cx));
+                image.update(cx, |view, cx| view.finish(None, cx));
                 return;
             }
             let status = match chosen {

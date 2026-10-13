@@ -188,3 +188,25 @@ SHA-256：`76878a38d334b2d939d12ff673cca145984f5be720afef00f2f278b9d7ac8e1e`。�
 独立重算原 manifest 所列22个 Rust 文件，逐文件摘要全部相同；包含新增 source，`source-fingerprint.txt` 聚合 SHA-256 仍为 `1720469129cf160176ad3a7fe8f168db94ab29ec1ff1b70f3d22ae44a5c0d99b`。`cargo fmt -p vega -p vega_ui -p vega_theme -- --check` 与 `git diff --check` 均 exit0；原始空输出保留在 `integration-format-check.log`、`integration-diff-check.log`。
 
 集成交接冻结 UTC `2026-10-13T05:43:12Z`，本地 `2026-10-13T13:43:12+08:00`；M01 仍 **NOT RUN**。
+
+## PR #327 首次 CI lint 修正
+
+云端 run `38353029075`、Clippy job `115149503508` 在 HEAD `86c11556f01175f7a19f6b66465274789fdc46dd` 返回 exit **101**。原始日志 `ci-first-clippy.log` SHA-256：`0aaf5d6e67f7531938b497a748d3da17fe234c156d3e26581a4361aae094153a`。三项分别为 unit 返回值的多余绑定、可合并的条件分支和 Copy 类型的多余 clone。修正仅移除绑定、使用 `else if let` 和直接传递 palette；原 bottom-max 分支仍保留快照，没有行为改动或 lint allow。
+
+编辑前 `git fetch origin && git rebase origin/master` exit0，分支已是最新；base 仍为 `6a668f56d6bc50fd3fcf2a8aade70161ca0a0842`。仅执行指定关联测试：
+
+```sh
+cargo nextest run -p vega -p vega_ui -E 'test(issue296_image_preview_saves_exact) | test(issue296_image_preview_workspace_nonmodal) | test(issue296_image_preview_geometry)'
+```
+
+`ci-fix.log`，exit **0**，原始 footer：
+
+```text
+Summary [   0.539s] 3 tests run: 3 passed, 997 skipped
+```
+
+SHA-256：`e93aa650b018fb82de0bc17e2bd7207cfa3aa15bbd892497ae2a78b2d217987d`。仅已有依赖 `block v0.1.6` 的 future-incompat 提示；没有运行本地 Clippy、全量测试或真实应用。
+
+本次重新计算同22个 Rust 文件，另存 `source-fingerprint-ci-fix.txt`，SHA-256：`a7972ec69a2f70d777da18e2c9cc5e26227756da1692dcbcf9aa96ff82219b6f`；旧 manifest 和失败日志保持不变。`cargo fmt -p vega -p vega_ui -p vega_theme -- --check` 与 `git diff --check` 均 exit0，空输出分别存入 `ci-fix-format-check.log`、`ci-fix-diff-check.log`。
+
+修正交接冻结 UTC `2026-10-13T05:52:56Z`，本地 `2026-10-13T13:52:56+08:00`；实现者未提交或推送，M01 仍 **NOT RUN**。

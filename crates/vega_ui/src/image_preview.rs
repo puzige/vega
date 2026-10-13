@@ -483,7 +483,7 @@ mod tests {
                 ),
             ] {
                 cx.update(|cx| {
-                    cx.set_global(palette.clone());
+                    cx.set_global(palette);
                     crate::init(cx);
                 });
                 let image = ImageAttachment::from_bytes(fixture.to_vec()).unwrap();
