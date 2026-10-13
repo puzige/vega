@@ -46,7 +46,7 @@ async fn issue296_reading_column_and_navigation_do_not_compete(cx: &mut TestAppC
             assert_eq!(column.size.width, px((width - 64.).min(736.)));
             assert_eq!(rail.size.width, px(24.));
             assert_eq!(rail.size.height, px(90.));
-            assert_eq!(rail.center().x, (list.left() - px(54.)).max(px(16.)));
+            assert_eq!(rail.center().x, px(16.));
             assert!((f32::from(rail.center().y - list.center().y)).abs() < 1.);
             assert!(rail.right() <= list.left());
             let (quads, scale) =

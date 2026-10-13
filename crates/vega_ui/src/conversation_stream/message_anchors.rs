@@ -295,15 +295,7 @@ impl ConversationStream {
         }
         self.message_anchor_window_start = self.message_anchor_window_start.min(max_start);
         let start = self.message_anchor_window_start;
-        let available_width = self
-            .workspace_width
-            .unwrap_or_else(|| f32::from(window.viewport_size().width));
-        let content_width = (available_width - 2. * Layout::CONVERSATION_PADDING)
-            .clamp(1., Layout::CONVERSATION_MAX_WIDTH);
-        let rail_left = ((available_width - content_width) / 2.
-            - Layout::CONVERSATION_MARKER_OFFSET
-            - Layout::CONVERSATION_NAVIGATION_GUTTER / 2.)
-            .max(Layout::MESSAGE_ANCHOR_LEFT_INSET);
+        let rail_left = Layout::MESSAGE_ANCHOR_LEFT_INSET;
         let rail_height = count as f32 * Layout::CONVERSATION_MARKER_PITCH;
         let rail_top = ((geometry.viewport_height - rail_height) / 2.).max(0.);
         let colors = theme(cx).colors;

@@ -2392,6 +2392,159 @@ mod tests {
         );
     }
 
+    fn issue296_navigation_window(
+        cx: &mut TestAppContext,
+    ) -> (
+        gpui_kit::Entity<VegaWindow>,
+        WindowHandle<VegaWindow>,
+        tempfile::TempDir,
+    ) {
+        let repo = tempfile::tempdir().unwrap();
+        let store = vega_store::Store::open(":memory:").unwrap();
+        store.migrate().unwrap();
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().unwrap(),
+            "Navigation",
+            None,
+        )
+        .unwrap();
+        let thread =
+            vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
+                .unwrap();
+        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        let root = cx.new(VegaWindow::new);
+        let view = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(1403.), px(860.)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| view,
+            )
+            .unwrap()
+        });
+        cx.run_until_parked();
+        (root, window, repo)
+    }
+
+    #[gpui_kit::test]
+    async fn issue296_navigation_pane_edge_tracks_shell_and_preview(cx: &mut TestAppContext) {
+        use vega_conversation::history::{HistoryEntry, HistoryPage};
+        let (root, window, _repo) = issue296_navigation_window(cx);
+        let stream = root.read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+        stream.update(cx, |stream, cx| {
+            stream.apply_history_page(
+                HistoryPage {
+                    entries: (1..=40)
+                        .map(|seq| HistoryEntry::UserText {
+                            seq,
+                            message_id: format!("edge-{seq}"),
+                            content: "Synthetic navigation request".into(),
+                        })
+                        .collect(),
+                    older_cursor: None,
+                    newer_cursor: None,
+                    newest_seq: Some(40),
+                },
+                cx,
+            );
+        });
+        for (collapsed, width, right) in [
+            (false, 304., false),
+            (true, 304., false),
+            (false, 240., true),
+            (false, 365., false),
+        ] {
+            cx.update(|cx| {
+                cx.set_global(SidebarCollapsed(collapsed));
+                vega_ui::sidebar::set_width(width, cx);
+                cx.refresh_windows();
+            });
+            root.update(cx, |root, cx| {
+                if right {
+                    root.workspace_open_diff(cx);
+                } else {
+                    root.workspace.close(&TabKey::Diff);
+                    cx.notify();
+                }
+            });
+            cx.run_until_parked();
+            let pane = shell_bounds(window, "main-header", cx);
+            let rail = shell_bounds(window, "message-anchor-rail", cx);
+            assert_close(rail.center().x - pane.left(), 16., "pane-edge navigation");
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            visual.simulate_mouse_move(rail.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            let preview = visual.debug_bounds("message-anchor-preview").unwrap();
+            assert!(preview.left() >= rail.right());
+            assert!(preview.right() <= pane.right());
+            if right {
+                assert!(
+                    preview.right() <= visual.debug_bounds("right-workspace-pane").unwrap().left()
+                );
+            }
+            visual.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::default());
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn issue296_sidebar_boundary_has_one_line_and_no_white_lane(cx: &mut TestAppContext) {
+        let (_root, window, _repo) = issue296_navigation_window(cx);
+        for appearance in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
+            let colors = appearance.colors;
+            cx.update(|cx| {
+                cx.set_global(appearance);
+                cx.refresh_windows();
+            });
+            cx.run_until_parked();
+            let handle = shell_bounds(window, "sidebar-resize-handle", cx);
+            let panel = shell_bounds(window, "main-content-panel", cx);
+            assert_eq!(handle.size.width, px(5.));
+            assert_eq!(handle.right(), panel.left());
+            window
+                .update(cx, |_, window, _| {
+                    let scale = window.scale_factor();
+                    let quads = window.painted_quads();
+                    let fills = quads
+                        .iter()
+                        .filter(|quad| {
+                            (quad.bounds.size.height.as_f32() / scale
+                                - f32::from(handle.size.height))
+                            .abs()
+                                < 0.1
+                                && quad.bounds.left().as_f32() / scale >= f32::from(handle.left())
+                                && quad.bounds.right().as_f32() / scale <= f32::from(handle.right())
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(
+                        fills.iter().any(|quad| {
+                            quad.background.as_solid() == Some(colors.bg_sidebar.into())
+                                && (quad.bounds.size.width.as_f32() / scale - 5.).abs() < 0.1
+                        }),
+                        "resize lane must continue the sidebar surface"
+                    );
+                    let lines = fills
+                        .iter()
+                        .filter(|quad| {
+                            quad.background.as_solid() == Some(colors.border_subtle.into())
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(lines.len(), 1);
+                    assert!((lines[0].bounds.size.width.as_f32() / scale - 1.).abs() < 0.1);
+                    assert!(
+                        (lines[0].bounds.right().as_f32() / scale - f32::from(panel.left())).abs()
+                            < 0.1
+                    );
+                })
+                .unwrap();
+        }
+    }
+
     #[gpui_kit::test]
     async fn issue296_image_preview_screenshot_opens_right_workspace(cx: &mut TestAppContext) {
         use vega_conversation::types::{ConversationEvent, ImageAttachment};
