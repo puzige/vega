@@ -848,6 +848,74 @@ fn inline_layout_view(
 }
 
 #[gpui_kit::test]
+fn issue296_padding_t01_code_reserves_space_for_both_edges(cx: &mut TestAppContext) {
+    for palette in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
+        for selectable in [true, false] {
+            let mut visual = inline_layout_view(cx, "甲`code`乙", selectable, palette);
+            visual.simulate_resize(size(px(800.), px(600.)));
+            visual.run_until_parked();
+            let (scale, quads, glyph_width) = visual.update(|window, _| {
+                let mut style = message_run_style(palette.colors.text_primary);
+                apply_span_style(&mut style, SpanStyle::Code, &palette.colors);
+                let shaped = window.text_system().shape_line(
+                    "code".into(),
+                    px(Typography::CONVERSATION),
+                    &[style.to_run("code".len())],
+                    None,
+                );
+                (
+                    window.scale_factor(),
+                    window.painted_quads(),
+                    shaped.width(),
+                )
+            });
+            let backgrounds = quads
+                .iter()
+                .filter(|quad| {
+                    quad.background.as_solid() == Some(palette.colors.conversation_code.into())
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(backgrounds.len(), 1);
+            let background = backgrounds[0];
+            assert!(
+                (background.bounds.size.width - (glyph_width + px(8.)).scale(scale))
+                    .0
+                    .abs()
+                    <= 1.,
+                "code background must reserve 4px at each edge: {:?}",
+                background.bounds
+            );
+            assert_eq!(background.bounds.size.height, px(17.5).scale(scale));
+            if selectable {
+                let (layout, offset) = selection::SELECTION_RUN_LAYOUTS.with_borrow(|runs| {
+                    runs.iter()
+                        .rev()
+                        .find_map(|(text, layout, _)| {
+                            text.find("code").map(|offset| (layout.clone(), offset))
+                        })
+                        .unwrap()
+                });
+                let start = layout.position_for_index(offset).unwrap();
+                let end = layout.position_for_index(offset + "code".len()).unwrap();
+                assert!(
+                    (background.bounds.left() - (start.x - px(4.)).scale(scale))
+                        .0
+                        .abs()
+                        <= 0.5
+                );
+                assert!(
+                    (background.bounds.right() - (end.x + px(4.)).scale(scale))
+                        .0
+                        .abs()
+                        <= 0.5
+                );
+                assert_eq!(layout.line_height(), px(23.));
+            }
+        }
+    }
+}
+
+#[gpui_kit::test]
 fn issue296_inline_t01_code_background_is_thin_and_rounded(cx: &mut TestAppContext) {
     for palette in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
         for selectable in [true, false] {
@@ -875,12 +943,22 @@ fn issue296_inline_t01_code_background_is_thin_and_rounded(cx: &mut TestAppConte
                 assert_eq!(corner, px(4.).scale(scale));
             }
             if selectable {
-                let layout = layout_for("中文 inline_code，继续🙂。");
-                let start = layout.position_for_index("中文 ".len()).unwrap();
-                let end = layout.position_for_index("中文 inline_code".len()).unwrap();
+                let layout = layout_for("inline_code");
+                let start = layout.position_for_index(0).unwrap();
+                let end = layout.position_for_index("inline_code".len()).unwrap();
                 assert_eq!(layout.line_height(), px(23.));
-                assert!((background.bounds.left() - start.x.scale(scale)).0.abs() <= 0.5);
-                assert!((background.bounds.right() - end.x.scale(scale)).0.abs() <= 0.5);
+                assert!(
+                    (background.bounds.left() - (start.x - px(4.)).scale(scale))
+                        .0
+                        .abs()
+                        <= 0.5
+                );
+                assert!(
+                    (background.bounds.right() - (end.x + px(4.)).scale(scale))
+                        .0
+                        .abs()
+                        <= 0.5
+                );
                 assert!(
                     (background.bounds.top() - (start.y + px(2.75)).scale(scale))
                         .0
@@ -941,6 +1019,21 @@ fn issue296_inline_t03_tables_allocate_width_to_long_content(cx: &mut TestAppCon
     }
 }
 
+fn fragment_point(
+    runs: &[(String, gpui_kit::TextLayout, gpui_kit::Bounds<Pixels>)],
+    index: usize,
+    end: bool,
+) -> Point<Pixels> {
+    let mut offset = 0;
+    for (text, layout, _) in runs {
+        if index < offset + text.len() || (end && index == offset + text.len()) {
+            return text_point(layout, index - offset, end);
+        }
+        offset += text.len();
+    }
+    panic!("source index missing: {index}")
+}
+
 #[gpui_kit::test]
 fn issue296_inline_t02_wrapped_code_preserves_ranges_and_copy(cx: &mut TestAppContext) {
     let identifier = "long_identifier_".repeat(14);
@@ -951,10 +1044,20 @@ fn issue296_inline_t02_wrapped_code_preserves_ranges_and_copy(cx: &mut TestAppCo
     let (stream, mut visual) = open_selection_harness(cx, assistant_entry(&source));
     visual.simulate_resize(size(px(380.), px(1000.)));
     visual.run_until_parked();
-    let layout = layout_for(&visible);
-    let lines = layout.line_layouts();
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].wrap_boundaries.len() >= 3);
+    let runs = selection::SELECTION_RUN_LAYOUTS.with_borrow(Clone::clone);
+    assert_eq!(
+        runs.iter()
+            .map(|(text, _, _)| text.as_str())
+            .collect::<String>(),
+        visible
+    );
+    assert!(
+        runs.iter()
+            .map(|(_, layout, _)| layout.bounds().top())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            >= 4
+    );
     let (scale, quads, color) = visual.update(|window, cx| {
         (
             window.scale_factor(),
@@ -967,23 +1070,27 @@ fn issue296_inline_t02_wrapped_code_preserves_ranges_and_copy(cx: &mut TestAppCo
         .filter(|quad| quad.background.as_solid() == Some(color.into()))
         .collect::<Vec<_>>();
     let mut code_lines = std::collections::BTreeSet::new();
-    for (index, ch) in visible.char_indices() {
-        let end = index + ch.len_utf8();
-        let point = layout.position_for_index(end).unwrap();
-        let advance = lines[0].unwrapped_layout.x_for_index(end)
-            - lines[0].unwrapped_layout.x_for_index(index);
-        let midpoint = Point::new(point.x - advance / 2., point.y + px(11.5)).scale(scale);
-        let is_code = first.contains(&index) || second.contains(&index);
-        assert_eq!(
-            backgrounds
-                .iter()
-                .any(|quad| quad.bounds.contains(&midpoint)),
-            is_code,
-            "glyph {index}: {ch}"
-        );
-        if is_code {
-            code_lines.insert((if first.contains(&index) { 0 } else { 1 }, point.y));
+    let mut offset = 0;
+    for (text, layout, bounds) in &runs {
+        for (index, ch) in text.char_indices() {
+            let start = layout.position_for_index(index).unwrap();
+            let end = layout.position_for_index(index + ch.len_utf8()).unwrap();
+            let midpoint = Point::new((start.x + end.x) / 2., start.y + px(11.5)).scale(scale);
+            let source_index = offset + index;
+            let is_code = first.contains(&source_index) || second.contains(&source_index);
+            assert_eq!(
+                backgrounds
+                    .iter()
+                    .any(|quad| quad.bounds.contains(&midpoint)),
+                is_code,
+                "glyph {source_index}: {ch}"
+            );
+            if is_code {
+                code_lines.insert((if first.contains(&source_index) { 0 } else { 1 }, start.y));
+            }
         }
+        assert!(bounds.right() <= px(348.5));
+        offset += text.len();
     }
     assert_eq!(backgrounds.len(), code_lines.len());
     for background in backgrounds {
@@ -993,8 +1100,8 @@ fn issue296_inline_t02_wrapped_code_preserves_ranges_and_copy(cx: &mut TestAppCo
     for range in [first.clone(), first.start + 5..first.end - 3] {
         drag(
             &mut visual,
-            text_point(&layout, range.start, false),
-            text_point(&layout, range.end, true),
+            fragment_point(&runs, range.start, false),
+            fragment_point(&runs, range.end, true),
         );
         visual.run_until_parked();
         assert_eq!(
@@ -1039,34 +1146,50 @@ fn issue296_inline_t02_center_and_right_table_backgrounds_follow_wrapped_glyphs(
         (&right, "！", "markdown-table-1-0-1-1", false),
     ] {
         let visible = format!("{text}{punctuation}");
-        let layout = layout_for(&visible);
         let cell = visual.debug_bounds(selector).unwrap();
-        let line = &layout.line_layouts()[0];
-        assert!(line.wrap_boundaries.len() > 1);
-        let mut start = 0;
-        for (row, end) in line
-            .wrap_boundaries
-            .iter()
-            .map(|boundary| line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index)
-            .chain(std::iter::once(visible.len()))
-            .enumerate()
-        {
-            let width =
-                line.unwrapped_layout.x_for_index(end) - line.unwrapped_layout.x_for_index(start);
-            let remaining = cell.size.width - px(24.) - width;
-            let x = cell.left() + px(12.) + if centered { remaining / 2. } else { remaining };
-            if start < text.len() {
-                let right = x + line.unwrapped_layout.x_for_index(end.min(text.len()))
-                    - line.unwrapped_layout.x_for_index(start);
-                let y = cell.top() + px(8. + 23. * row as f32 + 2.75);
-                assert!(backgrounds.iter().any(
-                    |quad| (quad.bounds.left() - x.scale(scale)).0.abs() <= 0.5
+        let runs = selection::SELECTION_RUN_LAYOUTS.with_borrow(|runs| {
+            runs.iter()
+                .filter(|(_, _, bounds)| cell.contains(&bounds.center()))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            runs.iter()
+                .map(|(text, _, _)| text.as_str())
+                .collect::<String>(),
+            visible
+        );
+        let mut rows = std::collections::BTreeMap::<Pixels, (Pixels, Pixels)>::new();
+        let mut offset = 0;
+        for (fragment, layout, _) in runs {
+            let start = layout.position_for_index(0).unwrap();
+            let end = layout.position_for_index(fragment.len()).unwrap();
+            let padding = if offset < text.len() { px(4.) } else { px(0.) };
+            let left = start.x - padding;
+            let right = end.x + padding;
+            let row = rows.entry(start.y).or_insert((left, right));
+            row.0 = row.0.min(left);
+            row.1 = row.1.max(right);
+            if offset < text.len() {
+                let y = start.y + px(2.75);
+                assert!(backgrounds.iter().any(|quad| {
+                    (quad.bounds.left() - left.scale(scale)).0.abs() <= 0.5
                         && (quad.bounds.right() - right.scale(scale)).0.abs() <= 0.5
                         && (quad.bounds.top() - y.scale(scale)).0.abs() <= 0.5
-                ));
+                }));
                 expected += 1;
             }
-            start = end;
+            offset += fragment.len();
+        }
+        assert!(rows.len() > 1);
+        for (left, right) in rows.values() {
+            assert!(*left >= cell.left() + px(11.5));
+            assert!(*right <= cell.right() - px(11.5));
+            if centered {
+                assert!(((*left + *right) / 2. - cell.center().x).abs() * scale <= px(1.));
+            } else {
+                assert!((*right - (cell.right() - px(12.))).abs() * scale <= px(1.));
+            }
         }
     }
     assert_eq!(backgrounds.len(), expected);
@@ -1268,7 +1391,7 @@ fn issue296_inline_t01_narrow_fragment_clamps_rounding(cx: &mut TestAppContext) 
         .filter(|quad| quad.background.as_solid() == Some(color.into()))
         .collect::<Vec<_>>();
     assert_eq!(backgrounds.len(), 1);
-    assert_eq!(backgrounds[0].bounds.size.width, px(6.).scale(scale));
+    assert_eq!(backgrounds[0].bounds.size.width, px(14.).scale(scale));
     assert_eq!(backgrounds[0].bounds.size.height, px(14.).scale(scale));
     let corners = backgrounds[0].corner_radii;
     for radius in [
@@ -1277,6 +1400,148 @@ fn issue296_inline_t01_narrow_fragment_clamps_rounding(cx: &mut TestAppContext) 
         corners.bottom_left,
         corners.bottom_right,
     ] {
-        assert_eq!(radius, px(3.).scale(scale));
+        assert_eq!(radius, px(4.).scale(scale));
+    }
+}
+
+fn padding_multi_click(cx: &mut TestAppContext, source: &str, expected: &str, count: usize) {
+    let (stream, mut visual) = open_selection_harness(cx, assistant_entry(source));
+    visual.simulate_resize(size(px(380.), px(1000.)));
+    visual.run_until_parked();
+    let runs = selection::SELECTION_RUN_LAYOUTS.with_borrow(Clone::clone);
+    let (text, layout, _) = runs
+        .iter()
+        .find(|(text, _, _)| text.contains("code"))
+        .unwrap();
+    let point = text_point(layout, text.find("code").unwrap() + 1, false);
+    visual.simulate_event(gpui_kit::MouseDownEvent {
+        button: MouseButton::Left,
+        position: point,
+        modifiers: Modifiers::default(),
+        click_count: count,
+        first_mouse: false,
+    });
+    visual.simulate_event(gpui_kit::MouseUpEvent {
+        button: MouseButton::Left,
+        position: point,
+        modifiers: Modifiers::default(),
+        click_count: count,
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(gpui_kit::base::TextSelection::selected_text),
+        expected
+    );
+    visual.simulate_keystrokes("cmd-c");
+    assert_eq!(
+        visual.read_from_clipboard().unwrap().text().unwrap(),
+        expected
+    );
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .update(gpui_kit::base::TextSelection::selected_text)
+            .is_empty()
+    );
+    drag(
+        &mut visual,
+        text_point(layout, 0, false),
+        text_point(layout, 2, true),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(gpui_kit::base::TextSelection::selected_text),
+        &text[..2]
+    );
+    stream.read_with(&visual, |stream, _| assert!(matches!(&stream.entries[0], StreamEntry::Assistant { copy, .. } if copy.original_text() == source)));
+    visual.simulate_event(gpui_kit::MouseDownEvent {
+        button: MouseButton::Left,
+        position: point,
+        modifiers: Modifiers::default(),
+        click_count: count,
+        first_mouse: false,
+    });
+    visual.simulate_event(gpui_kit::MouseUpEvent {
+        button: MouseButton::Left,
+        position: point,
+        modifiers: Modifiers::default(),
+        click_count: count,
+    });
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        stream.update(cx, |stream, cx| {
+            let StreamEntry::Assistant {
+                copy,
+                stream: markdown,
+                model,
+                ..
+            } = &mut stream.entries[0]
+            else {
+                panic!("assistant source");
+            };
+            assert!(copy.local_selection_range().is_some());
+            let generation = copy.selection_generation();
+            copy.append(" updated");
+            assert!(copy.selection_generation() > generation);
+            assert!(copy.local_selection_range().is_none());
+            assert!(!copy.has_selected_text());
+            **markdown = MarkdownStream::new();
+            markdown.append(&copy.original_text());
+            markdown.finish();
+            model.sync(&markdown.snapshot(), &StreamCounters::default());
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .update(gpui_kit::base::TextSelection::selected_text)
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn issue296_padding_t03_triple_click_selects_original_logical_line(cx: &mut TestAppContext) {
+    padding_multi_click(cx, "hello `code` world", "hello code world", 3);
+}
+
+#[gpui_kit::test]
+fn issue296_padding_t03_double_click_selects_soft_wrapped_word(cx: &mut TestAppContext) {
+    let word = format!("code{}", "_identifier".repeat(8));
+    padding_multi_click(cx, &format!("before `{word}` after"), &word, 2);
+}
+
+#[gpui_kit::test]
+fn issue296_padding_t02_mixed_scripts_and_kerning_stay_within_column(cx: &mut TestAppContext) {
+    for source in [
+        "AVAVAVAV`code`AVAVAV",
+        "שלום עולם `code_identifier` עוד טקסט",
+        "中文🙂`a👨‍👩‍👧‍👦b_identifier`，`第二段`**加粗**[链接](https://example.com)",
+    ] {
+        let (_, visual) = open_selection_harness(cx, assistant_entry(source));
+        for width in [180., 240., 380.] {
+            visual.simulate_resize(size(px(width), px(1000.)));
+            visual.run_until_parked();
+            let runs = selection::SELECTION_RUN_LAYOUTS.with_borrow(Clone::clone);
+            let expected = source
+                .replace('`', "")
+                .replace("**", "")
+                .replace("[链接](https://example.com)", "链接");
+            assert_eq!(
+                runs.iter()
+                    .map(|(text, _, _)| text.as_str())
+                    .collect::<String>(),
+                expected
+            );
+            for (text, layout, bounds) in &runs {
+                assert!(bounds.left() >= px(31.5), "{source}: {text:?} {bounds:?}");
+                assert!(
+                    bounds.right() <= px(width - 31.5),
+                    "{source}: {text:?} {bounds:?}"
+                );
+                assert_eq!(layout.line_height(), px(23.));
+            }
+        }
     }
 }

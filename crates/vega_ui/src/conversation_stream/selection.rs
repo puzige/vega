@@ -23,8 +23,10 @@ struct LaidOutRun {
     text: SharedString,
     layout: TextLayout,
     bounds: Bounds<Pixels>,
-    order: u64,
+    order: (u64, usize),
     content_range: Range<usize>,
+    logical_range: Range<usize>,
+    selected: Rc<RefCell<Option<Range<usize>>>>,
 }
 
 pub(crate) struct SelectionDocumentBuilder {
@@ -33,7 +35,6 @@ pub(crate) struct SelectionDocumentBuilder {
     content: String,
     next_run_order: u64,
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
-    projected_ranges: Rc<RefCell<Vec<Option<Range<usize>>>>>,
     selection_color: Hsla,
 }
 
@@ -45,7 +46,6 @@ impl SelectionDocumentBuilder {
             content: String::new(),
             next_run_order: 0,
             runs: Rc::new(RefCell::new(Vec::new())),
-            projected_ranges: Rc::new(RefCell::new(Vec::new())),
             selection_color,
         }
     }
@@ -92,18 +92,50 @@ impl SelectionDocumentBuilder {
         }
         let order = self.next_run_order;
         self.next_run_order += 1;
-        SelectableStyledText {
-            id: ElementId::Name(format!("{id_prefix}-selection-run-{order}").into()),
-            text: styled,
-            content: text.into(),
-            content_range: start..end,
-            order,
-            runs: self.runs.clone(),
-            projected_ranges: self.projected_ranges.clone(),
-            selection_color: self.selection_color,
-            paint_runs,
+        let runs = self.runs.clone();
+        let selection_color = self.selection_color;
+        let id_prefix = id_prefix.to_owned();
+        let fragment_id = id_prefix.clone();
+        let fragment =
+            move |range: Range<usize>, content: SharedString, paint_runs: Vec<TextRun>| {
+                let styled = StyledText::new(content.clone()).with_runs(paint_runs.clone());
+                let paint_runs = paint_runs
+                    .iter()
+                    .any(|run| run.background_color.is_some())
+                    .then_some(paint_runs);
+                SelectableStyledText {
+                    id: ElementId::Name(
+                        format!("{fragment_id}-selection-run-{order}-{}", range.start).into(),
+                    ),
+                    text: styled,
+                    content,
+                    content_range: start + range.start..start + range.end,
+                    logical_range: start..end,
+                    order: (order, range.start),
+                    runs: runs.clone(),
+                    selected: Rc::new(RefCell::new(None)),
+                    selection_color,
+                    paint_runs,
+                }
+                .into_any_element()
+            };
+        if let Some(paint_runs) = paint_runs {
+            super::inline_code::flow(text.into(), paint_runs, fragment)
+        } else {
+            SelectableStyledText {
+                id: ElementId::Name(format!("{id_prefix}-selection-run-{order}").into()),
+                text: styled,
+                content: text.into(),
+                content_range: start..end,
+                logical_range: start..end,
+                order: (order, 0),
+                runs: self.runs.clone(),
+                selected: Rc::new(RefCell::new(None)),
+                selection_color,
+                paint_runs: None,
+            }
+            .into_any_element()
         }
-        .into_any_element()
     }
 
     pub(crate) fn wrap(
@@ -121,11 +153,11 @@ impl SelectionDocumentBuilder {
             copy: self.copy.clone(),
             handle: self.copy.ensure_selection_handle(&self.focus, window, cx),
             scope: self.copy.selection_scope(),
+            focus: self.focus,
             content: self.content,
             generation,
             previous_visible_text: previous,
             runs: self.runs,
-            projected_ranges: self.projected_ranges,
         }
         .into_any_element()
     }
@@ -136,9 +168,10 @@ struct SelectableStyledText {
     text: StyledText,
     content: SharedString,
     content_range: Range<usize>,
-    order: u64,
+    logical_range: Range<usize>,
+    order: (u64, usize),
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
-    projected_ranges: Rc<RefCell<Vec<Option<Range<usize>>>>>,
+    selected: Rc<RefCell<Option<Range<usize>>>>,
     selection_color: Hsla,
     paint_runs: Option<Vec<TextRun>>,
 }
@@ -191,10 +224,12 @@ impl Element for SelectableStyledText {
             bounds,
             order: self.order,
             content_range: self.content_range.clone(),
+            logical_range: self.logical_range.clone(),
+            selected: self.selected.clone(),
         });
         #[cfg(test)]
         SELECTION_RUN_LAYOUTS.with_borrow_mut(|runs| {
-            if self.order == 0 {
+            if self.order == (0, 0) {
                 runs.clear();
             }
             runs.push((self.content.to_string(), self.text.layout().clone(), bounds));
@@ -227,7 +262,7 @@ impl Element for SelectableStyledText {
         {
             super::inline_code::paint_backgrounds(self.text.layout(), runs, window);
         }
-        if let Some(Some(range)) = self.projected_ranges.borrow().get(self.order as usize) {
+        if let Some(range) = self.selected.borrow().as_ref() {
             paint_selection(
                 self.text.layout(),
                 range.clone(),
@@ -250,11 +285,11 @@ struct SelectableMessage {
     copy: MessageCopy,
     handle: TextSelectionHandle,
     scope: TextSelectionScopeId,
+    focus: FocusHandle,
     content: String,
     generation: u64,
     previous_visible_text: Option<String>,
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
-    projected_ranges: Rc<RefCell<Vec<Option<Range<usize>>>>>,
 }
 
 struct MessagePrepaint {
@@ -306,7 +341,7 @@ impl Element for SelectableMessage {
             .previous_visible_text
             .as_ref()
             .is_some_and(|text| text != &self.content)
-            && self.handle.snapshot(cx).is_some()
+            && (self.handle.snapshot(cx).is_some() || self.handle.has_local_selection(cx))
         {
             self.copy.invalidate_selection();
             TextSelection::clear(window, cx);
@@ -316,28 +351,43 @@ impl Element for SelectableMessage {
         runs.sort_by_key(|run| run.order);
         let text_runs = runs
             .iter()
-            .map(|run| {
+            .enumerate()
+            .map(|(order, run)| {
                 TextSelectionRun::new(run.text.clone(), run.layout.clone(), run.bounds)
-                    .with_document_order(run.order)
+                    .with_document_order(order as u64)
             })
             .collect::<Vec<_>>();
         let projection = self.handle.update_runs(&text_runs, cx);
-        *self.projected_ranges.borrow_mut() = projection.ranges().to_vec();
-        let selected = projection
-            .ranges()
-            .iter()
-            .zip(&runs)
-            .filter_map(|(range, run)| {
-                range.as_ref().map(|range| {
-                    run.content_range.start + range.start..run.content_range.start + range.end
+        let local = self.copy.local_selection_range();
+        self.handle.set_local_selection(local.is_some(), cx);
+        for (run, range) in runs.iter().zip(projection.ranges()) {
+            *run.selected.borrow_mut() = if let Some(local) = &local {
+                let start = local.start.max(run.content_range.start);
+                let end = local.end.min(run.content_range.end);
+                (start < end).then_some(
+                    start - run.content_range.start..end.saturating_sub(run.content_range.start),
+                )
+            } else {
+                range.clone()
+            };
+        }
+        let selected = local.or_else(|| {
+            projection
+                .ranges()
+                .iter()
+                .zip(&runs)
+                .filter_map(|(range, run)| {
+                    range.as_ref().map(|range| {
+                        run.content_range.start + range.start..run.content_range.start + range.end
+                    })
                 })
-            })
-            .fold(None::<Range<usize>>, |combined, range| {
-                Some(match combined {
-                    Some(current) => current.start.min(range.start)..current.end.max(range.end),
-                    None => range,
+                .fold(None::<Range<usize>>, |combined, range| {
+                    Some(match combined {
+                        Some(current) => current.start.min(range.start)..current.end.max(range.end),
+                        None => range,
+                    })
                 })
-            });
+        });
         let selection_text = selected
             .and_then(|range| self.content.get(range))
             .unwrap_or_default()
@@ -366,12 +416,57 @@ impl Element for SelectableMessage {
     ) {
         let scope = self.scope;
         let hitbox = prepaint.hitbox.clone();
+        let runs = self.runs.clone();
+        let content = self.content.clone();
+        let copy = self.copy.clone();
+        let handle = self.handle.clone();
+        let focus = self.focus.clone();
         window.on_mouse_event(move |event: &gpui_kit::MouseDownEvent, phase, window, cx| {
             if phase.bubble()
                 && event.button == gpui_kit::MouseButton::Left
                 && hitbox.is_hovered(window)
             {
                 TextSelection::activate_scope(scope, window, cx);
+                if event.click_count >= 2 {
+                    let selected = runs.borrow().iter().find_map(|run| {
+                        if !run.bounds.contains(&event.position)
+                            || run.content_range == run.logical_range
+                        {
+                            return None;
+                        }
+                        let offset = run.layout.index_for_position(event.position).ok()?
+                            + run.content_range.start;
+                        let text = content.get(run.logical_range.clone())?;
+                        let range = multi_click_range(
+                            text,
+                            offset - run.logical_range.start,
+                            event.click_count,
+                        )?;
+                        Some(
+                            run.logical_range.start + range.start
+                                ..run.logical_range.start + range.end,
+                        )
+                    });
+                    if let Some(range) = selected {
+                        let copy = copy.clone();
+                        let handle = handle.clone();
+                        let focus = focus.clone();
+                        let content = content.clone();
+                        window.defer(cx, move |window, cx| {
+                            if copy.visible_text().as_deref() == Some(content.as_str()) {
+                                copy.set_local_selection_range(range.clone());
+                                copy.set_selected_text(
+                                    copy.selection_generation(),
+                                    content[range].to_owned(),
+                                );
+                                handle.set_local_selection(true, cx);
+                                focus.focus(window, cx);
+                                window.refresh();
+                            }
+                        });
+                        cx.stop_propagation();
+                    }
+                }
             }
         });
         self.body.paint(window, cx);
@@ -424,4 +519,55 @@ fn selection_quad_bounds(
         Point::new(end.x, end.y + line_height),
     ));
     quads
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelectionCharacter {
+    Word,
+    Whitespace,
+    Other,
+}
+
+fn selection_character(character: char) -> SelectionCharacter {
+    if character == '_'
+        || character.is_ascii_alphanumeric()
+        || matches!(character, '\u{00C0}'..='\u{024F}' | '\u{0400}'..='\u{04FF}' | '\u{1E00}'..='\u{1EFF}' | '\u{0300}'..='\u{036F}')
+    {
+        SelectionCharacter::Word
+    } else if character.is_whitespace() && !matches!(character, '\n' | '\r') {
+        SelectionCharacter::Whitespace
+    } else {
+        SelectionCharacter::Other
+    }
+}
+
+fn multi_click_range(text: &str, offset: usize, count: usize) -> Option<Range<usize>> {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    if count >= 3 {
+        let start = text[..offset].rfind('\n').map_or(0, |newline| newline + 1);
+        let end = text[offset..]
+            .find('\n')
+            .map_or(text.len(), |newline| offset + newline);
+        return Some(start..end);
+    }
+    let character = text[offset..].chars().next()?;
+    let kind = selection_character(character);
+    let connects = |next| kind != SelectionCharacter::Other && selection_character(next) == kind;
+    let start = text[..offset]
+        .chars()
+        .rev()
+        .take(128)
+        .take_while(|character| connects(*character))
+        .fold(offset, |start, character| start - character.len_utf8());
+    let end = text[offset + character.len_utf8()..]
+        .chars()
+        .take(128)
+        .take_while(|character| connects(*character))
+        .fold(offset + character.len_utf8(), |end, character| {
+            end + character.len_utf8()
+        });
+    Some(start..end)
 }
