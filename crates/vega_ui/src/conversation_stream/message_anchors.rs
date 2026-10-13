@@ -179,6 +179,7 @@ impl ConversationStream {
                     .unwrap_or_else(|| match entry {
                         StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx),
                         StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
+                        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
                         _ => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()),
                     } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })

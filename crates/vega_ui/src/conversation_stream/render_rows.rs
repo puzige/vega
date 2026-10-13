@@ -78,11 +78,25 @@ pub(crate) fn render_stream_entry(
     entry: &StreamEntry,
     index: usize,
     suppress_run_notices: bool,
+    process_top: f32,
     window: &mut Window,
     cx: &mut App,
     focus: &FocusHandle,
 ) -> AnyElement {
     let body = render_entry_internal(entry, window, cx, Some(focus), suppress_run_notices);
+    if matches!(
+        entry,
+        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. }
+    ) && process_top > 0.
+    {
+        return div()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .pt(px(process_top))
+            .child(body)
+            .into_any_element();
+    }
     if !matches!(entry, StreamEntry::Assistant { .. }) {
         return body;
     }

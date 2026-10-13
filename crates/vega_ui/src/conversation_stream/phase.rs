@@ -141,6 +141,16 @@ pub(crate) enum RunDetail {
     Assistant(usize),
 }
 
+fn operation_top_inset(index: usize, previous_assistant: bool) -> f32 {
+    if index == 0 {
+        Layout::CONVERSATION_BODY_TOP
+    } else if previous_assistant {
+        Layout::CONVERSATION_STAGE_TOP
+    } else {
+        0.
+    }
+}
+
 impl ConversationStream {
     pub(crate) fn run_details(
         &self,
@@ -177,9 +187,25 @@ impl ConversationStream {
 
     pub(crate) fn stage_top_insets(&self, cx: &App) -> HashMap<usize, f32> {
         let mut previous_clock = HashMap::new();
+        let mut previous_visible = None;
         let mut insets = HashMap::new();
         for (index, entry) in self.entries.iter().enumerate() {
             if self.process_entry_hidden(index, cx) {
+                continue;
+            }
+            if matches!(
+                entry,
+                StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. }
+            ) {
+                let top = match previous_visible.and_then(|previous| self.entries.get(previous)) {
+                    Some(StreamEntry::RunActivity { .. }) => Layout::CONVERSATION_BODY_TOP,
+                    Some(StreamEntry::Assistant { .. }) => Layout::CONVERSATION_STAGE_TOP,
+                    _ => 0.,
+                };
+                if top > 0. {
+                    insets.insert(index, top);
+                }
+                previous_visible = Some(index);
                 continue;
             }
             let Some(owner) = self
@@ -187,6 +213,7 @@ impl ConversationStream {
                 .get(index)
                 .and_then(|identity| identity.message_id.as_ref())
             else {
+                previous_visible = Some(index);
                 continue;
             };
             match entry {
@@ -207,12 +234,13 @@ impl ConversationStream {
                     );
                     previous_clock.insert(owner, false);
                 }
-                StreamEntry::Assistant { model, .. } if model.row_count() == 0 => {}
-                StreamEntry::Summary { .. } => {}
+                StreamEntry::Assistant { model, .. } if model.row_count() == 0 => continue,
+                StreamEntry::Summary { .. } => continue,
                 _ => {
                     previous_clock.insert(owner, false);
                 }
             }
+            previous_visible = Some(index);
         }
         insets
     }
@@ -232,19 +260,25 @@ impl ConversationStream {
         if details.is_empty() {
             return header;
         }
-        let height = details
-            .iter()
-            .map(|(_, detail)| match detail {
+        let mut height = 0.;
+        let mut previous_assistant = false;
+        for (index, (_, detail)) in details.iter().enumerate() {
+            match detail {
                 RunDetail::Operation(child) => {
-                    RunActivityGroup::estimated_child_height(child, width, cx)
+                    height += operation_top_inset(index, previous_assistant)
+                        + RunActivityGroup::estimated_child_height(child, width, cx);
+                    previous_assistant = false;
                 }
-                RunDetail::Assistant(index) => message_anchors::estimate_entry_height(
-                    &self.entries[*index],
-                    cx,
-                    self.workspace_width,
-                ),
-            })
-            .sum::<f32>();
+                RunDetail::Assistant(entry_index) => {
+                    height += message_anchors::estimate_entry_height(
+                        &self.entries[*entry_index],
+                        cx,
+                        self.workspace_width,
+                    );
+                    previous_assistant = true;
+                }
+            }
+        }
         header + height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
     }
 
@@ -255,18 +289,25 @@ impl ConversationStream {
         cx: &mut App,
     ) -> AnyElement {
         let details = if group.read(cx).expanded() {
+            let mut previous_assistant = false;
             self.run_details(&group, cx)
                 .into_iter()
                 .enumerate()
                 .map(|(detail_index, (_, detail))| match detail {
-                    RunDetail::Operation(child) => gpui_kit::div()
-                        .w_full()
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .debug_selector(move || format!("run-detail-row-{detail_index}"))
-                        .child(RunActivityGroup::render_child(child, window, cx))
-                        .into_any_element(),
+                    RunDetail::Operation(child) => {
+                        let top = operation_top_inset(detail_index, previous_assistant);
+                        previous_assistant = false;
+                        gpui_kit::div()
+                            .w_full()
+                            .min_w_0()
+                            .flex_shrink_0()
+                            .pt(px(top))
+                            .debug_selector(move || format!("run-detail-row-{detail_index}"))
+                            .child(RunActivityGroup::render_child(child, window, cx))
+                            .into_any_element()
+                    }
                     RunDetail::Assistant(index) => {
+                        previous_assistant = true;
                         let selector = match &self.entries[index] {
                             StreamEntry::Assistant { copy, .. } => {
                                 format!("run-process-message-{}", copy.id)

@@ -1631,6 +1631,10 @@ impl Render for ConversationStream {
                                                                 .is_some_and(|identity| {
                                                                     identity.message_id.is_some()
                                                                 }),
+                                                            stage_top_insets
+                                                                .get(&index)
+                                                                .copied()
+                                                                .unwrap_or(0.),
                                                             window,
                                                             cx,
                                                             &this.selection_focus,
