@@ -34,14 +34,14 @@ U8. 完全删除 composer 之下/全局底部 CUA 独立操作栏及其空占位
 
 | ID | 前置与操作 | 预期可观察结果 | 层级 | 初始状态 |
 |---|---|---|---|---|
-| U01 | Native/桌面启用、禁用、外部 backend 及压缩后发送 | 仅适用运行自动带内置指引，来源可核验，不累积、不改变外部 skill 信任 | 生产 provider/conversation fixture | 待测 |
-| U02 | 普通观察和显式截图分别走同一 provider 会话 | 只有显式截图产出可查看附件；模型收到明确产物结果 | runtime + conversation/storage | 待测 |
-| U03 | AX 空/无法解析而窗口截图具有完整身份绑定；反例身份/帧/图像冲突 | 前者只读交付成功且零动作；后者拒绝且无附件 | adapter fixture | 待测 |
-| U04 | 错字段、冲突定位、只读、过期引用 | 有限 code/恢复建议，无私密值；新旧安全卡片正常 | runtime + history | 待测 |
-| U05 | 相同失败三次，中间目录刷新/不同 opaque ID/压缩 | 第三次触发 no_progress，后续驱动与 provider 操作循环停止 | 完整 run_agent fixture | 待测 |
-| U06 | 重复点击成功但相同可比状态；另有真实状态变化/合理滚动 | 无变化第三次停止；真实变化不误判 | production runtime fixture | 待测 |
-| U07 | 截图写入失败、停止竞争、历史回读/清理 | 无虚假成功/晚到附件；显式截图历史可用，普通观察不持久化 | storage + controller | 待测 |
-| U08 | 观察/输入/成功/权限/暂停/浏览器待批，宽窄窗口 | 无全局操作栏/占位；所属对话内必要操作可达，任务停止有效 | GPUI 生产状态与布局 | 待测 |
+| U01 | Native/桌面启用、禁用、外部 backend 及压缩后发送 | 仅适用运行自动带内置指引，来源可核验，不累积、不改变外部 skill 信任 | 生产 provider/conversation fixture | PASS（进程内） |
+| U02 | 普通观察和显式截图分别走同一 provider 会话 | 只有显式截图产出可查看附件；模型收到明确产物结果 | runtime + conversation/storage | PASS（进程内） |
+| U03 | AX 空/无法解析而窗口截图具有完整身份绑定；反例身份/帧/图像冲突 | 前者只读交付成功且零动作；后者拒绝且无附件 | adapter fixture | PASS（进程内） |
+| U04 | 错字段、冲突定位、只读、过期引用 | 有限 code/恢复建议，无私密值；新旧安全卡片正常 | runtime + history | PASS（进程内） |
+| U05 | 相同失败三次，中间目录刷新/不同 opaque ID/压缩 | 第三次触发 no_progress，后续驱动与 provider 操作循环停止 | 完整 run_agent fixture | PASS（进程内） |
+| U06 | 重复点击成功但相同可比状态；另有真实状态变化/合理滚动 | 无变化第三次停止；真实变化不误判 | production runtime fixture | PASS（进程内） |
+| U07 | 截图写入失败、停止竞争、历史回读/清理 | 无虚假成功/晚到附件；显式截图历史可用，普通观察不持久化 | storage + controller | PASS（进程内） |
+| U08 | 观察/输入/成功/权限/暂停/浏览器待批，宽窄窗口 | 无全局操作栏/占位；所属对话内必要操作可达，任务停止有效 | GPUI 生产状态与布局 | PASS（进程内） |
 | U09 | 真机新建受控 TextEdit 请求截图，单窗与明确两窗 | 直接对话交付，单窗正常路径目录+截图约2次调用、最多3次，无 Act/bash，无无效重试；两窗最多5次；无额外菜单 | 真机 | 待新版 |
 | U10 | 真机受控 TextEdit 输入并验证结果；停止/恢复 | 指定窗口状态实际变化，确认结果而非仅工具成功；无循环、停止后不输入 | 真机 | 待新版 |
 | U11 | 用户本人重试工具禁止访问的原应用 | 记录调用数/错误/耗时及用户确认图片正确；代理只读安全元数据，不能转用 Vega/driver 读取该应用内容 | 用户手测 + 脱敏审计 | 待新版 |
@@ -214,3 +214,58 @@ cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
 内置 skill v2 SHA-256 为 `ba27d178bc85735e9f237a3bac4dd08bb81e9c14e5ceabcd0a274f015d3fb094`。全部本轮日志摘要、hash 和最终 argv 汇总在 `/tmp/vega-75-successful-reads-evidence.json`。提交前 fetch 确認 master 仍是 `5947e042`；保留权限修复 `58ee2d6`，此追加未新增 schema 或依赖。真机 input-01/takeover-01 失败仍为待新版复测状态，进程内成功不代替发布后的顺畅验收。
 
 固定提交审查发现 ComputerObserve schema 仍有“any action dispatch 后目录失效”的旧说明，与 SP1 不一致；只将它修正为动作保留原始 60 秒期限、仅消费可行动观察，pause/takeover、stop、compaction 和显式 invalidation 作废目录。现有 discovery schema 合同加入正反断言，先 RED（1 FAIL，`/tmp/vega-75-target-description-red.log`），修正后受影响 runtime issue75 用例 84/84 PASS、275 skipped（run `22fadbe7-fb90-410f-bf81-95d2d849d70b`，`/tmp/vega-75-target-description-verified.log`，SHA-256 `0a46b99b66caf21fd08a49b7ec7578d64cc7be8cd4d2b2fda49c8315057de768`）。命令为 `cargo nextest run -p vega_runtime -E 'test(issue75)'`，完整 argv 为 `/tmp/vega-75-target-description-verified-argv.json`；前述 115 项跨层结果独立保留。
+
+## 截图卡片与预览优化（2026-10-13 用户追加）
+
+用户静态截图显示：白底截图与聊天背景融合，图片盒子占据会话全宽，底部两枚文字按钮松散。按当前设计守则，仅改已交付截图的呈现与操作，不改变捕获/持久化/模型上下文及原图 bytes，不裁白边、不新增依赖或 schema。
+
+SV1. 缩略图基于附件 width/height 同步确定几何：原尺寸等比缩小到最大 360×240，不放大；图片区域最小 64×32，极端图居中 contain。外层只包实际图片区域和 32px 紧凑顶栏，1px border_subtle、8px 圆角，不用会话 w_full 作为图片宽度；容器不足时按可用宽度同比收缩图片区域。图片保存为顶栏右侧 28×28、16px 共享图标操作，默认可见且与像素区域不重叠。顶栏可用原始尺寸作简短元数据，不保留独立文字操作行。共享数值进入 Layout。
+算例：4000×80→360×7.2，图片区域360×32；400×8000→12×240，图片区域64×240；1200×800→360×240；16×8→16×8原始像素，居于64×32命中区，Img 自身最大尺寸不超过原尺寸。最小图片区域使极端图仍有独立可点击/聚焦目标，按钮不遮挡图片。小幅留边仅来自有界命中尺寸，不修改原图。
+
+SV2. 异步图像准备前用同一 width/height 预留尺寸并显示轻量“加载中”状态；准备后仅替换内容、不改行高。图片区域默认可聚焦，点击或 Enter/Space 打开预览，hover/focus 有反馈及可访问名称/tooltip，不能依赖 hover 才能发现入口。保存使用已有原生路径选择器，复用 busy 防重入、取消不报错、失败/成功就近反馈。反馈替换固定顶栏内的尺寸标签，窄卡片以状态图标和完整 tooltip 表达，不新增底部状态行，保存不改变对话行高。
+
+SV3. 预览挂所属 ConversationStream 根节点，deferred priority 3，与列表测量分离。使用主题容器，最大960×720、四周24安全边距；顶部紧凑保存/关闭图标，主区完整 contain 图片。Esc、关闭图标或背景点击关闭，回焦原缩略图；Tab/Shift-Tab 限于预览操作，背景滚动/误点被阻断。会话切换或所属卡片离开当前历史窗口时关闭并使用会话焦点，不残留旧图片，不推动聊天行高/滚动锚点。多张截图依原交付顺序纵向紧凑排列，预览/保存始终绑定该卡原图；不做轮播或图片管理器。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| SV01 | 宽/窄容器，横/竖/极端比例，解码前后 | 实际GPUI边界受限、原比例/全内容、加载前后同几何，按钮不侵入图片 | PASS（进程内） |
+| SV02 | 浅/深主题绘制 | 实际painted quad使用border_subtle，白底图片边界可辨，hover/focus几何不变 | PASS（进程内） |
+| SV03 | 图片点击/Enter/Space打开、Tab/Esc/外部点击关闭 | 根级预览命中、焦点限制与恢复，列表高度/阅读锚点不动、背景不滚动/误点 | PASS（进程内） |
+| SV04 | 卡片/预览保存，busy/取消/失败/成功，多图 | 原生选择器、一次pending、精确原图bytes，各图不串，状态就近 | PASS（进程内） |
+| SV05 | 历史重读、折叠过程、移除所属卡片/切换会话 | 图片继续可见且操作可达、交付幂等，旧预览消失 | PASS（进程内） |
+
+实施顺序：先用现有GPUI测试暴露全宽盒及缺预览问题，再改布局token/卡片/根层挂载，跑本卡相关UI和原存储历史矩阵。真实像素外观、TextEdit单/双截图与本机保存由主控新版验证，进程内几何/行为不冒充真机。
+
+### 截图呈现结果与失败保留
+
+SV01–SV05 的进程内验收通过：1100/360/240px 可用窗口、浅深两主题、横/竖/极端横长/极端竖长/16×8 小图均有真实 GPUI 布局和 painted quad 断言；缩略图始终完整 contain，16×8 不放大，最小命中区仍64×32。异步准备和 GPUI 解码均有加载占位，准备前后卡片与图片区域几何相同。白底图片边框与不透明图上的 hover/键盘焦点边框可观测；图片自身下圆角和预览顶栏自身上圆角分别断言，不依赖父 overflow_hidden。
+
+预览点击、Enter/Space 打开，Tab/Shift-Tab 陷获，Esc/关闭/外部点击回焦均通过。背景滚轮被阻断，相同滚轮在关闭后能移动列表；覆盖 composer“+”的点击不会穿透，相同点击在关闭后可打开原菜单。真实回归发现 mouse-down 提前关闭导致后续 mouse-up 穿透，现已改为消费 mouse-up 后关闭。存储历史图片仍在折叠过程之外可见并幂等；原生保存覆盖卡片/预览键盘入口、busy、防重入、取消、成功、拒绝覆盖旧文件及两张图各自精确原图 bytes。保存状态固定在顶栏，不改变聊天行高；历史窗口替换和会话切换均不残留旧预览。
+
+| 阶段 | 实际结果与原因 | 原始日志 |
+|---|---|---|
+| 初始 RED | 0 PASS / 2 FAIL：卡片宽736、图片点击无根预览 | `/tmp/vega-75-screenshot-ui-red.log` |
+| 初次编译 | focus() 缺少 App 参数，按固定 GPUI API 修正 | `/tmp/vega-75-screenshot-ui-first.log` |
+| 首轮界面 | 2/2 PASS | `/tmp/vega-75-screenshot-ui-second.log` |
+| 扩展夹具编译 | 使用了私有菜单字段/不存在的列表方法；改成真实按钮和既有 scroll_to_end | `/tmp/vega-75-screenshot-ui-matrix-first.log` |
+| 扩展夹具第1轮 | 5 PASS / 1 FAIL：点击真实背景按规格会关闭，原夹具错误要求仍打开；保留背景误点断言并改为实际“+” | `/tmp/vega-75-screenshot-ui-matrix-second.log` |
+| 点击穿透 RED | 5 PASS / 1 FAIL：预览关闭后 mouse-up 打开背后的“+”菜单 | `/tmp/vega-75-screenshot-ui-matrix-third.log` |
+| 消费完整点击修复 | 6/6 PASS | `/tmp/vega-75-screenshot-ui-matrix-fourth.log` |
+| 圆角/解码与键盘 | 7/7 PASS | `/tmp/vega-75-screenshot-ui-matrix-fifth.log` |
+| 跨层矩阵 | 121/121 PASS，1806 skipped | `/tmp/vega-75-screenshot-ui-final.log` |
+| 小图/保存布局 RED | 0 PASS / 2 FAIL：16×8被放大到64×32；保存后行高274→301.5 | `/tmp/vega-75-screenshot-ui-small-and-save-red.log` |
+| 对应最终 UI 复验 | 14/14 PASS，710 skipped | `/tmp/vega-75-screenshot-ui-small-and-save-verified.log` |
+
+初始 RED SHA-256：`50b8e52fd71a114db02d98fd22d0fc7836ef35b14eae91e0c4f8c7b58c053e24`；小图/保存 RED SHA-256：`71aab5ed14394965b61142922661a7b97ab533738ced77ca0c054807b20dc4d4`。121 项跨层日志 SHA-256：`7dfe8a8919e080f21e9104db4d7d20ce3d8daf388cf44456de7d58fb072e25eb`；最终14项 UI 日志 SHA-256：`f68ee97468f46c60231a4b202ea6b6cf0844c1fbfcbe3ad5f54936118ba0b980`。全部原始记录、run ID/摘要和 hash 保存在 `/tmp/vega-75-screenshot-ui-evidence.json`，完整命令在 `/tmp/vega-75-screenshot-ui-final-argv.json` 与 `/tmp/vega-75-screenshot-ui-small-and-save-verified-argv.json`：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire)'
+cargo nextest run -p vega_ui -E 'test(issue75)'
+```
+
+7 个修改的 Rust 文件 rustfmt 检查与 git diff --check 通过（`/tmp/vega-75-screenshot-ui-checks.log`）。没有新 schema/依赖，没有裁剪或改写交付原图，五张纯白 PNG 是受控尺寸测试 fixture。以上为进程内 GPUI 行为/几何/绘制数据和存储证据；真实像素、系统原生保存面板及新版 TextEdit 流程仍由主控发布后验证。
+
+提交后无冲突变基至 `f1cf5ee7c2b47c8e36a0d24385b5fb4020df969f`（#322 工具操作图标）。最终补测原本卡矩阵及上游实际修改的 6 个图标/分组/历史用例，共 **127/127 PASS**、1801 skipped，run `d8b916f2-b895-4ac5-8327-7664ce8a46f3`。原始日志 `/tmp/vega-75-screenshot-ui-rebased.log`，SHA-256 `0c9956a975bf5d132408257da9d356b21b6cfa6a20835c6be7d75d54686ca71d`，完整 executable/cwd/argv 在 `/tmp/vega-75-screenshot-ui-rebased-argv.json`。本分支相对主线修改的26个 Rust 文件 rustfmt --check 与 git diff --check 全部通过，原始命令/退出码在 `/tmp/vega-75-screenshot-ui-rebased-checks.log`。前述115、121、14项及全部失败证据独立保留。未执行 workspace 全量门禁或真实 driver；PR/CI/发布和真机验收由主控继续。
+
+发布前 fresh fetch 又发现 `5c7885c7517b3f1ba4978fd40ef9ead7501d78b1`（#323 仅按运行终态展示尾部提示），再次无冲突变基。本轮未改本卡生产逻辑，仅补测受影响 UI：本卡14项 + #323核心8项，**22/22 PASS**、704 skipped，run `fe75b4e8-fdf5-4c93-886d-5c04cfd962fb`；未重跑无变化 runtime 矩阵。原始日志 `/tmp/vega-75-screenshot-ui-terminal-notices-rebased.log`，SHA-256 `41476564c79eea0b537e538ff0cd6f5380bc0224183ef5dddab5712e1f5b8251`；完整命令为同名前缀 `-argv.json`，10个本卡 UI Rust 文件格式与 diff 检查通过（`/tmp/vega-75-screenshot-ui-terminal-notices-checks.log`）。此前127项与全部RED记录继续保留；提交数仍为3。

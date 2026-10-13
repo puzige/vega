@@ -70,7 +70,7 @@ async fn issue75_usability_screenshot_stays_visible_outside_folded_process_and_r
     let expand = visual.debug_bounds("screenshot-expand").unwrap();
     visual.simulate_click(expand.center(), Default::default());
     visual.run_until_parked();
-    let save = visual.debug_bounds("screenshot-save").unwrap();
+    let save = visual.debug_bounds("screenshot-preview-save").unwrap();
     visual.simulate_click(save.center(), Default::default());
     visual.run_until_parked();
     assert!(cx.did_prompt_for_new_path());
@@ -80,7 +80,7 @@ async fn issue75_usability_screenshot_stays_visible_outside_folded_process_and_r
     });
     cx.run_until_parked();
     let save = VisualTestContext::from_window(window.into(), cx)
-        .debug_bounds("screenshot-save")
+        .debug_bounds("screenshot-preview-save")
         .unwrap();
     VisualTestContext::from_window(window.into(), cx)
         .simulate_click(save.center(), Default::default());

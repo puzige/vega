@@ -1746,6 +1746,7 @@ impl Render for ConversationStream {
             })
             .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))
+            .children(self.render_screenshot_preview(window, cx))
             .into_any_element();
         counters.record_render(render_t0);
         element

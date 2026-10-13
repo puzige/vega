@@ -24,6 +24,7 @@ mod branch_popup_upward;
 mod composer_actions;
 mod composer_counter;
 mod core_flow;
+mod cua_screenshots;
 mod cua_usability;
 mod e2e_variable_height;
 mod hover_copy;
