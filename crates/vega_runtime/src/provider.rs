@@ -532,6 +532,11 @@ pub enum StopReason {
 /// is emitted only after the model's argument fragments are fully aggregated.
 #[derive(Clone, PartialEq, Eq)]
 pub enum ProviderEvent {
+    ResponseMetadata(ProviderResponseMetadata),
+    RetryScheduled {
+        attempt: u32,
+        max_retries: u32,
+    },
     /// Incremental visible text.
     TextDelta(String),
     /// Incremental reasoning text (OpenAI-compatible `reasoning_content`).
@@ -568,6 +573,18 @@ pub enum ProviderEvent {
 impl std::fmt::Debug for ProviderEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ResponseMetadata(metadata) => formatter
+                .debug_tuple("ResponseMetadata")
+                .field(metadata)
+                .finish(),
+            Self::RetryScheduled {
+                attempt,
+                max_retries,
+            } => formatter
+                .debug_struct("RetryScheduled")
+                .field("attempt", attempt)
+                .field("max_retries", max_retries)
+                .finish(),
             Self::TextDelta(text) => formatter
                 .debug_tuple("TextDelta")
                 .field(&format_args!("[redacted; {} bytes]", text.len()))
@@ -620,6 +637,13 @@ impl std::fmt::Debug for ProviderEvent {
 /// that connection setup, retries, and cancellation all happen inside the
 /// future while the loop only polls events afterwards.
 pub trait Provider: Send + Sync {
+    fn chat_stream_recovering(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        self.chat_stream_with_metadata(req, cancel)
+    }
     /// A single auxiliary request, without transport retries. Implementations
     /// with retrying transports must override this entry point.
     fn chat_stream_once(

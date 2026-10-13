@@ -70,6 +70,22 @@ pub(crate) struct RunActivityGroup {
 }
 
 impl RunActivityGroup {
+    pub(crate) fn response_checkpoint(&mut self, cx: &mut Context<Self>) -> usize {
+        if let Some(card) = self.current_thinking.take() {
+            card.update(cx, |card, cx| {
+                card.shimmer_epoch = None;
+                cx.notify();
+            });
+        }
+        self.segments.len()
+    }
+
+    pub(crate) fn rollback_response(&mut self, segments: usize, cx: &mut Context<Self>) {
+        self.response_checkpoint(cx);
+        self.segments.truncate(segments);
+        self.phase = RunPhase::Thinking;
+        cx.notify();
+    }
     pub(crate) fn start_clock(&mut self, started_at: Instant, cx: &mut Context<Self>) {
         if self.started_at.is_none() && !self.terminal {
             self.started_at = Some(started_at);

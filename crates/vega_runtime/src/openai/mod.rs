@@ -6,11 +6,6 @@
 //! (emitting [`ProviderEvent::ToolUse`] only once fragments complete), and
 //! recovers the final usage chunk before `data: [DONE]`.
 //!
-//! Retry policy (tech-spec §4.1): network errors / 5xx back off exponentially
-//! (1s / 2s / 4s, at most 3 retries); 429 honors `Retry-After`. Retries only
-//! rebuild the request — the stream is never replayed. Cancellation aborts
-//! immediately, mid-backoff or mid-stream, without further events.
-//!
 //! Red line: the API key is only ever placed into the `Authorization`
 //! request header — it never reaches logs, `Debug` output, or error messages
 //! (server bodies echoing it are redacted best-effort).
@@ -60,6 +55,7 @@ pub struct OpenAiProvider {
     key: String,
     /// Retry schedule applied while establishing the stream.
     retry: RetryPolicy,
+    recovery_retry: RetryPolicy,
     /// Owner-only request inspection. This must run for every HTTP attempt,
     /// including retries after a backoff; it is intentionally omitted from
     /// Debug output and never enters a wire request.
@@ -73,6 +69,7 @@ impl fmt::Debug for OpenAiProvider {
             .field("base_url_bytes", &self.base_url.len())
             .field("key", &"<redacted>")
             .field("retry", &self.retry)
+            .field("recovery_retry", &self.recovery_retry)
             .finish()
     }
 }
@@ -98,6 +95,10 @@ impl OpenAiProvider {
             base_url: base_url.into(),
             key: key.into(),
             retry: RetryPolicy::default(),
+            recovery_retry: RetryPolicy {
+                max_retries: 5,
+                ..RetryPolicy::default()
+            },
             before_attempt: None,
         })
     }
@@ -109,6 +110,7 @@ impl OpenAiProvider {
 
     /// Overrides the retry schedule (defaults: 1s / 2s / 4s, 3 retries).
     pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
+        self.recovery_retry = retry.clone();
         self.retry = retry;
         self
     }
@@ -290,6 +292,14 @@ impl OpenAiProvider {
 }
 
 impl Provider for OpenAiProvider {
+    fn chat_stream_recovering(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        let this = self.clone();
+        Box::pin(async move { this.recovering_stream(req, cancel) })
+    }
     fn chat_stream_once(
         &self,
         req: ChatRequest,
@@ -503,6 +513,7 @@ async fn error_snippet(resp: reqwest::Response, cancel: &CancellationToken) -> S
     String::from_utf8_lossy(&bytes).chars().take(512).collect()
 }
 
+mod recovery;
 pub(crate) mod responses;
 mod sse;
 

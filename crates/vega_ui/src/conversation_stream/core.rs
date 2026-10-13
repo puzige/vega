@@ -110,6 +110,8 @@ pub struct ConversationStream {
     pub(crate) active_agent_sequence: Option<i64>,
     pub(crate) active_segment_ordinal: usize,
     pub(crate) active_response_start: Option<usize>,
+    pub(crate) response_checkpoint: Option<network_retry::ResponseCheckpoint>,
+    pub(crate) network_retry: Option<(String, u32, u32)>,
     /// Whether the current Markdown segment contains text; a tool boundary
     /// may leave the active run without a segment until the next text delta.
     pub(crate) active_segment_has_text: bool,
@@ -477,6 +479,8 @@ impl ConversationStream {
             active_agent_sequence: None,
             active_segment_ordinal: 0,
             active_response_start: None,
+            response_checkpoint: None,
+            network_retry: None,
             active_thinking: None,
             thinking_bytes: 0,
             thinking_blocks: 0,
@@ -1613,6 +1617,7 @@ impl ConversationStream {
         let accepted = match event {
             ConversationEvent::MessageStarted { .. } => self.active_agent_message.is_none(),
             ConversationEvent::TextDelta { message_id, .. }
+            | ConversationEvent::ResponseRetrying { message_id, .. }
             | ConversationEvent::UsageUpdated { message_id, .. } => self
                 .active_agent_message
                 .as_ref()
@@ -1637,6 +1642,7 @@ impl ConversationStream {
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::RunStarted { .. }
+            | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
             | ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }

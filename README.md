@@ -32,6 +32,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-acp-codex-v1-spec.md](docs/vega-acp-codex-v1-spec.md) | A4 首版规格草案：新任务选择 Codex，完整执行、审批、停止、恢复及实施卡拆分 |
 | [vega-issue-287-a4-c2b-codex-task-routing.md](docs/vega-issue-287-a4-c2b-codex-task-routing.md) | #287/A4-C2B Codex New Task 路由、session-before-prompt 顺序与验收矩阵 |
 | [vega-issue-workflow.md](docs/vega-issue-workflow.md) | 问题/需求的 GitHub Issue 收集、Project 流转与 PRD/spec 分工 |
+| [vega-issue-350-network-retry.md](docs/vega-issue-350-network-retry.md) | #350 网络中断自动重试、当前回复回滚和重连状态契约 |
 | [vega-issue-58-full-access.md](docs/vega-issue-58-full-access.md) | #58 独立 Full access 模式、沙箱边界与生产链路验收 |
 | [vega-issue-59-markdown.md](docs/vega-issue-59-markdown.md) | #59 Markdown 表格的结构化单元格与窄窗布局 |
 | [vega-issue-61-thinking.md](docs/vega-issue-61-thinking.md) | #61 Thinking 流式展示、事件顺序与显示边界 |

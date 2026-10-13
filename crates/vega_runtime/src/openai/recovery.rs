@@ -1,0 +1,248 @@
+use super::*;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+struct RecoveryStream {
+    provider: OpenAiProvider,
+    request: ChatRequest,
+    body: serde_json::Value,
+    cancel: CancellationToken,
+    stream: Option<EventStream>,
+    metadata: ProviderResponseMetadata,
+    attempt: u32,
+    delay: Option<Duration>,
+    completed: bool,
+    ended: bool,
+}
+
+impl OpenAiProvider {
+    pub(super) fn recovering_stream(
+        self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<ProviderStream, VegaError> {
+        if cancel.is_cancelled() {
+            return Err(VegaError::Cancelled);
+        }
+        crate::images::validate_messages(&request.messages)?;
+        if let Some(reasoning) = &request.reasoning {
+            reasoning.validate()?;
+            if reasoning.model != request.model {
+                return Err(VegaError::ReasoningSelectionInvalid {
+                    message: "reasoning profile model does not match request model".into(),
+                });
+            }
+        }
+        let body = if self.responses_api {
+            responses::build_body(&request)?
+        } else {
+            build_request_body(&request)
+        };
+        let state = RecoveryStream {
+            provider: self,
+            request,
+            body,
+            cancel,
+            stream: None,
+            metadata: ProviderResponseMetadata::default(),
+            attempt: 0,
+            delay: None,
+            completed: false,
+            ended: false,
+        };
+        Ok(ProviderStream {
+            metadata: ProviderResponseMetadata::default(),
+            events: Box::pin(futures::stream::unfold(state, |mut state| async move {
+                if state.ended {
+                    return None;
+                }
+                let item = state.next().await;
+                item.map(|item| (item, state))
+            })),
+        })
+    }
+}
+
+impl RecoveryStream {
+    async fn next(&mut self) -> Option<Result<ProviderEvent, VegaError>> {
+        if self.cancel.is_cancelled() {
+            self.ended = true;
+            return Some(Err(VegaError::Cancelled));
+        }
+        if let Some(delay) = self.delay.take()
+            && let Err(error) = sleep_cancellable(delay, &self.cancel).await
+        {
+            self.ended = true;
+            return Some(Err(error));
+        }
+        let (error, retry_after) = if let Some(stream) = &mut self.stream {
+            let item = tokio::select! {
+                biased;
+                _ = self.cancel.cancelled() => Some(Err(VegaError::Cancelled)),
+                item = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => {
+                    item.unwrap_or_else(|_| Some(Err(transport_timeout_error())))
+                },
+            };
+            match item {
+                Some(Ok(event)) => {
+                    self.completed |= matches!(event, ProviderEvent::Done { .. });
+                    return Some(Ok(event));
+                }
+                Some(Err(error)) => (error, None),
+                None if self.completed => {
+                    self.ended = true;
+                    return None;
+                }
+                None if self.cancel.is_cancelled() => (VegaError::Cancelled, None),
+                None => (incomplete_stream_error(), None),
+            }
+        } else {
+            if let Some(guard) = &self.provider.before_attempt
+                && let Err(error) = guard(&self.request)
+            {
+                self.ended = true;
+                return Some(Err(error));
+            }
+            let sent = tokio::select! {
+                biased;
+                _ = self.cancel.cancelled() => {
+                    self.ended = true;
+                    return Some(Err(VegaError::Cancelled));
+                }
+                sent = tokio::time::timeout(REQUEST_TIMEOUT, self.provider.send_attempt(&self.body)) => sent,
+            };
+            match sent {
+                Ok(Ok(response)) if response.status().is_success() => {
+                    self.metadata = ProviderResponseMetadata {
+                        http_status: Some(response.status().as_u16()),
+                        request_id: request_id_from_headers(response.headers()),
+                        retry_count: Some(self.attempt),
+                    };
+                    self.stream = Some(if self.provider.responses_api {
+                        responses::event_stream_with_recovery(response, self.cancel.clone(), true)
+                    } else {
+                        sse::event_stream_with_recovery(response, self.cancel.clone(), true)
+                    });
+                    return Some(Ok(ProviderEvent::ResponseMetadata(self.metadata.clone())));
+                }
+                Ok(Ok(response)) => {
+                    let status = response.status().as_u16();
+                    let retry_after = retry_after_of(&response);
+                    let request_id = request_id_from_headers(response.headers());
+                    let retryable = status == 408 || is_retryable_status(status);
+                    let snippet = if self.provider.responses_api || retryable {
+                        "<response body omitted>".to_string()
+                    } else {
+                        let snippet = tokio::time::timeout(
+                            REQUEST_TIMEOUT,
+                            error_snippet(response, &self.cancel),
+                        )
+                        .await
+                        .unwrap_or_else(|_| "<response body omitted>".into());
+                        self.provider.redact_key(&snippet)
+                    };
+                    if self.cancel.is_cancelled() {
+                        self.ended = true;
+                        return Some(Err(VegaError::Cancelled));
+                    }
+                    (
+                        VegaError::ProviderDiagnostic {
+                            kind: if retryable {
+                                ProviderFailureKind::Http
+                            } else {
+                                ProviderFailureKind::Rejected
+                            },
+                            status: Some(status),
+                            message: format!("provider request failed (HTTP {status}): {snippet}"),
+                            retryable,
+                            retry_count: Some(self.attempt),
+                            request_id,
+                        },
+                        retry_after,
+                    )
+                }
+                Ok(Err(error)) => (
+                    VegaError::ProviderDiagnostic {
+                        kind: if error.is_builder() {
+                            ProviderFailureKind::Rejected
+                        } else {
+                            ProviderFailureKind::Transport
+                        },
+                        status: None,
+                        message: "provider request transport failed".into(),
+                        retryable: !error.is_builder()
+                            && !error.is_redirect()
+                            && !error.is_decode(),
+                        retry_count: Some(self.attempt),
+                        request_id: None,
+                    },
+                    None,
+                ),
+                Err(_) => (transport_timeout_error(), None),
+            }
+        };
+        let retryable = matches!(
+            &error,
+            VegaError::ProviderDiagnostic {
+                kind: ProviderFailureKind::Transport | ProviderFailureKind::Http,
+                retryable: true,
+                ..
+            }
+        );
+        if retryable && !self.completed && self.attempt < self.provider.recovery_retry.max_retries {
+            self.stream = None;
+            self.delay = Some(
+                self.provider
+                    .recovery_retry
+                    .delay_for(self.attempt, retry_after),
+            );
+            self.attempt += 1;
+            Some(Ok(ProviderEvent::RetryScheduled {
+                attempt: self.attempt,
+                max_retries: self.provider.recovery_retry.max_retries,
+            }))
+        } else {
+            self.ended = true;
+            Some(Err(match error {
+                VegaError::ProviderDiagnostic {
+                    kind,
+                    status,
+                    message,
+                    request_id,
+                    ..
+                } => VegaError::ProviderDiagnostic {
+                    kind,
+                    status,
+                    message,
+                    retryable: false,
+                    retry_count: Some(self.attempt),
+                    request_id,
+                },
+                other => other,
+            }))
+        }
+    }
+}
+
+pub(super) fn incomplete_stream_error() -> VegaError {
+    VegaError::ProviderDiagnostic {
+        kind: ProviderFailureKind::Transport,
+        status: None,
+        message: "provider stream ended before completion".into(),
+        retryable: true,
+        retry_count: None,
+        request_id: None,
+    }
+}
+
+fn transport_timeout_error() -> VegaError {
+    VegaError::ProviderDiagnostic {
+        kind: ProviderFailureKind::Transport,
+        status: None,
+        message: "provider request timed out".into(),
+        retryable: true,
+        retry_count: None,
+        request_id: None,
+    }
+}

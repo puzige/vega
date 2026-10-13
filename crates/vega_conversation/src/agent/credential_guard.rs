@@ -90,6 +90,18 @@ pub(crate) fn reject_owner_secret(
 }
 
 impl Provider for OwnerCredentialProvider {
+    fn chat_stream_recovering(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<vega_runtime::ProviderStream, VegaError>> {
+        let provider = self.provider.clone();
+        let known = self.known.clone();
+        Box::pin(async move {
+            reject_owner_secret(&request, known.as_ref())?;
+            provider.chat_stream_recovering(request, cancel).await
+        })
+    }
     fn chat_stream_once(
         &self,
         request: ChatRequest,
@@ -181,5 +193,63 @@ mod tests {
 
         assert!(!matches!(error, VegaError::Provider { status: None, .. }));
         assert!(inner.requests().is_empty());
+    }
+
+    struct RecoveryOnlyProvider(std::sync::atomic::AtomicUsize);
+
+    impl Provider for RecoveryOnlyProvider {
+        fn chat_stream(
+            &self,
+            _: ChatRequest,
+            _: CancellationToken,
+        ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
+            panic!("primary request must use recovery entry point")
+        }
+
+        fn chat_stream_recovering(
+            &self,
+            _: ChatRequest,
+            _: CancellationToken,
+        ) -> BoxFuture<'static, Result<vega_runtime::ProviderStream, VegaError>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(vega_runtime::ProviderStream {
+                    events: Box::pin(futures::stream::empty()),
+                    metadata: vega_runtime::ProviderResponseMetadata {
+                        http_status: Some(200),
+                        request_id: None,
+                        retry_count: Some(2),
+                    },
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn issue350_owner_wrapper_delegates_recovery_and_blocks_credentials_before_dispatch() {
+        let inner = Arc::new(RecoveryOnlyProvider(std::sync::atomic::AtomicUsize::new(0)));
+        let wrapped = OwnerCredentialProvider::new(
+            inner.clone(),
+            Arc::new(|| Ok(vec!["owned-secret-fixture".into()])),
+        );
+        let call = wrapped
+            .chat_stream_recovering(ChatRequest::default(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(call.metadata.retry_count, Some(2));
+        let request = ChatRequest {
+            messages: vec![ChatMessage::new(
+                vega_runtime::ChatRole::User,
+                "owned-secret-fixture",
+            )],
+            ..Default::default()
+        };
+        assert!(matches!(
+            wrapped
+                .chat_stream_recovering(request, CancellationToken::new())
+                .await,
+            Err(VegaError::CredentialExposureBlocked)
+        ));
+        assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

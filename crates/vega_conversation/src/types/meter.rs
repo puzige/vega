@@ -231,6 +231,12 @@ impl ConversationMeter {
                 self.in_run = true;
                 false
             }
+            ConversationEvent::ResponseRetrying { .. } => {
+                let changed = self.round_visible;
+                self.round_chars = 0;
+                self.round_visible = false;
+                changed
+            }
             ConversationEvent::TextDelta { delta, .. } => {
                 if !self.in_run {
                     return false;
@@ -370,6 +376,7 @@ impl ConversationMeter {
             }
             // Tool progress cannot move the visible-output estimate.
             ConversationEvent::RunStarted { .. }
+            | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
             | ConversationEvent::ToolCallApproved { .. }
             | ConversationEvent::ToolCallRunning { .. }

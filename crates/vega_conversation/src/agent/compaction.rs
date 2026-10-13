@@ -1971,7 +1971,11 @@ async fn collect_summary_with_timeout_diagnostics(
                 done = Some(stop_reason);
                 metrics.stop_reason = Some(stop_reason);
             }
-            Ok(ProviderEvent::ToolUse { .. }) => {
+            Ok(
+                ProviderEvent::ToolUse { .. }
+                | ProviderEvent::RetryScheduled { .. }
+                | ProviderEvent::ResponseMetadata(_),
+            ) => {
                 return Err(summary_collection_failure(
                     context_error(ContextRuntimeError::SummaryFormatInvalid),
                     metrics,

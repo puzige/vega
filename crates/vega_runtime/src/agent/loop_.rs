@@ -1537,6 +1537,13 @@ where
             cancel.cancel();
         }
         let response_text_start = final_text.len();
+        emit!(
+            events,
+            sink,
+            RuntimeEvent::AssistantResponseStarted {
+                text_start_bytes: response_text_start
+            }
+        );
         let attempt_id = ulid::Ulid::generate().to_string();
         let attempt_started_at = std::time::Instant::now();
         let mut diagnostic_metrics = RuntimeDiagnosticMetrics::default();
@@ -1595,7 +1602,7 @@ where
             Err(VegaError::Cancelled)
         } else {
             provider
-                .chat_stream_with_metadata(chat_request, cancel.clone())
+                .chat_stream_recovering(chat_request, cancel.clone())
                 .await
         } {
             Ok(call) => call,
@@ -1695,6 +1702,35 @@ where
             }
             let is_summary = matches!(&item, Ok(ProviderEvent::SummaryDelta(_)));
             match item {
+                Ok(ProviderEvent::ResponseMetadata(metadata)) => {
+                    diagnostic_metrics.provider = metadata;
+                }
+                Ok(ProviderEvent::RetryScheduled {
+                    attempt,
+                    max_retries,
+                }) => {
+                    final_text.truncate(response_text_start);
+                    assistant_text.clear();
+                    assistant_reasoning.clear();
+                    response_reasoning.clear();
+                    calls.clear();
+                    stop_reason = None;
+                    usage_seen = false;
+                    valid_primary_input = None;
+                    anchor_protocol_valid = true;
+                    reasoning_turn_bytes = 0;
+                    diagnostic_metrics = RuntimeDiagnosticMetrics::default();
+                    diagnostic_metrics.provider.retry_count = Some(attempt);
+                    emit!(
+                        events,
+                        sink,
+                        RuntimeEvent::ResponseRetrying {
+                            text_start_bytes: response_text_start,
+                            attempt,
+                            max_retries,
+                        }
+                    );
+                }
                 Ok(ProviderEvent::TextDelta(delta)) => {
                     diagnostic_metrics.visible_output_bytes = Some(
                         diagnostic_metrics

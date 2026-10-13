@@ -7,6 +7,21 @@ const ITEM_LIMIT: usize = 256;
 const REPLAY_LIMIT: usize = 256 * 1024;
 const WIRE_LIMIT: usize = 4 * 1024 * 1024;
 
+#[derive(Debug)]
+enum ResponseBytesError {
+    Limit,
+    Transport,
+}
+
+impl fmt::Display for ResponseBytesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Limit => "Responses byte limit",
+            Self::Transport => "Responses transport failure",
+        })
+    }
+}
+
 fn invalid() -> VegaError {
     VegaError::Provider {
         status: None,
@@ -323,24 +338,32 @@ fn push_text(events: &mut Vec<ProviderEvent>, mut text: &str, make: fn(String) -
 }
 
 pub(crate) fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -> EventStream {
+    event_stream_with_recovery(resp, cancel, false)
+}
+
+pub(super) fn event_stream_with_recovery(
+    resp: reqwest::Response,
+    cancel: CancellationToken,
+    recoverable: bool,
+) -> EventStream {
     let bytes = resp.bytes_stream().scan(0usize, |total, chunk| {
         let next = match chunk {
             Ok(chunk) => {
                 *total = total.saturating_add(chunk.len());
                 if *total > WIRE_LIMIT {
-                    Err(std::io::Error::other("Responses byte limit"))
+                    Err(ResponseBytesError::Limit)
                 } else {
                     Ok(chunk)
                 }
             }
-            Err(_) => Err(std::io::Error::other("Responses stream transport failure")),
+            Err(_) => Err(ResponseBytesError::Transport),
         };
         futures::future::ready(Some(next))
     });
     let inner = Box::pin(bytes.eventsource());
     Box::pin(futures::stream::unfold(
         (inner, Assembler::default(), VecDeque::new(), false, cancel),
-        |(mut inner, mut parser, mut pending, mut ended, cancel)| async move {
+        move |(mut inner, mut parser, mut pending, mut ended, cancel)| async move {
             loop {
                 if cancel.is_cancelled() {
                     return None;
@@ -360,7 +383,16 @@ pub(crate) fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -
                             pending.push_back(Err(error));
                         }
                     },
-                    _ => {
+                    Some(Err(EventStreamError::Transport(ResponseBytesError::Transport)))
+                    | None => {
+                        ended = true;
+                        pending.push_back(Err(if recoverable {
+                            recovery::incomplete_stream_error()
+                        } else {
+                            invalid()
+                        }));
+                    }
+                    Some(Err(_)) => {
                         ended = true;
                         pending.push_back(Err(invalid()));
                     }

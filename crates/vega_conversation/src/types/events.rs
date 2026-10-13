@@ -142,6 +142,16 @@ fn now_unix_millis() -> i64 {
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
 #[derive(Clone)]
 pub enum ConversationEvent {
+    AssistantResponseStarted {
+        message_id: MessageId,
+        text_start_bytes: usize,
+    },
+    ResponseRetrying {
+        message_id: MessageId,
+        text_start_bytes: usize,
+        attempt: u32,
+        max_retries: u32,
+    },
     ScreenshotDelivered {
         message_id: MessageId,
         call_id: CallId,
@@ -279,6 +289,23 @@ pub enum ConversationEvent {
 impl std::fmt::Debug for ConversationEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AssistantResponseStarted {
+                text_start_bytes, ..
+            } => formatter
+                .debug_struct("AssistantResponseStarted")
+                .field("text_start_bytes", text_start_bytes)
+                .finish_non_exhaustive(),
+            Self::ResponseRetrying {
+                text_start_bytes,
+                attempt,
+                max_retries,
+                ..
+            } => formatter
+                .debug_struct("ResponseRetrying")
+                .field("text_start_bytes", text_start_bytes)
+                .field("attempt", attempt)
+                .field("max_retries", max_retries)
+                .finish_non_exhaustive(),
             Self::ScreenshotDelivered { image, .. } => formatter
                 .debug_struct("ScreenshotDelivered")
                 .field("image_bytes", &image.bytes().len())
@@ -415,6 +442,22 @@ pub(crate) fn from_runtime_event(
     use vega_runtime::{RuntimeEvent, RuntimeFinishReason, RuntimeToolStatus};
 
     match event {
+        RuntimeEvent::AssistantResponseStarted { text_start_bytes } => {
+            Some(ConversationEvent::AssistantResponseStarted {
+                message_id: message_id.into(),
+                text_start_bytes: *text_start_bytes,
+            })
+        }
+        RuntimeEvent::ResponseRetrying {
+            text_start_bytes,
+            attempt,
+            max_retries,
+        } => Some(ConversationEvent::ResponseRetrying {
+            message_id: message_id.into(),
+            text_start_bytes: *text_start_bytes,
+            attempt: *attempt,
+            max_retries: *max_retries,
+        }),
         RuntimeEvent::DiagnosticAttempt(_) | RuntimeEvent::BuiltinSkillActivated(_) => None,
         RuntimeEvent::ScreenshotDelivered { call_id, image, .. } => {
             Some(ConversationEvent::ScreenshotDelivered {
