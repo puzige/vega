@@ -1,6 +1,6 @@
 # Issue #296 · 信息流工具块间距交付记录
 
-2026-10-13，规格：[信息流工具块间距一致性](vega-issue-296-stream-block-spacing.md)。实现切片基于 `origin/master@ff5db04` 复核；实现提交以本切片的 Git 历史为准。本记录不包含用户原始截图、会话文字或工具参数。
+2026-10-13，规格：[信息流工具块间距一致性](vega-issue-296-stream-block-spacing.md)。定向回归在 `origin/master@6e18e5d` 上复核；之后的主分支集成以 PR 云端门禁为准。实现提交以本切片的 Git 历史为准。本记录不包含用户原始截图、会话文字或工具参数。
 
 ## 根因与结果
 
@@ -26,7 +26,7 @@ B01 actual 0px, expected 16px; B02 actual 0px, expected 24px
 raw log SHA-256: 3a3fe497f832051132279c76d9a197e30f8d3ae2fd97c44368b6a3336a15b7aa
 ```
 
-基线更新至 `ff5db04` 后的定向 GREEN：
+首次更新至 `ff5db04` 后的定向 GREEN：
 
 ```text
 cargo nextest run -p vega_ui -E 'test(/issue296_spacing/) | test(/issue296_expansion_p06/) | test(/issue296_expansion_p07/) | test(/issue296_v2_process_spacing/) | test(/issue296_codex_stream/)'
@@ -36,6 +36,22 @@ cargo fmt --all -- --check
 exit 0
 git diff --check
 exit 0
+```
+
+PR 首次云端全量 Nextest 为 2451 通过、1 失败：旧的 #72 锚点几何测试仍断言说明后的工具段为 25px，实际已按本规格成为 25+24=49px。更新该旧断言并明确校验 `CONVERSATION_STAGE_TOP` 后，锚点与本切片的定向回归：
+
+```text
+cargo nextest run -p vega_ui --no-fail-fast -E 'test(/issue72_message_anchor_navigation/) or test(/issue296_spacing_/)'
+exit 0; 20 tests run: 20 passed, 724 skipped
+raw log SHA-256: 58fedb1addfd335dcc4dabb0c94241f683d4b2883b66c879d9c63f02c47e4a58
+```
+
+再次更新至 `6e18e5d` 后，合并覆盖间距、#72 锚点、展开与信息流的定向回归：
+
+```text
+cargo nextest run -p vega_ui -E 'test(/issue296_spacing/) | test(/issue72_message_anchor_navigation/) | test(/issue296_expansion_p06/) | test(/issue296_expansion_p07/) | test(/issue296_v2_process_spacing/) | test(/issue296_codex_stream/)'
+exit 0; 41 tests run: 41 passed, 707 skipped
+raw log SHA-256: 87af6e834e131d65d81d72bda3326f6956984eca88af50c7fb75ed6707128bea
 ```
 
 规格偏离：无。自动证据是进程内 GPUI 布局、顺序与估高断言；未做真实应用像素验收，也未安装、启动或中断用户当前 Vega。用户更新后手测 M01：运行中观察说明后新工具的块距、展开多条工具的内部行距、可信 Final 后收起与重新展开、窄窗口和长详情滚动。无数据迁移；如需回滚，revert 本切片的 squash commit。
