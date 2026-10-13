@@ -509,3 +509,189 @@ fn issue75_readonly_permissions_cua_denial_codec_rejects_unrelated_authority() {
         false
     ));
 }
+
+#[tokio::test]
+async fn issue75_delivery_progress_batched_reuse_preserves_private_model_inputs_and_safe_store() {
+    let (store, dir, _) = setup();
+    let run = vega_runtime::computer_use::ComputerUseRun::new(true, false);
+    let image = picture();
+    let windows = (2..4)
+        .map(|id| vega_runtime::computer_use::DesktopTarget {
+            selection_id: format!("private-target-{id}"),
+            application: "Private Fixture".into(),
+            bundle_id: "test.private.fixture".into(),
+            pid: 1,
+            window_id: id,
+            title: format!("Private Owned {id}"),
+        })
+        .collect();
+    let frames = [2, 3, 2, 3]
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| vega_mcp::ManagedResult {
+            text: Vec::new(),
+            images: vec![vega_mcp::ManagedImage {
+                bytes: image.bytes().to_vec(),
+                mime_type: "image/png".into(),
+            }],
+            structured: Some(
+                serde_json::json!({"pid":1,"window_id":id,"screenshot_frame_valid":true,
+            "snapshot_id":format!("snapshot-{index}"),"capture_id":format!("capture-{index}"),
+            "elements":[],"degraded":false}),
+            ),
+            is_error: false,
+        })
+        .collect();
+    let actions = test_support::install_desktop(
+        &run,
+        windows,
+        frames,
+        vec![serde_json::json!({"accessibility":false,"screen_recording":true})],
+    )
+    .await;
+    let batch = |number| {
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: format!("shot-a-{number}"),
+                name: "ComputerScreenshot".into(),
+                input_json: r#"{"target_id":"private-target-2"}"#.into(),
+            },
+            ProviderEvent::ToolUse {
+                id: format!("shot-b-{number}"),
+                name: "ComputerScreenshot".into(),
+                input_json: r#"{"target_id":"private-target-3"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])]
+    };
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "private-directory".into(),
+                name: "ComputerObserve".into(),
+                input_json: r#"{"target_id":null,"cursor":null}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        batch(1),
+        batch(2),
+        vec![
+            ScriptStep::text("Attached."),
+            ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }]),
+        ],
+    ]);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    run_thread_task_with_images_and_reasoning(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Screenshot the fixtures",
+        "",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        PersistenceActorConfig {
+            computer_use: Some(run.clone()),
+            ..Default::default()
+        },
+        None,
+        None,
+        None,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(actions.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.requests().len(), 4);
+    assert_eq!(test_support::desktop_calls(&run).await.len(), 4);
+    for table in ["image_attachments", "computer_screenshot_artifacts"] {
+        assert_eq!(
+            store
+                .conn()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+    let rows = store
+        .conn()
+        .prepare("SELECT input_json,output_text,status FROM tool_calls ORDER BY seq")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows.len(), 5);
+    for (input, output, status) in rows {
+        assert!(vega_runtime::computer_use::ComputerUseAudit::valid(&input));
+        assert_eq!(status, "success");
+        for secret in [
+            "private-target",
+            "Private Owned",
+            "Private Fixture",
+            "window_id",
+            "bundle_id",
+        ] {
+            assert!(!input.contains(secret));
+            assert!(!output.contains(secret), "{output}");
+        }
+    }
+    for (id, target, artifact) in [
+        ("shot-a-2", "private-target-2", "shot-a-1"),
+        ("shot-b-2", "private-target-3", "shot-b-1"),
+    ] {
+        let requests = provider.requests();
+        let request = requests.last().unwrap();
+        let call = request
+            .messages
+            .iter()
+            .flat_map(|message| &message.tool_calls)
+            .find(|call| call.id == id)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&call.input_json).unwrap(),
+            serde_json::json!({"target_id":target})
+        );
+        let message = request
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(id))
+            .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(message.content.lines().next().unwrap()).unwrap();
+        assert_eq!(receipt["artifact_id"], format!("screenshot:{artifact}"));
+        assert_eq!(receipt["unchanged"], true);
+    }
+    let path = dir.path().join("vega.db");
+    drop(store);
+    let store = Store::open(path).unwrap();
+    store.migrate().unwrap();
+    let page = crate::history::latest_history_page(&store, "thread-1", 50).unwrap();
+    let images = page
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            crate::history::HistoryEntry::AssistantScreenshot { call_id, image, .. } => {
+                Some((call_id.as_str(), image))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0], ("shot-a-1", &image));
+    assert_eq!(images[1], ("shot-b-1", &image));
+}

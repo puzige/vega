@@ -564,8 +564,7 @@ fn issue75_successful_reads_only_durable_ack_can_survive_capture_invalidation() 
             .connected(epoch, Capability::Desktop, observation.target.clone())
             .unwrap();
         let image = observation.image.clone().unwrap();
-        run.retain_screenshot(&observation.call_id, image.clone(), epoch)
-            .unwrap();
+        run.retain_screenshot(&observation).unwrap();
         assert!(
             run.acknowledge_screenshot(&observation.call_id, epoch + 1)
                 .is_err()
@@ -590,11 +589,88 @@ fn issue75_successful_reads_only_durable_ack_can_survive_capture_invalidation() 
             acknowledged
         );
         if acknowledged {
-            assert_eq!(message.content, screenshot_receipt(&observation.call_id));
+            assert_eq!(
+                message.content,
+                run.model_receipt(&observation.call_id).unwrap()
+            );
         } else {
             assert_eq!(message.content, INVALIDATED_OBSERVATION);
         }
         run.control.stop();
         run.control.finish_cleanup();
     }
+}
+
+#[test]
+fn issue75_delivery_progress_reuse_requires_ack_and_current_capture_epoch() {
+    let run = ComputerUseRun::new(true, false);
+    let epoch = run.control.begin(Capability::Desktop).unwrap();
+    let first = fixture_observation(&run.control, epoch, 0);
+    run.control
+        .connected(epoch, Capability::Desktop, first.target.clone())
+        .unwrap();
+    run.retain_screenshot(&first).unwrap();
+    assert!(run.model_receipt(&first.call_id).is_none());
+    let mut pending = first.clone();
+    pending.call_id = "pending-second".into();
+    let receipt: Value = serde_json::from_str(&run.retain_screenshot(&pending).unwrap()).unwrap();
+    assert_eq!(receipt["unchanged"], false);
+    assert!(run.screenshot(&pending.call_id).is_some());
+    assert!(run.model_receipt(&pending.call_id).is_none());
+    run.acknowledge_screenshot(&first.call_id, epoch).unwrap();
+    let mut reused = first.clone();
+    reused.call_id = "reused-after-ack".into();
+    let receipt: Value = serde_json::from_str(&run.retain_screenshot(&reused).unwrap()).unwrap();
+    assert_eq!(receipt["unchanged"], true);
+    assert_eq!(
+        receipt["artifact_id"],
+        format!("screenshot:{}", first.call_id)
+    );
+    assert!(run.screenshot(&reused.call_id).is_none());
+    assert!(run.model_receipt(&reused.call_id).is_some());
+    run.control.pause();
+    let mut late = first.clone();
+    late.call_id = "late-after-pause".into();
+    assert!(run.retain_screenshot(&late).is_err());
+    assert!(run.model_receipt(&late.call_id).is_none());
+    run.control.finish_cleanup();
+    run.control.resume(run.control.status().epoch).unwrap();
+    assert!(run.retain_screenshot(&late).is_err());
+    assert!(run.model_receipt(&late.call_id).is_none());
+    run.control.stop();
+    run.control.finish_cleanup();
+}
+
+#[test]
+fn issue75_delivery_progress_unacknowledged_external_body_cannot_escape_outcome() {
+    let control = ComputerUseControl::new();
+    let mut observation = fixture_observation(&control, 1, 0);
+    observation.text = "owned-private-screenshot-body".into();
+    let mut message =
+        crate::ChatMessage::tool_result(&observation.call_id, observation.model_text());
+    message.images = observation.image.into_iter().collect();
+    let outcome = crate::agent::outcome(
+        Vec::new(),
+        vec![
+            crate::ChatMessage::assistant_with_tools(
+                "",
+                vec![crate::ChatToolCall {
+                    id: observation.call_id,
+                    name: "ComputerScreenshot".into(),
+                    input_json: json!({"target_id":"owned-private-target"}).to_string(),
+                }],
+            ),
+            message,
+        ],
+        String::new(),
+        1,
+        1,
+        true,
+        false,
+    );
+    assert_eq!(outcome.messages[1].content, INVALIDATED_OBSERVATION);
+    assert!(outcome.messages[1].images.is_empty());
+    assert!(ComputerUseAudit::valid(
+        &outcome.messages[0].tool_calls[0].input_json
+    ));
 }

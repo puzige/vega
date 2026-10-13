@@ -394,6 +394,8 @@ where
         run.invalidate_observations();
         run.trim_messages(messages);
         run.trim_messages(&mut projected);
+        crate::computer_use::redact_ephemeral_messages(messages);
+        crate::computer_use::redact_ephemeral_messages(&mut projected);
     }
     let compacted = hook
         .compact(
@@ -1253,6 +1255,7 @@ where
                 if let Some(run) = &tool_config.computer_use {
                     run.invalidate_observations();
                     run.trim_messages(&mut messages);
+                    crate::computer_use::redact_ephemeral_messages(&mut messages);
                 }
                 let compacted = hook
                     .compact(
@@ -2124,14 +2127,7 @@ where
         }
         let wire_calls = prepared_calls
             .iter()
-            .map(|prepared| {
-                let call = prepared.call();
-                ChatToolCall {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    input_json: call.input_json.clone(),
-                }
-            })
+            .map(PreparedRuntimeCall::model_call)
             .collect();
         let mut assistant_message = ChatMessage::assistant_with_tools_and_reasoning(
             assistant_text,
@@ -2555,7 +2551,15 @@ where
                     .as_ref()
                     .is_some_and(|run| run.no_progress())
             {
-                let message = "电脑操作连续未取得进展，已停止本轮自动操作。请根据对话中的错误修正目标或参数后重新发起；不会继续重复点击或换用脚本。";
+                let message = if tool_config
+                    .computer_use
+                    .as_ref()
+                    .is_some_and(|run| run.has_delivered_screenshots())
+                {
+                    "已有截图保留在对话中。后续电脑操作连续未取得进展，已停止重复操作。请根据最后一个工具结果处理尚未完成的工作。"
+                } else {
+                    "电脑操作连续未取得进展，已停止本轮自动操作。请根据对话中的错误修正目标或参数后重新发起；不会继续重复点击或换用脚本。"
+                };
                 final_text.push_str(message);
                 emit!(events, sink, RuntimeEvent::TextDelta(message.into()));
                 emit!(

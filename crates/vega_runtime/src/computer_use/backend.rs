@@ -388,12 +388,7 @@ impl Backends {
                 .await?;
             if screenshot {
                 let observation = run.control.observation(capability, &id)?;
-                run.retain_screenshot(
-                    call_id,
-                    observation.image.ok_or(Error::Image)?,
-                    observation.epoch,
-                )?;
-                return Ok(super::screenshot_receipt(call_id));
+                return run.retain_screenshot(&observation);
             }
             Ok(format!(
                 "completed; observation_id={id}; observation images and page data are ephemeral and are not retained in history."
