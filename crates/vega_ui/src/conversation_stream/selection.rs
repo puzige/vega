@@ -208,21 +208,7 @@ impl Element for SelectableStyledText {
             }
         });
         self.paint_runs.as_ref().and_then(|runs| {
-            let line_layouts = self.text.layout().line_layouts();
-            let layout = line_layouts.first()?;
-            match window.text_system().shape_text(
-                self.content.clone(),
-                layout.font_size(),
-                runs,
-                layout.wrap_width,
-                None,
-            ) {
-                Ok(lines) => Some(lines.into_vec()),
-                Err(error) => {
-                    tracing::error!(%error, "failed to shape selectable styled text");
-                    None
-                }
-            }
+            super::inline_code::shape(self.content.clone(), runs, self.text.layout(), window)
         })
     }
 
@@ -236,23 +222,10 @@ impl Element for SelectableStyledText {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Some(lines) = prepaint {
-            let line_height = self.text.layout().line_height();
-            let text_bounds = self.text.layout().bounds();
-            let mut origin = text_bounds.origin;
-            for line in lines.iter() {
-                if let Err(error) = line.paint_background(
-                    origin,
-                    line_height,
-                    window.text_style().text_align,
-                    Some(text_bounds),
-                    window,
-                    cx,
-                ) {
-                    tracing::error!(%error, "failed to paint selectable text background");
-                }
-                origin.y += line.size(line_height).height;
-            }
+        if prepaint.is_some()
+            && let Some(runs) = &self.paint_runs
+        {
+            super::inline_code::paint_backgrounds(self.text.layout(), runs, window);
         }
         if let Some(Some(range)) = self.projected_ranges.borrow().get(self.order as usize) {
             paint_selection(
@@ -263,22 +236,7 @@ impl Element for SelectableStyledText {
             );
         }
         if let Some(lines) = prepaint {
-            let line_height = self.text.layout().line_height();
-            let text_bounds = self.text.layout().bounds();
-            let mut origin = text_bounds.origin;
-            for line in lines.iter() {
-                if let Err(error) = line.paint(
-                    origin,
-                    line_height,
-                    window.text_style().text_align,
-                    Some(text_bounds),
-                    window,
-                    cx,
-                ) {
-                    tracing::error!(%error, "failed to paint selectable styled text");
-                }
-                origin.y += line.size(line_height).height;
-            }
+            super::inline_code::paint_text(lines, self.text.layout(), window, cx);
         } else {
             self.text
                 .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);

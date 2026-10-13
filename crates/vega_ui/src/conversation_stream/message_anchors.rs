@@ -722,20 +722,52 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
             )
         })
         .sum::<f32>();
-    let rows = model
+    let content_height = model
         .committed_lines
         .iter()
         .chain(&model.pending_lines)
         .map(|line| {
+            if let Some(table) = &line.table {
+                let inset =
+                    if list_blocks.contains(&line.block_id) && line.kind != LineKind::ListItem {
+                        (line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+                    } else {
+                        0.0
+                    };
+                let widths = table.column_widths(width - inset);
+                return table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        let rows = row
+                            .iter()
+                            .zip(&widths)
+                            .map(|(spans, width)| {
+                                let capacity = ((width - 2.0 * Layout::MARKDOWN_TABLE_PADDING_X)
+                                    / (Typography::CONVERSATION * 0.56))
+                                    .max(1.0)
+                                    as usize;
+                                let text: String =
+                                    spans.iter().map(|span| span.text.as_str()).collect();
+                                text.split('\n')
+                                    .map(|line| display_width(line).div_ceil(capacity).max(1))
+                                    .sum::<usize>()
+                            })
+                            .max()
+                            .unwrap_or(1);
+                        rows as f32 * line_height + 2.0 * Layout::MARKDOWN_TABLE_PADDING_Y + 1.0
+                    })
+                    .sum();
+            }
             let chars = line
                 .spans
                 .iter()
                 .map(|span| display_width(&span.text))
                 .sum::<usize>();
-            chars.div_ceil(chars_per_line).max(1)
+            chars.div_ceil(chars_per_line).max(1) as f32 * line_height
         })
-        .sum::<usize>();
-    rows as f32 * line_height + gaps
+        .sum::<f32>();
+    content_height + gaps
 }
 
 pub(crate) fn estimate_stream_entry_height(

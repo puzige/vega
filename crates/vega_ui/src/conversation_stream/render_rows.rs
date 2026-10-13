@@ -889,6 +889,7 @@ fn render_table_selectable(
 ) -> AnyElement {
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
+    let weights = table.column_weights();
     let mut body = div()
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -933,7 +934,9 @@ fn render_table_selectable(
                     .debug_selector(move || {
                         format!("markdown-table-{block_id}-{ordinal}-{row_index}-{column}")
                     })
-                    .flex_1()
+                    .flex_basis(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH))
+                    .flex_grow(weights[column])
+                    .flex_shrink_0()
                     .min_w_0()
                     .px(px(Layout::MARKDOWN_TABLE_PADDING_X))
                     .py(px(Layout::MARKDOWN_TABLE_PADDING_Y))
@@ -1004,6 +1007,13 @@ pub(crate) fn block_text(
     StyledText::new(text).with_runs(block_text_runs(spans, default_style, colors))
 }
 
+fn markdown_text(spans: &[StreamSpan], style: TextStyle, colors: &ThemeColors) -> AnyElement {
+    super::inline_code::styled_text(
+        spans.iter().map(|span| span.text.as_str()).collect(),
+        block_text_runs(spans, style, colors),
+    )
+}
+
 fn block_text_runs(
     spans: &[StreamSpan],
     default_style: TextStyle,
@@ -1028,7 +1038,6 @@ pub(crate) fn apply_span_style(style: &mut TextStyle, span: SpanStyle, colors: &
         SpanStyle::Strikethrough => style.strikethrough = Some(StrikethroughStyle::default()),
         SpanStyle::Code => {
             style.font_family = MONOFONT.into();
-            style.font_size = AbsoluteLength::Pixels(px(Typography::CODE));
             style.background_color = Some(colors.conversation_code.into());
         }
         SpanStyle::Link => {
@@ -1094,7 +1103,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             .child(div().px_2().child("你"))
             .into_any_element(),
         LineKind::UserLine { .. } => item
-            .child(div().px_2().py(px(1.0)).child(block_text(
+            .child(div().px_2().py(px(1.0)).child(markdown_text(
                 &line.spans,
                 user_body_style(colors),
                 colors,
@@ -1106,7 +1115,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                 .line_height(gpui_kit::relative(Typography::CODE_LINE_HEIGHT))
                 .whitespace_nowrap()
                 .text_color(colors.text_primary)
-                .child(block_text(
+                .child(markdown_text(
                     &line.spans,
                     code_run_style(colors.text_primary),
                     colors,
@@ -1131,7 +1140,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                             .flex_shrink_0()
                             .bg(colors.border_subtle),
                     )
-                    .child(block_text(
+                    .child(markdown_text(
                         &line.spans,
                         message_run_style(colors.text_primary),
                         colors,
@@ -1146,7 +1155,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             let (size, weight) = heading_style(level);
             item.text_size(px(size))
                 .font_weight(weight)
-                .child(block_text(
+                .child(markdown_text(
                     &line.spans,
                     heading_run_style(level, colors),
                     colors,
@@ -1179,7 +1188,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                         .child(if checked { "[x]" } else { "[ ]" }),
                 );
             }
-            row = row.child(div().flex_1().min_w_0().child(block_text(
+            row = row.child(div().flex_1().min_w_0().child(markdown_text(
                 &line.spans,
                 message_run_style(colors.text_primary),
                 colors,
@@ -1187,7 +1196,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             item.child(row).into_any_element()
         }
         LineKind::Paragraph => item
-            .child(block_text(
+            .child(markdown_text(
                 &line.spans,
                 message_run_style(colors.text_primary),
                 colors,
@@ -1196,12 +1205,10 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
     }
 }
 
-/// Keep all rows in one scroll region and give every column the same share
-/// of its width. Text measurement then wraps inside each cell, independent
-/// of CJK fallback glyph widths or inline font changes.
 fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> AnyElement {
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
+    let weights = table.column_weights();
     let mut body = div()
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -1234,12 +1241,14 @@ fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> Any
                     .debug_selector(move || {
                         format!("markdown-table-{block_id}-{ordinal}-{row_index}-{column}")
                     })
-                    .flex_1()
+                    .flex_basis(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH))
+                    .flex_grow(weights[column])
+                    .flex_shrink_0()
                     .min_w_0()
                     .px(px(Layout::MARKDOWN_TABLE_PADDING_X))
                     .py(px(Layout::MARKDOWN_TABLE_PADDING_Y))
                     .text_align(alignment)
-                    .child(block_text(spans, style, colors)),
+                    .child(markdown_text(spans, style, colors)),
             );
         }
         body = body.child(row);

@@ -435,6 +435,9 @@ impl Layout {
     pub const MARKDOWN_LIST_INDENT: f32 = 24.0;
     pub const MARKDOWN_LIST_PARAGRAPH_GAP: f32 = 8.0;
     pub const MARKDOWN_CODE_PADDING: f32 = 12.0;
+    pub const MARKDOWN_INLINE_CODE_EXTRA_HEIGHT: f32 = 4.0;
+    pub const MARKDOWN_INLINE_CODE_RADIUS: f32 = 4.0;
+    pub const MARKDOWN_TABLE_COLUMN_DEMAND_CAP: f32 = 4.0 * Self::MARKDOWN_TABLE_COLUMN_MIN_WIDTH;
     pub const MARKDOWN_TABLE_PADDING_X: f32 = 12.0;
     pub const MARKDOWN_TABLE_PADDING_Y: f32 = 8.0;
     pub const MARKDOWN_BLOCK_GAP: f32 = 16.0;
