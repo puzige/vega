@@ -618,7 +618,7 @@ impl RunActivityGroup {
                     !has_stage || expanded || !matches!(child, RunActivityChild::Thinking(_))
                 })
                 .map(|child| Self::child_row_count(child, cx))
-                .sum()
+                .sum::<usize>()
     }
 
     pub(crate) fn compact_children(
@@ -1205,7 +1205,7 @@ impl RunActivityGroup {
         let epoch = state.animation_epoch;
         let mut header = None;
         let mut rows = Vec::new();
-        if let Some(card) = &thinking {
+        if thinking.is_some() {
             let title = state.stage_title(segment_index, cx);
             let disclosure_group: gpui_kit::SharedString =
                 format!("run-stage-{}-{segment_index}", group.entity_id()).into();
