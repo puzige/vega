@@ -350,6 +350,7 @@ mod render_rows;
 mod run_activity;
 mod run_notice;
 mod shimmer;
+mod sticky_disclosure;
 use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod selection;
 mod thinking;

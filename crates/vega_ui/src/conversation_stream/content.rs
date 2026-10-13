@@ -1057,6 +1057,37 @@ impl ConversationStream {
             for index in indexes {
                 this.invalidate_item(Some(index));
             }
+            if let Some(segment) = group.update(cx, |group, _| group.take_sticky_collapse())
+                && let Some(identity) =
+                    this.entries
+                        .iter()
+                        .zip(&this.entry_identities)
+                        .find_map(|(entry, identity)| match (entry, &segment) {
+                            (
+                                StreamEntry::RunActivity { group: owned },
+                                run_activity::StickyCollapse::Run,
+                            ) if owned == &group => Some(identity.key.clone()),
+                            (
+                                StreamEntry::RunActivitySegment {
+                                    group: owned,
+                                    segment: owned_segment,
+                                },
+                                run_activity::StickyCollapse::Segment(segment),
+                            ) if owned == &group && owned_segment == segment => {
+                                Some(identity.key.clone())
+                            }
+                            _ => None,
+                        })
+                && let Some(index) = this
+                    .entry_identities
+                    .iter()
+                    .position(|entry| entry.key == identity)
+            {
+                this.list.scroll_to(gpui_kit::ListOffset {
+                    item_ix: index,
+                    offset_in_item: px(0.),
+                });
+            }
             cx.notify();
         })
         .detach();

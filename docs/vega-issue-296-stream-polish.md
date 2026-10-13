@@ -74,3 +74,5 @@
 专职实现agent继续作为唯一代码作者。新增范围仅上述会话行/Markdown复用、侧栏spinner builder及定向测试；工具协议、存储和后端不变。先记录红测，再实现并只跑新增/受影响测试；P01–P05中受新改动影响的用例重跑。PR正文按最终范围重写，最新提交云端check全绿后才合并。
 
 P08测试边界补充：当前GPUI只公开`painted_quads`，Spinner的SVG transform位于私有scene；默认repeat使用真实Instant，TestClock不能推进该动画。禁止为了测试这一行参数修改动画同步机制、引入场景探针或headless renderer。匀速接线以生产代码核对、既有状态/布局回归和用户实机观察分层记录；等时间转角是函数验算，不能记作自动角度采样通过。
+
+2026-10-13 PR #318 合并后，用户补充长展开过程在外层对话滚动时丢失收起入口。后续按[收起入口吸顶规格](vega-issue-296-sticky-disclosure.md)限制 Final/run 和 live stage 的标题可见区域；本页 P01–P08 的数据、顺序、展开层级及几何契约继续保留。
