@@ -10,6 +10,13 @@ fn thinking(id: &str, delta: &str) -> ConversationEvent {
     }
 }
 
+fn summary(id: &str, delta: &str) -> ConversationEvent {
+    ConversationEvent::SummaryDelta {
+        message_id: id.into(),
+        delta: delta.into(),
+    }
+}
+
 fn start(id: &str) -> ConversationEvent {
     ConversationEvent::MessageStarted {
         message_id: id.into(),
@@ -487,7 +494,80 @@ async fn i71_live_heading_replaces_thinking_label_without_changing_activity_expa
 }
 
 #[gpui_kit::test]
-async fn i71_summary_priority_fallback_bounds_and_terminal(cx: &mut TestAppContext) {
+async fn i343_live_stage_title_follows_latest_readable_thinking_or_summary(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "live-thinking-title");
+    cx.update(|cx| {
+        cx.set_reduce_motion(false);
+        cx.set_global(shimmer::PaintProbe::default());
+    });
+    window
+        .update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(start("m"), cx);
+        stream.apply_event(thinking("m", "## Aliyun server:"), cx);
+    });
+    open_run_details(window, cx);
+    for (event, expected) in [
+        (summary("m", " \n## "), "Aliyun server:"),
+        (
+            thinking("m", "\nCache hit rate is unclear."),
+            "Cache hit rate is unclear.",
+        ),
+        (summary("m", "Summary A"), "Summary A"),
+        (
+            thinking("m", " Further investigation"),
+            "Cache hit rate is unclear. Further investigation",
+        ),
+        (summary("m", "\nSummary B"), "Summary B"),
+        (
+            thinking("m", "\n\n```rust\n## fake heading\n```\n**"),
+            "Summary B",
+        ),
+    ] {
+        stream.update(cx, |stream, cx| stream.apply_event(event, cx));
+        cx.run_until_parked();
+        stream.read_with(cx, |stream, app| {
+            assert_eq!(cards(stream, app)[0].read(app).title(), expected);
+        });
+        assert!(
+            gpui_kit::VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("run-stage-title-0")
+                .is_some()
+        );
+        cx.update(|cx| cx.global::<shimmer::PaintProbe>().0.borrow_mut().clear());
+        window
+            .update(cx, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let samples = cx.global::<shimmer::PaintProbe>().0.borrow();
+            assert_eq!(
+                samples
+                    .iter()
+                    .rev()
+                    .find(|sample| sample.moving)
+                    .map(|sample| sample.text.as_str()),
+                Some(expected)
+            );
+        });
+    }
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(finish("m"), cx);
+        stream.apply_event(thinking("m", "\nlate content"), cx);
+    });
+    stream.read_with(cx, |stream, app| {
+        let card = cards(stream, app)[0].read(app);
+        assert_eq!(card.title(), "Summary B");
+        assert!(card.source_text().contains("Further investigation"));
+        assert!(card.source_text().contains("Summary B"));
+    });
+}
+
+#[gpui_kit::test]
+async fn i343_latest_readable_source_fallback_bounds_and_terminal(cx: &mut TestAppContext) {
     let (_, stream, _) = open_controller_stream(cx, "summary-priority");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
@@ -514,7 +594,9 @@ async fn i71_summary_priority_fallback_bounds_and_terminal(cx: &mut TestAppConte
             },
             cx,
         );
-        stream.apply_event(thinking("m", "\n## raw must not override"), cx);
+        assert_eq!(cards(stream, cx)[0].read(cx).title(), "body under heading");
+        stream.apply_event(thinking("m", "\n## raw now takes over"), cx);
+        assert_eq!(cards(stream, cx)[0].read(cx).title(), "raw now takes over");
         stream.apply_event(
             ConversationEvent::SummaryDelta {
                 message_id: "m".into(),
@@ -535,7 +617,7 @@ async fn i71_summary_priority_fallback_bounds_and_terminal(cx: &mut TestAppConte
         stream.read_with(cx, |stream, app| {
             cards(stream, app)[0].read(app).title().to_owned()
         }),
-        "下个阶段"
+        "正文"
     );
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("next"), cx);
