@@ -221,6 +221,9 @@ struct ScreenshotCapture {
     image: crate::ImageAttachment,
     epoch: u64,
     delivered: bool,
+    target: DesktopTarget,
+    pixels: [u8; 32],
+    aliases: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -289,7 +292,7 @@ impl ComputerUseRun {
         if self.desktop_enabled {
             definitions.push(crate::ToolDefinition {
                 name: "ComputerScreenshot".into(),
-                description: "Capture and deliver a screenshot of one exact window from the current desktop directory directly as an image attachment in this conversation. Use this for screenshot requests instead of ComputerObserve or shell commands. Does not require an accessibility tree and never grants input authority. Only target_id from the current ComputerObserve directory is accepted. Successful delivery returns an artifact_id; the image is already displayed and saved in this conversation. At most four screenshots per run.".into(),
+                description: "Capture and deliver a screenshot of one exact window from the current desktop directory directly as an image attachment in this conversation. Use this for screenshot requests instead of ComputerObserve or shell commands. Does not require an accessibility tree and never grants input authority. Only target_id from the current ComputerObserve directory is accepted. Successful delivery returns an artifact_id; the image is already displayed and saved in this conversation. Unchanged pixels from the same window reuse its latest delivered artifact; do not capture again to verify delivery. Continue only remaining requested work, or answer when all requested images are delivered. At most four new screenshots per run.".into(),
                 input_schema: json!({"type":"object","properties":{"target_id":{"type":"string"}},"required":["target_id"],"additionalProperties":false}),
                 strict: true,
             });
@@ -378,7 +381,12 @@ impl ComputerUseRun {
                 .progress
                 .lock()
                 .map_err(|_| ComputerUseError::Unavailable)?
-                .finish(attempt, &result, after.as_ref());
+                .finish(
+                    attempt,
+                    &result,
+                    after.as_ref(),
+                    self.screenshot_delivered(call_id),
+                );
             if stopped {
                 self.control.fail(epoch, ComputerUseError::NoProgress);
                 result = Err(ComputerUseError::NoProgress);
@@ -404,6 +412,12 @@ impl ComputerUseRun {
             .is_ok_and(|progress| progress.stopped())
     }
 
+    pub(crate) fn has_delivered_screenshots(&self) -> bool {
+        self.screenshots
+            .lock()
+            .is_ok_and(|screenshots| screenshots.iter().any(|capture| capture.delivered))
+    }
+
     pub(crate) fn screenshot(&self, call_id: &str) -> Option<(crate::ImageAttachment, u64)> {
         self.screenshots
             .lock()
@@ -418,49 +432,104 @@ impl ComputerUseRun {
         call_id: &str,
         epoch: u64,
     ) -> Result<(), ComputerUseError> {
-        let mut screenshots = self
-            .screenshots
+        let target = {
+            let mut screenshots = self
+                .screenshots
+                .lock()
+                .map_err(|_| ComputerUseError::Unavailable)?;
+            let capture = screenshots
+                .iter_mut()
+                .find(|capture| capture.call_id == call_id && capture.epoch == epoch)
+                .ok_or(ComputerUseError::Protocol)?;
+            if capture.delivered {
+                return Ok(());
+            }
+            capture.delivered = true;
+            capture.target.clone()
+        };
+        self.progress
             .lock()
-            .map_err(|_| ComputerUseError::Unavailable)?;
-        let capture = screenshots
-            .iter_mut()
-            .find(|capture| capture.call_id == call_id && capture.epoch == epoch)
-            .ok_or(ComputerUseError::Protocol)?;
-        capture.delivered = true;
+            .map_err(|_| ComputerUseError::Unavailable)?
+            .delivered(&target);
         Ok(())
     }
 
     fn screenshot_delivered(&self, call_id: &str) -> bool {
         self.screenshots.lock().is_ok_and(|screenshots| {
-            screenshots
-                .iter()
-                .any(|capture| capture.call_id == call_id && capture.delivered)
+            screenshots.iter().any(|capture| {
+                capture.delivered
+                    && (capture.call_id == call_id
+                        || capture.aliases.iter().any(|alias| alias == call_id))
+            })
         })
     }
 
-    fn retain_screenshot(
-        &self,
-        call_id: &str,
-        image: crate::ImageAttachment,
-        epoch: u64,
-    ) -> Result<(), ComputerUseError> {
-        let mut screenshots = self
-            .screenshots
-            .lock()
-            .map_err(|_| ComputerUseError::Unavailable)?;
-        let mut images = screenshots
-            .iter()
-            .map(|capture| capture.image.clone())
-            .collect::<Vec<_>>();
-        images.push(image.clone());
-        crate::images::validate_images(&images).map_err(|_| ComputerUseError::ScreenshotLimit)?;
-        screenshots.push(ScreenshotCapture {
-            call_id: call_id.to_string(),
-            image,
-            epoch,
-            delivered: false,
+    fn model_receipt(&self, call_id: &str) -> Option<String> {
+        let screenshots = self.screenshots.lock().ok()?;
+        let capture = screenshots.iter().find(|capture| {
+            capture.delivered
+                && (capture.call_id == call_id
+                    || capture.aliases.iter().any(|alias| alias == call_id))
+        })?;
+        let mut receipt = screenshot_receipt_value(&capture.call_id, capture.call_id != call_id);
+        receipt["window"] = json!({
+            "pid":capture.target.pid,
+            "window_id":capture.target.window_id,
+            "application":capture.target.application,
+            "bundle_id":capture.target.bundle_id,
+            "title":capture.target.title,
+            "untrusted_metadata":true
         });
-        Ok(())
+        Some(receipt.to_string())
+    }
+
+    fn retain_screenshot(&self, observation: &Observation) -> Result<String, ComputerUseError> {
+        use sha2::{Digest, Sha256};
+        let Target::Desktop(target) = &observation.target else {
+            return Err(ComputerUseError::Protocol);
+        };
+        let image = observation.image.as_ref().ok_or(ComputerUseError::Image)?;
+        let decoded = image::load_from_memory(image.bytes())
+            .map_err(|_| ComputerUseError::Image)?
+            .to_rgba8();
+        let mut fingerprint = Sha256::new();
+        fingerprint.update(decoded.width().to_le_bytes());
+        fingerprint.update(decoded.height().to_le_bytes());
+        fingerprint.update(decoded.as_raw());
+        let pixels: [u8; 32] = fingerprint.finalize().into();
+        self.control.commit_delivery(observation.epoch, || {
+            let mut screenshots = self
+                .screenshots
+                .lock()
+                .map_err(|_| ComputerUseError::Unavailable)?;
+            if let Some(capture) = screenshots.iter_mut().rev().find(|capture| {
+                capture.delivered
+                    && capture.target.pid == target.pid
+                    && capture.target.window_id == target.window_id
+                    && capture.target.bundle_id == target.bundle_id
+            }) && capture.pixels == pixels
+            {
+                capture.aliases.push(observation.call_id.clone());
+                return Ok(screenshot_receipt_value(&capture.call_id, true).to_string());
+            }
+            let mut images = screenshots
+                .iter()
+                .map(|capture| capture.image.clone())
+                .collect::<Vec<_>>();
+            images.push(image.clone());
+            crate::images::validate_images(&images)
+                .map_err(|_| ComputerUseError::ScreenshotLimit)?;
+            screenshots.push(ScreenshotCapture {
+                call_id: observation.call_id.clone(),
+                image: image.clone(),
+                epoch: observation.epoch,
+                delivered: false,
+                target: target.clone(),
+                pixels,
+                aliases: Vec::new(),
+            });
+            Ok(screenshot_receipt(&observation.call_id))
+        })?
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -619,13 +688,13 @@ impl ComputerUseRun {
             .into_iter()
             .find(|item| item.call_id == call_id)
         {
-            let delivered = self.screenshot_delivered(call_id);
-            message.content = if delivered {
-                format!("{}\n{}", message.content, observation.model_text())
+            let receipt = self.model_receipt(call_id);
+            message.content = if let Some(receipt) = &receipt {
+                format!("{receipt}\n{}", observation.model_text())
             } else {
                 observation.model_text()
             };
-            if !delivered && matches!(observation.target, Target::Desktop(_)) {
+            if receipt.is_none() && matches!(observation.target, Target::Desktop(_)) {
                 let target_id = self.control.screenshot_target(&observation);
                 let next_step = if target_id.is_some() {
                     "computer_screenshot"
@@ -654,16 +723,19 @@ impl ComputerUseRun {
                     .as_ref()
                     .is_some_and(|call_id| !current.iter().any(|item| &item.call_id == call_id))
             {
-                if let Some(call_id) = message.tool_call_id.as_deref()
-                    && self.screenshot(call_id).is_some()
+                if let Some(receipt) = message
+                    .tool_call_id
+                    .as_deref()
+                    .and_then(|id| self.model_receipt(id))
                 {
                     message.images.clear();
-                    message.content = if self.screenshot_delivered(call_id) {
-                        screenshot_receipt(call_id)
-                    } else {
-                        INVALIDATED_OBSERVATION.into()
-                    };
-                } else if message.content.starts_with("[External tool observation;") {
+                    message.content = receipt;
+                } else if message
+                    .tool_call_id
+                    .as_deref()
+                    .is_some_and(|id| self.screenshot(id).is_some())
+                    || message.content.starts_with("[External tool observation;")
+                {
                     message.images.clear();
                     message.content = INVALIDATED_OBSERVATION.into();
                 }
@@ -672,8 +744,63 @@ impl ComputerUseRun {
     }
 }
 
+pub(crate) fn redact_ephemeral_messages(messages: &mut [crate::ChatMessage]) {
+    let screenshots = messages
+        .iter()
+        .flat_map(|message| &message.tool_calls)
+        .filter(|call| call.name == "ComputerScreenshot")
+        .map(|call| call.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    for message in messages {
+        for call in &mut message.tool_calls {
+            if ComputerUseRun::tool_capability(&call.name).is_some()
+                && !ComputerUseAudit::valid(&call.input_json)
+            {
+                call.input_json = ComputerUseAudit::for_tool(&call.name, &call.input_json);
+            }
+        }
+        if message.role != crate::ChatRole::Tool {
+            continue;
+        }
+        if message.content.starts_with("[External tool observation;") {
+            message.images.clear();
+            message.content = INVALIDATED_OBSERVATION.into();
+        } else if message
+            .tool_call_id
+            .as_ref()
+            .is_some_and(|id| screenshots.contains(id))
+        {
+            message.images.clear();
+            if let Some(line) = message.content.lines().next()
+                && let Ok(Value::Object(mut receipt)) = serde_json::from_str::<Value>(line)
+                && receipt.get("status").and_then(Value::as_str) == Some("delivered")
+                && receipt.get("delivery").and_then(Value::as_str)
+                    == Some("conversation_image_attachment")
+            {
+                receipt.retain(|key, _| {
+                    matches!(
+                        key.as_str(),
+                        "status"
+                            | "artifact_id"
+                            | "delivery"
+                            | "saved_in_history"
+                            | "read_only"
+                            | "unchanged"
+                            | "next_step"
+                    )
+                });
+                message.content = Value::Object(receipt).to_string();
+            }
+        }
+    }
+}
+
 fn screenshot_receipt(call_id: &str) -> String {
-    json!({"status":"delivered","artifact_id":format!("screenshot:{call_id}"),"delivery":"conversation_image_attachment","saved_in_history":true,"read_only":true}).to_string()
+    screenshot_receipt_value(call_id, false).to_string()
+}
+
+fn screenshot_receipt_value(call_id: &str, unchanged: bool) -> Value {
+    json!({"status":"delivered","artifact_id":format!("screenshot:{call_id}"),"delivery":"conversation_image_attachment","saved_in_history":true,"read_only":true,"unchanged":unchanged,"next_step":"continue_remaining_requested_work_or_finish"})
 }
 
 #[cfg(test)]
@@ -690,6 +817,26 @@ pub struct ComputerUseAudit {
 }
 
 impl ComputerUseAudit {
+    pub(crate) fn for_tool(name: &str, input: &str) -> String {
+        let arguments = serde_json::from_str::<Value>(input).unwrap_or(Value::Null);
+        let action = if name == "ComputerScreenshot" {
+            "screenshot"
+        } else if name.ends_with("Observe") {
+            "observe"
+        } else {
+            arguments["action"]
+                .as_str()
+                .filter(|action| {
+                    matches!(
+                        *action,
+                        "click" | "type_text" | "press_key" | "hotkey" | "scroll" | "navigate"
+                    )
+                })
+                .unwrap_or("invalid")
+        };
+        Self::project(input, action)
+    }
+
     pub(crate) fn project(input: &str, action: &str) -> String {
         use sha2::{Digest, Sha256};
         serde_json::json!({"kind":"computer_use","version":1,"action":action,"argument_bytes":input.len(),"argument_digest":format!("{:x}", Sha256::digest(input.as_bytes()))}).to_string()

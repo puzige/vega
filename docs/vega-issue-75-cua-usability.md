@@ -167,7 +167,7 @@ SP2. 成功 ComputerObserve 同样受到 runtime 无进展约束。窗口按 PID
 
 SP3. 窗口读状态比较保留稳定 AX 字段（包括 value/selected/frame）及解码图像。仅当 AX 中存在 AXTextArea/AXTextField/AXSearchField、AX 内容完全不变、图像尺寸相同，才将至多 4 个相邻像素列的变化视作光标闪烁，不重置读取计数；不忽略更宽画面变化、任何 AX 内容变化或无文本控件的视觉变化。以列哈希保存有界比较状态，不缓存额外原始截图/文本。算例：800×600 图像中 2 列×20 像素的 caret 变化，列跨度 2≤4，被忽略；视口滚动改变 480 列，480>4，计为进展；哪怕只 1 列像素改变，AX value 变化仍计为进展。既有 Act 的无变化比较保持严格像素规则，不能借本条放宽动作校验。
 
-SP4. 有可比状态变化的成功 Act 清除成功读取循环计数，以动作返回的新状态作为当前窗口基线（0 次额外读取）；仅 action success 字样不算变化。显式 Screenshot 产生新交付是进展，不计为冗余观察；原附件 ack/取消合同保留。目录刷新/成功 Observe 不清其他操作的失败计数；同操作实际恢复沿用既有合同。skill 升为 v2：动作已经返回验证后的新状态，完成输入且需要图片时使用返回的当前 target_id 直接 Screenshot；只有明确 expired/missing 引用才刷新目录一次，不为验证同一状态反复发现窗口。不单靠 skill 限制循环。
+SP4. 有可比状态变化的成功 Act 重建普通成功读取基线，并只清除本窗口的重复截图计数；其他窗口的重复截图计数保持。以动作返回的新状态作为当前窗口基线（0 次额外读取）；仅 action success 字样不算变化。显式 Screenshot 产生新交付是进展，不计为冗余观察；原附件 ack/取消合同保留。目录刷新/成功 Observe 不清其他操作的失败计数；同操作实际恢复沿用既有合同。skill 升为 v2：动作已经返回验证后的新状态，完成输入且需要图片时使用返回的当前 target_id 直接 Screenshot；只有明确 expired/missing 引用才刷新目录一次，不为验证同一状态反复发现窗口。不单靠 skill 限制循环。
 
 | ID | 生产前置与操作 | 预期 | 状态 |
 |---|---|---|---|
@@ -269,3 +269,72 @@ cargo nextest run -p vega_ui -E 'test(issue75)'
 提交后无冲突变基至 `f1cf5ee7c2b47c8e36a0d24385b5fb4020df969f`（#322 工具操作图标）。最终补测原本卡矩阵及上游实际修改的 6 个图标/分组/历史用例，共 **127/127 PASS**、1801 skipped，run `d8b916f2-b895-4ac5-8327-7664ce8a46f3`。原始日志 `/tmp/vega-75-screenshot-ui-rebased.log`，SHA-256 `0c9956a975bf5d132408257da9d356b21b6cfa6a20835c6be7d75d54686ca71d`，完整 executable/cwd/argv 在 `/tmp/vega-75-screenshot-ui-rebased-argv.json`。本分支相对主线修改的26个 Rust 文件 rustfmt --check 与 git diff --check 全部通过，原始命令/退出码在 `/tmp/vega-75-screenshot-ui-rebased-checks.log`。前述115、121、14项及全部失败证据独立保留。未执行 workspace 全量门禁或真实 driver；PR/CI/发布和真机验收由主控继续。
 
 发布前 fresh fetch 又发现 `5c7885c7517b3f1ba4978fd40ef9ead7501d78b1`（#323 仅按运行终态展示尾部提示），再次无冲突变基。本轮未改本卡生产逻辑，仅补测受影响 UI：本卡14项 + #323核心8项，**22/22 PASS**、704 skipped，run `fe75b4e8-fdf5-4c93-886d-5c04cfd962fb`；未重跑无变化 runtime 矩阵。原始日志 `/tmp/vega-75-screenshot-ui-terminal-notices-rebased.log`，SHA-256 `41476564c79eea0b537e538ff0cd6f5380bc0224183ef5dddab5712e1f5b8251`；完整命令为同名前缀 `-argv.json`，10个本卡 UI Rust 文件格式与 diff 检查通过（`/tmp/vega-75-screenshot-ui-terminal-notices-checks.log`）。此前127项与全部RED记录继续保留；提交数仍为3。
+
+
+## 已交付截图重复采集修复（2026-10-13，0.1.85 真机回归）
+
+multi85-01 已在前20秒交付两张 TextEdit 图片，仍继续目录→截图A→截图B，最终9次工具、4张附件、79.660秒后达到图数上限。源码确认两处缺口：prepared CUA call 已替换为审计摘要，但运行时 assistant tool_calls 直接复用该摘要，导致模型看不到自己实际使用的窗口/动作参数；成功 Screenshot 又无条件清理成功读取计数，重复交付被误算作进展。历史脱敏本身不是故障，修复不得把窗口内容或输入写进数据库。
+
+DP1. CUA 的当前 run 模型调用保留实际已解析参数，与该轮原 tool call 的语义一致；只用于临时 ChatMessage 和 provider 请求。RuntimeEvent、CompletedToolCall 的持久审计继续使用既有 ComputerUseAudit 摘要。目录/Act/截图调用和 tool result 保持完整顺序与 call_id 配对；Chat Completions 与 Responses 均须覆盖。进入可持久化压缩请求及 AgentOutcome 前，原参数恢复为审计摘要、截图仅保留有限ACK并去除临时窗口名称/身份与pixels；当前活跃模型请求仍可用原始参数。模型可看见当前操作参数不延长 target/observation 寿命，也不解除任何权限/身份/只读限制。
+
+DP2. 每次 Screenshot 仍重新检查权限、当前目录 scope、epoch、PID/window/frame/capture 及图像，再以已验证的 bundle/PID/window 身份和解码后的 RGBA 尺寸/像素，与同一窗口最近一次已 durable ACK 的交付比较。相同像素（即使PNG编码不同）复用原 artifact_id，返回 delivered + unchanged 回执，不再次 emit ScreenshotDelivered、不增加图数/字节预算；不同窗口即使画面相同也分别交付。真实像素/尺寸变化可产生新交付，A→B→A 依各次最近图比较，保留变化。只有同 run、已 ACK 的记录能被复用，未ACK、失败或取消不能成为已交付依据。暂停/继续保留 ACK，但不保留失效观察和输入授权；继续后仍须新目录和新捕获才能判定重复。
+
+DP3. 截图回执给模型明确完成状态、原 artifact 引用、所属窗口的临时身份/名称，以及 continue_remaining_requested_work_or_finish；若全部请求的图已交付，应直接回复完成，不再为确认附件而重新发现/截图。当前或已失效观察的回执都保持相同完成事实，旧pixels继续裁剪。窗口名称为不可信外部数据，不能成为指令或权限。有限持久回执仅保留状态/artifact/unchanged/next_step，不能持久化目标名称、ID或输入。
+
+DP4. 新且成功交付的图才算进展；重复截图不清读循环计数。经验证发生真实状态变化的 Act 可以重置本窗口的截图计数，不能抹除其他窗口的截图计数；跨窗口交错输入不能绕过同一窗口第3次重复截图的收口。同窗口相同内容的重复截图第3次至迟触发 no_progress，跨目录/另一窗口/Observe插入也不能重置其计数；已交付附件保留，并明确停止的是无变化重复操作。真实变化的动作/观察、合法分页和不同目标可继续按原合同推进；不能因已经交付两张就强行结束仍有实际工作的任务。图数上限仅约束真实新交付，不用来收口重复循环。
+
+DP5. 内置 CUA skill 更新指引与版本摘要：附件 ACK 表示截图工作已完成，按尚未完成的用户请求继续或直接回答；unchanged 回执复用已有图，不能再次采集相同状态。保留旧图片预算、pause/resume、取消优先、durable sink失败及存储历史限制，不改UI、签名、schema或依赖。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| DP01 | 完整run：目录→A/B截图→final | 3 tools/2附件/正常final；两种provider构造包含原target参数和对应ACK，持久事件仍无目标原值 | PASS（进程内） |
+| DP02 | 目录→目标Observe→Act→截图 | 下轮模型保留真实observation/element/text参数；事件仍摘要，无原输入；原权限和图像预算保持 | PASS（进程内） |
+| DP03 | A/B交付后重复目录→A/B，opaque引用/PNG编码变化 | 无重复附件，不吃4图cap，明确unchanged/完成指引；第3次无变化重复时收口 | PASS（进程内） |
+| DP04 | 同窗口真实变化、不同窗口同像素、A→B→A | 不错误合并；新交付允许，动作/分页原反例保持 | PASS（进程内） |
+| DP05 | 已交付2图→暂停/继续→重采相同状态；未ACK/取消/权限变更 | 原ACK复用，新capture仍检权限/epoch；未ACK绝不谎报交付；不恢复旧授权/图片 | PASS（进程内） |
+| DP06 | 四次实际不同交付 + 暂停清理 | 全请求通过production图片校验和两种请求构造，旧像素清除、4个ACK配对；未清理4图对照仍拒绝 | PASS（进程内） |
+| DP07 | A重复截图与B真实输入交错；A自身真实输入后继续截图 | 第3次重复A收口，不派发后续B输入；A自身真实变化可重建基线，继续剩余工作 | PASS（进程内） |
+
+先保留 production RED，再改接线/去重/guard。自动证据仅为进程内生产运行链；自然提示、真实provider与新版顺畅交付仍由主控发布后验收。
+
+
+### DP 本轮结果与原始失败保留
+
+DP01–DP06 已通过进程内生产链：正常双图3 tools/2 artifacts/final；目录/截图/Act 的当前模型请求保留原参数，Chat Completions 与 Responses 的调用和结果精确配对。实际 Store 批处理用例先一次模型响应发出2个截图调用，再各重复一次捕获，共5个工具均success、仅2个持久附件；5条审计输入与输出均不含目标、窗口名或bundle原值，数据库重开保留原两张图片身份。当前provider请求、压缩hook输入、AgentOutcome及数据库分别断言其不同隐私边界，不以持久摘要推断模型请求。
+
+PNG不同编码但相同RGBA复用原图；另一窗口同像素分别交付，同一窗口真实A→B→A依次交付。已交付2图后暂停/继续，实际重新验证并捕获两次，但只复用原ACK，无新附件；旧pixels失效且最新模型图满足原预算。原2+2预算用例后两张改为真实像素变化，仍严格保留4个ACK、完整调用配对、最新1张模型图，并以4张未清理图被production validate_messages拒绝作对照。此为生产校验及两种请求构造证据，没有发真实HTTP。
+
+重复目录/双图脚本只交付2张，在最多10个工具内由无进展检测收口，不再触发4图cap；该上界仅为重复策略防护，不代表自然交付顺畅验收。另一窗口的新交付和观察不会清除已有重复截图计数；真实动作/视口变化、分页与不同目标原反例保持。取消与第3次重复截图guard同时到达时以Interrupted结束；未ACK截图不可复用，暂停/旧epoch捕获不能创建晚到回执。未ACK External正文在AgentOutcome中被丢弃，压缩请求只含审计参数和有限交付ACK。
+
+| 阶段 | 实际结果与原因 | 原始日志 |
+|---|---|---|
+| 生产RED | 0 PASS / 3 FAIL：模型截图参数被摘要替换、Act.text丢失、重复交付4张 | `/tmp/vega-75-delivery-progress-red.log` |
+| 首轮修复 | 3/3 PASS | `/tmp/vega-75-delivery-progress-first.log` |
+| Store/编码/暂停/原读取矩阵 | 15/15 PASS | `/tmp/vega-75-delivery-progress-second.log` |
+| 完成出口隐私RED | 1 FAIL：新增临时参数仍出现在AgentOutcome | `/tmp/vega-75-delivery-progress-privacy-red.log` |
+| 压缩夹具首次编译 | 2个E0609：误用AgentRequest.messages，修正为真实history入口 | `/tmp/vega-75-delivery-progress-third.log` |
+| 取消/未ACK/压缩矩阵 | 18/18 PASS | `/tmp/vega-75-delivery-progress-fourth.log` |
+| 审查补充RED | 1 FAIL：Screenshot分类遮蔽了未ACK External正文清理 | `/tmp/vega-75-delivery-progress-unacked-red.log` |
+| 最终跨层矩阵 | 132/132 PASS，1808 skipped | `/tmp/vega-75-delivery-progress-final.log` |
+
+最终run ID：`f491c32c-ab07-4592-8529-3dda17244687`；日志SHA-256：`158ee9a6834fe015814cb3142fc0ffa97909c00edb7e30af01b9e07574cef538`。完整executable/cwd/argv在 `/tmp/vega-75-delivery-progress-final-argv.json`：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire)'
+```
+
+9个修改Rust文件定向rustfmt与git diff --check通过；内置skill v3通过quick_validate，内容SHA-256为 `f08550ee4a08d2ed778318a8eacec93a06d15046c0dcb4805c19d7ebe2e91df4`。所有原始阶段、命令、run ID/hash及检查路径汇总于 `/tmp/vega-75-delivery-progress-evidence.json`。本轮无UI/签名/schema/依赖修改，没有调用真实driver或读取live数据库/截图。0.1.85真机失败原证据继续保留；新版自然双图、输入、权限和接管验收由主控在发布后执行，以上自动结果不代替真实顺畅通过。
+
+提交后无冲突变基至 `bb6997e2857bef7833b09f41a44af3f602d0a742`（#325 仅inline code/table与主题/UI规范）。range-diff确认本卡生产/测试补丁完全等价；未重复无变化runtime矩阵，只补测 `cargo nextest run -p vega_ui -p vega -E 'test(issue75)'`，**19/19 PASS**、969 skipped，run `fd7961bb-a1aa-4736-99de-696c48ad2844`。原始日志 `/tmp/vega-75-delivery-progress-rebased-ui.log`，SHA-256 `6a404b9bd2443ff0f03ecb327810dd1d37f42c5d4b816c05cbef5b6df142c0b7`，完整命令为同名前缀 `-argv.json`。变基后9个Rust文件格式与完整diff检查通过（`/tmp/vega-75-delivery-progress-rebased-checks.log`），前述132项及全部失败证据保持。
+
+固定提交审查发现成功 Act 的全量 reads.clear() 仍会抹除其他窗口的重复截图计数。新增生产回归先复现 **1 PASS / 1 FAIL**：B真实输入两次后，旧实现仍派发第三次B输入，未在第3次重复A截图收口；同窗口真实变化可继续的反例通过。修复将真实动作与成功交付共享按目标重置：重建普通读取基线，仅清本窗口截图计数，保留其他窗口的截图计数。修复后的跨窗用例严格为9 tools、1附件、2次输入，最后返回no_progress，不再调用后续provider/driver；同窗变化仍正常final，不误停。
+
+新增RED日志为 `/tmp/vega-75-delivery-progress-interleaved-act-red.log`，SHA-256 `7651bc3bcb10886c1174bf1bd6126d38bdc75614e6bb5631415a54a90a652023`。受影响定向复验 **25/25 PASS**、346 skipped，run `d6a16207-951e-4f14-ba69-f01c0e40c5c7`，原始日志 `/tmp/vega-75-delivery-progress-interleaved-act-verified.log`，SHA-256 `68e686df35fb477850fd1055f9fe7047857885423576164f8323ccd560c01b85`；完整executable/cwd/argv在同名前缀 `-argv.json`：
+
+```sh
+cargo nextest run -p vega_runtime \
+  -E 'test(issue75_delivery_progress) | test(issue75_successful_reads) | test(computer_use::progress::)'
+```
+
+2个修改Rust文件格式与diff检查通过（`/tmp/vega-75-delivery-progress-interleaved-act-checks.log`）。未重跑不变跨层/UI矩阵，既有132项、19项和全部RED证据独立保留。

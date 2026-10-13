@@ -266,6 +266,16 @@ impl ProgressGuard {
         count >= 3
     }
 
+    fn reset_reads_for_progress(&mut self, target: &str) {
+        let current = format!("screenshot:{target}");
+        self.reads
+            .retain(|(key, _, _)| key.starts_with("screenshot:") && key != &current);
+    }
+
+    pub(super) fn delivered(&mut self, target: &super::DesktopTarget) {
+        self.reset_reads_for_progress(&format!("{}:{}", target.pid, target.window_id));
+    }
+
     pub(super) fn stopped(&self) -> bool {
         self.stopped
     }
@@ -275,6 +285,7 @@ impl ProgressGuard {
         attempt: Attempt,
         result: &Result<String, ComputerUseError>,
         after: Option<&Observation>,
+        screenshot_reused: bool,
     ) -> bool {
         if self.stopped {
             return true;
@@ -301,10 +312,21 @@ impl ProgressGuard {
             self.stopped = *count >= 3;
             return self.stopped;
         }
-        if attempt.operation == "ComputerScreenshot" {
-            self.reads.clear();
-        } else if attempt.operation == "ComputerObserve"
-            && let Some((key, state)) = after.and_then(ReadState::new)
+        let read = after
+            .filter(|_| {
+                attempt.operation == "ComputerObserve"
+                    || (attempt.operation == "ComputerScreenshot" && screenshot_reused)
+            })
+            .and_then(ReadState::new)
+            .map(|(key, state)| {
+                let key = if screenshot_reused {
+                    format!("screenshot:{}", attempt.target)
+                } else {
+                    key
+                };
+                (key, state)
+            });
+        if let Some((key, state)) = read
             && self.record_read(key, state, 1)
         {
             self.stopped = true;
@@ -324,7 +346,7 @@ impl ProgressGuard {
         if attempt.state.is_none() || attempt.state != state(after) {
             self.actions.remove(&attempt.target);
             if attempt.state.is_some() {
-                self.reads.clear();
+                self.reset_reads_for_progress(&attempt.target);
                 if let Some((key, state)) = ReadState::new(after) {
                     self.record_read(key, state, 0);
                 }
@@ -374,7 +396,8 @@ mod tests {
                         Some(&observation)
                     ),
                     &Err(ComputerUseError::InvalidArguments("x")),
-                    None
+                    None,
+                    false
                 ),
                 index == 2
             );
@@ -387,7 +410,8 @@ mod tests {
                         None
                     ),
                     &Ok("observed".into()),
-                    Some(&observation)
+                    Some(&observation),
+                    false
                 ));
             }
         }
@@ -408,7 +432,8 @@ mod tests {
                 guard.finish(
                     Attempt::new("ComputerAct", &args, Some(&before.target), Some(&before)),
                     &Ok("done".into()),
-                    Some(&after)
+                    Some(&after),
+                    false
                 ),
                 index == 2
             );
@@ -435,7 +460,8 @@ mod tests {
             assert!(!guard.finish(
                 Attempt::new("ComputerAct", &args, Some(&before.target), Some(&before)),
                 &Ok("done".into()),
-                Some(&after)
+                Some(&after),
+                false
             ));
             before = after;
         }
@@ -455,7 +481,8 @@ mod unresolved_target_tests {
                     guard.finish(
                         Attempt::new(operation, &args, None, None),
                         &Err(ComputerUseError::InvalidArguments("target_id")),
-                        None
+                        None,
+                        false
                     ),
                     index == 2
                 );

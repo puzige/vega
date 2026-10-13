@@ -96,6 +96,19 @@ impl PreparedRuntimeCall {
         }
     }
 
+    pub(crate) fn model_call(&self) -> ChatToolCall {
+        let call = self.call();
+        let input_json = match self {
+            Self::ComputerUse { arguments, .. } => arguments.to_string(),
+            _ => call.input_json.clone(),
+        };
+        ChatToolCall {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            input_json,
+        }
+    }
+
     fn permission_target(&self) -> Option<RuntimePermissionTarget> {
         match self {
             Self::Write { call, prepared, .. } => Some(RuntimePermissionTarget {
@@ -207,22 +220,8 @@ pub(crate) fn prepare_runtime_call(
 ) -> Result<PreparedRuntimeCall, VegaError> {
     if let Some(capability) = crate::computer_use::ComputerUseRun::tool_capability(&raw_call.name) {
         let arguments = serde_json::from_str::<Value>(&raw_call.input_json).unwrap_or(Value::Null);
-        let action = if raw_call.name == "ComputerScreenshot" {
-            "screenshot"
-        } else if raw_call.name.ends_with("Observe") {
-            "observe"
-        } else {
-            arguments["action"]
-                .as_str()
-                .filter(|action| {
-                    matches!(
-                        *action,
-                        "click" | "type_text" | "press_key" | "hotkey" | "scroll" | "navigate"
-                    )
-                })
-                .unwrap_or("invalid")
-        };
-        let input = crate::computer_use::ComputerUseAudit::project(&raw_call.input_json, action);
+        let input =
+            crate::computer_use::ComputerUseAudit::for_tool(&raw_call.name, &raw_call.input_json);
         let call = RuntimeToolCall {
             input_json: input,
             ..raw_call
@@ -1546,14 +1545,7 @@ pub(crate) fn outcome(
     interrupted: bool,
     failed: bool,
 ) -> AgentOutcome {
-    for message in &mut messages {
-        if message.role == ChatRole::Tool
-            && message.content.starts_with("[External tool observation;")
-        {
-            message.images.clear();
-            message.content = crate::computer_use::INVALIDATED_OBSERVATION.into();
-        }
-    }
+    crate::computer_use::redact_ephemeral_messages(&mut messages);
     AgentOutcome {
         events,
         messages,
