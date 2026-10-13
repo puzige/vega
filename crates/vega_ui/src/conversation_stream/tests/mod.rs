@@ -39,6 +39,7 @@ mod issue296_hierarchy_v2;
 mod issue296_phases;
 mod issue296_process_timeline;
 mod issue296_single_activity;
+mod issue296_sticky_disclosure;
 mod issue296_stream_polish;
 mod issue64_context_usage;
 mod issue70_tool_activity;

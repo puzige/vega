@@ -1,3 +1,4 @@
+use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
 #[cfg(test)]
@@ -20,6 +21,7 @@ pub(crate) enum RunActivityChild {
 }
 
 struct RunActivitySegment {
+    sticky: StickyState,
     expanded: bool,
     manually_expanded: bool,
     children: Vec<RunActivityChild>,
@@ -36,7 +38,14 @@ pub(crate) enum RunPhase {
     Waiting,
 }
 
+pub(crate) enum StickyCollapse {
+    Run,
+    Segment(usize),
+}
+
 pub(crate) struct RunActivityGroup {
+    sticky: StickyState,
+    collapsed_sticky: Option<StickyCollapse>,
     #[cfg(test)]
     clock_ticks: usize,
     started_at: Option<Instant>,
@@ -250,6 +259,8 @@ impl RunActivityGroup {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            sticky: StickyState::default(),
+            collapsed_sticky: None,
             #[cfg(test)]
             clock_ticks: 0,
             started_at: None,
@@ -352,6 +363,7 @@ impl RunActivityGroup {
 
     pub(crate) fn start_segment(&mut self, cx: &mut Context<Self>) -> usize {
         self.segments.push(RunActivitySegment {
+            sticky: StickyState::default(),
             expanded: false,
             manually_expanded: false,
             children: Vec::new(),
@@ -676,12 +688,19 @@ impl RunActivityGroup {
     }
 
     pub(crate) fn toggle_expanded(&mut self, cx: &mut Context<Self>) {
+        if self.expanded && self.sticky.pinned() {
+            self.collapsed_sticky = Some(StickyCollapse::Run);
+        }
         self.expanded = !self.expanded;
         self.manually_expanded = self.expanded;
         if self.final_confirmed {
             self.body_in_details = true;
         }
         cx.notify();
+    }
+
+    pub(crate) fn take_sticky_collapse(&mut self) -> Option<StickyCollapse> {
+        self.collapsed_sticky.take()
     }
 
     fn label(&self) -> String {
@@ -809,6 +828,7 @@ impl RunActivityGroup {
         let colors = theme(cx).colors;
         let group_ref = group.read(cx);
         let expanded = group_ref.expanded;
+        let sticky = group_ref.sticky.clone();
         let label = group_ref.label();
         let status_color = colors.conversation_clock;
         let can_expand = group_ref.process_in_details()
@@ -890,56 +910,66 @@ impl RunActivityGroup {
                 .absolute()
                 .inset_0(),
             );
+        let mut sections = vec![StickySection::plain(
+            div()
+                .debug_selector(|| "run-activity-divider".into())
+                .mt(px(Layout::CONVERSATION_DIVIDER_GAP))
+                .h(px(Layout::CONVERSATION_DIVIDER_HEIGHT))
+                .w_full()
+                .bg(colors.conversation_divider)
+                .into_any_element(),
+        )];
+        if expanded && !details.is_empty() {
+            sections.push(StickySection::content(
+                div()
+                    .relative()
+                    .w_full()
+                    .min_w_0()
+                    .track_focus(&focus)
+                    .child(
+                        div()
+                            .id(("run-activity-content", group.entity_id()))
+                            .debug_selector(|| "run-activity-content".into())
+                            .w_full()
+                            .min_w_0()
+                            .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
+                            .overflow_x_hidden()
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
+                            .flex()
+                            .flex_col()
+                            .gap_0()
+                            .children(details),
+                    )
+                    .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
+                    .child(
+                        gpui_kit::canvas(
+                            |_, _, _| (),
+                            move |_, _, _, cx| {
+                                let _ = detail_anchor
+                                    .update(cx, |group, cx| group.settle_detail_anchor(cx));
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .into_any_element(),
+                true,
+            ));
+        }
         render_rows::process_surface(&colors)
             .gap_0()
-            .child(header)
-            .child(
+            .child(StickyDisclosure::new(
                 div()
-                    .debug_selector(|| "run-activity-divider".into())
-                    .mt(px(Layout::CONVERSATION_DIVIDER_GAP))
-                    .h(px(Layout::CONVERSATION_DIVIDER_HEIGHT))
-                    .w_full()
-                    .bg(colors.conversation_divider),
-            )
-            .when(expanded && !details.is_empty(), |column| {
-                column.child(
-                    div()
-                        .relative()
-                        .w_full()
-                        .min_w_0()
-                        .track_focus(&focus)
-                        .child(
-                            div()
-                                .id(("run-activity-content", group.entity_id()))
-                                .debug_selector(|| "run-activity-content".into())
-                                .w_full()
-                                .min_w_0()
-                                .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
-                                .overflow_x_hidden()
-                                .overflow_y_scroll()
-                                .track_scroll(&scroll)
-                                .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(
-                                    &scroll,
-                                ))
-                                .flex()
-                                .flex_col()
-                                .gap_0()
-                                .children(details),
-                        )
-                        .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
-                        .child(
-                            gpui_kit::canvas(
-                                |_, _, _| (),
-                                move |_, _, _, cx| {
-                                    let _ = detail_anchor
-                                        .update(cx, |group, cx| group.settle_detail_anchor(cx));
-                                },
-                            )
-                            .absolute()
-                            .inset_0(),
-                        ),
-                )
-            })
+                    .bg(colors.bg_base)
+                    .block_mouse_except_scroll()
+                    .child(header)
+                    .into_any_element(),
+                sections,
+                sticky,
+                expanded && can_expand,
+            ))
             .debug_selector(|| "run-activity-group".into())
             .into_any_element()
     }
@@ -1012,6 +1042,9 @@ impl RunActivityGroup {
 
     fn toggle_segment(&mut self, segment: usize, cx: &mut Context<Self>) {
         let state = &mut self.segments[segment];
+        if state.expanded && state.sticky.pinned() {
+            self.collapsed_sticky = Some(StickyCollapse::Segment(segment));
+        }
         state.expanded = !state.expanded;
         state.manually_expanded = state.expanded;
         cx.notify();
@@ -1048,6 +1081,7 @@ impl RunActivityGroup {
         let focus = state.segments[segment_index].focus.clone();
         let thinking = state.stage_thinking(segment_index);
         let expanded = state.segments[segment_index].expanded;
+        let sticky = state.segments[segment_index].sticky.clone();
         let scrolls = state.segments[segment_index].scrolls.clone();
         let shimmering = !state.terminal
             && !state.waiting_for_user
@@ -1055,6 +1089,7 @@ impl RunActivityGroup {
             && thinking.is_some()
             && state.current_thinking == thinking;
         let epoch = state.animation_epoch;
+        let mut header = None;
         let mut rows = Vec::new();
         if let Some(card) = &thinking {
             let title = card.read(cx).title().to_owned();
@@ -1064,7 +1099,7 @@ impl RunActivityGroup {
             let toggle = group.clone();
             let click_focus = header_focus.clone();
             let keyboard = group.clone();
-            rows.push(
+            header = Some(
                 div()
                     .id(("run-stage-toggle", segment_index))
                     .debug_selector(move || format!("run-stage-toggle-{segment_index}"))
@@ -1135,7 +1170,7 @@ impl RunActivityGroup {
                 rows.extend(
                     section
                         .into_iter()
-                        .map(|child| Self::render_child(child, window, cx)),
+                        .map(|child| StickySection::plain(Self::render_child(child, window, cx))),
                 );
                 continue;
             }
@@ -1165,7 +1200,8 @@ impl RunActivityGroup {
                     child => Self::render_child(child, window, cx),
                 })
                 .collect::<Vec<_>>();
-            rows.push(
+            let reaches_header = rows.is_empty();
+            rows.push(StickySection::content(
                 div()
                     .relative()
                     .w_full()
@@ -1196,14 +1232,34 @@ impl RunActivityGroup {
                     )
                     .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
                     .into_any_element(),
-            );
+                reaches_header,
+            ));
         }
+        let content = if let Some(header) = header {
+            StickyDisclosure::new(
+                div()
+                    .bg(colors.bg_base)
+                    .block_mouse_except_scroll()
+                    .child(header)
+                    .into_any_element(),
+                rows,
+                sticky,
+                expanded,
+            )
+            .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .children(rows.into_iter().map(|section| section.into_element()))
+                .into_any_element()
+        };
         render_rows::process_surface(&colors)
             .gap_0()
             .when(thinking.is_some(), |surface| surface.pt(px(top)))
             .debug_selector(move || format!("run-timeline-segment-{segment_index}"))
             .track_focus(&focus)
-            .children(rows)
+            .child(content)
             .into_any_element()
     }
 }
