@@ -46,3 +46,9 @@ GPUI 适配边界：本地锁定版本的 deferred prepaint 不自动恢复传�
 实现顺序：确认共享标题封装和连续操作区边界 → 失败测试 → Final/stage 接线 → 收起阅读锚点和焦点验证 → 受影响定向回归 → 独立审查。仅当旧展示断言被本规格明确替代时更新，不能删除业务或安全断言。
 
 交付记录另存 `vega-issue-296-sticky-disclosure-delivery.md`，包含确切命令、红绿原始 footer、日志 hash、失败原因与真实边界。本地只跑本卡功能点测试和格式/差异检查；全量 fmt/Clippy/Nextest 交云端。CI 绿后主动 squash 合并，再将卡片置 In review 并等待用户手测，保留本地分支和 worktree，不操作或安装运行中的 Vega。
+
+## S06 测试帧适配补充
+
+首轮云端门禁在 `ten_k_mixed_items_trunk_e2e` 检出过期 ArenaRef。本地失败调用栈与锁定 GPUI 实现一致：旧 fixture 的 `VisualTestContext::draw` 只绘制子树，直接清理 arena，不完成 deferred 队列；随后正常窗口帧会访问它尚未绘制的悬浮标题。生产 `Window::draw` 会先完成 deferred 再 finish/swap/clear，本次不改变生产元素的生命周期。
+
+允许仅将该测试的帧 helper 改为正常窗口完整帧驱动，并显式保留 1200×800 真实视口。10,000 条混合消息、内容保真、贴底/脱离、前插锚点、回底、稳定身份及冻结区 rematerialization 断言全部保留；不得缩减 fixture、删除绘制或清空队列以避开失败。修复后只重跑此用例与吸顶专项，真实 App 手测边界不变。

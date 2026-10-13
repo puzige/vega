@@ -111,18 +111,18 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
     );
 
     // ── 2) 打开窗口并完成首帧布局 ──
-    let (harness, visual) = cx.add_window_view(|_, _| StreamHarness {
+    let (_harness, visual) = cx.add_window_view(|_, _| StreamHarness {
         stream: stream.clone(),
     });
-    let draw = |visual: &mut gpui_kit::VisualTestContext, harness: &Entity<StreamHarness>| {
-        let element = harness.clone();
-        visual.draw(
-            gpui_kit::point(px(0.), px(0.)),
-            gpui_kit::size(px(1200.), px(800.)),
-            |_, _| element.into_any_element(),
-        );
+    visual.simulate_resize(gpui_kit::size(px(1200.), px(800.)));
+    let draw = |visual: &mut gpui_kit::VisualTestContext| {
+        visual.update(|window, cx| {
+            assert_eq!(window.viewport_size(), gpui_kit::size(px(1200.), px(800.)));
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
     };
-    draw(visual, &harness);
+    draw(visual);
 
     // ── 3) 顺序与内容保真（抽样断言；全文保留，禁截断） ──
     let kinds = stream.read_with(visual, |stream, _| {
@@ -216,7 +216,7 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
             cx,
         );
     });
-    draw(visual, &harness);
+    draw(visual);
     stream.update(visual, |stream, cx| {
         stream.apply_event(
             ConversationEvent::TextDelta {
@@ -226,7 +226,7 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
             cx,
         );
     });
-    draw(visual, &harness);
+    draw(visual);
     let following = stream.read_with(visual, |stream, _| {
         (
             stream.following_tail(),
@@ -262,7 +262,7 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
     stream.update(visual, |stream, _| {
         stream.list.scroll_by(px(-600.0));
     });
-    draw(visual, &harness);
+    draw(visual);
     let detached = stream.read_with(visual, |stream, _| {
         (stream.following_tail(), stream.list.logical_scroll_top())
     });
@@ -279,7 +279,7 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
             cx,
         );
     });
-    draw(visual, &harness);
+    draw(visual);
     let still_detached = stream.read_with(visual, |stream, _| {
         (
             stream.following_tail(),
@@ -314,7 +314,7 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
             cx,
         );
     });
-    draw(visual, &harness);
+    draw(visual);
     let after_prepend = stream.read_with(visual, |stream, _| {
         (
             stream.list.logical_scroll_top(),
@@ -342,7 +342,7 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
     stream.update(visual, |stream, _| {
         stream.list.scroll_by(px(10_000_000.0));
     });
-    draw(visual, &harness);
+    draw(visual);
     let resumed = stream.read_with(visual, |stream, _| {
         (
             stream.following_tail(),

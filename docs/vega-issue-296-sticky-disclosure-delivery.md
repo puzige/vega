@@ -131,3 +131,36 @@ Summary [   4.329s] 153 tests run: 153 passed, 563 skipped
 | crates/vega_ui/src/conversation_stream/tests/mod.rs | `7ca64a81dc1cdd149e8e7209fb46cf8fee3b55af0a006e2d7d5b113d000156d0` |
 
 最终清单 SHA-256：`a5f64de6fd3d3245482275620d2f00fa6071895ee39027e4e6befb1e5fdad254`。清单与日志均位于前述 artifact 目录。实现 agent 已停止代码写入；提交 amend、CI 与集成由主 agent 接管，M01 仍待用户手测。
+
+## PR #321 首轮 CI 与测试帧适配
+
+首轮发布提交 `5e7fc1330190e6ba2c7d2c5fcc1def27aa205122` 的云端 run `38331280870` 中，Clippy job 通过，Nextest job `115081336565` 失败。原始 `ci-first-nextest.log` 的退出码为 **100**，footer 为 `Summary [ 128.221s] 2361 tests run: 2360 passed, 1 failed, 5 skipped`。唯一失败是 `ten_k_mixed_items_trunk_e2e` 的 `attempted to dereference an ArenaRef after its Arena was cleared`。该云端失败保留，不能用前述定向绿测代替全量 CI 结论。
+
+修改前再次 `git fetch origin`、`git rebase origin/master`，两条退出码均为 **0**，基线没有漂移。按以下命令本地单例复现：
+
+```sh
+RUST_BACKTRACE=1 cargo nextest run -p vega_ui -E 'test(/ten_k_mixed_items_trunk_e2e/)'
+```
+
+`ci-repro-red.log`，退出码 **100**：`Summary [   1.171s] 1 test run: 0 passed, 1 failed, 715 skipped`。调用栈为 `AnyElement::prepaint → Window::prepaint_deferred_draws → Window::draw → App::flush_effects`，来源是旧 fixture 的 `VisualTestContext::draw`。
+
+锁定 GPUI 的 `app/test_context.rs:893–920` 只对子树执行 layout/prepaint/paint，随后清理 arena，并未完成 deferred 队列。sticky 的正常 deferred header 因而在下一次真实窗口帧中已过期。生产 `Window::draw_roots` 在清理前执行 deferred prepaint/paint，`Window::draw` 完成 finish/swap/clear；独立审查与本地调用栈一致，没有生产元素生命周期缺陷证据。
+
+按新增的 S06 测试帧适配规格，仅修改 `tests/e2e_variable_height.rs` 的 draw helper：真实测试窗口 resize 为 1200×800，每帧严格检查 viewport 尺寸，并从 `VisualTestContext::update` 调用 `window.refresh()` 和完整 `window.draw(cx).clear(cx)`。保留全部 10,000 条混合消息、正文保真、贴底/脱离、前插像素锚点、回底、稳定身份与冻结区 rematerialization 断言；没有忽略、缩减 fixture、清空 pending 队列或修改生产代码。
+
+最终只跑该用例与 9 项 sticky：
+
+```sh
+cargo nextest run -p vega_ui -E 'test(/ten_k_mixed_items_trunk_e2e/) | test(/issue296_sticky_/)'
+```
+
+`ci-fix-green.log`，退出码 **0**：`Summary [   3.017s] 10 tests run: 10 passed, 706 skipped`。10k 用例自身通过耗时 1.138s。只出现既有 `block v0.1.6` future-incompatibility warning。`cargo fmt -p vega_ui -- --check` 和 `git diff --check` 退出码均为 **0**；没有额外本地全量或 Clippy。
+
+| 证据 | SHA-256 |
+|---|---|
+| ci-first-nextest.log | `9599d58886476692fadb1aa09c46a170da1408dc9a1c39fd73ae8c05214c0e97` |
+| ci-repro-red.log | `b7b9fde1e870aeb34c3bdd61be7d43adaafeff38d92231fd492e8f3c6d320a9c` |
+| ci-fix-green.log | `3ef3f26f10c33ad98e61bb5e02383738f4779287b33ddfb1ef24cd0a64ba8534` |
+| tests/e2e_variable_height.rs | `eb1a2322017f5ccfb59303e30b811fe0e2d0d2818c6f60427227e6ddca379284` |
+
+修复后的代码冻结取证时间为 **2026-10-13 01:27:02 UTC / 09:27:02 Asia/Shanghai**，环境版本与前一节相同。新的 `ci-fix-source-fingerprint.txt` 沿用相同字典序清单格式，包含此前六个 Rust 文件及本次 `tests/e2e_variable_height.rs`，共七个文件；清单 SHA-256 为 `9bf7009bfb04dc002b6a132f614550ece89c454f26b3a9e5bc37b8bda61aecb6`。此前六个文件内容与上一冻结清单完全相同。实现 agent 不提交或推送，主 agent 接管第二提交与下一轮 CI；M01 仍待用户手测。
