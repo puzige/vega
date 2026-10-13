@@ -52,8 +52,14 @@ impl ToolActivityCategory {
         match self {
             Self::Shell => Icon::Terminal,
             Self::Search => Icon::Search,
-            Self::Read | Self::Find | Self::Write | Self::Edit | Self::Skill => Icon::Document,
-            Self::Mcp | Self::CodexAcp | Self::ComputerUse | Self::Other => Icon::Summary,
+            Self::Read => Icon::BookOpen,
+            Self::Find => Icon::Folder,
+            Self::Write => Icon::Document,
+            Self::Edit => Icon::Pencil,
+            Self::Mcp => Icon::Plug,
+            Self::CodexAcp => Icon::Bot,
+            Self::ComputerUse => Icon::Monitor,
+            Self::Skill | Self::Other => Icon::Wrench,
         }
     }
 }
@@ -506,6 +512,17 @@ impl ToolCard {
     }
 
     pub(crate) fn leading_icon(&self) -> Icon {
+        if self.activity_category() == ToolActivityCategory::ComputerUse
+            && let Some(ToolCardInputProjection::ComputerUse { action, .. }) = &self.input
+        {
+            return match action.as_str() {
+                "screenshot" => Icon::Camera,
+                "click" | "scroll" => Icon::MousePointer,
+                "type_text" | "press_key" | "hotkey" => Icon::Keyboard,
+                "navigate" => Icon::Globe,
+                _ => Icon::Monitor,
+            };
+        }
         self.activity_category().icon()
     }
 
@@ -1234,7 +1251,6 @@ mod tests {
     mod asset_metadata;
     use super::*;
     use vega_conversation::types::{InvalidToolCode, InvalidToolKind, InvalidToolProjection};
-    use vega_theme::LIGHT;
 
     fn result(status: ToolCallStatus, output: &str) -> ToolResult {
         ToolResult {
@@ -1259,46 +1275,116 @@ mod tests {
             ToolCallStatus::Cancelled,
             ToolCallStatus::Failed,
         ] {
-            let card = ToolCard::hydrated(
-                Some(ToolCardInputProjection::Bash {
-                    command: "true".into(),
-                }),
-                status,
-                None,
-                None,
-            );
-            assert!(
-                matches!(card.leading_icon(), Icon::Terminal),
-                "Shell must keep Terminal for {status:?}"
-            );
-            assert_eq!(
-                card.leading_icon_color(&LIGHT),
-                LIGHT.conversation_tool,
-                "leading icon must stay neutral for {status:?}"
-            );
+            for (input, expected) in [
+                (
+                    ToolCardInputProjection::Bash {
+                        command: "true".into(),
+                    },
+                    Icon::Terminal,
+                ),
+                (
+                    ToolCardInputProjection::ComputerUse {
+                        tool: "ComputerAct".into(),
+                        action: "click".into(),
+                    },
+                    Icon::MousePointer,
+                ),
+            ] {
+                let card = ToolCard::hydrated(Some(input), status, None, None);
+                assert_eq!(
+                    card.leading_icon(),
+                    expected,
+                    "operation icon for {status:?}"
+                );
+                for colors in [vega_theme::LIGHT, vega_theme::DARK] {
+                    assert_eq!(card.leading_icon_color(&colors), colors.conversation_tool);
+                }
+            }
         }
 
         for (category, expected) in [
             (ToolActivityCategory::Shell, Icon::Terminal),
-            (ToolActivityCategory::Read, Icon::Document),
-            (ToolActivityCategory::Find, Icon::Document),
+            (ToolActivityCategory::Read, Icon::BookOpen),
+            (ToolActivityCategory::Find, Icon::Folder),
             (ToolActivityCategory::Search, Icon::Search),
             (ToolActivityCategory::Write, Icon::Document),
-            (ToolActivityCategory::Edit, Icon::Document),
-            (ToolActivityCategory::Mcp, Icon::Summary),
-            (ToolActivityCategory::Skill, Icon::Document),
-            (ToolActivityCategory::Other, Icon::Summary),
+            (ToolActivityCategory::Edit, Icon::Pencil),
+            (ToolActivityCategory::Mcp, Icon::Plug),
+            (ToolActivityCategory::CodexAcp, Icon::Bot),
+            (ToolActivityCategory::ComputerUse, Icon::Monitor),
+            (ToolActivityCategory::Skill, Icon::Wrench),
+            (ToolActivityCategory::Other, Icon::Wrench),
         ] {
-            assert!(
-                matches!(
-                    (category.icon(), expected),
-                    (Icon::Terminal, Icon::Terminal)
-                        | (Icon::Document, Icon::Document)
-                        | (Icon::Search, Icon::Search)
-                        | (Icon::Summary, Icon::Summary)
-                ),
-                "category icon mapping changed"
+            assert_eq!(category.icon(), expected, "{category:?}");
+        }
+
+        for (action, expected) in [
+            ("observe", Icon::Monitor),
+            ("screenshot", Icon::Camera),
+            ("click", Icon::MousePointer),
+            ("scroll", Icon::MousePointer),
+            ("type_text", Icon::Keyboard),
+            ("press_key", Icon::Keyboard),
+            ("hotkey", Icon::Keyboard),
+            ("navigate", Icon::Globe),
+            ("invalid", Icon::Monitor),
+        ] {
+            let tool = match action {
+                "observe" => "ComputerObserve",
+                "screenshot" => "ComputerScreenshot",
+                "navigate" => "BrowserAct",
+                _ => "ComputerAct",
+            };
+            let call = ToolCall {
+                id: action.into(),
+                tool: tool.into(),
+                input_json: serde_json::json!({"kind":"computer_use", "version":1, "action":action, "argument_bytes":2, "argument_digest":"a".repeat(64)}).to_string(),
+            };
+            let mut card = ToolCard::proposed(&call);
+            assert_eq!(card.leading_icon(), expected);
+            assert!(card.apply_approved(Approval::Once));
+            let mut finished = result(ToolCallStatus::Success, "Synthetic result");
+            finished.truncated = Some(false);
+            assert!(card.apply_finished(&finished));
+            assert_eq!(card.leading_icon(), expected);
+            let restored = ToolCard::hydrated(
+                card.input.clone(),
+                card.status,
+                card.approval,
+                card.result.clone(),
             );
+            assert_eq!(restored.leading_icon(), expected);
+            assert_eq!(restored.visible_text(), card.visible_text());
+        }
+        for action in ["", "future_action"] {
+            let card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::ComputerUse {
+                    tool: "ComputerAct".into(),
+                    action: action.into(),
+                }),
+                ToolCallStatus::Running,
+                None,
+                None,
+            );
+            assert_eq!(card.leading_icon(), Icon::Monitor);
+        }
+        for input in [
+            None,
+            Some(ToolCardInputProjection::Corrupt),
+            Some(ToolCardInputProjection::ComputerUse {
+                tool: "ComputerObserve".into(),
+                action: "observe".into(),
+            }),
+        ] {
+            let card = ToolCard::hydrated(
+                input,
+                ToolCallStatus::Failed,
+                None,
+                Some(ToolCardResultProjection::Corrupt),
+            );
+            assert_eq!(card.leading_icon(), Icon::Wrench);
+            assert_eq!(card.activity_state(), ToolActivityState::Failed);
+            assert!(card.visible_text().contains(CORRUPT_LABEL));
         }
     }
 
