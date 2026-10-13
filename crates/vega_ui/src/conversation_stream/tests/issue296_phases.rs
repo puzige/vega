@@ -576,7 +576,7 @@ async fn issue296_run_clock_and_shimmer_stop_when_not_painted_or_terminal(cx: &m
     cx.update(|cx| {
         let samples = cx.global::<shimmer::PaintProbe>().0.borrow();
         let last = samples.last().expect("painted current summary");
-        assert_eq!(last.text, "Reviewing changes");
+        assert_eq!(last.text, "Thinking · Reviewing changes");
         assert!(last.moving);
         assert!(
             last.colors.windows(2).any(|colors| colors[0] != colors[1]),
