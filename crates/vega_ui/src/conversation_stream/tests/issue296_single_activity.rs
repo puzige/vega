@@ -612,14 +612,11 @@ async fn issue296_single_activity_narrow_summary_preserves_clock_and_right_slot(
             .expect("clock title");
         let stage = visual.debug_bounds("run-stage-toggle-0").expect("stage");
         let stage_title = visual.debug_bounds("run-stage-title-0").expect("summary");
-        let stage_slot = visual
-            .debug_bounds("run-stage-chevron-0")
-            .expect("stage slot");
         assert_eq!(row.size.height, px(23.));
         assert_eq!(slot.size.width, px(12.));
         assert!(title.right() <= slot.left());
-        assert_eq!(stage_slot.left() - stage_title.right(), px(6.));
-        assert!(stage_slot.right() <= stage.right());
+        assert!(stage_title.right() <= stage.right());
+        assert!(visual.debug_bounds("run-stage-chevron-0").is_none());
         assert!(visual.debug_bounds("run-activity-icon").is_none());
         visual.update(|_, cx| {
             assert!(
