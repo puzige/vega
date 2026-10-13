@@ -27,6 +27,7 @@ pub(super) struct DesktopFixture {
     pub windows: Vec<DesktopTarget>,
     pub results: std::collections::VecDeque<vega_mcp::ManagedResult>,
     pub actions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub calls: Vec<(String, Value)>,
 }
 
 struct Desktop {
@@ -117,6 +118,14 @@ impl Backends {
         self.fixture = Some(fixture);
     }
 
+    #[cfg(test)]
+    pub(super) fn fixture_calls(&self) -> Vec<(String, Value)> {
+        self.fixture
+            .as_ref()
+            .map(|fixture| fixture.calls.clone())
+            .unwrap_or_default()
+    }
+
     async fn desktop_windows(
         &mut self,
         cancel: &CancellationToken,
@@ -140,6 +149,7 @@ impl Backends {
     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
         #[cfg(test)]
         if let Some(fixture) = &mut self.fixture {
+            fixture.calls.push((name.into(), args.clone()));
             if name != "get_window_state" {
                 fixture
                     .actions
@@ -237,7 +247,15 @@ impl Backends {
                 ));
             }
             match self
-                .observe(run, capability, epoch, call_id, include_image, cancel)
+                .observe(
+                    run,
+                    capability,
+                    epoch,
+                    call_id,
+                    include_image,
+                    false,
+                    cancel,
+                )
                 .await
             {
                 Ok(id) => Ok(format!(
@@ -253,9 +271,21 @@ impl Backends {
             }
         } else {
             if capability == Capability::Desktop {
-                let (target_id, cursor) = desktop_observe_arguments(&arguments)?;
+                let (target_id, cursor) = if name == "ComputerScreenshot" {
+                    (Some(screenshot_arguments(&arguments)?), None)
+                } else {
+                    desktop_observe_arguments(&arguments)?
+                };
                 if let Some(target_id) = target_id {
-                    run.control.select_window(epoch, target_id)?;
+                    run.control
+                        .select_window(epoch, target_id)
+                        .map_err(|error| {
+                            if error == Error::StaleObservation {
+                                Error::TargetExpired
+                            } else {
+                                error
+                            }
+                        })?;
                 } else {
                     let id = self
                         .discover_desktop(run, epoch, call_id, cursor, cancel)
@@ -278,9 +308,27 @@ impl Backends {
             }
             let include_image = capability == Capability::Desktop
                 || arguments["include_image"].as_bool().unwrap_or(false);
+            let screenshot = name == "ComputerScreenshot";
             let id = self
-                .observe(run, capability, epoch, call_id, include_image, cancel)
+                .observe(
+                    run,
+                    capability,
+                    epoch,
+                    call_id,
+                    include_image,
+                    screenshot,
+                    cancel,
+                )
                 .await?;
+            if screenshot {
+                let observation = run.control.observation(capability, &id)?;
+                run.retain_screenshot(
+                    call_id,
+                    observation.image.ok_or(Error::Image)?,
+                    observation.epoch,
+                )?;
+                return Ok(json!({"status":"delivered","artifact_id":format!("screenshot:{call_id}"),"delivery":"conversation_image_attachment","saved_in_history":true,"read_only":true}).to_string());
+            }
             Ok(format!(
                 "completed; observation_id={id}; observation images and page data are ephemeral and are not retained in history."
             ))
@@ -492,6 +540,7 @@ impl Backends {
         epoch: u64,
         call_id: &str,
         include_image: bool,
+        screenshot_only: bool,
         cancel: &CancellationToken,
     ) -> Result<String, Error> {
         self.validate_target(run, capability, epoch, cancel).await?;
@@ -519,8 +568,14 @@ impl Backends {
         match target {
             Target::DesktopCatalog => return Err(Error::NotReady),
             Target::Desktop(target) => {
-                let result = self.desktop_call("get_window_state",json!({"pid":target.pid,"window_id":target.window_id,"include_screenshot":true,"include_accessibility_tree":true,"max_elements":200,"max_depth":12,"max_dimension":1600}),cancel).await.map_err(|error| diagnostics::transport(Capability::Desktop, Stage::Observe, error))?;
+                let result = self.desktop_call("get_window_state",json!({"pid":target.pid,"window_id":target.window_id,"include_screenshot":true,"include_accessibility_tree":!screenshot_only,"max_elements":200,"max_depth":12,"max_dimension":1600}),cancel).await.map_err(|error| diagnostics::transport(Capability::Desktop, Stage::Observe, error))?;
                 super::desktop_observation::apply(&mut observation, &target, result)?;
+                if screenshot_only {
+                    observation.read_only = true;
+                    observation.elements = Value::Null;
+                    observation.background_input = super::background::BackgroundInput::default();
+                    observation.text = "Explicit screenshot delivered to this conversation. This capture is read-only and cannot authorize actions.".into();
+                }
             }
             Target::Browser { .. } => {
                 let browser = self.browser.as_mut().ok_or(Error::NotReady)?;
@@ -634,25 +689,40 @@ fn desktop_daemon_arguments(socket: &Path) -> Vec<OsString> {
     .collect()
 }
 
+fn screenshot_arguments(arguments: &Value) -> Result<&str, Error> {
+    let object = arguments
+        .as_object()
+        .ok_or(Error::InvalidArguments("target_id"))?;
+    if object.len() != 1 || !object.contains_key("target_id") {
+        return Err(Error::InvalidArguments("target_id"));
+    }
+    object["target_id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 128)
+        .ok_or(Error::InvalidArguments("target_id"))
+}
+
 fn desktop_observe_arguments(arguments: &Value) -> Result<(Option<&str>, Option<&str>), Error> {
-    let object = arguments.as_object().ok_or(Error::InvalidAction)?;
+    let object = arguments
+        .as_object()
+        .ok_or(Error::InvalidArguments("target_id"))?;
     if object
         .keys()
         .any(|key| key != "target_id" && key != "cursor")
     {
-        return Err(Error::InvalidAction);
+        return Err(Error::InvalidArguments("target_id"));
     }
-    let parse = |key| match object.get(key) {
+    let parse = |key: &'static str| match object.get(key) {
         Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
             Ok(Some(value.as_str()))
         }
         Some(Value::Null) | None => Ok(None),
-        _ => Err(Error::InvalidAction),
+        _ => Err(Error::InvalidArguments(key)),
     };
     let target = parse("target_id")?;
     let cursor = parse("cursor")?;
     if target.is_some() && cursor.is_some() {
-        return Err(Error::InvalidAction);
+        return Err(Error::InvalidArguments("cursor"));
     }
     Ok((target, cursor))
 }
@@ -1027,13 +1097,13 @@ fn safe_url(url: &str) -> bool {
     })
 }
 
-fn map_action(
+pub(super) fn map_action(
     capability: Capability,
     observation: &Observation,
     args: &Value,
 ) -> Result<(&'static str, Value), Error> {
     if observation.read_only {
-        return Err(Error::InvalidAction);
+        return Err(Error::ReadOnlyObservation);
     }
     let object = args.as_object().ok_or(Error::InvalidAction)?;
     if object.keys().any(|key| {
@@ -1054,11 +1124,11 @@ fn map_action(
         return Err(Error::InvalidAction);
     }
     let action = args["action"].as_str().ok_or(Error::InvalidAction)?;
-    let text = |key: &str| {
+    let text = |key: &'static str| {
         args[key]
             .as_str()
             .filter(|value| !value.is_empty() && value.len() <= 8192)
-            .ok_or(Error::InvalidAction)
+            .ok_or(Error::InvalidArguments(key))
     };
     match capability {
         Capability::Desktop => {
@@ -1084,7 +1154,7 @@ fn map_action(
                 }
                 value["element_token"] = json!(token);
                 if !args["x"].is_null() || !args["y"].is_null() {
-                    return Err(Error::InvalidAction);
+                    return Err(Error::CoordinateElementConflict);
                 }
             }
             if (matches!(action, "hotkey" | "press_key")
@@ -1103,8 +1173,8 @@ fn map_action(
                         value["element_token"] = json!(token);
                     } else {
                         let (x, y) = observation.coordinates(
-                            args["x"].as_f64().ok_or(Error::InvalidAction)?,
-                            args["y"].as_f64().ok_or(Error::InvalidAction)?,
+                            args["x"].as_f64().ok_or(Error::InvalidArguments("x"))?,
+                            args["y"].as_f64().ok_or(Error::InvalidArguments("y"))?,
                         )?;
                         value["x"] = json!(x);
                         value["y"] = json!(y);
@@ -1128,7 +1198,7 @@ fn map_action(
                 "hotkey" => {
                     let keys: Vec<_> = text("key")?.split('+').collect();
                     if keys.len() < 2 || keys.len() > 4 {
-                        return Err(Error::InvalidAction);
+                        return Err(Error::InvalidArguments("key"));
                     }
                     value["keys"] = json!(keys);
                     "hotkey"
@@ -1136,14 +1206,14 @@ fn map_action(
                 "scroll" => {
                     let direction = text("direction")?;
                     if !matches!(direction, "up" | "down" | "left" | "right") {
-                        return Err(Error::InvalidAction);
+                        return Err(Error::InvalidArguments("direction"));
                     }
                     value["direction"] = json!(direction);
                     value["amount"] = json!(
                         args["amount"]
                             .as_u64()
                             .filter(|amount| (1..=10).contains(amount))
-                            .ok_or(Error::InvalidAction)?
+                            .ok_or(Error::InvalidArguments("amount"))?
                     );
                     value["by"] = json!("line");
                     "scroll"
@@ -1875,19 +1945,6 @@ mod tests {
     }
     #[tokio::test]
     async fn issue75_observation_read_only_blocks_all_actions_before_dispatch() {
-        let run = ComputerUseRun::new(true, false);
-        let epoch = run.control.begin(Capability::Desktop).unwrap();
-        let mut observation = super::super::tests::fixture_observation(&run.control, epoch, 0);
-        observation.read_only = true;
-        observation.elements = json!([{"element_token":"fixture"}]);
-        let Target::Desktop(target) = observation.target.clone() else {
-            panic!()
-        };
-        let actions = run.install_desktop_fixture(vec![target], Vec::new()).await;
-        run.control
-            .connected(epoch, Capability::Desktop, observation.target.clone())
-            .unwrap();
-        run.control.publish(observation.clone()).unwrap();
         for mut args in [
             json!({"action":"click","x":1,"y":1}),
             json!({"action":"click","target":"fixture"}),
@@ -1896,6 +1953,19 @@ mod tests {
             json!({"action":"hotkey","key":"cmd+end"}),
             json!({"action":"scroll","target":"fixture","direction":"down","amount":1}),
         ] {
+            let run = ComputerUseRun::new(true, false);
+            let epoch = run.control.begin(Capability::Desktop).unwrap();
+            let mut observation = super::super::tests::fixture_observation(&run.control, epoch, 0);
+            observation.read_only = true;
+            observation.elements = json!([{"element_token":"fixture"}]);
+            let Target::Desktop(target) = observation.target.clone() else {
+                panic!()
+            };
+            let actions = run.install_desktop_fixture(vec![target], Vec::new()).await;
+            run.control
+                .connected(epoch, Capability::Desktop, observation.target.clone())
+                .unwrap();
+            run.control.publish(observation.clone()).unwrap();
             args["observation_id"] = json!(observation.id);
             assert_eq!(
                 run.execute(
@@ -1905,21 +1975,21 @@ mod tests {
                     &CancellationToken::new()
                 )
                 .await,
-                Err(Error::InvalidAction)
+                Err(Error::ReadOnlyObservation)
             );
             assert_eq!(actions.load(std::sync::atomic::Ordering::SeqCst), 0);
+            observation.read_only = false;
+            assert!(
+                map_action(
+                    Capability::Desktop,
+                    &observation,
+                    &json!({"action":"click","x":1,"y":1})
+                )
+                .is_ok()
+            );
+            run.control.stop();
+            run.control.finish_cleanup();
         }
-        observation.read_only = false;
-        assert!(
-            map_action(
-                Capability::Desktop,
-                &observation,
-                &json!({"action":"click","x":1,"y":1})
-            )
-            .is_ok()
-        );
-        run.control.stop();
-        run.control.finish_cleanup();
     }
 
     #[tokio::test]

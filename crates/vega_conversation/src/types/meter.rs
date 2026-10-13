@@ -248,7 +248,8 @@ impl ConversationMeter {
             // the estimate.
             ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }
-            | ConversationEvent::SkillActivated { .. } => false,
+            | ConversationEvent::SkillActivated { .. }
+            | ConversationEvent::ScreenshotDelivered { .. } => false,
             ConversationEvent::ToolCallProposed { .. } => {
                 if !self.in_run {
                     return false;

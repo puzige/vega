@@ -207,7 +207,9 @@ pub(crate) fn prepare_runtime_call(
 ) -> Result<PreparedRuntimeCall, VegaError> {
     if let Some(capability) = crate::computer_use::ComputerUseRun::tool_capability(&raw_call.name) {
         let arguments = serde_json::from_str::<Value>(&raw_call.input_json).unwrap_or(Value::Null);
-        let action = if raw_call.name.ends_with("Observe") {
+        let action = if raw_call.name == "ComputerScreenshot" {
+            "screenshot"
+        } else if raw_call.name.ends_with("Observe") {
             "observe"
         } else {
             arguments["action"]
@@ -650,7 +652,15 @@ pub(crate) async fn authorize_call(
                 }),
                 Err(error) => Ok(Authorization::Terminal(terminal_result(
                     call,
-                    format!("Tool error: computer use not_dispatched: {error}"),
+                    format!(
+                        "Tool error: computer use{}: {}",
+                        if error == crate::computer_use::ComputerUseError::NoProgress {
+                            ""
+                        } else {
+                            " not_dispatched"
+                        },
+                        error.feedback()
+                    ),
                     RuntimeToolStatus::Rejected,
                     Some(run_mode_denial()),
                 ))),
@@ -1179,7 +1189,15 @@ pub(crate) async fn execute_prepared_waiting(
                     if error == crate::computer_use::ComputerUseError::Cancelled {
                         "outcome_unknown: control was cancelled; do not retry a potentially dispatched action".into()
                     } else {
-                        format!("Tool error: computer use not_dispatched: {error}")
+                        format!(
+                            "Tool error: computer use{}: {}",
+                            if error == crate::computer_use::ComputerUseError::NoProgress {
+                                ""
+                            } else {
+                                " not_dispatched"
+                            },
+                            error.feedback()
+                        )
                     },
                     RuntimeToolStatus::Failed,
                     None,

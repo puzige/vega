@@ -860,7 +860,16 @@ where
     }
 
     let mut messages = Vec::with_capacity(request.history.len() + 1);
-    let base_system_prompt = request.system_prompt.clone();
+    let builtin_cua = request
+        .tool_config
+        .computer_use
+        .as_ref()
+        .is_some_and(|run| run.enabled(crate::computer_use::Capability::Desktop));
+    let base_system_prompt = if builtin_cua {
+        crate::computer_use::guide::system_prompt(&request.system_prompt)
+    } else {
+        request.system_prompt.clone()
+    };
     messages.push(ChatMessage::new(
         ChatRole::System,
         base_system_prompt.clone(),
@@ -950,6 +959,13 @@ where
         ));
     }
 
+    if builtin_cua {
+        emit!(
+            events,
+            sink,
+            RuntimeEvent::BuiltinSkillActivated(crate::computer_use::guide::activation())
+        );
+    }
     if let Some(config) = &skill_config {
         let initial_snapshot = {
             let run = config.run.lock().map_err(|_| skill_runtime_error())?;
@@ -2467,10 +2483,28 @@ where
                     }
                 }
             };
-            if cancelled_while_running {
+            if cancelled_while_running || cancel.is_cancelled() {
                 result.status = RuntimeToolStatus::Cancelled;
             }
             redact_runtime_tool_result(&tool_config, &mut result);
+            if call.name == "ComputerScreenshot"
+                && result.status == RuntimeToolStatus::Success
+                && !cancel.is_cancelled()
+                && let Some(run) = &tool_config.computer_use
+                && let Some((image, epoch)) = run.screenshot(&call.id)
+            {
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::ScreenshotDelivered {
+                        call_id: call.id.clone(),
+                        image,
+                        control: run.control.clone(),
+                        epoch,
+                        cancel: cancel.clone(),
+                    }
+                );
+            }
             emit!(
                 events,
                 sink,
@@ -2504,6 +2538,31 @@ where
                 },
             );
 
+            if !cancelled_while_running
+                && !cancel.is_cancelled()
+                && tool_config
+                    .computer_use
+                    .as_ref()
+                    .is_some_and(|run| run.no_progress())
+            {
+                let message = "电脑操作连续未取得进展，已停止本轮自动操作。请根据对话中的错误修正目标或参数后重新发起；不会继续重复点击或换用脚本。";
+                final_text.push_str(message);
+                emit!(events, sink, RuntimeEvent::TextDelta(message.into()));
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::Finished(RuntimeFinishReason::End)
+                );
+                return Ok(outcome(
+                    events,
+                    messages,
+                    final_text,
+                    tool_call_count,
+                    executed_tool_call_count,
+                    false,
+                    false,
+                ));
+            }
             if cancelled_while_running || cancel.is_cancelled() {
                 emit!(events, sink, RuntimeEvent::Interrupted);
                 return Ok(outcome(

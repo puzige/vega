@@ -142,6 +142,11 @@ fn now_unix_millis() -> i64 {
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
 #[derive(Clone)]
 pub enum ConversationEvent {
+    ScreenshotDelivered {
+        message_id: MessageId,
+        call_id: CallId,
+        image: super::ImageAttachment,
+    },
     RunStarted {
         message_id: MessageId,
         started_at: std::time::Instant,
@@ -274,6 +279,10 @@ pub enum ConversationEvent {
 impl std::fmt::Debug for ConversationEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ScreenshotDelivered { image, .. } => formatter
+                .debug_struct("ScreenshotDelivered")
+                .field("image_bytes", &image.bytes().len())
+                .finish_non_exhaustive(),
             Self::RunStarted { message_id, .. } => formatter
                 .debug_struct("RunStarted")
                 .field("message_id_bytes", &message_id.len())
@@ -406,7 +415,14 @@ pub(crate) fn from_runtime_event(
     use vega_runtime::{RuntimeEvent, RuntimeFinishReason, RuntimeToolStatus};
 
     match event {
-        RuntimeEvent::DiagnosticAttempt(_) => None,
+        RuntimeEvent::DiagnosticAttempt(_) | RuntimeEvent::BuiltinSkillActivated(_) => None,
+        RuntimeEvent::ScreenshotDelivered { call_id, image, .. } => {
+            Some(ConversationEvent::ScreenshotDelivered {
+                message_id: message_id.into(),
+                call_id: call_id.clone(),
+                image: image.clone(),
+            })
+        }
         RuntimeEvent::AssistantResponseCompleted {
             response_id,
             text_start_bytes,

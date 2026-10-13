@@ -1,3 +1,4 @@
+mod cua_usability;
 use std::fs;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1031,7 +1032,11 @@ async fn issue75_native_tool_gate_rejects_plan_readonly_and_disabled_without_dis
                 .iter()
                 .all(|request| request.tools.iter().all(|tool| !matches!(
                     tool.name.as_str(),
-                    "ComputerObserve" | "ComputerAct" | "BrowserObserve" | "BrowserAct"
+                    "ComputerObserve"
+                        | "ComputerScreenshot"
+                        | "ComputerAct"
+                        | "BrowserObserve"
+                        | "BrowserAct"
                 )))
         );
         assert!(outcome.events.iter().any(|event|matches!(event,RuntimeEvent::ToolCallFinished(result) if result.status==RuntimeToolStatus::Rejected)));

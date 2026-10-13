@@ -663,8 +663,7 @@ impl Render for VegaWindow {
                             })
                             .flatten(),
                     )
-                    .child(div().flex_1().min_h_0().child(content))
-                    .children(self.render_computer_use_bar(window, cx)),
+                    .child(div().flex_1().min_h_0().child(content)),
             )
             // R46 §2.1: the shell slots belong to the window, not to a column.
             // They paint after every sidebar/rail/pane so they stay on top,

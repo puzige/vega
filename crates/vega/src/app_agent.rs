@@ -162,7 +162,6 @@ pub(crate) struct ActiveAgentRun {
     pub(crate) cancel: tokio_util::sync::CancellationToken,
     pub(crate) computer_use: Option<ComputerUseControl>,
     pub(crate) computer_use_owner: String,
-    pub(crate) computer_use_details_open: bool,
     pub(crate) pending_user_content: Option<String>,
     pub(crate) pending_approved_instruction: Option<String>,
     /// Live wall-clock measurement of this run (S7-T40). It exists only in
@@ -435,7 +434,6 @@ impl AppAgentController {
                 cancel: cancel.clone(),
                 computer_use: None,
                 computer_use_owner: String::new(),
-                computer_use_details_open: false,
                 pending_user_content,
                 pending_approved_instruction,
                 started: Instant::now(),

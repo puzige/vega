@@ -10,6 +10,7 @@ use crate::types::{ConversationEvent, PermissionOptionChoice, ToolCallStatus};
 
 mod automatic_titles;
 mod credential_redaction;
+mod cua_usability;
 mod failure_paths;
 mod file_edit_parity;
 mod history_permissions;

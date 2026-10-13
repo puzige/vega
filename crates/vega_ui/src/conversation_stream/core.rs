@@ -36,6 +36,7 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
     pub(crate) context_control: context_control::ContextControl,
     pub(crate) attachments: Vec<(u64, attachments::ImagePreview)>,
     pub(crate) attachment_generation: u64,
@@ -423,6 +424,7 @@ impl ConversationStream {
         .detach();
         Self {
             context_control: context_control::ContextControl::new(cx),
+            computer_use_control: None,
             attachments: Vec::new(),
             attachment_generation: 0,
             attachment_import_pending: false,
@@ -1632,6 +1634,7 @@ impl ConversationStream {
             | ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }
             | ConversationEvent::SkillActivated { .. }
+            | ConversationEvent::ScreenshotDelivered { .. }
             | ConversationEvent::ContextCompactionStatus { .. }
             | ConversationEvent::ContextAccounting { .. } => false,
             // R7: app accepts these only after its thread/run ownership fence.

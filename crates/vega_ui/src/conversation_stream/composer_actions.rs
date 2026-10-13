@@ -107,6 +107,7 @@ pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerActionRow {
     AddImages,
+    ComputerTakeover,
     /// `@` project-file reference (menu only).
     FileReference,
     /// One `/ask` `/plan` `/execute` thread-mode command.
@@ -119,6 +120,7 @@ impl ComposerActionRow {
     fn label(self) -> &'static str {
         match self {
             Self::AddImages => "添加图片",
+            Self::ComputerTakeover => "接管电脑操作",
             Self::FileReference => "项目文件引用",
             Self::Mode(mode) => mode_command(mode),
             Self::Permission(mode) => permission_label(mode),
@@ -128,7 +130,7 @@ impl ComposerActionRow {
     /// Whether this row shows the thread's current authoritative value.
     fn is_selected(self, thread: &Thread) -> bool {
         match self {
-            Self::AddImages => false,
+            Self::AddImages | Self::ComputerTakeover => false,
             Self::FileReference => false,
             Self::Mode(mode) => thread.mode == mode,
             Self::Permission(mode) => thread.permission_mode == mode,
@@ -139,6 +141,7 @@ impl ComposerActionRow {
     fn selector(self) -> &'static str {
         match self {
             Self::AddImages => "composer-action-images",
+            Self::ComputerTakeover => "composer-action-computer-takeover",
             Self::FileReference => "composer-action-file",
             Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask",
             Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan",
@@ -157,6 +160,7 @@ impl ComposerActionRow {
     fn check_selector(self) -> &'static str {
         match self {
             Self::AddImages => "composer-action-images-check",
+            Self::ComputerTakeover => "composer-action-computer-takeover-check",
             Self::FileReference => "composer-action-file-check",
             Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask-check",
             Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan-check",
@@ -234,10 +238,6 @@ impl ComposerActions {
             rows.push(ComposerActionRow::AddImages);
         }
         rows
-    }
-
-    fn count(&self, backend: TaskBackend) -> usize {
-        self.rows(backend).len()
     }
 }
 
@@ -462,8 +462,8 @@ impl ConversationStream {
             cx.propagate();
             return;
         }
-        self.actions.highlight = (self.actions.highlight + 1)
-            .min(self.actions.count(self.thread.backend).saturating_sub(1));
+        self.actions.highlight =
+            (self.actions.highlight + 1).min(self.composer_action_rows().len().saturating_sub(1));
         cx.stop_propagation();
         cx.notify();
     }
@@ -491,10 +491,18 @@ impl ConversationStream {
         if self.input.read(cx).is_composing() {
             return;
         }
-        let Some(row) = self.actions.rows(self.thread.backend).get(index).copied() else {
+        let Some(row) = self.composer_action_rows().get(index).copied() else {
             return;
         };
         match row {
+            ComposerActionRow::ComputerTakeover => {
+                self.actions.menu = false;
+                if let Some(control) = &self.computer_use_control {
+                    let _ = control.pause_at(control.status().epoch);
+                }
+                self.focus_composer(window, cx);
+                cx.notify();
+            }
             ComposerActionRow::AddImages => {
                 self.actions.menu = false;
                 self.pick_images(cx);
@@ -577,9 +585,21 @@ impl ConversationStream {
         }
     }
 
+    fn composer_action_rows(&self) -> Vec<ComposerActionRow> {
+        let mut rows = self.actions.rows(self.thread.backend);
+        if self.actions.menu
+            && self.computer_use_control.as_ref().is_some_and(|control| {
+                control.status().phase == vega_conversation::types::ControlPhase::Running
+            })
+        {
+            rows.push(ComposerActionRow::ComputerTakeover);
+        }
+        rows
+    }
+
     pub(crate) fn render_composer_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let rows = self.actions.rows(self.thread.backend);
+        let rows = self.composer_action_rows();
         let mut children = Vec::with_capacity(rows.len() + 1);
         for (index, row) in rows.iter().enumerate() {
             // One separator between the thread-mode commands and the

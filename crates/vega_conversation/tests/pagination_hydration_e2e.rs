@@ -147,7 +147,8 @@ fn history_seqs(page: &history::HistoryPage) -> Vec<i64> {
             | HistoryEntry::Summary { seq, .. }
             | HistoryEntry::Tool { seq, .. }
             | HistoryEntry::SkillActivation { seq, .. }
-            | HistoryEntry::AssistantResponseMetadata { seq, .. } => *seq,
+            | HistoryEntry::AssistantResponseMetadata { seq, .. }
+            | HistoryEntry::AssistantScreenshot { seq, .. } => *seq,
         })
         .collect()
 }
@@ -221,7 +222,8 @@ async fn ten_thousand_rows_walk_without_gap_or_duplicate() -> Result<(), Box<dyn
                 | HistoryEntry::Summary { seq, .. }
                 | HistoryEntry::Tool { seq, .. }
                 | HistoryEntry::SkillActivation { seq, .. }
-                | HistoryEntry::AssistantResponseMetadata { seq, .. } => *seq,
+                | HistoryEntry::AssistantResponseMetadata { seq, .. }
+                | HistoryEntry::AssistantScreenshot { seq, .. } => *seq,
             };
             seen.push(seq);
         }
@@ -570,7 +572,9 @@ async fn real_run_hydrates_tools_costs_summary_and_redacts_inputs() -> Result<()
                 );
             }
             HistoryEntry::Plan { .. } => unreachable!("no plans in this run"),
-            HistoryEntry::UserImages { .. } => unreachable!("no images in this run"),
+            HistoryEntry::UserImages { .. } | HistoryEntry::AssistantScreenshot { .. } => {
+                unreachable!("no images in this run")
+            }
             HistoryEntry::SkillActivation { .. } => unreachable!("no Skills in this run"),
             HistoryEntry::AssistantResponseMetadata { response, .. } => {
                 assert!(response.text_start_bytes < response.text_end_bytes)

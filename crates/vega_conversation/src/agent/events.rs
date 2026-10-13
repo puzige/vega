@@ -352,6 +352,43 @@ pub(crate) fn persist_runtime_event(
     execution_duration_ms: Option<i64>,
 ) -> Result<(), VegaError> {
     match event {
+        RuntimeEvent::BuiltinSkillActivated(activation) => {
+            vega_store::computer_use_delivery::activate_builtin(
+                store.conn(),
+                thread_id,
+                message_id,
+                &activation.name,
+                activation.version,
+                &activation.content_sha256,
+            )
+            .map_err(|_| safe_audit_error("builtin_skill"))?;
+        }
+        RuntimeEvent::ScreenshotDelivered {
+            call_id,
+            image,
+            control,
+            epoch,
+            cancel,
+        } => {
+            crate::attachments::validate_images(std::slice::from_ref(image))
+                .map_err(|_| safe_audit_error("ComputerScreenshot"))?;
+            control
+                .commit_delivery(*epoch, || {
+                    if cancel.is_cancelled() {
+                        return Err(safe_audit_error("ComputerScreenshot"));
+                    }
+                    vega_store::computer_use_delivery::insert_screenshot(
+                        store.conn(),
+                        thread_id,
+                        message_id,
+                        call_id,
+                        image.bytes(),
+                    )
+                    .map_err(|_| safe_audit_error("ComputerScreenshot"))
+                })
+                .map_err(|_| safe_audit_error("ComputerScreenshot"))?
+                .map_err(|_| safe_audit_error("ComputerScreenshot"))?;
+        }
         RuntimeEvent::AssistantResponseCompleted {
             response_id,
             text_start_bytes,

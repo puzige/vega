@@ -33,6 +33,12 @@ use crate::types::{
 /// segments; legacy audits retain their original text-then-tools order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryEntry {
+    AssistantScreenshot {
+        seq: i64,
+        message_id: String,
+        call_id: String,
+        image: crate::types::ImageAttachment,
+    },
     AssistantResponseMetadata {
         seq: i64,
         message_id: String,
@@ -445,10 +451,18 @@ fn parsed_skill_audit(
 /// silently drops durable content.
 fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationError> {
     if page.images.iter().any(|image| {
-        !page
-            .rows
-            .iter()
-            .any(|row| row.id == image.message_id && row.role == "user")
+        !page.rows.iter().any(|row| {
+            row.id == image.message_id
+                && (row.role == "user" && image.artifact_call_id.is_none()
+                    || row.role == "assistant"
+                        && image.artifact_call_id.as_ref().is_some_and(|id| {
+                            page.tool_calls.iter().any(|call| {
+                                &call.id == id
+                                    && call.message_id == row.id
+                                    && call.tool == "ComputerScreenshot"
+                            })
+                        }))
+        })
     }) {
         return Err(ConversationError::CorruptRow("invalid image owner".into()));
     }
@@ -575,6 +589,30 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                     "page row role: {other}"
                 )));
             }
+        }
+        if row.role == "assistant" {
+            let mut screenshots = Vec::new();
+            for image in page
+                .images
+                .iter()
+                .filter(|image| image.message_id == row.id)
+            {
+                let attachment =
+                    crate::types::ImageAttachment::from_bytes(image.encoded.clone())
+                        .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
+                screenshots.push(attachment.clone());
+                let call_id = image.artifact_call_id.clone().ok_or_else(|| {
+                    ConversationError::CorruptRow("invalid screenshot owner".into())
+                })?;
+                entries.push(HistoryEntry::AssistantScreenshot {
+                    seq: row.seq,
+                    message_id: row.id.clone(),
+                    call_id,
+                    image: attachment,
+                });
+            }
+            crate::attachments::validate_images(&screenshots)
+                .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
         }
         if let Some(calls) = calls_by_message.remove(row.id.as_str()) {
             for call in calls {

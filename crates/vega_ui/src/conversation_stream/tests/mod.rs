@@ -24,6 +24,7 @@ mod branch_popup_upward;
 mod composer_actions;
 mod composer_counter;
 mod core_flow;
+mod cua_usability;
 mod e2e_variable_height;
 mod hover_copy;
 mod hydration;
@@ -291,6 +292,7 @@ fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
             StreamEntry::Summary { .. } => "summary",
             StreamEntry::ContextCompaction { .. } => "compaction",
             StreamEntry::SkillActivation { .. } => "skill-activation",
+            StreamEntry::Screenshot { .. } => "screenshot",
         })
         .collect()
 }

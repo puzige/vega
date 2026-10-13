@@ -38,6 +38,7 @@
 //! owner-only plaintext local credentials; `projects` / `git_detect` are T10 additions.
 
 pub mod codex_tasks;
+pub mod computer_use_delivery;
 pub mod config;
 pub mod context_compaction;
 pub mod git_detect;
@@ -85,6 +86,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0015_run_diagnostics.sql"),
     include_str!("../migrations/0016_codex_task_identity.sql"),
     include_str!("../migrations/0017_assistant_responses.sql"),
+    include_str!("../migrations/0018_computer_use_delivery.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

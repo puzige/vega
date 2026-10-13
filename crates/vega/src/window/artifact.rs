@@ -314,6 +314,12 @@ impl VegaWindow {
                 .observe_terminal_message(generation, thread_id, stream, &event);
             stream.update(cx, |stream, cx| stream.apply_event(event, cx));
         }
+        if let Some(active) = self.agent_controller.active.get(thread_id) {
+            let control = active.computer_use.clone();
+            stream.update(cx, |stream, cx| {
+                stream.set_computer_use_control(control, cx)
+            });
+        }
         let Some(success) = batch.finished else {
             return AgentBatchIngress::Running;
         };

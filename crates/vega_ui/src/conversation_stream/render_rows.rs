@@ -172,6 +172,7 @@ fn render_entry_internal(
             }
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images),
+        StreamEntry::Screenshot { card } => card.clone().into_any_element(),
         StreamEntry::Assistant {
             model,
             failure,

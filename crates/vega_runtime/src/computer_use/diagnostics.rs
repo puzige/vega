@@ -189,6 +189,29 @@ impl Class {
     }
 }
 
+impl ExecutorFailure {
+    pub(super) fn needs_permissions(self) -> bool {
+        self.class == Class::PermissionsMissing
+    }
+
+    pub(super) fn feedback(self) -> String {
+        let retryable = recoverable_observe(Error::Executor(self));
+        let next = if matches!(
+            self.class,
+            Class::AxUnavailable | Class::AxTimeout | Class::AxWindowUnresolved
+        ) {
+            "refresh_directory_then_computer_screenshot_or_stop_input"
+        } else if self.class == Class::PermissionsMissing {
+            "open_system_settings"
+        } else if retryable {
+            "refresh_directory_once_then_observe"
+        } else {
+            "stop_and_report"
+        };
+        serde_json::json!({"code":self.class.code(),"retryable":retryable,"next_step":next,"field":serde_json::Value::Null,"diagnostic":self.to_string()}).to_string()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutorFailure {
     capability: Capability,
