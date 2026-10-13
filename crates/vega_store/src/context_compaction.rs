@@ -282,6 +282,7 @@ const STATUS_FAILURES: &[&str] = &[
     "no_compactable_prefix",
     "too_large",
     "invalid_summary",
+    "summary_timeout",
     "images_unsupported",
     "over_limit",
     "unavailable",
@@ -318,11 +319,15 @@ pub fn insert_status(
     let estimated_tokens = status_i64(status.estimated_tokens, "estimated_tokens")?;
     let input_budget = status_i64(status.input_budget, "input_budget")?;
     let target_tokens = status_i64(status.target_tokens, "target_tokens")?;
+    let (failure, failure_detail) = match status.failure {
+        Some("summary_timeout") => (Some("invalid_summary"), Some("summary_timeout")),
+        other => (other, None),
+    };
     conn.execute(
         "INSERT INTO context_compaction_status \
          (thread_id, model, operation_key, generation, phase, usage_state, failure, \
-          source_version, estimated_tokens, input_budget, target_tokens, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+          source_version, estimated_tokens, input_budget, target_tokens, created_at, failure_detail) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             status.thread_id,
             status.model,
@@ -330,12 +335,13 @@ pub fn insert_status(
             generation,
             status.phase,
             status.usage_state,
-            status.failure,
+            failure,
             source_version,
             estimated_tokens,
             input_budget,
             target_tokens,
             status.created_at,
+            failure_detail,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -351,7 +357,8 @@ pub fn latest_status(
         return Err(invalid_status_parameter("context status identity"));
     }
     conn.query_row(
-        "SELECT id, thread_id, model, operation_key, generation, phase, usage_state, failure, \
+        "SELECT id, thread_id, model, operation_key, generation, phase, usage_state, \
+                CASE WHEN failure_detail = 'summary_timeout' THEN failure_detail ELSE failure END, \
                 source_version, estimated_tokens, input_budget, target_tokens, created_at \
          FROM context_compaction_status \
          WHERE thread_id = ?1 AND model = ?2 ORDER BY id DESC LIMIT 1",

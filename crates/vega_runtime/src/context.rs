@@ -399,6 +399,7 @@ pub enum ContextCompactionStatusFailure {
     TooLarge,
     /// Summary stream or reconstructed projection was malformed.
     InvalidSummary,
+    TimedOut,
     /// Historical images are not currently representable by the summarizer.
     ImagesUnsupported,
     /// The configured budget could not fit the request/result.
@@ -425,13 +426,13 @@ impl ContextCompactionStatusFailure {
             VegaError::Context(ContextRuntimeError::ImagesUnsupported) => Self::ImagesUnsupported,
             VegaError::Context(ContextRuntimeError::OverLimit { .. })
             | VegaError::Context(ContextRuntimeError::Estimate(_)) => Self::OverLimit,
+            VegaError::Context(ContextRuntimeError::SummaryTimedOut) => Self::TimedOut,
             VegaError::Context(
                 ContextRuntimeError::InvalidSummary
                 | ContextRuntimeError::SummaryEmpty
                 | ContextRuntimeError::SummaryFormatInvalid
                 | ContextRuntimeError::SummaryProjectionInvalid
                 | ContextRuntimeError::InvalidProjection
-                | ContextRuntimeError::SummaryTimedOut
                 | ContextRuntimeError::SummaryOutputTruncated { .. },
             ) => Self::InvalidSummary,
             _ => Self::Unavailable,

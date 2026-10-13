@@ -67,6 +67,7 @@ pub enum ContextCompactionFailureCode {
     TooLarge,
     /// The summary was empty, truncated, malformed, or otherwise unusable.
     InvalidSummary,
+    TimedOut,
     /// A historical image cannot be represented safely by the summary call.
     ImagesUnsupported,
     /// The configured input/output budget could not be satisfied.

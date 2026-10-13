@@ -287,7 +287,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
         assert_eq!(table_count, 32);
     }
 }

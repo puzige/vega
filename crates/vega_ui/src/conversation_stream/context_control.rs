@@ -413,6 +413,7 @@ pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'st
             }
             Some(Failure::ImagesUnsupported) => "历史图片无法安全压缩，请使用新的会话",
             Some(Failure::InvalidSummary) => "压缩结果无效，请重试",
+            Some(Failure::TimedOut) => "上下文压缩超时，请重试",
             _ => "上下文压缩失败，请重试",
         },
     }
