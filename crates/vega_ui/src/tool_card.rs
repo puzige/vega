@@ -523,6 +523,14 @@ impl ToolCard {
         }
     }
 
+    pub(crate) fn needs_attention(&self) -> bool {
+        self.status == ToolCallStatus::PendingApproval
+            || matches!(
+                self.activity_state(),
+                ToolActivityState::Rejected | ToolActivityState::Failed
+            )
+    }
+
     pub(crate) fn leading_icon(&self) -> Icon {
         if self.activity_category() == ToolActivityCategory::ComputerUse
             && let Some(ToolCardInputProjection::ComputerUse { action, .. }) = &self.input

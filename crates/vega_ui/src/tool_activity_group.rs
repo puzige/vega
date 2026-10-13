@@ -1,5 +1,3 @@
-//! UI-only grouping for adjacent audited tool calls.
-
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Entity, MouseButton, MouseUpEvent, ScrollHandle, div, px,
@@ -9,10 +7,6 @@ use vega_theme::{Layout, ThemeColors, Typography, theme};
 use crate::icons::Icon;
 use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard};
 
-/// Ordered, memory-only presentation state for one adjacent tool run.
-///
-/// The children remain the exact entities owned by the call-id map. The group
-/// carries only UI expansion state and never retains a provider call id.
 pub(crate) struct ToolActivityGroup {
     children: Vec<Entity<ToolCard>>,
     expanded: bool,
@@ -45,6 +39,17 @@ impl ToolActivityGroup {
     pub(crate) fn append(&mut self, card: Entity<ToolCard>, cx: &mut Context<Self>) {
         self.children.push(card);
         cx.notify();
+    }
+
+    pub(crate) fn replace_children(
+        &mut self,
+        children: Vec<Entity<ToolCard>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.children != children {
+            self.children = children;
+            cx.notify();
+        }
     }
 
     pub(crate) fn extend(

@@ -115,6 +115,7 @@ pub struct ConversationStream {
     /// Whether the current Markdown segment contains text; a tool boundary
     /// may leave the active run without a segment until the next text delta.
     pub(crate) active_segment_has_text: bool,
+    pub(crate) active_segment_has_visible_text: bool,
     pub(crate) active_thinking: Option<Entity<ThinkingBlock>>,
     pub(crate) thinking_bytes: usize,
     pub(crate) thinking_blocks: usize,
@@ -491,6 +492,7 @@ impl ConversationStream {
             thinking_bytes: 0,
             thinking_blocks: 0,
             active_segment_has_text: false,
+            active_segment_has_visible_text: false,
             last_finished_agent_message: None,
             meter: ConversationMeter::default(),
             composer_history: Vec::new(),
