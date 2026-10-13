@@ -88,3 +88,6 @@ pub use updater::*;
 
 mod model_catalog;
 pub use model_catalog::*;
+
+mod pending_messages;
+pub use pending_messages::*;

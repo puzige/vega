@@ -301,14 +301,42 @@ impl VegaWindow {
                 continue;
             }
             self.observe_artifact_event(generation, stream, &event, cx);
-            if matches!(event, ConversationEvent::MessageStarted { .. })
+            if let ConversationEvent::PendingMessageDelivered { pending_id, .. } = &event {
+                self.agent_controller
+                    .queue_delivered
+                    .insert(pending_id.clone());
+            }
+            if let ConversationEvent::MessageStarted { seq, .. } = &event
                 && let Some(content) = self
                     .agent_controller
                     .accept_durable_start(generation, thread_id, stream)
             {
-                stream.update(cx, |stream, cx| {
-                    stream.accept_composer_submission(&content, cx)
-                });
+                let delivery = self
+                    .agent_controller
+                    .active
+                    .get_mut(thread_id)
+                    .and_then(|active| active.queue_delivery.take());
+                if let Some(message) = delivery {
+                    self.agent_controller
+                        .queue_delivered
+                        .insert(message.id.clone());
+                    stream.update(cx, |stream, cx| {
+                        stream.apply_event(
+                            ConversationEvent::PendingMessageDelivered {
+                                pending_id: message.id.clone(),
+                                message_id: message.id,
+                                seq: seq.saturating_sub(1),
+                                content: message.content,
+                                images: message.images,
+                            },
+                            cx,
+                        )
+                    });
+                } else {
+                    stream.update(cx, |stream, cx| {
+                        stream.accept_composer_submission(&content, cx)
+                    });
+                }
             }
             self.agent_controller
                 .observe_terminal_message(generation, thread_id, stream, &event);

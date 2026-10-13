@@ -191,8 +191,10 @@ impl Default for UiPrefs {
 /// number of tool calls. `0` means unlimited, which is the default so that
 /// convergence is driven by the context/token budget rather than a fixed
 /// call count.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentConfig {
+    #[serde(default = "default_running_message_behavior")]
+    pub running_message_behavior: String,
     #[serde(default)]
     pub desktop_use_enabled: bool,
     #[serde(default)]
@@ -202,6 +204,22 @@ pub struct AgentConfig {
     pub turn_limit: u32,
     #[serde(default)]
     pub codex_acp_profile: Option<CodexAcpProfileConfig>,
+}
+
+fn default_running_message_behavior() -> String {
+    "queue".into()
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            running_message_behavior: default_running_message_behavior(),
+            desktop_use_enabled: false,
+            browser_use_enabled: false,
+            turn_limit: 0,
+            codex_acp_profile: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -499,6 +517,7 @@ mod tests {
                 sessions_collapsed: false,
             },
             agent: AgentConfig {
+                running_message_behavior: default_running_message_behavior(),
                 desktop_use_enabled: false,
                 browser_use_enabled: false,
                 turn_limit: 0,
@@ -771,5 +790,23 @@ mod issue71_tests {
             provider
         );
         assert!(toml::from_str::<ProviderConfig>(&format!("{legacy}\napi='unknown'")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod pending_message_tests {
+    use super::*;
+
+    #[test]
+    fn issue299_running_send_default_survives_legacy_and_roundtrip() {
+        let legacy: AgentConfig = toml::from_str("turn_limit = 7").unwrap();
+        assert_eq!(legacy.running_message_behavior, "queue");
+        assert_eq!(AgentConfig::default().running_message_behavior, "queue");
+        let mut selected = legacy;
+        selected.running_message_behavior = "steer".into();
+        let wire = toml::to_string(&selected).unwrap();
+        let restored: AgentConfig = toml::from_str(&wire).unwrap();
+        assert_eq!(restored.running_message_behavior, "steer");
+        assert_eq!(restored.turn_limit, 7);
     }
 }

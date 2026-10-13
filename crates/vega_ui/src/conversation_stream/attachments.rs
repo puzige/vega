@@ -74,6 +74,11 @@ impl ConversationStream {
     }
 
     pub(crate) fn reset_image_visibility(&self, cx: &mut App) {
+        for item in self.pending_ui.items.values() {
+            for image in &item.images {
+                image.view.update(cx, |view, _| view.reset_thumbnail());
+            }
+        }
         for (_, image) in &self.attachments {
             image.view.update(cx, |view, _| view.reset_thumbnail());
         }
@@ -101,6 +106,11 @@ impl ConversationStream {
         self.attachments
             .iter()
             .any(|(_, entry)| &entry.view == image)
+            || self
+                .pending_ui
+                .items
+                .values()
+                .any(|item| item.images.iter().any(|entry| &entry.view == image))
             || self.entries.iter().any(|entry| match entry {
                 StreamEntry::UserImages { images } => {
                     images.iter().any(|entry| &entry.view == image)

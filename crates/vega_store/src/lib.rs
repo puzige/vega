@@ -48,6 +48,7 @@ pub mod mcp_servers;
 pub mod messages;
 pub mod palette;
 pub mod paths;
+pub mod pending_messages;
 pub mod permissions;
 pub mod projects;
 pub mod reasoning;
@@ -87,6 +88,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0016_codex_task_identity.sql"),
     include_str!("../migrations/0017_assistant_responses.sql"),
     include_str!("../migrations/0018_computer_use_delivery.sql"),
+    include_str!("../migrations/0019_pending_messages.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -238,7 +240,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 18);
+        assert_eq!(user_version(&store), 19);
         let settings = skills::read_settings(store.conn()).unwrap();
         assert!(!settings.global_enabled);
         assert!(!settings.automatic_enabled);
@@ -326,9 +328,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_18() {
+    fn migrated_store_is_wal_at_user_version_19() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 18);
+        assert_eq!(user_version(&store), 19);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -444,7 +446,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 18);
+        assert_eq!(user_version(&store), 19);
         let after: String = store
             .conn()
             .query_row(
@@ -473,7 +475,7 @@ mod tests {
         store.conn().pragma_update(None, "user_version", 7).unwrap();
         store.conn().execute_batch("INSERT INTO threads (id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) VALUES ('named','手动','ask','confirm','m','active',0,0,1,1),('populated','','ask','confirm','m','active',0,0,1,1),('empty','','ask','confirm','m','active',0,0,1,1); INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','populated',1,'user','text','hi','done',1);").unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 18);
+        assert_eq!(user_version(&store), 19);
         let rows: Vec<(String, String, String)> = store
             .conn()
             .prepare("SELECT id,title,auto_title_state FROM threads ORDER BY id")
@@ -498,7 +500,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 18);
+        assert_eq!(user_version(&store), 19);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -534,7 +536,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 18);
+        assert_eq!(user_version(&store), 19);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -606,7 +608,7 @@ mod tests {
                VALUES ('old','t','m',1,'read','{}','success',1);"
         ).unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 18);
+        assert_eq!(user_version(&store), 19);
         let old: Option<i64> = store
             .conn()
             .query_row(
@@ -689,7 +691,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 18);
+        assert_eq!(user_version(&store), 19);
         for table in [
             "messages",
             "tool_calls",

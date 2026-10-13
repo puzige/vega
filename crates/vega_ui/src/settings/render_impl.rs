@@ -648,9 +648,99 @@ impl SettingsView {
                         None,
                         self.render_model_selector(cx),
                         colors,
+                    ))
+                    .child(settings_field(
+                        "settings-running-message",
+                        "运行中发送消息",
+                        None,
+                        self.render_running_message_behavior(cx),
+                        colors,
                     )),
             )
             .child(self.render_updater(cx))
+            .into_any_element()
+    }
+
+    fn render_running_message_behavior(&self, cx: &mut Context<Self>) -> AnyElement {
+        use vega_conversation::types::PendingMessageBehavior;
+        let colors = theme(cx).colors;
+        let enabled = !self.provider_management.saving;
+        settings_actions()
+            .children(
+                [PendingMessageBehavior::Queue, PendingMessageBehavior::Steer]
+                    .into_iter()
+                    .map(|behavior| {
+                        let selected =
+                            self.config.agent.running_message_behavior == behavior.as_str();
+                        let label = behavior.label();
+                        let description = match behavior {
+                            PendingMessageBehavior::Queue => "当前任务结束后发送",
+                            PendingMessageBehavior::Steer => "补充要求或调整当前任务方向",
+                        };
+                        let id = format!("settings-running-message-{}", behavior.as_str());
+                        let selector = id.clone();
+                        settings_action_chrome(colors)
+                            .id(id)
+                            .debug_selector(move || selector.clone())
+                            .aria_label(if selected {
+                                format!("{label}，已选中")
+                            } else {
+                                label.to_string()
+                            })
+                            .aria_description(description)
+                            .interaction_surface(
+                                if selected {
+                                    colors.bg_active
+                                } else {
+                                    colors.bg_elevated
+                                },
+                                if selected {
+                                    colors.bg_active
+                                } else {
+                                    colors.bg_hover
+                                },
+                                colors.bg_active,
+                                enabled,
+                            )
+                            .focusable()
+                            .tab_stop(true)
+                            .focus_visible(move |style| style.border_color(colors.accent))
+                            .when(enabled, |element| element.cursor_pointer())
+                            .tooltip(move |_, cx| crate::icons::tooltip(description, cx))
+                            .child(label)
+                            .child(div().size(px(Layout::ICON_SIZE)).when(selected, |element| {
+                                element
+                                    .debug_selector(move || {
+                                        format!(
+                                            "settings-running-message-{}-selected",
+                                            behavior.as_str()
+                                        )
+                                    })
+                                    .child(crate::icons::icon(
+                                        crate::icons::Icon::Check,
+                                        colors.text_primary,
+                                    ))
+                            }))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    if enabled {
+                                        this.select_running_message_behavior(behavior, cx);
+                                    }
+                                }),
+                            )
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                    if enabled
+                                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                    {
+                                        this.select_running_message_behavior(behavior, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                    }),
+            )
             .into_any_element()
     }
 

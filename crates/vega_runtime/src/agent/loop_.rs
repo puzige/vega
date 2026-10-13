@@ -879,7 +879,7 @@ where
     messages.extend(request.history);
     let context_budget = request.context_budget;
     let request_context_hook = request.context_compaction_hook.clone();
-    let context_operation_id = request
+    let mut context_operation_id = request
         .context_operation_id
         .clone()
         .unwrap_or_else(|| ulid::Ulid::generate().to_string());
@@ -2135,6 +2135,32 @@ where
                     RuntimeFinishReason::End
                 }
             };
+            if finish == RuntimeFinishReason::End
+                && (tool_config.turn_limit == 0 || turn_index < tool_config.turn_limit)
+                && let Some(source) = &tool_config.steering_source
+                && let Some(input) = source.take().await?
+            {
+                if cancel.is_cancelled() {
+                    emit!(events, sink, RuntimeEvent::Interrupted);
+                    return Ok(outcome(
+                        events,
+                        messages,
+                        final_text,
+                        tool_call_count,
+                        executed_tool_call_count,
+                        true,
+                        false,
+                    ));
+                }
+                crate::images::validate_messages(std::slice::from_ref(&input.message))?;
+                emit!(events, sink, RuntimeEvent::SteeringAccepted(input.clone()));
+                context_operation_id = input.assistant_message_id.clone();
+                messages.push(input.message);
+                final_text.clear();
+                input_anchor = None;
+                live_projection_revision = live_projection_revision.saturating_add(1);
+                continue;
+            }
             emit!(events, sink, RuntimeEvent::Finished(finish));
             return Ok(outcome(
                 events,
@@ -2743,6 +2769,30 @@ where
                     false,
                 ));
             }
+        }
+        if !cancel.is_cancelled()
+            && (tool_config.turn_limit == 0 || turn_index < tool_config.turn_limit)
+            && let Some(source) = &tool_config.steering_source
+            && let Some(input) = source.take().await?
+        {
+            if cancel.is_cancelled() {
+                emit!(events, sink, RuntimeEvent::Interrupted);
+                return Ok(outcome(
+                    events,
+                    messages,
+                    final_text,
+                    tool_call_count,
+                    executed_tool_call_count,
+                    true,
+                    false,
+                ));
+            }
+            crate::images::validate_messages(std::slice::from_ref(&input.message))?;
+            emit!(events, sink, RuntimeEvent::SteeringAccepted(input.clone()));
+            context_operation_id = input.assistant_message_id.clone();
+            messages.push(input.message);
+            final_text.clear();
+            input_anchor = None;
         }
         if batch_policy != BatchPolicy::SkillOnly {
             direct_user_skill_round = false;

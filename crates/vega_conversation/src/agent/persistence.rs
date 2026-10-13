@@ -2,6 +2,9 @@ use super::*;
 
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    pub(crate) steering_cancel: Option<CancellationToken>,
+    pub(crate) pending_message_id: Option<String>,
+    pub(crate) steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
     pub(crate) computer_use: Option<vega_runtime::computer_use::ComputerUseRun>,
     pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
     /// Maximum agentic turns (provider round-trips) for this run; `0` means
@@ -37,6 +40,15 @@ pub(crate) enum InjectedPersistenceFailure {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_pending_input(
+        mut self,
+        id: Option<String>,
+        source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
+    ) -> Self {
+        self.pending_message_id = id;
+        self.steering_source = source;
+        self
+    }
     pub fn with_computer_use(
         mut self,
         run: Option<vega_runtime::computer_use::ComputerUseRun>,
@@ -181,6 +193,7 @@ impl PersistenceActor {
             }
             let _ = ready.send(Ok(()));
             let mut next_tool_seq = next_tool_seq;
+            let mut message_id = message_id;
             while let Some(command) = receiver.blocking_recv() {
                 match command {
                     PersistenceCommand::Snapshot { content, ack } => {
@@ -202,6 +215,14 @@ impl PersistenceActor {
                     } => {
                         config.delay_command();
                         let result = config.check_event(&event).and_then(|()| {
+                            if matches!(event.as_ref(), RuntimeEvent::SteeringAccepted(_))
+                                && config
+                                    .steering_cancel
+                                    .as_ref()
+                                    .is_some_and(CancellationToken::is_cancelled)
+                            {
+                                return Err(VegaError::Cancelled);
+                            }
                             persist_runtime_event(
                                 &store,
                                 &project_id,
@@ -215,6 +236,11 @@ impl PersistenceActor {
                                 execution_duration_ms,
                             )
                         });
+                        if result.is_ok()
+                            && let RuntimeEvent::SteeringAccepted(input) = event.as_ref()
+                        {
+                            message_id = input.assistant_message_id.clone();
+                        }
                         let _ = ack.send(result);
                     }
                     PersistenceCommand::Diagnostic(event) => {

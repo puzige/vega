@@ -5,6 +5,9 @@ use gpui_kit::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOpti
 #[path = "context_compaction.rs"]
 mod context_compaction;
 
+#[path = "pending_messages.rs"]
+mod pending_messages;
+
 struct Fixture {
     _data: TempDir,
     repo: ControllerRepo,
@@ -65,6 +68,7 @@ fn fixture(
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| {
             root.stream_view.is_some()
+                && root.agent_controller.queue_operations.is_empty()
                 && root.configured_models.is_some()
                 && !root.model_catalog_loading
                 && matches!(

@@ -128,6 +128,10 @@ pub struct ConversationStream {
     /// Submitted drafts, scoped to this thread view.
     pub(crate) composer_history: Vec<String>,
     pub(crate) composer_submit_pending: bool,
+    pub(crate) pending_queue: PendingQueueProjection,
+    pub(crate) pending_behavior_override: Option<PendingMessageBehavior>,
+    pub(crate) pending_submission_revision: Option<u64>,
+    pub(crate) pending_ui: pending_messages::PendingQueueUi,
     pub(crate) skill_projection: Option<SkillComposerProjection>,
     pub(crate) skill_projection_generation: u64,
     pub(crate) skill_mutation_pending: bool,
@@ -309,6 +313,8 @@ impl ConversationStream {
         permission_queue: PermissionQueue,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.observe_global::<RunningMessageDefault>(|_, cx| cx.notify())
+            .detach();
         let input = cx.new(|cx| {
             TextInput::new_multiline(cx, "描述任务，或用 @ 引用文件", COMPOSER_ROWS)
                 .with_image_paste()
@@ -489,6 +495,10 @@ impl ConversationStream {
             meter: ConversationMeter::default(),
             composer_history: Vec::new(),
             composer_submit_pending: false,
+            pending_queue: PendingQueueProjection::default(),
+            pending_behavior_override: None,
+            pending_submission_revision: None,
+            pending_ui: pending_messages::PendingQueueUi::new(cx),
             skill_projection: None,
             skill_projection_generation: 0,
             skill_mutation_pending: false,

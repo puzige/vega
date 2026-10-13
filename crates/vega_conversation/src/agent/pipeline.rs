@@ -673,6 +673,24 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             })
             .collect::<Result<Vec<_>, _>>()?
     };
+    let pending_original = config
+        .pending_message_id
+        .as_ref()
+        .map(|id| {
+            if id != &user_message_id || uses_existing_user {
+                return Err(ConversationError::Store("待处理消息状态已变化".into()));
+            }
+            let row = vega_store::pending_messages::find(&transaction, &thread_id, id)
+                .map_err(runtime_store_error)?
+                .ok_or_else(|| ConversationError::Store("待处理消息已经交付".into()))?;
+            let pending = crate::pending_messages::decode(row)?;
+            if pending.images != images {
+                return Err(ConversationError::Store("待处理消息附件已变化".into()));
+            }
+            Ok::<_, ConversationError>(pending.content)
+        })
+        .transpose()?;
+    let pending_model_content = pending_original.as_ref().map(|_| user_content.clone());
     let now = now_ms();
     let title_eligible_payload = !user_content.trim().is_empty() || !images.is_empty();
     if uses_existing_user {
@@ -722,7 +740,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 seq: user_seq,
                 role: "user".to_string(),
                 kind: "text".to_string(),
-                content: user_content,
+                content: pending_original.unwrap_or(user_content),
                 status: "done".to_string(),
                 created_at: now,
                 plan_status: None,
@@ -760,6 +778,16 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     } else {
         None
     };
+    if let Some(id) = &config.pending_message_id
+        && !vega_store::pending_messages::mark_delivered(&transaction, &thread_id, id)
+            .map_err(runtime_store_error)?
+    {
+        return Err(ConversationError::Store("待处理消息已经交付".into()));
+    }
+    if let (Some(id), Some(content)) = (&config.pending_message_id, pending_model_content) {
+        vega_store::pending_messages::preserve_model_input(&transaction, &thread_id, id, &content)
+            .map_err(runtime_store_error)?;
+    }
     let assistant_seq =
         messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
     messages::insert(
@@ -929,6 +957,10 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     checkpoint_root,
                     exact_rules,
                 );
+                let runtime_config = match config.steering_source.clone() {
+                    Some(source) => runtime_config.with_steering_source(source),
+                    None => runtime_config,
+                };
                 let runtime_config = match config.owner_credential_reader.clone() {
                     Some(reader) => runtime_config.with_credential_reader(reader),
                     None => runtime_config,

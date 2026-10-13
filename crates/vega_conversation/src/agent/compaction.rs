@@ -1245,6 +1245,8 @@ impl ConversationCompactionHook<'_> {
                 .collect::<HashSet<_>>();
             let request_without_owned_group =
                 remove_owned_live_group(&request.messages, &owned_call_ids);
+            let request_without_owned_group =
+                normalize_completed_live_groups(&source, owner_id, &request_without_owned_group)?;
             if request_without_owned_group != persisted_history {
                 return Err(failure(
                     context_error(ContextRuntimeError::SourceChanged),
@@ -1660,6 +1662,142 @@ fn classify_summary_input_overflow(error: &VegaError) -> Option<SummaryInputOver
         requested.checked_sub(limit).filter(|gap| *gap > 0)
     });
     Some(SummaryInputOverflow { token_gap })
+}
+
+fn normalize_completed_live_groups(
+    source: &vega_store::context_compaction::ContextSource,
+    current_owner: &str,
+    messages: &[ChatMessage],
+) -> Result<Vec<ChatMessage>, ContextCompactionFailure> {
+    let invalid = || failure(context_error(ContextRuntimeError::SourceChanged), None);
+    let mut projected = Vec::with_capacity(messages.len());
+    let mut cursor = 0;
+    while cursor < messages.len() {
+        if matches!(messages[cursor].role, ChatRole::User | ChatRole::System) {
+            projected.push(messages[cursor].clone());
+            cursor += 1;
+            continue;
+        }
+        let end = messages[cursor..]
+            .iter()
+            .position(|message| matches!(message.role, ChatRole::User | ChatRole::System))
+            .map_or(messages.len(), |offset| cursor + offset);
+        let group = &messages[cursor..end];
+        cursor = end;
+        let Some(first_call) = group.iter().flat_map(|message| &message.tool_calls).next() else {
+            projected.extend(group.iter().cloned());
+            continue;
+        };
+        let owner = source
+            .tool_calls
+            .iter()
+            .find(|call| call.id == first_call.id)
+            .map(|call| call.message_id.as_str())
+            .ok_or_else(invalid)?;
+        let owner_row = source
+            .messages
+            .iter()
+            .find(|message| {
+                message.id == owner
+                    && message.id != current_owner
+                    && message.role == "assistant"
+                    && message.status == "done"
+            })
+            .ok_or_else(invalid)?;
+        validate_complete_projection(group)?;
+        let mut owned_source = source.clone();
+        owned_source.messages.retain(|message| message.id == owner);
+        owned_source
+            .tool_calls
+            .retain(|call| call.message_id == owner);
+        owned_source
+            .images
+            .retain(|image| image.message_id == owner);
+        let mut canonical =
+            super::pipeline::history_from_context_source(&owned_source, current_owner, None)
+                .map_err(|_| invalid())?;
+        vega_runtime::computer_use::redact_ephemeral_messages(&mut canonical);
+        let mut content = String::new();
+        let mut observed_calls = Vec::new();
+        for message in group {
+            match message.role {
+                ChatRole::Assistant => {
+                    if !message.images.is_empty() || message.tool_call_id.is_some() {
+                        return Err(invalid());
+                    }
+                    content.push_str(&message.content);
+                    for call in &message.tool_calls {
+                        let stored = source
+                            .tool_calls
+                            .iter()
+                            .find(|row| row.id == call.id && row.message_id == owner)
+                            .ok_or_else(invalid)?;
+                        let canonical_call = canonical
+                            .iter()
+                            .flat_map(|message| &message.tool_calls)
+                            .find(|expected| expected.id == call.id)
+                            .ok_or_else(invalid)?;
+                        if canonical_call != call
+                            || stored.text_offset_bytes != Some(content.len() as i64)
+                        {
+                            return Err(invalid());
+                        }
+                        observed_calls.push(call.id.as_str());
+                    }
+                }
+                ChatRole::Tool => {
+                    let stored = source
+                        .tool_calls
+                        .iter()
+                        .find(|row| {
+                            row.message_id == owner
+                                && Some(row.id.as_str()) == message.tool_call_id.as_deref()
+                        })
+                        .ok_or_else(invalid)?;
+                    let expected = canonical
+                        .iter()
+                        .find(|expected| {
+                            expected.role == ChatRole::Tool
+                                && expected.tool_call_id.as_deref() == Some(stored.id.as_str())
+                        })
+                        .ok_or_else(invalid)?;
+                    if message != expected {
+                        return Err(invalid());
+                    }
+                }
+                _ => return Err(invalid()),
+            }
+        }
+        let mut stored_calls = source
+            .tool_calls
+            .iter()
+            .filter(|call| call.message_id == owner)
+            .collect::<Vec<_>>();
+        stored_calls.sort_by(|left, right| {
+            left.text_offset_bytes
+                .cmp(&right.text_offset_bytes)
+                .then_with(|| left.seq.cmp(&right.seq))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if content != owner_row.content
+            || observed_calls
+                != stored_calls
+                    .iter()
+                    .map(|call| call.id.as_str())
+                    .collect::<Vec<_>>()
+        {
+            return Err(invalid());
+        }
+        projected.extend(
+            super::pipeline::primary_history_from_context_source_with_checkpoint(
+                &owned_source,
+                None,
+                current_owner,
+            )
+            .map_err(|_| invalid())?,
+        );
+    }
+    Ok(projected)
 }
 
 fn remove_owned_live_group(

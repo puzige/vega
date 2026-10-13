@@ -28,6 +28,7 @@ mod image_preview;
 mod model_catalog;
 mod model_context;
 pub(crate) mod navigation;
+mod pending_messages;
 mod pricing;
 mod reasoning;
 mod render;

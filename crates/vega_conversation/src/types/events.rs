@@ -152,6 +152,13 @@ pub enum ConversationEvent {
         attempt: u32,
         max_retries: u32,
     },
+    PendingMessageDelivered {
+        pending_id: String,
+        message_id: String,
+        seq: u64,
+        content: String,
+        images: Vec<ImageAttachment>,
+    },
     ScreenshotDelivered {
         message_id: MessageId,
         call_id: CallId,
@@ -306,6 +313,7 @@ impl std::fmt::Debug for ConversationEvent {
                 .field("attempt", attempt)
                 .field("max_retries", max_retries)
                 .finish_non_exhaustive(),
+            Self::PendingMessageDelivered { .. } => formatter.write_str("PendingMessageDelivered"),
             Self::ScreenshotDelivered { image, .. } => formatter
                 .debug_struct("ScreenshotDelivered")
                 .field("image_bytes", &image.bytes().len())
@@ -458,7 +466,9 @@ pub(crate) fn from_runtime_event(
             attempt: *attempt,
             max_retries: *max_retries,
         }),
-        RuntimeEvent::DiagnosticAttempt(_) | RuntimeEvent::BuiltinSkillActivated(_) => None,
+        RuntimeEvent::SteeringAccepted(_)
+        | RuntimeEvent::DiagnosticAttempt(_)
+        | RuntimeEvent::BuiltinSkillActivated(_) => None,
         RuntimeEvent::ScreenshotDelivered { call_id, image, .. } => {
             Some(ConversationEvent::ScreenshotDelivered {
                 message_id: message_id.into(),

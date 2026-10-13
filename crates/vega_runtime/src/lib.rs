@@ -78,11 +78,11 @@ pub use agent::{
     REASONING_TURN_MAX_BYTES, RuntimeAssistantResponseKind, RuntimeDiagnosticAttempt,
     RuntimeDiagnosticFailure, RuntimeDiagnosticMetrics, RuntimeDiagnosticPhase,
     RuntimeDiagnosticState, RuntimeEvent, RuntimeExactRule, RuntimeFinishReason,
-    RuntimePermissionHook, RuntimeTokenUsage, RuntimeToolCall, RuntimeToolConfig,
-    RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing, contains_sensitive_credential,
-    redact_sensitive_credential_text, redact_sensitive_credential_text_with_offsets, run_agent,
-    run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
-    run_agent_with_sink, tool_definitions,
+    RuntimePermissionHook, RuntimeSteeringInput, RuntimeSteeringSource, RuntimeTokenUsage,
+    RuntimeToolCall, RuntimeToolConfig, RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing,
+    contains_sensitive_credential, redact_sensitive_credential_text,
+    redact_sensitive_credential_text_with_offsets, run_agent, run_agent_with_permission_sink,
+    run_agent_with_permission_sink_and_context, run_agent_with_sink, tool_definitions,
 };
 pub use context::{
     CONTEXT_ESTIMATOR_VERSION, ContextBudget, ContextCheck, ContextCompactionFailure,

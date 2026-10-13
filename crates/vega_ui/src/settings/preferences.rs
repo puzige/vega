@@ -1,5 +1,7 @@
 //! Preference writes share provider serialization and preserve unrelated disk fields.
 use super::*;
+use crate::conversation_stream::RunningMessageDefault;
+use vega_conversation::types::PendingMessageBehavior;
 
 impl SettingsView {
     pub(crate) fn save_preferences(&mut self, candidate: AppConfig, cx: &mut Context<Self>) {
@@ -25,6 +27,7 @@ impl SettingsView {
             }
             patch!(agent.desktop_use_enabled);
             patch!(agent.browser_use_enabled);
+            patch!(agent.running_message_behavior);
             patch!(defaults.model);
             patch!(defaults.permission_mode);
             patch!(ui.theme);
@@ -41,6 +44,13 @@ impl SettingsView {
                 this.provider_management.saving = false;
                 match result {
                     Ok(config) => {
+                        cx.set_global(RunningMessageDefault(
+                            if config.agent.running_message_behavior == "steer" {
+                                PendingMessageBehavior::Steer
+                            } else {
+                                PendingMessageBehavior::Queue
+                            },
+                        ));
                         if theme_changed {
                             cx.set_global(match config.ui.theme.as_str() {
                                 "light" => vega_theme::Theme::light(),
@@ -59,5 +69,15 @@ impl SettingsView {
         })
         .detach();
         cx.notify();
+    }
+
+    pub(crate) fn select_running_message_behavior(
+        &mut self,
+        behavior: PendingMessageBehavior,
+        cx: &mut Context<Self>,
+    ) {
+        let mut candidate = self.config.clone();
+        candidate.agent.running_message_behavior = behavior.as_str().to_string();
+        self.save_preferences(candidate, cx);
     }
 }

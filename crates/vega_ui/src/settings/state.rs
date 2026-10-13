@@ -137,6 +137,15 @@ impl SettingsView {
     /// App-level acceptance tests and other embedders can supply an owned
     /// snapshot so constructing the view never reads the host user's files.
     pub fn from_config(config: AppConfig, error: Option<String>, cx: &mut Context<Self>) -> Self {
+        cx.observe_global::<crate::conversation_stream::RunningMessageDefault>(|this, cx| {
+            this.config.agent.running_message_behavior = cx
+                .global::<crate::conversation_stream::RunningMessageDefault>()
+                .0
+                .as_str()
+                .to_string();
+            cx.notify();
+        })
+        .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             if !cx.global::<SettingsOpen>().0 {
                 this.cancel_provider_operation(cx);

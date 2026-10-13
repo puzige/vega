@@ -174,7 +174,8 @@ impl ConversationStream {
     /// must run on either the old or the new authoritative model, never a
     /// value that raced the durable write.
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
-        if self.actions.running
+        if (self.actions.running && self.thread.backend != TaskBackend::Native)
+            || self.pending_queue.busy
             || self.context_operation_busy()
             || self.attachment_import_pending
             || self.actions.pending_mode.is_some()
@@ -194,8 +195,16 @@ impl ConversationStream {
             return;
         }
         self.composer_submit_pending = true;
+        self.pending_submission_revision = self
+            .actions
+            .running
+            .then(|| self.input.read(cx).content_revision());
         self.submitted_attachments = self.attachments.clone();
         cx.emit(ComposerSubmitted {
+            pending_behavior: self
+                .actions
+                .running
+                .then(|| self.running_message_behavior(cx)),
             images: self
                 .attachments
                 .iter()
@@ -217,6 +226,8 @@ impl ConversationStream {
             return;
         }
         self.composer_submit_pending = false;
+        self.pending_submission_revision = None;
+        self.pending_behavior_override = None;
         if self.composer_history.last().map(String::as_str) != Some(content) {
             self.composer_history.push(content.to_string());
         }
@@ -253,6 +264,7 @@ impl ConversationStream {
 
     /// Re-arms submit after preparation failed before any durable message.
     pub fn reject_composer_submission(&mut self, cx: &mut Context<Self>) {
+        self.pending_submission_revision = None;
         self.submitted_attachments.clear();
         if self.composer_submit_pending {
             self.composer_submit_pending = false;

@@ -8,6 +8,7 @@ impl TextInput {
             image_paste: false,
             focus_handle: cx.focus_handle(),
             content: "".into(),
+            content_revision: 0,
             placeholder: placeholder.into(),
             masked,
             multiline: false,
@@ -78,6 +79,7 @@ impl TextInput {
 
     /// Clears content and selection (used to reset the add-provider form).
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.content_revision = self.content_revision.wrapping_add(1);
         self.content = "".into();
         self.selected_range = 0..0;
         self.selection_reversed = false;
@@ -90,12 +92,17 @@ impl TextInput {
     /// Replaces the whole content and collapses the selection to the end
     /// (used to seed the T13 inline rename editor with the current title).
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.content_revision = self.content_revision.wrapping_add(1);
         self.content = text.to_string().into();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
         self.update_logical_viewport();
         cx.notify();
+    }
+
+    pub(crate) fn content_revision(&self) -> u64 {
+        self.content_revision
     }
 
     /// Whether a platform IME composition is still active.
@@ -158,6 +165,7 @@ impl TextInput {
             return;
         };
         let replacement = format!("{path} ");
+        self.content_revision = self.content_revision.wrapping_add(1);
         self.content =
             (self.content[..range.start].to_owned() + &replacement + &self.content[range.end..])
                 .into();
