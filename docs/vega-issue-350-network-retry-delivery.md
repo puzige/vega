@@ -1,6 +1,6 @@
 # Issue #350 网络中断自动重试交付记录
 
-日期：2026-10-13。规格：[网络中断自动重试](vega-issue-350-network-retry.md)。本记录包含实现、静态检查和首次云端编译失败后的修复；PR Check 尚未通过，真实网络与原生界面手测未执行，不代表功能已验收。
+日期：2026-10-13。规格：[网络中断自动重试](vega-issue-350-network-retry.md)。本记录包含实现、静态检查和两轮云端检查后的修复；PR Check 尚未通过，真实网络与原生界面手测未执行，不代表功能已验收。
 
 ## 实现
 
@@ -18,7 +18,7 @@
 |---|---|
 | Provider/协议/恢复 | `crates/vega_runtime/src/provider.rs`、`openai/{mod,recovery,sse,responses}.rs` |
 | Runtime 事件/循环 | `crates/vega_runtime/src/agent/{mod,loop_}.rs` |
-| Runtime 回归 | `crates/vega_runtime/src/openai/tests/{mod,network_retry}.rs`、`agent/tests/loop_tools.rs` |
+| Runtime 回归 | `crates/vega_runtime/src/openai/tests/{mod,network_retry}.rs`、`agent/tests/{loop_tools,permission_flow}.rs` |
 | 会话与持久化 | `crates/vega_conversation/src/agent/{credential_guard,events,persistence,compaction}.rs`、`types/{events,meter}.rs` |
 | 会话回归 | `crates/vega_conversation/src/agent/tests/{mod,network_retry,failure_paths}.rs`，凭据 wrapper 回归在 `credential_guard.rs` |
 | UI | `crates/vega_ui/src/conversation_stream/{mod,core,content,network_retry,run_activity,run_notice}.rs` |
@@ -27,7 +27,7 @@
 
 ## 自动回归设计与证据边界
 
-新增 18 个 `issue350_` 测试；既有精确事件序列断言显式适配 transient round-start 事件，保留原有工具、取消和失败断言。下表仅说明已写入代码的覆盖，所有测试结果均待 CI。
+新增 18 个 `issue350_` 测试；既有精确事件序列断言显式适配 transient round-start 事件，保留原有工具、取消和失败断言。下表记录初次提交时的覆盖设计与状态，后续实际云端结果见本文的 PR Check 记录。
 
 | 验收 | 回归与断言 | 执行状态 |
 |---|---|---|
@@ -70,7 +70,7 @@ cargo nextest run --workspace
 cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -E 'test(issue350_)'
 ```
 
-上述 Clippy、nextest 命令本地均未运行；没有本地编译、构建、打包或安装。当前尚无 CI 成功结果，不将格式检查标为类型检查或测试通过。
+上述 Clippy、nextest 命令本地均未运行；没有本地编译、构建、打包或安装。不将格式检查标为类型检查或测试通过；云端结果单独记录如下。
 
 ## 首次 PR Check 与修复
 
@@ -85,6 +85,25 @@ error: could not compile `vega_ui` (lib test) due to 2 previous errors
 修复遵循现有 GPUI 模式：重连行先设置稳定 message 对应的 `.id(...)`，再调用 Stateful 元素提供的 `aria_label`；停止回归监听现有 `ComposerStopRequested`，验证正确 thread、重复停止只发出一次请求和终态清理，移除对私有字段的访问，没有扩大公共 API。
 
 修改前已执行 `git fetch origin` 和 `git merge --ff-only origin/feat/350-network-retry`；后者原始输出为 `Already up to date.`。修复后 `cargo fmt --all -- --check`、`git diff --check` 均 exit 0、stdout/stderr 为空。首次 CI 的失败事实保留，修复尚待下一轮云端验证；本地仍未运行编译或测试。
+
+## 第二轮 PR Check 与修复
+
+[第二轮运行 38412409609](https://github.com/puzige/vega/actions/runs/38412409609) 对应 head `54a0cfb`：Clippy 成功；Nextest 完成全部计划执行项后退出 100，原始摘要为：
+
+```text
+Summary [176.083s] 2496 tests run: 2494 passed, 2 failed, 5 skipped
+FAIL agent::tests::permission_flow::invalid_write_is_atomic_validation_rejection_before_any_proposal
+FAIL openai::tests::network_retry::issue350_responses_eof_and_transport_fault_retry_but_invalid_streams_do_not
+```
+
+18 个本卡 `issue350_` 测试中 17 个通过。三个 GPUI 回归、两个 conversation 持久化回归、凭据 wrapper、双协议 body 断流、五次共享预算、取消、超时及耗尽均通过；5 个 skipped 是既有跳过项，没有新增 skip 或 ignore。上述结果仅属于 `54a0cfb`，不能代替修复后的下一轮门禁。
+
+两项失败的原因与修复：
+
+1. `permission_flow` 原先只过滤诊断事件，新增 transient `AssistantResponseStarted` 占据首项。只把该 transient 事件加入过滤，完整保留“第一条业务事件必须是脱敏后的 Validation 拒绝”及“不得出现 ToolCallProposed”的原安全断言。
+2. 连接故障 fixture 从 `response.bytes().await` 提取错误，再误放到 `send_attempt`。锁定的 reqwest 0.12.24 在 `Decoder::PlainText` 中把 body 读取错误包装成 `Kind::Decode`，而真实连接失败由 client 包装成 `Kind::Request`。生产分类无需放宽。fixture 改用 reqwest 的进程内 `Resolve`，显式 `no_proxy`，在 resolver 内直接返回 IO 错误；先断言 resolver 调用一次、`is_connect()`/`is_request()` 为真且 `is_decode()` 为假，再检查 RetryScheduled、两次请求、完整文本、Done 和无错误。没有真实 DNS 查询、socket 连接或新增依赖；body 断流仍由第二轮已通过的双协议流测试覆盖。
+
+修复前再次执行 `git fetch origin`、`git merge --ff-only origin/feat/350-network-retry`，输出 `Already up to date.`。修复后 `cargo fmt --all -- --check`、`git diff --check` 均 exit 0、stdout/stderr 为空。本地没有执行编译或测试，第三轮完整 PR Check 待运行。
 
 ## 待验证与风险
 

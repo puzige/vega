@@ -321,16 +321,21 @@ async fn issue350_responses_eof_and_transport_fault_retry_but_invalid_streams_do
         assert!(events.last().unwrap().is_err());
     }
 
-    let response: reqwest::Response = ::http::Response::builder()
-        .body(reqwest::Body::wrap_stream(futures::stream::once(async {
-            Err::<Vec<u8>, _>(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                "fixture disconnect",
-            ))
-        })))
+    let resolver = Arc::new(FailingResolver::default());
+    let error = reqwest::Client::builder()
+        .no_proxy()
+        .dns_resolver(resolver.clone())
+        .build()
         .unwrap()
-        .into();
-    let error = Arc::new(Mutex::new(Some(response.bytes().await.unwrap_err())));
+        .get("http://fixture.invalid")
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+    assert!(error.is_connect());
+    assert!(error.is_request());
+    assert!(!error.is_decode());
+    let error = Arc::new(Mutex::new(Some(error)));
     let server = mock_transport(Arc::new(move |index| {
         if index == 0 {
             Err(error.lock().unwrap().take().unwrap())
@@ -354,7 +359,36 @@ async fn issue350_responses_eof_and_transport_fault_retry_but_invalid_streams_do
             .iter()
             .any(|event| matches!(event, Ok(ProviderEvent::RetryScheduled { attempt: 1, .. })))
     );
+    assert!(events.iter().all(Result::is_ok));
+    assert!(
+        events.iter().any(
+            |event| matches!(event, Ok(ProviderEvent::TextDelta(text)) if text == "connected")
+        )
+    );
+    assert!(matches!(
+        events.last(),
+        Some(Ok(ProviderEvent::Done { .. }))
+    ));
     assert_eq!(server.attempt_count(), 2);
+}
+
+#[derive(Default)]
+struct FailingResolver {
+    calls: AtomicUsize,
+}
+
+impl reqwest::dns::Resolve for FailingResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        assert_eq!(name.as_str(), "fixture.invalid");
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "fixture DNS unavailable",
+            )
+            .into())
+        })
+    }
 }
 
 #[tokio::test(start_paused = true)]
