@@ -520,7 +520,7 @@ async fn issue296_visual_v05_two_stages_final_reopens_source_order(cx: &mut Test
 }
 
 #[gpui_kit::test]
-async fn issue296_visual_v08_markers_follow_body_axis_and_stay_inside_narrow_window(
+async fn issue296_visual_v08_markers_stay_at_pane_edge_inside_narrow_window(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "visual-markers");
@@ -539,9 +539,8 @@ async fn issue296_visual_v08_markers_follow_body_axis_and_stay_inside_narrow_win
     for width in [1400., 480.] {
         visual.simulate_resize(gpui_kit::size(px(width), px(800.)));
         visual.run_until_parked();
-        let column = visual.debug_bounds("conversation-column").unwrap();
         let rail = visual.debug_bounds("message-anchor-rail").unwrap();
-        assert_eq!(rail.center().x, (column.left() - px(54.)).max(px(16.)));
+        assert_eq!(rail.center().x, px(16.));
         assert_eq!(rail.size.height, px(90.));
         let mut ticks = visual.update(|window, cx| {
             window

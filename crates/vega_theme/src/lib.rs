@@ -368,7 +368,6 @@ impl Layout {
     pub const CONVERSATION_TOOL_HEIGHT: f32 = 25.0;
     pub const CONVERSATION_MARKER_WIDTH: f32 = 6.0;
     pub const CONVERSATION_MARKER_PITCH: f32 = 10.0;
-    pub const CONVERSATION_MARKER_OFFSET: f32 = 54.0;
     pub const CONVERSATION_CHEVRON_SIZE: f32 = 12.0;
     pub const CONVERSATION_INLINE_GAP: f32 = 6.0;
     pub const CONVERSATION_USER_RATIO: f32 = 0.7;
