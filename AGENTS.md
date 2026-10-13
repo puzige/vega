@@ -1,5 +1,14 @@
 # AGENTS.md — Vega 仓库协作准则
 
+## Vega 本地验证限制（2026-10-13 用户裁决）
+
+**仅适用于 Vega 项目，包括它的所有 worktree、主 agent 和子 agent；不限制 Loom 自身或其他项目。**
+
+- **禁止本地编译、构建和打包；本地只允许低 CPU、能快速完成的 check。** 多任务并发编译会打满 CPU、造成机器卡顿。
+- 完整编译、全量检查，以及会触发耗时编译的定向测试，交给云端 PR Check / CI；打包使用云端发布流程。
+- `cargo check`、Clippy、定向 test / nextest 不因命令名或范围小就自动豁免：若会冷编译、大量重编译或持续高负载，不在本地运行。可做快速的差异、格式和静态检查；一旦发现检查变成耗时构建，停止本任务启动的检查并移交 CI。
+- 本规则优先于旧文档、技能、任务规格中要求本地编译或先跑定向测试的条款。保留测试覆盖与断言，改由 PR Check 执行；报告清楚区分本地已执行和待 CI 验证，不把未运行项标为通过。
+
 Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 **2026-09-25 用户更新（Issue #149）**：按 [移除真实 E2E 规格](docs/vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
@@ -19,7 +28,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 1. **不在 `master` 上直接做功能开发**——用 feature 分支（`feat/<task-id>-<slug>`，如 `feat/t01-scaffold`）。
 2. **动手前先 `git fetch && git rebase origin/master`**。
 3. **任务来源**：默认从 [GitHub Project](https://github.com/users/puzige/projects/2/views/1?system_template=kanban) 的 Ready 卡取任务，用户指定任务优先；关联 `docs/vega-s*-tasks.md` 等规格。一张卡 = 一个 PR。卡外工作先问。取卡、实现与交付必须使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
-4. **交付节奏（2026-09-23 用户裁决）**：接卡立即置 `In progress` → 需求分析/测试用例/实现计划 → 实现（**只跑本卡功能点测试，不跑本地全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写上下文、关闭 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress` 修复。**未收到用户手测结论前不得关闭或清理。**
+4. **交付节奏（2026-09-23 用户裁决）**：接卡立即置 `In progress` → 需求分析/测试用例/实现计划 → 实现（**本地仅做快速 check；本卡功能点测试交给云端 PR Check**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写上下文、关闭 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress` 修复。**未收到用户手测结论前不得关闭或清理。**
 5. **主 agent 角色**：协调、集成、开 PR 与合并；**代码实现委托给专用 subagent**，主上下文不被实现细节污染。
 6. **遇阻**：按 exec-guide §6 用 `[BLOCKED]` 格式上报，禁止自创方案绕过。
 7. **真实验收由用户手测**：真实模型/服务/UI 路径的验收由用户在合并后的 master 上手动完成；Agent 不再以自产全量 E2E/截图作为合并前门禁。本卡自动测试覆盖进程内业务行为，真实外部集成由用户手测；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
@@ -34,7 +43,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 - 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 [vega-features.md](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
-- PR 必须附：本卡功能点测试命令与原始输出 + 与 spec 的偏离说明（必须为无）；**不附本地全量测试**（全量门禁由云端 `pr-check` 承担）
+- PR 必须附：本卡功能点测试命令与云端原始输出（运行前标记待 CI 验证） + 与 spec 的偏离说明（必须为无）；**不附本地全量测试**（全量门禁由云端 `pr-check` 承担）
 - 合并方式：squash merge，合并后删除功能分支（2026-08-29 决策）
 - **合并由 Agent 主动完成**：云端 `check` 绿后由 Agent 合并 master，合并完成后才把卡片改为 `In review` 等待用户手测（2026-09-23 用户裁决）
 
@@ -47,9 +56,9 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - `.github/workflows/cicd.yml`（GitHub Actions 名称 `master`）：push 到 master（PR merge 后）直接调用 `release.yml` 共用发布流程，固定事件 SHA 自动分配 patch 版本、打包并发布 Release；与 PR check 使用相同 `shared-key: vega-master-build`，仅自动 master 发布写缓存。rust-cache 的实际缓存还依赖 runner 平台、工具链和 Cargo 输入，因此只有兼容的缓存条目会命中。
 - 2026-09-25 用户裁决（Issue #181）：每次合入 master 自动 patch 发布；保留人工 stable tag 与手动重跑，共用发布串行队列 `queue: max`，不取消正在运行的发布。先 draft，资产完整才 publish；同 SHA 幂等、正式资产不可覆盖，拒绝逆序发布。见 [发版指南](docs/vega-release.md)。
 - 历史 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md) 与 [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
-- 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
-- `.config/nextest.toml` 用于 PR gate 和本地定向 nextest 测试：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
-- **本地只跑本卡功能点测试，不跑 workspace 全量**（2026-09-23 用户裁决）：`cargo nextest run -p <crate> <filter>` 等定向命令，确保本卡自己新增/修改的测试通过；全量 fmt/clippy/workspace 测试交给云端 `pr-check`。任务级 production-root 回归与测试矩阵仍须覆盖，只是不再在本地重复全量门禁。保留既有安全断言、失败输出及任务验收矩阵；除 #149 明确授权删除的真实 E2E 外，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
+- 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。调度器的移除不代表允许本地编译；本地验证遵守顶部的快速 check 限制。
+- `.config/nextest.toml` 用于云端 PR gate：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
+- **本地仅做快速 check，功能点测试与全量门禁交给云端 `pr-check`**（2026-10-13 用户裁决，取代 2026-09-23 的本地定向测试要求）。任务级 production-root 回归与测试矩阵仍须覆盖；保留既有安全断言、失败输出及任务验收矩阵，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
 
 ## 应用安装入口（2026-09-25 用户更新约定）
 
@@ -293,7 +302,7 @@ R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-hei
 
 ## 行为技能
 
-- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：看板取卡到关闭的工程交付流程；测试用例先行、本地只跑本卡功能点测试、开 PR 与云端 check、Agent 合并 master、用户手测后收尾的统一完成标准。
+- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：看板取卡到关闭的工程交付流程；测试用例先行、本地仅快速 check、功能点测试交给 PR Check、Agent 合并 master、用户手测后收尾的统一完成标准。
 
 - [karpathy-guidelines](.agents/skills/karpathy-guidelines/SKILL.md)：写/审/重构代码时的
   行为准则（最小改动、表面化假设、可验证成功判据）。**冲突时以本文件与 exec-guide 为准**，

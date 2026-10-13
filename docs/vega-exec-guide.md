@@ -1,5 +1,14 @@
 # ✦ Vega — 执行层开发总纲（Executor's Constitution）
 
+## Vega 本地验证限制（2026-10-13 用户裁决）
+
+**仅适用于 Vega 项目，包括它的所有 worktree、主 agent 和子 agent；不限制 Loom 自身或其他项目。**
+
+- **禁止本地编译、构建和打包；本地只允许低 CPU、能快速完成的 check。** 多任务并发编译会打满 CPU、造成机器卡顿。
+- 完整编译、全量检查，以及会触发耗时编译的定向测试，交给云端 PR Check / CI；打包使用云端发布流程。
+- `cargo check`、Clippy、定向 test / nextest 不因命令名或范围小就自动豁免：若会冷编译、大量重编译或持续高负载，不在本地运行。可做快速的差异、格式和静态检查；一旦发现检查变成耗时构建，停止本任务启动的检查并移交 CI。
+- 本规则优先于旧文档、技能、任务规格中要求本地编译或先跑定向测试的条款。保留测试覆盖与断言，改由 PR Check 执行；报告清楚区分本地已执行和待 CI 验证，不把未运行项标为通过。
+
 **2026-09-25 用户更新（Issue #149）**：按 [移除真实 E2E 规格](vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
 
 > **2026-09-22 Issue #140 用户更新：** [Git/Shell 测试依赖隔离](vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 允许通过内部执行边界替身迁移业务分支测试，保留真实策略与安全断言，另用真实适配层集成测试验证 OS/Git 契约。该范围优先于 §7 的旧 E2E-first 限制；mockall 获批准用于本卡 dev-only 依赖（若需要），证据必须准确标注 mock/real。
@@ -31,7 +40,7 @@
 
 1. 读任务卡 → 读它引用的 spec 章节 → 读它列出的参考文件
 2. 复述任务：用 3 句话说明要做什么、验收命令是什么（防止读错题）
-3. 实现 → **只跑本卡功能点测试**（不跑本地全量）→ 提交并开 PR
+3. 实现 → **本地仅做快速 check** → 提交并开 PR，由云端执行本卡功能点测试
 4. 等云端 `pr-check` 通过 → 主动合并 master → 卡片改 `In review` → **停下等用户手测**
 5. 用户手测通过 → 回写上下文 → 关闭 Issue/Done → 清理本卡分支/worktree；不通过 → 退回 `In progress` 修复后重开 PR
 6. 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 vega-features.md）
@@ -69,7 +78,7 @@
 |---|---|
 | Rust edition | 2024，stable 工具链（rust-toolchain.toml 锁定） |
 | 格式化 | `cargo fmt --all`（CI 强制） |
-| Lint | 统一验证入口选择受影响包的 `clippy --all-targets -- -D warnings`，零警告 |
+| Lint | 云端 PR Check 执行 `clippy --all-targets -- -D warnings`，零警告 |
 | 异步 | tokio；取消一律 `CancellationToken`（禁 abort） |
 | 错误 | 统一 `VegaError`（tech-spec §7）；`thiserror` 定义，跨线程 `Send + Sync` |
 | 日志 | `tracing`；禁 `println!`；敏感信息（key/文件内容）禁入日志 |
@@ -103,9 +112,9 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ## 7. 验收协议（每个任务卡通用）
 
-**PR gate 拓扑（2026-09-24 用户裁决，[Issue #175](vega-issue-175-single-pr-check.md)；缓存和 workflow 命名由 [Issue #179](vega-issue-179-shared-pr-cicd-cache.md) 更新，测试运行器按 2026-09-25 [Issue #183](vega-issue-183-nextest-ci.md) 更新，并行结构按 [Issue #188](vega-issue-188-parallel-ci-checks.md) 更新）**：门禁全部在云端。`.github/workflows/pr-check.yml` 仅响应 base 为 `master` 的 PR，并以两个无相互依赖的 `macos-latest` job 并行执行：Clippy job 依次运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；Nextest job 运行 `cargo nextest run --workspace`。required check `check (fmt, clippy, test)` 是依赖两者的轻量汇总 job，以 `always()` 运行，仅两个结果均为 `success` 才通过，失败、取消和跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。失败直接阻断合并，不自动重试。该 workflow 保留 Rust 1.98.0、`contents: read`、执行 job 的 60 分钟超时和并发取消；两个执行 job 使用 `Swatinem/rust-cache@v2` 恢复 master CICD 写入的 `vega-master-build` 缓存，PR 的 `save-if` 条件为 false，因此 PR 不保存缓存；不使用归档、分片、额外 build 或手动 dispatch。`.github/workflows/cicd.yml` 的 GitHub Actions 名称为 `master`，仅在 push 到 master 时打包并上传 artifact；它和 PR check 使用相同 `shared-key: vega-master-build` 及 `save-if: ${{ github.ref == 'refs/heads/master' }}`，master 是唯一写入方。rust-cache 还会按 runner 平台、工具链及 Cargo 输入派生实际缓存键。旧的 [Issue #123](vega-issue-123-pr-check-pipeline.md) / [Issue #140](vega-issue-140-ci-test-throughput.md) 流水线描述只记录历史决策；CI 和本地定向 nextest 共用 `.config/nextest.toml` 默认 profile：`retries=0`、`fail-fast=false`、600 秒挂起保护，不覆盖默认并发。
-- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地**不跑 workspace 全量测试**，只运行本卡新增/修改的功能点测试；不重复跑相同门禁制造独立验收的表象。本地 commit/push 不做强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。
-- **验收节奏（2026-09-23 用户裁决）**：实现完成 → 只跑本卡功能点测试 → 开 PR → 云端 `pr-check` 绿 → Agent 主动合并 master → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写、关 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress`。**真实验收（真实模型/服务/UI 路径）由用户在 master 上手动完成**，Agent 不再以自产全量 E2E/截图作为合并前门禁。
+**PR gate 拓扑（2026-09-24 用户裁决，[Issue #175](vega-issue-175-single-pr-check.md)；缓存和 workflow 命名由 [Issue #179](vega-issue-179-shared-pr-cicd-cache.md) 更新，测试运行器按 2026-09-25 [Issue #183](vega-issue-183-nextest-ci.md) 更新，并行结构按 [Issue #188](vega-issue-188-parallel-ci-checks.md) 更新）**：门禁全部在云端。`.github/workflows/pr-check.yml` 仅响应 base 为 `master` 的 PR，并以两个无相互依赖的 `macos-latest` job 并行执行：Clippy job 依次运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；Nextest job 运行 `cargo nextest run --workspace`。required check `check (fmt, clippy, test)` 是依赖两者的轻量汇总 job，以 `always()` 运行，仅两个结果均为 `success` 才通过，失败、取消和跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。失败直接阻断合并，不自动重试。该 workflow 保留 Rust 1.98.0、`contents: read`、执行 job 的 60 分钟超时和并发取消；两个执行 job 使用 `Swatinem/rust-cache@v2` 恢复 master CICD 写入的 `vega-master-build` 缓存，PR 的 `save-if` 条件为 false，因此 PR 不保存缓存；不使用归档、分片、额外 build 或手动 dispatch。`.github/workflows/cicd.yml` 的 GitHub Actions 名称为 `master`，仅在 push 到 master 时打包并上传 artifact；它和 PR check 使用相同 `shared-key: vega-master-build` 及 `save-if: ${{ github.ref == 'refs/heads/master' }}`，master 是唯一写入方。rust-cache 还会按 runner 平台、工具链及 Cargo 输入派生实际缓存键。旧的 [Issue #123](vega-issue-123-pr-check-pipeline.md) / [Issue #140](vega-issue-140-ci-test-throughput.md) 流水线描述只记录历史决策；云端 nextest 使用 `.config/nextest.toml` 默认 profile：`retries=0`、`fail-fast=false`、600 秒挂起保护，不覆盖默认并发。
+- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地**仅做快速 check**，本卡新增/修改的功能点测试及 workspace 全量测试交给云端；不重复跑相同门禁制造独立验收的表象。本地 commit/push 不做强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。
+- **验收节奏（2026-09-23 用户裁决）**：实现完成 → 本地仅做快速 check → 开 PR（功能点测试交给云端） → 云端 `pr-check` 绿 → Agent 主动合并 master → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写、关 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress`。**真实验收（真实模型/服务/UI 路径）由用户在 master 上手动完成**，Agent 不再以自产全量 E2E/截图作为合并前门禁。
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
 - **报告**：贴验收命令原始输出，不许概述"通过了"
