@@ -29,6 +29,7 @@ impl RunNotice {
     pub(crate) fn render(&self, colors: &ThemeColors) -> AnyElement {
         if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
             return gpui_kit::div()
+                .id(format!("assistant-network-retry-{}", self.message_id))
                 .debug_selector(|| "assistant-network-retry".into())
                 .w_full()
                 .min_w_0()

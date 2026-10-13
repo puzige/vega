@@ -52,6 +52,14 @@ async fn issue350_retry_replaces_partial_text_and_thinking_and_keeps_stop_availa
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "retry-ui");
+    let stops = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_stops = stops.clone();
+    cx.update(|cx| {
+        cx.subscribe(&stream, move |_, event: &ComposerStopRequested, _| {
+            captured_stops.lock().unwrap().push(event.thread_id.clone());
+        })
+        .detach();
+    });
     stream.update(cx, |stream, cx| {
         start(stream, cx);
         stream.apply_event(
@@ -131,7 +139,8 @@ async fn issue350_retry_replaces_partial_text_and_thinking_and_keeps_stop_availa
         assert!(stream.run_notice_projection(cx).is_empty());
         retry(stream, 0, 3, cx);
         stream.request_composer_stop(cx);
-        assert!(stream.actions.stopping);
+        stream.request_composer_stop(cx);
+        assert!(stream.actions.running);
         stream.apply_event(
             ConversationEvent::Interrupted {
                 message_id: "retry".into(),
@@ -144,6 +153,8 @@ async fn issue350_retry_replaces_partial_text_and_thinking_and_keeps_stop_availa
         assert!(!stream.has_active_agent());
         assert!(stream.finish_composer_run(true, cx));
     });
+    visual.run_until_parked();
+    assert_eq!(stops.lock().unwrap().as_slice(), &["retry-ui"]);
 }
 
 #[gpui_kit::test]

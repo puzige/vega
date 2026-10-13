@@ -1,6 +1,6 @@
 # Issue #350 网络中断自动重试交付记录
 
-日期：2026-10-13。规格：[网络中断自动重试](vega-issue-350-network-retry.md)。本记录对应提交前实现和静态检查；云端 PR Check、真实网络与原生界面手测均未执行，不代表功能已验收。
+日期：2026-10-13。规格：[网络中断自动重试](vega-issue-350-network-retry.md)。本记录包含实现、静态检查和首次云端编译失败后的修复；PR Check 尚未通过，真实网络与原生界面手测未执行，不代表功能已验收。
 
 ## 实现
 
@@ -71,6 +71,20 @@ cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -E 'test(issue
 ```
 
 上述 Clippy、nextest 命令本地均未运行；没有本地编译、构建、打包或安装。当前尚无 CI 成功结果，不将格式检查标为类型检查或测试通过。
+
+## 首次 PR Check 与修复
+
+[PR #353](https://github.com/puzige/vega/pull/353) 的 [首次 Clippy job](https://github.com/puzige/vega/actions/runs/38411505295/job/115344747588) 在编译阶段退出 101：
+
+```text
+error[E0599]: no method named `aria_label` found for struct `gpui_kit::Div` in the current scope
+error[E0616]: field `stopping` of struct `conversation_stream::composer_actions::ComposerActions` is private
+error: could not compile `vega_ui` (lib test) due to 2 previous errors
+```
+
+修复遵循现有 GPUI 模式：重连行先设置稳定 message 对应的 `.id(...)`，再调用 Stateful 元素提供的 `aria_label`；停止回归监听现有 `ComposerStopRequested`，验证正确 thread、重复停止只发出一次请求和终态清理，移除对私有字段的访问，没有扩大公共 API。
+
+修改前已执行 `git fetch origin` 和 `git merge --ff-only origin/feat/350-network-retry`；后者原始输出为 `Already up to date.`。修复后 `cargo fmt --all -- --check`、`git diff --check` 均 exit 0、stdout/stderr 为空。首次 CI 的失败事实保留，修复尚待下一轮云端验证；本地仍未运行编译或测试。
 
 ## 待验证与风险
 
