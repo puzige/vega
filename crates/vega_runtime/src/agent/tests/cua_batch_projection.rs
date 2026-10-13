@@ -1,3 +1,4 @@
+mod resume_refresh;
 mod text_delivery;
 
 use super::*;
@@ -682,12 +683,15 @@ async fn issue75_batch_projection_pause_within_batch_keeps_ack_and_discards_old_
             .content
             .contains("observation_id:")
     );
+    assert_eq!(
+        result(&requests[2], "b").content,
+        crate::computer_use::SUPERSEDED_CONTROL_OUTPUT
+    );
     assert!(
-        result(&requests[2], "b")
-            .content
-            .contains("control_unavailable"),
-        "{}",
-        result(&requests[2], "b").content
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event,RuntimeEvent::ToolCallProposed(call) if call.id=="b"))
     );
     assert_provider_contract(&requests[2]);
 }

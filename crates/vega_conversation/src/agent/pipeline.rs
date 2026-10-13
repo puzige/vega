@@ -977,6 +977,19 @@ pub(crate) fn validate_recovered_projection(
         return Ok(input_json.to_string());
     }
     if vega_runtime::computer_use::ComputerUseRun::tool_capability(tool).is_some() {
+        let superseded = output.len() <= 2048
+            && serde_json::from_str::<serde_json::Value>(output)
+                .ok()
+                .is_some_and(|value| value["status"] == "superseded");
+        if superseded
+            && (output != vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT
+                || status != RuntimeToolStatus::Cancelled
+                || approval.decision != Approval::Once
+                || approval.source != ApprovalSource::ComputerUse
+                || approval.note.is_some())
+        {
+            return Err(corrupt());
+        }
         if !vega_runtime::computer_use::ComputerUseAudit::valid(input_json)
             || output.len() > 2048
             || exit_code.is_some()

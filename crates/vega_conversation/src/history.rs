@@ -750,7 +750,17 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         input_json: call.input_json.clone(),
     };
     let input = tool_card_input_projection(&proposal);
+    let invalid_superseded_claim = matches!(input, ToolCardInputProjection::ComputerUse { .. })
+        && call.output_text.as_deref()
+            == Some(vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT)
+        && !approval_audit.as_ref().is_some_and(|audit| {
+            audit.decision == Approval::Once
+                && audit.source == ApprovalSource::ComputerUse
+                && audit.note.is_none()
+                && audit.danger.is_none()
+        });
     let (input, result) = if invalid_bash_claim
+        || invalid_superseded_claim
         || matches!(input, ToolCardInputProjection::Corrupt)
         || matches!(
             status,
@@ -1058,5 +1068,55 @@ mod issue146_tests {
                 ..
             }] if content.is_empty()
         ));
+    }
+}
+
+#[cfg(test)]
+mod issue75_resume_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn issue75_resume_refresh_history_requires_complete_approval_audit() {
+        let receipt = vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT;
+        let approved = serde_json::json!({"decision":"once","source":"computer_use","note":null,"danger":null});
+        let row = |approval: serde_json::Value| {
+            PageToolCall {
+            id: "superseded".into(),
+            message_id: "assistant".into(),
+            seq: 1,
+            text_offset_bytes: None,
+            tool: "ComputerScreenshot".into(),
+            input_json: serde_json::json!({"kind":"computer_use","version":1,"action":"screenshot","argument_bytes":2,"argument_digest":"a".repeat(64)}).to_string(),
+            output_text: Some(receipt.into()),
+            status: "cancelled".into(),
+            approval: Some(approval.to_string()),
+            exit_code: None,
+            duration_ms: None,
+        }
+        };
+        assert!(matches!(tool_entry(&row(approved.clone())),
+            HistoryEntry::Tool { status: ToolCallStatus::Cancelled,
+                approval: Some(Approval::Once),
+                result: Some(ToolCardResultProjection::ComputerUse { output, .. }), ..
+            } if output == receipt
+        ));
+        for field in ["source", "note", "danger", "decision"] {
+            let mut invalid = approved.clone();
+            invalid[field] = match field {
+                "source" => serde_json::json!("user"),
+                "note" => serde_json::json!("unrelated approval"),
+                "danger" => {
+                    serde_json::json!({"rule_id":"unrelated","decision":"once","note":null})
+                }
+                _ => serde_json::json!("deny"),
+            };
+            assert!(matches!(
+                tool_entry(&row(invalid)),
+                HistoryEntry::Tool {
+                    result: Some(ToolCardResultProjection::Corrupt),
+                    ..
+                }
+            ));
+        }
     }
 }

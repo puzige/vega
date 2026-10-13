@@ -29,6 +29,12 @@ pub(super) struct DesktopFixture {
     pub actions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub calls: Vec<(String, Value)>,
     pub permissions: std::collections::VecDeque<Value>,
+    #[cfg(test)]
+    pub permission_gate: Option<(
+        usize,
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    )>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -45,6 +51,11 @@ impl DesktopFixture {
             is_error: false,
         }
     }
+}
+
+struct Dispatch<'a> {
+    cancel: &'a CancellationToken,
+    started: bool,
 }
 
 enum CaptureMode {
@@ -204,6 +215,23 @@ impl Backends {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(fixture) = &mut self.fixture {
             if name == "check_permissions" {
+                #[cfg(test)]
+                {
+                    let gate = fixture.permission_gate.as_mut().and_then(
+                        |(remaining, entered, release)| {
+                            *remaining = remaining.saturating_sub(1);
+                            (*remaining == 0).then(|| (entered.clone(), release.clone()))
+                        },
+                    );
+                    if let Some((entered, release)) = gate {
+                        fixture.permission_gate = None;
+                        entered.notify_one();
+                        tokio::select! { biased;
+                            _ = cancel.cancelled() => return Err(vega_mcp::McpError::Cancelled),
+                            _ = release.notified() => {}
+                        }
+                    }
+                }
                 return Ok(fixture.permissions_result());
             }
             fixture.calls.push((name.into(), args.clone()));
@@ -228,17 +256,31 @@ impl Backends {
     pub(super) async fn execute(
         &mut self,
         run: &ComputerUseRun,
+        epoch: u64,
         name: &str,
         call_id: &str,
         arguments: Value,
         root_cancel: &CancellationToken,
     ) -> Result<String, Error> {
-        let epoch = run.control.snapshot().epoch;
-        let token = run.control.action_token(epoch)?;
+        run.check_request_epoch(epoch, root_cancel)?;
+        let token = match run.control.action_token(epoch) {
+            Ok(token) => token,
+            Err(error) => {
+                run.check_request_epoch(epoch, root_cancel)?;
+                return Err(error);
+            }
+        };
+        let mut dispatch = Dispatch {
+            cancel: &token,
+            started: false,
+        };
         let result = tokio::select! { biased;
             _ = root_cancel.cancelled() => { run.control.stop(); Err(Error::Cancelled) },
-            result = self.execute_inner(run,epoch,name,call_id,arguments,&token) => result,
+            result = self.execute_inner(run,epoch,name,call_id,arguments,&mut dispatch) => result,
         };
+        if !dispatch.started && matches!(result, Err(Error::Cancelled | Error::NotReady)) {
+            run.check_request_epoch(epoch, root_cancel)?;
+        }
         result
     }
 
@@ -249,8 +291,9 @@ impl Backends {
         name: &str,
         call_id: &str,
         arguments: Value,
-        cancel: &CancellationToken,
+        dispatch: &mut Dispatch<'_>,
     ) -> Result<String, Error> {
+        let cancel = dispatch.cancel;
         let capability = ComputerUseRun::tool_capability(name).ok_or(Error::InvalidAction)?;
         self.ensure_connected(run, capability, epoch, cancel)
             .await?;
@@ -269,6 +312,7 @@ impl Backends {
             }
             run.control.check_epoch(epoch)?;
             run.consume_observations();
+            dispatch.started = true;
             let dispatched = match capability {
                 Capability::Desktop => self.desktop_call(tool, mapped, cancel).await,
                 Capability::Browser => {
@@ -314,7 +358,7 @@ impl Backends {
                     epoch,
                     call_id,
                     CaptureMode::Observe { include_image },
-                    cancel,
+                    dispatch,
                 )
                 .await
             {
@@ -350,6 +394,7 @@ impl Backends {
                             }
                         })?;
                 } else {
+                    dispatch.started = true;
                     let id = self
                         .discover_desktop(run, epoch, call_id, cursor, cancel)
                         .await?;
@@ -383,7 +428,7 @@ impl Backends {
                     } else {
                         CaptureMode::Observe { include_image }
                     },
-                    cancel,
+                    dispatch,
                 )
                 .await?;
             if screenshot {
@@ -643,8 +688,9 @@ impl Backends {
         epoch: u64,
         call_id: &str,
         mode: CaptureMode,
-        cancel: &CancellationToken,
+        dispatch: &mut Dispatch<'_>,
     ) -> Result<String, Error> {
+        let cancel = dispatch.cancel;
         let (include_image, screenshot_only) = match mode {
             CaptureMode::Observe { include_image } => (include_image, false),
             CaptureMode::Screenshot => (true, true),
@@ -674,6 +720,7 @@ impl Backends {
         match target {
             Target::DesktopCatalog => return Err(Error::NotReady),
             Target::Desktop(target) => {
+                dispatch.started = true;
                 let result = self.desktop_call("get_window_state",json!({"pid":target.pid,"window_id":target.window_id,"include_screenshot":true,"include_accessibility_tree":!screenshot_only,"max_elements":200,"max_depth":12,"max_dimension":1600}),cancel).await.map_err(|error| diagnostics::transport(Capability::Desktop, Stage::Observe, error))?;
                 super::desktop_observation::apply(&mut observation, &target, result)?;
                 if screenshot_only {
@@ -685,6 +732,7 @@ impl Backends {
             }
             Target::Browser { .. } => {
                 let browser = self.browser.as_mut().ok_or(Error::NotReady)?;
+                dispatch.started = true;
                 let snapshot = checked(
                     Capability::Browser,
                     Stage::Observe,
@@ -2319,7 +2367,9 @@ mod tests {
                     "{args}"
                 );
                 let cancel = CancellationToken::new();
-                run.authorize("ComputerAct", &args, &cancel).await.unwrap();
+                run.authorize("ComputerAct", &args, run.control.status().epoch, &cancel)
+                    .await
+                    .unwrap();
                 assert_eq!(
                     run.execute("ComputerAct", "revoked", args.clone(), &cancel)
                         .await,
@@ -2423,9 +2473,14 @@ mod tests {
             .await
             .unwrap();
             let args = json!({"target_id":"fixture"});
-            run.authorize("ComputerScreenshot", &args, &cancel)
-                .await
-                .unwrap();
+            run.authorize(
+                "ComputerScreenshot",
+                &args,
+                run.control.status().epoch,
+                &cancel,
+            )
+            .await
+            .unwrap();
             if stop {
                 cancel.cancel();
             } else {

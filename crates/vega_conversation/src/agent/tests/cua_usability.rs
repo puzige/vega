@@ -695,3 +695,328 @@ async fn issue75_delivery_progress_batched_reuse_preserves_private_model_inputs_
     assert_eq!(images[0], ("shot-a-1", &image));
     assert_eq!(images[1], ("shot-b-1", &image));
 }
+
+#[tokio::test]
+async fn issue75_resume_refresh_approved_superseded_call_persists_and_reloads_neutrally() {
+    for boundary in ["proposed", "approved", "running"] {
+        let (store, dir, _) = setup();
+        let run = vega_runtime::computer_use::ComputerUseRun::new(true, false);
+        test_support::install_desktop(
+            &run,
+            vec![vega_runtime::computer_use::DesktopTarget {
+                selection_id: "private-target".into(),
+                application: "Fixture".into(),
+                bundle_id: "test.fixture".into(),
+                pid: 1,
+                window_id: 2,
+                title: "Owned".into(),
+            }],
+            Vec::new(),
+            vec![serde_json::json!({"accessibility":true,"screen_recording":true})],
+        )
+        .await;
+        let call = |id: &str, name: &str, args: &str| {
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: id.into(),
+                    name: name.into(),
+                    input_json: args.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])]
+        };
+        let provider = MockProvider::new_rounds(vec![
+            call(
+                "directory",
+                "ComputerObserve",
+                r#"{"target_id":null,"cursor":null}"#,
+            ),
+            call(
+                "superseded",
+                "ComputerScreenshot",
+                r#"{"target_id":"private-target"}"#,
+            ),
+            vec![
+                ScriptStep::text("The pending capture was withdrawn after takeover."),
+                ScriptStep::events(vec![ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                }]),
+            ],
+        ]);
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let control = run.control.clone();
+        run_thread_task_with_images_and_reasoning(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            "Capture the owned fixture",
+            "",
+            CancellationToken::new(),
+            &RejectPermissionHook,
+            move |event| {
+                let pause = match &event {
+                    ConversationEvent::ToolCallProposed { call } => {
+                        boundary == "proposed" && call.id == "superseded"
+                    }
+                    ConversationEvent::ToolCallApproved { call_id, .. } => {
+                        boundary == "approved" && call_id == "superseded"
+                    }
+                    ConversationEvent::ToolCallRunning { call_id } => {
+                        boundary == "running" && call_id == "superseded"
+                    }
+                    _ => false,
+                };
+                if pause {
+                    control.pause();
+                    test_support::finish_cleanup(&control);
+                    control.resume(control.status().epoch).unwrap();
+                }
+                Ok(())
+            },
+            PersistenceActorConfig {
+                computer_use: Some(run.clone()),
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert!(test_support::desktop_calls(&run).await.is_empty());
+        let state = vega_store::tool_calls::find_state(store.conn(), "superseded")
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.status, "cancelled");
+        assert!(!state.input_json.contains("private-target"));
+        assert_eq!(
+            store
+                .conn()
+                .query_row(
+                    "SELECT output_text FROM tool_calls WHERE id='superseded'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT
+        );
+        assert_eq!(store.conn().query_row("SELECT status FROM messages WHERE id=(SELECT message_id FROM tool_calls WHERE id='superseded')",[],|row|row.get::<_,String>(0)).unwrap(),"done");
+        assert_eq!(
+            store
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM computer_screenshot_artifacts",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 3);
+        let result = requests[2]
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("superseded"))
+            .unwrap();
+        assert_eq!(
+            result.content,
+            vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT
+        );
+        assert!(result.images.is_empty());
+        let path = dir.path().join("vega.db");
+        drop(store);
+        let store = Store::open(path).unwrap();
+        store.migrate().unwrap();
+        let page = crate::history::latest_history_page(&store, "thread-1", 50).unwrap();
+        assert!(page.entries.iter().any(
+            |entry| matches!(entry,crate::history::HistoryEntry::Tool {
+        call_id,status:ToolCallStatus::Cancelled,approval:Some(crate::types::Approval::Once),
+        result:Some(crate::types::ToolCardResultProjection::ComputerUse {output,..}),..
+    } if call_id=="superseded" && output==vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT)
+        ));
+    }
+}
+
+#[test]
+fn issue75_resume_refresh_receipt_requires_exact_cancelled_cua_approval() {
+    use crate::types::{
+        Approval, ApprovalAudit, ApprovalSource, ToolCall, ToolCardResultProjection, ToolResult,
+        tool_card_input_projection, tool_card_result_projection,
+    };
+    let input=serde_json::json!({"kind":"computer_use","version":1,"action":"screenshot","argument_bytes":2,"argument_digest":"a".repeat(64)}).to_string();
+    let approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ComputerUse,
+        danger: None,
+    };
+    let receipt = vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT;
+    let call = ToolCall {
+        id: "capture".into(),
+        tool: "ComputerScreenshot".into(),
+        input_json: input.clone(),
+    };
+    let projected = tool_card_input_projection(&call);
+    for (status, output, valid) in [
+        (RuntimeToolStatus::Cancelled, receipt.to_owned(), true),
+        (RuntimeToolStatus::Success, receipt.to_owned(), false),
+        (RuntimeToolStatus::Failed, receipt.to_owned(), false),
+        (RuntimeToolStatus::Rejected, receipt.to_owned(), false),
+        (
+            RuntimeToolStatus::Cancelled,
+            receipt.replace("\"executed\":false", "\"executed\":true"),
+            false,
+        ),
+        (
+            RuntimeToolStatus::Cancelled,
+            receipt.replace("\"preserved\"", "\"deleted\""),
+            false,
+        ),
+    ] {
+        assert_eq!(
+            super::super::pipeline::validate_recovered_projection(
+                "p",
+                "t",
+                "capture",
+                "ComputerScreenshot",
+                &input,
+                &output,
+                status,
+                &approval,
+                None,
+                None
+            )
+            .is_ok(),
+            valid
+        );
+        let ui_status = match status {
+            RuntimeToolStatus::Cancelled => ToolCallStatus::Cancelled,
+            RuntimeToolStatus::Success => ToolCallStatus::Success,
+            RuntimeToolStatus::Failed => ToolCallStatus::Failed,
+            RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
+        };
+        let result = ToolResult {
+            status: ui_status,
+            output,
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: (status == RuntimeToolStatus::Success).then_some(false),
+            invalid: None,
+        };
+        assert_eq!(
+            !matches!(
+                tool_card_result_projection(Some(&projected), &result),
+                ToolCardResultProjection::Corrupt
+            ),
+            valid
+        );
+    }
+    for invalid in [
+        ApprovalAudit {
+            source: ApprovalSource::User,
+            ..approval.clone()
+        },
+        ApprovalAudit {
+            note: Some("not part of the receipt".into()),
+            ..approval.clone()
+        },
+    ] {
+        assert!(
+            super::super::pipeline::validate_recovered_projection(
+                "p",
+                "t",
+                "capture",
+                "ComputerScreenshot",
+                &input,
+                receipt,
+                RuntimeToolStatus::Cancelled,
+                &invalid,
+                None,
+                None
+            )
+            .is_err()
+        );
+    }
+    let denied = ApprovalAudit {
+        decision: Approval::Deny,
+        ..approval
+    };
+    assert!(
+        super::super::pipeline::validate_recovered_projection(
+            "p",
+            "t",
+            "capture",
+            "ComputerScreenshot",
+            &input,
+            receipt,
+            RuntimeToolStatus::Cancelled,
+            &denied,
+            None,
+            None
+        )
+        .is_err()
+    );
+    let (store, _dir, project) = setup();
+    let (control, _) = prepare(&store);
+    let approved = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ComputerUse,
+        danger: None,
+    };
+    store
+        .conn()
+        .execute(
+            "UPDATE tool_calls SET approval=?1 WHERE id='capture'",
+            [approved.to_json().unwrap()],
+        )
+        .unwrap();
+    let mut terminal = vega_runtime::RuntimeToolResult {
+        call_id: "capture".into(),
+        output: receipt.into(),
+        status: RuntimeToolStatus::Cancelled,
+        reused: false,
+        exit_code: None,
+        duration_ms: None,
+        truncated: Some(false),
+        approval: Some(vega_runtime::RuntimeApprovalAudit {
+            decision: vega_runtime::RuntimeApprovalDecision::Once,
+            note: None,
+            source: vega_runtime::RuntimeApprovalSource::ComputerUse,
+            danger: None,
+        }),
+        remember_rule: None,
+    };
+    assert!(
+        persist(
+            &store,
+            &project,
+            &RuntimeEvent::ToolCallFinished(terminal.clone())
+        )
+        .is_err()
+    );
+    assert_eq!(
+        tool_calls::find_state(store.conn(), "capture")
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    terminal.truncated = None;
+    persist(&store, &project, &RuntimeEvent::ToolCallFinished(terminal)).unwrap();
+    assert_eq!(
+        tool_calls::find_state(store.conn(), "capture")
+            .unwrap()
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    control.stop();
+    test_support::finish_cleanup(&control);
+}

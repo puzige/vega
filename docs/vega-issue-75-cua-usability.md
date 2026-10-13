@@ -555,3 +555,44 @@ PR #336首轮CI `38369457548`：Clippy成功，2464通过/1失败/5 skipped；6�
 ## 图片展示清理（2026-10-13 用户追加）
 
 用户要求删除对话截图卡片顶部“尺寸 + 下载”整栏，以及预览下方的外部打开成功提示。按 [#296 本次修订](vega-issue-296-image-preview.md#2026-10-13-用户追加移除截图卡片栏和外部打开成功提示) 的 IC01–IC06 实施；它替代本页 SV1/SV2/SV04 中固定顶栏、行内保存和该栏状态投影的旧展示要求，不修改已经记录的历史验收事实。截图图片本体和可访问预览入口保留，保存使用右侧既有入口；真实错误/权限/待用户处理事项不隐藏。范围不涉及 CUA runtime、截图交付数据或签名权限。
+
+## 接管恢复时撤销旧工具批次（2026-10-13，0.1.97 真机回归）
+
+普通双窗图文 run `01M4TB3FSW5HFC08RFYYDB8MPG` 已按目录→双截图完成：38265ms、3 calls/3模型轮/2图，skill v5自动加载。接管 run `01M4TB7WTJ2P1TGR907CGK9W69` 在暂停149139ms后恢复，两个暂停前生成的截图立即返回target_expired/not_dispatched，再重新发现和读取，最终229144ms、10 calls/7轮/2图，恢复后54340ms。最终内容正确仍记FAIL_USABILITY，不以人工暂停耗时掩盖旧调用和重读。
+
+源码根因是provider请求、prepared CUA调用与control epoch未绑定：wait_ready只等待phase，authorize/execute在恢复后重新采样epoch，导致旧参数跨接管继续派发。本轮只修该生命周期，不延长目录TTL、不修改系统权限、UI布局或模型指标。
+
+RR1. 实际provider请求构造时固定当前CUA epoch；wait_ready之后首次采样与trim之后均验证可请求phase及同epoch，暂停态不能被当成新请求的有效epoch；从该响应准备的CUA调用沿用它，等待恢复、授权与取得执行锁后均验证原epoch。正常Connecting/Running不换epoch；快速pause→resume仍因epoch不同被识别。旧引用始终无效，不重新授予旧调用控制权。
+
+RR2. 尚未提案的旧CUA调用不进入权限/driver、不制造工具批准或失败记录；在当前临时模型协议中保留call/result配对，并给内容固定的superseded、executed:false回执，明确只刷新一次再规划尚未完成的工作。混合批次的非CUA调用仍按原合同执行一次。已真实批准但尚未派发时发生接管，沿用Cancelled审计终态并使用相同有限回执，来源/批准/状态严格校验；该特例显示中性“接管后未执行”，不算失败或整轮中断，不影响真正拒绝/失败/结果未知的呈现。
+
+RR3. 已派发的Act不适用superseded；结果未知时保持outcome_unknown，不自动重试或改称未执行。取消/停止优先，不能以恢复回执吞掉Interrupted。已完成的动作与持久截图ACK不重放，旧图/AX正文/元素与目标引用清理；v5文字桥接、2图/8MiB与4附件/16MiB、幂等/no_progress保持。
+
+RR4. 不增加数据库状态/schema，不修改持久参数脱敏。权限或目标预检await期间接管且尚未capture/输入派发时，按原epoch撤销；实际派发以后不能转换成superseded。历史入口必须在丢弃source/note/danger之前验证完整ApprovalAudit，仅Cancelled + Once + ComputerUse且无额外元数据可中性重放。superseded是精确有限回执，不能由任意JSON或其他tool/status/approval伪装；既有错误、拒绝、恢复审计不能被该特例变绿。对话重开后撤销事实仍准确，模型临时配对不构造并未发生的审计事件。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| RR01 | 模型流中pause，含快速pause→resume；返回双截图旧批次 | 旧capture零派发/零附件/零失败审计；一次刷新→新双截图→final；配对完整 | 待CI，未本地运行 |
+| RR02 | 同批首图durable ACK后pause，第二图尚未提案；混合普通read | ACK保留、旧像素正文清理；第二图旧调用未执行；普通read只一次；新目标续交付 | 待CI，未本地运行 |
+| RR03 | 已批准/Running事件边界pause后恢复 | 原批准审计真实、Cancelled有限回执可存储/重开且呈现中性；执行计数不增加 | 待CI，未本地运行 |
+| RR04 | 暂停时root cancel；已派发Act结果未知；已完成Act后剩余旧调用 | 取消优先；Act未知不重放；已完成动作不重复；真实failed/denied保持 | 待CI，未本地运行 |
+| RR05 | 所有下一provider请求、outcome、历史/图预算 | 无过期原文/旧像素/可操作引用泄漏；有限ACK/回执保持；CC/Responses配对与预算有效 | 待CI，未本地运行 |
+
+继续遵守用户禁止本地编译的要求：回归源码先写，全部cargo/test/nextest/check/Clippy由云端PR Check执行；本地仅低CPU rustfmt、diff与静态检查，不报告本地RED/GREEN。新版真机由主控在云端通过后验收：恢复后≤5次实际工具调用、≤3模型轮、≤60秒；旧target零派发、无读循环/重复图、两图六行正确。
+
+### RR 实现与验证交接
+
+新增12项回归源码，覆盖实际run_agent模型流/快速接管、同批首图ACK后的剩余工作、Proposed/Approved/Running三个持久ACK边界、执行期第二次权限预检通知栅栏、等待结束后的ready-phase采样、root取消/Stop、已派发Act结果未知、完整审批审计和原始PageToolCall篡改、实时/历史卡片及整轮中性汇总。生产请求仍经过图片校验和CC/Responses请求构造断言。预检栅栏仅编译于test配置，不增加正式可绕过入口。
+
+既有BP批内暂停用例原先要求剩余B返回control_unavailable，本轮按RR2改为精确superseded且B无提案；原已交付ACK、旧正文/像素清理、实际调用次数、配对和预算断言保留。未改变真正错误/拒绝/未知结果断言。
+
+所有新增与受影响测试均待云端执行；本地没有编译或运行测试，不把源码推断记为RED/PASS。仅对修改文件做rustfmt、rustfmt --check及git diff --check；完整cwd/executable/argv与原始结果保存于 `/tmp/vega-75-resume-refresh-static-checks.json` 和同前缀 `.log`。拟定云端定向命令（尚未执行）：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui \
+  -E 'test(issue75) | test(types::tests_audit_wire) | test(issue296_polish_p03)'
+```
+
+仓库PR Check的完整fmt/Clippy/nextest门禁与新版自然语言真机测试仍由主控接续；当前代码提交不代表真机验收通过。内置skill v5、窗口TTL、依赖、数据库schema和UI布局保持不变。
+
+RR静态原始日志SHA-256：`e9952da990eac03142544739608b1d66a624901156921ed812ea30c1c45044ed`；14条记录全部exit0，只有静态检查与Git同步，不含编译或测试执行。

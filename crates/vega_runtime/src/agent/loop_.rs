@@ -1552,12 +1552,26 @@ where
                 None,
             )
         );
-        if let Some(run) = &tool_config.computer_use {
-            if run.wait_ready(&cancel).await.is_err() {
-                cancel.cancel();
+        let computer_use_epoch = if let Some(run) = &tool_config.computer_use {
+            loop {
+                if run.wait_ready(&cancel).await.is_err() {
+                    cancel.cancel();
+                }
+                if cancel.is_cancelled() {
+                    run.trim_messages(&mut messages);
+                    break None;
+                }
+                let Some(epoch) = run.ready_model_epoch() else {
+                    continue;
+                };
+                run.trim_messages(&mut messages);
+                if run.ready_model_epoch() == Some(epoch) {
+                    break Some(epoch);
+                }
             }
-            run.trim_messages(&mut messages);
-        }
+        } else {
+            None
+        };
         let chat_request = ChatRequest {
             model: request.model.clone(),
             messages: messages.clone(),
@@ -2119,7 +2133,10 @@ where
                 prepare_runtime_call(tools, &tool_config, &capabilities, call)
             };
             match prepared {
-                Ok(prepared) => prepared_calls.push(prepared),
+                Ok(mut prepared) => {
+                    prepared.bind_computer_use_epoch(computer_use_epoch);
+                    prepared_calls.push(prepared);
+                }
                 Err(error) => {
                     emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
                     return Ok(outcome(
@@ -2348,16 +2365,46 @@ where
                     false,
                 ));
             }
+            let cua_authorization = if matches!(&prepared, PreparedRuntimeCall::ComputerUse { .. })
+            {
+                let authorization = authorize_call(
+                    &prepared,
+                    &tool_config,
+                    &exact_rules,
+                    permission_hook,
+                    &cancel,
+                )
+                .await?;
+                if matches!(&authorization, Authorization::Terminal(result) if result.status == RuntimeToolStatus::Cancelled && result.output == crate::computer_use::SUPERSEDED_CONTROL_OUTPUT)
+                {
+                    tool_call_count -= 1;
+                    messages.push(ChatMessage::tool_result(
+                        &call.id,
+                        crate::computer_use::SUPERSEDED_CONTROL_OUTPUT,
+                    ));
+                    if let Some(run) = &tool_config.computer_use {
+                        run.trim_messages(&mut messages);
+                    }
+                    continue;
+                }
+                Some(authorization)
+            } else {
+                None
+            };
             emit!(events, sink, RuntimeEvent::ToolCallProposed(call.clone()));
 
-            let authorization = authorize_call(
-                &prepared,
-                &tool_config,
-                &exact_rules,
-                permission_hook,
-                &cancel,
-            )
-            .await?;
+            let authorization = if let Some(authorization) = cua_authorization {
+                authorization
+            } else {
+                authorize_call(
+                    &prepared,
+                    &tool_config,
+                    &exact_rules,
+                    permission_hook,
+                    &cancel,
+                )
+                .await?
+            };
             let (mut result, cancelled_while_running) = match authorization {
                 Authorization::Terminal(result) => (result, false),
                 Authorization::Approved {
@@ -2395,6 +2442,16 @@ where
                                 Some(audit),
                             ),
                             true,
+                        )
+                    } else if prepared.superseded_after_wait(&cancel).await {
+                        (
+                            terminal_result(
+                                &call,
+                                crate::computer_use::SUPERSEDED_CONTROL_OUTPUT.into(),
+                                RuntimeToolStatus::Cancelled,
+                                Some(audit),
+                            ),
+                            false,
                         )
                     } else if tool_config.computer_use.as_ref().is_some_and(|run| {
                         let model_call = prepared.model_call();
@@ -2512,6 +2569,11 @@ where
                             }
                             other => execute_prepared_waiting(other, tools, &cancel).await,
                         };
+                        if result.status == RuntimeToolStatus::Cancelled
+                            && result.output == crate::computer_use::SUPERSEDED_CONTROL_OUTPUT
+                        {
+                            executed_tool_call_count -= 1;
+                        }
                         result.approval = Some(audit);
                         (result, cancelled)
                     }

@@ -814,3 +814,49 @@ async fn issue296_polish_p05_no_tool_notice_preserves_source_anchor(cx: &mut Tes
         assert!(!stream.list.is_following_tail());
     });
 }
+
+#[gpui_kit::test]
+async fn issue75_resume_refresh_neutral_cancellation_does_not_interrupt_run_or_hide_real_failure(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "resume-refresh");
+    stream.update(cx,|stream,cx| {
+        start(stream,"polish",cx);
+        let call_id="resume-superseded".to_string();
+        stream.apply_event(ConversationEvent::ToolCallProposed{call:vega_conversation::types::ToolCall {
+            id:call_id.clone(),tool:"ComputerScreenshot".into(),
+            input_json:serde_json::json!({"kind":"computer_use","version":1,"action":"screenshot","argument_bytes":2,"argument_digest":"a".repeat(64)}).to_string(),
+        }},cx);
+        stream.apply_event(ConversationEvent::ToolCallApproved{call_id:call_id.clone(),approval:vega_conversation::types::Approval::Once},cx);
+        stream.apply_event(ConversationEvent::ToolCallRunning{call_id:call_id.clone()},cx);
+        stream.apply_event(ConversationEvent::ToolCallFinished{call_id:call_id.clone(),result:vega_conversation::types::ToolResult {
+            status:ToolCallStatus::Cancelled,output:vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT.into(),reused:false,exit_code:None,duration_ms:None,truncated:None,invalid:None,
+        }},cx);
+        assert_eq!(stream.tool_cards[&call_id].read(cx).activity_state(),crate::tool_card::ToolActivityState::Superseded);
+        assert_eq!(stream.run_activity_groups["polish"].read(cx).status(),RunActivityStatus::Running);
+        tool(stream,"real-failure",ToolCallStatus::Failed,cx);
+        assert_eq!(stream.tool_cards["real-failure"].read(cx).activity_state(),crate::tool_card::ToolActivityState::Failed);
+        stream.apply_event(ConversationEvent::TextDelta{message_id:"polish".into(),delta:"Replanned from fresh targets.".into()},cx);
+        confirm_test_final(stream,"polish",cx);
+        stream.apply_event(ConversationEvent::MessageFinished{message_id:"polish".into(),stop_reason:vega_conversation::types::ConversationStopReason::End,execution_duration_ms:Some(100)},cx);
+        assert_eq!(stream.run_activity_groups["polish"].read(cx).status(),RunActivityStatus::Completed);
+        assert!(stream.run_notices.is_empty());
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-notice-polish").is_none());
+    assert!(visual.debug_bounds("run-activity-exception").is_none());
+    click(&mut visual, "run-activity-toggle");
+    stream.read_with(&visual, |stream, cx| {
+        assert!(
+            stream.tool_cards["resume-superseded"]
+                .read(cx)
+                .visible_text()
+                .contains("接管后未执行")
+        );
+        assert_eq!(
+            stream.tool_cards["real-failure"].read(cx).activity_state(),
+            crate::tool_card::ToolActivityState::Failed
+        );
+    });
+}
