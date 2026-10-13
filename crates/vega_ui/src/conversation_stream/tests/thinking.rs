@@ -494,7 +494,7 @@ async fn i71_live_heading_replaces_thinking_label_without_changing_activity_expa
 }
 
 #[gpui_kit::test]
-async fn i343_live_stage_title_follows_latest_readable_thinking_or_summary(
+async fn live_stage_title_switches_to_summary_without_revealing_raw_thinking(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "live-thinking-title");
@@ -517,10 +517,7 @@ async fn i343_live_stage_title_follows_latest_readable_thinking_or_summary(
             "Cache hit rate is unclear.",
         ),
         (summary("m", "Summary A"), "Summary A"),
-        (
-            thinking("m", " Further investigation"),
-            "Cache hit rate is unclear. Further investigation",
-        ),
+        (thinking("m", " Further investigation"), "Summary A"),
         (summary("m", "\nSummary B"), "Summary B"),
         (
             thinking("m", "\n\n```rust\n## fake heading\n```\n**"),
@@ -530,8 +527,15 @@ async fn i343_live_stage_title_follows_latest_readable_thinking_or_summary(
         stream.update(cx, |stream, cx| stream.apply_event(event, cx));
         cx.run_until_parked();
         stream.read_with(cx, |stream, app| {
-            assert_eq!(cards(stream, app)[0].read(app).title(), expected);
+            let card = cards(stream, app)[0].read(app);
+            assert_eq!(card.title(), expected);
+            assert!(!card.expanded);
         });
+        assert!(
+            gpui_kit::VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("thinking-content")
+                .is_none()
+        );
         assert!(
             gpui_kit::VisualTestContext::from_window(window.into(), cx)
                 .debug_bounds("run-stage-title-0")
@@ -554,20 +558,39 @@ async fn i343_live_stage_title_follows_latest_readable_thinking_or_summary(
             );
         });
     }
-    stream.update(cx, |stream, cx| {
-        stream.apply_event(finish("m"), cx);
-        stream.apply_event(thinking("m", "\nlate content"), cx);
-    });
     stream.read_with(cx, |stream, app| {
         let card = cards(stream, app)[0].read(app);
         assert_eq!(card.title(), "Summary B");
-        assert!(card.source_text().contains("Further investigation"));
-        assert!(card.source_text().contains("Summary B"));
+        assert!(card.text.contains("Further investigation"));
+        assert_eq!(card.source_text(), " \n## Summary A\nSummary B");
+        assert_eq!(card.test_source_copy().original_text(), card.source_text());
+    });
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let stage = visual
+        .debug_bounds("run-stage-toggle-0")
+        .expect("stage disclosure");
+    visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_none());
+    let source = visual
+        .debug_bounds("thinking-toggle")
+        .expect("thinking disclosure");
+    visual.simulate_click(source.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_some());
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(finish("m"), cx);
+        stream.apply_event(thinking("m", "\nlate content"), cx);
+    });
+    stream.read_with(&visual, |stream, app| {
+        let card = cards(stream, app)[0].read(app);
+        assert_eq!(card.title(), "Summary B");
+        assert_eq!(card.source_text(), " \n## Summary A\nSummary B");
     });
 }
 
 #[gpui_kit::test]
-async fn i343_latest_readable_source_fallback_bounds_and_terminal(cx: &mut TestAppContext) {
+async fn summary_replacement_preserves_fallback_bounds_and_terminal(cx: &mut TestAppContext) {
     let (_, stream, _) = open_controller_stream(cx, "summary-priority");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
@@ -580,13 +603,20 @@ async fn i343_latest_readable_source_fallback_bounds_and_terminal(cx: &mut TestA
         "initial useful fragment"
     );
     stream.update(cx, |stream, cx| {
+        stream.apply_event(summary("m", " \n"), cx);
+        let card = cards(stream, cx)[0].read(cx);
+        assert_eq!(card.title(), "initial useful fragment");
+        assert_eq!(card.source_text(), "initial useful fragment");
         stream.apply_event(
             ConversationEvent::SummaryDelta {
                 message_id: "m".into(),
-                delta: " \n**".into(),
+                delta: "**".into(),
             },
             cx,
         );
+        let card = cards(stream, cx)[0].read(cx);
+        assert_eq!(card.title(), "initial useful fragment");
+        assert_eq!(card.source_text(), " \n**");
         stream.apply_event(
             ConversationEvent::SummaryDelta {
                 message_id: "m".into(),
@@ -596,7 +626,10 @@ async fn i343_latest_readable_source_fallback_bounds_and_terminal(cx: &mut TestA
         );
         assert_eq!(cards(stream, cx)[0].read(cx).title(), "body under heading");
         stream.apply_event(thinking("m", "\n## raw now takes over"), cx);
-        assert_eq!(cards(stream, cx)[0].read(cx).title(), "raw now takes over");
+        let card = cards(stream, cx)[0].read(cx);
+        assert_eq!(card.title(), "body under heading");
+        assert!(!card.source_text().contains("raw now takes over"));
+        assert_eq!(card.test_source_copy().original_text(), card.source_text());
         stream.apply_event(
             ConversationEvent::SummaryDelta {
                 message_id: "m".into(),
@@ -627,9 +660,11 @@ async fn i343_latest_readable_source_fallback_bounds_and_terminal(cx: &mut TestA
     });
     stream.read_with(cx, |stream, app| {
         let cards = cards(stream, app);
-        let title = cards[1].read(app).title();
-        assert!(title.chars().count() <= 96);
-        assert!(title.ends_with("最新尾部"));
+        let card = cards[1].read(app);
+        assert!(card.title().chars().count() <= 96);
+        assert!(card.title().ends_with("最新尾部"));
+        assert_eq!(card.source_text(), card.text);
+        assert_eq!(card.test_source_copy().original_text(), card.text);
     });
 }
 

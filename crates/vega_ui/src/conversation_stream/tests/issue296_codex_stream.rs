@@ -186,9 +186,7 @@ async fn issue296_visual_v02_text_bubble_geometry_colors_and_original(cx: &mut T
 }
 
 #[gpui_kit::test]
-async fn issue296_visual_v04_full_sources_and_multiple_summaries_remain_reachable(
-    cx: &mut TestAppContext,
-) {
+async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "visual-sources");
     let (first, second) = stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -250,7 +248,7 @@ async fn issue296_visual_v04_full_sources_and_multiple_summaries_remain_reachabl
     second.read_with(&visual, |card, _| {
         assert_eq!(
             card.source_text(),
-            "Original independent reasoning.\n\nSecond phase\nFull summary continuation."
+            "Second phase\nFull summary continuation."
         )
     });
     assert!(visual.debug_bounds("thinking-toggle").is_some());

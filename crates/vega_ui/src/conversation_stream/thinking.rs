@@ -175,12 +175,6 @@ impl Preview {
     }
 }
 
-#[derive(Clone, Copy)]
-enum PreviewSource {
-    Thinking,
-    Summary,
-}
-
 pub(crate) struct ThinkingBlock {
     pub(crate) text: String,
     pub(crate) shimmer_epoch: Option<Instant>,
@@ -188,7 +182,6 @@ pub(crate) struct ThinkingBlock {
     summary_has_content: bool,
     thinking_preview: Preview,
     summary_preview: Preview,
-    latest_preview: Option<PreviewSource>,
     source_stream: MarkdownStream,
     source_model: StreamModel,
     source_copy: MessageCopy,
@@ -207,10 +200,12 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn title(&self) -> &str {
-        match self.latest_preview {
-            Some(PreviewSource::Thinking) => &self.thinking_preview.title,
-            Some(PreviewSource::Summary) => &self.summary_preview.title,
-            None => "思考过程",
+        if !self.summary_preview.title.is_empty() {
+            &self.summary_preview.title
+        } else if !self.thinking_preview.title.is_empty() {
+            &self.thinking_preview.title
+        } else {
+            "思考过程"
         }
     }
 
@@ -223,10 +218,7 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn source_text(&self) -> String {
-        if self.text.trim().is_empty() || !self.summary_has_content {
-            return self.visible_text().to_owned();
-        }
-        format!("{}\n\n{}", self.text, self.summary)
+        self.visible_text().to_owned()
     }
 
     #[cfg(test)]
@@ -247,7 +239,6 @@ impl ThinkingBlock {
             summary_has_content: false,
             thinking_preview: Preview::default(),
             summary_preview: Preview::default(),
-            latest_preview: None,
             source_stream: MarkdownStream::new(),
             source_model: StreamModel::default(),
             source_copy: MessageCopy::default(),
@@ -303,14 +294,10 @@ impl ThinkingBlock {
         if summary {
             self.summary_has_content |= delta[..end].chars().any(|ch| !ch.is_whitespace());
             self.summary.push_str(&delta[..end]);
-            if self.summary_preview.append(&delta[..end]) {
-                self.latest_preview = Some(PreviewSource::Summary);
-            }
+            self.summary_preview.append(&delta[..end]);
         } else {
             self.text.push_str(&delta[..end]);
-            if self.thinking_preview.append(&delta[..end]) {
-                self.latest_preview = Some(PreviewSource::Thinking);
-            }
+            self.thinking_preview.append(&delta[..end]);
         }
         let source = self.source_text();
         let previous = self.source_copy.original_text();
