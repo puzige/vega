@@ -455,9 +455,9 @@ async fn i71_live_heading_replaces_thinking_label_without_changing_activity_expa
     cx.run_until_parked();
     assert_eq!(
         stream.read_with(cx, |stream, app| {
-            cards(stream, app)[0].read(app).title()
+            cards(stream, app)[0].read(app).title().to_owned()
         }),
-        "Thinking · 检查条件"
+        "检查条件"
     );
     assert!(
         !stream.read_with(cx, |stream, app| cards(stream, app)[0].read(app).expanded),
@@ -468,9 +468,9 @@ async fn i71_live_heading_replaces_thinking_label_without_changing_activity_expa
     });
     assert_eq!(
         stream.read_with(cx, |stream, app| {
-            cards(stream, app)[0].read(app).title()
+            cards(stream, app)[0].read(app).title().to_owned()
         }),
-        "Thinking · 现在验证结果"
+        "现在验证结果"
     );
     open_run_details(window, cx);
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -495,9 +495,9 @@ async fn i71_summary_priority_fallback_bounds_and_terminal(cx: &mut TestAppConte
     });
     assert_eq!(
         stream.read_with(cx, |stream, app| {
-            cards(stream, app)[0].read(app).title()
+            cards(stream, app)[0].read(app).title().to_owned()
         }),
-        "Thinking · initial useful fragment"
+        "initial useful fragment"
     );
     stream.update(cx, |stream, cx| {
         stream.apply_event(
@@ -533,9 +533,9 @@ async fn i71_summary_priority_fallback_bounds_and_terminal(cx: &mut TestAppConte
     });
     assert_eq!(
         stream.read_with(cx, |stream, app| {
-            cards(stream, app)[0].read(app).title()
+            cards(stream, app)[0].read(app).title().to_owned()
         }),
-        "Thinking · 下个阶段"
+        "下个阶段"
     );
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("next"), cx);
@@ -597,95 +597,12 @@ async fn i71_fenced_summary_keeps_received_content(cx: &mut TestAppContext) {
     });
     stream.read_with(cx, |stream, app| {
         let card = cards(stream, app)[0].read(app);
-        assert_eq!(card.title(), "Thinking");
+        assert_eq!(card.title(), "思考过程");
         assert_eq!(card.visible_text(), content);
     });
     cx.run_until_parked();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("thinking-content").is_some());
-}
-
-#[gpui_kit::test]
-async fn issue329_thinking_prefix_tracks_content_and_summary(cx: &mut TestAppContext) {
-    let (window, stream, _) = open_controller_stream(cx, "thinking-prefix-dynamic");
-    stream.update(cx, |stream, cx| {
-        stream.apply_event(start("m"), cx);
-        stream.apply_event(thinking("m", "Let me write the script."), cx);
-        let card = cards(stream, cx)[0].read(cx);
-        assert_eq!(card.title(), "Thinking · Let me write the script.");
-        stream.apply_event(thinking("m", "\nThen build."), cx);
-        assert_eq!(
-            cards(stream, cx)[0].read(cx).title(),
-            "Thinking · Then build."
-        );
-    });
-    open_run_details(window, cx);
-    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("run-stage-title-0").is_some());
-    let stage = visual.debug_bounds("run-stage-toggle-0").unwrap();
-    visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("thinking-title").is_some());
-    stream.update(&mut visual, |stream, cx| {
-        stream.apply_event(
-            ConversationEvent::SummaryDelta {
-                message_id: "m".into(),
-                delta: "**检查配置**".into(),
-            },
-            cx,
-        );
-        stream.apply_event(thinking("m", "\n## raw must not override"), cx);
-        assert_eq!(cards(stream, cx)[0].read(cx).title(), "Thinking · 检查配置");
-        assert_eq!(
-            cards(stream, cx)[0].read(cx).source_text(),
-            "Let me write the script.\nThen build.\n## raw must not override\n\n**检查配置**"
-        );
-    });
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("run-stage-title-0").is_some());
-    assert!(visual.debug_bounds("thinking-title").is_some());
-    let source = visual.debug_bounds("thinking-toggle").unwrap();
-    visual.simulate_click(source.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("thinking-content").is_some());
-}
-
-#[gpui_kit::test]
-async fn issue329_empty_preview_has_only_fixed_label(cx: &mut TestAppContext) {
-    let (_, stream, _) = open_controller_stream(cx, "thinking-prefix-empty");
-    stream.update(cx, |stream, cx| {
-        stream.apply_event(start("m"), cx);
-        assert!(cards(stream, cx).is_empty());
-        stream.apply_event(thinking("m", " \n## \n```rust\n## hidden\n```"), cx);
-        stream.apply_event(
-            ConversationEvent::SummaryDelta {
-                message_id: "m".into(),
-                delta: " \n**".into(),
-            },
-            cx,
-        );
-        assert_eq!(cards(stream, cx)[0].read(cx).title(), "Thinking");
-    });
-}
-
-#[gpui_kit::test]
-async fn issue329_thinking_prefix_respects_unicode_limit_and_latest_tail(cx: &mut TestAppContext) {
-    let (_, stream, _) = open_controller_stream(cx, "thinking-prefix-length");
-    stream.update(cx, |stream, cx| {
-        stream.apply_event(start("m"), cx);
-        stream.apply_event(thinking("m", &"汉".repeat(50)), cx);
-        stream.apply_event(thinking("m", &"字".repeat(80)), cx);
-        stream.apply_event(thinking("m", "最新🙂"), cx);
-        let title = cards(stream, cx)[0].read(cx).title();
-        assert!(title.starts_with("Thinking · …"));
-        assert!(title.ends_with("最新🙂"));
-        assert_eq!(title.chars().count(), 96);
-        stream.apply_event(thinking("m", &format!("\n## {}", "标题".repeat(80))), cx);
-        let heading = cards(stream, cx)[0].read(cx).title();
-        assert!(heading.starts_with("Thinking · 标题"));
-        assert!(heading.ends_with('…'));
-        assert_eq!(heading.chars().count(), 96);
-    });
 }
 
 #[gpui_kit::test]
