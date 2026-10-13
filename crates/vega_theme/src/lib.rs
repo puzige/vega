@@ -379,9 +379,6 @@ impl Layout {
     pub const SCREENSHOT_MIN_HEIGHT: f32 = 32.0;
     pub const SCREENSHOT_BORDER: f32 = 1.0;
     pub const SCREENSHOT_RADIUS: f32 = 8.0;
-    pub const SCREENSHOT_HEADER_HEIGHT: f32 = 32.0;
-    pub const SCREENSHOT_CONTROL_SIZE: f32 = 28.0;
-    pub const SCREENSHOT_LABEL_MIN_WIDTH: f32 = 120.0;
     pub const SCREENSHOT_PREVIEW_MAX_WIDTH: f32 = 960.0;
     pub const SCREENSHOT_PREVIEW_MAX_HEIGHT: f32 = 720.0;
     pub const SCREENSHOT_PREVIEW_MARGIN: f32 = 24.0;

@@ -88,7 +88,7 @@ async fn issue75_screenshot_card_wraps_actual_thumbnail_instead_of_full_conversa
                 visual.run_until_parked();
                 let card = visual.debug_bounds("assistant-screenshot").unwrap();
                 let image = visual.debug_bounds("screenshot-expand").unwrap();
-                let save = visual.debug_bounds("screenshot-save").unwrap();
+                assert!(visual.debug_bounds("screenshot-save").is_none());
                 if name == "tiny" {
                     let pixels = visual.debug_bounds("screenshot-pixels").unwrap();
                     assert_eq!(
@@ -110,10 +110,8 @@ async fn issue75_screenshot_card_wraps_actual_thumbnail_instead_of_full_conversa
                         < 1.0,
                     "{name}/{viewport}: {image:?}"
                 );
-                assert!((card.size.height - image.size.height - px(34.0)).abs() < px(1.0));
-                assert_eq!(save.size, size(px(28.0), px(28.0)));
-                assert!(save.left() >= card.left() && save.right() <= card.right());
-                assert!(save.bottom() <= image.top());
+                assert!((card.size.height - image.size.height - px(2.0)).abs() < px(1.0));
+                assert!((image.top() - card.top() - px(1.0)).abs() < px(1.0));
                 let (quads, scale) =
                     visual.update(|window, _| (window.painted_quads(), window.scale_factor()));
                 assert!(

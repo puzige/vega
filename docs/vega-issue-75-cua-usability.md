@@ -551,3 +551,7 @@ PR #336首轮CI `38369457548`：Clippy成功，2464通过/1失败/5 skipped；6�
 修正后的测试仍待下一轮云端PR Check；本地只做快速格式/diff检查，未编译或运行测试。
 
 修正静态记录 `/tmp/vega-75-text-delivery-ci-assertion-checks.log` SHA-256 `16a13c2f0eb6e8ff8a05cb669b52cb4d4443e311ae5194df73b596fa760c7078`；同前缀`.json`含完整executable/cwd/argv。rustfmt、rustfmt --check、git diff --check均exit0（30–179ms），无本地编译。此结果不代表修正用例已运行。
+
+## 图片展示清理（2026-10-13 用户追加）
+
+用户要求删除对话截图卡片顶部“尺寸 + 下载”整栏，以及预览下方的外部打开成功提示。按 [#296 本次修订](vega-issue-296-image-preview.md#2026-10-13-用户追加移除截图卡片栏和外部打开成功提示) 的 IC01–IC06 实施；它替代本页 SV1/SV2/SV04 中固定顶栏、行内保存和该栏状态投影的旧展示要求，不修改已经记录的历史验收事实。截图图片本体和可访问预览入口保留，保存使用右侧既有入口；真实错误/权限/待用户处理事项不隐藏。范围不涉及 CUA runtime、截图交付数据或签名权限。

@@ -1,5 +1,4 @@
 use super::*;
-use crate::icons::{Icon, icon_button};
 
 fn loading_indicator(preview: bool, colors: ThemeColors) -> AnyElement {
     div()
@@ -40,20 +39,18 @@ fn screenshot_image(
         .max_w(px(dimensions.0 as f32))
         .max_h(px(dimensions.1 as f32))
         .object_fit(gpui_kit::ObjectFit::Contain)
-        .rounded_b(px(Layout::SCREENSHOT_RADIUS - Layout::SCREENSHOT_BORDER))
+        .rounded(px(Layout::SCREENSHOT_RADIUS - Layout::SCREENSHOT_BORDER))
         .with_loading(move || loading_indicator(preview, colors))
 }
 
 pub(crate) struct ScreenshotCard {
     pub(super) image: attachments::ImagePreview,
-    save_focus: FocusHandle,
 }
 
 impl ScreenshotCard {
     pub(crate) fn new(image: ImageAttachment, name: String, cx: &mut Context<Self>) -> Self {
         Self {
             image: attachments::ImagePreview::new(image, name, cx),
-            save_focus: cx.focus_handle().tab_stop(true),
         }
     }
 
@@ -73,90 +70,6 @@ impl ScreenshotCard {
         self.image.view.update(cx, |view, cx| {
             view.action(crate::image_preview::ImagePreviewAction::Open, cx)
         });
-    }
-
-    fn save(&mut self, cx: &mut Context<Self>) {
-        self.image.view.update(cx, |view, cx| {
-            view.action(crate::image_preview::ImagePreviewAction::SaveInline, cx)
-        });
-    }
-
-    fn save_button(&self, preview: bool, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let label = if self.image.view.read(cx).busy() {
-            "保存中…"
-        } else {
-            "保存图片"
-        };
-        icon_button(
-            Icon::ArrowDown,
-            label,
-            colors,
-            cx.listener(|this, _, _, cx| this.save(cx)),
-        )
-        .size(px(Layout::SCREENSHOT_CONTROL_SIZE))
-        .debug_selector(move || {
-            if preview {
-                "screenshot-preview-save"
-            } else {
-                "screenshot-save"
-            }
-            .into()
-        })
-        .track_focus(&self.save_focus)
-        .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
-        .when(self.image.view.read(cx).busy(), |button| {
-            button.opacity(0.5)
-        })
-        .into_any_element()
-    }
-
-    fn header_caption(&self, width: f32, cx: &App) -> AnyElement {
-        let colors = theme(cx).colors;
-        let label = self.image.view.read(cx).status().unwrap_or("");
-        div()
-            .id("screenshot-caption")
-            .flex_1()
-            .min_w_0()
-            .truncate()
-            .text_size(px(Typography::METADATA))
-            .text_color(colors.text_secondary)
-            .when_some(self.image.view.read(cx).status(), |caption, status| {
-                caption
-                    .debug_selector(|| "screenshot-save-status".into())
-                    .aria_label(status)
-                    .tooltip(move |_, cx| crate::icons::tooltip(status, cx))
-            })
-            .when(width >= Layout::SCREENSHOT_LABEL_MIN_WIDTH, |caption| {
-                caption.child(if self.image.view.read(cx).status().is_some() {
-                    if label.starts_with("保存失败") {
-                        "保存失败".into()
-                    } else {
-                        label.to_owned()
-                    }
-                } else {
-                    format!(
-                        "{} × {}",
-                        self.image.image.width(),
-                        self.image.image.height()
-                    )
-                })
-            })
-            .when(
-                width < Layout::SCREENSHOT_LABEL_MIN_WIDTH
-                    && self.image.view.read(cx).status().is_some(),
-                |caption| {
-                    caption.child(crate::icons::icon(
-                        if label.starts_with("保存失败") {
-                            Icon::Warning
-                        } else {
-                            Icon::Check
-                        },
-                        colors.text_secondary,
-                    ))
-                },
-            )
-            .into_any_element()
     }
 
     fn image_content(&self, preview: bool, cx: &App) -> AnyElement {
@@ -198,17 +111,6 @@ impl Render for ScreenshotCard {
             .bg(colors.bg_elevated)
             .child(
                 div()
-                    .h(px(Layout::SCREENSHOT_HEADER_HEIGHT))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .px_1()
-                    .child(self.header_caption(width, cx))
-                    .child(self.save_button(false, cx)),
-            )
-            .child(
-                div()
                     .id("screenshot-expand")
                     .debug_selector(|| "screenshot-expand".into())
                     .aria_label("查看截图大图")
@@ -217,7 +119,7 @@ impl Render for ScreenshotCard {
                     .w_full()
                     .aspect_ratio(width / height)
                     .relative()
-                    .rounded_b(px(Layout::SCREENSHOT_RADIUS - Layout::SCREENSHOT_BORDER))
+                    .rounded(px(Layout::SCREENSHOT_RADIUS - Layout::SCREENSHOT_BORDER))
                     .cursor_pointer()
                     .hover(move |style| style.border_1().border_color(colors.text_secondary))
                     .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
@@ -299,11 +201,12 @@ mod tests {
         let corners = &element.style().corner_radii;
         assert_eq!(corners.bottom_left, Some(px(7.0).into()));
         assert_eq!(corners.bottom_right, Some(px(7.0).into()));
-        assert!(corners.top_left.is_none() && corners.top_right.is_none());
+        assert_eq!(corners.top_left, Some(px(7.0).into()));
+        assert_eq!(corners.top_right, Some(px(7.0).into()));
     }
 
     #[gpui_kit::test]
-    async fn issue75_screenshot_loading_reserves_metadata_geometry_and_keyboard_target(
+    async fn issue75_screenshot_loading_reserves_image_geometry_and_keyboard_target(
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
@@ -325,7 +228,6 @@ mod tests {
                     preview: view.read(cx).pixels(),
                     view,
                 },
-                save_focus: cx.focus_handle().tab_stop(true),
             }
         });
         let root = card.clone();
@@ -339,6 +241,9 @@ mod tests {
         let before = visual.debug_bounds("assistant-screenshot").unwrap();
         let image_before = visual.debug_bounds("screenshot-expand").unwrap();
         assert!(visual.debug_bounds("screenshot-loading").is_some());
+        assert!(visual.debug_bounds("screenshot-save").is_none());
+        assert_eq!(before.size.height, image_before.size.height + px(2.0));
+        assert_eq!(image_before.top(), before.top() + px(1.0));
         let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = actions.clone();
         let source = card.read_with(cx, |card, _| card.image.view.clone());
@@ -351,12 +256,6 @@ mod tests {
             )
             .detach()
         });
-        visual.update(|window, cx| card.read(cx).save_focus.clone().focus(window, cx));
-        visual.simulate_keystrokes("space");
-        assert!(matches!(
-            actions.borrow().last(),
-            Some(crate::image_preview::ImagePreviewAction::SaveInline)
-        ));
         visual.update(|window, cx| {
             card.read(cx)
                 .image
