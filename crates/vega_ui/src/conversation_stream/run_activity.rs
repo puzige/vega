@@ -1092,7 +1092,7 @@ impl RunActivityGroup {
         let mut header = None;
         let mut rows = Vec::new();
         if let Some(card) = &thinking {
-            let title = card.read(cx).title().to_owned();
+            let title = card.read(cx).title();
             let disclosure_group: gpui_kit::SharedString =
                 format!("run-stage-{}-{segment_index}", group.entity_id()).into();
             let header_focus = crate::disclosure::focus(disclosure_group.clone(), window, cx);

@@ -7,6 +7,8 @@ pub(crate) const THINKING_DELTA_BYTES: usize = 64 * 1024;
 pub(crate) const THINKING_BLOCK_BYTES: usize = 256 * 1024;
 pub(crate) const THINKING_VIEW_BYTES: usize = 1024 * 1024;
 pub(crate) const THINKING_VIEW_BLOCKS: usize = 256;
+const THINKING_TITLE_PREFIX: &str = "Thinking · ";
+const THINKING_TITLE_MAX_SCALARS: usize = 96;
 
 fn accepted_prefix_len(delta: &str, limit: usize) -> usize {
     let mut end = delta.len().min(THINKING_DELTA_BYTES).min(limit);
@@ -98,17 +100,18 @@ impl Preview {
             return;
         }
         let chars: Vec<_> = readable.chars().collect();
-        self.title = if chars.len() <= 96 {
+        let preview_limit = THINKING_TITLE_MAX_SCALARS - THINKING_TITLE_PREFIX.chars().count();
+        self.title = if chars.len() <= preview_limit {
             readable.to_owned()
         } else if is_heading {
-            chars[..95]
+            chars[..preview_limit - 1]
                 .iter()
                 .copied()
                 .chain(std::iter::once('…'))
                 .collect()
         } else {
             std::iter::once('…')
-                .chain(chars[chars.len() - 95..].iter().copied())
+                .chain(chars[chars.len() - (preview_limit - 1)..].iter().copied())
                 .collect()
         };
         self.heading |= is_heading;
@@ -134,18 +137,20 @@ pub(crate) struct ThinkingBlock {
 }
 
 impl ThinkingBlock {
+    #[cfg(test)]
     pub(crate) fn summary_title(&self) -> Option<&str> {
         (!self.summary_preview.title.is_empty()).then_some(self.summary_preview.title.as_str())
     }
 
-    pub(crate) fn title(&self) -> &str {
-        if !self.summary_preview.title.is_empty() {
+    pub(crate) fn title(&self) -> String {
+        let preview = if !self.summary_preview.title.is_empty() {
             &self.summary_preview.title
         } else if !self.thinking_preview.title.is_empty() {
             &self.thinking_preview.title
         } else {
-            "思考过程"
-        }
+            return "Thinking".to_owned();
+        };
+        format!("{THINKING_TITLE_PREFIX}{preview}")
     }
 
     pub(crate) fn visible_text(&self) -> &str {
@@ -271,6 +276,7 @@ impl Render for ThinkingBlock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.expanded_rendered = self.expanded;
         let colors = theme(cx).colors;
+        let title = self.title();
         div()
             .w_full()
             .min_w_0()
@@ -296,14 +302,7 @@ impl Render for ThinkingBlock {
                     .tab_stop(true)
                     .focus_visible(move |row| row.bg(colors.bg_hover))
                     .debug_selector(|| "thinking-toggle".into())
-                    .aria_label(format!(
-                        "{}，展开或收起思考过程",
-                        if self.shimmer_epoch.is_some() {
-                            self.summary_title().unwrap_or("Thinking")
-                        } else {
-                            self.title()
-                        }
-                    ))
+                    .aria_label(format!("{title}，展开或收起思考过程"))
                     .flex()
                     .items_center()
                     .gap(px(Layout::CONVERSATION_INLINE_GAP))
@@ -346,14 +345,9 @@ impl Render for ThinkingBlock {
                             .flex_shrink(1.)
                             .truncate()
                             .child(if let Some(epoch) = self.shimmer_epoch {
-                                shimmer::text(
-                                    self.summary_title().unwrap_or("Thinking").to_owned(),
-                                    epoch,
-                                    window,
-                                    cx,
-                                )
+                                shimmer::text(title.clone(), epoch, window, cx)
                             } else {
-                                div().child(self.title().to_owned()).into_any_element()
+                                div().child(title).into_any_element()
                             }),
                     )
                     .child(crate::disclosure::chevron(
