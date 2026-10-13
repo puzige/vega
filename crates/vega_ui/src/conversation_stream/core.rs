@@ -1651,7 +1651,8 @@ impl ConversationStream {
             | ConversationEvent::ToolCallRunning { .. }
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
-            ConversationEvent::RunStarted { .. }
+            ConversationEvent::PendingMessageDelivered { .. }
+            | ConversationEvent::RunStarted { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
             | ConversationEvent::ThinkingDelta { .. }

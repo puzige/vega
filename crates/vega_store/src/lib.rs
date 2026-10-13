@@ -63,7 +63,8 @@ pub mod tool_calls;
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+pub use rusqlite::Connection;
+use rusqlite::{Transaction, TransactionBehavior};
 
 /// Ordered, compile-time-embedded schema migrations.
 ///

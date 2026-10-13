@@ -375,7 +375,8 @@ impl ConversationMeter {
                 changed
             }
             // Tool progress cannot move the visible-output estimate.
-            ConversationEvent::RunStarted { .. }
+            ConversationEvent::PendingMessageDelivered { .. }
+            | ConversationEvent::RunStarted { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
             | ConversationEvent::ToolCallApproved { .. }

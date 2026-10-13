@@ -89,7 +89,7 @@ pub fn load_cached(
 }
 
 fn load_cached_conn(
-    conn: &rusqlite::Connection,
+    conn: &vega_store::Connection,
     thread_id: &str,
     cached: &[PendingMessage],
 ) -> Result<Vec<PendingMessage>, ConversationError> {
