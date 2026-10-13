@@ -90,6 +90,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0017_assistant_responses.sql"),
     include_str!("../migrations/0018_computer_use_delivery.sql"),
     include_str!("../migrations/0019_pending_messages.sql"),
+    include_str!("../migrations/0020_context_compaction_timeout.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -216,6 +217,161 @@ mod tests {
     }
 
     #[test]
+    fn issue356_additive_timeout_migration_preserves_legacy_rows_and_rejects_invalid_details() {
+        use crate::context_compaction::{NewContextCompactionStatus, insert_status, latest_status};
+
+        let directory = tempdir().unwrap();
+        let database_path = directory.path().join("timeout-v19.db");
+        let store = Store::open(&database_path).unwrap();
+        for migration in MIGRATIONS.iter().take(19) {
+            store.conn().execute_batch(migration).unwrap();
+        }
+        store
+            .conn()
+            .pragma_update(None, "user_version", 19_u32)
+            .unwrap();
+        store.conn().execute_batch(
+            "INSERT INTO threads (id,model,created_at,updated_at) VALUES ('t','model',1,1); \
+             INSERT INTO messages (id,thread_id,seq,role,content,status,created_at) \
+               VALUES ('m','t',1,'user','original source','done',1); \
+             INSERT INTO context_checkpoints (id,thread_id,model,source_version,covered_through_seq,source_fingerprint,summary,estimator_version,created_at) \
+               VALUES (23,'t','model',1,1,'legacy-fingerprint','legacy summary','legacy-estimator',1);",
+        ).unwrap();
+        let failures = [
+            "cancelled",
+            "source_changed",
+            "no_compactable_prefix",
+            "too_large",
+            "invalid_summary",
+            "images_unsupported",
+            "over_limit",
+            "unavailable",
+        ];
+        for (index, failure) in failures.iter().enumerate() {
+            store.conn().execute(
+                "INSERT INTO context_compaction_status \
+                 (id,thread_id,model,operation_key,generation,phase,usage_state,failure,source_version,estimated_tokens,input_budget,target_tokens,created_at) \
+                 VALUES (?1,'t',?2,'legacy',1,'failed','unknown',?2,1,400,500,300,1)",
+                rusqlite::params![index as i64 + 10, failure],
+            ).unwrap();
+        }
+        let schema_identity = |store: &Store| {
+            store
+                .conn()
+                .prepare(
+                    "SELECT name,rootpage FROM sqlite_master WHERE name IN \
+                 ('context_compaction_status','context_compaction_status_latest') ORDER BY name",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let before_schema = schema_identity(&store);
+        store.migrate().unwrap();
+        store.migrate().unwrap();
+        assert_eq!(user_version(&store), 20);
+        assert_eq!(schema_identity(&store), before_schema);
+        for (index, failure) in failures.iter().enumerate() {
+            let legacy = latest_status(store.conn(), "t", failure).unwrap().unwrap();
+            assert_eq!(legacy.id, index as i64 + 10);
+            assert_eq!(legacy.failure.as_deref(), Some(*failure));
+            let detail: Option<String> = store
+                .conn()
+                .query_row(
+                    "SELECT failure_detail FROM context_compaction_status WHERE id=?1",
+                    [legacy.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(detail, None);
+        }
+        let audit: (String, i64, String) = store
+            .conn()
+            .query_row(
+                "SELECT (SELECT content FROM messages WHERE id='m'), \
+             (SELECT id FROM context_checkpoints WHERE id=23), \
+             (SELECT summary FROM context_checkpoints WHERE id=23)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            audit,
+            ("original source".into(), 23, "legacy summary".into())
+        );
+        let status = NewContextCompactionStatus {
+            thread_id: "t",
+            model: "model",
+            operation_key: "new-timeout",
+            generation: 2,
+            phase: "failed",
+            usage_state: "unknown",
+            failure: Some("summary_timeout"),
+            source_version: 1,
+            estimated_tokens: 400,
+            input_budget: 500,
+            target_tokens: 300,
+            created_at: 2,
+        };
+        let id = insert_status(store.conn(), status).unwrap();
+        assert_eq!(id, 18);
+        let raw: (String, String) = store
+            .conn()
+            .query_row(
+                "SELECT failure,failure_detail FROM context_compaction_status WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(raw, ("invalid_summary".into(), "summary_timeout".into()));
+        for (base, detail) in [
+            (None, "summary_timeout"),
+            (Some("unavailable"), "summary_timeout"),
+            (Some("invalid_summary"), "unknown-detail"),
+        ] {
+            let error = store.conn().execute(
+                "INSERT INTO context_compaction_status \
+                 (thread_id,model,operation_key,generation,phase,usage_state,failure,failure_detail,source_version,estimated_tokens,input_budget,target_tokens,created_at) \
+                 VALUES ('t','model','invalid',3,'failed','unknown',?1,?2,1,400,500,300,3)",
+                rusqlite::params![base, detail],
+            ).unwrap_err();
+            assert_eq!(
+                error.sqlite_error_code(),
+                Some(ErrorCode::ConstraintViolation)
+            );
+        }
+        assert!(
+            insert_status(
+                store.conn(),
+                NewContextCompactionStatus {
+                    failure: Some("raw provider diagnostic"),
+                    ..status
+                }
+            )
+            .is_err()
+        );
+        drop(store);
+        let reopened = Store::open_read_only(&database_path).unwrap();
+        let timeout = latest_status(reopened.conn(), "t", "model")
+            .unwrap()
+            .unwrap();
+        assert_eq!(timeout.id, id);
+        assert_eq!(timeout.failure.as_deref(), Some("summary_timeout"));
+        assert_eq!(
+            latest_status(reopened.conn(), "t", "invalid_summary")
+                .unwrap()
+                .unwrap()
+                .failure
+                .as_deref(),
+            Some("invalid_summary")
+        );
+    }
+
+    #[test]
     fn issue74_version_twelve_upgrade_adds_skills_without_losing_mcp_or_thread_rows() {
         let dir = tempdir().unwrap();
         let store = Store::open(dir.path().join("issue74-v12.db")).unwrap();
@@ -241,7 +397,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 19);
+        assert_eq!(user_version(&store), 20);
         let settings = skills::read_settings(store.conn()).unwrap();
         assert!(!settings.global_enabled);
         assert!(!settings.automatic_enabled);
@@ -330,9 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_19() {
+    fn migrated_store_is_wal_at_user_version_20() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 19);
+        assert_eq!(user_version(&store), 20);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -448,7 +604,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 19);
+        assert_eq!(user_version(&store), 20);
         let after: String = store
             .conn()
             .query_row(
@@ -477,7 +633,7 @@ mod tests {
         store.conn().pragma_update(None, "user_version", 7).unwrap();
         store.conn().execute_batch("INSERT INTO threads (id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) VALUES ('named','手动','ask','confirm','m','active',0,0,1,1),('populated','','ask','confirm','m','active',0,0,1,1),('empty','','ask','confirm','m','active',0,0,1,1); INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','populated',1,'user','text','hi','done',1);").unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 19);
+        assert_eq!(user_version(&store), 20);
         let rows: Vec<(String, String, String)> = store
             .conn()
             .prepare("SELECT id,title,auto_title_state FROM threads ORDER BY id")
@@ -502,7 +658,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 19);
+        assert_eq!(user_version(&store), 20);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -538,7 +694,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 19);
+        assert_eq!(user_version(&store), 20);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -610,7 +766,7 @@ mod tests {
                VALUES ('old','t','m',1,'read','{}','success',1);"
         ).unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 19);
+        assert_eq!(user_version(&store), 20);
         let old: Option<i64> = store
             .conn()
             .query_row(
@@ -693,7 +849,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 19);
+        assert_eq!(user_version(&store), 20);
         for table in [
             "messages",
             "tool_calls",

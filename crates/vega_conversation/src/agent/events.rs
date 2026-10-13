@@ -867,6 +867,7 @@ pub(crate) fn persist_runtime_event(
                 }
                 vega_runtime::ContextCompactionStatusFailure::TooLarge => "too_large",
                 vega_runtime::ContextCompactionStatusFailure::InvalidSummary => "invalid_summary",
+                vega_runtime::ContextCompactionStatusFailure::TimedOut => "summary_timeout",
                 vega_runtime::ContextCompactionStatusFailure::ImagesUnsupported => {
                     "images_unsupported"
                 }

@@ -685,6 +685,9 @@ pub(crate) fn from_runtime_event(
                 Some(vega_runtime::ContextCompactionStatusFailure::InvalidSummary) => {
                     Some(ContextCompactionFailureCode::InvalidSummary)
                 }
+                Some(vega_runtime::ContextCompactionStatusFailure::TimedOut) => {
+                    Some(ContextCompactionFailureCode::TimedOut)
+                }
                 Some(vega_runtime::ContextCompactionStatusFailure::ImagesUnsupported) => {
                     Some(ContextCompactionFailureCode::ImagesUnsupported)
                 }

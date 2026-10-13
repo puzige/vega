@@ -174,6 +174,41 @@ fn issue88_internal_stage_limit_and_model_budget_have_distinct_copy() {
     assert!(!status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("安全分段上限"));
 }
 
+#[gpui_kit::test]
+async fn issue356_timeout_label_survives_restoration_and_keeps_invalid_summary_distinct(
+    cx: &mut TestAppContext,
+) {
+    assert_eq!(
+        status_label_for(Status::Failed, Some(Failure::TimedOut)),
+        "上下文压缩超时，请重试"
+    );
+    assert_eq!(
+        status_label_for(Status::Failed, Some(Failure::InvalidSummary)),
+        "压缩结果无效，请重试"
+    );
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            let mut record = status(1, Status::Failed);
+            record.failure = Some(Failure::TimedOut);
+            assert!(stream.restore_context_status("context-thread", "mock", record, cx));
+            let Some(StreamEntry::ContextCompaction {
+                record, restored, ..
+            }) = stream.entries.last()
+            else {
+                panic!("restored timeout row missing");
+            };
+            assert!(*restored);
+            assert_eq!(record.failure, Some(Failure::TimedOut));
+            assert_eq!(
+                context_compaction_label(record.status, record.failure, *restored),
+                "已恢复 · 上下文压缩超时，请重试"
+            );
+            assert!(!stream.context_operation_busy());
+        })
+        .unwrap();
+}
+
 #[test]
 fn issue117_compaction_copy_matches_reference_and_marks_restored_rows() {
     assert_eq!(status_label_for(Status::Compacting, None), "正在压缩上下文");
