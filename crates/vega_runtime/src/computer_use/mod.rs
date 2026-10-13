@@ -6,7 +6,9 @@ mod backend;
 mod components;
 mod control;
 mod diagnostics;
+pub mod guide;
 mod media;
+mod progress;
 
 pub use components::ManagedComponents;
 pub use control::{ComputerUseControl, ControlPhase, ControlSnapshot};
@@ -70,6 +72,81 @@ pub enum ComputerUseError {
     Image,
     #[error("不支持此操作或参数")]
     InvalidAction,
+    #[error("invalid_arguments: field={0}")]
+    InvalidArguments(&'static str),
+    #[error("coordinate_element_conflict: use either target or x/y")]
+    CoordinateElementConflict,
+    #[error("read_only_observation: obtain an actionable ComputerObserve before input")]
+    ReadOnlyObservation,
+    #[error("target_expired: refresh the directory")]
+    TargetExpired,
+    #[error("screenshot_limit: at most four screenshots and 16 MiB per run")]
+    ScreenshotLimit,
+    #[error("no_progress: repeated desktop calls made no observable progress; stopped this run")]
+    NoProgress,
+}
+
+impl ComputerUseError {
+    pub fn needs_permissions(self) -> bool {
+        matches!(self, Self::Permissions)
+            || matches!(self, Self::Executor(error) if error.needs_permissions())
+    }
+
+    pub(crate) fn feedback(self) -> String {
+        let (code, retryable, next, field) = match self {
+            Self::InvalidAction => ("invalid_arguments", true, "correct_parameters", None),
+            Self::InvalidArguments(field) => {
+                ("invalid_arguments", true, "correct_parameters", Some(field))
+            }
+            Self::CoordinateElementConflict => (
+                "coordinate_element_conflict",
+                true,
+                "use_element_or_coordinates",
+                Some("target"),
+            ),
+            Self::ReadOnlyObservation => {
+                ("read_only_observation", true, "observe_before_input", None)
+            }
+            Self::StaleObservation => (
+                "stale_observation",
+                true,
+                "refresh_directory_then_observe",
+                None,
+            ),
+            Self::TargetExpired | Self::TargetChanged => (
+                "target_expired",
+                true,
+                "refresh_directory",
+                Some("target_id"),
+            ),
+            Self::NoProgress => ("no_progress", false, "stop_and_report", None),
+            Self::ScreenshotLimit => ("screenshot_limit", false, "stop_and_report", None),
+            Self::Executor(error) => return error.feedback(),
+            Self::Permissions => ("permissions_missing", false, "open_system_settings", None),
+            Self::Unavailable
+            | Self::MissingComponents
+            | Self::IncompatibleComponents
+            | Self::UnsupportedPlatform => {
+                ("component_unavailable", false, "check_installation", None)
+            }
+            Self::Busy => ("busy", false, "wait_for_current_task", None),
+            Self::NotReady | Self::Cancelled => {
+                ("control_unavailable", false, "stop_and_report", None)
+            }
+            Self::GrantExpired => ("grant_expired", false, "reconnect_browser", None),
+            Self::BrowserExtension => (
+                "browser_extension",
+                false,
+                "connect_browser_extension",
+                None,
+            ),
+            Self::Protocol | Self::Rejected | Self::Image => {
+                ("unverified_result", false, "stop_and_report", None)
+            }
+        };
+        serde_json::json!({"code":code,"retryable":retryable,"next_step":next,"field":field})
+            .to_string()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -123,6 +200,8 @@ pub struct ComputerUseRun {
     desktop_enabled: bool,
     browser_enabled: bool,
     backend: Arc<tokio::sync::Mutex<backend::Backends>>,
+    progress: Arc<std::sync::Mutex<progress::ProgressGuard>>,
+    screenshots: Arc<std::sync::Mutex<Vec<(String, crate::ImageAttachment, u64)>>>,
 }
 
 impl std::fmt::Debug for ComputerUseRun {
@@ -141,6 +220,8 @@ impl ComputerUseRun {
             desktop_enabled,
             browser_enabled,
             backend: Arc::new(tokio::sync::Mutex::new(backend::Backends::default())),
+            progress: Arc::new(std::sync::Mutex::new(progress::ProgressGuard::default())),
+            screenshots: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -174,14 +255,22 @@ impl ComputerUseRun {
             } else {
                 ""
             };
-            definitions.push(crate::ToolDefinition { name: act.into(), description: format!("{}{background_guidance}", if capability == Capability::Desktop { "Perform one bounded action on the exact target of the latest desktop window observation and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. A desktop directory or screenshot-only observation cannot be used for actions. A screenshot-only result supports visual inspection but requires a fresh healthy observation before any input. To switch windows, call ComputerObserve with its target_id first. No scripts, file transfers, tab selection or permission changes." } else { "Perform one bounded action on the exact user-authorized target and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. No scripts, file transfers, tab selection or permission changes." }), input_schema: json!({"type":"object","properties":{"observation_id":{"type":"string"},"action":{"type":"string","enum":actions},"target":{"type":["string","null"]},"text":{"type":["string","null"]},"key":{"type":["string","null"]},"url":{"type":["string","null"]},"x":{"type":["number","null"]},"y":{"type":["number","null"]},"direction":{"type":["string","null"],"enum":["up","down","left","right",null]},"amount":{"type":["integer","null"],"minimum":1,"maximum":10}},"required":["observation_id","action","target","text","key","url","x","y","direction","amount"],"additionalProperties":false}), strict: true });
+            definitions.push(crate::ToolDefinition { name: act.into(), description: format!("{}{background_guidance}", if capability == Capability::Desktop { "Perform one bounded action on the exact target of the latest desktop window observation and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. A desktop directory or screenshot-only observation cannot be used for actions. A screenshot-only result supports visual inspection but requires a fresh healthy observation before any input. To switch windows, call ComputerObserve with its target_id first. No scripts, file transfers, tab selection or permission changes." } else { "Perform one bounded action on the exact user-authorized target and observe its result. Requires the latest observation_id. Coordinates use the displayed image pixel size; use element references when available. Never retry an outcome_unknown action. No scripts, file transfers, tab selection or permission changes." }), input_schema: json!({"type":"object","properties":{"observation_id":{"type":"string"},"action":{"type":"string","enum":actions},"target":{"type":["string","null"]},"text":{"type":["string","null"],"description":if capability == Capability::Desktop { "type_text inserts at the verified caret or replaces the current selection; never assumes whole-field replacement." } else { "Text for the browser type action." }},"key":{"type":["string","null"],"description":"press_key: one key such as return/tab/escape. Desktop hotkey: 2–4 keys joined by +, modifiers first and base key last, e.g. cmd+a or cmd+shift+z."},"url":{"type":["string","null"]},"x":{"type":["number","null"]},"y":{"type":["number","null"]},"direction":{"type":["string","null"],"enum":["up","down","left","right",null]},"amount":{"type":["integer","null"],"minimum":1,"maximum":10}},"required":["observation_id","action","target","text","key","url","x","y","direction","amount"],"additionalProperties":false}), strict: true });
+        }
+        if self.desktop_enabled {
+            definitions.push(crate::ToolDefinition {
+                name: "ComputerScreenshot".into(),
+                description: "Capture and deliver a screenshot of one exact window from the current desktop directory directly as an image attachment in this conversation. Use this for screenshot requests instead of ComputerObserve or shell commands. Does not require an accessibility tree and never grants input authority. Only target_id from the current ComputerObserve directory is accepted. Successful delivery returns an artifact_id; the image is already displayed and saved in this conversation. At most four screenshots per run.".into(),
+                input_schema: json!({"type":"object","properties":{"target_id":{"type":"string"}},"required":["target_id"],"additionalProperties":false}),
+                strict: true,
+            });
         }
         definitions
     }
 
     pub fn tool_capability(name: &str) -> Option<Capability> {
         match name {
-            "ComputerObserve" | "ComputerAct" => Some(Capability::Desktop),
+            "ComputerObserve" | "ComputerAct" | "ComputerScreenshot" => Some(Capability::Desktop),
             "BrowserObserve" | "BrowserAct" => Some(Capability::Browser),
             _ => None,
         }
@@ -227,12 +316,43 @@ impl ComputerUseRun {
         }
         self.wait_ready(cancel).await?;
         let epoch = self.control.status().epoch;
-        let result = self
+        if capability == Capability::Desktop && self.no_progress() {
+            return Err(ComputerUseError::NoProgress);
+        }
+        let previous = self
+            .control
+            .snapshot()
+            .observations
+            .into_iter()
+            .find(|item| arguments["observation_id"].as_str() == Some(item.id.as_str()));
+        let target = arguments["target_id"]
+            .as_str()
+            .and_then(|id| self.control.window_target(id))
+            .or_else(|| previous.as_ref().map(|item| item.target.clone()));
+        let attempt = progress::Attempt::new(name, &arguments, target.as_ref(), previous.as_ref());
+        let mut result = self
             .backend
             .lock()
             .await
             .execute(self, name, call_id, arguments, cancel)
             .await;
+        if capability == Capability::Desktop {
+            let after = self
+                .control
+                .snapshot()
+                .observations
+                .into_iter()
+                .find(|item| item.call_id == call_id);
+            let stopped = self
+                .progress
+                .lock()
+                .map_err(|_| ComputerUseError::Unavailable)?
+                .finish(attempt, &result, after.as_ref());
+            if stopped {
+                self.control.fail(epoch, ComputerUseError::NoProgress);
+                result = Err(ComputerUseError::NoProgress);
+            }
+        }
         if let Err(error) = &result
             && self.record_failure(name, capability, epoch, *error)
         {
@@ -245,6 +365,41 @@ impl ComputerUseRun {
             self.cleanup_revoked().await;
         }
         result
+    }
+
+    pub(crate) fn no_progress(&self) -> bool {
+        self.progress
+            .lock()
+            .is_ok_and(|progress| progress.stopped())
+    }
+
+    pub(crate) fn screenshot(&self, call_id: &str) -> Option<(crate::ImageAttachment, u64)> {
+        self.screenshots
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(id, _, _)| id == call_id)
+            .map(|(_, image, epoch)| (image.clone(), *epoch))
+    }
+
+    fn retain_screenshot(
+        &self,
+        call_id: &str,
+        image: crate::ImageAttachment,
+        epoch: u64,
+    ) -> Result<(), ComputerUseError> {
+        let mut screenshots = self
+            .screenshots
+            .lock()
+            .map_err(|_| ComputerUseError::Unavailable)?;
+        let mut images = screenshots
+            .iter()
+            .map(|(_, image, _)| image.clone())
+            .collect::<Vec<_>>();
+        images.push(image.clone());
+        crate::images::validate_images(&images).map_err(|_| ComputerUseError::ScreenshotLimit)?;
+        screenshots.push((call_id.to_string(), image, epoch));
+        Ok(())
     }
 
     #[cfg(test)]
@@ -261,8 +416,14 @@ impl ComputerUseRun {
                 windows,
                 results: results.into(),
                 actions: actions.clone(),
+                calls: Vec::new(),
             });
         actions
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fixture_calls(&self) -> Vec<(String, Value)> {
+        self.backend.lock().await.fixture_calls()
     }
 
     fn record_failure(
@@ -272,7 +433,7 @@ impl ComputerUseRun {
         epoch: u64,
         error: ComputerUseError,
     ) -> bool {
-        if name == "ComputerObserve"
+        if matches!(name, "ComputerObserve" | "ComputerScreenshot")
             && capability == Capability::Desktop
             && diagnostics::recoverable_observe(error)
         {
@@ -283,6 +444,10 @@ impl ComputerUseRun {
                 error,
                 ComputerUseError::StaleObservation
                     | ComputerUseError::InvalidAction
+                    | ComputerUseError::InvalidArguments(_)
+                    | ComputerUseError::CoordinateElementConflict
+                    | ComputerUseError::ReadOnlyObservation
+                    | ComputerUseError::TargetExpired
                     | ComputerUseError::Busy
                     | ComputerUseError::NotReady
                     | ComputerUseError::Cancelled
@@ -378,7 +543,11 @@ impl ComputerUseRun {
             .into_iter()
             .find(|item| item.call_id == call_id)
         {
-            message.content = observation.model_text();
+            message.content = if self.screenshot(call_id).is_some() {
+                format!("{}\n{}", message.content, observation.model_text())
+            } else {
+                observation.model_text()
+            };
             message.images = if observation.model_image {
                 observation.image.into_iter().collect()
             } else {
@@ -429,6 +598,7 @@ impl ComputerUseAudit {
                 && matches!(
                     audit.action.as_str(),
                     "observe"
+                        | "screenshot"
                         | "click"
                         | "type_text"
                         | "press_key"
@@ -465,5 +635,45 @@ impl std::fmt::Debug for Target {
                 .field("index", index)
                 .finish_non_exhaustive(),
         }
+    }
+}
+
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use super::{Capability, ComputerUseControl, ComputerUseError, Target};
+
+    pub fn connected_desktop() -> Result<ComputerUseControl, ComputerUseError> {
+        let control = ComputerUseControl::new();
+        let epoch = control.begin(Capability::Desktop)?;
+        control.connected(epoch, Capability::Desktop, Target::DesktopCatalog)?;
+        Ok(control)
+    }
+
+    pub fn pending_browser() -> Result<ComputerUseControl, ComputerUseError> {
+        let control = ComputerUseControl::new();
+        let epoch = control.begin(Capability::Browser)?;
+        control.offer_browser(
+            epoch,
+            Target::Browser {
+                connection: "fixture".into(),
+                index: 1,
+                title: "Owned fixture".into(),
+                url: "https://fixture.invalid".into(),
+            },
+        )?;
+        Ok(control)
+    }
+
+    pub fn permission_failure() -> Result<ComputerUseControl, ComputerUseError> {
+        let control = ComputerUseControl::new();
+        let epoch = control.begin(Capability::Desktop)?;
+        control.fail(epoch, ComputerUseError::Permissions);
+        control.stop();
+        control.finish_cleanup();
+        Ok(control)
+    }
+
+    pub fn finish_cleanup(control: &ComputerUseControl) {
+        control.finish_cleanup();
     }
 }

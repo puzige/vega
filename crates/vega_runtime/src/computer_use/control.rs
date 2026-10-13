@@ -90,6 +90,37 @@ impl ComputerUseControl {
         }))
     }
 
+    pub fn commit_delivery<T>(
+        &self,
+        epoch: u64,
+        deliver: impl FnOnce() -> T,
+    ) -> Result<T, ComputerUseError> {
+        let state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| ComputerUseError::Unavailable)?;
+        if state.epoch != epoch
+            || state.phase != ControlPhase::Running
+            || state.action_cancel.is_cancelled()
+        {
+            return Err(ComputerUseError::Cancelled);
+        }
+        Ok(deliver())
+    }
+
+    pub(crate) fn window_target(&self, id: &str) -> Option<Target> {
+        self.0
+            .state
+            .lock()
+            .ok()?
+            .windows
+            .iter()
+            .find(|window| window.selection_id == id)
+            .cloned()
+            .map(Target::Desktop)
+    }
+
     pub(crate) fn run_id(&self) -> &str {
         &self.0.run_id
     }
@@ -124,17 +155,29 @@ impl ComputerUseControl {
     }
 
     pub fn pause(&self) {
-        self.revoke(ControlPhase::Pausing);
+        self.revoke(ControlPhase::Pausing, None);
     }
 
     pub fn stop(&self) {
-        self.revoke(ControlPhase::Stopping);
+        self.revoke(ControlPhase::Stopping, None);
     }
 
-    fn revoke(&self, phase: ControlPhase) {
+    pub fn pause_at(&self, expected_epoch: u64) -> Result<(), ComputerUseError> {
+        if self.revoke(ControlPhase::Pausing, Some(expected_epoch)) {
+            Ok(())
+        } else {
+            Err(ComputerUseError::NotReady)
+        }
+    }
+
+    fn revoke(&self, phase: ControlPhase, expected_epoch: Option<u64>) -> bool {
         if let Ok(mut state) = self.0.state.lock() {
-            if matches!(state.phase, ControlPhase::Stopped | ControlPhase::Stopping) {
-                return;
+            if matches!(state.phase, ControlPhase::Stopped | ControlPhase::Stopping)
+                || expected_epoch.is_some_and(|epoch| {
+                    state.epoch != epoch || state.phase != ControlPhase::Running
+                })
+            {
+                return false;
             }
             state.epoch = state.epoch.saturating_add(1);
             state.action_cancel.cancel();
@@ -144,8 +187,11 @@ impl ComputerUseControl {
             state.next_cursor = None;
             state.browser_target = None;
             state.phase = phase;
+        } else {
+            return false;
         }
         self.notify();
+        true
     }
 
     pub fn resume(&self, expected_epoch: u64) -> Result<(), ComputerUseError> {

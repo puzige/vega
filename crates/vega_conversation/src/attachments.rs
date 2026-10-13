@@ -34,6 +34,22 @@ pub fn import_images(paths: &[PathBuf]) -> Result<Vec<ImageAttachment>, ImageErr
     Ok(images)
 }
 
+pub fn save_screenshot(image: &ImageAttachment, path: &std::path::Path) -> Result<(), ImageError> {
+    use std::io::Write;
+    validate_images(std::slice::from_ref(image))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| ImageError("could not create screenshot file; choose a new filename"))?;
+    file.write_all(image.bytes())
+        .map_err(|_| ImageError("could not save screenshot file"))?;
+    file.sync_all()
+        .map_err(|_| ImageError("could not finish saving screenshot file"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

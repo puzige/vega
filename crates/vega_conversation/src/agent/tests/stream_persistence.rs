@@ -205,8 +205,10 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
         vec![
             "assistant_responses",
             "assistant_run_durations",
+            "builtin_skill_activations",
             "codex_session_creations",
             "codex_task_snapshots",
+            "computer_screenshot_artifacts",
             "context_checkpoints",
             "context_compaction_status",
             "context_settings",

@@ -95,7 +95,8 @@ impl ConversationStream {
                 | StreamEntry::RunActivity { .. }
                 | StreamEntry::RunActivitySegment { .. }
                 | StreamEntry::Permission { .. }
-                | StreamEntry::SkillActivation { .. } => continue,
+                | StreamEntry::SkillActivation { .. }
+                | StreamEntry::Screenshot { .. } => continue,
             };
             if !seen.insert(message_id) {
                 continue;

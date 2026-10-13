@@ -9,7 +9,7 @@ use vega_conversation::attachments::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TURN_IMAGE
 #[derive(Clone)]
 pub(crate) struct ImagePreview {
     pub image: ImageAttachment,
-    preview: Arc<std::sync::OnceLock<Arc<Image>>>,
+    pub(super) preview: Arc<std::sync::OnceLock<Arc<Image>>>,
 }
 
 impl ImagePreview {

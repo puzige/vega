@@ -893,6 +893,7 @@ impl VegaWindow {
                                 });
                             if latest != control_status {
                                 control_status = latest;
+                                stream.update(cx, |_, cx| cx.notify());
                                 cx.notify();
                             }
                         }

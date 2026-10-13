@@ -206,6 +206,21 @@ impl ConversationStream {
                         .or_default()
                         .push(response);
                 }
+                HistoryEntry::AssistantScreenshot {
+                    seq,
+                    message_id,
+                    call_id,
+                    image,
+                } => {
+                    hydrated.push(StreamEntry::Screenshot {
+                        card: self.screenshot_card(image, cx),
+                    });
+                    hydrated_identities.push(self.durable_entry_identity(
+                        &message_id,
+                        &format!("screenshot-{call_id}"),
+                        Some(seq),
+                    ));
+                }
                 HistoryEntry::UserImages {
                     seq,
                     message_id,
@@ -619,6 +634,7 @@ impl ConversationStream {
             HistoryEntry::UserText { message_id: id, .. }
             | HistoryEntry::UserImages { message_id: id, .. }
             | HistoryEntry::AssistantText { message_id: id, .. }
+            | HistoryEntry::AssistantScreenshot { message_id: id, .. }
             | HistoryEntry::Tool { message_id: id, .. }
             | HistoryEntry::AssistantResponseMetadata { message_id: id, .. } => id == message_id,
             HistoryEntry::Plan { plan, .. } => plan.id == message_id,
@@ -1123,6 +1139,7 @@ impl ConversationStream {
                     return;
                 }
                 self.last_finished_agent_message = None;
+                self.computer_use_control = None;
                 self.active_thinking = None;
                 self.active_skills.clear();
                 self.active_skill_focuses.clear();
@@ -1224,6 +1241,36 @@ impl ConversationStream {
             }
             ConversationEvent::ThinkingDelta { message_id, delta } => {
                 self.append_thinking(&message_id, &delta, cx);
+            }
+            ConversationEvent::ScreenshotDelivered {
+                message_id,
+                call_id,
+                image,
+            } => {
+                if self
+                    .active_agent_message
+                    .as_ref()
+                    .is_some_and(|(active, _)| active == &message_id)
+                {
+                    let identity = self.durable_entry_identity(
+                        &message_id,
+                        &format!("screenshot-{call_id}"),
+                        self.active_agent_sequence,
+                    );
+                    if !self
+                        .entry_identities
+                        .iter()
+                        .any(|existing| existing == &identity)
+                    {
+                        let index = self.entries.len();
+                        let card = self.screenshot_card(image, cx);
+                        self.entries.push(StreamEntry::Screenshot { card });
+                        self.list_append(index);
+                        self.set_entry_identity(index, identity);
+                        self.invalidate_item(Some(index));
+                        cx.notify();
+                    }
+                }
             }
             ConversationEvent::SkillActivated { message_id, skill } => {
                 if self

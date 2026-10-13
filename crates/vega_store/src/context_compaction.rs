@@ -1405,7 +1405,7 @@ fn fingerprint_source(
     let (image_count, image_bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(encoded)), 0) \
          FROM image_attachments a JOIN messages m ON m.id = a.message_id \
-         WHERE m.thread_id = ?1",
+         WHERE m.thread_id = ?1 AND m.role = 'user'",
         [thread_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -1421,7 +1421,7 @@ fn fingerprint_source(
     let mut statement = conn.prepare(
         "SELECT a.message_id, a.ordinal, a.encoded \
          FROM image_attachments a JOIN messages m ON m.id = a.message_id \
-         WHERE m.thread_id = ?1 ORDER BY m.seq, a.ordinal",
+         WHERE m.thread_id = ?1 AND m.role = 'user' ORDER BY m.seq, a.ordinal",
     )?;
     let mut rows = statement.query([thread_id])?;
     while let Some(row) = rows.next()? {
@@ -1435,6 +1435,7 @@ fn fingerprint_source(
             images.push(ImageRow {
                 message_id,
                 ordinal,
+                artifact_call_id: None,
                 encoded: encoded.to_vec(),
             });
         }

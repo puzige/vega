@@ -390,8 +390,18 @@ async fn r11_composer_stream_stop_retains_partial_and_next_draft(
     });
     assert_eq!(draft(&f, cx), "", "durable start accepted submitted text");
     edit(&f, "unsent next draft", cx);
+    let computer_control = ComputerUseControl::new();
+    f.root.update(cx, |root, _| {
+        root.agent_controller
+            .active
+            .values_mut()
+            .next()
+            .unwrap()
+            .computer_use = Some(computer_control.clone());
+    });
     assert_composer_control_size(&f, "composer-stop", cx);
     click(&f, "composer-stop", cx);
+    assert_eq!(computer_control.status().phase, ControlPhase::Stopping);
     assert_terminal(&f, cx);
     assert!(
         VisualTestContext::from_window(f.window.into(), cx)

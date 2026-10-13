@@ -25,6 +25,7 @@ fn entry_kinds_at(stream: &ConversationStream, indices: &[usize]) -> Vec<&'stati
                 StreamEntry::Summary { .. } => "summary",
                 StreamEntry::ContextCompaction { .. } => "compaction",
                 StreamEntry::SkillActivation { .. } => "skill-activation",
+                StreamEntry::Screenshot { .. } => "screenshot",
             })
         })
         .collect()

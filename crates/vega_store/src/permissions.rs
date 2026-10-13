@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_twenty_nine_tables_at_current_user_version() {
+    fn schema_has_thirty_one_tables_at_current_user_version() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -287,7 +287,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(user_version, 17);
-        assert_eq!(table_count, 29);
+        assert_eq!(user_version, 18);
+        assert_eq!(table_count, 31);
     }
 }

@@ -495,3 +495,42 @@ async fn issue75_observation_recovery_never_revives_revoked_or_fatal_runs() {
         run.control.finish_cleanup();
     }
 }
+
+#[test]
+fn issue75_usability_delivery_commit_and_pause_have_one_ordered_boundary() {
+    let control = ComputerUseControl::new();
+    let epoch = control.begin(Capability::Desktop).unwrap();
+    control
+        .connected(epoch, Capability::Desktop, Target::DesktopCatalog)
+        .unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let delivery = control.clone();
+    let committing = std::thread::spawn(move || {
+        delivery.commit_delivery(epoch, || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            1
+        })
+    });
+    started_rx.recv().unwrap();
+    let paused = control.clone();
+    let pausing = std::thread::spawn(move || paused.pause());
+    release_tx.send(()).unwrap();
+    assert_eq!(committing.join().unwrap().unwrap(), 1);
+    pausing.join().unwrap();
+    assert!(
+        control
+            .commit_delivery(epoch, || panic!("late artifact must not commit"))
+            .is_err()
+    );
+    control.finish_cleanup();
+    control.resume(control.status().epoch).unwrap();
+    assert!(
+        control
+            .commit_delivery(epoch, || panic!("old epoch cannot publish after resume"))
+            .is_err()
+    );
+    control.stop();
+    control.finish_cleanup();
+}

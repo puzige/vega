@@ -230,11 +230,17 @@ pub(crate) fn history_from_context_source(
             _ => unreachable!("role filtered above"),
         };
         let mut chat = vega_runtime::ChatMessage::new(role, message.content.clone());
-        for image in source
-            .images
-            .iter()
-            .filter(|image| image.message_id == message.id)
-        {
+        for image in source.images.iter().filter(|image| {
+            image.message_id == message.id
+                && !(message.role == "assistant"
+                    && image.artifact_call_id.as_ref().is_some_and(|id| {
+                        source.tool_calls.iter().any(|call| {
+                            call.id == *id
+                                && call.message_id == message.id
+                                && call.tool == "ComputerScreenshot"
+                        })
+                    }))
+        }) {
             let attachment = vega_runtime::ImageAttachment::from_bytes(image.encoded.clone())
                 .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
             crate::attachments::validate_images(std::slice::from_ref(&attachment))
@@ -385,7 +391,17 @@ pub(crate) fn historical_image_projection(
         let rows = source
             .images
             .iter()
-            .filter(|image| image.message_id == message.id)
+            .filter(|image| {
+                image.message_id == message.id
+                    && !(message.role == "assistant"
+                        && image.artifact_call_id.as_ref().is_some_and(|id| {
+                            source.tool_calls.iter().any(|call| {
+                                call.id == *id
+                                    && call.message_id == message.id
+                                    && call.tool == "ComputerScreenshot"
+                            })
+                        }))
+            })
             .collect::<Vec<_>>();
         if rows.is_empty() {
             continue;

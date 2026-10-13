@@ -688,6 +688,14 @@ pub enum RuntimeAssistantResponseKind {
 
 #[derive(Clone)]
 pub enum RuntimeEvent {
+    BuiltinSkillActivated(crate::computer_use::guide::BuiltinSkillActivation),
+    ScreenshotDelivered {
+        call_id: String,
+        image: crate::ImageAttachment,
+        control: crate::computer_use::ComputerUseControl,
+        epoch: u64,
+        cancel: CancellationToken,
+    },
     AssistantResponseCompleted {
         response_id: String,
         text_start_bytes: usize,
@@ -788,6 +796,14 @@ pub enum RuntimeEvent {
 impl fmt::Debug for RuntimeEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BuiltinSkillActivated(activation) => formatter
+                .debug_tuple("BuiltinSkillActivated")
+                .field(activation)
+                .finish(),
+            Self::ScreenshotDelivered { image, .. } => formatter
+                .debug_struct("ScreenshotDelivered")
+                .field("image_bytes", &image.bytes().len())
+                .finish_non_exhaustive(),
             Self::AssistantResponseCompleted {
                 response_id,
                 text_start_bytes,

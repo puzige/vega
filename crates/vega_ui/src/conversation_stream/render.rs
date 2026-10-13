@@ -1677,6 +1677,7 @@ impl Render for ConversationStream {
                         ),
                 )
                 .children(self.message_location_status_element(cx))
+                .children(self.render_computer_use_notice(cx))
                 .into_any_element()
         };
 

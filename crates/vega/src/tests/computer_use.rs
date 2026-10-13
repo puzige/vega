@@ -1,5 +1,4 @@
 use super::*;
-use crate::window::computer_use::{ComputerUseAction, ComputerUseOwner};
 use gpui_kit::{TestAppContext, VisualTestContext};
 
 fn fixture(
@@ -101,44 +100,34 @@ async fn issue75_late_ready_after_stop_is_revoked_and_stale_generation_is_ignore
 }
 
 #[gpui_kit::test]
-async fn issue75_control_bar_survives_settings_and_stop_has_epoch_and_owner_fences(
+async fn issue75_usability_no_global_bar_in_task_or_settings_and_window_cleanup_revokes_cua(
     cx: &mut TestAppContext,
 ) {
     let (_dir, root, stream, thread) = fixture(cx);
     let control = ComputerUseControl::new();
     control.pause();
-    let (generation, cancel) = root.update(cx, |root, _| {
+    let (_, cancel) = root.update(cx, |root, _| {
         let result = root
             .agent_controller
             .begin(thread.id.clone(), stream.clone(), None, None)
             .unwrap();
-        let active = root.agent_controller.active.get_mut(&thread.id).unwrap();
-        active.computer_use = Some(control.clone());
-        active.computer_use_owner = "Original owner".into();
+        root.agent_controller
+            .active
+            .get_mut(&thread.id)
+            .unwrap()
+            .computer_use = Some(control.clone());
         result
     });
     let rendered = root.clone();
     let window = cx
-        .update(|cx| {
-            cx.open_window(
-                gpui_kit::WindowOptions {
-                    window_bounds: Some(gpui_kit::WindowBounds::Windowed(
-                        gpui_kit::Bounds::centered(
-                            None,
-                            gpui_kit::size(gpui_kit::px(960.), gpui_kit::px(600.)),
-                            cx,
-                        ),
-                    )),
-                    ..Default::default()
-                },
-                move |_, _| rendered,
-            )
-        })
+        .update(|cx| cx.open_window(Default::default(), move |_, _| rendered))
         .unwrap();
     cx.run_until_parked();
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("computer-use-control-bar").is_some());
-    assert!(visual.debug_bounds("computer-use-resume").is_none());
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("computer-use-control-bar")
+            .is_none()
+    );
     cx.update(|cx| {
         cx.set_global(OpenedThread(None));
         cx.set_global(SettingsOpen(true));
@@ -147,30 +136,10 @@ async fn issue75_control_bar_survives_settings_and_stop_has_epoch_and_owner_fenc
     assert!(
         VisualTestContext::from_window(window.into(), cx)
             .debug_bounds("computer-use-control-bar")
-            .is_some()
+            .is_none()
     );
-    let status = control.status();
-    let mut owner = ComputerUseOwner {
-        thread_id: thread.id.clone(),
-        generation,
-        epoch: status.epoch + 1,
-        phase: status.phase,
-        capability: status.capability,
-    };
-    root.update(cx, |root, cx| {
-        root.computer_use_action(&owner, &ComputerUseAction::Stop, cx)
-    });
     assert!(!cancel.is_cancelled());
-    owner.epoch = status.epoch;
-    owner.generation += 1;
-    root.update(cx, |root, cx| {
-        root.computer_use_action(&owner, &ComputerUseAction::Stop, cx)
-    });
-    assert!(!cancel.is_cancelled());
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
-    let stop = visual.debug_bounds("computer-use-stop").unwrap();
-    visual.simulate_click(stop.center(), Default::default());
-    cx.run_until_parked();
+    root.update(cx, |root, _| root.window_terminal_cleanup());
     assert!(cancel.is_cancelled());
     assert_eq!(control.status().phase, ControlPhase::Stopping);
 }
@@ -228,5 +197,53 @@ async fn issue75_confirming_background_task_deletion_revokes_its_control(cx: &mu
     visual.simulate_click(delete.center(), Default::default());
     cx.run_until_parked();
     assert!(cancel.is_cancelled());
+    assert_eq!(control.status().phase, ControlPhase::Stopping);
+}
+
+#[gpui_kit::test]
+async fn issue75_usability_ready_before_message_started_keeps_owned_notice(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, root, stream, thread) = fixture(cx);
+    let (generation, _) = root.update(cx, |root, _| {
+        root.agent_controller
+            .begin(thread.id.clone(), stream.clone(), None, None)
+            .unwrap()
+    });
+    let control = ComputerUseControl::new();
+    control.pause();
+    let (sender, receiver) = mpsc::sync_channel(4);
+    sender
+        .send(AgentUpdate::ComputerUseReady {
+            control: control.clone(),
+            owner: "Fixture".into(),
+        })
+        .unwrap();
+    sender
+        .send(AgentUpdate::Event(ConversationEvent::MessageStarted {
+            message_id: "current".into(),
+            seq: 1,
+        }))
+        .unwrap();
+    root.update(cx, |root, cx| {
+        root.apply_agent_batch_ingress(
+            generation,
+            &thread.id,
+            &stream,
+            drain_agent_updates(&receiver),
+            cx,
+        );
+    });
+    let rendered = stream.clone();
+    let window = cx
+        .update(|cx| cx.open_window(Default::default(), move |_, _| rendered))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("conversation-computer-use-notice")
+            .is_some()
+    );
+    root.update(cx, |root, _| root.window_terminal_cleanup());
     assert_eq!(control.status().phase, ControlPhase::Stopping);
 }

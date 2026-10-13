@@ -62,6 +62,7 @@ fn timeline(stream: &ConversationStream, cx: &App) -> Vec<String> {
             StreamEntry::Permission { .. } => vec!["permission".into()],
             StreamEntry::ContextCompaction { .. } => vec!["compaction".into()],
             StreamEntry::SkillActivation { .. } => vec!["skill-activation".into()],
+            StreamEntry::Screenshot { .. } => vec!["screenshot".into()],
         })
         .collect()
 }

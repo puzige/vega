@@ -6,6 +6,7 @@ use rusqlite::{Connection, params};
 pub struct ImageRow {
     pub message_id: String,
     pub ordinal: i64,
+    pub artifact_call_id: Option<String>,
     pub encoded: Vec<u8>,
 }
 impl std::fmt::Debug for ImageRow {
@@ -62,7 +63,7 @@ pub fn for_messages(
         ));
     }
     let mut stmt = conn.prepare(&format!(
-        "SELECT a.message_id, a.ordinal, a.encoded {scope} ORDER BY m.seq, a.ordinal"
+        "SELECT a.message_id, a.ordinal, a.encoded, (SELECT s.call_id FROM computer_screenshot_artifacts s WHERE s.message_id=a.message_id AND s.ordinal=a.ordinal) {scope} ORDER BY m.seq, a.ordinal"
     ))?;
     let mut rows = stmt.query(rusqlite::params_from_iter(values.iter()))?;
     let mut result = Vec::new();
@@ -82,6 +83,7 @@ pub fn for_messages(
         result.push(ImageRow {
             message_id: id,
             ordinal: row.get(1)?,
+            artifact_call_id: row.get(3)?,
             encoded: bytes.to_vec(),
         });
     }

@@ -848,6 +848,9 @@ impl Default for MessageCopy {
 /// 外侧」实现 —— 不进入 MarkdownStream，T15 管线零侵入；每段 assistant 流
 /// 拥有独立的 final 终结语义（回放结束 `finish()`，tech-spec §5.4）。
 pub(crate) enum StreamEntry {
+    Screenshot {
+        card: Entity<screenshots::ScreenshotCard>,
+    },
     RunActivity {
         group: Entity<RunActivityGroup>,
     },
@@ -916,7 +919,7 @@ impl StreamEntry {
                 group.read(cx).segment_row_count(*segment, cx)
             }
             StreamEntry::User { lines, .. } => lines.len(),
-            StreamEntry::UserImages { .. } => 1,
+            StreamEntry::UserImages { .. } | StreamEntry::Screenshot { .. } => 1,
             StreamEntry::Assistant { model, failure, .. } => {
                 model.row_count() + usize::from(failure.is_some())
             }
