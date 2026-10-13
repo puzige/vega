@@ -1100,8 +1100,8 @@ async fn transcript_hides_completed_statistics_but_keeps_failure_status(cx: &mut
     );
     assert!(
         visual
-            .debug_bounds("task-outcome-status")
-            .expect("visible failure")
+            .debug_bounds("run-notice-failed")
+            .expect("visible failure at owned run tail")
             .size
             .height
             > px(0.)

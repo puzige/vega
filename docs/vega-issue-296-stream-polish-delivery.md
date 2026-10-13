@@ -81,3 +81,129 @@ SHA-256：`217cd53578c6e4e602d5f90f6adb0316b6b0576c893175af363ec6734cab5a7f`。�
 - LIMIT：最后异常按源时间线顺序，历史没有完成事件时序；具体runtime诊断只保留于当前stream，重开且无详细诊断仍诚实使用Persisted。
 - NOT RUN：原生字形像素、真实provider/ACP与真实应用手测；进程内bounds/paint不等同于原生截图验收。完整云端门禁由新PR承担。
 - 用户手测：展开完成轮，确认Thinking与工具图标及文字共轴；移开鼠标后展开箭头仍在，收起后仅hover/键盘focus可见；计时旁无红色异常汇总，每轮尾部最多一条问题，展开原工具仍能查看真实失败/拒绝详情；再提交一轮、重开历史并尝试选字/上滚，确认提示归属和阅读位置不变。
+
+## 追加 P06–P08：紧凑展开与旋转（2026-10-13）
+
+增量基于PR #318首个提交 `c67cc72`，本地验证时间2026-10-13 00:17 UTC / 08:17 Asia/Shanghai。原P01–P05及其失败记录仍有效，下面的结果不覆盖或改写前一轮日志。
+
+首阶段的顶部间距由stream层一次投影，按同run前一个可见内容选择clock后的16px或正文后的24px；空阶段与无可见Markdown行的非失败正文不制造幽灵间距，原copy、identity保留，失败空正文仍保留安全提示。render与未测量高度/锚点使用同一计算。
+
+阶段展开现在按源顺序显示25px紧凑Thinking行和原ToolCard，工具组只在此展示投影中扁平化，同级gap为0。Thinking全文与阶段开关独立，默认关闭；再次点击才在240px上限内显示Markdown。MarkdownStream/StreamModel在源变动时更新缓存，不在render重解析；可选择文本与Cmd-C继续复制可见文本，右键“复制原文”使用完整原始字节，链接没有增加外部打开行为。Final统一过程使用同一扁平子项投影与detail索引，正文穿插和身份保持。
+
+通常阶段使用一个320px上限的滚动区；存在产物时按源位置拆为连续操作区，每区最多320px，产物保持原位外显。实测合成“Thinking→工具→产物→工具”顺序、自然高度与未测量估算相同，关闭阶段后产物仍存在。旧ToolGroup的hover/focus覆盖移到仍受支持的独立ToolGroup生产渲染路径，未删掉第五种disclosure入口。
+
+侧栏仅在既有Spinner上设置 `ease(gpui_kit::linear)`，保留0.8秒周期、16px尺寸、颜色、稳定id及RunningThreads来源。生产侧栏liveness和槽位几何测试通过。当前公开GPUI接口仅能读取quads，不能读取Spinner的SVG旋转变换；默认repeat使用真实Instant，TestClock不能模拟精确0.2秒角度。四段各90°是参数验算，并非实际角度采样。没有为测试新增动画循环、修改依赖或改变Reduce Motion机制，实际匀速观感由用户手测确认。
+
+### 追加红绿记录
+
+P06首间距、P07阶段紧凑来源行与Final工具扁平化先行红测：
+
+```sh
+cargo nextest run -p vega_ui -E 'test(/issue296_expansion_/)'
+```
+
+`expansion-red.log`，退出码 `100`：
+
+```text
+Summary [   0.049s] 3 tests run: 0 passed, 3 failed, 693 skipped
+```
+
+SHA-256：`2959a67694cf8a048978d47419d1e25161b3327db9225da4044896ac411f6d2b`。
+
+受影响会话/Thinking选择与阅读、P01–P07及侧栏状态回归：
+
+```sh
+cargo nextest run -p vega_ui -E 'test(/conversation_stream::tests::issue296_/) | test(/thinking::/) | test(/issue147_/) | test(/issue146_/) | test(/transcript_hides_completed_statistics_but_keeps_failure_status/) | test(/issue150_/)'
+```
+
+`expansion-green.log`，退出码 `0`：
+
+```text
+Summary [   1.628s] 115 tests run: 115 passed, 585 skipped
+```
+
+SHA-256：`110efe6f38e52c4972f67caefc0b1a3303d331b3a70bbc9c57825a01d3c649b0`。
+
+随后发现并去除空Assistant残留的16px占位，新增空TextDelta与已加载历史组合的真实bounds断言；只复跑该增量及受影响边界：
+
+```sh
+cargo nextest run -p vega_ui -E 'test(/issue296_expansion_/) | test(/issue103_thinking_scroll_survives_streaming_and_reopen/) | test(/failed_empty_assistant_hydrates_a_visible_safe_reason/)'
+cargo fmt -p vega_ui --check
+git diff --check
+```
+
+`expansion-edge.log`，nextest退出码 `0`，fmt/diff均退出 `0`：
+
+```text
+Summary [   0.122s] 10 tests run: 10 passed, 691 skipped
+```
+
+SHA-256：`23134adc2987a9b027d0035c1ab3dfda4226538c8b7e920259c7b2589170daf4`。
+
+### 收尾审查的两项边界
+
+空正文隐藏会依赖已同步的Markdown模型，因此把Final/尾提示/阶段间距投影移到mutable tail同步之后，避免首个TextDelta已绘出而尾提示仍在先前工具行。共享Markdown估高对零行返回0，避免空失败正文被重复计入一行；原failure与唯一安全提示保留。
+
+审查先行红测：
+
+```sh
+cargo nextest run -p vega_ui -E 'test(/issue296_expansion_p07_first_render/) | test(/issue296_expansion_p07_empty_failure/)'
+```
+
+`expansion-review-red.log`，退出码 `100`：
+
+```text
+Summary [   0.046s] 2 tests run: 0 passed, 2 failed, 701 skipped
+```
+
+SHA-256：`19d8ab8a6d8f19060452562762784f8950acc0b6ae610304ba29e94f320b24af`。分别检出notice仍属于旧index、空失败估高85.15而实际正文与提示合计62。
+
+两处生产修复后的窄回归：
+
+```sh
+cargo nextest run -p vega_ui -E 'test(/issue296_expansion_/) | test(/issue296_polish_p04_empty_runtime_failure/) | test(/issue296_polish_p05_notice_moves_tail/) | test(/failed_empty_assistant_hydrates_a_visible_safe_reason/) | test(/issue103_thinking_scroll_survives_streaming_and_reopen/)'
+```
+
+`expansion-review-green.log`，退出码 `100`：
+
+```text
+Summary [   0.125s] 14 tests run: 12 passed, 2 failed, 689 skipped
+```
+
+SHA-256：`1cfab36a7f5b4534d81bad16ec0321b852ffa5c6a00b5fad3cb6abf6341a884e`。12项通过；新增空失败断言残留的是既有提示估高与绘制取整的0.15px差，新首帧fixture直接丢弃Render结果则留下GPUI arena引用。仅修测试：正文自身估高严格等于实测16，总高允许小于0.25px舍入差；首帧改为正常Window.draw/clear生命周期，紧接绘制断言，之后才清理队列。
+
+同一两项过滤命令的 `expansion-review-final.log`，退出码 `100`：
+
+```text
+Summary [   0.074s] 2 tests run: 1 passed, 1 failed, 701 skipped
+```
+
+SHA-256：`075c76b77c3a65ed29f7458bbeaaff947fbe12da5b6c877e619101d12f10a849`。空失败正文/唯一提示/原failure断言通过；首帧fixture清理队列仍不能代替正常绘制生命周期。随后 `expansion-review-frame.log` 的单例仍因typed WindowHandle更新时借住root而重入失败，退出码 `100`，没有再次修改生产代码。
+
+最终首帧测试使用VisualTestContext更新入口，在同一回调内追加TextDelta、确认模型尚空、执行恰一次Window.draw/clear并立即核对模型与新尾部索引，避免后续通知掩盖时序：
+
+```sh
+cargo nextest run -p vega_ui -E 'test(/issue296_expansion_p07_first_render/)'
+cargo fmt -p vega_ui --check
+git diff --check
+```
+
+`expansion-review-frame-final.log`，nextest退出码 `0`：
+
+```text
+Summary [   0.043s] 1 test run: 1 passed, 702 skipped
+```
+
+SHA-256：`48453ded558a8a6f73d0e19a6996682984d5d577d0aba2e3e116be91cdfbf50d`。与前述12项及空失败单项通过证据共同覆盖最终改动，没有将14项失败日志写成全绿或重复已通过集合。收尾验证时间2026-10-13 00:25 UTC / 08:25 Asia/Shanghai；fmt/diff均退出 `0`。
+
+中间日志保留于同一artifact目录：`expansion-first.log`/`expansion-second.log`记录新增Markdown helper的编译接线错误；`expansion-third.log`为首批10/10；`expansion-regression.log`为155/168，13项失败是被P06/P07明确替代的自动展开、旧selector和Final嵌套/间距断言，后续逐项保留原文、滚动、焦点和安全要求迁移。初次宽正则还选中同卡Settings测试；后续已收窄到conversation_stream，未运行workspace全量。`expansion-regression-second.log`记录迁移脚本语法错误未生效时的旧失败；`expansion-regression-third.log`为113/115，剩余一个新artifact fixture的checkpoint/call id不匹配、一个旧测试直接清除raw后未更新Markdown缓存/空body断言，均已修正。没有把这些失败日志改写为全绿。最终仅已有 `block v0.1.6` future-incompatibility警告。
+
+### 首个PR head云端反馈
+
+`c67cc72` 的CI run `38324687172` 未通过：Clippy报 `run_notice.rs` 的 `collapsible_match`；nextest为2321项中2320通过、1失败，退出码100，唯一失败为 `transcript_hides_completed_statistics_but_keeps_failure_status`。原始 `ci-first.log` SHA-256：`dfbf27606289b62078c6977f1a9e149ab6d25aa2f1f47add0be0da701983b7e7`。
+
+本增量把Summary条件移到match guard，没有新增allow；恢复Completed summary的零高隐藏selector，Failed断言改为实际owned `run-notice-failed` 尾提示，原两份summary数据和可见错误断言保留。该case已包含于115/115。最新提交的云端Clippy/workspace全量门禁仍由主控推进，本地结果不代替新head CI。
+
+### 追加手测范围
+
+确认clock后的首摘要间距缩短；展开阶段只有紧凑同级来源/工具行，独立打开思考后Markdown正常、原文可复制；长工具区与思考全文分别有320/240上限，内部回看不会被流式文本抢走；产物出现在所属工具后且收起阶段仍可见；Final统一重开仍保序，尾提示只有一条；侧栏running圆环应匀速旋转。未进行原生App操作、真实provider调用、系统字形像素验收或实际动画角度采样。

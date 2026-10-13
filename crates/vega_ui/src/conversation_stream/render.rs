@@ -1499,8 +1499,6 @@ impl Render for ConversationStream {
             self.actions.restore_focus = false;
             self.focus_composer(window, cx);
         }
-        self.settle_final_presentation(window, cx);
-        self.refresh_run_notices(cx);
         let render_t0 = Instant::now();
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
@@ -1516,6 +1514,9 @@ impl Render for ConversationStream {
             model.sync(&snapshot, &self.counters);
             self.invalidate_item(Some(*index));
         }
+        self.settle_final_presentation(window, cx);
+        self.refresh_run_notices(cx);
+        let stage_top_insets = self.stage_top_insets(cx);
 
         // 2) 顶部水合请求（S8-T45/C7）：视口到达顶部且仍存在更早历史时，
         //    向 app 层请求上一页（typed 投影返回后 splice 前插，页边界保
@@ -1620,6 +1621,7 @@ impl Render for ConversationStream {
                                                             window,
                                                             cx,
                                                         ),
+                                                        Some(StreamEntry::RunActivitySegment { group, segment }) => RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx),
                                                         Some(entry) => render_stream_entry(
                                                             entry,
                                                             index,

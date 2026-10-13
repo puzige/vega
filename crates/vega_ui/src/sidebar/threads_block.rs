@@ -1502,6 +1502,7 @@ impl ThreadsBlock {
                 .justify_center()
                 .child(
                     Spinner::new()
+                        .ease(gpui_kit::linear)
                         .with_size(px(16.))
                         .icon(IconName::LoaderCircle)
                         .color(colors.text_secondary.into()),

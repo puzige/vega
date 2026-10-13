@@ -119,17 +119,17 @@ impl ConversationStream {
                     }
                 }
                 StreamEntry::RunActivity { group } => source.status = Some(group.read(cx).status()),
-                StreamEntry::Summary { card } => {
+                StreamEntry::Summary { card }
                     if !matches!(
                         source.status,
                         Some(RunActivityStatus::Failed | RunActivityStatus::Interrupted)
-                    ) {
-                        source.status = match card.read(cx).summary().outcome {
-                            TaskSummaryOutcome::Failed => Some(RunActivityStatus::Failed),
-                            TaskSummaryOutcome::Interrupted => Some(RunActivityStatus::Interrupted),
-                            _ => source.status,
-                        };
-                    }
+                    ) =>
+                {
+                    source.status = match card.read(cx).summary().outcome {
+                        TaskSummaryOutcome::Failed => Some(RunActivityStatus::Failed),
+                        TaskSummaryOutcome::Interrupted => Some(RunActivityStatus::Interrupted),
+                        _ => source.status,
+                    };
                 }
                 _ => {}
             }

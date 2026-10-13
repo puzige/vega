@@ -92,10 +92,7 @@ async fn issue296_polish_p01_final_details_share_icon_and_text_axes(cx: &mut Tes
     let tool_title = visual
         .debug_bounds("tool-activity-single-row-title")
         .unwrap();
-    for (icon, title) in [
-        ("thinking-icon", "thinking-title"),
-        ("tool-activity-group-icon", "tool-activity-group-label"),
-    ] {
+    for (icon, title) in [("thinking-icon", "thinking-title")] {
         assert_eq!(visual.debug_bounds(icon).unwrap().left(), tool_icon.left());
         assert_eq!(
             visual.debug_bounds(title).unwrap().left(),
@@ -110,13 +107,17 @@ async fn issue296_polish_p01_final_details_share_icon_and_text_axes(cx: &mut Tes
         visual.debug_bounds("thinking-toggle").unwrap().size.height,
         px(25.)
     );
+    for selector in ["run-detail-row-1", "run-detail-row-3", "run-detail-row-4"] {
+        let row = visual.debug_bounds(selector).expect("flattened tool row");
+        assert_eq!(row.left(), tool.left());
+        assert_eq!(row.size.height, px(25.));
+    }
+    assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     let lefts = [
         "thinking-icon",
         "thinking-title",
         "tool-activity-single-row-icon",
         "tool-activity-single-row-title",
-        "tool-activity-group-icon",
-        "tool-activity-group-label",
     ]
     .map(|selector| (selector, visual.debug_bounds(selector).unwrap().left()));
     let row = visual.debug_bounds("thinking-toggle").unwrap();

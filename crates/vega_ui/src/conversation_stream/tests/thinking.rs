@@ -149,13 +149,19 @@ async fn i61_thinking_blocks_follow_real_event_order_and_expand(cx: &mut TestApp
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("run-timeline-segment-0").is_some());
     assert!(visual.debug_bounds("run-stage-toggle-0").is_some());
-    assert!(visual.debug_bounds("stage-thinking-content").is_none());
+    assert!(visual.debug_bounds("thinking-content").is_none());
     let toggle = visual
         .debug_bounds("run-stage-toggle-0")
         .expect("real thinking header");
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("stage-thinking-content").is_some());
+    assert!(visual.debug_bounds("thinking-content").is_none());
+    let source = visual
+        .debug_bounds("thinking-toggle")
+        .expect("independent source toggle");
+    visual.simulate_click(source.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_some());
     assert!(
         blocks
             .iter()
@@ -167,19 +173,19 @@ async fn i61_thinking_blocks_follow_real_event_order_and_expand(cx: &mut TestApp
         .expect("thinking header");
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("stage-thinking-content").is_none());
+    assert!(visual.debug_bounds("thinking-content").is_none());
     cx.simulate_keystrokes(window.into(), "enter");
     cx.run_until_parked();
     assert!(
         gpui_kit::VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("stage-thinking-content")
+            .debug_bounds("thinking-content")
             .is_some()
     );
     cx.simulate_keystrokes(window.into(), "space");
     cx.run_until_parked();
     assert!(
         gpui_kit::VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("stage-thinking-content")
+            .debug_bounds("thinking-content")
             .is_none()
     );
 }
@@ -345,7 +351,7 @@ async fn issue103_thinking_body_is_bounded(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue103-thinking");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
-        stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
+        stream.apply_event(thinking("m", &"reasoning line\n\n".repeat(80)), cx);
         stream.run_activity_groups.values().for_each(|group| {
             group.update(cx, |group, cx| group.reveal_segment(0, cx));
         });
@@ -354,7 +360,7 @@ async fn issue103_thinking_body_is_bounded(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(stream.read_with(cx, |stream, cx| cards(stream, cx)[0].read(cx).expanded));
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let body = visual.debug_bounds("stage-thinking-content").expect("body");
+    let body = visual.debug_bounds("thinking-content").expect("body");
     assert!(
         body.size.height <= px(240.),
         "thinking body: {:?}",
@@ -367,7 +373,7 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     let (window, stream, _) = open_controller_stream(cx, "issue103-thinking-scroll");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
-        stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
+        stream.apply_event(thinking("m", &"reasoning line\n\n".repeat(80)), cx);
         stream.run_activity_groups.values().for_each(|group| {
             group.update(cx, |group, cx| group.reveal_segment(0, cx));
         });
@@ -379,7 +385,7 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     let scroll = block.read_with(cx, |block, _| block.scroll_handle());
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let toggle = visual.debug_bounds("run-stage-toggle-0").expect("header");
-    let body = visual.debug_bounds("stage-thinking-content").expect("body");
+    let body = visual.debug_bounds("thinking-content").expect("body");
     assert!(
         scroll.max_offset().y > px(1000.),
         "full reasoning remains reachable"
@@ -393,7 +399,7 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     visual.run_until_parked();
     assert_eq!(scroll.offset().y, px(-100.));
     stream.update(&mut visual, |stream, cx| {
-        stream.apply_event(thinking("m", &"new reasoning\n".repeat(20)), cx)
+        stream.apply_event(thinking("m", &"new reasoning\n\n".repeat(20)), cx)
     });
     visual.run_until_parked();
     assert_eq!(
@@ -407,12 +413,13 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     );
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("stage-thinking-content").is_none());
+    assert!(visual.debug_bounds("thinking-content").is_none());
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     assert_eq!(scroll.offset().y, px(-100.), "reopen retains offset");
     block.update(&mut visual, |block, cx| {
         block.text = "short".into();
+        block.append("", false, 0);
         cx.notify();
     });
     visual.run_until_parked();
@@ -420,7 +427,7 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     assert_eq!(scroll.max_offset().y, px(0.));
     assert!(
         visual
-            .debug_bounds("stage-thinking-content")
+            .debug_bounds("thinking-content")
             .expect("short body")
             .size
             .height
@@ -428,10 +435,11 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     );
     block.update(&mut visual, |block, cx| {
         block.text.clear();
+        block.append("", false, 0);
         cx.notify();
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds("stage-thinking-content").is_none());
+    assert!(visual.debug_bounds("thinking-content").is_none());
 }
 
 #[gpui_kit::test]
@@ -471,7 +479,11 @@ async fn i71_live_heading_replaces_thinking_label_without_changing_activity_expa
         .expect("production toggle");
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("stage-thinking-content").is_some());
+    assert!(visual.debug_bounds("thinking-content").is_none());
+    let source = visual.debug_bounds("thinking-toggle").unwrap();
+    visual.simulate_click(source.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_some());
 }
 
 #[gpui_kit::test]
@@ -590,7 +602,7 @@ async fn i71_fenced_summary_keeps_received_content(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("stage-thinking-content").is_some());
+    assert!(visual.debug_bounds("thinking-content").is_some());
 }
 
 #[gpui_kit::test]
@@ -598,7 +610,7 @@ async fn issue296_v3_thinking_follows_only_when_reader_is_at_its_tail(cx: &mut T
     let (window, stream, _) = open_controller_stream(cx, "issue296-thinking-tail");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
-        stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
+        stream.apply_event(thinking("m", &"reasoning line\n\n".repeat(80)), cx);
         stream.run_activity_groups.values().for_each(|group| {
             group.update(cx, |group, cx| group.reveal_segment(0, cx));
         });
@@ -610,7 +622,7 @@ async fn issue296_v3_thinking_follows_only_when_reader_is_at_its_tail(cx: &mut T
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     scroll.set_offset(gpui_kit::point(px(0.), -scroll.max_offset().y));
     stream.update(&mut visual, |stream, cx| {
-        stream.apply_event(thinking("m", &"new reasoning\n".repeat(20)), cx)
+        stream.apply_event(thinking("m", &"new reasoning\n\n".repeat(20)), cx)
     });
     visual.run_until_parked();
     assert!((scroll.offset().y + scroll.max_offset().y).abs() <= px(1.));
@@ -642,7 +654,7 @@ async fn issue296_v3_thinking_short_content_follows_through_first_overflow(
     assert_eq!(scroll.max_offset().y, px(0.));
     assert!(
         visual
-            .debug_bounds("stage-thinking-content")
+            .debug_bounds("thinking-content")
             .expect("expanded")
             .size
             .height
@@ -650,7 +662,7 @@ async fn issue296_v3_thinking_short_content_follows_through_first_overflow(
     );
     for _ in 0..18 {
         stream.update(&mut visual, |stream, cx| {
-            stream.apply_event(thinking("m", "another short line\n"), cx);
+            stream.apply_event(thinking("m", "another short line\n\n"), cx);
         });
         visual.run_until_parked();
         assert!((scroll.offset().y + scroll.max_offset().y).abs() <= px(1.));
@@ -658,7 +670,7 @@ async fn issue296_v3_thinking_short_content_follows_through_first_overflow(
     assert!(scroll.max_offset().y > px(0.));
     assert_eq!(
         visual
-            .debug_bounds("stage-thinking-content")
+            .debug_bounds("thinking-content")
             .expect("bounded")
             .size
             .height,

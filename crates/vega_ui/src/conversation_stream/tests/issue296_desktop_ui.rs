@@ -333,6 +333,18 @@ fn has_hover_surface(
     })
 }
 
+fn append_standalone_tool_group(stream: &Entity<ConversationStream>, cx: &mut TestAppContext) {
+    stream.update(cx, |stream, cx| {
+        let first = cx.new(|_| ToolCard::proposed(&bash_call("standalone-one", "pwd")));
+        let second = cx.new(|_| ToolCard::proposed(&bash_call("standalone-two", "pwd")));
+        let group = cx.new(|_| ToolActivityGroup::new(first, second));
+        let index = stream.entries.len();
+        stream.entries.push(StreamEntry::ToolGroup { group });
+        stream.list_append(index);
+        cx.notify();
+    });
+}
+
 #[gpui_kit::test]
 async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue296-hover");
@@ -362,6 +374,7 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
     });
     stream.update(cx, |stream, cx| confirm_test_final(stream, "run", cx));
     open_run_details(window, cx);
+    append_standalone_tool_group(&stream, cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("tool-activity-child-0").is_none());
@@ -590,6 +603,7 @@ async fn issue296_disclosure_focus_rings_do_not_move_icons_or_labels(cx: &mut Te
     });
     stream.update(cx, |stream, cx| confirm_test_final(stream, "run", cx));
     open_run_details(window, cx);
+    append_standalone_tool_group(&stream, cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("tool-activity-child-0").is_none());

@@ -91,7 +91,8 @@ async fn issue296_visual_v03_summary_collapses_tools_and_opens_flat_rows(cx: &mu
     assert_eq!(second.top() - first.top(), px(25.));
     assert_eq!(first.left(), stage.left());
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
-    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    assert!(visual.debug_bounds("thinking-content").is_none());
 }
 
 fn summary(stream: &mut ConversationStream, text: &str, cx: &mut Context<ConversationStream>) {
@@ -252,7 +253,8 @@ async fn issue296_visual_v04_full_sources_and_multiple_summaries_remain_reachabl
             "Original independent reasoning.\n\nSecond phase\nFull summary continuation."
         )
     });
-    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    assert!(visual.debug_bounds("thinking-content").is_none());
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
 }
 
@@ -564,7 +566,7 @@ async fn issue296_visual_v08_markers_follow_body_axis_and_stay_inside_narrow_win
 }
 
 #[gpui_kit::test]
-async fn issue296_visual_v06_expanded_stage_new_thinking_inherits_reading_and_tail(
+async fn issue296_visual_v06_new_thinking_stays_closed_until_independent_reading(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "visual-follow-new-thought");
@@ -594,17 +596,25 @@ async fn issue296_visual_v06_expanded_stage_new_thinking_inherits_reading_and_ta
                 .segment_expanded(0)
         );
         let card = stream.active_thinking.clone().unwrap();
-        assert!(card.read(cx).expanded);
+        assert!(!card.read(cx).expanded);
         card
     });
     visual.run_until_parked();
+    let row = visual
+        .debug_bounds(Box::leak(
+            format!("run-stage-source-{}", card.entity_id()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(row.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(card.read_with(&visual, |card, _| card.expanded));
     let scroll = card.read_with(&visual, |card, _| card.scroll_handle());
     for _ in 0..20 {
         stream.update(&mut visual, |stream, cx| {
             stream.apply_event(
                 ConversationEvent::ThinkingDelta {
                     message_id: "visual".into(),
-                    delta: "another reasoning line\n".into(),
+                    delta: "another reasoning line\n\n".into(),
                 },
                 cx,
             )

@@ -120,7 +120,7 @@ pub fn thread_is_running(thread_id: &str, cx: &App) -> bool;
 
 - 使用 `gpui_kit::component::spinner::Spinner`（`gpui-component` 0.6.0，已是既有依赖，**不新增 crate**），图标为 `IconName::LoaderCircle`。
 - 颜色 **`colors.text_secondary`**（中性）：设计守则 §2.1 要求 sidebar 安静，§7 规定品牌蓝只用于主操作与明确的品牌/Agent 语义；行 indicator 属导航 chrome，取中性。**此为用户可覆盖的默认值**（见 §8）。
-- 旋转周期沿用 Spinner 默认 `0.8s`，`ease_in_out`。
+- 旋转周期沿用 Spinner 默认 `0.8s`，显式使用 `linear` 匀速。2026-10-13 用户在 Issue #296 手测中指出默认缓入缓出不符合预期；此条取代原 `ease_in_out`，依据[信息流补充规格 P08](vega-issue-296-stream-polish.md)。
 - **必须**走 `AnimationExt::with_animation`：GPUI 在 `reduce_motion` 打开时自动退化为静止起始帧并停止调度动画帧（已核实 `gpui-pre-0.3.4/src/elements/animation.rs:82-100`）。不得自建定时器或手写帧循环。
 
 **R12（必须）** 状态真实性：indicator **只**由 `RunningThreads` 驱动，不得由 `unread`、`updated_at`、选中态或任何近似量推断。global 未安装（isolated embedder / 测试未 seed）→ 一律不显示。

@@ -40,3 +40,37 @@
 本次会话中已知的typed运行失败按明确run身份保留在UI派生状态，与Composer当前重复提示的owner分离。新输入或独立错误只清Composer去重owner，不把旧轮的具体诊断退回泛化Persisted；重启恢复没有typed证据时仍用既有安全泛化状态，不新增持久化。
 
 定向红绿命令、原始footer和hash记录到本次delivery；PR关联#296但不自动关闭。CI绿后squash合并并将卡片转In review，等待用户手测后再关闭或清理。原生字形/实机交互由用户确认，GPUI的bounds/paint结果不冒充原生截图验收。
+
+## 2026-10-13 追加：首段间距、紧凑明细与匀速旋转
+
+用户在PR #318尚未合并时追加反馈：clock到首阶段空白偏大；live阶段展开后原始`**标题**`和空行混入工具列表，要求参考Codex紧凑明细；侧栏运行圆环非匀速。当前PR继续承接，P01–P05保持，以下契约先于新增代码冻结。
+
+### 根因与数值验算
+
+- 所有含Thinking阶段的渲染/估算都加24px顶部inset，本应只用于正文到阶段。clock后采用已有16px首内容token，减少`24-16=8`逻辑像素（2倍屏16物理像素）；量测布局bounds，不以字形上沿代替。
+- 阶段展开直接用SelectableText画`source_text`，raw/summary间双换行占高，Markdown定界符裸露；stage开关还同步Thinking.expanded，让原文全部摊开。
+- 原紧凑行25px加容器gap4，节距`25+4=29`。同级紧凑行gap改0，节距`25+0=25`；正文/原文详情仍保留阅读间距。
+- Spinner默认每0.8秒使用ease_in_out，四段0.2秒转角为45°/135°/135°/45°；linear应每段`360×0.2/0.8=90°`。常规重绘依稳定element id保留起点，不增加相位状态或timer。
+
+### 补充展示契约
+
+1. **P06**：stream层根据同run的前一个可见内容决定阶段顶部inset，紧接clock为16px，前有可见说明正文为24px；不得按segment==0判断。跳过隐藏Assistant和空阶段，覆盖多轮/历史。渲染、估算和定位共享计算，不能每行遍历整个历史。
+2. **P07**：stage展开按source顺序显示25px紧凑Thinking摘要行与工具行，ToolGroup仅在此投影扁平化为原ToolCard行；不挪动说明或把全部Thinking放末尾。同级行沿用16px图标槽、6px图文间距、0px行间gap。沿用既有安全工具摘要，不从raw参数/输出推导新文件名或命令标题。
+3. Thinking全文展开与stage独立，打开stage不批量打开全文。再次点击Thinking才用已有Markdown解析和可选文本原语显示全文，不复用带16px消息顶距的完整Assistant外壳。raw/summary字节不变，另保留全文原文复制；Markdown模型随源更新缓存，不每帧重解析；链接不增加IO或外部打开。
+4. 无产物打断的stage明细沿用320px限高与滚动，Thinking原文沿用240px；短内容按自然高度。若Artifact位于操作之间，按源位置切分连续过程段，每段独立限高320px，Artifact留在原位置外显，不能塞入随stage关闭的滚动区，也不能全部移至末尾。渲染与估算共享切分规则。P02箭头契约覆盖两级入口，同级左轴不变。
+5. Final统一过程也使用相同紧凑Thinking/扁平工具投影，Assistant、权限、问题和产物保持顺序与外显。`run_details`的渲染、估算、detail index和工具/正文定位同步，不能只改render造成错行。Final可信判断、阅读保护和唯一尾提示保持。
+6. **P08**：仅侧栏运行圆环显式使用linear，保留0.8秒周期、稳定id、尺寸/颜色、RunningThreads真实来源和Reduce Motion；不扩展其他loading、不新增依赖/帧循环。此次用户要求覆盖Issue #150 R11原缓动规定；静态图不作为真实帧率/掉帧证据。
+
+### 先行补充验收
+
+| ID | 场景与操作 | 预期结果 |
+|---|---|---|
+| P06 | summary-first、先正文后首stage、隐藏/空前驱、两轮及恢复 | 按可见前驱使用16/24px，渲染与估算一致 |
+| P07a | Markdown summary、raw+多段summary、工具交替；展开stage/Final | 源顺序不变，默认25px紧凑行共轴，无裸露Markdown段及大空白 |
+| P07b | 独立开Thinking、选字/原文复制、长内容滚动、stage关开 | 正确Markdown、源字节全等、240/320px限高，两级状态独立 |
+| P07c | Final关开、工具/正文定位、选字回看、权限/问题/产物及尾提示；工具→Artifact→工具 | 共用投影索引正确；产物分隔的操作段各自限高、顺序和外显不变；安全及阅读保护不退化 |
+| P08 | 检查生产builder显式linear，定向验证运行状态/槽位；实机每0.2秒观察圆环及中途重绘 | 数学预期每段90°；真实角速度与帧率由用户手测，自动化不冒充实测；保留Reduce Motion链路 |
+
+专职实现agent继续作为唯一代码作者。新增范围仅上述会话行/Markdown复用、侧栏spinner builder及定向测试；工具协议、存储和后端不变。先记录红测，再实现并只跑新增/受影响测试；P01–P05中受新改动影响的用例重跑。PR正文按最终范围重写，最新提交云端check全绿后才合并。
+
+P08测试边界补充：当前GPUI只公开`painted_quads`，Spinner的SVG transform位于私有scene；默认repeat使用真实Instant，TestClock不能推进该动画。禁止为了测试这一行参数修改动画同步机制、引入场景探针或headless renderer。匀速接线以生产代码核对、既有状态/布局回归和用户实机观察分层记录；等时间转角是函数验算，不能记作自动角度采样通过。
