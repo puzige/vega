@@ -1,8 +1,9 @@
 use super::*;
 use futures::future::BoxFuture;
 use std::sync::Mutex;
-use vega_runtime::mock::{MockProvider, ScriptStep};
-use vega_runtime::{EventStream, ProviderResponseMetadata, ProviderStream};
+use vega_runtime::{
+    EventStream, MockProvider, ProviderResponseMetadata, ProviderStream, ScriptStep,
+};
 
 struct TimedSummaryProvider {
     inner: MockProvider,
