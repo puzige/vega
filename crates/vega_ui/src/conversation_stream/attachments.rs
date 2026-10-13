@@ -1,8 +1,6 @@
 //! Issue 63 R1–R4: explicit, bounded attachment intents owned by this stream.
 use super::*;
-use gpui_kit::{
-    ClipboardEntry, ClipboardItem, ExternalPaths, Image, ImageFormat, PathPromptOptions, img,
-};
+use gpui_kit::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, PathPromptOptions};
 use std::path::PathBuf;
 use vega_conversation::attachments::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TURN_IMAGE_BYTES};
 
@@ -10,21 +8,28 @@ use vega_conversation::attachments::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TURN_IMAGE
 pub(crate) struct ImagePreview {
     pub image: ImageAttachment,
     pub(super) preview: Arc<std::sync::OnceLock<Arc<Image>>>,
+    pub(super) view: Entity<crate::image_preview::ImagePreview>,
 }
 
 impl ImagePreview {
-    pub(crate) fn new(image: ImageAttachment) -> Self {
-        let format = match image.mime_type() {
-            "image/jpeg" => ImageFormat::Jpeg,
-            "image/webp" => ImageFormat::Webp,
-            _ => ImageFormat::Png,
-        };
-        let preview = Arc::new(std::sync::OnceLock::from(Arc::new(Image::from_bytes(
-            format,
-            image.bytes().to_vec(),
-        ))));
-        Self { image, preview }
+    pub(crate) fn new(image: ImageAttachment, name: String, cx: &mut App) -> Self {
+        let view = cx.new(|cx| crate::image_preview::ImagePreview::new(image.clone(), name, cx));
+        let preview = view.read(cx).pixels();
+        Self {
+            image,
+            preview,
+            view,
+        }
     }
+}
+
+pub(crate) fn image_name(prefix: &str, ordinal: usize, image: &ImageAttachment) -> String {
+    let extension = match image.mime_type() {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
+    };
+    format!("{prefix}-{ordinal}.{extension}")
 }
 
 const IMPORT_ERROR: &str =
@@ -36,28 +41,73 @@ impl ConversationStream {
         images: Vec<ImageAttachment>,
         cx: &mut Context<Self>,
     ) -> Vec<ImagePreview> {
-        let previews: Vec<_> = images
+        images
             .into_iter()
-            .map(|image| ImagePreview {
-                image,
-                preview: Arc::new(std::sync::OnceLock::new()),
+            .enumerate()
+            .map(|(index, image)| {
+                let name = image_name("图片", index + 1, &image);
+                let preview = ImagePreview::new(image, name, cx);
+                self.observe_image(&preview.view, cx);
+                preview
             })
-            .collect();
-        let pending = previews.clone();
-        let work = cx.background_executor().spawn(async move {
-            for target in pending {
-                let ready = ImagePreview::new(target.image);
-                if let Some(image) = ready.preview.get() {
-                    let _ = target.preview.set(image.clone());
+            .collect()
+    }
+
+    pub(crate) fn observe_image(
+        &self,
+        view: &Entity<crate::image_preview::ImagePreview>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe(
+            view,
+            |this, image, action: &crate::image_preview::ImagePreviewAction, cx| {
+                if this.owns_image_preview(&image, cx) {
+                    cx.emit(ImagePreviewRequested {
+                        image: image.clone(),
+                        action: *action,
+                    });
                 }
-            }
-        });
-        cx.spawn(async move |this, cx| {
-            work.await;
-            let _ = this.update(cx, |_, cx| cx.notify());
-        })
+            },
+        )
         .detach();
-        previews
+        cx.observe(view, |_, _, cx| cx.notify()).detach();
+    }
+
+    pub(crate) fn reset_image_visibility(&self, cx: &mut App) {
+        for (_, image) in &self.attachments {
+            image.view.update(cx, |view, _| view.reset_thumbnail());
+        }
+        for entry in &self.entries {
+            match entry {
+                StreamEntry::UserImages { images } => {
+                    for image in images {
+                        image.view.update(cx, |view, _| view.reset_thumbnail());
+                    }
+                }
+                StreamEntry::Screenshot { card } => {
+                    let image = card.read(cx).image.view.clone();
+                    image.update(cx, |view, _| view.reset_thumbnail());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn owns_image_preview(
+        &self,
+        image: &Entity<crate::image_preview::ImagePreview>,
+        cx: &App,
+    ) -> bool {
+        self.attachments
+            .iter()
+            .any(|(_, entry)| &entry.view == image)
+            || self.entries.iter().any(|entry| match entry {
+                StreamEntry::UserImages { images } => {
+                    images.iter().any(|entry| &entry.view == image)
+                }
+                StreamEntry::Screenshot { card } => &card.read(cx).image.view == image,
+                _ => false,
+            })
     }
 
     pub(crate) fn paste_images(&mut self, item: Arc<ClipboardItem>, cx: &mut Context<Self>) {
@@ -179,10 +229,7 @@ impl ConversationStream {
             let mut all = existing;
             all.extend(imported.iter().cloned());
             vega_conversation::attachments::validate_images(&all).map_err(|_| ())?;
-            Ok(imported
-                .into_iter()
-                .map(ImagePreview::new)
-                .collect::<Vec<_>>())
+            Ok(imported)
         });
         cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -195,7 +242,11 @@ impl ConversationStream {
                     Ok(images) => {
                         for image in images {
                             this.attachment_generation = this.attachment_generation.wrapping_add(1);
-                            this.attachments.push((this.attachment_generation, image));
+                            let name =
+                                image_name("图片", this.attachment_generation as usize, &image);
+                            let preview = ImagePreview::new(image, name, cx);
+                            this.observe_image(&preview.view, cx);
+                            this.attachments.push((this.attachment_generation, preview));
                         }
                     }
                     Err(()) => this.attachment_error = Some(IMPORT_ERROR),
@@ -235,7 +286,7 @@ impl ConversationStream {
                     .gap_2()
                     .children(self.attachments.iter().map(|(id, image)| {
                         let id = *id;
-                        div().relative().child(thumbnail(image)).child(
+                        div().relative().child(thumbnail(image, cx)).child(
                             crate::icons::icon_button(
                                 crate::icons::Icon::Close,
                                 format!("移除图片 {id}"),
@@ -265,18 +316,17 @@ impl ConversationStream {
     }
 }
 
-fn thumbnail(image: &ImagePreview) -> AnyElement {
+fn thumbnail(image: &ImagePreview, cx: &App) -> AnyElement {
     div()
         .debug_selector(|| "attachment-thumbnail".into())
-        .w(px(Layout::ATTACHMENT_THUMBNAIL))
-        .h(px(Layout::ATTACHMENT_THUMBNAIL))
-        .when_some(image.preview.get().cloned(), |el, preview| {
-            el.child(img(preview).size_full().rounded_md())
-        })
+        .child(crate::image_preview::ImagePreview::thumbnail(
+            &image.view,
+            cx,
+        ))
         .into_any_element()
 }
 
-pub(crate) fn render_user_images(images: &[ImagePreview]) -> AnyElement {
+pub(crate) fn render_user_images(images: &[ImagePreview], cx: &App) -> AnyElement {
     div()
         .debug_selector(|| "user-message-images".into())
         .w_full()
@@ -287,6 +337,6 @@ pub(crate) fn render_user_images(images: &[ImagePreview]) -> AnyElement {
         .justify_end()
         .flex_wrap()
         .gap_2()
-        .children(images.iter().map(thumbnail))
+        .children(images.iter().map(|image| thumbnail(image, cx)))
         .into_any_element()
 }

@@ -611,6 +611,8 @@ async fn issue63_standalone_first_image_submit_crosses_app_worker_and_persists(
     cx.dispatch_action(f.window.into(), vega_ui::text_input::Paste);
     cx.run_until_parked();
     assert!(!f.absent("composer-attachments", cx));
+    f.click("attachment-thumbnail", cx);
+    assert!(!f.absent("image-preview", cx));
     assert_eq!(f.standalone_rows(), 0);
     f.disable_provider();
     f.submit("", cx);
@@ -618,6 +620,7 @@ async fn issue63_standalone_first_image_submit_crosses_app_worker_and_persists(
     assert!(!f.absent("composer-attachments", cx));
     assert_eq!(f.standalone_rows(), 0);
     assert!(f.provider.requests().is_empty());
+    assert!(!f.absent("image-preview", cx));
     f.repair_provider();
     f.submit("", cx);
     pump_test_app(cx, |cx| {
@@ -644,6 +647,12 @@ async fn issue63_standalone_first_image_submit_crosses_app_worker_and_persists(
         .expect("durable image count");
     assert_eq!(count, 1);
     assert!(f.absent("composer-attachments", cx));
+    assert!(
+        f.absent("image-preview", cx),
+        "ACK retires the draft occurrence"
+    );
+    f.click("attachment-thumbnail", cx);
+    assert!(!f.absent("image-preview", cx));
 }
 
 /// Owned project + config + window at the production viewport. The window is

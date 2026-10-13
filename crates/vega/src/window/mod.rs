@@ -24,6 +24,7 @@ mod commit_reconcile;
 mod context;
 mod diff;
 mod file_index;
+mod image_preview;
 mod model_catalog;
 mod model_context;
 pub(crate) mod navigation;
@@ -98,6 +99,7 @@ pub(crate) struct VegaWindow {
     /// Sidebar with the [新建任务] button, projects block, and sessions block.
     pub(crate) sidebar: Entity<Sidebar>,
     workspace: workspace::Workspace,
+    image_preview: image_preview::ImagePreviewController,
     /// Explicit wide-rail choice. Width-driven hiding is derived separately
     /// from the live viewport so a resize never overwrites the user's choice.
     environment_collapsed: bool,
@@ -328,6 +330,7 @@ impl VegaWindow {
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),
             workspace: workspace::Workspace::default(),
+            image_preview: image_preview::ImagePreviewController::new(cx),
             environment_collapsed: true,
             environment_overlay_open: false,
             sidebar_resize_dragging: false,
@@ -378,6 +381,7 @@ impl VegaWindow {
     }
 
     pub(crate) fn window_terminal_cleanup(&mut self) {
+        self.image_preview.retire();
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
         for (_, active) in self.agent_controller.active.drain() {

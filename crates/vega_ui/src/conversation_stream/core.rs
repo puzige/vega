@@ -36,7 +36,6 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
-    pub(crate) screenshot_preview: Option<Entity<screenshots::ScreenshotCard>>,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
     pub(crate) computer_use_diagnostic: Option<(u64, String)>,
     pub(crate) computer_use_notice_generation: u64,
@@ -242,6 +241,7 @@ pub struct ConversationStream {
     pub(crate) _permission_listener_task: gpui_kit::Task<()>,
 }
 
+impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
@@ -428,7 +428,6 @@ impl ConversationStream {
         .detach();
         Self {
             context_control: context_control::ContextControl::new(cx),
-            screenshot_preview: None,
             computer_use_control: None,
             computer_use_diagnostic: None,
             computer_use_notice_generation: 0,

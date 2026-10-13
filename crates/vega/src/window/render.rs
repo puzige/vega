@@ -282,6 +282,18 @@ impl Render for VegaWindow {
                                 stream.apply_model_options(model_options, cx);
                             });
                             self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
+                            cx.subscribe_in(
+                                &view,
+                                window,
+                                |this, stream, request: &ImagePreviewRequested, window, cx| {
+                                    this.handle_image_preview(stream.clone(), request, window, cx);
+                                },
+                            )
+                            .detach();
+                            cx.observe_in(&view, window, |this, _, window, cx| {
+                                this.sync_image_preview(window, cx);
+                            })
+                            .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.apply_thread_model_selection(stream.clone(), request, cx);
                             })

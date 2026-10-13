@@ -353,6 +353,11 @@ impl Motion {
 pub struct Layout;
 
 impl Layout {
+    pub const IMAGE_PREVIEW_HEADER: f32 = 40.0;
+    pub const IMAGE_PREVIEW_PADDING: f32 = 16.0;
+    pub const IMAGE_PREVIEW_HEADER_PADDING: f32 = 12.0;
+    pub const IMAGE_PREVIEW_CONTROL: f32 = 28.0;
+    pub const IMAGE_PREVIEW_GAP: f32 = 8.0;
     pub const CONVERSATION_MAX_WIDTH: f32 = 736.0;
     pub const CONVERSATION_CLOCK_HEIGHT: f32 = 23.0;
     pub const CONVERSATION_DIVIDER_GAP: f32 = 4.5;

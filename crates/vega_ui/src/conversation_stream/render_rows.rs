@@ -171,7 +171,7 @@ fn render_entry_internal(
                 message_with_copy(user_message_item(lines, &colors), copy, true, colors)
             }
         }
-        StreamEntry::UserImages { images } => attachments::render_user_images(images),
+        StreamEntry::UserImages { images } => attachments::render_user_images(images, cx),
         StreamEntry::Screenshot { card } => card.clone().into_any_element(),
         StreamEntry::Assistant {
             model,
