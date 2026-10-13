@@ -385,3 +385,69 @@ cargo nextest run -p vega_ui \
 4个修改Rust文件的格式与git diff检查通过，原始命令/退出码为 `/tmp/vega-75-menu-stability-checks.log`。所有RED/GREEN日志、hash、分支/基线、源码内容摘要保存在 `/tmp/vega-75-menu-stability-evidence.json`。以上仅为进程内生产GPUI，不是用户Mac系统操作或新版真机通过；主控负责云端门禁、发布与真实时序复测。
 
 生产接线复审补充：每个event batch会重投影同一个control clone，不能将它当作替换。新增MS07先得到1项RED（点击后仍Running而非Pausing）；修复以Arc共享实例身份比较，连续同实例保持菜单有效，真正替换/撤下重装继续使旧菜单失效。受影响原矩阵加新增项 **34/34 PASS**、704 skipped，run `34acc4ad-8943-44f7-b8e9-0c3db52eb26a`。RED日志 `/tmp/vega-75-menu-stability-projection-red.log`，SHA-256 `f899355574fc0db2ade0922f1192cf92e5090ac77c2e15706820ffe60b33983f`；GREEN日志 `/tmp/vega-75-menu-stability-projection-verified.log`，SHA-256 `72df47aaad6365f5037f21fd28f2b86a1e2a970fe43bd57f356dc9632d63ef56`。完整命令为同名前缀 `-argv.json`，没有运行全仓门禁。
+
+## 同批次多窗口读取的一次性模型投影（2026-10-13，0.1.87 真机回归）
+
+takeover-87-02：同一模型响应要求读取两个窗口，A已成功，但发布B会按原单目标动作合同移除A；每工具trim随即清除A正文和图片，下一次模型实际没有同时收到两份内容。已交付2张图片不能完成用户的文字读取/比较任务，暂停后重复读取最终触发no_progress。修复仅补临时模型投影，不扩大旧观察的输入有效性、不改UI/权限/持久化或预算。
+
+BP1. 每次模型工具批次建立有界的一次性读取投影（每条沿用65536字符正文、200个AX标签和16KiB标签投影；总缓存文字最多2×(65536×4+16KiB+8KiB)，图像沿用全请求2张/8MiB），绑定本ComputerUseRun、当时epoch、模型attempt/batch和call_id。已验证的窗口Observe/截图结果在同批后续窗口发布前保存；批次中较早的结果以明确只读方式提供窗口归属、正文和图像，去除可调用的observation/element/snapshot/capture/target引用，不进入control.observations或增加动作权限。最新窗口B继续按既有合同可操作，旧A的ComputerAct仍拒绝。
+
+BP2. 只保留到该批完成后的下一次实际provider请求；最后wait_ready及事件sink返回后重新校验epoch/取消状态再构造请求，禁止已clone的旧snapshot跨越暂停。构造并消费后立即清除较早结果，下一请求仅保留当前有效观察/已ACK的有限交付事实。输入实际消费、显式invalidate、暂停/epoch变化、compaction、取消/错误退出和AgentOutcome都清除临时批次数据。暂停后不恢复原像素/输入引用，已经durable ACK的截图仍保持真实delivered。
+
+BP3. 整个模型请求保持最多2张工具图/8MiB，包含既有工具图。调用前按已知图数和字节余量准入：不能容纳下一张的读取不执行，回执为有限observation_budget_exceeded、executed:false、deferred:true，并指引先使用已有结果再请求剩余窗口。实际捕获编码大小在调用前未知；若执行后仍超实际字节预算，回执必须如实executed:true，不能谎称not_dispatched或Success后静默丢正文。实际预算检查优先在ScreenshotDelivered durable ACK前完成；失败不新增附件，未ACK捕获立即退出新交付名额；既有附件与ACK不受影响。若重复捕获已复用旧ACK，即使当前模型图超额，仍返回delivered/unchanged并附有限model_projection错误、去除本次pixels，不能将已交付事实改成失败。不增加压缩上限或放宽原预算。
+
+BP4. 模型输入仍为当次原始参数，事件/历史审计和压缩出口仍脱敏；临时只读投影标记外部不可信数据，保持call_id配对，生产图片校验和两种provider请求构造均覆盖。内置skill v4明确图片交付和文字读取是不同请求项：只有全部要求完成才结束；在下一模型轮使用同批只读结果完成描述/比较，不能把它们当作新的输入授权。预算deferred后分批继续，不为确认附件而重复截图。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| BP01 | 目录→同批Observe A/B→下一模型→后续请求 | 下一请求同时有A/B正文和2图；A只读无可调用引用，B有效；再下一请求A已清理 | PASS（进程内） |
+| BP02 | 同批Observe A/截图B，随后对旧A和最新B输入 | A文字可读、B交付ACK保留；旧A拒绝，最新B按原只读/可操作合同；真实输入消费清除旧投影 | PASS（进程内） |
+| BP03 | 批中及实际发送前暂停/恢复，或取消 | 无旧epoch正文/图越界、既有ACK保留；取消无后续provider | PASS（进程内） |
+| BP04 | 2图、3图、8MiB边界及既有工具图 | 容量内完整可见；第3图执行前deferred；实际字节超限真实标executed且在截图ACK前拒绝 | PASS（进程内） |
+| BP05 | 请求构造、compaction/outcome/错误出口 | 两种provider配对和图片校验通过；持久/压缩出口无窗口正文/引用/像素 | PASS（进程内） |
+
+先生产RED，再修改有界投影与最后发送边界；不改control单目标有效性、不加依赖/schema、不调用真机driver。仅跑本卡受影响定向矩阵，原菜单及此前所有失败证据保留；主控负责新版自然图文/接管真机验收。
+
+### BP 本轮结果与原始失败保留
+
+15项生产运行链回归通过：同批Observe A/B与Observe A/截图B均完整进入下一provider请求，A明确只读且无observation/element/target输入引用、包含窗口归属与正文；后续请求A的正文/图已清除。旧A的真实ComputerAct仍拒绝，当前B可正确输入并得到已变化状态；非CUA读取与无图目录不错误消耗图slots。暂停在批中或primary Started事件sink均清除旧epoch原文/图，已ACK的图片仍有delivered；取消不再调用后续provider，sink错误与压缩也清理临时数据。
+
+预算回归覆盖既有工具图、2图/8MiB边界：第三图在派发前返回executed:false/deferred，下一批正常完成剩余窗口；未知编码大小超额如实executed:true，未ACK捕获不占新交付名额。四个不同窗口的预算失败后第五个合法窗口仍成功交付；复用已ACK图片遇模型图预算不足时仍返回Success/delivered/unchanged和明确projection受限，不创建重复附件。所有实际请求均通过production图片校验及Chat Completions/Responses构造与call_id配对；没有发送真实HTTP。
+
+| 阶段 | 实际结果与原因 | 原始日志 |
+|---|---|---|
+| 初始夹具编译 | 3项接口误用：test-support可见性、Diagnostic事件名、Outcome字段，修正为现有接口 | `/tmp/vega-75-batch-projection-fixture-compile.log` |
+| 生产RED | 0 PASS / 4 FAIL：A正文丢失、图文结果不全、第三图仍派发、暂停后旧pixels越过实际发送 | `/tmp/vega-75-batch-projection-red.log` |
+| 核心修复 | 4/4 PASS | `/tmp/vega-75-batch-projection-first.log` |
+| 预算夹具编译 | ToolCall应为现有ChatToolCall，修正后再运行RED | `/tmp/vega-75-batch-projection-budget-fixture-compile.log` |
+| 预算RED | 0 PASS / 2 FAIL：已ACK事实被改成Failed；未ACK捕获仍占交付名额 | `/tmp/vega-75-batch-projection-budget-red.log` |
+| 边界夹具编译 | 测试误访私有batch_reads，改为公开生产终态/请求/隐私边界断言 | `/tmp/vega-75-batch-projection-boundary-fixture-compile.log` |
+| 扩展矩阵 | 8 PASS / 1 FAIL：批中接管后未刷新目录的旧调用，fixture预期target_expired但原合同为control_unavailable且未派发 | `/tmp/vega-75-batch-projection-second.log` |
+| 暂停反馈诊断 | 保留1项FAIL全文，确认真实有限code后精确断言control_unavailable；不改变生产拒绝合同 | `/tmp/vega-75-batch-projection-pause-diagnostic.log` |
+| 恢复夹具编译 | ManagedResult无Clone，改为分别构造四个不同目标及最后合法结果 | `/tmp/vega-75-batch-projection-recovery-fixture-compile.log` |
+| BP定向矩阵 | 15/15 PASS，371 skipped | `/tmp/vega-75-batch-projection-third.log` |
+| 本卡跨层矩阵 | 155/155 PASS，1814 skipped | `/tmp/vega-75-batch-projection-final.log` |
+
+初始4项RED日志SHA-256：`bb1d4ff32f30e69d1ded41cf27337d5c10ba80cbc4d8a133f1db1c7bf8a1b463`；预算2项RED日志SHA-256：`87f5c5adc30cbda948a3dd1b26d2ce4f2da85b4f7018a96730effbb37607196b`。最终155项run ID：`dc57006d-34c5-4ada-902e-e08f0ce9b361`，日志SHA-256：`e24ccd11ac0ac3d84c375f0d87f460d0365c945024542a5e1762825de03a65c5`。每阶段完整executable/cwd/argv均保存在同名前缀`-argv.json`；最终命令：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire)'
+```
+
+内置skill v4通过quick_validate；初次Homebrew Python缺少yaml模块的环境错误原样保留，随后复用已缓存uv/PyYAML离线完成，无网络安装。修改文件格式及git diff检查结果、skill hash、所有RED/GREEN日志hash和最终提交身份汇总于`/tmp/vega-75-batch-projection-evidence.json`。本轮无schema/依赖/权限放宽，无新的常驻UI。以上为进程内生产链，菜单及图文读取真机验收仍由主控发布后执行，不以155项通过代替自然任务顺畅完成。
+
+### PR #328 合并前更新至统一右侧预览
+
+旧HEAD `5fe688903ee0632372d4a2d6e36822a777b301bd` 的云端 `38354525137` 已通过2429/2429（5 skipped），fmt/Clippy/required均成功。原始日志 `/tmp/vega-75-menu-read-ci.log` SHA-256为 `4f177e19a5d249b46e774e96ff7fcd64efbee7aabf117a440864fd5e873b7882`；该结果仅对应旧基线，不代替变基后的云端门禁。
+
+重新fetch后无冲突变基至 `cefb2f1e74797303a2924da821ce534f023d6ae8`（PR #327）。保留上游右侧Workspace图片预览及SV3替代说明；MS/BP两提交的生产代码与测试补丁在range-diff中均等价，无新增实现或断言修改。变基后的实际请求/附件/菜单与右侧预览组合复验：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire) | test(issue296_image_preview)'
+```
+
+**167/167 PASS**，1814 skipped，exit0；run ID `776d16f4-997f-4749-836d-932bdee3a3f4`。原始日志 `/tmp/vega-75-menu-read-rebased.log`，SHA-256 `cb725623a3c0ec17908eb742475b2f1043737f89b32c2fdbb72f49bcd47651e0`；完整executable/cwd/argv和测试时HEAD在同名前缀 `-argv.json`。右侧预览测试涵盖来源/历史替换、非模态焦点/窄窗、精确原图保存与迟到picker、受控打开适配、阅读锚点及错误/生命周期；旧SV3模态断言按上游契约替换，不恢复原居中弹层。
+
+13个本卡修改Rust文件的定向rustfmt和完整提交diff检查通过，记录于 `/tmp/vega-75-menu-read-rebased-checks.log`。原range-diff为 `/tmp/vega-75-menu-read-rebased-range-diff.log`；所有旧RED、155项及云端结果保留，最终提交身份追加至 `/tmp/vega-75-batch-projection-evidence.json`。未运行本地全量、Clippy、真实driver/UI/数据库；主控在固定变基提交上重新跑云端门禁，再继续发布真机验收。

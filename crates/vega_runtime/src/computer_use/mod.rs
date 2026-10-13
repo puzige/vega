@@ -1,4 +1,5 @@
 mod background;
+mod batch;
 mod desktop_observation;
 
 pub(crate) const INVALIDATED_OBSERVATION: &str = "[Earlier tool observation returned successfully, but its payload has since been invalidated and discarded. This placeholder does not mean the original observation was empty or failed, and does not establish whether an earlier action was verified. Obtain a fresh observation before any new action.]";
@@ -82,6 +83,8 @@ pub enum ComputerUseError {
     TargetExpired,
     #[error("screenshot_limit: at most four screenshots and 16 MiB per run")]
     ScreenshotLimit,
+    #[error("observation_budget_exceeded: consume current results before reading more windows")]
+    ObservationBudget { executed: bool },
     #[error("no_progress: repeated desktop calls made no observable progress; stopped this run")]
     NoProgress,
 }
@@ -110,6 +113,9 @@ impl ComputerUseError {
             Self::TargetExpired => "窗口目录已过期，请重新发现窗口。".into(),
             Self::ScreenshotLimit => "本轮截图已达到数量或大小限制，请在新回合继续。".into(),
             Self::NoProgress => "重复操作没有进展，已停止本轮电脑操作。".into(),
+            Self::ObservationBudget { .. } => {
+                "本批观察已达到容量限制，请先使用已有结果，再分批读取其余窗口。".into()
+            }
             _ => self.to_string(),
         }
     }
@@ -141,6 +147,7 @@ impl ComputerUseError {
                 "refresh_directory",
                 Some("target_id"),
             ),
+            Self::ObservationBudget { executed } => return json!({"code":"observation_budget_exceeded","executed":executed,"deferred":true,"retryable":true,"next_step":"use_current_results_then_request_remaining_windows"}).to_string(),
             Self::NoProgress => ("no_progress", false, "stop_and_report", None),
             Self::ScreenshotLimit => ("screenshot_limit", false, "stop_and_report", None),
             Self::Executor(error) => return error.feedback(),
@@ -234,6 +241,7 @@ pub struct ComputerUseRun {
     backend: Arc<tokio::sync::Mutex<backend::Backends>>,
     progress: Arc<std::sync::Mutex<progress::ProgressGuard>>,
     screenshots: Arc<std::sync::Mutex<Vec<ScreenshotCapture>>>,
+    model_batch: Arc<std::sync::Mutex<batch::ModelBatch>>,
 }
 
 impl std::fmt::Debug for ComputerUseRun {
@@ -254,6 +262,7 @@ impl ComputerUseRun {
             backend: Arc::new(tokio::sync::Mutex::new(backend::Backends::default())),
             progress: Arc::new(std::sync::Mutex::new(progress::ProgressGuard::default())),
             screenshots: Arc::new(std::sync::Mutex::new(Vec::new())),
+            model_batch: Arc::new(std::sync::Mutex::new(batch::ModelBatch::default())),
         }
     }
 
@@ -464,6 +473,31 @@ impl ComputerUseRun {
         })
     }
 
+    pub(crate) fn discard_pending_screenshot(&self, call_id: &str) {
+        if let Ok(mut screenshots) = self.screenshots.lock() {
+            screenshots.retain(|capture| capture.delivered || capture.call_id != call_id);
+        }
+    }
+
+    pub(crate) fn limited_screenshot_receipt(
+        &self,
+        call_id: &str,
+        error: ComputerUseError,
+    ) -> Option<String> {
+        if !matches!(error, ComputerUseError::ObservationBudget { .. }) {
+            return None;
+        }
+        let screenshots = self.screenshots.lock().ok()?;
+        let capture = screenshots.iter().find(|capture| {
+            capture.delivered
+                && (capture.call_id == call_id
+                    || capture.aliases.iter().any(|alias| alias == call_id))
+        })?;
+        let mut receipt = screenshot_receipt_value(&capture.call_id, capture.call_id != call_id);
+        receipt["model_projection"] = serde_json::from_str(&error.feedback()).ok()?;
+        Some(receipt.to_string())
+    }
+
     fn model_receipt(&self, call_id: &str) -> Option<String> {
         let screenshots = self.screenshots.lock().ok()?;
         let capture = screenshots.iter().find(|capture| {
@@ -613,6 +647,7 @@ impl ComputerUseRun {
         ) {
             return true;
         }
+        self.clear_model_batch();
         let mut backend = self.backend.lock().await;
         let current = self.control.status();
         if pending.epoch != current.epoch || pending.phase != current.phase {
@@ -672,11 +707,13 @@ impl ComputerUseRun {
     }
 
     pub async fn shutdown(&self) {
+        self.clear_model_batch();
         self.control.stop();
         self.cleanup_revoked().await;
     }
 
     pub fn invalidate_observations(&self) {
+        self.clear_model_batch();
         self.control.discard_observations();
     }
 
@@ -716,6 +753,7 @@ impl ComputerUseRun {
 
     pub(crate) fn trim_messages(&self, messages: &mut [crate::ChatMessage]) {
         let current = self.control.snapshot().observations;
+        let reads = self.batch_reads();
         for message in messages {
             if message.role == crate::ChatRole::Tool
                 && message
@@ -723,7 +761,16 @@ impl ComputerUseRun {
                     .as_ref()
                     .is_some_and(|call_id| !current.iter().any(|item| &item.call_id == call_id))
             {
-                if let Some(receipt) = message
+                if let Some(read) = reads
+                    .iter()
+                    .find(|read| message.tool_call_id.as_deref() == Some(&read.call_id))
+                {
+                    message.content = self.model_receipt(&read.call_id).map_or_else(
+                        || read.content.clone(),
+                        |receipt| format!("{receipt}\n{}", read.content),
+                    );
+                    message.images = read.images.clone();
+                } else if let Some(receipt) = message
                     .tool_call_id
                     .as_deref()
                     .and_then(|id| self.model_receipt(id))

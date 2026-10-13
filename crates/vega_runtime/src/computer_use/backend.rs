@@ -268,7 +268,7 @@ impl Backends {
                     .await?;
             }
             run.control.check_epoch(epoch)?;
-            run.control.consume_observations();
+            run.consume_observations();
             let dispatched = match capability {
                 Capability::Desktop => self.desktop_call(tool, mapped, cancel).await,
                 Capability::Browser => {

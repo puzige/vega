@@ -1531,25 +1531,6 @@ where
         let mut valid_primary_input = None;
         let mut anchor_protocol_valid = true;
         let mut reasoning_turn_bytes = 0usize;
-        let chat_request = ChatRequest {
-            model: request.model.clone(),
-            messages: messages.clone(),
-            tools: tool_definitions,
-            // The reserved output capacity protects the input budget; it is
-            // not a request to generate that many tokens on every round.
-            // Keep provider defaults when no explicit generation cap exists.
-            max_tokens: request_output_cap(request.max_tokens, context_budget),
-            reasoning: request.reasoning.clone(),
-        };
-        primary_revision = primary_revision.checked_add(1).ok_or(VegaError::Context(
-            ContextRuntimeError::Estimate(crate::ContextEstimateError::Overflow),
-        ))?;
-        let pending_anchor = if context_budget.is_some() {
-            PendingInputAnchor::from_request(&chat_request)
-                .map_err(|error| VegaError::Context(error.into()))?
-        } else {
-            None
-        };
         if let Some(run) = &tool_config.computer_use
             && run.wait_ready(&cancel).await.is_err()
         {
@@ -1571,10 +1552,38 @@ where
                 None,
             )
         );
-        let call = match provider
-            .chat_stream_with_metadata(chat_request, cancel.clone())
-            .await
-        {
+        if let Some(run) = &tool_config.computer_use {
+            if run.wait_ready(&cancel).await.is_err() {
+                cancel.cancel();
+            }
+            run.trim_messages(&mut messages);
+        }
+        let chat_request = ChatRequest {
+            model: request.model.clone(),
+            messages: messages.clone(),
+            tools: tool_definitions,
+            max_tokens: request_output_cap(request.max_tokens, context_budget),
+            reasoning: request.reasoning.clone(),
+        };
+        primary_revision = primary_revision.checked_add(1).ok_or(VegaError::Context(
+            ContextRuntimeError::Estimate(crate::ContextEstimateError::Overflow),
+        ))?;
+        let pending_anchor = if context_budget.is_some() {
+            PendingInputAnchor::from_request(&chat_request)
+                .map_err(|error| VegaError::Context(error.into()))?
+        } else {
+            None
+        };
+        if let Some(run) = &tool_config.computer_use {
+            run.consume_model_batch(&mut messages);
+        }
+        let call = match if cancel.is_cancelled() {
+            Err(VegaError::Cancelled)
+        } else {
+            provider
+                .chat_stream_with_metadata(chat_request, cancel.clone())
+                .await
+        } {
             Ok(call) => call,
             Err(VegaError::Cancelled) => {
                 emit!(
@@ -2146,6 +2155,9 @@ where
             });
         }
 
+        if let Some(run) = &tool_config.computer_use {
+            run.begin_model_batch(&attempt_id);
+        }
         for prepared in prepared_calls {
             let call = prepared.call().clone();
             // `tool_call_count` is a telemetry/result field only. The run is
@@ -2379,6 +2391,26 @@ where
                             ),
                             true,
                         )
+                    } else if tool_config.computer_use.as_ref().is_some_and(|run| {
+                        let model_call = prepared.model_call();
+                        run.defer_model_read(
+                            &model_call.name,
+                            &model_call.input_json,
+                            &mut messages,
+                        )
+                    }) {
+                        (
+                            terminal_result(
+                                &call,
+                                crate::computer_use::ComputerUseError::ObservationBudget {
+                                    executed: false,
+                                }
+                                .feedback(),
+                                RuntimeToolStatus::Failed,
+                                Some(audit),
+                            ),
+                            false,
+                        )
                     } else {
                         executed_tool_call_count += 1;
                         let (mut result, cancelled) = match prepared {
@@ -2487,6 +2519,22 @@ where
             {
                 result.status = RuntimeToolStatus::Cancelled;
             }
+            let mut project_observation = result.status == RuntimeToolStatus::Success;
+            if project_observation
+                && !cancel.is_cancelled()
+                && let Some(run) = &tool_config.computer_use
+                && let Err(error) =
+                    run.stage_model_observation(&attempt_id, &call.id, &mut messages)
+            {
+                project_observation = false;
+                if let Some(receipt) = run.limited_screenshot_receipt(&call.id, error) {
+                    result.output = receipt;
+                } else {
+                    result.status = RuntimeToolStatus::Failed;
+                    result.output = error.feedback();
+                    run.discard_pending_screenshot(&call.id);
+                }
+            }
             redact_runtime_tool_result(&tool_config, &mut result);
             if call.name == "ComputerScreenshot"
                 && result.status == RuntimeToolStatus::Success
@@ -2528,7 +2576,10 @@ where
             }
             let mut model_result =
                 ChatMessage::projected_tool_result(&call.id, &call.name, &result.output);
-            if let Some(run) = &tool_config.computer_use {
+            if project_observation
+                && result.status == RuntimeToolStatus::Success
+                && let Some(run) = &tool_config.computer_use
+            {
                 run.apply_observation(&call.id, &mut model_result);
             }
             messages.push(model_result);
