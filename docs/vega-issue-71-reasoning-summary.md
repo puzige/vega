@@ -1,7 +1,5 @@
 # Issue 71 · 实时思考摘要标题
 
-后续标题呈现规则由 [Issue #329](vega-issue-329-thinking-prefix.md) 覆盖：固定 `Thinking` 前缀，后接本规格定义的动态预览；预览来源、提取与原文契约仍按本规格。
-
 来源：https://github.com/puzige/vega/issues/71。2026-09-22 用户确认了实时 reasoning summary 范围；该范围随后随 PR #145 一起暂缓。2026-10-04 用户重新授权完成 #71，本规格现按 R1–R7 执行。只更新 thinking 活动块标题和预览，不回退 #151 的展开/收起行为，也不恢复 #141 的独立改动。
 
 ## 事实与范围
