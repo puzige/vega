@@ -58,6 +58,7 @@
 mod attachments;
 pub mod bench;
 mod computer_use;
+mod network_retry;
 mod screenshots;
 mod skills;
 use vega_conversation::types::ImageAttachment;

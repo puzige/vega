@@ -214,7 +214,9 @@ async fn text_only_preserves_events_usage_and_visible_content() {
         .events
         .iter()
         .filter_map(|event| match event {
-            RuntimeEvent::DiagnosticAttempt(_) => None,
+            RuntimeEvent::DiagnosticAttempt(_) | RuntimeEvent::AssistantResponseStarted { .. } => {
+                None
+            }
             event => Some(event.clone()),
         })
         .collect::<Vec<_>>();
@@ -469,7 +471,9 @@ async fn provider_error_emits_error_without_message_finished() {
         .events
         .iter()
         .filter_map(|event| match event {
-            RuntimeEvent::DiagnosticAttempt(_) => None,
+            RuntimeEvent::DiagnosticAttempt(_) | RuntimeEvent::AssistantResponseStarted { .. } => {
+                None
+            }
             event => Some(event.clone()),
         })
         .collect::<Vec<_>>();

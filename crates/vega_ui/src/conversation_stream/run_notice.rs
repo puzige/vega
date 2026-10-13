@@ -3,6 +3,7 @@ use vega_conversation::types::TaskSummaryOutcome;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum RunNoticeKind {
+    Retrying { attempt: u32, max_retries: u32 },
     Failure(RunFailureKind),
     Interrupted,
 }
@@ -16,14 +17,33 @@ pub(crate) struct RunNotice {
 impl RunNotice {
     pub(crate) fn text(&self) -> String {
         match &self.kind {
+            RunNoticeKind::Retrying {
+                attempt,
+                max_retries,
+            } => format!("正在重新连接… {attempt}/{max_retries}"),
             RunNoticeKind::Failure(failure) => failure.message(),
             RunNoticeKind::Interrupted => "已中断".into(),
         }
     }
 
     pub(crate) fn render(&self, colors: &ThemeColors) -> AnyElement {
+        if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
+            return gpui_kit::div()
+                .id(format!("assistant-network-retry-{}", self.message_id))
+                .debug_selector(|| "assistant-network-retry".into())
+                .w_full()
+                .min_w_0()
+                .py_1()
+                .text_size(px(Typography::BODY))
+                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+                .text_color(colors.text_secondary)
+                .aria_label(self.text())
+                .child(self.text())
+                .into_any_element();
+        }
         let message_id = self.message_id.clone();
         let color = match self.kind {
+            RunNoticeKind::Retrying { .. } => colors.text_secondary,
             RunNoticeKind::Failure(_) => colors.danger,
             RunNoticeKind::Interrupted => colors.warning,
         };
@@ -46,6 +66,10 @@ impl RunNotice {
     }
 
     pub(crate) fn estimated_height(&self, width: f32) -> f32 {
+        if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
+            return Typography::BODY * Typography::BODY_LINE_HEIGHT
+                + 2. * Layout::CONVERSATION_INLINE_GAP;
+        }
         let content_width =
             (width - 2. * Layout::STATUS_PADDING - 2. - Layout::ICON_SIZE - Layout::STATUS_GAP)
                 .max(1.);
@@ -140,6 +164,15 @@ impl ConversationStream {
             .filter_map(|(message_id, source)| {
                 let kind = if let Some(failure) = source.failure {
                     Some(RunNoticeKind::Failure(failure))
+                } else if let Some((_, attempt, max_retries)) =
+                    self.network_retry.as_ref().filter(|(id, _, _)| {
+                        id == &message_id && source.status == Some(RunActivityStatus::Running)
+                    })
+                {
+                    Some(RunNoticeKind::Retrying {
+                        attempt: *attempt,
+                        max_retries: *max_retries,
+                    })
                 } else {
                     match source.status {
                         Some(RunActivityStatus::Failed) => {

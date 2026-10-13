@@ -649,6 +649,8 @@ impl ConversationStream {
         self.entries.clear();
         self.assistant_role_rows.clear();
         self.run_notices.clear();
+        self.response_checkpoint = None;
+        self.network_retry = None;
         self.controller_runtime_error = None;
         self.entry_identities.clear();
         self.measured_entry_heights.clear();
@@ -1125,6 +1127,7 @@ impl ConversationStream {
         // S7-T39: the bounded meter projection consumes the same accepted
         // events (fence below) before ownership moves into the render path.
         self.feed_meter(&event, cx);
+        self.clear_recovered_retry(&event);
         let phase = match &event {
             ConversationEvent::TextDelta { message_id, delta }
                 if !delta.is_empty()
@@ -1164,6 +1167,20 @@ impl ConversationStream {
             group.update(cx, |group, cx| group.set_phase(phase, cx));
         }
         match event {
+            ConversationEvent::AssistantResponseStarted {
+                message_id,
+                text_start_bytes,
+            } => {
+                self.checkpoint_response(&message_id, text_start_bytes, cx);
+            }
+            ConversationEvent::ResponseRetrying {
+                message_id,
+                text_start_bytes,
+                attempt,
+                max_retries,
+            } => {
+                self.retry_response(&message_id, text_start_bytes, attempt, max_retries, cx);
+            }
             ConversationEvent::MessageStarted { message_id, seq } => {
                 if self.active_agent_message.is_some() {
                     self.apply_controller_error(cx);
@@ -1482,6 +1499,8 @@ impl ConversationStream {
         if active_id != message_id {
             return;
         }
+        self.response_checkpoint = None;
+        self.network_retry = None;
         self.active_thinking = None;
         self.active_skills.clear();
         self.active_skill_focuses.clear();

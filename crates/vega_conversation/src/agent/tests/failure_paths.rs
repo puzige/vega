@@ -146,6 +146,10 @@ async fn provider_error_maps_to_error_event_and_failed_message() {
             message_id: clock_id,
             started_at,
         },
+        ConversationEvent::AssistantResponseStarted {
+            message_id: response_id,
+            text_start_bytes: 0,
+        },
         ConversationEvent::TextDelta {
             message_id: text_id,
             delta,
@@ -160,7 +164,7 @@ async fn provider_error_maps_to_error_event_and_failed_message() {
         panic!("unexpected failure event sequence: {:?}", run.events);
     };
     assert_eq!(*seq, 2);
-    for id in [message_id, clock_id, text_id, error_id] {
+    for id in [message_id, clock_id, response_id, text_id, error_id] {
         assert_eq!(id, &run.assistant_message_id);
     }
     assert_eq!(delta, "partial");

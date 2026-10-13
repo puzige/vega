@@ -30,6 +30,7 @@ pub struct PersistenceActorConfig {
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InjectedPersistenceFailure {
+    Retrying,
     Running,
     Finished,
     PanicRunning,
@@ -83,6 +84,9 @@ impl PersistenceActorConfig {
             let matches_failure = matches!(
                 (self.fail_event, event),
                 (
+                    Some(InjectedPersistenceFailure::Retrying),
+                    RuntimeEvent::ResponseRetrying { .. }
+                ) | (
                     Some(InjectedPersistenceFailure::Running),
                     RuntimeEvent::ToolCallRunning { .. }
                 ) | (

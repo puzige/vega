@@ -688,6 +688,14 @@ pub enum RuntimeAssistantResponseKind {
 
 #[derive(Clone)]
 pub enum RuntimeEvent {
+    AssistantResponseStarted {
+        text_start_bytes: usize,
+    },
+    ResponseRetrying {
+        text_start_bytes: usize,
+        attempt: u32,
+        max_retries: u32,
+    },
     BuiltinSkillActivated(crate::computer_use::guide::BuiltinSkillActivation),
     ScreenshotDelivered {
         call_id: String,
@@ -796,6 +804,20 @@ pub enum RuntimeEvent {
 impl fmt::Debug for RuntimeEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AssistantResponseStarted { text_start_bytes } => formatter
+                .debug_struct("AssistantResponseStarted")
+                .field("text_start_bytes", text_start_bytes)
+                .finish(),
+            Self::ResponseRetrying {
+                text_start_bytes,
+                attempt,
+                max_retries,
+            } => formatter
+                .debug_struct("ResponseRetrying")
+                .field("text_start_bytes", text_start_bytes)
+                .field("attempt", attempt)
+                .field("max_retries", max_retries)
+                .finish(),
             Self::BuiltinSkillActivated(activation) => formatter
                 .debug_tuple("BuiltinSkillActivated")
                 .field(activation)

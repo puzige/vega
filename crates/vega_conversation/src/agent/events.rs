@@ -36,6 +36,7 @@ where
     let mut pending_text = Vec::new();
     let mut pending_text_bytes = 0usize;
     let mut batch_deadline = None;
+    let mut response_start = None;
     let mut tool_attempts =
         std::collections::HashMap::<String, (String, std::time::Instant)>::new();
 
@@ -82,7 +83,26 @@ where
         };
 
         let RuntimeEnvelope { event, ack } = envelope;
-        let result = if let RuntimeEvent::DiagnosticAttempt(attempt) = &event {
+        let invalid_boundary = match &event {
+            RuntimeEvent::AssistantResponseStarted { text_start_bytes } => {
+                if *text_start_bytes == streamed_content.len() {
+                    response_start = Some(*text_start_bytes);
+                    false
+                } else {
+                    true
+                }
+            }
+            RuntimeEvent::ResponseRetrying {
+                text_start_bytes, ..
+            } => {
+                response_start != Some(*text_start_bytes)
+                    || !streamed_content.is_char_boundary(*text_start_bytes)
+            }
+            _ => false,
+        };
+        let result = if invalid_boundary {
+            Err(persistence_actor_error("invalid response retry boundary"))
+        } else if let RuntimeEvent::DiagnosticAttempt(attempt) = &event {
             diagnostics.runtime_attempt(thread_id, run_id, root_attempt_id, attempt);
             Ok(())
         } else if let RuntimeEvent::TextDelta(delta) = &event {
@@ -123,6 +143,12 @@ where
             match flushed {
                 Ok(()) if matches!(event, RuntimeEvent::ToolCallOutput { .. }) => Ok(()),
                 Ok(()) => {
+                    if let RuntimeEvent::ResponseRetrying {
+                        text_start_bytes, ..
+                    } = &event
+                    {
+                        streamed_content.truncate(*text_start_bytes);
+                    }
                     let execution_duration_ms = terminal_execution_duration(&event, run_started_at);
                     match actor
                         .event(
@@ -352,6 +378,15 @@ pub(crate) fn persist_runtime_event(
     execution_duration_ms: Option<i64>,
 ) -> Result<(), VegaError> {
     match event {
+        RuntimeEvent::ResponseRetrying { .. } => {
+            vega_store::messages::update_streaming_content(
+                store.conn(),
+                message_id,
+                streamed_content,
+            )
+            .map_err(|error| persistence_actor_error(error.to_string()))?;
+        }
+        RuntimeEvent::AssistantResponseStarted { .. } => {}
         RuntimeEvent::BuiltinSkillActivated(activation) => {
             vega_store::computer_use_delivery::activate_builtin(
                 store.conn(),

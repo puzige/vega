@@ -24,6 +24,7 @@ pub(crate) struct SsePipeline {
     pub(crate) pending: VecDeque<Result<ProviderEvent, VegaError>>,
     pub(crate) done: bool,
     pub(crate) cancel: CancellationToken,
+    recoverable: bool,
 }
 
 /// Wraps a successful SSE response into the boxed event stream.
@@ -35,6 +36,14 @@ pub(crate) struct SsePipeline {
 /// - errors after stream establishment are terminal (retries only apply to
 ///   request setup — consumed increments cannot be replayed).
 pub(crate) fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -> EventStream {
+    event_stream_with_recovery(resp, cancel, false)
+}
+
+pub(super) fn event_stream_with_recovery(
+    resp: reqwest::Response,
+    cancel: CancellationToken,
+    recoverable: bool,
+) -> EventStream {
     let inner: RawSse = Box::pin(resp.bytes_stream().eventsource());
     let state = SsePipeline {
         inner,
@@ -42,6 +51,7 @@ pub(crate) fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -
         pending: VecDeque::new(),
         done: false,
         cancel,
+        recoverable,
     };
     let stream = futures::stream::unfold(state, |mut st| async move {
         loop {
@@ -77,10 +87,16 @@ pub(crate) fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -
                 }
                 Some(Err(err)) => {
                     st.done = true;
-                    st.pending.push_back(Err(map_sse_error(err)));
+                    st.pending
+                        .push_back(Err(map_sse_error(err, st.recoverable)));
                 }
                 None => {
                     st.done = true;
+                    if st.recoverable && st.assembler.finish_reason.is_none() {
+                        st.pending
+                            .push_back(Err(recovery::incomplete_stream_error()));
+                        continue;
+                    }
                     match st.assembler.finalize() {
                         Ok(events) => st.pending.extend(events.into_iter().map(Ok)),
                         Err(error) => st.pending.push_back(Err(error)),
@@ -92,12 +108,17 @@ pub(crate) fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -
     Box::pin(stream)
 }
 
-pub(crate) fn map_sse_error(err: EventStreamError<reqwest::Error>) -> VegaError {
+pub(crate) fn map_sse_error(err: EventStreamError<reqwest::Error>, recoverable: bool) -> VegaError {
+    let transport = matches!(err, EventStreamError::Transport(_));
     VegaError::ProviderDiagnostic {
-        kind: ProviderFailureKind::Transport,
+        kind: if transport {
+            ProviderFailureKind::Transport
+        } else {
+            ProviderFailureKind::Protocol
+        },
         status: None,
-        message: format!("SSE stream error: {err}"),
-        retryable: false,
+        message: "SSE stream failed".into(),
+        retryable: transport && recoverable,
         retry_count: None,
         request_id: None,
     }
