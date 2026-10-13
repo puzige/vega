@@ -440,12 +440,7 @@ async fn issue296_phase_rejected_tools_and_permissions_survive_final_collapse(
         let group = stream.run_activity_groups["run"].read(cx);
         assert!(!group.test_projection().2);
         assert_eq!(group.segment_row_count(1, cx), 0);
-        assert!(
-            stream
-                .run_notice_projection(cx)
-                .values()
-                .any(|notice| notice.text().contains("拒绝"))
-        );
+        assert!(stream.run_notice_projection(cx).is_empty());
         assert!(stream.active_permission.is_some());
         assert!(
             stream.tool_cards["rejected"]
@@ -457,7 +452,7 @@ async fn issue296_phase_rejected_tools_and_permissions_survive_final_collapse(
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("permission-card-heading").is_some());
     assert!(visual.debug_bounds("run-activity-exception").is_none());
-    assert!(visual.debug_bounds("run-notice-run").is_some());
+    assert!(visual.debug_bounds("run-notice-run").is_none());
     drop(decision);
 }
 
