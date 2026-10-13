@@ -49,7 +49,7 @@ async fn issue296_visual_v01_clock_divider_column_and_no_role(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-async fn issue296_visual_v03_summary_collapses_tools_and_opens_flat_rows(cx: &mut TestAppContext) {
+async fn issue296_visual_v03_summary_keeps_flat_tools_visible(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "visual-stage");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -74,14 +74,10 @@ async fn issue296_visual_v03_summary_collapses_tools_and_opens_flat_rows(cx: &mu
     let stage = visual
         .debug_bounds("run-stage-toggle-0")
         .expect("inline stage");
-    let title = visual.debug_bounds("run-stage-title-0").unwrap();
-    let chevron = visual.debug_bounds("run-stage-chevron-0").unwrap();
-    assert_eq!(chevron.size.width, px(12.));
-    assert_eq!(chevron.left() - title.right(), px(6.));
+    assert!(visual.debug_bounds("run-stage-title-0").is_some());
+    assert!(visual.debug_bounds("run-stage-chevron-0").is_none());
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("tool-activity-single-row").is_none());
-    visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
     let first = visual
         .debug_bounds("run-stage-tool-0-0")
         .expect("first direct tool");
@@ -90,8 +86,12 @@ async fn issue296_visual_v03_summary_collapses_tools_and_opens_flat_rows(cx: &mu
         .expect("second direct tool");
     assert_eq!(second.top() - first.top(), px(25.));
     assert_eq!(first.left(), stage.left());
+    visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("run-stage-tool-0-0"), Some(first));
+    assert_eq!(visual.debug_bounds("run-stage-tool-0-1"), Some(second));
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
-    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
     assert!(visual.debug_bounds("thinking-content").is_none());
 }
 
@@ -226,22 +226,24 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
         (cards[0].clone(), cards[1].clone())
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    click_stage(&mut visual);
-    let first_source = visual
-        .debug_bounds(Box::leak(
-            format!("run-stage-source-{}", first.entity_id()).into_boxed_str(),
-        ))
-        .unwrap();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("run-stage-source-{}", first.entity_id()).into_boxed_str(),
+            ))
+            .is_none()
+    );
     let first_tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
-    let second_source = visual
-        .debug_bounds(Box::leak(
-            format!("run-stage-source-{}", second.entity_id()).into_boxed_str(),
-        ))
-        .unwrap();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("run-stage-source-{}", second.entity_id()).into_boxed_str(),
+            ))
+            .is_none()
+    );
     let second_tool = visual.debug_bounds("run-stage-tool-0-1").unwrap();
-    assert!(first_source.bottom() <= first_tool.top());
-    assert!(first_tool.bottom() <= second_source.top());
-    assert!(second_source.bottom() <= second_tool.top());
+    assert!(first_tool.bottom() <= second_tool.top());
+    assert_eq!(second_tool.top() - first_tool.top(), px(25.));
     first.read_with(&visual, |card, _| {
         assert_eq!(card.source_text(), "First phase")
     });
@@ -251,15 +253,46 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
             "Second phase\nFull summary continuation."
         )
     });
-    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
     assert!(visual.debug_bounds("thinking-content").is_none());
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
+    stream.read_with(&visual, |stream, cx| {
+        assert_eq!(
+            stream.run_activity_groups["visual"]
+                .read(cx)
+                .stage_title(0, cx),
+            "Full summary continuation."
+        );
+    });
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "visual".into(),
+                delta: "Later raw reasoning.".into(),
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["visual"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Full summary continuation.");
+        assert_eq!(
+            group
+                .segment_children(0)
+                .iter()
+                .filter(|child| matches!(child, RunActivityChild::Thinking(_)))
+                .count(),
+            3
+        );
+    });
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_some());
 }
 
 #[gpui_kit::test]
-async fn issue296_visual_v06_closed_stage_hidden_tool_does_not_block_final(
-    cx: &mut TestAppContext,
-) {
+async fn issue296_visual_v06_visible_tool_reading_defers_final(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "visual-hidden-reading");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -272,12 +305,10 @@ async fn issue296_visual_v06_closed_stage_hidden_tool_does_not_block_final(
         );
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    click_stage(&mut visual);
     let tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
     visual.simulate_click(tool.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("run-stage-tool-0-0-detail").is_some());
-    click_stage(&mut visual);
     visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
     stream.update(&mut visual, |stream, cx| {
         confirm_test_final(stream, "visual", cx)
@@ -288,23 +319,27 @@ async fn issue296_visual_v06_closed_stage_hidden_tool_does_not_block_final(
         assert!(
             stream.run_activity_groups["visual"]
                 .read(cx)
-                .process_in_details()
+                .collapse_pending()
         );
         assert!(
             !stream.run_activity_groups["visual"]
                 .read(cx)
-                .collapse_pending()
+                .process_in_details()
         );
     });
-    assert!(visual.debug_bounds("run-stage-toggle-0").is_none());
-    let clock = visual.debug_bounds("run-activity-toggle").unwrap();
-    visual.simulate_click(clock.center(), gpui_kit::Modifiers::default());
+    assert!(visual.debug_bounds("run-stage-tool-0-0-detail").is_some());
+    let tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
+    visual.simulate_click(tool.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds("tool-activity-single-row-detail")
-            .is_some()
-    );
+    visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        assert!(
+            stream.run_activity_groups["visual"]
+                .read(cx)
+                .process_in_details()
+        );
+    });
 }
 
 #[gpui_kit::test]
@@ -314,7 +349,13 @@ async fn issue296_visual_v06_stage_anchor_reveals_inline_and_focus_defers_final(
     let (window, stream, _) = open_controller_stream(cx, "visual-stage-anchor");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
-        summary(stream, "检查锚点", cx);
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "visual".into(),
+                delta: "检查锚点".into(),
+            },
+            cx,
+        );
         stream.apply_event(
             ConversationEvent::ToolCallProposed {
                 call: bash_call("one", "pwd"),
@@ -369,7 +410,13 @@ async fn issue296_visual_v07_stage_shimmer_theme_reduce_motion_and_hover(cx: &mu
         .unwrap();
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
-        summary(stream, "检查活动摘要", cx);
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "visual".into(),
+                delta: "检查活动摘要".into(),
+            },
+            cx,
+        );
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     for palette in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
@@ -569,7 +616,13 @@ async fn issue296_visual_v06_new_thinking_stays_closed_until_independent_reading
     let (window, stream, _) = open_controller_stream(cx, "visual-follow-new-thought");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
-        summary(stream, "First phase", cx);
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "visual".into(),
+                delta: "First phase".into(),
+            },
+            cx,
+        );
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     click_stage(&mut visual);

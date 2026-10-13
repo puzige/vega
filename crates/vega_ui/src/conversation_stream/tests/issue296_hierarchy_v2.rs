@@ -197,7 +197,7 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
             28.5
         );
         stream.apply_event(
-            ConversationEvent::SummaryDelta {
+            ConversationEvent::ThinkingDelta {
                 message_id: "run".into(),
                 delta: "Inspecting".into(),
             },

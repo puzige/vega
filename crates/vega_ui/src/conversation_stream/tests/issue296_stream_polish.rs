@@ -13,7 +13,7 @@ fn start(stream: &mut ConversationStream, id: &str, cx: &mut Context<Conversatio
 
 fn thinking(stream: &mut ConversationStream, id: &str, cx: &mut Context<ConversationStream>) {
     stream.apply_event(
-        ConversationEvent::SummaryDelta {
+        ConversationEvent::ThinkingDelta {
             message_id: id.into(),
             delta: "Synthetic phase".into(),
         },

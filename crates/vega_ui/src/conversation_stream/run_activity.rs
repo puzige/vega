@@ -26,6 +26,7 @@ struct RunActivitySegment {
     manually_expanded: bool,
     children: Vec<RunActivityChild>,
     focus: FocusHandle,
+    header_focus: FocusHandle,
     scrolls: Vec<ScrollHandle>,
 }
 
@@ -232,32 +233,54 @@ impl RunActivityGroup {
         self.manually_expanded
             || self.focus.contains_focused(window, cx)
             || self.segments.iter().enumerate().any(|(index, segment)| {
-                segment.manually_expanded
-                    || segment.focus.contains_focused(window, cx)
-                    || ((self.stage_thinking(index).is_none() || segment.expanded)
-                        && segment.children.iter().any(|child| match child {
-                            RunActivityChild::Thinking(card) => card.read(cx).expanded,
-                            RunActivityChild::Tool(card) => card.read(cx).is_expanded(),
-                            RunActivityChild::ToolGroup(group) => {
-                                group.read(cx).expanded()
-                                    || group
-                                        .read(cx)
-                                        .children()
-                                        .iter()
-                                        .any(|card| card.read(cx).is_expanded())
-                            }
-                            RunActivityChild::Artifact(_) => false,
-                        }))
+                let stage_thinking = self.stage_thinking(index);
+                let thinking_can_expand =
+                    stage_thinking.is_some() && self.stage_summary_title(index, cx).is_none();
+                let thinking_visible =
+                    stage_thinking.is_none() || (segment.expanded && thinking_can_expand);
+                (segment.manually_expanded && thinking_can_expand)
+                    || (segment.focus.contains_focused(window, cx)
+                        && (!segment.header_focus.is_focused(window) || thinking_can_expand))
+                    || segment.children.iter().any(|child| match child {
+                        RunActivityChild::Thinking(card) => {
+                            thinking_visible && card.read(cx).expanded
+                        }
+                        RunActivityChild::Tool(card) => card.read(cx).is_expanded(),
+                        RunActivityChild::ToolGroup(group) => {
+                            (stage_thinking.is_none() && group.read(cx).expanded())
+                                || group
+                                    .read(cx)
+                                    .children()
+                                    .iter()
+                                    .any(|card| card.read(cx).is_expanded())
+                        }
+                        RunActivityChild::Artifact(_) => false,
+                    })
             })
     }
 
-    fn visible_segment_children(&self, segment: usize, _cx: &App) -> Vec<RunActivityChild> {
+    fn visible_segment_children(&self, segment: usize, cx: &App) -> Vec<RunActivityChild> {
+        let has_summary = self.stage_summary_title(segment, cx).is_some();
         self.segment_children(segment)
             .into_iter()
             .filter(|child| {
-                !self.process_in_details() || matches!(child, RunActivityChild::Artifact(_))
+                (!self.process_in_details() || matches!(child, RunActivityChild::Artifact(_)))
+                    && (!has_summary || !matches!(child, RunActivityChild::Thinking(_)))
             })
             .collect()
+    }
+
+    fn leading_segment_child_count(&self, segment: usize) -> usize {
+        self.segments
+            .get(segment)
+            .map(|segment| {
+                segment
+                    .children
+                    .iter()
+                    .take_while(|child| !matches!(child, RunActivityChild::Thinking(_)))
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     pub(crate) fn status(&self) -> RunActivityStatus {
@@ -384,6 +407,7 @@ impl RunActivityGroup {
             manually_expanded: false,
             children: Vec::new(),
             focus: cx.focus_handle(),
+            header_focus: cx.focus_handle().tab_stop(true),
             scrolls: vec![ScrollHandle::new()],
         });
         cx.notify();
@@ -575,10 +599,26 @@ impl RunActivityGroup {
     }
 
     pub(crate) fn segment_row_count(&self, segment: usize, cx: &App) -> usize {
-        self.visible_segment_children(segment, cx)
-            .iter()
-            .map(|child| Self::child_row_count(child, cx))
-            .sum()
+        let has_stage = self.stage_thinking(segment).is_some();
+        let children = self.visible_segment_children(segment, cx);
+        let children = if has_stage {
+            Self::compact_children(children, cx)
+        } else {
+            children
+        };
+        let expanded = has_stage
+            && self.segments[segment].expanded
+            && children
+                .iter()
+                .any(|child| matches!(child, RunActivityChild::Thinking(_)));
+        usize::from(has_stage)
+            + children
+                .iter()
+                .filter(|child| {
+                    !has_stage || expanded || !matches!(child, RunActivityChild::Thinking(_))
+                })
+                .map(|child| Self::child_row_count(child, cx))
+                .sum()
     }
 
     pub(crate) fn compact_children(
@@ -630,23 +670,40 @@ impl RunActivityGroup {
         cx: &App,
     ) -> f32 {
         if self.stage_thinking(segment).is_some() {
-            let details = Self::compact_sections(self.segment_children(segment), cx)
+            let children = self.visible_segment_children(segment, cx);
+            let (leading, details) = children.split_at(self.leading_segment_child_count(segment));
+            let expanded = self.segments[segment].expanded
+                && details
+                    .iter()
+                    .any(|child| matches!(child, RunActivityChild::Thinking(_)));
+            let leading_height = Self::compact_children(leading.to_vec(), cx)
+                .iter()
+                .map(|child| Self::estimated_child_height(child, width, cx))
+                .sum::<f32>();
+            let details_height = Self::compact_sections(details.to_vec(), cx)
                 .iter()
                 .map(|section| {
-                    let height = section
-                        .iter()
-                        .map(|child| Self::estimated_child_height(child, width, cx))
-                        .sum::<f32>();
                     if matches!(section.first(), Some(RunActivityChild::Artifact(_))) {
-                        height
-                    } else if self.segments[segment].expanded {
-                        height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
+                        section
+                            .iter()
+                            .map(|child| Self::estimated_child_height(child, width, cx))
+                            .sum::<f32>()
+                    } else if expanded {
+                        section
+                            .iter()
+                            .map(|child| Self::estimated_child_height(child, width, cx))
+                            .sum::<f32>()
+                            .min(Layout::TOOL_GROUP_MAX_HEIGHT)
                     } else {
-                        0.
+                        section
+                            .iter()
+                            .filter(|child| matches!(child, RunActivityChild::Tool(_)))
+                            .map(|child| Self::estimated_child_height(child, width, cx))
+                            .sum::<f32>()
                     }
                 })
                 .sum::<f32>();
-            return top + Layout::CONVERSATION_TOOL_HEIGHT + details;
+            return top + leading_height + Layout::CONVERSATION_TOOL_HEIGHT + details_height;
         }
         let children = self.visible_segment_children(segment, cx);
         let tool_leads = matches!(
@@ -1045,13 +1102,34 @@ impl RunActivityGroup {
             })
     }
 
+    fn stage_summary_title(&self, segment: usize, cx: &App) -> Option<String> {
+        self.segments
+            .get(segment)?
+            .children
+            .iter()
+            .rev()
+            .find_map(|child| {
+                if let RunActivityChild::Thinking(card) = child {
+                    card.read(cx).summary_title().map(str::to_owned)
+                } else {
+                    None
+                }
+            })
+    }
+
+    pub(crate) fn stage_title(&self, segment: usize, cx: &App) -> String {
+        self.stage_summary_title(segment, cx)
+            .unwrap_or_else(|| "Thinking".to_owned())
+    }
+
     #[cfg(test)]
     pub(crate) fn segment_expanded(&self, segment: usize) -> bool {
         self.segments[segment].expanded
     }
 
     pub(crate) fn reveal_segment(&mut self, segment: usize, cx: &mut Context<Self>) -> bool {
-        if self.stage_thinking(segment).is_none() {
+        if self.stage_thinking(segment).is_none() || self.stage_summary_title(segment, cx).is_some()
+        {
             return false;
         }
         let state = &mut self.segments[segment];
@@ -1094,19 +1172,29 @@ impl RunActivityGroup {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let children = group.read(cx).visible_segment_children(segment_index, cx);
-        if children.is_empty() {
+        let state = group.read(cx);
+        let thinking = state.stage_thinking(segment_index);
+        let mut children = state.visible_segment_children(segment_index, cx);
+        if thinking.is_none() && children.is_empty() {
             return div().h_0().into_any_element();
         }
         let tool_leads = matches!(
             children.first(),
             Some(RunActivityChild::Tool(_) | RunActivityChild::ToolGroup(_))
         );
+        let leading_children = if thinking.is_some() {
+            children
+                .drain(..state.leading_segment_child_count(segment_index))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let colors = theme(cx).colors;
-        let state = group.read(cx);
         let focus = state.segments[segment_index].focus.clone();
-        let thinking = state.stage_thinking(segment_index);
-        let expanded = state.segments[segment_index].expanded;
+        let can_expand = children
+            .iter()
+            .any(|child| matches!(child, RunActivityChild::Thinking(_)));
+        let expanded = state.segments[segment_index].expanded && can_expand;
         let sticky = state.segments[segment_index].sticky.clone();
         let scrolls = state.segments[segment_index].scrolls.clone();
         let shimmering = !state.terminal
@@ -1118,10 +1206,10 @@ impl RunActivityGroup {
         let mut header = None;
         let mut rows = Vec::new();
         if let Some(card) = &thinking {
-            let title = card.read(cx).title().to_owned();
+            let title = state.stage_title(segment_index, cx);
             let disclosure_group: gpui_kit::SharedString =
                 format!("run-stage-{}-{segment_index}", group.entity_id()).into();
-            let header_focus = crate::disclosure::focus(disclosure_group.clone(), window, cx);
+            let header_focus = state.segments[segment_index].header_focus.clone();
             let toggle = group.clone();
             let click_focus = header_focus.clone();
             let keyboard = group.clone();
@@ -1131,13 +1219,19 @@ impl RunActivityGroup {
                     .debug_selector(move || format!("run-stage-toggle-{segment_index}"))
                     .group(disclosure_group.clone())
                     .track_focus(&header_focus)
-                    .tab_stop(true)
-                    .aria_expanded(expanded)
-                    .aria_label(format!(
-                        "{title}，{}阶段过程",
-                        if expanded { "收起" } else { "展开" }
-                    ))
-                    .focus_visible(move |row| row.bg(colors.bg_hover))
+                    .tab_stop(can_expand)
+                    .when(can_expand, |row| row.aria_expanded(expanded))
+                    .aria_label(if can_expand {
+                        format!(
+                            "{title}，{}阶段过程",
+                            if expanded { "收起" } else { "展开" }
+                        )
+                    } else {
+                        title.clone()
+                    })
+                    .when(can_expand, |row| {
+                        row.focus_visible(move |row| row.bg(colors.bg_hover))
+                    })
                     .w_full()
                     .min_w_0()
                     .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
@@ -1147,13 +1241,18 @@ impl RunActivityGroup {
                     .flex()
                     .items_center()
                     .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                    .cursor_pointer()
-                    .on_mouse_up(MouseButton::Left, move |_: &MouseUpEvent, window, cx| {
-                        click_focus.focus(window, cx);
-                        toggle.update(cx, |group, cx| group.toggle_segment(segment_index, cx))
+                    .when(can_expand, |row| {
+                        row.cursor_pointer().on_mouse_up(
+                            MouseButton::Left,
+                            move |_: &MouseUpEvent, window, cx| {
+                                click_focus.focus(window, cx);
+                                toggle
+                                    .update(cx, |group, cx| group.toggle_segment(segment_index, cx))
+                            },
+                        )
                     })
                     .on_key_down(move |event, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                             keyboard
                                 .update(cx, |group, cx| group.toggle_segment(segment_index, cx));
                             cx.stop_propagation();
@@ -1171,19 +1270,38 @@ impl RunActivityGroup {
                                 div().child(title).into_any_element()
                             }),
                     )
-                    .child(crate::disclosure::inline_chevron(
-                        disclosure_group,
-                        format!("run-stage-chevron-{segment_index}"),
-                        &header_focus,
-                        expanded,
-                        true,
-                        colors,
-                        window,
-                    ))
+                    .when(can_expand, |row| {
+                        row.child(crate::disclosure::inline_chevron(
+                            disclosure_group,
+                            format!("run-stage-chevron-{segment_index}"),
+                            &header_focus,
+                            expanded,
+                            true,
+                            colors,
+                            window,
+                        ))
+                    })
                     .into_any_element(),
             );
         }
         let mut tool_index = 0;
+        let leading_rows = Self::compact_children(leading_children, cx)
+            .into_iter()
+            .map(|child| match child {
+                RunActivityChild::Tool(card) => {
+                    let row = ToolCard::render(
+                        card,
+                        format!("run-stage-tool-{segment_index}-{tool_index}"),
+                        false,
+                        window,
+                        cx,
+                    );
+                    tool_index += 1;
+                    row
+                }
+                child => Self::render_child(child, window, cx),
+            })
+            .collect::<Vec<_>>();
         let mut operation_index = 0;
         let sections = if thinking.is_some() {
             Self::compact_sections(children, cx)
@@ -1207,6 +1325,21 @@ impl RunActivityGroup {
             let section_index = operation_index;
             operation_index += 1;
             if !expanded {
+                rows.extend(section.into_iter().filter_map(|child| {
+                    if let RunActivityChild::Tool(card) = child {
+                        let row = ToolCard::render(
+                            card,
+                            format!("run-stage-tool-{segment_index}-{tool_index}"),
+                            false,
+                            window,
+                            cx,
+                        );
+                        tool_index += 1;
+                        Some(StickySection::plain(row))
+                    } else {
+                        None
+                    }
+                }));
                 continue;
             }
             let details = section
@@ -1278,6 +1411,16 @@ impl RunActivityGroup {
                 .flex()
                 .flex_col()
                 .children(rows.into_iter().map(|section| section.into_element()))
+                .into_any_element()
+        };
+        let content = if leading_rows.is_empty() {
+            content
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .children(leading_rows)
+                .child(content)
                 .into_any_element()
         };
         render_rows::process_surface(&colors)
