@@ -504,7 +504,7 @@ impl ToolCard {
                 Some(ToolCardInputProjection::ComputerUse { .. })
             )
             && self.approval == Some(Approval::Once)
-            && matches!(&self.result, Some(ToolCardResultProjection::ComputerUse { output, .. }) if output == vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT)
+            && matches!(&self.result, Some(ToolCardResultProjection::ComputerUse { output, .. }) if output == vega_conversation::types::SUPERSEDED_CONTROL_OUTPUT)
         {
             return ToolActivityState::Superseded;
         }

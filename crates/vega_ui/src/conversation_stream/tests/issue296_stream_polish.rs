@@ -830,7 +830,7 @@ async fn issue75_resume_refresh_neutral_cancellation_does_not_interrupt_run_or_h
         stream.apply_event(ConversationEvent::ToolCallApproved{call_id:call_id.clone(),approval:vega_conversation::types::Approval::Once},cx);
         stream.apply_event(ConversationEvent::ToolCallRunning{call_id:call_id.clone()},cx);
         stream.apply_event(ConversationEvent::ToolCallFinished{call_id:call_id.clone(),result:vega_conversation::types::ToolResult {
-            status:ToolCallStatus::Cancelled,output:vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT.into(),reused:false,exit_code:None,duration_ms:None,truncated:None,invalid:None,
+            status:ToolCallStatus::Cancelled,output:vega_conversation::types::SUPERSEDED_CONTROL_OUTPUT.into(),reused:false,exit_code:None,duration_ms:None,truncated:None,invalid:None,
         }},cx);
         assert_eq!(stream.tool_cards[&call_id].read(cx).activity_state(),crate::tool_card::ToolActivityState::Superseded);
         assert_eq!(stream.run_activity_groups["polish"].read(cx).status(),RunActivityStatus::Running);

@@ -391,7 +391,7 @@ mod tests {
         let call=ToolCall{id:"capture".into(),tool:"ComputerScreenshot".into(),input_json:serde_json::json!({"kind":"computer_use","version":1,"action":"screenshot","argument_bytes":2,"argument_digest":"a".repeat(64)}).to_string()};
         let result = ToolResult {
             status: ToolCallStatus::Cancelled,
-            output: vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT.into(),
+            output: vega_conversation::types::SUPERSEDED_CONTROL_OUTPUT.into(),
             reused: false,
             exit_code: None,
             duration_ms: None,

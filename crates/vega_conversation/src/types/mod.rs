@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{
     Capability, ComputerUseControl, ComputerUseRun, ControlPhase, ControlSnapshot, DesktopTarget,
-    ManagedComponents, Observation, Target,
+    ManagedComponents, Observation, SUPERSEDED_CONTROL_OUTPUT, Target,
 };
 
 use serde::{Deserialize, Deserializer, Serialize};

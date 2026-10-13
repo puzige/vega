@@ -596,3 +596,11 @@ cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui \
 仓库PR Check的完整fmt/Clippy/nextest门禁与新版自然语言真机测试仍由主控接续；当前代码提交不代表真机验收通过。内置skill v5、窗口TTL、依赖、数据库schema和UI布局保持不变。
 
 RR静态原始日志SHA-256：`e9952da990eac03142544739608b1d66a624901156921ed812ea30c1c45044ed`；14条记录全部exit0，只有静态检查与Git同步，不含编译或测试执行。
+
+### RR 云端首轮编译反馈
+
+PR #339首轮CI 38386396210的fmt通过，Nextest与Clippy均在编译阶段报E0433：tool_card.rs生产路径直接引用vega_runtime，而vega_ui仅有其dev-dependency。回归测试尚未运行，不能记为失败用例或PASS。原始日志 `/tmp/vega-75-resume-refresh-first-ci.log`，SHA-256 `98e2ea237b73610d687966db7f9b7a3c679d2ad139df7e725e66ccbdffea8a6d`。
+
+按既有分层从vega_conversation::types重新导出runtime的同一有限回执常量，UI生产代码和本轮UI回归统一通过该入口引用；不新增依赖、不复制回执字面量、不改变语义与审计合同。此修正仅做修改文件rustfmt与diff检查，编译和12项新回归仍交云端PR Check。
+
+本次修正静态记录 `/tmp/vega-75-resume-refresh-ci-import-checks.log`，SHA-256 `8642505d45caa416e44e6bc6fa438920998e2ada5d22bd9b1b2d289c3479abb7`；同前缀.json含完整cwd/argv。三项检查exit0（24–229ms），不代表编译或测试已通过。
