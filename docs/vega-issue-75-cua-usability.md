@@ -541,3 +541,13 @@ cargo nextest run -p vega_runtime -p vega_conversation \
 云端PR Check仍须执行仓库完整fmt/Clippy/nextest门禁；root随后以新版普通双窗图文任务核验≤5调用/≤3模型轮/≤60秒，最终正确但反复读取仍不算通过。本轮不改UI/权限、数据库/审计schema、driver或发布签名；未操作应用DB、UI或真实driver。
 
 提交后fresh fetch，无冲突变基至 `e6c69b787bd05bb0dad220b81caf76f1c0c3c668`（#333工具块间距与#335交互规范）。原 `a57f72d` 到变基后 `6d3a239` 的range-diff为等价补丁；保留新主线UI/UX改动，本轮无UI更改。记录 `/tmp/vega-75-text-delivery-rebase.log`；仅追加这条集成身份，不重复未变生产代码的检查，也未启动任何本地编译/测试。
+
+### TD 云端首轮失败与预算分批合同同步
+
+PR #336首轮CI `38369457548`：Clippy成功，2464通过/1失败/5 skipped；6项新增TD回归全部通过。唯一失败为旧 `issue75_batch_projection_deferred_window_can_be_read_in_next_batch` 在802行要求A正文消失。原始日志 `/tmp/vega-75-text-delivery-ci-failure.log`，SHA-256 `e4afd6edd086316e8ecc518505482dfd5a7fba83d3a3ecb297977bf811752968`，完整失败保留。
+
+该场景先Observe A/B，第三张截图C因2图预算在派发前deferred，随后一个仅含ComputerScreenshot C的批次。它属于TD2许可的文字桥接：最终答复仍应同时有A/B的先前只读文字、各自窗口身份与时序，只有C的新图；不能因C曾被deferred而要求丢弃A/B文字。此次只同步旧断言并强化旧图清理、旧action引用失效、窗口归属、最终1图以及原executed:false/执行次数/1附件/provider配对和预算断言，不修改生产实现、不放宽图预算。
+
+修正后的测试仍待下一轮云端PR Check；本地只做快速格式/diff检查，未编译或运行测试。
+
+修正静态记录 `/tmp/vega-75-text-delivery-ci-assertion-checks.log` SHA-256 `16a13c2f0eb6e8ff8a05cb669b52cb4d4443e311ae5194df73b596fa760c7078`；同前缀`.json`含完整executable/cwd/argv。rustfmt、rustfmt --check、git diff --check均exit0（30–179ms），无本地编译。此结果不代表修正用例已运行。

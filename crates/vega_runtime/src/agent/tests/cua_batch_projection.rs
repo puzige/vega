@@ -777,11 +777,44 @@ async fn issue75_batch_projection_deferred_window_can_be_read_in_next_batch() {
         )]),
         finish(),
     ]);
-    let outcome = run_agent(
+    let recorded = Arc::new(Mutex::new(Vec::<String>::new()));
+    let stale_checked = Arc::new(AtomicUsize::new(0));
+    let checked = stale_checked.clone();
+    let control = run.control.clone();
+    let outcome = run_agent_with_sink(
         &provider,
         &tools,
         configured(run.clone(), dir.path()),
         CancellationToken::new(),
+        move |event| {
+            if let RuntimeEvent::ToolCallFinished(ref finished) = event {
+                if matches!(finished.call_id.as_str(), "a" | "b") {
+                    let id = control
+                        .snapshot()
+                        .observations
+                        .iter()
+                        .find(|item| item.call_id == finished.call_id)
+                        .unwrap()
+                        .id
+                        .clone();
+                    recorded.lock().unwrap().push(id);
+                } else if finished.call_id == "remaining" {
+                    assert_eq!(control.status().phase, ControlPhase::Running);
+                    let old = recorded.lock().unwrap();
+                    assert_eq!(old.len(), 2);
+                    for id in old.iter() {
+                        assert_eq!(
+                            control
+                                .observation(crate::computer_use::Capability::Desktop, id)
+                                .err(),
+                            Some(crate::computer_use::ComputerUseError::StaleObservation)
+                        );
+                    }
+                    checked.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            async { Ok(()) }
+        },
     )
     .await
     .unwrap();
@@ -799,8 +832,34 @@ async fn issue75_batch_projection_deferred_window_can_be_read_in_next_batch() {
             .content
             .contains("conversation_image_attachment")
     );
-    assert!(!result(&requests[3], "a").content.contains("BODY-2"));
-    assert!(result(&requests[3], "a").images.is_empty());
+    assert_eq!(stale_checked.load(Ordering::SeqCst), 1);
+    for (call, id, other) in [("a", 2, 3), ("b", 3, 2)] {
+        let prior = result(&requests[3], call);
+        assert!(prior.content.contains(&format!("BODY-{id}")));
+        assert!(prior.content.contains(&format!("Owned {id}")));
+        assert!(!prior.content.contains(&format!("Owned {other}")));
+        assert!(prior.content.contains("Prior read-only evidence"));
+        assert!(prior.content.contains("observed_at_unix_ms"));
+        assert!(prior.images.is_empty());
+        for reference in [
+            "observation_id:",
+            "element_token",
+            "edit-",
+            "snapshot-",
+            "capture-",
+        ] {
+            assert!(!prior.content.contains(reference));
+        }
+    }
+    assert_eq!(result(&requests[3], "remaining").images.len(), 1);
+    assert_eq!(
+        requests[3]
+            .messages
+            .iter()
+            .map(|message| message.images.len())
+            .sum::<usize>(),
+        1
+    );
     assert_eq!(
         outcome
             .events
