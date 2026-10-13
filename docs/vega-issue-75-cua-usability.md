@@ -502,3 +502,52 @@ cargo nextest run -p vega -p vega_ui \
 ```
 
 **62/62 PASS**、946 skipped、exit0；run `7c1b94f7-9749-44b7-a142-184448f90d30`。原始日志 `/tmp/vega-75-navigation-rebased.log`，SHA-256 `c0259e2e0951e39282d29d24d94850a81286e0909dee6ecd8d11b69a381d30d9`；完整命令/cwd/测试时HEAD在同名前缀 `-argv.json`。15个本卡修改Rust文件定向格式和提交diff检查通过，记录于 `/tmp/vega-75-navigation-rebased-checks.log`；等价range-diff为 `/tmp/vega-75-navigation-rebased-range-diff.log`。最终身份另记 `/tmp/vega-75-navigation-rebased-evidence.json`，既有186项、所有RED及两轮云端证据保留；本轮仅追加本段记录，不改变旧结果。变基后的固定提交仍须重新通过云端严格门禁。
+
+## 联合截图与文字交付的上下文连续性（2026-10-13，0.1.90 真机回归）
+
+`multi-90-02` 最终112953ms、8次工具调用、6轮模型（88788ms），两张图片和两组三行文字均正确，但出现目录→Observe A/B→目录→Observe A/B→Screenshot A/B；所有工具成功，仍记FAIL_USABILITY_REPEATED_READS。第二次目录开始时距首次目录完成仅33.6秒，不能归因60秒TTL已到期。既有单窗37.105秒/2次工具/3轮模型通过的事实与全部历史失败保留。
+
+源码确认的合同缺口：skill v4将图文任务导向先Observe，而先前BP一次性投影在下一provider请求构造后删除较早窗口的原文；若该模型轮选择截图，最终回答前原文缺失。截图已有模型图片与持久ACK，却未明确可直接读图完成文字请求；最新普通Observe/Act模型正文没有窗口归属，较早只读投影也未提供仍有效的截图目标；截图本身既有ACK已带临时窗口归属，继续复用而不新增持久字段。以上是确定的源码路径，不代表能够从已脱敏历史还原本轮模型为何选择重读。
+
+TD1. 普通“截图并列出可见文字/描述/比较”使用同一截图结果同时完成两项目标：目录一次→同批ComputerScreenshot A/B→最终答复，目标3次工具/3轮模型。工具定义、每张图的只读结果和skill v5统一说明图像可供模型阅读、窗口归属及已交付事实。可读性不足或用户明确需要精确AX字段时仍使用ComputerObserve，不能猜不可辨认文字，也不要求为截图先获得AX。每张模型图/文本均显式携带有界app/title/PID/window归属，名称与内容仍是外部不可信数据。持久回执仅保留既有有限交付字段，不增加窗口正文、标题或参数落库。
+
+TD2. 对已选择AX读取的联合任务增加最小文字桥接：同批读取后最多保留两个物理窗口的最新有界文字证据（沿用BP1正文/标签/总字节上限），在随后仅由ComputerScreenshot组成的批次继续供最终回答使用。它独立于仅供下一请求的图像投影；只含先前只读正文、窗口身份、来源call及捕获时间，不含旧像素、observation/element/snapshot/capture可调用引用，不进入control.observations。明确标记为先前观察，不能声称它描述随后截图时的最新内容；窗口变化时以新图为准或重新核验需要的AX字段。其他工具批次不继承该桥接，避免把它变成通用长期记忆。此项替代BP2在“Observe→随后截图→最终回答”范围内立即丢弃旧文字的规则；其他一次性图像/动作规则保持。
+
+TD3. 桥接绑定单run/epoch及原call，实际输入消费、pause/epoch变化、显式invalidate、compaction、finish、取消和错误出口清理；旧动作继续拒绝。只读结果可另附当前截图目标，但必须在实际构造模型请求前用当前目录核验完整目标身份与原始60秒期限；过期输出refresh_directory_once，不能复活引用或延寿。截图交付仍先验证预算后durable ACK；全请求2图/8MiB、4张新附件/16MiB、幂等去重/no_progress及隐私脱敏不变。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| TD01 | 目录→同批Screenshot A/B→final | 3 calls/3 requests；两份窗口身份、两图、两条ACK同见；无需AX Observe；真实provider图片校验与两种构造有效 | 待CI，未本地运行 |
+| TD02 | 目录→同批Observe A/B→同批Screenshot A/B→final | 最终仍有两份明确“先前观察”的文字及正确窗口归属，旧图已清仅新2图；不重复目录/读取；旧引用不可操作 | 待CI，未本地运行 |
+| TD03 | 相同物理窗新截图像素已变；或第三窗口/同窗新读 | 不将旧文字冒充新图内容；每窗最新证据且最多2窗，字节预算保持；不足时原有限deferred合同保持 | 待CI，未本地运行 |
+| TD04 | 桥接后pause/epoch、Act、invalidate、compaction、取消/错误/finish | 旧正文/图/动作引用零越界，已ACK有限事实保持；压缩/outcome/持久出口不带原文 | 待CI，未本地运行 |
+| TD05 | 原目录有效/过期时投影旧A及最新B | 有效期内各自截图target准确；到期只提示刷新，不能操作旧A；不延长TTL | 待CI，未本地运行 |
+
+遵守2026-10-13用户本地验证限制：先写生产回归再实现，但不在本地运行cargo/test/nextest/check/Clippy或任何编译。仅做低CPU格式、差异和静态检查；新增及受影响测试全部等待云端PR Check，不能把静态推断标为RED/PASS。无UI、系统权限、真实driver、应用数据库、依赖或schema变更；主控负责云端验证与新版自然任务真机验收。
+
+### TD 本轮交付与验证边界
+
+新增6项进程内生产回归：直接双截图3次工具/3轮请求；两窗AX跨双截图仍可供最终答复且旧像素不保留；桥接激活后在最终发送前pause/invalidate/cancel/sink错误清理；同物理窗口只保留最新AX；新的Observe批次不积累第三窗旧证据；较早A和当前B的截图目标均在投影时重验TTL，过期不延寿且旧A动作仍拒绝。原BP的预算、Act消费、compaction、durable ACK/去重、no_progress及outcome脱敏回归保留。旧BP单请求测试只将禁止一切target字段改为“允许经当前目录核验的截图target”；observation/element引用禁止及无关后续请求清理断言保持。
+
+这些测试按规格先写入，**未在本地编译或运行，状态全部待CI**；没有本轮本地RED/GREEN输出。基线仍存在断档的判断来自上述生产源码路径，不伪称已执行失败。新测试使用受控图像/AX fixture与真实run_agent、图片校验及Chat Completions/Responses构造，不调用真实模型或HTTP，也不能代替自然语言真机顺畅验收。
+
+内置skill v5摘要为 `7079a77d86664a7a3f7410c874977cda57b23318600cbcc64f6e88e18dec6adb`。本地只运行修改文件rustfmt、rustfmt --check、git diff --check和离线quick_validate，均exit0（单项17–232ms）；原始记录 `/tmp/vega-75-text-delivery-static-checks.log`，SHA-256 `5f55d06916fd9bc95001ed94c507a1a0167961915b5ce3c6927f5cc5ec8a868e`，完整executable/cwd/argv在同名前缀`.json`。拟定云端定向命令（尚未执行）：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation \
+  -E 'test(issue75) | test(types::tests_audit_wire)'
+```
+
+云端PR Check仍须执行仓库完整fmt/Clippy/nextest门禁；root随后以新版普通双窗图文任务核验≤5调用/≤3模型轮/≤60秒，最终正确但反复读取仍不算通过。本轮不改UI/权限、数据库/审计schema、driver或发布签名；未操作应用DB、UI或真实driver。
+
+提交后fresh fetch，无冲突变基至 `e6c69b787bd05bb0dad220b81caf76f1c0c3c668`（#333工具块间距与#335交互规范）。原 `a57f72d` 到变基后 `6d3a239` 的range-diff为等价补丁；保留新主线UI/UX改动，本轮无UI更改。记录 `/tmp/vega-75-text-delivery-rebase.log`；仅追加这条集成身份，不重复未变生产代码的检查，也未启动任何本地编译/测试。
+
+### TD 云端首轮失败与预算分批合同同步
+
+PR #336首轮CI `38369457548`：Clippy成功，2464通过/1失败/5 skipped；6项新增TD回归全部通过。唯一失败为旧 `issue75_batch_projection_deferred_window_can_be_read_in_next_batch` 在802行要求A正文消失。原始日志 `/tmp/vega-75-text-delivery-ci-failure.log`，SHA-256 `e4afd6edd086316e8ecc518505482dfd5a7fba83d3a3ecb297977bf811752968`，完整失败保留。
+
+该场景先Observe A/B，第三张截图C因2图预算在派发前deferred，随后一个仅含ComputerScreenshot C的批次。它属于TD2许可的文字桥接：最终答复仍应同时有A/B的先前只读文字、各自窗口身份与时序，只有C的新图；不能因C曾被deferred而要求丢弃A/B文字。此次只同步旧断言并强化旧图清理、旧action引用失效、窗口归属、最终1图以及原executed:false/执行次数/1附件/provider配对和预算断言，不修改生产实现、不放宽图预算。
+
+修正后的测试仍待下一轮云端PR Check；本地只做快速格式/diff检查，未编译或运行测试。
+
+修正静态记录 `/tmp/vega-75-text-delivery-ci-assertion-checks.log` SHA-256 `16a13c2f0eb6e8ff8a05cb669b52cb4d4443e311ae5194df73b596fa760c7078`；同前缀`.json`含完整executable/cwd/argv。rustfmt、rustfmt --check、git diff --check均exit0（30–179ms），无本地编译。此结果不代表修正用例已运行。
