@@ -2001,10 +2001,11 @@ where
                 false,
             ));
         }
-        if let Some(run) = &tool_config.computer_use
-            && run.wait_ready(&cancel).await.is_err()
-        {
-            cancel.cancel();
+        if let Some(run) = &tool_config.computer_use {
+            if run.wait_ready(&cancel).await.is_err() {
+                cancel.cancel();
+            }
+            run.trim_messages(&mut messages);
         }
         if cancel.is_cancelled() {
             emit!(events, sink, RuntimeEvent::Interrupted);
@@ -2508,6 +2509,11 @@ where
                         cancel: cancel.clone(),
                     }
                 );
+                run.acknowledge_screenshot(&call.id, epoch)
+                    .map_err(|_| VegaError::Tool {
+                        tool: "ComputerScreenshot".into(),
+                        message: "screenshot delivery acknowledgement failed".into(),
+                    })?;
             }
             emit!(
                 events,

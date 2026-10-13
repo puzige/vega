@@ -242,3 +242,270 @@ fn issue75_usability_screenshot_limits_activation_audit_and_explicit_save() {
     control.stop();
     test_support::finish_cleanup(&control);
 }
+
+#[tokio::test]
+async fn issue75_readonly_permissions_screenshot_delivers_without_ax_through_persistence() {
+    let (store, dir, _) = setup();
+    let run = vega_runtime::computer_use::ComputerUseRun::new(true, false);
+    let image = picture();
+    let actions = test_support::install_desktop(
+        &run,
+        vec![vega_runtime::computer_use::DesktopTarget {
+            selection_id: "fixture".into(),
+            application: "Fixture".into(),
+            bundle_id: "test.fixture".into(),
+            pid: 1,
+            window_id: 2,
+            title: "Owned test".into(),
+        }],
+        vec![vega_mcp::ManagedResult {
+            text: Vec::new(),
+            images: vec![vega_mcp::ManagedImage { bytes: image.bytes().to_vec(), mime_type: "image/png".into() }],
+            structured: Some(serde_json::json!({"pid":1,"window_id":2,"screenshot_frame_valid":true,"snapshot_id":"snapshot","capture_id":"capture","elements":[],"degraded":false})),
+            is_error: false,
+        }],
+        vec![serde_json::json!({"accessibility":false,"screen_recording":true})],
+    ).await;
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "directory".into(),
+                name: "ComputerObserve".into(),
+                input_json: r#"{"target_id":null,"cursor":null}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "capture-no-ax".into(),
+                name: "ComputerScreenshot".into(),
+                input_json: r#"{"target_id":"fixture"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![
+            ScriptStep::text("Screenshot attached."),
+            ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }]),
+        ],
+    ]);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    run_thread_task_with_images_and_reasoning(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Screenshot Fixture",
+        "",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        PersistenceActorConfig {
+            computer_use: Some(run.clone()),
+            ..Default::default()
+        },
+        None,
+        None,
+        None,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(actions.load(Ordering::SeqCst), 0);
+    let calls = test_support::desktop_calls(&run).await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "get_window_state");
+    assert_eq!(calls[0].1["include_accessibility_tree"], false);
+    assert_eq!(calls[0].1["pid"], 1);
+    assert_eq!(calls[0].1["window_id"], 2);
+    assert_eq!(
+        store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM computer_screenshot_artifacts",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .conn()
+            .query_row(
+                "SELECT status FROM tool_calls WHERE id='capture-no-ax'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "success"
+    );
+    assert!(
+        provider.requests()[2]
+            .messages
+            .iter()
+            .any(|message| message.role == vega_runtime::ChatRole::Tool
+                && message.content.contains("conversation_image_attachment"))
+    );
+    let path = dir.path().join("vega.db");
+    drop(store);
+    let reopened = Store::open(path).unwrap();
+    reopened.migrate().unwrap();
+    let history = crate::history::latest_history_page(&reopened, "thread-1", 50).unwrap();
+    assert_eq!(history.entries.iter().filter(|entry| matches!(entry, crate::history::HistoryEntry::AssistantScreenshot {call_id,image:found,..} if call_id=="capture-no-ax" && found==&image)).count(), 1);
+}
+
+#[tokio::test]
+async fn issue75_readonly_permissions_denial_remains_rejected_in_store_and_history() {
+    for (name, args, ax, sr, code) in [
+        (
+            "ComputerObserve",
+            serde_json::json!({"target_id":null,"cursor":null}),
+            true,
+            false,
+            "screen_recording_permission_missing",
+        ),
+        (
+            "ComputerObserve",
+            serde_json::json!({"target_id":"fixture","cursor":null}),
+            false,
+            true,
+            "accessibility_permission_missing",
+        ),
+        (
+            "ComputerObserve",
+            serde_json::json!({"target_id":"fixture","cursor":null}),
+            false,
+            false,
+            "permissions_missing",
+        ),
+    ] {
+        let (store, dir, _) = setup();
+        let run = vega_runtime::computer_use::ComputerUseRun::new(true, false);
+        test_support::install_desktop(
+            &run,
+            Vec::new(),
+            Vec::new(),
+            vec![serde_json::json!({"accessibility":ax,"screen_recording":sr})],
+        )
+        .await;
+        let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "permission-denied".into(),
+                name: name.into(),
+                input_json: args.to_string(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])]]);
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        run_thread_task_with_images_and_reasoning(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            "Screenshot Fixture",
+            "",
+            CancellationToken::new(),
+            &RejectPermissionHook,
+            |_| Ok(()),
+            PersistenceActorConfig {
+                computer_use: Some(run),
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        let (status, approval, output): (String, String, String) = store
+            .conn()
+            .query_row(
+                "SELECT status,approval,output_text FROM tool_calls WHERE id='permission-denied'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "rejected");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&approval).unwrap()["source"],
+            "computer_use"
+        );
+        assert!(output.contains(code), "{output}");
+        assert_eq!(
+            store
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM computer_screenshot_artifacts",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        let path = dir.path().join("vega.db");
+        drop(store);
+        let reopened = Store::open(path).unwrap();
+        reopened.migrate().unwrap();
+        let page = crate::history::latest_history_page(&reopened, "thread-1", 50).unwrap();
+        assert!(page.entries.iter().any(|entry|matches!(entry,crate::history::HistoryEntry::Tool{status:ToolCallStatus::Rejected,result:Some(crate::types::ToolCardResultProjection::ComputerUse{status:ToolCallStatus::Rejected,output,..}),..} if output.contains(code))));
+    }
+}
+
+#[test]
+fn issue75_readonly_permissions_cua_denial_codec_rejects_unrelated_authority() {
+    for (decision, note, danger, valid) in [
+        (
+            "deny",
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            true,
+        ),
+        (
+            "always",
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            false,
+        ),
+        (
+            "deny",
+            serde_json::json!("invented"),
+            serde_json::Value::Null,
+            false,
+        ),
+        (
+            "deny",
+            serde_json::Value::Null,
+            serde_json::json!({"rule_id":"invented","decision":"deny","note":null}),
+            false,
+        ),
+    ] {
+        let raw=serde_json::json!({"decision":decision,"note":note,"source":"computer_use","danger":danger}).to_string();
+        assert_eq!(
+            crate::types::ApprovalAudit::from_json(&raw).is_ok(),
+            valid,
+            "{raw}"
+        );
+    }
+    assert!(!approval_source_matches(
+        "read",
+        RuntimeToolStatus::Rejected,
+        crate::types::ApprovalSource::ComputerUse,
+        false
+    ));
+    assert!(!approval_source_matches(
+        "write",
+        RuntimeToolStatus::Rejected,
+        crate::types::ApprovalSource::ComputerUse,
+        false
+    ));
+}

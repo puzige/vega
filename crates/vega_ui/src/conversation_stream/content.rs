@@ -1171,6 +1171,9 @@ impl ConversationStream {
                 }
                 self.last_finished_agent_message = None;
                 self.computer_use_control = None;
+                self.computer_use_diagnostic = None;
+                self.computer_use_notice_generation =
+                    self.computer_use_notice_generation.wrapping_add(1);
                 self.active_thinking = None;
                 self.active_skills.clear();
                 self.active_skill_focuses.clear();

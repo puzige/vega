@@ -1442,7 +1442,10 @@ pub(crate) fn approval_source_matches(
         return if status == RuntimeToolStatus::Rejected {
             matches!(
                 source,
-                ApprovalSource::RunMode | ApprovalSource::Recovery | ApprovalSource::Validation
+                ApprovalSource::RunMode
+                    | ApprovalSource::Recovery
+                    | ApprovalSource::Validation
+                    | ApprovalSource::ComputerUse
             )
         } else {
             source == ApprovalSource::ComputerUse

@@ -1,3 +1,4 @@
+mod cua_read_progress;
 mod cua_usability;
 use std::fs;
 use std::sync::Mutex;

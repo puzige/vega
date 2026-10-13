@@ -34,14 +34,14 @@ U8. 完全删除 composer 之下/全局底部 CUA 独立操作栏及其空占位
 
 | ID | 前置与操作 | 预期可观察结果 | 层级 | 初始状态 |
 |---|---|---|---|---|
-| U01 | Native/桌面启用、禁用、外部 backend 及压缩后发送 | 仅适用运行自动带内置指引，来源可核验，不累积、不改变外部 skill 信任 | 生产 provider/conversation fixture | 待测 |
-| U02 | 普通观察和显式截图分别走同一 provider 会话 | 只有显式截图产出可查看附件；模型收到明确产物结果 | runtime + conversation/storage | 待测 |
-| U03 | AX 空/无法解析而窗口截图具有完整身份绑定；反例身份/帧/图像冲突 | 前者只读交付成功且零动作；后者拒绝且无附件 | adapter fixture | 待测 |
-| U04 | 错字段、冲突定位、只读、过期引用 | 有限 code/恢复建议，无私密值；新旧安全卡片正常 | runtime + history | 待测 |
-| U05 | 相同失败三次，中间目录刷新/不同 opaque ID/压缩 | 第三次触发 no_progress，后续驱动与 provider 操作循环停止 | 完整 run_agent fixture | 待测 |
-| U06 | 重复点击成功但相同可比状态；另有真实状态变化/合理滚动 | 无变化第三次停止；真实变化不误判 | production runtime fixture | 待测 |
-| U07 | 截图写入失败、停止竞争、历史回读/清理 | 无虚假成功/晚到附件；显式截图历史可用，普通观察不持久化 | storage + controller | 待测 |
-| U08 | 观察/输入/成功/权限/暂停/浏览器待批，宽窄窗口 | 无全局操作栏/占位；所属对话内必要操作可达，任务停止有效 | GPUI 生产状态与布局 | 待测 |
+| U01 | Native/桌面启用、禁用、外部 backend 及压缩后发送 | 仅适用运行自动带内置指引，来源可核验，不累积、不改变外部 skill 信任 | 生产 provider/conversation fixture | PASS（进程内） |
+| U02 | 普通观察和显式截图分别走同一 provider 会话 | 只有显式截图产出可查看附件；模型收到明确产物结果 | runtime + conversation/storage | PASS（进程内） |
+| U03 | AX 空/无法解析而窗口截图具有完整身份绑定；反例身份/帧/图像冲突 | 前者只读交付成功且零动作；后者拒绝且无附件 | adapter fixture | PASS（进程内） |
+| U04 | 错字段、冲突定位、只读、过期引用 | 有限 code/恢复建议，无私密值；新旧安全卡片正常 | runtime + history | PASS（进程内） |
+| U05 | 相同失败三次，中间目录刷新/不同 opaque ID/压缩 | 第三次触发 no_progress，后续驱动与 provider 操作循环停止 | 完整 run_agent fixture | PASS（进程内） |
+| U06 | 重复点击成功但相同可比状态；另有真实状态变化/合理滚动 | 无变化第三次停止；真实变化不误判 | production runtime fixture | PASS（进程内） |
+| U07 | 截图写入失败、停止竞争、历史回读/清理 | 无虚假成功/晚到附件；显式截图历史可用，普通观察不持久化 | storage + controller | PASS（进程内） |
+| U08 | 观察/输入/成功/权限/暂停/浏览器待批，宽窄窗口 | 无全局操作栏/占位；所属对话内必要操作可达，任务停止有效 | GPUI 生产状态与布局 | PASS（进程内） |
 | U09 | 真机新建受控 TextEdit 请求截图，单窗与明确两窗 | 直接对话交付，单窗正常路径目录+截图约2次调用、最多3次，无 Act/bash，无无效重试；两窗最多5次；无额外菜单 | 真机 | 待新版 |
 | U10 | 真机受控 TextEdit 输入并验证结果；停止/恢复 | 指定窗口状态实际变化，确认结果而非仅工具成功；无循环、停止后不输入 | 真机 | 待新版 |
 | U11 | 用户本人重试工具禁止访问的原应用 | 记录调用数/错误/耗时及用户确认图片正确；代理只读安全元数据，不能转用 Vega/driver 读取该应用内容 | 用户手测 + 脱敏审计 | 待新版 |
@@ -102,3 +102,170 @@ HEAD 9ed8f9f 的云端 Nextest 为 2334 项中 2315 PASS、19 FAIL（`/tmp/vega-
 本地仅执行这 19 个失败用例（更新名称的迁移测试按新名称选取）、issue75 与已有 composer Stop 的组合：108/108 PASS，1923 项按范围跳过；run `09bf8279-fa71-4dca-a876-278aeb63a59c`。原始输出 `/tmp/vega-75-usability-ci-regressions.log`，SHA-256 `00a1cea82d93b4037b5263427ee2f39da91499ea4e70acaeeed1edc88ff92336`；完整 executable/cwd/argv 保存在 `/tmp/vega-75-usability-ci-regressions-argv.json`，过滤表达式保存在 `/tmp/vega-75-usability-ci-regressions-filter.txt`。
 
 受影响 runtime 的 `cargo clippy -p vega_runtime --all-targets -- -D warnings` 诊断复验 exit 0（`/tmp/vega-75-usability-ci-regressions-clippy.log`），6 个修改 Rust 文件的格式和 diff 检查通过。此次没有运行本地 workspace 全量测试；最终云端结果与真机结果仍待主控执行。
+
+## 只读权限分层修复（2026-10-13）
+
+0.1.81 真机首次单窗口截图在首个 ComputerObserve 的权限预检被拒。源码确认桌面连接统一要求辅助功能（AX）和屏幕录制（SR），导致 AX=false/SR=true 也无法走已实现的显式只读截图路径；错误聚合后无法判断具体缺哪项，不能据此声称真机一定缺 AX。固定 `check_permissions` 源码的顶层 `accessibility`、`screen_recording` 均为布尔值，与 Vega 解析一致；错误不是字段名不匹配。固定 Cua 0.34 截图的 include_accessibility_tree=false 跳过 AX；目录只对特定无标题隐藏辅助窗口尝试 AX 过滤，AX 无权或不可读时保留，不构成强制 AX 前提。
+
+RP1. 桌面建链与操作权限分开；目录（含分页）和 ComputerScreenshot 只要求 SR=true，仍严格解析两个权限布尔值，协议异常不能当授权成功。普通目标 ComputerObserve 与所有 ComputerAct 继续要求 AX=true 且 SR=true，不放宽现有 degraded、后台输入及 PID/window/frame/snapshot/capture 校验。显式截图保持只读，不产生输入授权。
+
+RP2. 授权入口按实际工具/参数检查本次所需权限；执行前刷新检查，所有输入在目标复核后、派发前再次确认 AX/SR，不能借旧 observation 或已连接状态绕过撤权。取消/epoch 变化优先，权限刷新不得发布迟到截图或派发新输入。授权失败仍 Rejected；已派发动作保持 outcome_unknown，不能自动重试。
+
+RP3. 保留 AX 缺失、SR 缺失、两项缺失的有限分类。对话默认只显示简明中文和实际所需的设置入口；executor/stage/error_class 在用户主动展开的诊断详情显示，Enter/Space 和焦点可达。不新增底栏/常驻操作提示；新回合或新错误收起旧详情。只报告本次所需且缺失的权限，不要求仅截图的用户开启 AX。设置中的初始说明同步按用途分层，不将组件检测声称为实时权限状态。
+
+RP4. 授权中的 CUA 失败使用既有 ComputerUse + Deny 审计；仅增加现有 codec/工具终态对该组合的合法性，仍拒绝 Always、note、danger 及非 CUA 混用。Plan/ReadOnly 的原 run_mode 拒绝语义、Rejected 生命周期和 schema18 不变。无新依赖、无签名重构；Apple Developer ID 路径既有，当前 ad-hoc 升级后的 TCC 有效性由真机单独核验。
+
+| ID | 前置/操作 | 预期与自动证据 | 状态 |
+|---|---|---|---|
+| RP01 | AX=false/SR=true，production run_thread 目录→显式截图 | 两次工具产生持久附件，重开可见；模型知道已交付，无输入/AX 请求 | PASS（进程内） |
+| RP02 | AX=false/SR=true，普通 Observe 或持有旧可行动观察的 Act | 派发前拒绝，有限 AX 指引，0 输入 | PASS（进程内） |
+| RP03 | SR=false 或两项 false、权限字段类型错误 | 目录/截图拒绝，正确 SR/两项/协议分类，不存附件 | PASS（进程内） |
+| RP04 | 授权后撤权、连接已缓存、停止/epoch 变化 | 重新检查，不派发输入/不发布晚到附件，保留取消终态 | PASS（进程内） |
+| RP05 | 单项/两项缺失对话卡 | 简明中文、对应设置入口、详情默认收起并可键盘展开，新回合清理 | PASS（进程内） |
+| RP06 | CUA Deny 审计持久化与历史重载 | Rejected 合法、不误标 run_mode；非 CUA/Always/note/danger 仍拒绝 | PASS（进程内） |
+
+实施顺序：先补本表与失败用例；复用既有 test-support 外部执行 fixture，让权限响应进入生产解析和授权路径；实现分层预检/有限诊断/对话展开；只跑本卡 runtime、conversation、UI 定向 nextest。完整命令与首次失败/最终成功日志保留在临时证据目录；真实 driver/系统权限/应用安装由主控验收，不以进程内替身宣称真机通过。
+
+### 本轮实现与原始证据
+
+实现从 a47abb0 开始，提交前 fetch 发现主线新增 #321 后无冲突同步至 5947e042；原始 a47abb0 结果独立保留。测试替身仅启用既有 test-support，替换驱动边界，权限响应仍经过 production 解析、授权、执行及 durable storage；正式构建无 fixture 入口。本轮未新增 schema、依赖或内置 skill 修改。
+
+权限检查按实际 PreparedRuntimeCall 参数判定，不读取已脱敏的工具审计 JSON。目录/分页与显式截图只要求 SR；普通目标 Observe 和所有输入要求 AX/SR。已有连接也刷新检查，输入在目标复核后刷新，实际派发前仍检查 epoch。截图路径保留现有身份、帧、图像上限和只读校验；授权入口的权限失败仍为 Rejected，只有授权入口真实 CUA 失败使用既有 ComputerUse + Deny；Plan/ReadOnly 保持 RunMode + Deny。
+
+| 阶段 | 结果 | 原始记录 |
+|---|---|---|
+| RED，新增 production 目录→截图→存储用例 | 0 PASS / 1 FAIL；预期 3 个 provider 轮次，旧统一预检在第 1 轮终止 | `/tmp/vega-75-permissions-red.log`，run `4fa9ce24-2909-4285-9ee8-bba55f2cac41` |
+| 首轮编译及接线修正 | first/second 修正新测试的历史 projection、方法可见性和焦点借用；third 修正接线时对已有 arguments 的多余解析；fifth 修正新取消测试对事件终态的访问 | `/tmp/vega-75-permissions-{first,second,third,fifth}.log` |
+| 首轮可执行矩阵 | 89 PASS / 2 FAIL；新存储测试误用 SQL 列名、UI 测试缺少上一消息结束事件，修正实际前置；未删除或放宽断言 | `/tmp/vega-75-permissions-fourth.log`，run `4f6b208f-a25e-4c7b-a0a4-845cacb6edde` |
+| a47abb0 最终定向矩阵 | 105/105 PASS，1797 项按范围跳过 | `/tmp/vega-75-permissions-final.log`，run `62bf642d-e8d1-4133-9f50-df7286dee3af` |
+| 同步 5947e042 后同一矩阵 | 105/105 PASS，1806 项按范围跳过 | `/tmp/vega-75-permissions-rebased.log`，run `512d94cc-e76c-4a4b-8e96-fc179134011a` |
+
+RED 日志 SHA-256：`30681855a6c36a33249125d2a663a3f9df069f6c9f49c6e45fe130a283621cbb`。a47abb0 最终日志 SHA-256：`88ea329a62e5a22d31db53355bb8e79346e45997c03ce1123b95c2c2573eacd8`。完整 executable/cwd/argv 分别保存在 `/tmp/vega-75-permissions-red-argv.json`、`/tmp/vega-75-permissions-first-argv.json`（中间三包矩阵）、`/tmp/vega-75-permissions-final-argv.json`。
+
+最终定向命令：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire)'
+```
+
+新增回归证明：AX=false/SR=true 在完整 run_thread 中 2 次工具/3 个 provider 轮次交付持久截图，历史重开可见；5 种输入 × 3 种撤权均零派发；缓存连接后撤权仍拒绝；截图批准后立即取消以 Interrupted 结束且无捕获/附件。缺 AX、缺 SR、两项缺失及畸形字段分别覆盖，审计可持久化并正常重载。GPUI 实际渲染验证对应设置入口、详情默认收起、Enter/Space 和点击展开、新回合清理及旧回调无效。普通观察、截图交付、无进展、composer 停止和无全局栏的既有 issue75 回归同时通过。
+
+13 个修改的 Rust 文件使用 `rustfmt --edition 2024 --config skip_children=true --check`，以及 `git diff --check` 均通过。本次尚无云端 Clippy 诊断，未运行本地 workspace 全量门禁。新权限分层的真机结果、PR 云端门禁和发布由主控继续验证，以上进程内结果不代替真机验收；未调用真实 driver、修改 live DB 或访问受限应用内容。
+
+同步主线后的最终日志 SHA-256：`b506ed9ce09dea7c2b008983b7afba113e9127d834761fde04965ee5ad56ed02`，完整 executable/cwd/argv 为 `/tmp/vega-75-permissions-rebased-argv.json`；所有本轮原始日志摘要及 hash 另存 `/tmp/vega-75-permissions-evidence.json`。#321 进入同一会话组件后无冲突，合并后的权限、截图布局和 lifecycle 定向回归通过。
+
+## 成功观察循环与动作后截图引用修复（2026-10-13）
+
+0.1.81 受控真机 input-01：142241 ms 后用户授权的主控停止；10 次工具（9 Observe + 1 type_text）全部 success，输入只发生一次，0 Screenshot/0 附件。动作后目录与目标观察交替，引用变动但没有交付。安全元数据单独保留；本节不读取实时数据库或捕获内容。
+
+源码发现两个独立缺口：Act 派发前的 discard_observations 同时清空目录和 TTL，使动作后原 target_id 无法截图；普通/动作观察回执无 target_id，且模型中的旧目录和 assistant 工具参数已分别失效/脱敏，模型难以恢复引用。动作后完整观察本应通过 apply_observation 进入模型，需 production 请求证实，不能以持久摘要推断丢失。既有 guard 只统计失败及无变化 Act，全 success 的目录/观察循环没有计数。
+
+SP1. 动作执行前仅消费旧可行动观察；保留已存在、未过 60 秒 TTL 的目录及其原身份，不更新生成时间。暂停、停止、压缩/显式失效继续全量清理。普通窗口及动作回执中的截图目标只来自同 epoch、Running、未撤权且当前有效目录中精确匹配的 target_id；过期/被清理则只提示 refresh_directory_once，不发新引用、不延长 TTL，不接受从 observation_id 越权构造截图目标。模型下一轮实际收到动作后图像/AX 内容及该引用，旧观察继续按原合同失效。
+
+SP2. 成功 ComputerObserve 同样受到 runtime 无进展约束。窗口按 PID/window 身份计数，目录页按页内稳定窗口身份集合计数，忽略新 target_id、element_token、snapshot/capture/observation ID、游标和时戳。第一次读取建立基线；同一语义内容第 3 次成功读取触发 no_progress，并复用既有 run_loop 终止，不发下一 provider 轮。新目标、不同目录页、新目录内容及有意义窗口变化分别推进自己的基线。目录刷新、不同目标间切换和上下文压缩不能抹除其他目标已有重复计数；最近至多 64 个读目标采用有界淘汰，不把正常第 65 个新目标误判无进展。
+
+SP3. 窗口读状态比较保留稳定 AX 字段（包括 value/selected/frame）及解码图像。仅当 AX 中存在 AXTextArea/AXTextField/AXSearchField、AX 内容完全不变、图像尺寸相同，才将至多 4 个相邻像素列的变化视作光标闪烁，不重置读取计数；不忽略更宽画面变化、任何 AX 内容变化或无文本控件的视觉变化。以列哈希保存有界比较状态，不缓存额外原始截图/文本。算例：800×600 图像中 2 列×20 像素的 caret 变化，列跨度 2≤4，被忽略；视口滚动改变 480 列，480>4，计为进展；哪怕只 1 列像素改变，AX value 变化仍计为进展。既有 Act 的无变化比较保持严格像素规则，不能借本条放宽动作校验。
+
+SP4. 有可比状态变化的成功 Act 清除成功读取循环计数，以动作返回的新状态作为当前窗口基线（0 次额外读取）；仅 action success 字样不算变化。显式 Screenshot 产生新交付是进展，不计为冗余观察；原附件 ack/取消合同保留。目录刷新/成功 Observe 不清其他操作的失败计数；同操作实际恢复沿用既有合同。skill 升为 v2：动作已经返回验证后的新状态，完成输入且需要图片时使用返回的当前 target_id 直接 Screenshot；只有明确 expired/missing 引用才刷新目录一次，不为验证同一状态反复发现窗口。不单靠 skill 限制循环。
+
+| ID | 生产前置与操作 | 预期 | 状态 |
+|---|---|---|---|
+| SP01 | 目录→目标 Observe→type_text→Screenshot | 下一 provider 看见输入后的图像/AX及有效 target_id；4 tools/5 rounds，1 次输入、1 附件，无额外目录 | PASS（进程内） |
+| SP02 | 动作后目录↔Observe，opaqueID/elementToken 每轮变化，语义内容稳定/光标闪烁 | 第 3 次重复成功观察收口，后续 provider/driver 不再运行 | PASS（进程内） |
+| SP03 | 合法多页、不同窗口及真实 AX/视口变化 | 能继续读完整页和目标；真实进展不误停 | PASS（进程内） |
+| SP04 | 已有引用 TTL 到期/全量失效/暂停 | 模型不给已过期截图 target_id；不得绕过现有 scope/epoch/取消 | PASS（进程内） |
+| SP05 | 同类失败/动作无进展、截图 ack、权限分层原回归 | 原合同保持，skill v2 内容摘要审计有效 | PASS（进程内） |
+
+先保留 production RED，再修改引用路径、guard 和 skill；本地仍只跑 issue75 及受影响审计定向组合。真实输入、像素和新版顺畅程度由主控发布后复测，不能仅凭自动最终成功判通过。
+
+SP6. 已交付截图的 acknowledgement 与临时观察分离。截图回执当前以前置交付 JSON 加 observation 正文构造，不能只按 starts_with External 清理：只对本 run 经 durable event ack 确认交付的截图 call，在观察失效时保留同一有限交付 JSON，移除失效正文与 pixels。已交付 Screenshot 不附带 computer_screenshot 下一步指引；当前截图目标仅随普通 Observe/Act 返回。正常临时观察仍整体替换为失效说明，其他工具不受影响；后续 provider 不因暂停/继续丢失既有附件交付事实。进程内补充“2 张已持久交付→最后 provider 阶段暂停→继续→确认已交付”用例，预期 3 tools/2 artifacts，恢复后的请求保留两个 ack 且不含旧观察图像。takeover-01 的 1 ms unknown_safe_failure 已由 production 源码确认：旧 Screenshot JSON 前缀使 trim 漏清图片，两批截图累积 4 张 tool image，OpenAiProvider 的 validate_messages 在网络前按 2 张工具观察预算拒绝。回归须覆盖 2+2 捕获间的 pause/cleanup/resume，保留 4 条 ack、清理旧 pixels、完整工具配对，并通过实际 validate_messages、Chat Completions 与 Responses 请求构造；4 张未清理图片作为拒绝对照。MockProvider 自身不校验该预算，单独使用它不能证明此边界。
+
+
+SP7. 对话既有安全工具卡按实际操作使用“观察”“截图”“操控”：ComputerObserve/BrowserObserve 不展示操控授权，ComputerScreenshot 不展示操控授权，Act 保持既有审批文案。只调整展示映射，不更改审计字段、权限或 Rejected 生命周期，不新增操作栏。
+
+### 本轮结果与失败保留
+
+SP01–SP05 已由 production run_agent 请求和原有跨层矩阵验证。SP06 的两个时序（最终 provider 前暂停、最终流中暂停）均保留 2 个交付 ack，3 tools/2 artifacts，无重截；额外 2+2 捕获夹具保留 4 个 ack，旧画面清除，最终只有最新窗口 1 张有效工具观察图，满足原 2 张预算。全部实际模型请求通过 production validate_messages；最终请求通过 Chat Completions/Responses 构造、6 对工具调用/回执一致，手动恢复全部 4 张旧图的对照被精确拒绝为 tool observation image budget exceeded。此证据是生产图片校验与两种请求构造，没有调用 OpenAiProvider::chat_stream 或 HTTP transport；真实 provider 由主控新版本验收。SP07 的 Running/Success/Rejected、桌面/浏览器只读及输入标题均通过。
+
+截图缓存现有 capture identity 增加 run 内 delivered 状态，必须等 ScreenshotDelivered sink 成功后按 call/原 capture epoch 标记；未知 call/epoch 不可标记。trim 仅为已 ack 的截图恢复交付 JSON，未确认 capture 在失效后只能变为失效说明。原 sink 失败、取消/epoch、持久化/历史显示和截图不回喂历史模型用例继续通过。
+
+| 阶段 | 实际结果与原因 | 原始日志 |
+|---|---|---|
+| 首次 RED | 3 项全部失败：动作后 target 失效、全成功目录/窗口循环未停、光标变化绕过重复读检测 | `/tmp/vega-75-successful-reads-red.log` |
+| 暂停回执 RED | 1 项失败：失效截图仍保留 External 正文和 pixels | `/tmp/vega-75-successful-reads-pause-red.log` |
+| 首轮修复 | 4/4 PASS | `/tmp/vega-75-successful-reads-first.log` |
+| 新增边界与只读标题 | 7 PASS / 3 FAIL；标题是真实 RED，另两项为新夹具多转义 JSON、误把有效图数写死为 2（实际最新窗口 1 图） | `/tmp/vega-75-successful-reads-second.log` |
+| 上述修正 | 10/10 PASS；TTL 改解析真实 JSON，图像断言严格为最新 1 图，4 图拒绝对照保留 | `/tmp/vega-75-successful-reads-third.log` |
+| 首次跨层 | 114 PASS / 1 FAIL；新成功读 guard 在第 5 轮的第 3 次相同目录提前停止，旧 AX 失败夹具原期望第 6 轮 | `/tmp/vega-75-successful-reads-final.log` |
+| 区分两种 guard | 115/115 PASS；旧夹具每次目录有实际 title 更新，保留严格 6 轮、3 次同一物理窗口 AX 失败、取消优先及禁止后续 Bash，未放宽次数 | `/tmp/vega-75-successful-reads-complete.log` |
+| 已交付指引 RED | 1 项失败：已交付截图仍附 computer_screenshot 下一步 | `/tmp/vega-75-successful-reads-delivered-guidance-red.log` |
+| 最终同范围复验 | 115/115 PASS，1806 项按范围跳过 | `/tmp/vega-75-successful-reads-verified.log` |
+
+最终 run ID 为 `22707bec-e2d9-4263-aa28-3e6a80697d97`，日志 SHA-256 为 `62d1991f86c3fbe70d3c591e1eb7ff98ce13b5fa0b9860f3ffdb21c284374ec6`。完整 executable/cwd/argv 保存在 `/tmp/vega-75-successful-reads-verified-argv.json`，命令为：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire)'
+```
+
+11 个修改 Rust 文件的 rustfmt 检查和 git diff --check 通过，命令与退出码为 `/tmp/vega-75-successful-reads-checks.log`。新 TTL 测试首次 rustfmt 的转义语法失败单独保存在 `/tmp/vega-75-successful-reads-fmt-initial.log`。本地 Python 缺 PyYAML 的首次 quick_validate 环境失败保留；随后用 uv 的独立环境执行同一校验器通过，日志为 `/tmp/vega-75-successful-reads-skill-validation-final.log`，没有增加项目依赖。
+
+内置 skill v2 SHA-256 为 `ba27d178bc85735e9f237a3bac4dd08bb81e9c14e5ceabcd0a274f015d3fb094`。全部本轮日志摘要、hash 和最终 argv 汇总在 `/tmp/vega-75-successful-reads-evidence.json`。提交前 fetch 确認 master 仍是 `5947e042`；保留权限修复 `58ee2d6`，此追加未新增 schema 或依赖。真机 input-01/takeover-01 失败仍为待新版复测状态，进程内成功不代替发布后的顺畅验收。
+
+固定提交审查发现 ComputerObserve schema 仍有“any action dispatch 后目录失效”的旧说明，与 SP1 不一致；只将它修正为动作保留原始 60 秒期限、仅消费可行动观察，pause/takeover、stop、compaction 和显式 invalidation 作废目录。现有 discovery schema 合同加入正反断言，先 RED（1 FAIL，`/tmp/vega-75-target-description-red.log`），修正后受影响 runtime issue75 用例 84/84 PASS、275 skipped（run `22fadbe7-fb90-410f-bf81-95d2d849d70b`，`/tmp/vega-75-target-description-verified.log`，SHA-256 `0a46b99b66caf21fd08a49b7ec7578d64cc7be8cd4d2b2fda49c8315057de768`）。命令为 `cargo nextest run -p vega_runtime -E 'test(issue75)'`，完整 argv 为 `/tmp/vega-75-target-description-verified-argv.json`；前述 115 项跨层结果独立保留。
+
+## 截图卡片与预览优化（2026-10-13 用户追加）
+
+用户静态截图显示：白底截图与聊天背景融合，图片盒子占据会话全宽，底部两枚文字按钮松散。按当前设计守则，仅改已交付截图的呈现与操作，不改变捕获/持久化/模型上下文及原图 bytes，不裁白边、不新增依赖或 schema。
+
+SV1. 缩略图基于附件 width/height 同步确定几何：原尺寸等比缩小到最大 360×240，不放大；图片区域最小 64×32，极端图居中 contain。外层只包实际图片区域和 32px 紧凑顶栏，1px border_subtle、8px 圆角，不用会话 w_full 作为图片宽度；容器不足时按可用宽度同比收缩图片区域。图片保存为顶栏右侧 28×28、16px 共享图标操作，默认可见且与像素区域不重叠。顶栏可用原始尺寸作简短元数据，不保留独立文字操作行。共享数值进入 Layout。
+算例：4000×80→360×7.2，图片区域360×32；400×8000→12×240，图片区域64×240；1200×800→360×240；16×8→16×8原始像素，居于64×32命中区，Img 自身最大尺寸不超过原尺寸。最小图片区域使极端图仍有独立可点击/聚焦目标，按钮不遮挡图片。小幅留边仅来自有界命中尺寸，不修改原图。
+
+SV2. 异步图像准备前用同一 width/height 预留尺寸并显示轻量“加载中”状态；准备后仅替换内容、不改行高。图片区域默认可聚焦，点击或 Enter/Space 打开预览，hover/focus 有反馈及可访问名称/tooltip，不能依赖 hover 才能发现入口。保存使用已有原生路径选择器，复用 busy 防重入、取消不报错、失败/成功就近反馈。反馈替换固定顶栏内的尺寸标签，窄卡片以状态图标和完整 tooltip 表达，不新增底部状态行，保存不改变对话行高。
+
+SV3. 预览挂所属 ConversationStream 根节点，deferred priority 3，与列表测量分离。使用主题容器，最大960×720、四周24安全边距；顶部紧凑保存/关闭图标，主区完整 contain 图片。Esc、关闭图标或背景点击关闭，回焦原缩略图；Tab/Shift-Tab 限于预览操作，背景滚动/误点被阻断。会话切换或所属卡片离开当前历史窗口时关闭并使用会话焦点，不残留旧图片，不推动聊天行高/滚动锚点。多张截图依原交付顺序纵向紧凑排列，预览/保存始终绑定该卡原图；不做轮播或图片管理器。
+
+| ID | 生产前置/操作 | 预期 | 状态 |
+|---|---|---|---|
+| SV01 | 宽/窄容器，横/竖/极端比例，解码前后 | 实际GPUI边界受限、原比例/全内容、加载前后同几何，按钮不侵入图片 | PASS（进程内） |
+| SV02 | 浅/深主题绘制 | 实际painted quad使用border_subtle，白底图片边界可辨，hover/focus几何不变 | PASS（进程内） |
+| SV03 | 图片点击/Enter/Space打开、Tab/Esc/外部点击关闭 | 根级预览命中、焦点限制与恢复，列表高度/阅读锚点不动、背景不滚动/误点 | PASS（进程内） |
+| SV04 | 卡片/预览保存，busy/取消/失败/成功，多图 | 原生选择器、一次pending、精确原图bytes，各图不串，状态就近 | PASS（进程内） |
+| SV05 | 历史重读、折叠过程、移除所属卡片/切换会话 | 图片继续可见且操作可达、交付幂等，旧预览消失 | PASS（进程内） |
+
+实施顺序：先用现有GPUI测试暴露全宽盒及缺预览问题，再改布局token/卡片/根层挂载，跑本卡相关UI和原存储历史矩阵。真实像素外观、TextEdit单/双截图与本机保存由主控新版验证，进程内几何/行为不冒充真机。
+
+### 截图呈现结果与失败保留
+
+SV01–SV05 的进程内验收通过：1100/360/240px 可用窗口、浅深两主题、横/竖/极端横长/极端竖长/16×8 小图均有真实 GPUI 布局和 painted quad 断言；缩略图始终完整 contain，16×8 不放大，最小命中区仍64×32。异步准备和 GPUI 解码均有加载占位，准备前后卡片与图片区域几何相同。白底图片边框与不透明图上的 hover/键盘焦点边框可观测；图片自身下圆角和预览顶栏自身上圆角分别断言，不依赖父 overflow_hidden。
+
+预览点击、Enter/Space 打开，Tab/Shift-Tab 陷获，Esc/关闭/外部点击回焦均通过。背景滚轮被阻断，相同滚轮在关闭后能移动列表；覆盖 composer“+”的点击不会穿透，相同点击在关闭后可打开原菜单。真实回归发现 mouse-down 提前关闭导致后续 mouse-up 穿透，现已改为消费 mouse-up 后关闭。存储历史图片仍在折叠过程之外可见并幂等；原生保存覆盖卡片/预览键盘入口、busy、防重入、取消、成功、拒绝覆盖旧文件及两张图各自精确原图 bytes。保存状态固定在顶栏，不改变聊天行高；历史窗口替换和会话切换均不残留旧预览。
+
+| 阶段 | 实际结果与原因 | 原始日志 |
+|---|---|---|
+| 初始 RED | 0 PASS / 2 FAIL：卡片宽736、图片点击无根预览 | `/tmp/vega-75-screenshot-ui-red.log` |
+| 初次编译 | focus() 缺少 App 参数，按固定 GPUI API 修正 | `/tmp/vega-75-screenshot-ui-first.log` |
+| 首轮界面 | 2/2 PASS | `/tmp/vega-75-screenshot-ui-second.log` |
+| 扩展夹具编译 | 使用了私有菜单字段/不存在的列表方法；改成真实按钮和既有 scroll_to_end | `/tmp/vega-75-screenshot-ui-matrix-first.log` |
+| 扩展夹具第1轮 | 5 PASS / 1 FAIL：点击真实背景按规格会关闭，原夹具错误要求仍打开；保留背景误点断言并改为实际“+” | `/tmp/vega-75-screenshot-ui-matrix-second.log` |
+| 点击穿透 RED | 5 PASS / 1 FAIL：预览关闭后 mouse-up 打开背后的“+”菜单 | `/tmp/vega-75-screenshot-ui-matrix-third.log` |
+| 消费完整点击修复 | 6/6 PASS | `/tmp/vega-75-screenshot-ui-matrix-fourth.log` |
+| 圆角/解码与键盘 | 7/7 PASS | `/tmp/vega-75-screenshot-ui-matrix-fifth.log` |
+| 跨层矩阵 | 121/121 PASS，1806 skipped | `/tmp/vega-75-screenshot-ui-final.log` |
+| 小图/保存布局 RED | 0 PASS / 2 FAIL：16×8被放大到64×32；保存后行高274→301.5 | `/tmp/vega-75-screenshot-ui-small-and-save-red.log` |
+| 对应最终 UI 复验 | 14/14 PASS，710 skipped | `/tmp/vega-75-screenshot-ui-small-and-save-verified.log` |
+
+初始 RED SHA-256：`50b8e52fd71a114db02d98fd22d0fc7836ef35b14eae91e0c4f8c7b58c053e24`；小图/保存 RED SHA-256：`71aab5ed14394965b61142922661a7b97ab533738ced77ca0c054807b20dc4d4`。121 项跨层日志 SHA-256：`7dfe8a8919e080f21e9104db4d7d20ce3d8daf388cf44456de7d58fb072e25eb`；最终14项 UI 日志 SHA-256：`f68ee97468f46c60231a4b202ea6b6cf0844c1fbfcbe3ad5f54936118ba0b980`。全部原始记录、run ID/摘要和 hash 保存在 `/tmp/vega-75-screenshot-ui-evidence.json`，完整命令在 `/tmp/vega-75-screenshot-ui-final-argv.json` 与 `/tmp/vega-75-screenshot-ui-small-and-save-verified-argv.json`：
+
+```sh
+cargo nextest run -p vega_runtime -p vega_conversation -p vega_ui -p vega \
+  -E 'test(issue75) | test(types::tests_audit_wire)'
+cargo nextest run -p vega_ui -E 'test(issue75)'
+```
+
+7 个修改的 Rust 文件 rustfmt 检查与 git diff --check 通过（`/tmp/vega-75-screenshot-ui-checks.log`）。没有新 schema/依赖，没有裁剪或改写交付原图，五张纯白 PNG 是受控尺寸测试 fixture。以上为进程内 GPUI 行为/几何/绘制数据和存储证据；真实像素、系统原生保存面板及新版 TextEdit 流程仍由主控发布后验证。
+
+提交后无冲突变基至 `f1cf5ee7c2b47c8e36a0d24385b5fb4020df969f`（#322 工具操作图标）。最终补测原本卡矩阵及上游实际修改的 6 个图标/分组/历史用例，共 **127/127 PASS**、1801 skipped，run `d8b916f2-b895-4ac5-8327-7664ce8a46f3`。原始日志 `/tmp/vega-75-screenshot-ui-rebased.log`，SHA-256 `0c9956a975bf5d132408257da9d356b21b6cfa6a20835c6be7d75d54686ca71d`，完整 executable/cwd/argv 在 `/tmp/vega-75-screenshot-ui-rebased-argv.json`。本分支相对主线修改的26个 Rust 文件 rustfmt --check 与 git diff --check 全部通过，原始命令/退出码在 `/tmp/vega-75-screenshot-ui-rebased-checks.log`。前述115、121、14项及全部失败证据独立保留。未执行 workspace 全量门禁或真实 driver；PR/CI/发布和真机验收由主控继续。
+
+发布前 fresh fetch 又发现 `5c7885c7517b3f1ba4978fd40ef9ead7501d78b1`（#323 仅按运行终态展示尾部提示），再次无冲突变基。本轮未改本卡生产逻辑，仅补测受影响 UI：本卡14项 + #323核心8项，**22/22 PASS**、704 skipped，run `fe75b4e8-fdf5-4c93-886d-5c04cfd962fb`；未重跑无变化 runtime 矩阵。原始日志 `/tmp/vega-75-screenshot-ui-terminal-notices-rebased.log`，SHA-256 `41476564c79eea0b537e538ff0cd6f5380bc0224183ef5dddab5712e1f5b8251`；完整命令为同名前缀 `-argv.json`，10个本卡 UI Rust 文件格式与 diff 检查通过（`/tmp/vega-75-screenshot-ui-terminal-notices-checks.log`）。此前127项与全部RED记录继续保留；提交数仍为3。

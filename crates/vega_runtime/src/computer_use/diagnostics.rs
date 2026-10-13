@@ -42,6 +42,8 @@ pub(super) enum Class {
     LimitExceeded,
     RpcRejected,
     PermissionsMissing,
+    AccessibilityPermissionMissing,
+    ScreenRecordingPermissionMissing,
     PolicyDenied,
     ExtensionMissing,
     ExtensionConnection,
@@ -84,6 +86,8 @@ impl Class {
             Self::LimitExceeded => "limit_exceeded",
             Self::RpcRejected => "rpc_rejected",
             Self::PermissionsMissing => "permissions_missing",
+            Self::AccessibilityPermissionMissing => "accessibility_permission_missing",
+            Self::ScreenRecordingPermissionMissing => "screen_recording_permission_missing",
             Self::PolicyDenied => "policy_denied",
             Self::ExtensionMissing => "extension_missing",
             Self::ExtensionConnection => "extension_connection",
@@ -119,7 +123,13 @@ impl Class {
     fn guidance(self) -> &'static str {
         match self {
             Self::PermissionsMissing => {
-                "系统权限预检未通过，请在系统设置中核对 Vega 辅助功能和屏幕录制权限。"
+                "请在系统设置中开启 Vega 的辅助功能和屏幕录制权限，然后重试。"
+            }
+            Self::AccessibilityPermissionMissing => {
+                "请在系统设置中开启 Vega 的辅助功能权限，才能读取窗口控件或输入。"
+            }
+            Self::ScreenRecordingPermissionMissing => {
+                "请在系统设置中开启 Vega 的屏幕录制权限，然后重试。"
             }
             Self::ExtensionMissing => {
                 "执行器未发现扩展，请在正在使用的 Chrome 配置中检查 Playwright 扩展安装。"
@@ -191,7 +201,29 @@ impl Class {
 
 impl ExecutorFailure {
     pub(super) fn needs_permissions(self) -> bool {
-        self.class == Class::PermissionsMissing
+        matches!(
+            self.class,
+            Class::PermissionsMissing
+                | Class::AccessibilityPermissionMissing
+                | Class::ScreenRecordingPermissionMissing
+        )
+    }
+
+    pub(super) fn permission_settings(self) -> (bool, bool) {
+        match self.class {
+            Class::PermissionsMissing => (true, true),
+            Class::AccessibilityPermissionMissing => (true, false),
+            Class::ScreenRecordingPermissionMissing => (false, true),
+            _ => (false, false),
+        }
+    }
+
+    pub(super) fn user_message(self) -> &'static str {
+        if self.capability == Capability::Desktop && self.class == Class::PolicyDenied {
+            "执行器工具策略拒绝了请求，请检查组件安装与受管策略。"
+        } else {
+            self.class.guidance()
+        }
     }
 
     pub(super) fn feedback(self) -> String {
@@ -201,7 +233,7 @@ impl ExecutorFailure {
             Class::AxUnavailable | Class::AxTimeout | Class::AxWindowUnresolved
         ) {
             "refresh_directory_then_computer_screenshot_or_stop_input"
-        } else if self.class == Class::PermissionsMissing {
+        } else if self.needs_permissions() {
             "open_system_settings"
         } else if retryable {
             "refresh_directory_once_then_observe"
@@ -230,11 +262,7 @@ impl std::fmt::Display for ExecutorFailure {
             "executor={executor} stage={} error_class={}: {}",
             self.stage.label(),
             self.class.code(),
-            if self.capability == Capability::Desktop && self.class == Class::PolicyDenied {
-                "执行器工具策略拒绝了请求，请检查组件安装与受管策略。"
-            } else {
-                self.class.guidance()
-            }
+            self.user_message()
         )
     }
 }

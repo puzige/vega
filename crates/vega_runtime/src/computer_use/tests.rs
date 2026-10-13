@@ -244,6 +244,25 @@ fn issue75_desktop_access_explicit_discovery_schema() {
         json!(["target_id", "cursor"])
     );
     assert!(!definition.description.contains("user selects and grants"));
+    assert!(!definition.description.contains("any action dispatch"));
+    assert!(
+        definition
+            .description
+            .contains("original 60-second lifetime across action dispatch")
+    );
+    assert!(
+        definition
+            .description
+            .contains("actions consume only actionable observations")
+    );
+    for invalidation in [
+        "Pause/takeover",
+        "stop",
+        "compaction",
+        "explicit invalidation",
+    ] {
+        assert!(definition.description.contains(invalidation));
+    }
 }
 
 #[test]
@@ -533,4 +552,49 @@ fn issue75_usability_delivery_commit_and_pause_have_one_ordered_boundary() {
     );
     control.stop();
     control.finish_cleanup();
+}
+
+#[test]
+fn issue75_successful_reads_only_durable_ack_can_survive_capture_invalidation() {
+    for acknowledged in [false, true] {
+        let run = ComputerUseRun::new(true, false);
+        let epoch = run.control.begin(Capability::Desktop).unwrap();
+        let observation = fixture_observation(&run.control, epoch, 0);
+        run.control
+            .connected(epoch, Capability::Desktop, observation.target.clone())
+            .unwrap();
+        let image = observation.image.clone().unwrap();
+        run.retain_screenshot(&observation.call_id, image.clone(), epoch)
+            .unwrap();
+        assert!(
+            run.acknowledge_screenshot(&observation.call_id, epoch + 1)
+                .is_err()
+        );
+        if acknowledged {
+            run.acknowledge_screenshot(&observation.call_id, epoch)
+                .unwrap();
+        }
+        let mut message = crate::ChatMessage::projected_tool_result(
+            &observation.call_id,
+            "ComputerScreenshot",
+            &screenshot_receipt(&observation.call_id),
+        );
+        message.images = vec![image];
+        run.control.publish(observation.clone()).unwrap();
+        run.control.pause();
+        run.control.finish_cleanup();
+        run.trim_messages(std::slice::from_mut(&mut message));
+        assert!(message.images.is_empty());
+        assert_eq!(
+            message.content.contains("conversation_image_attachment"),
+            acknowledged
+        );
+        if acknowledged {
+            assert_eq!(message.content, screenshot_receipt(&observation.call_id));
+        } else {
+            assert_eq!(message.content, INVALIDATED_OBSERVATION);
+        }
+        run.control.stop();
+        run.control.finish_cleanup();
+    }
 }

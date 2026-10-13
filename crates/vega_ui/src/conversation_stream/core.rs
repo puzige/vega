@@ -36,7 +36,11 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) screenshot_preview: Option<Entity<screenshots::ScreenshotCard>>,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
+    pub(crate) computer_use_diagnostic: Option<(u64, String)>,
+    pub(crate) computer_use_notice_generation: u64,
+    pub(crate) computer_use_diagnostic_focus: FocusHandle,
     pub(crate) context_control: context_control::ContextControl,
     pub(crate) attachments: Vec<(u64, attachments::ImagePreview)>,
     pub(crate) attachment_generation: u64,
@@ -424,7 +428,11 @@ impl ConversationStream {
         .detach();
         Self {
             context_control: context_control::ContextControl::new(cx),
+            screenshot_preview: None,
             computer_use_control: None,
+            computer_use_diagnostic: None,
+            computer_use_notice_generation: 0,
+            computer_use_diagnostic_focus: cx.focus_handle(),
             attachments: Vec::new(),
             attachment_generation: 0,
             attachment_import_pending: false,
