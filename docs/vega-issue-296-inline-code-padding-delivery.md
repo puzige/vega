@@ -51,3 +51,11 @@ ac9b9a8abc3c38398772d13e5a03a322956ca6ec268ca028e4d6b9550c07d2c7
 - M01原生手测NOT RUN；合并后In review等待用户，无应用安装/重启。
 - 无数据迁移，无新依赖或公开API；回滚本轮共享布局即可。
 - 不改变既有GPUI极窄容器无法容纳单字形的行为；shape失败沿原空布局和日志语义。测试为进程内证据，不代表真实字体平台全组合。
+
+## 基线与云端修正
+
+PR #331 无冲突更新至 master d1956e3（#330导航边缘）。UI四文件指纹不变，theme包含上游token删除；受影响的 `cargo nextest run -p vega_ui -E 'test(width_remeasure_preserves_anchor_identity)'` exit0，原始footer `Summary [   0.160s] 1 test run: 1 passed, 734 skipped`；日志SHA256 `cf8716efc02940d7dc739fbf55104efca2c284d177ef59b037c1bb86ae41a7b6`。
+
+首轮云端run38359651852的Clippy job115170801334失败：仅测试行 `replace_box` 无谓分配。原日志SHA256 `19a10ab7090f87b6032e6681382f4c0074931c39480d3a3e5b1ce7eae413b9ee`。改为原位替换Box内容，未改生产行为，未降低lint。
+
+修正后F命令exit0：`Summary [   0.061s] 2 tests run: 2 passed, 733 skipped`。日志SHA256 `b0a37f6ab0e45c06e26c373eeb901562bf62b4b53c60a48eafccc88b76d0c705`；最终5文件源码manifest SHA256 `32c3a0666a3063f61081d0c696b4fbd0ee1418dc9d2ddb0466cfc76ee79ed784`。scoped fmt/diff check exit0。最终云端结果留在PR与Issue交付回写，不把旧失败或被取消的运行记作PASS。

@@ -1486,7 +1486,7 @@ fn padding_multi_click(cx: &mut TestAppContext, source: &str, expected: &str, co
             assert!(copy.selection_generation() > generation);
             assert!(copy.local_selection_range().is_none());
             assert!(!copy.has_selected_text());
-            *markdown = Box::new(MarkdownStream::new());
+            **markdown = MarkdownStream::new();
             markdown.append(&copy.original_text());
             markdown.finish();
             model.sync(&markdown.snapshot(), &StreamCounters::default());
