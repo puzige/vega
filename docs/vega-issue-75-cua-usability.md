@@ -92,3 +92,13 @@ HEAD 98aa8aba 的 Clippy 在 `Backends::observe` 报 8/7 参数；原始诊断�
 受影响 runtime 回归 `cargo nextest run -p vega_runtime -E 'test(issue75)'`：69/69 PASS，275 项按范围跳过；run `d848b231-9886-4fe2-b15d-4d9d4c526f21`，原始输出 `/tmp/vega-75-usability-ci-fix-tests.log`，SHA-256 `8043daf8f3314757db73edf6c9314a9bbc80d01d881b167d21fcc409f84803e6`。仅修改的 backend.rs 已通过 rustfmt 与 diff 检查；云端 Clippy 是否通过须以新提交的 PR gate 为准。
 
 针对已确认云端诊断，额外复验受影响包：`cargo clippy -p vega_runtime --all-targets -- -D warnings` 通过，exit 0；原始记录 `/tmp/vega-75-usability-ci-fix-clippy.log`。未运行本地 workspace 全量门禁。
+
+### PR #320 全量 Nextest 反馈修复
+
+HEAD 9ed8f9f 的云端 Nextest 为 2334 项中 2315 PASS、19 FAIL（`/tmp/vega-75-usability-ci-nextest.log`）。其中 13 项是 schema 精确期望仍为 17/29 表，现更新为 18/31 并在完整表集合加入 builtin_skill_activations、computer_screenshot_artifacts；旧数据、WAL、幂等迁移、外键和生命周期断言全部保留。另 5 项由新增的全局取消状态覆盖导致：审批前已有 Rejected 被写成 Cancelled，破坏其审批审计和持久化前置。修复仅对成功 ComputerScreenshot 在交付前取消时标记 Cancelled，恢复普通工具的原拒绝/取消合同，不改变原断言。
+
+第 19 项 `issue67_concurrent_settings_fails_closed_for_both_permissions` 的云端失败发生在 B 工具提案前；未修改的 9ed8f9f 单独运行已 PASS（1.204s，`/tmp/vega-75-usability-issue67-red.log`，文件名不代表其结果为 RED），本轮组合中也 PASS（1.495s）。其根因尚未确认，不能称为被本轮修好；没有添加延时、放宽断言、降低并发或自动重试，下一轮云端继续执行原用例，若重现则继续定位。
+
+本地仅执行这 19 个失败用例（更新名称的迁移测试按新名称选取）、issue75 与已有 composer Stop 的组合：108/108 PASS，1923 项按范围跳过；run `09bf8279-fa71-4dca-a876-278aeb63a59c`。原始输出 `/tmp/vega-75-usability-ci-regressions.log`，SHA-256 `00a1cea82d93b4037b5263427ee2f39da91499ea4e70acaeeed1edc88ff92336`；完整 executable/cwd/argv 保存在 `/tmp/vega-75-usability-ci-regressions-argv.json`，过滤表达式保存在 `/tmp/vega-75-usability-ci-regressions-filter.txt`。
+
+受影响 runtime 的 `cargo clippy -p vega_runtime --all-targets -- -D warnings` 诊断复验 exit 0（`/tmp/vega-75-usability-ci-regressions-clippy.log`），6 个修改 Rust 文件的格式和 diff 检查通过。此次没有运行本地 workspace 全量测试；最终云端结果与真机结果仍待主控执行。

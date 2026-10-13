@@ -2483,7 +2483,11 @@ where
                     }
                 }
             };
-            if cancelled_while_running || cancel.is_cancelled() {
+            if cancelled_while_running
+                || (call.name == "ComputerScreenshot"
+                    && result.status == RuntimeToolStatus::Success
+                    && cancel.is_cancelled())
+            {
                 result.status = RuntimeToolStatus::Cancelled;
             }
             redact_runtime_tool_result(&tool_config, &mut result);
