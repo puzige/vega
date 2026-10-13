@@ -20,17 +20,23 @@ fn accepted_prefix_len(delta: &str, limit: usize) -> usize {
 struct Preview {
     line: String,
     title: String,
-    heading: bool,
     continued: bool,
+    continued_heading: bool,
+    long_bold_marker: Option<&'static str>,
+    long_bold_start: String,
     fence: Option<char>,
+    continued_fence: Option<char>,
 }
 impl Preview {
-    fn append(&mut self, delta: &str) {
+    fn append(&mut self, delta: &str) -> bool {
+        let mut updated = false;
         for ch in delta.chars() {
             if ch == '\n' {
-                self.update();
+                updated |= self.update();
                 let trimmed = self.line.trim_start();
-                let marker = if !self.continued && trimmed.starts_with("```") {
+                let marker = if let Some(marker) = self.continued_fence {
+                    Some(marker)
+                } else if !self.continued && trimmed.starts_with("```") {
                     Some('`')
                 } else if !self.continued && trimmed.starts_with("~~~") {
                     Some('~')
@@ -46,10 +52,42 @@ impl Preview {
                 }
                 self.line.clear();
                 self.continued = false;
+                self.continued_heading = false;
+                self.long_bold_marker = None;
+                self.long_bold_start.clear();
+                self.continued_fence = None;
             } else {
                 self.line.push(ch);
                 if self.line.len() > 1024 {
-                    self.update();
+                    if !self.continued {
+                        let line = self.line.trim();
+                        self.continued_fence = if line.starts_with("```") {
+                            Some('`')
+                        } else if line.starts_with("~~~") {
+                            Some('~')
+                        } else {
+                            None
+                        };
+                        let hashes = line.bytes().take_while(|ch| *ch == b'#').count();
+                        self.continued_heading = (1..=6).contains(&hashes)
+                            && line
+                                .as_bytes()
+                                .get(hashes)
+                                .is_some_and(u8::is_ascii_whitespace);
+                        if !self.continued_heading {
+                            self.long_bold_marker = ["**", "__"].into_iter().find(|marker| {
+                                line.starts_with(*marker) && !line[2..].contains(*marker)
+                            });
+                            if self.long_bold_marker.is_some() {
+                                self.long_bold_start = line[2..]
+                                    .chars()
+                                    .filter(|ch| !ch.is_control() && *ch != '`')
+                                    .take(95)
+                                    .collect();
+                            }
+                        }
+                    }
+                    updated |= self.update();
                     let mut cut = self.line.len() - 768;
                     while !self.line.is_char_boundary(cut) {
                         cut += 1;
@@ -59,13 +97,36 @@ impl Preview {
                 }
             }
         }
-        self.update();
+        updated | self.update()
     }
 
-    fn update(&mut self) {
+    fn update(&mut self) -> bool {
         let line = self.line.trim();
-        if self.fence.is_some() || line.starts_with("```") || line.starts_with("~~~") {
-            return;
+        if self.fence.is_some()
+            || self.continued_fence.is_some()
+            || line.starts_with("```")
+            || line.starts_with("~~~")
+        {
+            return false;
+        }
+        if let Some(marker) = self.long_bold_marker {
+            if line.ends_with(marker) && !self.long_bold_start.trim().is_empty() {
+                let title = format!("{}…", self.long_bold_start);
+                let updated = self.title != title;
+                self.title = title;
+                self.continued_heading = true;
+                return updated;
+            }
+            return false;
+        }
+        if self.continued && self.continued_heading {
+            return false;
+        }
+        if ["**", "__"]
+            .into_iter()
+            .any(|marker| line.starts_with(marker) && !line[2..].contains(marker))
+        {
+            return false;
         }
         let hashes = line.bytes().take_while(|ch| *ch == b'#').count();
         let atx = !self.continued
@@ -79,9 +140,6 @@ impl Preview {
             && ((line.starts_with("**") && line.ends_with("**"))
                 || (line.starts_with("__") && line.ends_with("__")));
         let is_heading = atx || bold;
-        if self.heading && !is_heading {
-            return;
-        }
         let line = if atx {
             line[hashes..].trim().trim_end_matches('#').trim()
         } else if bold {
@@ -95,10 +153,10 @@ impl Preview {
             .collect();
         let readable = readable.trim().trim_matches('*').trim_matches('_').trim();
         if readable.is_empty() || readable.chars().all(|ch| matches!(ch, '#' | '~' | '_')) {
-            return;
+            return false;
         }
         let chars: Vec<_> = readable.chars().collect();
-        self.title = if chars.len() <= 96 {
+        let title = if chars.len() <= 96 {
             readable.to_owned()
         } else if is_heading {
             chars[..95]
@@ -111,8 +169,16 @@ impl Preview {
                 .chain(chars[chars.len() - 95..].iter().copied())
                 .collect()
         };
-        self.heading |= is_heading;
+        let updated = self.title != title;
+        self.title = title;
+        updated
     }
+}
+
+#[derive(Clone, Copy)]
+enum PreviewSource {
+    Thinking,
+    Summary,
 }
 
 pub(crate) struct ThinkingBlock {
@@ -122,6 +188,7 @@ pub(crate) struct ThinkingBlock {
     summary_has_content: bool,
     thinking_preview: Preview,
     summary_preview: Preview,
+    latest_preview: Option<PreviewSource>,
     source_stream: MarkdownStream,
     source_model: StreamModel,
     source_copy: MessageCopy,
@@ -134,17 +201,16 @@ pub(crate) struct ThinkingBlock {
 }
 
 impl ThinkingBlock {
+    #[cfg(test)]
     pub(crate) fn summary_title(&self) -> Option<&str> {
         (!self.summary_preview.title.is_empty()).then_some(self.summary_preview.title.as_str())
     }
 
     pub(crate) fn title(&self) -> &str {
-        if !self.summary_preview.title.is_empty() {
-            &self.summary_preview.title
-        } else if !self.thinking_preview.title.is_empty() {
-            &self.thinking_preview.title
-        } else {
-            "思考过程"
+        match self.latest_preview {
+            Some(PreviewSource::Thinking) => &self.thinking_preview.title,
+            Some(PreviewSource::Summary) => &self.summary_preview.title,
+            None => "思考过程",
         }
     }
 
@@ -181,6 +247,7 @@ impl ThinkingBlock {
             summary_has_content: false,
             thinking_preview: Preview::default(),
             summary_preview: Preview::default(),
+            latest_preview: None,
             source_stream: MarkdownStream::new(),
             source_model: StreamModel::default(),
             source_copy: MessageCopy::default(),
@@ -236,10 +303,14 @@ impl ThinkingBlock {
         if summary {
             self.summary_has_content |= delta[..end].chars().any(|ch| !ch.is_whitespace());
             self.summary.push_str(&delta[..end]);
-            self.summary_preview.append(&delta[..end]);
+            if self.summary_preview.append(&delta[..end]) {
+                self.latest_preview = Some(PreviewSource::Summary);
+            }
         } else {
             self.text.push_str(&delta[..end]);
-            self.thinking_preview.append(&delta[..end]);
+            if self.thinking_preview.append(&delta[..end]) {
+                self.latest_preview = Some(PreviewSource::Thinking);
+            }
         }
         let source = self.source_text();
         let previous = self.source_copy.original_text();
@@ -271,6 +342,7 @@ impl Render for ThinkingBlock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.expanded_rendered = self.expanded;
         let colors = theme(cx).colors;
+        let title = self.title().to_owned();
         div()
             .w_full()
             .min_w_0()
@@ -296,14 +368,7 @@ impl Render for ThinkingBlock {
                     .tab_stop(true)
                     .focus_visible(move |row| row.bg(colors.bg_hover))
                     .debug_selector(|| "thinking-toggle".into())
-                    .aria_label(format!(
-                        "{}，展开或收起思考过程",
-                        if self.shimmer_epoch.is_some() {
-                            self.summary_title().unwrap_or("Thinking")
-                        } else {
-                            self.title()
-                        }
-                    ))
+                    .aria_label(format!("{}，展开或收起思考过程", title))
                     .flex()
                     .items_center()
                     .gap(px(Layout::CONVERSATION_INLINE_GAP))
@@ -346,14 +411,9 @@ impl Render for ThinkingBlock {
                             .flex_shrink(1.)
                             .truncate()
                             .child(if let Some(epoch) = self.shimmer_epoch {
-                                shimmer::text(
-                                    self.summary_title().unwrap_or("Thinking").to_owned(),
-                                    epoch,
-                                    window,
-                                    cx,
-                                )
+                                shimmer::text(title.clone(), epoch, window, cx)
                             } else {
-                                div().child(self.title().to_owned()).into_any_element()
+                                div().child(title).into_any_element()
                             }),
                     )
                     .child(crate::disclosure::chevron(
@@ -517,11 +577,56 @@ mod preview_tests {
         preview.append("\n## ");
         assert_eq!(preview.title, "#hashtag is prose");
         preview.append("真实标题\nbody\n\nmore body");
-        assert_eq!(preview.title, "真实标题");
+        assert_eq!(preview.title, "more body");
         preview.append("\n```\n## fake\n```\n**下一");
-        assert_eq!(preview.title, "真实标题");
+        assert_eq!(preview.title, "more body");
         preview.append("阶段**\nbody");
-        assert_eq!(preview.title, "下一阶段");
+        assert_eq!(preview.title, "body");
         assert!(preview.line.len() <= 1024);
+    }
+
+    #[test]
+    fn i343_heading_yields_to_later_prose_but_not_markers_or_fenced_code() {
+        let mut preview = Preview::default();
+        preview.append("## 阿里云服务：");
+        assert_eq!(preview.title, "阿里云服务：");
+        preview.append("\nBest: check keeper DB");
+        assert_eq!(preview.title, "Best: check keeper DB");
+        preview.append(" and compare accounts");
+        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
+        preview.append("\n\n### ");
+        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
+        preview.append("\n```rust\n## fake heading\nlet token = 42;\n```\n**下个");
+        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
+        preview.append("阶段**");
+        assert_eq!(preview.title, "下个阶段");
+        preview.append(&format!("\n```{}\n## fenced\n```\n", "x".repeat(1100)));
+        assert_eq!(preview.title, "下个阶段");
+        preview.append("围栏之后的正文");
+        assert_eq!(preview.title, "围栏之后的正文");
+    }
+
+    #[test]
+    fn i343_long_heading_keeps_start_and_long_prose_advances_tail() {
+        let mut heading = Preview::default();
+        heading.append(&format!("## 开头{}", "中".repeat(500)));
+        assert!(heading.title.starts_with("开头"));
+        assert_eq!(heading.title.chars().count(), 96);
+        heading.append("\n新的普通段落");
+        assert_eq!(heading.title, "新的普通段落");
+
+        let mut bold = Preview::default();
+        let long_bold = format!("**起点{}**", "文".repeat(500));
+        bold.append(&long_bold[..long_bold.len() - 2]);
+        assert_eq!(bold.title, "");
+        bold.append("**");
+        assert!(bold.title.starts_with("起点"));
+        assert_eq!(bold.title.chars().count(), 96);
+
+        let mut prose = Preview::default();
+        prose.append(&"😀汉字".repeat(500));
+        prose.append("🦀最后");
+        assert!(prose.title.ends_with("🦀最后"));
+        assert_eq!(prose.title.chars().count(), 96);
     }
 }
