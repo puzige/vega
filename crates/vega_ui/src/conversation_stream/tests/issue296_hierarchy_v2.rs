@@ -252,6 +252,23 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
         assert_eq!(
+            *geometry
+                .entry_heights
+                .last()
+                .expect("unsynchronized assistant"),
+            0.
+        );
+        assert!(matches!(
+            stream.entries.last(),
+            Some(StreamEntry::Assistant { model, copy, .. })
+                if model.row_count() == 0 && copy.original_text() == "Plain answer"
+        ));
+    });
+    visual.run_until_parked();
+    stream.update(&mut visual, |stream, cx| {
+        stream.measured_entry_heights.clear();
+        let geometry = stream.message_anchor_geometry(cx, 600.);
+        assert_eq!(
             *geometry.entry_heights.last().expect("assistant height"),
             16. + Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT
         );

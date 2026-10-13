@@ -92,17 +92,16 @@ async fn issue296_polish_p01_final_details_share_icon_and_text_axes(cx: &mut Tes
     let tool_title = visual
         .debug_bounds("tool-activity-single-row-title")
         .unwrap();
-    for (icon, title) in [("thinking-icon", "thinking-title")] {
-        assert_eq!(visual.debug_bounds(icon).unwrap().left(), tool_icon.left());
-        assert_eq!(
-            visual.debug_bounds(title).unwrap().left(),
-            tool_title.left()
-        );
-        assert_eq!(
-            visual.debug_bounds(title).unwrap().left() - tool.left(),
-            px(22.)
-        );
-    }
+    let (icon, title) = ("thinking-icon", "thinking-title");
+    assert_eq!(visual.debug_bounds(icon).unwrap().left(), tool_icon.left());
+    assert_eq!(
+        visual.debug_bounds(title).unwrap().left(),
+        tool_title.left()
+    );
+    assert_eq!(
+        visual.debug_bounds(title).unwrap().left() - tool.left(),
+        px(22.)
+    );
     assert_eq!(
         visual.debug_bounds("thinking-toggle").unwrap().size.height,
         px(25.)

@@ -207,3 +207,63 @@ SHA-256：`48453ded558a8a6f73d0e19a6996682984d5d577d0aba2e3e116be91cdfbf50d`。�
 ### 追加手测范围
 
 确认clock后的首摘要间距缩短；展开阶段只有紧凑同级来源/工具行，独立打开思考后Markdown正常、原文可复制；长工具区与思考全文分别有320/240上限，内部回看不会被流式文本抢走；产物出现在所属工具后且收起阶段仍可见；Final统一重开仍保序，尾提示只有一条；侧栏running圆环应匀速旋转。未进行原生App操作、真实provider调用、系统字形像素验收或实际动画角度采样。
+
+### 第二个PR head的Clippy修复
+
+`3cce789` 的Clippy job `115068868101` 退出 `101`，唯一错误是P01测试在Final扁平化后只剩单元素循环，触发 `single_element_loop`。原始 `ci-second-clippy.log` SHA-256：`8f674b6ca4aa0d4eade50df9db47f30d5b8493d521fd1c5be698050cfb13e4e5`。
+
+fetch并rebase确认分支已是最新后，仅将该循环改为直接tuple绑定，原图标/文字左轴、22px偏移、25px行高与hover/focus/展开几何断言全部保留；没有生产代码、allow或注释变更。2026-10-13 00:34 UTC / 08:34 Asia/Shanghai定向验证：
+
+```sh
+cargo nextest run -p vega_ui -E 'test(/issue296_polish_p01_final_details_share_icon_and_text_axes/)'
+cargo fmt -p vega_ui --check
+git diff --check
+```
+
+`ci-second-p01.log`，nextest退出码 `0`，fmt/diff均退出 `0`：
+
+```text
+Summary [   0.075s] 1 test run: 1 passed, 702 skipped
+```
+
+SHA-256：`07dbb90254c936bf4e31878b54f9c56f917a69f733375d4d1fe6300ea6513673`。仅已有 `block v0.1.6` future-incompatibility警告；没有本地重跑Clippy或workspace全量。新提交的云端门禁由主控继续推进，未用此单项结果声称整个CI通过。
+
+### 第二个PR head的Nextest收尾
+
+同一 `3cce789` head的云端Nextest最终退出 `100`：
+
+```text
+Summary [ 164.622s] 2331 tests run: 2326 passed, 5 failed, 5 skipped
+```
+
+原始 `ci-second-nextest.log` SHA-256：`0dc15c9f4de30e6f070a80a3610f932969e259247bd262c92a338f4ac69f514b`。五项为App的thinking-only完成入口、Issue151的三项手动展开/收起持续性，以及Issue296阶段几何估算。fetch/rebase确认最新后先做同集合本地复现：
+
+```sh
+cargo nextest run -p vega_ui -p vega -E 'test(/i61_v3_thinking_only_completion_keeps_summary_with_collapsed_details/) | test(/issue151_manual_expansion_of_an_older_unit_survives_newer_content/) | test(/issue151_user_collapsed_unit_is_never_re_expanded/) | test(/issue151_v3_manual_expansion_survives_text_segments/) | test(/issue296_v2_process_spacing_and_estimate_include_new_geometry/)'
+```
+
+`ci-second-regression-red.log`，退出码 `100`：
+
+```text
+Summary [   0.386s] 5 tests run: 0 passed, 5 failed, 954 skipped
+```
+
+SHA-256：`d9ce4e9b1ecb36fba1bd080d49450b45ccedcbec0078cbe82ddd4614cc5dffe3`。前四项仍假设打开阶段会自动展开Thinking全文，迁移为实际点击阶段后确认25px紧凑来源行与全文仍收起，再独立点击Thinking；保留手动展开跨工具/正文/新消息的持续性。手动收起测试额外确认阶段关闭后追加delta不会打开阶段，重开阶段也不会展开已手动收起的全文，完整来源字符串仍保留。
+
+几何用例原先在TextDelta后、Markdown模型尚未同步的同一update内立刻要求39px，恰好依赖已移除的空占位行。新断言在同步前检查0高且原copy完整，正常绘制后清除测量缓存再严格检查39px，最后原有逐entry估高与真实bounds相等断言不变。没有恢复空行占位或修改生产代码。
+
+2026-10-13 00:40 UTC / 08:40 Asia/Shanghai，定向验证App入口、Issue151整个模块和该几何用例：
+
+```sh
+cargo nextest run -p vega_ui -p vega -E 'test(/i61_v3_thinking_only_completion_keeps_summary_with_collapsed_details/) | test(/issue151_latest_activity::/) | test(/issue296_v2_process_spacing_and_estimate_include_new_geometry/)'
+cargo fmt -p vega -p vega_ui --check
+git diff --check
+```
+
+`ci-second-regression-green.log`，nextest退出码 `0`，fmt/diff均退出 `0`：
+
+```text
+Summary [   0.416s] 9 tests run: 9 passed, 950 skipped
+```
+
+SHA-256：`ef3fcbfd2c827ce3169acc7407ced7974bb7e4647ef9dcb9e3abd1d5b222d721`。只修改三份测试与本交付文档；独立只读审查通过。仅已有 `block v0.1.6` future-incompatibility警告，未本地运行全量；由主控将收尾纳入未推送的第三提交后继续云端门禁。

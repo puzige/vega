@@ -80,6 +80,23 @@ fn activity_expansion(stream: &ConversationStream, cx: &App) -> Vec<bool> {
         .collect()
 }
 
+fn thinking_sources(stream: &ConversationStream, cx: &App) -> Vec<String> {
+    stream
+        .entries
+        .iter()
+        .flat_map(|entry| match entry {
+            StreamEntry::RunActivitySegment { group, segment } => {
+                group.read(cx).segment_children(*segment)
+            }
+            _ => Vec::new(),
+        })
+        .filter_map(|child| match child {
+            RunActivityChild::Thinking(card) => Some(card.read(cx).source_text()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn click(window: WindowHandle<StreamHarness>, selector: &'static str, cx: &mut TestAppContext) {
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let target = visual
@@ -197,6 +214,9 @@ async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
 
     open_run_details(window, cx);
     click(window, "run-stage-toggle-0", cx);
+    assert_eq!(stream.read_with(cx, activity_expansion), [false, false]);
+    assert!(!mounted(window, "thinking-content", cx));
+    click(window, "thinking-toggle", cx);
     assert_eq!(
         stream.read_with(cx, activity_expansion),
         [true, false],
@@ -227,6 +247,8 @@ async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
         }),
         "R151-3: an upgraded group never opens a child's own detail"
     );
+    assert!(mounted(window, "thinking-content", cx));
+    assert_eq!(stream.read_with(cx, thinking_sources), ["推理"]);
 }
 
 #[gpui_kit::test]
@@ -306,6 +328,9 @@ async fn issue151_v3_manual_expansion_survives_text_segments(cx: &mut TestAppCon
 
     open_run_details(window, cx);
     click(window, "run-stage-toggle-0", cx);
+    assert_eq!(stream.read_with(cx, activity_expansion), [false]);
+    assert!(!mounted(window, "thinking-content", cx));
+    click(window, "thinking-toggle", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [true]);
 
     stream.update(cx, |stream, cx| {
@@ -327,6 +352,8 @@ async fn issue151_v3_manual_expansion_survives_text_segments(cx: &mut TestAppCon
         [true],
         "a new message preserves user expansion of prior details"
     );
+    assert!(mounted(window, "thinking-content", cx));
+    assert_eq!(stream.read_with(cx, thinking_sources), ["推理"]);
 }
 
 #[gpui_kit::test]
@@ -336,14 +363,19 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", "第一段"), cx);
     });
-    assert!(!mounted(window, "stage-thinking-content", cx));
+    assert!(!mounted(window, "thinking-content", cx));
     open_run_details(window, cx);
     click(window, "run-stage-toggle-0", cx);
-    assert!(mounted(window, "stage-thinking-content", cx));
-
-    click(window, "run-stage-toggle-0", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [false]);
-    assert!(!mounted(window, "stage-thinking-content", cx));
+    assert!(!mounted(window, "thinking-content", cx));
+    click(window, "thinking-toggle", cx);
+    assert!(mounted(window, "thinking-content", cx));
+
+    click(window, "thinking-toggle", cx);
+    assert_eq!(stream.read_with(cx, activity_expansion), [false]);
+    assert!(!mounted(window, "thinking-content", cx));
+    click(window, "run-stage-toggle-0", cx);
+    assert!(!mounted(window, "thinking-toggle", cx));
 
     stream.update(cx, |stream, cx| {
         stream.apply_event(thinking("m", "第二段"), cx);
@@ -354,7 +386,15 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
         [false],
         "more deltas of the same unit must not re-open a user-collapsed unit"
     );
-    assert!(!mounted(window, "stage-thinking-content", cx));
+    assert!(!mounted(window, "thinking-toggle", cx));
+    click(window, "run-stage-toggle-0", cx);
+    assert!(mounted(window, "thinking-toggle", cx));
+    assert!(!mounted(window, "thinking-content", cx));
+    assert_eq!(stream.read_with(cx, activity_expansion), [false]);
+    assert_eq!(
+        stream.read_with(cx, thinking_sources),
+        ["第一段第二段第三段"]
+    );
 }
 
 #[gpui_kit::test]

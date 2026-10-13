@@ -267,19 +267,27 @@ async fn i61_v3_thinking_only_completion_keeps_summary_with_collapsed_details(
         .expect("terminal run header");
     assert!(visual.debug_bounds("run-activity-status").is_some());
     assert!(visual.debug_bounds("run-stage-toggle-0").is_some());
-    assert!(visual.debug_bounds("stage-thinking-content").is_none());
+    assert!(visual.debug_bounds("thinking-content").is_none());
     visual.simulate_click(run_toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("run-stage-toggle-0").is_some());
     assert!(visual.debug_bounds("run-activity-content").is_none());
     assert!(visual.debug_bounds("run-stage-title-0").is_some());
-    assert!(visual.debug_bounds("stage-thinking-content").is_none());
+    assert!(visual.debug_bounds("thinking-content").is_none());
     let toggle = visual
         .debug_bounds("run-stage-toggle-0")
         .expect("thought header");
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("stage-thinking-content").is_some());
+    assert!(visual.debug_bounds("thinking-block").is_some());
+    assert!(visual.debug_bounds("thinking-content").is_none());
+    let source = visual
+        .debug_bounds("thinking-toggle")
+        .expect("independent thinking source");
+    assert_eq!(source.size.height, gpui_kit::px(25.));
+    visual.simulate_click(source.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_some());
 }
 
 #[gpui_kit::test]
