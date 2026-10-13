@@ -515,3 +515,111 @@ async fn issue75_usability_cursor_error_names_only_the_bad_schema_field() {
     assert!(result.content.contains("\"field\":\"cursor\""));
     assert!(!result.content.contains("PRIVATE_VALUE"));
 }
+
+#[tokio::test]
+async fn issue75_readonly_permissions_missing_grant_is_cua_rejected_not_run_mode() {
+    for (mode, permission, expected_source, expected_code) in [
+        (
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::FullAccess,
+            RuntimeApprovalSource::ComputerUse,
+            "screen_recording_permission_missing",
+        ),
+        (
+            RuntimeRunMode::Plan,
+            RuntimePermissionMode::FullAccess,
+            RuntimeApprovalSource::RunMode,
+            "denied by run mode",
+        ),
+        (
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::ReadOnly,
+            RuntimeApprovalSource::RunMode,
+            "denied by run mode",
+        ),
+    ] {
+        let dir = tempdir().unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let run = desktop_run();
+        run.install_desktop_fixture(vec![fixture_window()], vec![frame_result()])
+            .await;
+        run.set_desktop_permissions_fixture(vec![
+            serde_json::json!({"accessibility":false,"screen_recording":false}),
+        ])
+        .await;
+        let provider = MockProvider::new_rounds(screenshot_rounds());
+        let mut req = request(vec![ChatMessage::new(ChatRole::User, "Screenshot Fixture")]);
+        req.tool_config = tool_config(mode, permission, dir.path().to_owned())
+            .with_computer_use(Some(run.clone()));
+        let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        let result = outcome
+            .events
+            .iter()
+            .find_map(|event| match event {
+                RuntimeEvent::ToolCallFinished(result) => Some(result),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(result.status, RuntimeToolStatus::Rejected);
+        assert_eq!(result.approval.as_ref().unwrap().source, expected_source);
+        assert_eq!(
+            result.approval.as_ref().unwrap().decision,
+            RuntimeApprovalDecision::Deny
+        );
+        assert!(result.output.contains(expected_code), "{}", result.output);
+        assert!(
+            !outcome
+                .events
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::ScreenshotDelivered { .. }))
+        );
+        assert!(run.fixture_calls().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn issue75_readonly_permissions_cancel_at_approval_wins_before_capture() {
+    let dir = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let run = desktop_run();
+    run.install_desktop_fixture(vec![fixture_window()], vec![frame_result()])
+        .await;
+    run.set_desktop_permissions_fixture(vec![
+        serde_json::json!({"accessibility":false,"screen_recording":true}),
+    ])
+    .await;
+    let provider = MockProvider::new_rounds(screenshot_rounds());
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "Screenshot Fixture")]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::FullAccess,
+        dir.path().to_owned(),
+    )
+    .with_computer_use(Some(run.clone()));
+    let cancel = CancellationToken::new();
+    let owned = cancel.clone();
+    let outcome = run_agent_with_sink(&provider, &tools, req, cancel, move |event| {
+        if matches!(&event,RuntimeEvent::ToolCallApproved{call_id,..} if call_id=="capture") {
+            owned.cancel();
+        }
+        async { Ok(()) }
+    })
+    .await
+    .unwrap();
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::Interrupted))
+    );
+    assert_eq!(provider.requests().len(), 2);
+    assert!(run.fixture_calls().await.is_empty());
+    assert!(
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::ScreenshotDelivered { .. }))
+    );
+}

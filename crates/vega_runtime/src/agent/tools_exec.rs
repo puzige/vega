@@ -626,7 +626,11 @@ pub(crate) async fn authorize_call(
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
     match prepared {
-        PreparedRuntimeCall::ComputerUse { call, run, .. } => {
+        PreparedRuntimeCall::ComputerUse {
+            call,
+            run,
+            arguments,
+        } => {
             if config.run_mode != RuntimeRunMode::Execute
                 || config.permission_mode == RuntimePermissionMode::ReadOnly
                 || cancel.is_cancelled()
@@ -638,9 +642,7 @@ pub(crate) async fn authorize_call(
                     Some(run_mode_denial()),
                 )));
             }
-            let capability = crate::computer_use::ComputerUseRun::tool_capability(&call.name)
-                .ok_or_else(safe_permission_error)?;
-            match run.authorize(capability, cancel).await {
+            match run.authorize(&call.name, arguments, cancel).await {
                 Ok(()) => Ok(Authorization::Approved {
                     audit: RuntimeApprovalAudit {
                         decision: RuntimeApprovalDecision::Once,
@@ -662,7 +664,12 @@ pub(crate) async fn authorize_call(
                         error.feedback()
                     ),
                     RuntimeToolStatus::Rejected,
-                    Some(run_mode_denial()),
+                    Some(RuntimeApprovalAudit {
+                        decision: RuntimeApprovalDecision::Deny,
+                        note: None,
+                        source: RuntimeApprovalSource::ComputerUse,
+                        danger: None,
+                    }),
                 ))),
             }
         }

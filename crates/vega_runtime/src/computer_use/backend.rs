@@ -19,15 +19,32 @@ use vega_mcp::{LocalServer, ManagedClient};
 pub(super) struct Backends {
     desktop: Option<Desktop>,
     browser: Option<Browser>,
-    #[cfg(test)]
-    fixture: Option<DesktopFixture>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fixture: Option<DesktopFixture>,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) struct DesktopFixture {
     pub windows: Vec<DesktopTarget>,
     pub results: std::collections::VecDeque<vega_mcp::ManagedResult>,
     pub actions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub calls: Vec<(String, Value)>,
+    pub permissions: std::collections::VecDeque<Value>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl DesktopFixture {
+    fn permissions_result(&mut self) -> vega_mcp::ManagedResult {
+        let structured = self.permissions.front().cloned();
+        if self.permissions.len() > 1 {
+            self.permissions.pop_front();
+        }
+        vega_mcp::ManagedResult {
+            structured,
+            text: Vec::new(),
+            images: Vec::new(),
+            is_error: false,
+        }
+    }
 }
 
 enum CaptureMode {
@@ -81,7 +98,28 @@ fn server(executable: PathBuf, args: Vec<String>, root: &Path) -> LocalServer {
     }
 }
 
-fn validate_permissions(result: vega_mcp::ManagedResult) -> Result<(), Error> {
+#[derive(Clone, Copy)]
+enum DesktopPermissions {
+    ScreenRecording,
+    AccessibilityAndScreenRecording,
+}
+
+impl DesktopPermissions {
+    fn for_call(name: &str, arguments: &Value) -> Self {
+        if name == "ComputerScreenshot"
+            || (name == "ComputerObserve" && arguments.get("target_id").is_none_or(Value::is_null))
+        {
+            Self::ScreenRecording
+        } else {
+            Self::AccessibilityAndScreenRecording
+        }
+    }
+}
+
+fn validate_permissions(
+    result: vega_mcp::ManagedResult,
+    required: DesktopPermissions,
+) -> Result<(), Error> {
     let value = result.structured.ok_or_else(|| {
         diagnostics::failure(Capability::Desktop, Stage::Permissions, Class::Protocol)
     })?;
@@ -89,12 +127,23 @@ fn validate_permissions(result: vega_mcp::ManagedResult) -> Result<(), Error> {
         value["accessibility"].as_bool(),
         value["screen_recording"].as_bool(),
     ) {
-        (Some(true), Some(true)) => Ok(()),
-        (Some(_), Some(_)) => Err(diagnostics::failure(
-            Capability::Desktop,
-            Stage::Permissions,
-            Class::PermissionsMissing,
-        )),
+        (Some(accessibility), Some(screen_recording)) => {
+            let needs_accessibility = matches!(
+                required,
+                DesktopPermissions::AccessibilityAndScreenRecording
+            );
+            let class = match (!accessibility && needs_accessibility, !screen_recording) {
+                (false, false) => return Ok(()),
+                (true, false) => Class::AccessibilityPermissionMissing,
+                (false, true) => Class::ScreenRecordingPermissionMissing,
+                (true, true) => Class::PermissionsMissing,
+            };
+            Err(diagnostics::failure(
+                Capability::Desktop,
+                Stage::Permissions,
+                class,
+            ))
+        }
         _ => Err(diagnostics::failure(
             Capability::Desktop,
             Stage::Permissions,
@@ -118,12 +167,12 @@ fn action_unknown(
 }
 
 impl Backends {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn install_fixture(&mut self, fixture: DesktopFixture) {
         self.fixture = Some(fixture);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn fixture_calls(&self) -> Vec<(String, Value)> {
         self.fixture
             .as_ref()
@@ -135,7 +184,7 @@ impl Backends {
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Vec<DesktopTarget>, Error> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(fixture) = &self.fixture {
             return Ok(fixture.windows.clone());
         }
@@ -152,8 +201,11 @@ impl Backends {
         args: Value,
         cancel: &CancellationToken,
     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(fixture) = &mut self.fixture {
+            if name == "check_permissions" {
+                return Ok(fixture.permissions_result());
+            }
             fixture.calls.push((name.into(), args.clone()));
             if name != "get_window_state" {
                 fixture
@@ -211,6 +263,10 @@ impl Backends {
             let (tool, mapped) = map_action(capability, &previous, &arguments)?;
             let include_image = previous.model_image;
             self.validate_target(run, capability, epoch, cancel).await?;
+            if capability == Capability::Desktop {
+                self.check_permissions(DesktopPermissions::AccessibilityAndScreenRecording, cancel)
+                    .await?;
+            }
             run.control.check_epoch(epoch)?;
             run.control.discard_observations();
             let dispatched = match capability {
@@ -275,6 +331,9 @@ impl Backends {
             }
         } else {
             if capability == Capability::Desktop {
+                self.check_permissions(DesktopPermissions::for_call(name, &arguments), cancel)
+                    .await?;
+                run.control.check_epoch(epoch)?;
                 let (target_id, cursor) = if name == "ComputerScreenshot" {
                     (Some(screenshot_arguments(&arguments)?), None)
                 } else {
@@ -342,6 +401,48 @@ impl Backends {
         }
     }
 
+    async fn check_permissions(
+        &mut self,
+        required: DesktopPermissions,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let permissions = checked(
+            Capability::Desktop,
+            Stage::Permissions,
+            self.desktop_call(
+                "check_permissions",
+                json!({"prompt":false,"probe_direct_capture":false}),
+                cancel,
+            )
+            .await,
+        )?;
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        validate_permissions(permissions, required)
+    }
+
+    pub(super) async fn authorize(
+        &mut self,
+        run: &ComputerUseRun,
+        name: &str,
+        arguments: &Value,
+        epoch: u64,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        let capability = ComputerUseRun::tool_capability(name).ok_or(Error::InvalidAction)?;
+        self.ensure_connected(run, capability, epoch, cancel)
+            .await?;
+        if capability == Capability::Desktop {
+            self.check_permissions(DesktopPermissions::for_call(name, arguments), cancel)
+                .await?;
+        }
+        run.control.check_epoch(epoch)
+    }
+
     pub(super) async fn ensure_connected(
         &mut self,
         run: &ComputerUseRun,
@@ -349,7 +450,7 @@ impl Backends {
         epoch: u64,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if capability == Capability::Desktop && self.fixture.is_some() {
             if run.control.target(capability)?.is_none() {
                 run.control.begin(capability)?;
@@ -867,20 +968,6 @@ impl Desktop {
                     })?;
             }
         }
-        let permissions = checked(
-            Capability::Desktop,
-            Stage::Permissions,
-            self.client
-                .as_mut()
-                .ok_or(Error::Unavailable)?
-                .call(
-                    "check_permissions",
-                    json!({"prompt":false,"probe_direct_capture":false}),
-                    cancel,
-                )
-                .await,
-        )?;
-        validate_permissions(permissions)?;
         Ok(())
     }
 
@@ -1350,7 +1437,7 @@ mod tests {
         for (structured, expected) in [
             (
                 json!({"accessibility":false,"screen_recording":true}),
-                Some("permissions_missing"),
+                Some("accessibility_permission_missing"),
             ),
             (
                 json!({"accessibility":"false","screen_recording":true}),
@@ -1364,7 +1451,8 @@ mod tests {
                 images: Vec::new(),
                 is_error: false,
             };
-            let actual = validate_permissions(result);
+            let actual =
+                validate_permissions(result, DesktopPermissions::AccessibilityAndScreenRecording);
             if let Some(expected) = expected {
                 let output = actual.unwrap_err().to_string();
                 assert!(output.contains("executor=cua stage=permissions"));
@@ -2117,6 +2205,254 @@ mod tests {
                 super::super::ControlPhase::Failed
             );
             assert!(!error.to_string().contains("PRIVATE"));
+            run.control.stop();
+            run.control.finish_cleanup();
+        }
+    }
+
+    #[test]
+    fn issue75_readonly_permissions_are_scoped_and_strictly_typed() {
+        for (ax, sr, expected_read, expected_input) in [
+            (true, true, None, None),
+            (false, true, None, Some("accessibility_permission_missing")),
+            (
+                true,
+                false,
+                Some("screen_recording_permission_missing"),
+                Some("screen_recording_permission_missing"),
+            ),
+            (
+                false,
+                false,
+                Some("screen_recording_permission_missing"),
+                Some("permissions_missing"),
+            ),
+        ] {
+            for (required, expected) in [
+                (DesktopPermissions::ScreenRecording, expected_read),
+                (
+                    DesktopPermissions::AccessibilityAndScreenRecording,
+                    expected_input,
+                ),
+            ] {
+                let result = validate_permissions(
+                    ManagedResult {
+                        structured: Some(json!({"accessibility":ax,"screen_recording":sr})),
+                        text: vec!["PRIVATE_BODY".into()],
+                        images: Vec::new(),
+                        is_error: false,
+                    },
+                    required,
+                );
+                match expected {
+                    None => assert!(result.is_ok()),
+                    Some(code) => {
+                        let error = result.unwrap_err();
+                        let feedback: Value = serde_json::from_str(&error.feedback()).unwrap();
+                        assert_eq!(feedback["code"], code);
+                        assert_eq!(feedback["retryable"], false);
+                        assert_eq!(feedback["next_step"], "open_system_settings");
+                        assert!(!error.user_message().contains("executor="));
+                        assert!(!error.to_string().contains("PRIVATE"));
+                    }
+                }
+            }
+        }
+        for malformed in [
+            json!({"screen_recording":true}),
+            json!({"accessibility":"true","screen_recording":true}),
+            json!({"accessibility":false,"screen_recording":1}),
+        ] {
+            assert!(
+                validate_permissions(
+                    ManagedResult {
+                        structured: Some(malformed),
+                        text: Vec::new(),
+                        images: Vec::new(),
+                        is_error: false,
+                    },
+                    DesktopPermissions::ScreenRecording
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("error_class=protocol")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn issue75_readonly_permissions_recheck_all_input_after_authorization() {
+        for mut args in [
+            json!({"action":"click","x":1,"y":1}),
+            json!({"action":"type_text","target":"fixture","text":"fixture"}),
+            json!({"action":"press_key","key":"end"}),
+            json!({"action":"hotkey","key":"cmd+end"}),
+            json!({"action":"scroll","target":"fixture","direction":"down","amount":1}),
+        ] {
+            for (ax, sr, expected) in [
+                (false, true, Class::AccessibilityPermissionMissing),
+                (true, false, Class::ScreenRecordingPermissionMissing),
+                (false, false, Class::PermissionsMissing),
+            ] {
+                let run = ComputerUseRun::new(true, false);
+                let epoch = run.control.begin(Capability::Desktop).unwrap();
+                let mut observation =
+                    super::super::tests::fixture_observation(&run.control, epoch, 0);
+                observation.elements = json!([{"element_token":"fixture"}]);
+                let Target::Desktop(target) = observation.target.clone() else {
+                    panic!()
+                };
+                let actions = run.install_desktop_fixture(vec![target], Vec::new()).await;
+                run.backend
+                    .lock()
+                    .await
+                    .fixture
+                    .as_mut()
+                    .unwrap()
+                    .permissions = vec![
+                    json!({"accessibility":true,"screen_recording":true}),
+                    json!({"accessibility":ax,"screen_recording":sr}),
+                ]
+                .into();
+                run.control
+                    .connected(epoch, Capability::Desktop, observation.target.clone())
+                    .unwrap();
+                run.control.publish(observation.clone()).unwrap();
+                args["observation_id"] = json!(observation.id);
+                assert!(
+                    map_action(Capability::Desktop, &observation, &args).is_ok(),
+                    "{args}"
+                );
+                let cancel = CancellationToken::new();
+                run.authorize("ComputerAct", &args, &cancel).await.unwrap();
+                assert_eq!(
+                    run.execute("ComputerAct", "revoked", args.clone(), &cancel)
+                        .await,
+                    Err(diagnostics::failure(
+                        Capability::Desktop,
+                        Stage::Permissions,
+                        expected
+                    ))
+                );
+                assert_eq!(actions.load(std::sync::atomic::Ordering::SeqCst), 0);
+                assert!(run.fixture_calls().await.is_empty());
+                assert!(run.control.snapshot().observations.is_empty());
+                run.control.stop();
+                run.control.finish_cleanup();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn issue75_readonly_permissions_cached_connection_rechecks_capture_and_observe() {
+        for (name, ax, sr, class) in [
+            (
+                "ComputerScreenshot",
+                false,
+                false,
+                Class::ScreenRecordingPermissionMissing,
+            ),
+            (
+                "ComputerObserve",
+                false,
+                true,
+                Class::AccessibilityPermissionMissing,
+            ),
+        ] {
+            let run = ComputerUseRun::new(true, false);
+            let target = DesktopTarget {
+                selection_id: "fixture".into(),
+                application: "Fixture".into(),
+                bundle_id: "test.fixture".into(),
+                pid: 1,
+                window_id: 2,
+                title: "Owned".into(),
+            };
+            run.install_desktop_fixture(vec![target], Vec::new()).await;
+            let cancel = CancellationToken::new();
+            run.execute(
+                "ComputerObserve",
+                "directory",
+                json!({"target_id":null,"cursor":null}),
+                &cancel,
+            )
+            .await
+            .unwrap();
+            run.backend
+                .lock()
+                .await
+                .fixture
+                .as_mut()
+                .unwrap()
+                .permissions = vec![json!({"accessibility":ax,"screen_recording":sr})].into();
+            let args = if name == "ComputerScreenshot" {
+                json!({"target_id":"fixture"})
+            } else {
+                json!({"target_id":"fixture","cursor":null})
+            };
+            assert_eq!(
+                run.execute(name, "capture", args, &cancel).await,
+                Err(diagnostics::failure(
+                    Capability::Desktop,
+                    Stage::Permissions,
+                    class
+                ))
+            );
+            assert!(run.screenshot("capture").is_none());
+            assert!(run.fixture_calls().await.is_empty());
+            run.control.stop();
+            run.control.finish_cleanup();
+        }
+    }
+
+    #[tokio::test]
+    async fn issue75_readonly_permissions_cancel_after_approval_cannot_capture() {
+        for stop in [true, false] {
+            let run = ComputerUseRun::new(true, false);
+            let target = DesktopTarget {
+                selection_id: "fixture".into(),
+                application: "Fixture".into(),
+                bundle_id: "test.fixture".into(),
+                pid: 1,
+                window_id: 2,
+                title: "Owned".into(),
+            };
+            run.install_desktop_fixture(vec![target], Vec::new()).await;
+            let cancel = CancellationToken::new();
+            run.execute(
+                "ComputerObserve",
+                "directory",
+                json!({"target_id":null,"cursor":null}),
+                &cancel,
+            )
+            .await
+            .unwrap();
+            let args = json!({"target_id":"fixture"});
+            run.authorize("ComputerScreenshot", &args, &cancel)
+                .await
+                .unwrap();
+            if stop {
+                cancel.cancel();
+            } else {
+                run.control.pause();
+            }
+            if !stop {
+                run.control.finish_cleanup();
+            }
+            let task = run.execute("ComputerScreenshot", "cancelled", args, &cancel);
+            if stop {
+                assert!(task.await.is_err());
+            } else {
+                tokio::pin!(task);
+                assert!(matches!(
+                    futures::poll!(&mut task),
+                    std::task::Poll::Pending
+                ));
+                cancel.cancel();
+                assert!(task.await.is_err());
+            }
+            assert!(run.fixture_calls().await.is_empty());
+            assert!(run.screenshot("cancelled").is_none());
             run.control.stop();
             run.control.finish_cleanup();
         }

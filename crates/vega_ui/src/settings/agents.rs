@@ -302,7 +302,7 @@ impl SettingsView {
                 .child(self.native_agent_button("settings-computer-use-screen-recording", "屏幕录制设置", NativeAgentAction::ScreenRecording, false, cx))
                 .child(self.native_agent_button("settings-computer-use-extension", "安装浏览器扩展", NativeAgentAction::Extension, false, cx)))
             .child(div().mt_2().text_size(px(Typography::METADATA)).text_color(colors.text_secondary)
-                .child(self.computer_use_check.clone().unwrap_or_else(|| "组件随 Vega 提供。首次使用请授予 Vega 辅助功能和屏幕录制权限；浏览器扩展需由你安装并选择标签页。".into())))
+                .child(self.computer_use_check.clone().unwrap_or_else(|| "组件随 Vega 提供。查看窗口和截图需要屏幕录制权限；读取控件和输入还需要辅助功能权限。浏览器扩展需由你安装并选择标签页。".into())))
             .into_any_element()
     }
 }

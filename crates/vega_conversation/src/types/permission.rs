@@ -405,7 +405,12 @@ impl ApprovalAudit {
                         danger.decision == Approval::Deny && danger.note.is_none()
                     })
             }
-            ApprovalSource::ComputerUse | ApprovalSource::ReadonlyTool => {
+            ApprovalSource::ComputerUse => {
+                matches!(self.decision, Approval::Once | Approval::Deny)
+                    && self.note.is_none()
+                    && self.danger.is_none()
+            }
+            ApprovalSource::ReadonlyTool => {
                 self.decision == Approval::Once && self.note.is_none() && self.danger.is_none()
             }
             ApprovalSource::Legacy => false,

@@ -92,6 +92,28 @@ impl ComputerUseError {
             || matches!(self, Self::Executor(error) if error.needs_permissions())
     }
 
+    pub fn permission_settings(self) -> (bool, bool) {
+        match self {
+            Self::Permissions => (true, true),
+            Self::Executor(error) => error.permission_settings(),
+            _ => (false, false),
+        }
+    }
+
+    pub fn user_message(self) -> String {
+        match self {
+            Self::Executor(error) => error.user_message().into(),
+            Self::InvalidAction | Self::InvalidArguments(_) | Self::CoordinateElementConflict => {
+                "操作参数无效，请检查目标后重试。".into()
+            }
+            Self::ReadOnlyObservation => "当前观察仅可查看，输入前需要重新读取窗口控件。".into(),
+            Self::TargetExpired => "窗口目录已过期，请重新发现窗口。".into(),
+            Self::ScreenshotLimit => "本轮截图已达到数量或大小限制，请在新回合继续。".into(),
+            Self::NoProgress => "重复操作没有进展，已停止本轮电脑操作。".into(),
+            _ => self.to_string(),
+        }
+    }
+
     pub(crate) fn feedback(self) -> String {
         let (code, retryable, next, field) = match self {
             Self::InvalidAction => ("invalid_arguments", true, "correct_parameters", None),
@@ -278,9 +300,11 @@ impl ComputerUseRun {
 
     pub(crate) async fn authorize(
         &self,
-        capability: Capability,
+        name: &str,
+        arguments: &Value,
         cancel: &CancellationToken,
     ) -> Result<(), ComputerUseError> {
+        let capability = Self::tool_capability(name).ok_or(ComputerUseError::InvalidAction)?;
         if !self.enabled(capability) {
             return Err(ComputerUseError::NotReady);
         }
@@ -289,7 +313,7 @@ impl ComputerUseRun {
         let token = self.control.action_token(epoch)?;
         let result = tokio::select! { biased;
             _ = cancel.cancelled() => { self.control.stop(); Err(ComputerUseError::Cancelled) },
-            result = async { self.backend.lock().await.ensure_connected(self, capability, epoch, &token).await } => result,
+            result = async { self.backend.lock().await.authorize(self, name, arguments, epoch, &token).await } => result,
         };
         if let Err(error) = result {
             if !matches!(
@@ -402,7 +426,7 @@ impl ComputerUseRun {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn install_desktop_fixture(
         &self,
         windows: Vec<DesktopTarget>,
@@ -417,11 +441,19 @@ impl ComputerUseRun {
                 results: results.into(),
                 actions: actions.clone(),
                 calls: Vec::new(),
+                permissions: vec![json!({"accessibility":true,"screen_recording":true})].into(),
             });
         actions
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) async fn set_desktop_permissions_fixture(&self, permissions: Vec<Value>) {
+        if let Some(fixture) = &mut self.backend.lock().await.fixture {
+            fixture.permissions = permissions.into();
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn fixture_calls(&self) -> Vec<(String, Value)> {
         self.backend.lock().await.fixture_calls()
     }
@@ -642,6 +674,21 @@ impl std::fmt::Debug for Target {
 pub mod test_support {
     use super::{Capability, ComputerUseControl, ComputerUseError, Target};
 
+    pub async fn install_desktop(
+        run: &super::ComputerUseRun,
+        windows: Vec<super::DesktopTarget>,
+        results: Vec<vega_mcp::ManagedResult>,
+        permissions: Vec<serde_json::Value>,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        let actions = run.install_desktop_fixture(windows, results).await;
+        run.set_desktop_permissions_fixture(permissions).await;
+        actions
+    }
+
+    pub async fn desktop_calls(run: &super::ComputerUseRun) -> Vec<(String, serde_json::Value)> {
+        run.fixture_calls().await
+    }
+
     pub fn connected_desktop() -> Result<ComputerUseControl, ComputerUseError> {
         let control = ComputerUseControl::new();
         let epoch = control.begin(Capability::Desktop)?;
@@ -668,6 +715,31 @@ pub mod test_support {
         let control = ComputerUseControl::new();
         let epoch = control.begin(Capability::Desktop)?;
         control.fail(epoch, ComputerUseError::Permissions);
+        control.stop();
+        control.finish_cleanup();
+        Ok(control)
+    }
+
+    pub fn permission_failure_for(
+        accessibility: bool,
+        screen_recording: bool,
+    ) -> Result<ComputerUseControl, ComputerUseError> {
+        let class = match (accessibility, screen_recording) {
+            (false, false) => super::diagnostics::Class::PermissionsMissing,
+            (false, true) => super::diagnostics::Class::AccessibilityPermissionMissing,
+            (true, false) => super::diagnostics::Class::ScreenRecordingPermissionMissing,
+            (true, true) => super::diagnostics::Class::Protocol,
+        };
+        let control = ComputerUseControl::new();
+        let epoch = control.begin(Capability::Desktop)?;
+        control.fail(
+            epoch,
+            super::diagnostics::failure(
+                Capability::Desktop,
+                super::diagnostics::Stage::Permissions,
+                class,
+            ),
+        );
         control.stop();
         control.finish_cleanup();
         Ok(control)
