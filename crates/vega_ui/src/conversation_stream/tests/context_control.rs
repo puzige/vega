@@ -167,7 +167,7 @@ fn status(generation: u64, status: Status) -> ContextCompactionStatusRecord {
 fn issue88_internal_stage_limit_and_model_budget_have_distinct_copy() {
     assert!(status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("无法安全压缩"));
     assert!(!status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("模型容量"));
-    assert!(status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("上下文超出容量"));
+    assert!(status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("上下文超出预算"));
     assert!(!status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("无法安全压缩"));
 }
 
