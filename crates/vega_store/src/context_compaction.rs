@@ -507,6 +507,7 @@ pub struct ContextToolCallRow {
     pub finished_at: Option<i64>,
     /// UTF-8 byte offset within the owning assistant text, when known.
     pub text_offset_bytes: Option<i64>,
+    pub response_id: Option<String>,
     /// Digest of the optional full-output path. The raw path is not exposed,
     /// but mutations still participate in the source fence.
     output_full_path_fingerprint: String,
@@ -586,6 +587,9 @@ pub struct NewContextCheckpoint {
     pub source_version: u64,
     /// Last message sequence covered by the summary prefix.
     pub covered_through_seq: u64,
+    pub covered_assistant_id: Option<String>,
+    pub covered_assistant_text_bytes: u64,
+    pub covered_assistant_tool_seq: u64,
     /// Fingerprint captured with `source_version`.
     pub source_fingerprint: String,
     /// Labelled historical summary; raw transcript remains in messages.
@@ -648,6 +652,9 @@ pub struct ContextCheckpoint {
     pub source_version: u64,
     /// Last source message sequence covered by the summary.
     pub covered_through_seq: u64,
+    pub covered_assistant_id: Option<String>,
+    pub covered_assistant_text_bytes: u64,
+    pub covered_assistant_tool_seq: u64,
     /// Source fingerprint captured with the checkpoint.
     pub source_fingerprint: String,
     /// Labelled historical summary.
@@ -973,7 +980,7 @@ pub fn latest_checkpoint(
     }
     conn.query_row(
         "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                source_fingerprint, summary, estimator_version, expected_previous_id, created_at \
+                source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
          FROM context_checkpoints \
          WHERE thread_id = ?1 AND model = ?2 ORDER BY id DESC LIMIT 1",
         params![thread_id, model],
@@ -996,7 +1003,7 @@ pub fn latest_checkpoint_in_transaction(
     transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
              FROM context_checkpoints \
              WHERE thread_id = ?1 AND model = ?2 ORDER BY id DESC LIMIT 1",
             params![thread_id, model],
@@ -1055,6 +1062,60 @@ where
         return Ok(ContextCheckpointInstall::Stale);
     }
 
+    if let Some(owner) = checkpoint.covered_assistant_id.as_deref() {
+        let message = current
+            .messages
+            .iter()
+            .find(|message| message.id == owner)
+            .ok_or(ContextCheckpointError::IncompleteCoverage)?;
+        let cursor = usize::try_from(checkpoint.covered_assistant_text_bytes)
+            .map_err(|_| ContextCheckpointError::Invalid)?;
+        if message.role != "assistant"
+            || message.seq as u64 != checkpoint.covered_through_seq.saturating_add(1)
+            || !message.content.is_char_boundary(cursor)
+        {
+            return Err(ContextCheckpointError::IncompleteCoverage);
+        }
+        let calls = current
+            .tool_calls
+            .iter()
+            .filter(|call| {
+                call.message_id == owner && call.seq as u64 <= checkpoint.covered_assistant_tool_seq
+            })
+            .collect::<Vec<_>>();
+        if calls.is_empty()
+            || calls.iter().any(|call| {
+                !matches!(
+                    call.status.as_str(),
+                    "success" | "failed" | "cancelled" | "rejected"
+                ) || call.output_text.is_none()
+            })
+        {
+            return Err(ContextCheckpointError::IncompleteCoverage);
+        }
+        let last = calls
+            .iter()
+            .max_by_key(|call| call.seq)
+            .ok_or(ContextCheckpointError::IncompleteCoverage)?;
+        if last.seq as u64 != checkpoint.covered_assistant_tool_seq
+            || last.text_offset_bytes != Some(cursor as i64)
+            || current.tool_calls.iter().any(|call| {
+                call.message_id == owner
+                    && call.seq > last.seq
+                    && match (&call.response_id, &last.response_id) {
+                        (Some(left), Some(right)) => left == right,
+                        _ => call.text_offset_bytes == last.text_offset_bytes,
+                    }
+            })
+        {
+            return Err(ContextCheckpointError::IncompleteCoverage);
+        }
+    } else if checkpoint.covered_assistant_text_bytes != 0
+        || checkpoint.covered_assistant_tool_seq != 0
+    {
+        return Err(ContextCheckpointError::Invalid);
+    }
+
     let thread_model: Option<String> = transaction
         .query_row(
             "SELECT model FROM threads WHERE id = ?1",
@@ -1089,12 +1150,12 @@ where
     let committed_same_request = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
              FROM context_checkpoints \
              WHERE thread_id = ?1 AND model = ?2 AND source_version = ?3 \
                AND covered_through_seq = ?4 AND source_fingerprint = ?5 \
                AND summary = ?6 AND estimator_version = ?7 \
-               AND expected_previous_id IS ?8 AND created_at = ?9 \
+               AND expected_previous_id IS ?8 AND created_at = ?9 AND covered_assistant_id IS ?10 AND covered_assistant_text_bytes = ?11 AND covered_assistant_tool_seq = ?12 \
              ORDER BY id DESC LIMIT 1",
             params![
                 checkpoint.thread_id,
@@ -1106,6 +1167,9 @@ where
                 checkpoint.estimator_version,
                 checkpoint.expected_previous_id,
                 checkpoint.created_at,
+            checkpoint.covered_assistant_id,
+            checkpoint.covered_assistant_text_bytes as i64,
+            checkpoint.covered_assistant_tool_seq as i64,
             ],
             checkpoint_from_row,
         )
@@ -1118,7 +1182,7 @@ where
     let previous = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
              FROM context_checkpoints WHERE thread_id = ?1 AND model = ?2 \
              ORDER BY id DESC LIMIT 1",
             params![checkpoint.thread_id, checkpoint.model],
@@ -1152,8 +1216,8 @@ where
     transaction.execute(
         "INSERT INTO context_checkpoints \
             (thread_id, model, source_version, covered_through_seq, source_fingerprint, \
-             summary, estimator_version, expected_previous_id, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             checkpoint.thread_id,
             checkpoint.model,
@@ -1164,6 +1228,9 @@ where
             checkpoint.estimator_version,
             checkpoint.expected_previous_id,
             checkpoint.created_at,
+            checkpoint.covered_assistant_id,
+            checkpoint.covered_assistant_text_bytes as i64,
+            checkpoint.covered_assistant_tool_seq as i64,
         ],
     )?;
     if should_cancel() {
@@ -1177,6 +1244,9 @@ where
         model: checkpoint.model.clone(),
         source_version: checkpoint.source_version,
         covered_through_seq: checkpoint.covered_through_seq,
+        covered_assistant_id: checkpoint.covered_assistant_id.clone(),
+        covered_assistant_text_bytes: checkpoint.covered_assistant_text_bytes,
+        covered_assistant_tool_seq: checkpoint.covered_assistant_tool_seq,
         source_fingerprint: checkpoint.source_fingerprint.clone(),
         summary: checkpoint.summary.clone(),
         estimator_version: checkpoint.estimator_version.clone(),
@@ -1310,7 +1380,7 @@ fn load_tool_calls(
     let mut statement = conn.prepare(
         "SELECT id, thread_id, message_id, seq, tool, input_json, output_text, status, \
                 approval, exit_code, duration_ms, created_at, finished_at, text_offset_bytes, \
-                output_full_path \
+                output_full_path, (SELECT response_id FROM tool_call_rounds r WHERE r.message_id = tool_calls.message_id AND r.call_id = tool_calls.id) \
          FROM tool_calls WHERE thread_id = ?1 ORDER BY seq, id",
     )?;
     statement
@@ -1330,6 +1400,7 @@ fn load_tool_calls(
                 created_at: row.get(11)?,
                 finished_at: row.get(12)?,
                 text_offset_bytes: row.get(13)?,
+                response_id: row.get(15)?,
                 output_full_path_fingerprint: path_fingerprint(row.get(14)?),
             })
         })?
@@ -1351,6 +1422,9 @@ fn checkpoint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextCheck
         model: row.get(2)?,
         source_version,
         covered_through_seq,
+        covered_assistant_id: row.get(10)?,
+        covered_assistant_text_bytes: row.get(11)?,
+        covered_assistant_tool_seq: row.get(12)?,
         source_fingerprint: row.get(5)?,
         summary: row.get(6)?,
         estimator_version: row.get(7)?,
@@ -1403,6 +1477,7 @@ fn fingerprint_source(
         feed(&mut hash, b"created", &call.created_at.to_le_bytes());
         feed_optional_i64(&mut hash, b"finished", call.finished_at);
         feed_optional_i64(&mut hash, b"text-offset-bytes", call.text_offset_bytes);
+        feed_optional_str(&mut hash, b"response-id", call.response_id.as_deref());
         feed(
             &mut hash,
             b"output-full-path",
@@ -1540,6 +1615,9 @@ mod tests {
             model: "model-a".into(),
             source_version: source.source_version,
             covered_through_seq: source.source_version,
+            covered_assistant_id: None,
+            covered_assistant_text_bytes: 0,
+            covered_assistant_tool_seq: 0,
             source_fingerprint: source.fingerprint,
             summary: "[historical context] keep the user's goal".into(),
             estimator_version: "test-estimator-v1".into(),
@@ -2089,6 +2167,9 @@ mod tests {
             model: "model-a".into(),
             source_version: source.source_version,
             covered_through_seq: source.source_version,
+            covered_assistant_id: None,
+            covered_assistant_text_bytes: 0,
+            covered_assistant_tool_seq: 0,
             source_fingerprint: source.fingerprint.clone(),
             summary: SECRET.into(),
             estimator_version: "test-estimator-v1".into(),
@@ -2247,6 +2328,9 @@ mod tests {
             model: "model-a".into(),
             source_version: first_source.source_version,
             covered_through_seq: 2,
+            covered_assistant_id: None,
+            covered_assistant_text_bytes: 0,
+            covered_assistant_tool_seq: 0,
             source_fingerprint: first_source.fingerprint,
             summary: "complete early group".into(),
             estimator_version: "test-estimator-v1".into(),
@@ -2274,6 +2358,9 @@ mod tests {
             model: "model-a".into(),
             source_version: second_source.source_version,
             covered_through_seq: 2,
+            covered_assistant_id: None,
+            covered_assistant_text_bytes: 0,
+            covered_assistant_tool_seq: 0,
             source_fingerprint: second_source.fingerprint,
             summary: "early group remains complete".into(),
             estimator_version: "test-estimator-v1".into(),

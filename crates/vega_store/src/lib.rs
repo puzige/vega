@@ -92,6 +92,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0019_pending_messages.sql"),
     include_str!("../migrations/0020_context_compaction_timeout.sql"),
     include_str!("../migrations/0021_tool_call_rounds.sql"),
+    include_str!("../migrations/0022_partial_compaction.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
