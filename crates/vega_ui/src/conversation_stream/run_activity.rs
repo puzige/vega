@@ -389,41 +389,57 @@ impl RunActivityGroup {
                 (segment.manually_expanded && details_visible)
                     || (segment.focus.contains_focused(window, cx)
                         && (!segment.header_focus.is_focused(window) || details_visible))
-                    || segment.children.iter().any(|child| match child {
-                        RunActivityChild::Thinking(card) => {
-                            details_visible
-                                && (self.stage_is_aggregate(index, cx)
-                                    || self.stage_summary_title(index, cx).is_none())
-                                && card.read(cx).expanded
-                        }
-                        RunActivityChild::Tool(card) => {
-                            details_visible && card.read(cx).is_expanded()
-                        }
-                        RunActivityChild::ToolGroup(group) => {
-                            details_visible
-                                && (group.read(cx).expanded()
-                                    || group
-                                        .read(cx)
-                                        .children()
-                                        .iter()
-                                        .any(|card| card.read(cx).is_expanded()))
-                        }
-                        RunActivityChild::Artifact(_) => false,
-                    })
+                    || self
+                        .visible_segment_children(index, cx)
+                        .iter()
+                        .any(|child| match child {
+                            RunActivityChild::Thinking(card) => {
+                                details_visible && card.read(cx).expanded
+                            }
+                            RunActivityChild::Tool(card) => {
+                                details_visible && card.read(cx).is_expanded()
+                            }
+                            RunActivityChild::ToolGroup(group) => {
+                                details_visible
+                                    && (group.read(cx).expanded()
+                                        || group
+                                            .read(cx)
+                                            .children()
+                                            .iter()
+                                            .any(|card| card.read(cx).is_expanded()))
+                            }
+                            RunActivityChild::Artifact(_) => false,
+                        })
             })
     }
 
     fn visible_segment_children(&self, segment: usize, cx: &App) -> Vec<RunActivityChild> {
-        let single_summary = !self.stage_is_aggregate(segment, cx)
-            && self.stage_summary_title(segment, cx).is_some();
         let has_tools = !self.stage_tool_calls(segment, cx).is_empty();
+        let outer_summary = (!has_tools)
+            .then(|| self.stage_summary_card(segment, cx))
+            .flatten();
         self.segment_children(segment)
             .into_iter()
             .filter(|child| {
                 (!self.process_in_details() || matches!(child, RunActivityChild::Artifact(_)))
-                    && (!single_summary || !matches!(child, RunActivityChild::Thinking(_)))
+                    && !matches!(child, RunActivityChild::Thinking(card) if outer_summary.as_ref() == Some(card))
                     && (!has_tools
                         || !matches!(child, RunActivityChild::Thinking(card) if !card.read(cx).has_meaningful_source_text()))
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_visible_segment_thinking_texts(
+        &self,
+        segment: usize,
+        cx: &App,
+    ) -> Vec<String> {
+        self.visible_segment_children(segment, cx)
+            .into_iter()
+            .filter_map(|child| match child {
+                RunActivityChild::Thinking(card) => Some(card.read(cx).source_text()),
+                _ => None,
             })
             .collect()
     }
@@ -1505,7 +1521,7 @@ impl RunActivityGroup {
             })
     }
 
-    fn stage_summary_title(&self, segment: usize, cx: &App) -> Option<String> {
+    fn stage_summary_card(&self, segment: usize, cx: &App) -> Option<Entity<ThinkingBlock>> {
         self.segments
             .get(segment)?
             .children
@@ -1513,11 +1529,16 @@ impl RunActivityGroup {
             .rev()
             .find_map(|child| {
                 if let RunActivityChild::Thinking(card) = child {
-                    card.read(cx).summary_title().map(str::to_owned)
+                    card.read(cx).summary_title().map(|_| card.clone())
                 } else {
                     None
                 }
             })
+    }
+
+    fn stage_summary_title(&self, segment: usize, cx: &App) -> Option<String> {
+        self.stage_summary_card(segment, cx)
+            .and_then(|card| card.read(cx).summary_title().map(str::to_owned))
     }
 
     fn stage_thinking_active(&self, segment: usize) -> bool {
@@ -1652,6 +1673,13 @@ impl RunActivityGroup {
         let shimmering = !aggregate && state.stage_thinking_active(segment_index);
         let activity_icon = activity.map(|(_, icon)| icon);
         let epoch = state.animation_epoch;
+        if tool_ids.is_empty()
+            && state
+                .stage_summary_card(segment_index, cx)
+                .is_some_and(|card| card.read(cx).header_focused(window))
+        {
+            header_focus.focus(window, cx);
+        }
         if aggregate && !expanded {
             let focused_hidden_tool = tool_ids.iter().any(|id| {
                 crate::disclosure::focus(format!("tool-disclosure-{id}").into(), window, cx)
@@ -1777,28 +1805,26 @@ impl RunActivityGroup {
         } else {
             vec![children]
         };
-        if single_thinking {
-            if let Some(card) = thinking.clone() {
+        if single_thinking && let Some(card) = thinking.clone() {
+            let (has_source, truncated) = {
                 let card_state = card.read(cx);
-                let has_source = card_state.has_source_text();
-                let truncated = card_state.truncated;
-                drop(card_state);
-                if expanded && has_source {
-                    rows.push(StickySection::content(
-                        ThinkingBlock::render_stage_source(card, window, cx),
-                        true,
-                    ));
-                }
-                if truncated {
-                    rows.push(StickySection::plain(
-                        div()
-                            .pt(px(Layout::PROCESS_ITEM_GAP))
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_tertiary)
-                            .child("思考内容已达显示上限")
-                            .into_any_element(),
-                    ));
-                }
+                (card_state.has_source_text(), card_state.truncated)
+            };
+            if expanded && has_source {
+                rows.push(StickySection::content(
+                    ThinkingBlock::render_stage_source(card, window, cx),
+                    true,
+                ));
+            }
+            if truncated {
+                rows.push(StickySection::plain(
+                    div()
+                        .pt(px(Layout::PROCESS_ITEM_GAP))
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_tertiary)
+                        .child("思考内容已达显示上限")
+                        .into_any_element(),
+                ));
             }
         }
         for section in sections {

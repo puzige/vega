@@ -198,6 +198,15 @@ impl ThinkingBlock {
         (!self.summary_preview.title.is_empty()).then_some(self.summary_preview.title.as_str())
     }
 
+    pub(crate) fn header_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_focus(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
     pub(crate) fn title(&self) -> &str {
         if !self.summary_preview.title.is_empty() {
             &self.summary_preview.title

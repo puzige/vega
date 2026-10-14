@@ -1458,6 +1458,96 @@ async fn issue343_t17_single_thought_tracks_explicit_completion_across_body_stag
 }
 
 #[gpui_kit::test]
+async fn issue343_t18_pure_summary_aggregate_shows_latest_only_in_title(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "pure-summary-aggregate");
+    stream.update(cx, |stream, cx| {
+        begin(stream, cx);
+        summary(stream, "First summary", cx);
+        stream.apply_event(
+            ConversationEvent::AssistantResponseStarted {
+                message_id: "expansion".into(),
+                text_start_bytes: 0,
+            },
+            cx,
+        );
+        reasoning(stream, "Second thought", cx);
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "First summary");
+        assert_eq!(group.segment_row_count(0, cx), 1);
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, cx),
+            vec!["Second thought".to_owned()]
+        );
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    click(&mut visual, "run-stage-toggle-0");
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    let second_card = stream.read_with(&visual, |stream, cx| {
+        stream.run_activity_groups["expansion"]
+            .read(cx)
+            .segment_children(0)
+            .into_iter()
+            .filter_map(|child| match child {
+                RunActivityChild::Thinking(card) => Some(card),
+                _ => None,
+            })
+            .last()
+            .unwrap()
+    });
+    visual.update(|window, cx| {
+        second_card.read(cx).test_focus().focus(window, cx);
+        assert!(second_card.read(cx).header_focused(window));
+    });
+    stream.update(&mut visual, |stream, cx| {
+        summary(stream, "Second summary", cx);
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Second summary");
+        assert_eq!(group.segment_row_count(0, cx), 2);
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, cx),
+            vec!["First summary".to_owned()]
+        );
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(
+            stream.read(cx).run_activity_groups["expansion"]
+                .read(cx)
+                .segment_header_focus(0)
+                .is_focused(window)
+        );
+    });
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.segment_row_count(0, cx), 2);
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, cx),
+            vec!["First summary".to_owned()]
+        );
+    });
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("shell", "pwd"),
+            },
+            cx,
+        );
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Waiting to run a command");
+        assert_eq!(group.segment_row_count(0, cx), 4);
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, cx),
+            vec!["First summary".to_owned(), "Second summary".to_owned()]
+        );
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
+}
+
+#[gpui_kit::test]
 async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "summary-tool-activity");
     stream.update(cx, |stream, cx| {
