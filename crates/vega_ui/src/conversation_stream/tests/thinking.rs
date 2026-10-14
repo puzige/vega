@@ -678,10 +678,7 @@ async fn summary_stage_nests_tools_without_duplicate_reasoning(cx: &mut TestAppC
         let group = stream.run_activity_groups["m"].read(app);
         assert_eq!(group.stage_title(0, app), "Writing the fix");
         assert!(!group.segment_expanded(0));
-        assert_eq!(
-            group.stage_tool_status_label(0, app).as_deref(),
-            Some("1 项调用被拒绝")
-        );
+        assert!(stream.run_notice_projection(app).is_empty());
         let kinds = group
             .segment_children(0)
             .into_iter()
@@ -693,7 +690,7 @@ async fn summary_stage_nests_tools_without_duplicate_reasoning(cx: &mut TestAppC
             .collect::<Vec<_>>();
         assert_eq!(kinds, ["thinking", "tool", "thinking"]);
     });
-    assert!(visual.debug_bounds("run-stage-status-0").is_some());
+    assert!(visual.debug_bounds("run-stage-status-0").is_none());
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
     let stage = visual.debug_bounds("run-stage-toggle-0").unwrap();

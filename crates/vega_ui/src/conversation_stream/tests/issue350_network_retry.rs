@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::{Modifiers, VisualTestContext};
 use vega_conversation::types::{AssistantResponseKind, AssistantResponseMetadata};
 
 fn start(stream: &mut ConversationStream, cx: &mut Context<ConversationStream>) {
@@ -45,6 +46,122 @@ fn text(stream: &ConversationStream) -> String {
             _ => None,
         })
         .collect()
+}
+
+fn assert_retry_outside_stage(visual: &mut VisualTestContext) {
+    let stage = visual.debug_bounds("run-timeline-segment-0").unwrap();
+    let title = visual.debug_bounds("run-stage-title-0").unwrap();
+    let retry = visual.debug_bounds("assistant-network-retry").unwrap();
+    assert!(stage.bottom() <= retry.top());
+    assert!(retry.left() <= title.left());
+    assert!(retry.size.height > px(Typography::BODY));
+}
+
+#[gpui_kit::test]
+async fn issue343_t15_retry_notice_stays_outside_folded_and_expanded_thinking(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "retry-stage-notice");
+    stream.update(cx, |stream, cx| {
+        start(stream, cx);
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "retry".into(),
+                delta: "Prior thinking".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::AssistantResponseStarted {
+                message_id: "retry".into(),
+                text_start_bytes: 0,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "retry".into(),
+                delta: "Abandoned thinking".into(),
+            },
+            cx,
+        );
+        retry(stream, 0, 1, cx);
+        assert_eq!(stream.run_notice_projection(cx).len(), 1);
+        assert_eq!(
+            stream.run_activity_groups["retry"]
+                .read(cx)
+                .segment_row_count(0, cx),
+            1
+        );
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert_retry_outside_stage(&mut visual);
+    assert!(visual.debug_bounds("run-stage-status-0").is_none());
+    visual.simulate_resize(gpui_kit::size(px(480.), px(900.)));
+    visual.run_until_parked();
+    assert_retry_outside_stage(&mut visual);
+    let retry_bounds = visual.debug_bounds("assistant-network-retry").unwrap();
+    let estimated_height = stream.read_with(&visual, |stream, cx| {
+        stream
+            .run_notice_projection(cx)
+            .values()
+            .next()
+            .unwrap()
+            .estimated_height(f32::from(retry_bounds.size.width))
+    });
+    assert!((f32::from(retry_bounds.size.height) - estimated_height).abs() < 2.);
+    let toggle = visual.debug_bounds("run-stage-toggle-0").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    assert_retry_outside_stage(&mut visual);
+    stream.update(&mut visual, |stream, cx| {
+        retry(stream, 0, 2, cx);
+        let notices = stream.run_notice_projection(cx);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices.values().next().unwrap().text(), "正在重新连接… 2/5");
+    });
+    visual.run_until_parked();
+    assert_retry_outside_stage(&mut visual);
+    let toggle = visual.debug_bounds("run-stage-toggle-0").unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert_retry_outside_stage(&mut visual);
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "retry".into(),
+                delta: "Recovered thinking".into(),
+            },
+            cx,
+        );
+        assert!(stream.run_notice_projection(cx).is_empty());
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("assistant-network-retry").is_none());
+    stream.update(&mut visual, |stream, cx| {
+        retry(stream, 0, 3, cx);
+        stream.apply_event(
+            ConversationEvent::Error {
+                message_id: Some("retry".into()),
+                error: Arc::new(std::io::Error::other("synthetic exhausted retry").into()),
+                execution_duration_ms: Some(1),
+            },
+            cx,
+        );
+        let notices = stream.run_notice_projection(cx);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            notices.values().next().unwrap().text(),
+            RunFailureKind::Runtime.message()
+        );
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("assistant-network-retry").is_none());
+    assert!(visual.debug_bounds("assistant-run-failure").is_some());
+    assert!(visual.debug_bounds("run-stage-status-0").is_none());
 }
 
 #[gpui_kit::test]
