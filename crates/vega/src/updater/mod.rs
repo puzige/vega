@@ -408,7 +408,7 @@ impl Worker {
             let version = self
                 .state
                 .latest_version
-                .as_deref()
+                .clone()
                 .ok_or_else(|| failure("更新版本不可用"))?;
             self.state.phase = UpdatePhase::Installing;
             self.state.message = "正在准备重启安装…".into();
@@ -416,7 +416,7 @@ impl Worker {
             prepare_installation(
                 &mut self.delta,
                 &mut discard_staging,
-                |delta| install::prepare(bundle, staging.path(), version, delta),
+                |delta| install::prepare(bundle, staging.path(), &version, delta),
                 || {
                     let release = self
                         .release
@@ -431,7 +431,7 @@ impl Worker {
                             &client,
                             release,
                             staging.path(),
-                            version,
+                            &version,
                             bundle,
                             false,
                             |received, total| {
@@ -486,6 +486,13 @@ fn prepare_installation(
         }
         Err(error) => Err(error),
     }
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -553,11 +560,4 @@ mod tests {
         assert_eq!(error.to_string(), "identity changed");
         assert!(!discard);
     }
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default()
 }

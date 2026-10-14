@@ -52,3 +52,15 @@
 - 实际下载节省取决于变更文件与运行版本；未承诺固定大小。
 - 未改全量包构建优化、二进制差分、组件生命周期或用户数据。
 - 实现与规格无有意偏离。CI 和最终集成结果由主 agent 补充。
+
+## 云端首次检查与修复
+
+PR #377 的首次云端 Nextest job（run 38580288159）在编译阶段以 exit 101 失败，尚未执行 Rust 测试。诊断为 `E0502`：安装准备持有更新状态中的版本字符串借用，同时全量回退回调需要更新下载进度并克隆状态。修复为进入准备流程时持有独立的版本 `String`，两个回调仅借用该局部版本，解除状态字段借用冲突。另将 `now()` 移至测试模块前以满足 Clippy 模块顺序约束。
+
+修复后仅执行本地 `cargo fmt --all -- --check` 和 `git diff --check`；Rust 编译、Clippy 与 Nextest 需重新由 PR CI 验证，不将失败运行标记通过。
+
+## 云端首次通过与基线同步
+
+[PR CI 38581650473](https://github.com/puzige/vega/actions/runs/38581650473) 已通过格式、Clippy、Nextest 与发布脚本测试。Nextest 原始摘要：`Summary [ 212.098s] 2613 tests run: 2613 passed, 5 skipped`；Python 两组分别 `Ran 5 tests in 0.036s`、`Ran 14 tests in 0.045s`，均 `OK`。本卡增量重建、路径/权限/签名/篡改、下载回退和退出前准备测试均 PASS。真实升级仍待用户验收。
+
+等待期间 master 合入独立的上下文预算修复，无本卡文件交叉；分支保护要求同步最新 master 后重跑门禁。最终同步后的 CI 和合并身份以 [PR #377](https://github.com/puzige/vega/pull/377) 的验证记录为准，不沿用旧基线结果冒充最终集成验证。
