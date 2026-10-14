@@ -1239,6 +1239,11 @@ impl ConversationStream {
                 message_id,
                 response,
             } => {
+                if let Some((active_id, group)) = &self.active_run_activity
+                    && active_id == &message_id
+                {
+                    group.update(cx, |group, cx| group.finish_thinking(cx));
+                }
                 self.apply_response_metadata(&message_id, response, cx);
             }
             ConversationEvent::TextDelta { message_id, delta } => {

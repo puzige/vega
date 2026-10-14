@@ -465,6 +465,32 @@ impl ToolCard {
         }
     }
 
+    pub(crate) fn stage_activity_category(&self) -> ToolActivityCategory {
+        match &self.input {
+            Some(ToolCardInputProjection::ReadOnly { tool, .. }) => match tool {
+                ReadOnlyToolKind::Read => ToolActivityCategory::Read,
+                ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
+                ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
+            },
+            Some(ToolCardInputProjection::Bash { .. }) => ToolActivityCategory::Shell,
+            Some(ToolCardInputProjection::Write { .. }) => ToolActivityCategory::Write,
+            Some(ToolCardInputProjection::Edit { .. }) => ToolActivityCategory::Edit,
+            Some(ToolCardInputProjection::Mcp { .. }) => ToolActivityCategory::Mcp,
+            Some(ToolCardInputProjection::CodexAcp { .. }) => ToolActivityCategory::CodexAcp,
+            Some(ToolCardInputProjection::Skill { .. }) => ToolActivityCategory::Skill,
+            Some(ToolCardInputProjection::ComputerUse { .. }) => ToolActivityCategory::ComputerUse,
+            None => match &self.result {
+                Some(ToolCardResultProjection::InvalidRejected { tool, .. }) => match tool {
+                    InvalidToolKind::Bash => ToolActivityCategory::Shell,
+                    InvalidToolKind::Write => ToolActivityCategory::Write,
+                    InvalidToolKind::Edit => ToolActivityCategory::Edit,
+                },
+                _ => ToolActivityCategory::Other,
+            },
+            Some(ToolCardInputProjection::Corrupt) => ToolActivityCategory::Other,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn activity_action_name(&self) -> String {
         let named = match &self.input {
@@ -492,9 +518,27 @@ impl ToolCard {
         self.activity_category().action_phrase().to_owned()
     }
 
-    #[cfg(test)]
     pub(crate) fn call_status(&self) -> ToolCallStatus {
         self.status
+    }
+
+    pub(crate) fn safe_activity_filename(&self) -> Option<String> {
+        let path = match self.input.as_ref()? {
+            ToolCardInputProjection::ReadOnly {
+                tool: ReadOnlyToolKind::Read,
+                permission_path: Some(path),
+            }
+            | ToolCardInputProjection::Write { path, .. }
+            | ToolCardInputProjection::Edit { path, .. } => path,
+            _ => return None,
+        };
+        let name = std::path::Path::new(path).file_name()?.to_str()?;
+        (name.chars().count() <= 32
+            && !name.starts_with('.')
+            && name
+                .chars()
+                .all(|character| character.is_alphanumeric() || "._-".contains(character)))
+        .then(|| name.to_owned())
     }
 
     pub(crate) fn activity_state(&self) -> ToolActivityState {

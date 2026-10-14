@@ -162,12 +162,6 @@ async fn i61_thinking_blocks_follow_real_event_order_and_expand(cx: &mut TestApp
         .expect("real thinking header");
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("thinking-content").is_none());
-    let source = visual
-        .debug_bounds("thinking-toggle")
-        .expect("independent source toggle");
-    visual.simulate_click(source.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
     assert!(visual.debug_bounds("thinking-content").is_some());
     assert!(
         blocks
@@ -502,10 +496,6 @@ async fn i71_live_heading_replaces_thinking_label_without_changing_activity_expa
         .expect("production toggle");
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("thinking-content").is_none());
-    let source = visual.debug_bounds("thinking-toggle").unwrap();
-    visual.simulate_click(source.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
     assert!(visual.debug_bounds("thinking-content").is_some());
 }
 
@@ -545,8 +535,8 @@ async fn raw_reasoning_stage_keeps_preview_inside_manual_disclosure(cx: &mut Tes
     let stage = visual.debug_bounds("run-stage-toggle-0").unwrap();
     visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("thinking-toggle").is_some());
-    assert!(visual.debug_bounds("thinking-content").is_none());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("thinking-content").is_some());
     stream.update(&mut visual, |stream, cx| {
         stream.apply_event(thinking("m", "\n\nChecking result"), cx)
     });
@@ -557,10 +547,6 @@ async fn raw_reasoning_stage_keeps_preview_inside_manual_disclosure(cx: &mut Tes
         assert!(group.segment_expanded(0));
         assert_eq!(cards(stream, app)[0].read(app).title(), "Checking result");
     });
-    assert!(visual.debug_bounds("thinking-content").is_none());
-    let inner = visual.debug_bounds("thinking-toggle").unwrap();
-    visual.simulate_click(inner.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
     assert!(visual.debug_bounds("thinking-content").is_some());
     let stage = visual.debug_bounds("run-stage-toggle-0").unwrap();
     visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
@@ -676,7 +662,7 @@ async fn summary_stage_nests_tools_without_duplicate_reasoning(cx: &mut TestAppC
     visual.run_until_parked();
     stream.read_with(&visual, |stream, app| {
         let group = stream.run_activity_groups["m"].read(app);
-        assert_eq!(group.stage_title(0, app), "Writing the fix");
+        assert_eq!(group.stage_title(0, app), "Tried to run a command");
         assert!(!group.segment_expanded(0));
         assert!(stream.run_notice_projection(app).is_empty());
         let kinds = group
@@ -697,7 +683,7 @@ async fn summary_stage_nests_tools_without_duplicate_reasoning(cx: &mut TestAppC
     visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
-    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
     stream.update(&mut visual, |stream, cx| {
         stream.apply_event(
             ConversationEvent::TextDelta {

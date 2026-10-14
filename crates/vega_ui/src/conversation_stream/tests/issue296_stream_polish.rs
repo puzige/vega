@@ -293,7 +293,7 @@ async fn issue296_polish_p02_all_disclosures_theme_keyboard_and_disabled(cx: &mu
                     "tool-activity-single-row",
                     "tool-activity-single-row-chevron",
                 ),
-                "group" => ("tool-activity-group-toggle", "tool-activity-group-chevron"),
+                "group" => ("run-stage-toggle-0", "run-stage-chevron-0"),
                 _ => ("thinking-toggle", "thinking-chevron"),
             };
             leave(&mut visual);
@@ -641,7 +641,7 @@ async fn issue296_polish_p04_empty_runtime_failure_and_summary_have_one_notice(
     );
 }
 
-fn focus_row(visual: &mut VisualTestContext, selector: &'static str) {
+pub(super) fn focus_row(visual: &mut VisualTestContext, selector: &'static str) {
     let bounds = visual.debug_bounds(selector).unwrap();
     visual.simulate_keystrokes("tab");
     visual.update(|window, cx| window.blur(cx));

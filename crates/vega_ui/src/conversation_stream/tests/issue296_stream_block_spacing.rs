@@ -99,12 +99,12 @@ async fn issue296_spacing_b02_prose_to_plain_tools_matches_stage_inset(cx: &mut 
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let first_prose = visual.debug_bounds("assistant-body-1").unwrap();
-    let tool_group = visual.debug_bounds("tool-activity-group-toggle").unwrap();
+    let tool_stage = visual.debug_bounds("run-stage-toggle-0").unwrap();
     let second_prose = visual.debug_bounds("assistant-body-3").unwrap();
     let next_stage = visual.debug_bounds("run-stage-toggle-1").unwrap();
-    assert_eq!(tool_group.top() - first_prose.bottom(), px(24.));
+    assert_eq!(tool_stage.top() - first_prose.bottom(), px(24.));
     assert_eq!(next_stage.top() - second_prose.bottom(), px(24.));
-    assert_eq!(second_prose.top() - tool_group.bottom(), px(0.));
+    assert_eq!(second_prose.top() - tool_stage.bottom(), px(0.));
     stream.read_with(&visual, |stream, cx| {
         let inset = stream.stage_top_insets(cx)[&2];
         let StreamEntry::RunActivitySegment { group, segment } = &stream.entries[2] else {
@@ -117,6 +117,14 @@ async fn issue296_spacing_b02_prose_to_plain_tools_matches_stage_inset(cx: &mut 
             49.
         );
     });
+    visual.simulate_click(tool_stage.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    let first_tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
+    let second_tool = visual.debug_bounds("run-stage-tool-0-1").unwrap();
+    let second_prose = visual.debug_bounds("assistant-body-3").unwrap();
+    assert!(tool_stage.bottom() <= first_tool.top());
+    assert!(first_tool.bottom() <= second_tool.top());
+    assert!(second_tool.bottom() <= second_prose.top());
 }
 
 #[gpui_kit::test]
