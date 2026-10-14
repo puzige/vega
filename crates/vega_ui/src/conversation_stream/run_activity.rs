@@ -1,8 +1,7 @@
 use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
-use crate::tool_card::{ToolActivityCategory, ToolActivityState};
+use crate::tool_card::ToolActivityCategory;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
-use vega_conversation::types::ToolCallStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunActivityStatus {
@@ -32,68 +31,65 @@ struct RunActivitySegment {
     scrolls: Vec<ScrollHandle>,
 }
 
-#[derive(Clone)]
-struct StageToolActivity {
-    category: ToolActivityCategory,
-    count: usize,
-    running: usize,
-    pending: usize,
-    approved: usize,
-    attempted: usize,
-    filename: Option<String>,
+fn format_stage_tool_categories(categories: &[ToolActivityCategory]) -> String {
+    let mut title = String::new();
+    for (index, category) in categories.iter().enumerate() {
+        let (first, subsequent) = match category {
+            ToolActivityCategory::Shell => ("Commands", "commands"),
+            ToolActivityCategory::Read => ("Read files", "read files"),
+            ToolActivityCategory::Find => ("File searches", "file searches"),
+            ToolActivityCategory::Search => ("Content searches", "content searches"),
+            ToolActivityCategory::Write => ("Write files", "write files"),
+            ToolActivityCategory::Edit => ("Edit files", "edit files"),
+            ToolActivityCategory::Mcp => ("MCP tools", "MCP tools"),
+            ToolActivityCategory::CodexAcp => ("Codex ACP tasks", "Codex ACP tasks"),
+            ToolActivityCategory::ComputerUse => ("Computer actions", "computer actions"),
+            ToolActivityCategory::Skill => ("Skills", "skills"),
+            ToolActivityCategory::Other => ("Tools", "tools"),
+        };
+        let candidate = if title.is_empty() {
+            first.to_owned()
+        } else {
+            format!("{title}, {subsequent}")
+        };
+        let ellipsis_length = if index + 1 < categories.len() { 3 } else { 0 };
+        if candidate.chars().count() + ellipsis_length > 96 {
+            if title.is_empty() {
+                title = first.chars().take(95).collect();
+                title.push('…');
+            } else {
+                title.push_str(", …");
+            }
+            break;
+        }
+        title = candidate;
+    }
+    title
 }
 
-impl StageToolActivity {
-    fn phrase(&self) -> String {
-        let (present, past, base, singular, plural) = match self.category {
-            ToolActivityCategory::Read => ("Reading", "Read", "read", "file", "files"),
-            ToolActivityCategory::Shell => ("Running", "Ran", "run", "command", "commands"),
-            ToolActivityCategory::Find => ("Running", "Ran", "run", "file search", "file searches"),
-            ToolActivityCategory::Search => (
-                "Running",
-                "Ran",
-                "run",
-                "content search",
-                "content searches",
-            ),
-            ToolActivityCategory::Write => ("Writing", "Wrote", "write", "file", "files"),
-            ToolActivityCategory::Edit => ("Editing", "Edited", "edit", "file", "files"),
-            ToolActivityCategory::Mcp => ("Calling", "Called", "call", "MCP tool", "MCP tools"),
-            ToolActivityCategory::CodexAcp => {
-                ("Running", "Ran", "run", "Codex ACP task", "Codex ACP tasks")
-            }
-            ToolActivityCategory::ComputerUse => (
-                "Performing",
-                "Performed",
-                "perform",
-                "computer action",
-                "computer actions",
-            ),
-            ToolActivityCategory::Skill => ("Using", "Used", "use", "skill", "skills"),
-            ToolActivityCategory::Other => ("Using", "Used", "use", "tool", "tools"),
-        };
-        let object = if self.count == 1 {
-            self.filename
-                .clone()
-                .unwrap_or_else(|| format!("a {singular}"))
-        } else {
-            format!("{} {plural}", self.count)
-        };
-        if self.running == self.count {
-            format!("{present} {object}")
-        } else if self.pending == self.count {
-            format!("Waiting to {base} {object}")
-        } else if self.approved == self.count {
-            format!("Preparing to {base} {object}")
-        } else if self.attempted == self.count {
-            format!("Tried to {base} {object}")
-        } else if self.running + self.pending + self.approved > 0 {
-            format!("Working on {object}")
-        } else if self.attempted > 0 {
-            format!("Worked on {object}")
-        } else {
-            format!("{past} {object}")
-        }
+#[cfg(test)]
+mod category_title_tests {
+    use super::*;
+
+    #[test]
+    fn stage_tool_category_title_elides_many_kinds_without_counts() {
+        let title = format_stage_tool_categories(&[
+            ToolActivityCategory::Read,
+            ToolActivityCategory::Shell,
+            ToolActivityCategory::Find,
+            ToolActivityCategory::Search,
+            ToolActivityCategory::Write,
+            ToolActivityCategory::Edit,
+            ToolActivityCategory::Mcp,
+            ToolActivityCategory::CodexAcp,
+            ToolActivityCategory::ComputerUse,
+            ToolActivityCategory::Skill,
+            ToolActivityCategory::Other,
+        ]);
+        assert!(title.starts_with("Read files, commands"));
+        assert!(title.ends_with(", …"));
+        assert!(title.chars().count() <= 96);
+        assert!(!title.chars().any(|character| character.is_ascii_digit()));
     }
 }
 
@@ -611,8 +607,8 @@ impl RunActivityGroup {
         !self.process_in_details() && self.stage_process_entry_count(segment, cx) >= 2
     }
 
-    fn stage_tool_activity(&self, segment: usize, cx: &App) -> Vec<StageToolActivity> {
-        let mut activities = Vec::<StageToolActivity>::new();
+    fn stage_tool_categories(&self, segment: usize, cx: &App) -> Vec<ToolActivityCategory> {
+        let mut categories = Vec::new();
         for tool in self.stage_tool_calls(segment, cx) {
             let category = self.segments[segment]
                 .tool_categories
@@ -620,38 +616,11 @@ impl RunActivityGroup {
                 .find(|(tracked, _)| tracked == &tool)
                 .map(|(_, category)| *category)
                 .unwrap_or_else(|| tool.read(cx).stage_activity_category());
-            let card = tool.read(cx);
-            let index = if let Some(index) = activities
-                .iter()
-                .position(|activity| activity.category == category)
-            {
-                index
-            } else {
-                activities.push(StageToolActivity {
-                    category,
-                    count: 0,
-                    running: 0,
-                    pending: 0,
-                    approved: 0,
-                    attempted: 0,
-                    filename: card.safe_activity_filename(),
-                });
-                activities.len() - 1
-            };
-            let activity = &mut activities[index];
-            activity.count += 1;
-            activity.running += usize::from(card.call_status() == ToolCallStatus::Running);
-            activity.pending += usize::from(card.call_status() == ToolCallStatus::PendingApproval);
-            activity.approved += usize::from(card.call_status() == ToolCallStatus::Approved);
-            activity.attempted += usize::from(matches!(
-                card.activity_state(),
-                ToolActivityState::Cancelled
-                    | ToolActivityState::Rejected
-                    | ToolActivityState::Failed
-                    | ToolActivityState::Superseded
-            ));
+            if !categories.contains(&category) {
+                categories.push(category);
+            }
         }
-        activities
+        categories
     }
 
     #[cfg(test)]
@@ -664,52 +633,9 @@ impl RunActivityGroup {
     }
 
     fn stage_tool_title(&self, segment: usize, cx: &App) -> Option<(String, crate::icons::Icon)> {
-        let activities = self.stage_tool_activity(segment, cx);
-        let first = activities.first()?;
-        let icon = first.category.icon();
-        let phrases = activities
-            .iter()
-            .enumerate()
-            .map(|(index, activity)| {
-                let phrase = activity.phrase();
-                if index == 0 {
-                    phrase
-                } else {
-                    let mut characters = phrase.chars();
-                    characters
-                        .next()
-                        .map(|first| first.to_lowercase().chain(characters).collect::<String>())
-                        .unwrap_or_default()
-                }
-            })
-            .collect::<Vec<_>>();
-        let mut title = String::new();
-        let mut included = 0;
-        for phrase in &phrases {
-            let candidate = if title.is_empty() {
-                phrase.clone()
-            } else {
-                format!("{title}, {phrase}")
-            };
-            let remaining = phrases.len() - included - 1;
-            let suffix = if remaining > 0 {
-                format!(", +{remaining} more")
-            } else {
-                String::new()
-            };
-            if candidate.chars().count() + suffix.chars().count() > 96 {
-                break;
-            }
-            title = candidate;
-            included += 1;
-        }
-        if included == 0 {
-            title = phrases[0].chars().take(95).collect();
-            title.push('…');
-        } else if included < phrases.len() {
-            title.push_str(&format!(", +{} more", phrases.len() - included));
-        }
-        Some((title, icon))
+        let categories = self.stage_tool_categories(segment, cx);
+        let icon = categories.first()?.icon();
+        Some((format_stage_tool_categories(&categories), icon))
     }
 
     #[cfg(test)]

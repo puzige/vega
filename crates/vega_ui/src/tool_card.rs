@@ -518,27 +518,9 @@ impl ToolCard {
         self.activity_category().action_phrase().to_owned()
     }
 
+    #[cfg(test)]
     pub(crate) fn call_status(&self) -> ToolCallStatus {
         self.status
-    }
-
-    pub(crate) fn safe_activity_filename(&self) -> Option<String> {
-        let path = match self.input.as_ref()? {
-            ToolCardInputProjection::ReadOnly {
-                tool: ReadOnlyToolKind::Read,
-                permission_path: Some(path),
-            }
-            | ToolCardInputProjection::Write { path, .. }
-            | ToolCardInputProjection::Edit { path, .. } => path,
-            _ => return None,
-        };
-        let name = std::path::Path::new(path).file_name()?.to_str()?;
-        (name.chars().count() <= 32
-            && !name.starts_with('.')
-            && name
-                .chars()
-                .all(|character| character.is_alphanumeric() || "._-".contains(character)))
-        .then(|| name.to_owned())
     }
 
     pub(crate) fn activity_state(&self) -> ToolActivityState {
