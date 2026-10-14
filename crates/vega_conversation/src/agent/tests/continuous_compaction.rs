@@ -1,4 +1,4 @@
-use super::super::pipeline::primary_history_from_context_source_with_checkpoint;
+use super::super::pipeline::history_from_context_source_with_checkpoint;
 use super::*;
 
 fn append_round(store: &Store, round: i64) {
@@ -28,7 +28,7 @@ async fn continuous_compaction_twice_same_assistant_reopens_without_duplicate_or
     append_round(&store, 1);
     append_round(&store, 2);
     let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
-    let history = primary_history_from_context_source_with_checkpoint(&source, None, "").unwrap();
+    let history = history_from_context_source_with_checkpoint(&source, None, "").unwrap();
     let batches = history
         .iter()
         .filter(|m| !m.tool_calls.is_empty())
@@ -50,6 +50,13 @@ async fn continuous_compaction_twice_same_assistant_reopens_without_duplicate_or
             .collect::<Vec<_>>(),
         ["call-4", "call-5"]
     );
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET status = 'streaming' WHERE id = 'active'",
+            [],
+        )
+        .unwrap();
     let provider = MockProvider::new_rounds((0..2).map(|_| vec![ScriptStep::events(vec![
         ProviderEvent::TextDelta("Task goal: implement task. Progress: completed prior read rounds. Next: continue remaining rounds.".into()),
         ProviderEvent::Done { stop_reason: StopReason::End },
@@ -100,12 +107,9 @@ async fn continuous_compaction_twice_same_assistant_reopens_without_duplicate_or
         let reopened = Store::open(dir.path().join("vega.db")).unwrap();
         let reopened_source =
             vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap();
-        let replay = primary_history_from_context_source_with_checkpoint(
-            &reopened_source,
-            Some(&checkpoint),
-            "",
-        )
-        .unwrap();
+        let replay =
+            history_from_context_source_with_checkpoint(&reopened_source, Some(&checkpoint), "")
+                .unwrap();
         assert_eq!(result.messages, replay);
         assert_eq!(reopened_source, source);
         assert!(result.messages[0].content.contains("Task goal"));
@@ -114,12 +118,9 @@ async fn continuous_compaction_twice_same_assistant_reopens_without_duplicate_or
             append_round(&store, 3);
             let next_source =
                 vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
-            history = primary_history_from_context_source_with_checkpoint(
-                &next_source,
-                Some(&checkpoint),
-                "",
-            )
-            .unwrap();
+            history =
+                history_from_context_source_with_checkpoint(&next_source, Some(&checkpoint), "")
+                    .unwrap();
         } else {
             history = result.messages;
         }
