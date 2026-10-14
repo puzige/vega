@@ -978,10 +978,11 @@ pub(crate) fn persist_runtime_event(
             )?;
             vega_store::threads::open_thread(store.conn(), thread_id, now_ms())?;
         }
-        RuntimeEvent::Error(_) => {
+        RuntimeEvent::Error(error) => {
+            let transaction = store.immediate_transaction()?;
             ensure_message_updated(
-                messages::finish_streaming(
-                    store.conn(),
+                messages::finish_streaming_in_transaction(
+                    &transaction,
                     message_id,
                     streamed_content,
                     "failed",
@@ -989,7 +990,26 @@ pub(crate) fn persist_runtime_event(
                 )?,
                 message_id,
             )?;
-            vega_store::threads::open_thread(store.conn(), thread_id, now_ms())?;
+            let reason = match error.as_ref() {
+                VegaError::CredentialExposureBlocked => Some("exposure".to_owned()),
+                VegaError::CredentialCheckUnavailable => Some("unavailable".to_owned()),
+                VegaError::CredentialProjectionInvalid { tool_index } => {
+                    Some(format!("projection:{tool_index}"))
+                }
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                vega_store::credential_continuation::suspend(
+                    &transaction,
+                    thread_id,
+                    message_id,
+                    &reason,
+                    now_ms(),
+                )?;
+            }
+            vega_store::credential_continuation::complete(&transaction, message_id)?;
+            vega_store::threads::open_thread_in_transaction(&transaction, thread_id, now_ms())?;
+            transaction.commit()?;
         }
         RuntimeEvent::TextDelta(_)
         | RuntimeEvent::ThinkingDelta(_)

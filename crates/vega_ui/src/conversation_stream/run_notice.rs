@@ -1,3 +1,4 @@
+use super::privacy::PrivacyButton;
 use super::*;
 use crate::icons::Icon;
 use vega_conversation::types::TaskSummaryOutcome;
@@ -33,7 +34,23 @@ impl RunNotice {
         }
     }
 
-    pub(crate) fn render(&self, colors: &ThemeColors) -> AnyElement {
+    pub(crate) fn can_resume_credentials(&self) -> bool {
+        matches!(
+            self.kind,
+            RunNoticeKind::Failure(
+                RunFailureKind::CredentialExposureBlocked
+                    | RunFailureKind::CredentialCheckUnavailable
+                    | RunFailureKind::CredentialProjectionInvalid(_)
+            )
+        )
+    }
+
+    pub(crate) fn render(
+        &self,
+        colors: &ThemeColors,
+        thread_id: String,
+        cx: &mut Context<ConversationStream>,
+    ) -> AnyElement {
         if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
             return gpui_kit::div()
                 .id(format!("assistant-network-retry-{}", self.message_id))
@@ -50,6 +67,8 @@ impl RunNotice {
                 ))
                 .into_any_element();
         }
+        let recovery_id = self.message_id.clone();
+        let credential_failure = self.can_resume_credentials();
         let message_id = self.message_id.clone();
         let color = match self.kind {
             RunNoticeKind::Retrying { .. } => colors.text_secondary,
@@ -75,6 +94,39 @@ impl RunNotice {
                     })
                     .child(render_rows::status_notice(self.text(), color, colors)),
             )
+            .when(credential_failure, |row| {
+                row.child(
+                    gpui_kit::div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            PrivacyButton::new(
+                                format!("credential-continue-{}", self.message_id),
+                                *colors,
+                            )
+                            .label("继续")
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
+                                    cx.emit(CredentialContinuationRequested {
+                                        thread_id: thread_id.clone(),
+                                        message_id: recovery_id.clone(),
+                                    });
+                                },
+                            )),
+                        )
+                        .child(
+                            PrivacyButton::new(
+                                format!("credential-settings-{}", self.message_id),
+                                *colors,
+                            )
+                            .label("检查凭据设置")
+                            .on_click(|_, _, cx| {
+                                cx.set_global(crate::settings::SettingsOpen(true));
+                                cx.refresh_windows();
+                            }),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -92,6 +144,11 @@ impl RunNotice {
         lines as f32 * Typography::BODY * Typography::BODY_LINE_HEIGHT
             + 2. * Layout::STATUS_PADDING
             + 10.
+            + if self.can_resume_credentials() {
+                Typography::SIDEBAR_LINE_HEIGHT
+            } else {
+                0.
+            }
     }
 }
 

@@ -249,3 +249,73 @@ async fn tool_failure_is_persisted_and_the_model_can_still_converge() {
     assert_eq!(persisted.0, "failed");
     assert!(persisted.1.contains("not found"));
 }
+
+#[test]
+fn credential_error_terminal_receipt_and_thread_update_commit_or_roll_back_together() {
+    for reject_thread_update in [false, true] {
+        let (store, _dir, project_id) = setup();
+        store
+            .conn()
+            .execute_batch(
+                "INSERT INTO messages (id,thread_id,seq,role,content,status,created_at)
+             VALUES ('atomic-user','thread-1',1,'user','continue safely','done',0),
+                    ('atomic-assistant','thread-1',2,'assistant','partial','streaming',0);
+             UPDATE threads SET updated_at = 0 WHERE id = 'thread-1';
+             UPDATE projects SET last_opened_at = 0;",
+            )
+            .unwrap();
+        if reject_thread_update {
+            store.conn().execute_batch(
+                "CREATE TRIGGER reject_terminal_thread_update BEFORE UPDATE OF updated_at ON threads
+                 BEGIN SELECT RAISE(ABORT, 'synthetic thread write failure'); END;",
+            ).unwrap();
+        }
+        let result = persist_runtime_event(
+            &store,
+            &project_id,
+            "thread-1",
+            "atomic-assistant",
+            "mock",
+            false,
+            "partial",
+            &mut 1,
+            &RuntimeEvent::Error(Arc::new(VegaError::CredentialCheckUnavailable)),
+            Some(123),
+        );
+        assert_eq!(result.is_err(), reject_thread_update);
+        let status: String = store
+            .conn()
+            .query_row(
+                "SELECT status FROM messages WHERE id = 'atomic-assistant'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status,
+            if reject_thread_update {
+                "streaming"
+            } else {
+                "failed"
+            }
+        );
+        let receipt =
+            vega_store::credential_continuation::find(store.conn(), "atomic-assistant").unwrap();
+        assert_eq!(receipt.is_some(), !reject_thread_update);
+        if let Some(receipt) = receipt {
+            assert_eq!(receipt.state, "ready");
+            assert_eq!(receipt.user_message_id, "atomic-user");
+            assert_eq!(receipt.reason, "unavailable");
+        }
+        let (thread_updated, project_opened): (i64, i64) = store.conn().query_row(
+            "SELECT t.updated_at, p.last_opened_at FROM threads t JOIN projects p ON p.id = t.project_id WHERE t.id = 'thread-1'", [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(thread_updated > 0, !reject_thread_update);
+        assert_eq!(thread_updated, project_opened);
+        let duration_count: i64 = store.conn().query_row(
+            "SELECT COUNT(*) FROM assistant_run_durations WHERE message_id = 'atomic-assistant'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(duration_count, i64::from(!reject_thread_update));
+    }
+}

@@ -33,6 +33,7 @@ pub(crate) struct AgentWorkerStartProbe {
     /// The sender releases the worker explicitly; dropping it also unblocks cleanup.
     pub(crate) provider_construction_gate:
         Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
+    pub(crate) credential_stages: Mutex<std::collections::HashMap<String, &'static str>>,
 }
 
 #[cfg(test)]
@@ -51,6 +52,12 @@ impl AgentWorkerStartProbe {
     fn record(&self) {
         self.starts.fetch_add(1, Ordering::SeqCst);
     }
+
+    fn credential_stage(&self, thread: &str, stage: &'static str) {
+        if let Ok(mut stages) = self.credential_stages.lock() {
+            stages.insert(thread.to_owned(), stage);
+        }
+    }
 }
 
 pub(crate) const SYSTEM_PROMPT: &str =
@@ -59,6 +66,7 @@ pub(crate) const SYSTEM_PROMPT: &str =
 pub(crate) enum PendingAgentRun {
     UserMessage(UserSubmission),
     ApprovedPlan(String),
+    CredentialContinuation(String),
 }
 
 /// Frozen explicit user payload, never reconstructed from a later UI draft.
@@ -806,6 +814,30 @@ pub(crate) fn run_agent_worker_with_mcp(
         let config = config_path
             .as_deref()
             .and_then(|path| vega_store::config::read_from(path).ok());
+        let tools = if let Some(root) = config_path.as_deref().and_then(std::path::Path::parent) {
+            let root = root.to_path_buf();
+            let reader_root = root.clone();
+            let binding_path = config_path.clone().ok_or(())?;
+            let bindings = config
+                .as_ref()
+                .map(|config| config.credential_bindings.clone())
+                .unwrap_or_default();
+            let authorized = bindings.clone();
+            let reader: vega_credentials::SecretReader = Arc::new(move |key_ref| {
+                let current = vega_store::config::read_from(&binding_path)
+                    .map_err(|_| vega_credentials::CredentialError::Unavailable)?;
+                if current.credential_bindings != authorized {
+                    return Err(vega_credentials::CredentialError::Unavailable);
+                }
+                vega_store::keystore::get_key(&reader_root, key_ref)
+                    .map_err(|_| vega_credentials::CredentialError::Unavailable)
+            });
+            tools.with_credential_policy(
+                vega_tools::ToolCredentialPolicy::new(root, bindings, reader).map_err(|_| ())?,
+            )
+        } else {
+            tools
+        };
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
@@ -903,16 +935,65 @@ pub(crate) fn run_agent_worker_with_mcp(
                         .map_err(|_| ())
                 }) as CredentialReader
             });
+        let broker_credential_reader: Option<CredentialReader> = config_path
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(|root| {
+                let root = root.to_path_buf();
+                let refs = config
+                    .as_ref()
+                    .map(|config| {
+                        config
+                            .credential_bindings
+                            .iter()
+                            .map(|binding| binding.key_ref.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                Arc::new(move || {
+                    refs.iter()
+                        .map(|reference| {
+                            vega_store::keystore::get_key(&root, reference).map_err(|_| ())
+                        })
+                        .collect()
+                }) as CredentialReader
+            });
+        let credential_root = config_path.as_deref().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf);
+        let credential_exceptions: vega_runtime::CredentialExceptionFilter = credential_root.as_ref()
+            .and_then(|root| vega_conversation::privacy::exception_filter(database_path.clone(), thread.id.clone(), root.clone()).ok())
+            .unwrap_or_else(|| Arc::new(|_, _| false));
+        let authority_database = database_path.clone();
+        let authority_root = credential_root.clone();
         let owner = mcp_service.clone();
         let selected_provider_reader = provider_credential_reader.clone();
+        #[cfg(test)]
+        let authority_probe = worker_start_probe.clone();
+        #[cfg(test)]
+        let authority_thread = thread.id.clone();
         let owner_credential_reader: CredentialReader = Arc::new(move || {
+            #[cfg(test)]
+            authority_probe.credential_stage(&authority_thread, "authority_refresh");
+            if let Some(root) = &authority_root {
+                vega_conversation::privacy::refresh_authority(&authority_database, root).map_err(|_| ())?;
+            }
+            #[cfg(test)]
+            authority_probe.credential_stage(&authority_thread, "owner_read");
             let mut known = match &owner {
                 Some(service) => service.current_owner_credential_values().map_err(|_| ())?,
                 None => Vec::new(),
             };
+            #[cfg(test)]
+            authority_probe.credential_stage(&authority_thread, "provider_read");
             if let Some(reader) = &selected_provider_reader {
                 known.extend(reader()?);
             }
+            #[cfg(test)]
+            authority_probe.credential_stage(&authority_thread, "binding_read");
+            if let Some(reader) = &broker_credential_reader {
+                known.extend(reader()?);
+            }
+            #[cfg(test)]
+            authority_probe.credential_stage(&authority_thread, "authority_ready");
             Ok(known)
         });
         let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
@@ -930,6 +1011,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                     release.recv().map_err(|_| ())?;
                 }
                 if let Some(provider) = provider_override.clone() {
+                    worker_start_probe.credential_stage(&thread.id, "provider_constructed");
                     return Ok(provider);
                 }
             }
@@ -950,8 +1032,9 @@ pub(crate) fn run_agent_worker_with_mcp(
                 })
                 .map_err(|_| ())?
                 .with_pre_attempt_guard(
-                    vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard(
+                    vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard_with_exceptions(
                         owner_credential_reader.clone(),
+                        credential_exceptions.clone(),
                     ),
                 );
             Ok(Arc::new(provider) as Arc<dyn vega_runtime::Provider>)
@@ -960,7 +1043,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             Arc::new(vega_conversation::agent::OwnerCredentialProvider::new(
                 provider,
                 owner_credential_reader.clone(),
-            )) as Arc<dyn vega_runtime::Provider>
+            ).with_credential_exceptions(credential_exceptions.clone())) as Arc<dyn vega_runtime::Provider>
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -985,7 +1068,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                     context.generation.clone(),
                     owner_credential_reader.clone(),
                     cancel.clone(),
-                ),
+                ).with_credential_exceptions(credential_exceptions.clone()),
             ) as Arc<dyn vega_runtime::RuntimeSteeringSource>
         });
         let pending_message_id = queue_context.and_then(|context| context.message_id);
@@ -1089,6 +1172,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1164,10 +1248,80 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
                             ),
+                    ),
+                )
+            }
+            PendingAgentRun::CredentialContinuation(receipt_id) => {
+                let provider = guard_provider(make_provider()?);
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                let mcp_servers = match &mcp_service {
+                    Some(service) => runtime
+                        .block_on(async {
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => Err(()),
+                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                            }
+                        })
+                        .map(|readiness| {
+                            if !readiness.unavailable.is_empty() {
+                                let _ =
+                                    sender.send(AgentUpdate::McpUnavailable(readiness.unavailable));
+                            }
+                            readiness.ready_servers
+                        })?,
+                    None => Vec::new(),
+                };
+                let mcp_servers = mcp_servers
+                    .into_iter()
+                    .map(|server| {
+                        let server = server.with_known_credentials(
+                            provider_known_credential.clone().into_iter().collect(),
+                        );
+                        match (
+                            provider_known_credential.as_ref(),
+                            &provider_credential_reader,
+                        ) {
+                            (Some(_), Some(reader)) => {
+                                server.with_known_credentials_reader(reader.clone())
+                            }
+                            _ => server,
+                        }
+                    })
+                    .collect();
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                runtime.block_on(
+                    vega_conversation::agent::resume_credential_continuation_with_mcp(
+                        &store,
+                        provider.as_ref(),
+                        &tools,
+                        &thread.id,
+                        &receipt_id,
+                        SYSTEM_PROMPT,
+                        cancel,
+                        &permission_queue,
+                        event_sink,
+                        vega_conversation::agent::PersistenceActorConfig::default()
+                            .with_turn_limit(turn_limit)
+                            .with_computer_use(computer_use.clone())
+                            .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_credential_exceptions(Some(credential_exceptions.clone()))
+                            .with_pending_input(
+                                pending_message_id.clone(),
+                                steering_source.clone(),
+                            ),
+                        pricing_catalog,
+                        Some(reasoning),
+                        mcp_servers,
                     ),
                 )
             }

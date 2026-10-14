@@ -9,6 +9,7 @@ async fn m02_modern_stdio_duplex_round_trip() {
     let temp = tempfile::tempdir().expect("owned cwd");
     let fixture = owned_stdio_fixture(temp.path());
     let server = LocalServer {
+        credential_policy: None,
         executable: fixture.path().into(),
         args: vec!["modern".into()],
         working_directory: temp.path().into(),
@@ -34,6 +35,7 @@ async fn m03_legacy_stdio_only_after_nonmodern_probe() {
     let fixture = owned_stdio_fixture(temp.path());
     let trace = temp.path().join("methods.txt");
     let server = LocalServer {
+        credential_policy: None,
         executable: fixture.path().into(),
         args: vec!["legacy".into(), trace.to_string_lossy().into_owned()],
         working_directory: temp.path().into(),
@@ -58,6 +60,7 @@ async fn m03_modern_version_error_never_initializes_legacy() {
     let fixture = owned_stdio_fixture(temp.path());
     let trace = temp.path().join("methods.txt");
     let server = LocalServer {
+        credential_policy: None,
         executable: fixture.path().into(),
         args: vec!["modern-error".into(), trace.to_string_lossy().into_owned()],
         working_directory: temp.path().into(),
@@ -74,6 +77,7 @@ async fn m11_stdio_oversized_line_is_rejected_before_parsing() {
     let temp = tempfile::tempdir().expect("owned cwd");
     let fixture = owned_stdio_fixture(temp.path());
     let server = LocalServer {
+        credential_policy: None,
         executable: fixture.path().into(),
         args: vec!["oversize".into()],
         working_directory: temp.path().into(),
@@ -91,6 +95,7 @@ async fn m11_stdio_line_accepts_exact_1m_and_rejects_plus_one() {
     let fixture = owned_stdio_fixture(temp.path());
     for (mode, allowed) in [("modern-line-exact", true), ("modern-line-over", false)] {
         let server = LocalServer {
+            credential_policy: None,
             executable: fixture.path().into(),
             args: vec![mode.into()],
             working_directory: temp.path().into(),
@@ -112,6 +117,7 @@ async fn m12_stdio_stop_cancels_exact_inflight_call_id() {
     let fixture = owned_stdio_fixture(temp.path());
     let trace = temp.path().join("cancel.txt");
     let server = LocalServer {
+        credential_policy: None,
         executable: fixture.path().into(),
         args: vec!["cancel-slow".into(), trace.to_string_lossy().into_owned()],
         working_directory: temp.path().into(),
@@ -158,6 +164,7 @@ async fn m12_stdio_timeout_cancels_inflight_call_but_completed_call_does_not() {
     let fixture = owned_stdio_fixture(temp.path());
     let slow_trace = temp.path().join("timeout.txt");
     let server = LocalServer {
+        credential_policy: None,
         executable: fixture.path().into(),
         args: vec![
             "cancel-slow".into(),
@@ -188,6 +195,7 @@ async fn m12_stdio_timeout_cancels_inflight_call_but_completed_call_does_not() {
 
     let fast_trace = temp.path().join("fast.txt");
     let server = LocalServer {
+        credential_policy: None,
         executable: fixture.path().into(),
         args: vec![
             "cancel-fast".into(),
@@ -232,6 +240,7 @@ async fn m12_stdio_peer_eof_after_dispatch_is_transport_failure_without_replay()
     let fixture = owned_stdio_fixture(temp.path());
     let trace = temp.path().join("exited.txt");
     let server = LocalServer {
+        credential_policy: None,
         executable: fixture.path().into(),
         args: vec!["exit-on-call".into(), trace.to_string_lossy().into_owned()],
         working_directory: temp.path().into(),
@@ -256,6 +265,7 @@ async fn m11_stdio_paginated_catalog_counts_exact_raw_wire_bytes() {
         let temp = tempfile::tempdir().expect("owned cwd");
         let fixture = owned_stdio_fixture(temp.path());
         let server = LocalServer {
+            credential_policy: None,
             executable: fixture.path().into(),
             args: vec![if over {
                 "modern-catalog-wire-over".into()

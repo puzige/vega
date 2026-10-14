@@ -30,6 +30,10 @@ pub enum RunFailureKind {
     Runtime,
     #[allow(missing_docs)]
     CredentialExposureBlocked,
+    CredentialCheckUnavailable,
+    CredentialContinuationUnavailable,
+    CredentialProjectionInvalid(usize),
+    CredentialOutcomeUnknown,
     ContextOverLimit,
     #[allow(missing_docs)]
     ReasoningLimit(Option<vega_runtime::ReasoningBudgetScope>),
@@ -81,6 +85,13 @@ impl RunFailureKind {
                 ..
             } => Self::ProviderTransport,
             vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
+            vega_runtime::VegaError::CredentialCheckUnavailable => Self::CredentialCheckUnavailable,
+            vega_runtime::VegaError::CredentialContinuationUnavailable => {
+                Self::CredentialContinuationUnavailable
+            }
+            vega_runtime::VegaError::CredentialProjectionInvalid { tool_index } => {
+                Self::CredentialProjectionInvalid(*tool_index)
+            }
             vega_runtime::VegaError::Context(
                 vega_runtime::ContextRuntimeError::OverLimit { .. }
                 | vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
@@ -109,9 +120,13 @@ impl RunFailureKind {
             }
             Self::ProviderTransport => "无法连接供应商；请检查网络和供应商地址后重试".into(),
             Self::CredentialExposureBlocked => {
-                "为保护本地凭据，本次发送已在本地拦截。请移除对话中残留的凭据后重试，或在新对话中继续。"
+                "无法安全转换本次请求；已完成的工具操作仍然保留。请检查工具配置后继续。"
                     .into()
             }
+            Self::CredentialCheckUnavailable => "无法读取凭据配置；请在设置中检查凭据后继续，已完成的操作仍然保留。".into(),
+            Self::CredentialProjectionInvalid(index) => format!("第 {} 个工具的定义含有敏感值，无法安全发送；请检查工具配置后继续。", index + 1),
+            Self::CredentialOutcomeUnknown => "部分操作的结果未知，请检查工具记录后再决定下一步".into(),
+            Self::CredentialContinuationUnavailable => "恢复记录已使用、对话已变化或操作结果未知。请检查工具记录，再发送新消息继续。".into(),
             Self::ContextOverLimit => {
                 "本地上下文超出预算；原始对话已保留。请调整上下文容量、缩小工具查询范围或在新对话中继续。".into()
             }
@@ -1024,9 +1039,9 @@ mod run_failure_tests {
         let kind = RunFailureKind::from_runtime(&VegaError::CredentialExposureBlocked);
         assert_eq!(kind, RunFailureKind::CredentialExposureBlocked);
         let message = kind.message();
-        assert!(message.contains("本地拦截"));
-        assert!(message.contains("残留的凭据"));
-        assert!(message.contains("新对话"));
+        assert!(message.contains("无法安全转换"));
+        assert!(message.contains("已完成的工具操作仍然保留"));
+        assert!(message.contains("检查工具配置"));
         assert!(!message.contains("无法连接供应商"));
     }
 }

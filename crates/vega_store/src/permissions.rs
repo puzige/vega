@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_thirty_three_tables_at_current_user_version() {
+    fn schema_has_thirty_six_tables_at_current_user_version() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -288,6 +288,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(user_version, crate::MIGRATIONS.len() as i64);
-        assert_eq!(table_count, 33);
+        assert_eq!(table_count, 36);
     }
 }

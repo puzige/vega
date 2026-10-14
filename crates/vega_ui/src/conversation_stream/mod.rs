@@ -55,6 +55,8 @@
 //! The stream is memory-only (S3 has no message persistence): opening a
 //! thread constructs empty entries; restarting clears the conversation.
 
+mod privacy;
+pub use privacy::{PrivacyAction, PrivacyRequested};
 mod attachments;
 mod pending_messages;
 pub use pending_messages::{PendingQueueAction, PendingQueueRequested, RunningMessageDefault};
@@ -389,4 +391,9 @@ pub use vega_conversation::types::ThreadScrollAnchor;
 /// Explicit stop for the currently owned worker; the app keeps its generation until terminal.
 pub struct ComposerStopRequested {
     pub thread_id: String,
+}
+
+pub struct CredentialContinuationRequested {
+    pub thread_id: String,
+    pub message_id: String,
 }

@@ -478,12 +478,21 @@ pub fn open_thread(
     now: i64,
 ) -> Result<Option<ThreadRow>, rusqlite::Error> {
     let tx = conn.unchecked_transaction()?;
+    let thread = open_thread_in_transaction(&tx, id, now)?;
+    tx.commit()?;
+    Ok(thread)
+}
+
+pub fn open_thread_in_transaction(
+    tx: &Transaction<'_>,
+    id: &str,
+    now: i64,
+) -> Result<Option<ThreadRow>, rusqlite::Error> {
     let updated = tx.execute(
         "UPDATE threads SET updated_at = ?1 WHERE id = ?2",
         params![now, id],
     )?;
     if updated == 0 {
-        // 事务 drop 即回滚；线程不存在时未写任何行。
         return Ok(None);
     }
     tx.execute(
@@ -491,8 +500,7 @@ pub fn open_thread(
          WHERE id = (SELECT project_id FROM threads WHERE id = ?2)",
         params![now, id],
     )?;
-    tx.commit()?;
-    find(conn, id)
+    find(tx, id)
 }
 
 /// Records a genuine task visit atomically, including clearing its unread flag.

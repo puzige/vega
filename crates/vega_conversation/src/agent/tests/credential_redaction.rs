@@ -262,13 +262,16 @@ async fn issue170_legacy_credential_history_is_scrubbed_and_blocked_before_provi
     ));
 
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
-        stop_reason: StopReason::End,
-    }])]);
+    let provider = Arc::new(MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]));
     let reader: vega_runtime::CredentialReader = Arc::new(|| Ok(vec![CANARY.to_string()]));
+    let guarded = super::super::OwnerCredentialProvider::new(provider.clone(), reader.clone());
     let run = run_thread_task_with_sink_config(
         &store,
-        &provider,
+        &guarded,
         &tools,
         "thread-1",
         "Continue safely",
@@ -280,13 +283,20 @@ async fn issue170_legacy_credential_history_is_scrubbed_and_blocked_before_provi
     .await
     .unwrap();
 
-    assert!(run.failed);
-    assert!(provider.requests().is_empty());
-    assert!(run.events.iter().any(|event| matches!(
-        event,
-        ConversationEvent::Error { error, .. }
-            if matches!(error.as_ref(), VegaError::CredentialExposureBlocked)
-    )));
+    assert!(!run.failed);
+    assert_eq!(provider.requests().len(), 1);
+    assert!(
+        provider
+            .requests()
+            .iter()
+            .flat_map(|request| &request.messages)
+            .all(|message| !message.content.contains(CANARY))
+    );
+    assert!(
+        !run.events
+            .iter()
+            .any(|event| matches!(event, ConversationEvent::ToolCallRunning { .. }))
+    );
     let assistant: String = store
         .conn()
         .query_row(

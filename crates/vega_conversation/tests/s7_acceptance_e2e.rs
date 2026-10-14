@@ -586,8 +586,8 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
     assert_eq!(
-        user_version, 22,
-        "all twenty-two ordered migrations are applied"
+        user_version, 24,
+        "all twenty-four ordered migrations are applied"
     );
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
@@ -608,6 +608,9 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "context_checkpoints",
             "context_compaction_status",
             "context_settings",
+            "credential_continuations",
+            "credential_privacy_epoch",
+            "credential_privacy_exceptions",
             "image_attachments",
             "mcp_secret_cleanup",
             "mcp_servers",

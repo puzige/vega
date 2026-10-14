@@ -43,6 +43,7 @@ pub enum ProtocolVersion {
 /// Explicit local command; no shell or inherited credential environment.
 #[derive(Clone)]
 pub struct LocalServer {
+    pub credential_policy: Option<std::sync::Arc<vega_credentials::ProcessPolicy>>,
     pub executable: PathBuf,
     pub args: Vec<String>,
     pub working_directory: PathBuf,

@@ -37,8 +37,12 @@ mod mcp_registry;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
 mod credential_redaction;
 pub use credential_redaction::{
-    CredentialReader, PROVIDER_CREDENTIAL_REDACTION_MARKER, contains_sensitive_credential,
-    redact_sensitive_credential_text, redact_sensitive_credential_text_with_offsets,
+    CredentialConfidence, CredentialExceptionFilter, CredentialFinding, CredentialReader,
+    PROVIDER_CREDENTIAL_REDACTION_MARKER, contains_sensitive_credential,
+    credential_stream_safe_end, inspect_credential_text, redact_sensitive_credential_text,
+    redact_sensitive_credential_text_with_offsets,
+    redact_sensitive_credential_text_with_offsets_and_policy,
+    redact_sensitive_credential_text_with_policy,
 };
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
@@ -163,6 +167,7 @@ pub struct RuntimeToolConfig {
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
     credential_reader: Option<CredentialReader>,
+    credential_exceptions: Option<CredentialExceptionFilter>,
     legacy_credential_cleanup_detected: bool,
 }
 
@@ -191,6 +196,7 @@ impl RuntimeToolConfig {
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
             credential_reader: None,
+            credential_exceptions: None,
             legacy_credential_cleanup_detected: false,
         }
     }
@@ -233,6 +239,15 @@ impl RuntimeToolConfig {
         self.credential_reader.clone()
     }
 
+    pub fn with_credential_exceptions(mut self, filter: Option<CredentialExceptionFilter>) -> Self {
+        self.credential_exceptions = filter;
+        self
+    }
+
+    pub fn credential_exceptions(&self) -> Option<CredentialExceptionFilter> {
+        self.credential_exceptions.clone()
+    }
+
     pub fn with_legacy_credential_cleanup_detected(mut self) -> Self {
         self.legacy_credential_cleanup_detected = true;
         self
@@ -240,10 +255,14 @@ impl RuntimeToolConfig {
 
     pub(crate) fn redact_tool_output(&self, output: &str) -> Result<String, VegaError> {
         let credentials = match &self.credential_reader {
-            Some(reader) => reader().map_err(|_| VegaError::CredentialExposureBlocked)?,
+            Some(reader) => reader().map_err(|_| VegaError::CredentialCheckUnavailable)?,
             None => Vec::new(),
         };
-        Ok(redact_sensitive_credential_text(output, &credentials))
+        Ok(redact_sensitive_credential_text_with_policy(
+            output,
+            &credentials,
+            self.credential_exceptions.as_ref(),
+        ))
     }
 
     #[cfg(test)]

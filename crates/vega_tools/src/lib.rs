@@ -73,3 +73,6 @@ mod text_file;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use bash::BashTestExecutor;
+
+mod credentials;
+pub use credentials::ToolCredentialPolicy;

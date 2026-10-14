@@ -71,6 +71,7 @@ enum McpAction {
     Save,
     SaveBearer,
     SaveLocalSecret,
+    CopyCredentialBindings,
     CancelEditor,
     Disable {
         id: String,
@@ -93,6 +94,7 @@ enum McpAction {
 }
 
 enum McpOperation {
+    CredentialBindings(String),
     Reload,
     Create(McpServerForm),
     Replace {
@@ -153,6 +155,7 @@ enum McpOperation {
 }
 
 enum McpOperationOutput {
+    CredentialBindings(String),
     NoData,
     Tested(McpConnectionTest),
     OAuthDiscovered(McpOAuthDiscovery),
@@ -255,6 +258,9 @@ fn mcp_error_label(error: McpSettingsError) -> &'static str {
         McpSettingsError::NotFound => "服务器已移除，列表已刷新",
         McpSettingsError::Capacity => "最多只能启用 8 个 MCP 服务器",
         McpSettingsError::Store => "本地配置存储失败，请重试或检查数据目录",
+        McpSettingsError::CredentialBindingRequired => {
+            "此服务尚未授权 API 目标；请编辑服务并复制授权配置模板，填写 API 地址后加入 Vega 配置，再重新连接"
+        }
         McpSettingsError::Credential => "凭据存储不可用；已刷新状态，请重新录入",
         McpSettingsError::AuthorizationRequired => "该服务器需要显式授权，未建立连接",
         McpSettingsError::CimdUnavailable => {
@@ -363,7 +369,10 @@ pub(super) fn mcp_confirmation_lines(row: &McpServerView) -> Vec<String> {
                         .join("、")
                 }
             ));
-            lines.push("此子进程不受 Vega 内置 bash 沙箱约束；请只用专用密钥字段录入凭据，不要把 token 写进命令参数。".into());
+            lines.push(
+                "凭据调用仅访问已授权的 API；请使用专用密钥字段，不要把 token 写进命令参数。"
+                    .into(),
+            );
             lines
         }
         McpServerTransport::Remote {
@@ -712,6 +721,11 @@ impl SettingsView {
                     );
                 }
             }
+            McpAction::CopyCredentialBindings => {
+                if let Some(McpEditor::Existing { id, .. }) = self.mcp.editor.clone() {
+                    self.mcp_operation(McpOperation::CredentialBindings(id), cx);
+                }
+            }
             McpAction::SaveLocalSecret => {
                 if let Some(McpEditor::Existing { id, revision }) = self.mcp.editor.clone() {
                     let variable = self
@@ -885,6 +899,9 @@ impl SettingsView {
             .name("vega-mcp-settings".into())
             .spawn(move || {
                 let result: Result<McpOperationOutput, McpSettingsError> = match operation {
+                    McpOperation::CredentialBindings(id) => service
+                        .local_credential_binding_template(&id)
+                        .map(McpOperationOutput::CredentialBindings),
                     McpOperation::Reload => Ok(McpOperationOutput::NoData),
                     McpOperation::Create(form) => {
                         service.create(form).map(|_| McpOperationOutput::NoData)
@@ -1025,6 +1042,9 @@ impl SettingsView {
                             this.mcp.editor = None;
                         }
                         match output {
+                            McpOperationOutput::CredentialBindings(template) => {
+                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(template));
+                            }
                             McpOperationOutput::NoData => {}
                             McpOperationOutput::Tested(preview) => {
                                 if let Some(id) = tested_id {
@@ -1493,9 +1513,11 @@ impl SettingsView {
             let environment_height =
                 px(self.mcp.environment_input.read(cx).visible_rows() as f32 * row_height);
             form = form
-                .child(div().text_color(colors.text_secondary).child(
-                    "程序独立运行，不受 Vega 内置 bash 沙箱约束；参数按行传入，不经过 shell。",
-                ))
+                .child(
+                    div()
+                        .text_color(colors.text_secondary)
+                        .child("参数按行传入；配置凭据后，程序仅能通过代理访问已授权的 API。"),
+                )
                 .child(settings_field(
                     "mcp-field-executable",
                     "可执行文件",
@@ -1567,6 +1589,13 @@ impl SettingsView {
                         "保存此环境密钥",
                         "mcp-save-local-secret",
                         McpAction::SaveLocalSecret,
+                        !self.mcp.busy,
+                        cx,
+                    ))
+                    .child(self.mcp_button(
+                        "复制 API 授权配置模板",
+                        "mcp-copy-credential-bindings",
+                        McpAction::CopyCredentialBindings,
                         !self.mcp.busy,
                         cx,
                     ));

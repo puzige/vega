@@ -180,6 +180,10 @@ fn issue67_safe_controller_failure(message: Option<&str>) -> &'static str {
             RunFailureKind::CredentialExposureBlocked,
             "CredentialExposureBlocked",
         ),
+        (
+            RunFailureKind::CredentialCheckUnavailable,
+            "CredentialCheckUnavailable",
+        ),
         (RunFailureKind::ContextOverLimit, "ContextOverLimit"),
         (RunFailureKind::Persisted, "Persisted"),
     ]
@@ -734,9 +738,31 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
     });
     release_b_tx.send(()).expect("release B");
     release_tx.send(()).expect("release A");
-    pump_test_app(cx, |_| {
-        !provider.requests().is_empty() && !provider_b.requests().is_empty()
-    });
+    pump_test_app_with_diagnostics(
+        cx,
+        |_| !provider.requests().is_empty() && !provider_b.requests().is_empty(),
+        |cx| {
+            let failure = |stream: &gpui_kit::Entity<
+                vega_ui::conversation_stream::ConversationStream,
+            >| {
+                stream.read_with(cx, |stream, _| {
+                    issue67_safe_controller_failure(stream.controller_error_message().as_deref())
+                })
+            };
+            let stages = probe.credential_stages.lock().expect("credential stages");
+            format!(
+                "requests=({},{}), stages=({:?},{:?}), failures=({},{}), A=[{}], B=[{}]",
+                provider.requests().len(),
+                provider_b.requests().len(),
+                stages.get(&origin.id),
+                stages.get(&destination.id),
+                failure(&origin_stream),
+                failure(&draft_stream),
+                issue67_safe_store_diagnostics(&store, &origin.id),
+                issue67_safe_store_diagnostics(&store, &destination.id),
+            )
+        },
+    );
     stream_entered_a
         .recv_timeout(Duration::from_secs(5))
         .expect("A first stream event delivered and gate entered");

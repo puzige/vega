@@ -196,6 +196,13 @@ impl ConversationStream {
         let mut restored_responses: HashMap<String, phase::RunResponses> = HashMap::new();
         for entry in history_entries {
             match entry {
+                HistoryEntry::CredentialContinuation {
+                    message_id,
+                    failure,
+                    ..
+                } => {
+                    self.run_failures.insert(message_id, failure);
+                }
                 HistoryEntry::AssistantResponseMetadata {
                     message_id,
                     response,
@@ -631,7 +638,8 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) -> bool {
         let contains_target = page.entries.iter().any(|entry| match entry {
-            HistoryEntry::UserText { message_id: id, .. }
+            HistoryEntry::CredentialContinuation { message_id: id, .. }
+            | HistoryEntry::UserText { message_id: id, .. }
             | HistoryEntry::UserImages { message_id: id, .. }
             | HistoryEntry::AssistantText { message_id: id, .. }
             | HistoryEntry::AssistantScreenshot { message_id: id, .. }

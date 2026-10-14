@@ -190,10 +190,18 @@ pub struct QueueSteeringSource {
     thread_id: String,
     generation: String,
     credentials: vega_runtime::CredentialReader,
+    exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     cancel: CancellationToken,
 }
 
 impl QueueSteeringSource {
+    pub fn with_credential_exceptions(
+        mut self,
+        filter: vega_runtime::CredentialExceptionFilter,
+    ) -> Self {
+        self.exceptions = Some(filter);
+        self
+    }
     pub fn new(
         database: PathBuf,
         workspace: PathBuf,
@@ -208,6 +216,7 @@ impl QueueSteeringSource {
             thread_id,
             generation,
             credentials,
+            exceptions: None,
             cancel,
         }
     }
@@ -220,6 +229,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         let thread_id = self.thread_id.clone();
         let generation = self.generation.clone();
         let credentials = Arc::clone(&self.credentials);
+        let exceptions = self.exceptions.clone();
         let cancel = self.cancel.clone();
         async move {
             tokio::task::spawn_blocking(move || {
@@ -248,10 +258,12 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                         message.content
                     )
                 };
-                let values = credentials().map_err(|_| VegaError::CredentialExposureBlocked)?;
-                if vega_runtime::contains_sensitive_credential(&content, &values) {
-                    return Err(VegaError::CredentialExposureBlocked);
-                }
+                let values = credentials().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+                let content = vega_runtime::redact_sensitive_credential_text_with_policy(
+                    &content,
+                    &values,
+                    exceptions.as_ref(),
+                );
                 if cancel.is_cancelled() {
                     return Ok(None);
                 }

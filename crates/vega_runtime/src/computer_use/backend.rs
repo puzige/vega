@@ -102,6 +102,7 @@ fn private_directory() -> Result<PathBuf, Error> {
 
 fn server(executable: PathBuf, args: Vec<String>, root: &Path) -> LocalServer {
     LocalServer {
+        credential_policy: None,
         executable,
         args,
         working_directory: root.to_owned(),

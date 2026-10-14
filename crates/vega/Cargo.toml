@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+vega_credentials = { workspace = true }
 gpui_kit.workspace = true
 tracing.workspace = true
 serde = { workspace = true, features = ["derive"] }

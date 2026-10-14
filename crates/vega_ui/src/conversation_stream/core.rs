@@ -36,6 +36,7 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) privacy: super::privacy::PrivacyPanel,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
     pub(crate) computer_use_diagnostic: Option<(u64, String)>,
     pub(crate) computer_use_notice_generation: u64,
@@ -514,6 +515,7 @@ impl ConversationStream {
             approved_not_started: false,
             trusted_action_busy: false,
             controller_error: None,
+            privacy: Default::default(),
             controller_runtime_error: None,
             run_notices: HashMap::new(),
             run_failures: HashMap::new(),
@@ -1048,6 +1050,21 @@ impl ConversationStream {
     ) {
         if thread_id != self.thread.id || self.composer_submit_pending {
             return;
+        }
+        if let Some(content) = history.last()
+            && let Some(index) = self
+                .entries
+                .iter()
+                .rposition(|entry| matches!(entry, StreamEntry::User { .. }))
+            && matches!(&self.entries[index], StreamEntry::User { copy, .. } if copy.original_text() == "[凭据检查不可用]")
+        {
+            let block = self.user_block_seq;
+            self.user_block_seq += 1;
+            self.entries[index] = StreamEntry::User {
+                copy: MessageCopy::new(content),
+                lines: user_message_lines(block, content),
+            };
+            self.invalidate_item(Some(index));
         }
         self.composer_history = history;
         self.history_cursor = None;
@@ -1736,3 +1753,5 @@ fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
         effort => ReasoningChoice::Effort(effort.to_string()),
     }
 }
+
+impl EventEmitter<CredentialContinuationRequested> for ConversationStream {}

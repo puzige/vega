@@ -8,6 +8,22 @@ use std::{collections::BTreeMap, path::Path, sync::Mutex};
 const MAX_BYTES: u64 = 1024 * 1024;
 const MAX_ENTRIES: usize = 256;
 static LOCK: Mutex<()> = Mutex::new(());
+static REVISIONS: std::sync::LazyLock<Mutex<std::collections::HashMap<std::path::PathBuf, u64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+pub fn revision(root: &Path) -> u64 {
+    REVISIONS
+        .lock()
+        .map(|values| values.get(root).copied().unwrap_or(0))
+        .unwrap_or(u64::MAX)
+}
+
+fn changed(root: &Path) {
+    if let Ok(mut values) = REVISIONS.lock() {
+        let value = values.entry(root.to_path_buf()).or_default();
+        *value = value.saturating_add(1);
+    }
+}
 
 /// Content-free credential errors: never contain file contents or secret values.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -67,7 +83,9 @@ pub fn set_key(root: &Path, name: &str, key: &str) -> Result<(), Error> {
     let mut document = platform::read(&directory)?;
     document.keys.insert(name.into(), key.into());
     validate(&document)?;
-    platform::write(&directory, &document)
+    platform::write(&directory, &document)?;
+    changed(root);
+    Ok(())
 }
 
 /// Read a key from the same explicit root used by Settings.
@@ -88,7 +106,9 @@ pub fn delete_key(root: &Path, name: &str) -> Result<(), Error> {
     let directory = platform::directory(root, false)?;
     let mut document = platform::read(&directory)?;
     document.keys.remove(name).ok_or(Error::Missing)?;
-    platform::write(&directory, &document)
+    platform::write(&directory, &document)?;
+    changed(root);
+    Ok(())
 }
 
 /// Return only available reference names; callers never retain secret values for UI badges.

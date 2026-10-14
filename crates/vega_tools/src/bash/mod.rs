@@ -139,6 +139,14 @@ impl Tools {
             return Err(BashError::new(BashErrorCode::Cancelled));
         }
 
+        if full_access
+            && self
+                .credential_policy
+                .as_ref()
+                .is_some_and(|policy| policy.has_bindings())
+        {
+            return Err(BashError::new(BashErrorCode::CredentialProtectionRequired));
+        }
         let sandbox = if full_access {
             None
         } else {
@@ -195,10 +203,42 @@ impl Tools {
             return BashAttempt::safe(Err(BashError::new(BashErrorCode::Cancelled)));
         }
 
+        let credential_lease = match &self.credential_policy {
+            Some(policy) => match policy
+                .start(&temp_root.path().join("credential-ca.pem"), cancel.clone())
+                .await
+            {
+                Ok(lease) => lease,
+                Err(error) => return BashAttempt::safe(Err(error)),
+            },
+            None => None,
+        };
+        let credential_context = self.credential_policy.as_ref().map(|policy| {
+            let mut environment = crate::credentials::controlled_environment(temp_root.path());
+            if let Some((_, values)) = &credential_lease {
+                environment.extend(values.clone());
+            }
+            crate::sandbox::ShellCredentialContext {
+                protected_root: policy.protected_root.clone(),
+                proxy_port: credential_lease.as_ref().map(|(lease, _)| lease.port),
+                environment,
+            }
+        });
         let started = Instant::now();
         let spawned = match sandbox {
-            Some(sandbox) => sandbox.spawn_shell(&prepared.command, temp_root, hooks),
-            None => spawn_full_access_shell(&self.root, &prepared.command, temp_root, hooks),
+            Some(sandbox) => sandbox.spawn_shell(
+                &prepared.command,
+                temp_root,
+                hooks,
+                credential_context.as_ref(),
+            ),
+            None => spawn_full_access_shell(
+                &self.root,
+                &prepared.command,
+                temp_root,
+                hooks,
+                credential_context.as_ref(),
+            ),
         };
         let mut child = match spawned {
             Ok(child) => child,

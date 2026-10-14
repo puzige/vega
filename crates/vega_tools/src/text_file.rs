@@ -77,14 +77,13 @@ fn unsupported() -> ToolError {
 }
 
 /// Open only regular files, without following the final component or blocking on FIFOs.
-pub(crate) fn read_regular(path: &std::path::Path) -> Result<Vec<u8>, ToolError> {
+pub(crate) fn read_regular(
+    path: &std::path::Path,
+    reject_hardlinks: bool,
+) -> Result<Vec<u8>, ToolError> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
     const MAX_BYTES: u64 = 1024 * 1024 * 1024;
-    let file = std::fs::File::options()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
+    let file = open_regular(path, reject_hardlinks)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(MutationError::new(MutationErrorCode::PathNotFile).into());
@@ -98,4 +97,89 @@ pub(crate) fn read_regular(path: &std::path::Path) -> Result<Vec<u8>, ToolError>
         return Err(MutationError::new(MutationErrorCode::FileTooLarge).into());
     }
     Ok(bytes)
+}
+
+pub(crate) fn open_directory(path: &std::path::Path) -> Result<std::fs::File, ToolError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    if !path.is_absolute() {
+        return Err(MutationError::new(MutationErrorCode::PathNotFile).into());
+    }
+    let mut directory = std::fs::File::open("/")?;
+    for component in path.components() {
+        let std::path::Component::Normal(name) = component else {
+            if matches!(component, std::path::Component::RootDir) {
+                continue;
+            }
+            return Err(MutationError::new(MutationErrorCode::PathNotFile).into());
+        };
+        let name = std::ffi::CString::new(name.as_bytes())
+            .map_err(|_| MutationError::new(MutationErrorCode::PathNotFile))?;
+        // SAFETY: directory is a live descriptor and name is a NUL-terminated single path component.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        // SAFETY: successful openat returned a new descriptor owned only by this File.
+        directory = unsafe { std::fs::File::from_raw_fd(fd) };
+    }
+    Ok(directory)
+}
+
+pub(crate) fn open_regular(
+    path: &std::path::Path,
+    reject_hardlinks: bool,
+) -> Result<std::fs::File, ToolError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+    let parent = path
+        .parent()
+        .ok_or_else(|| MutationError::new(MutationErrorCode::PathNotFile))?;
+    let directory = open_directory(parent)?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| MutationError::new(MutationErrorCode::PathNotFile))?;
+    let name = std::ffi::CString::new(name.as_bytes())
+        .map_err(|_| MutationError::new(MutationErrorCode::PathNotFile))?;
+    // SAFETY: directory is live and name is a NUL-terminated single component; no links are followed.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: successful openat returned a new descriptor owned only by this File.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || (reject_hardlinks && metadata.nlink() != 1) {
+        return Err(MutationError::new(MutationErrorCode::PathNotFile).into());
+    }
+    Ok(file)
+}
+
+#[cfg(test)]
+mod credential_path_tests {
+    #[test]
+    fn replaced_parent_symlink_is_rejected_before_reading() {
+        let root = tempfile::tempdir().unwrap();
+        let public = root.path().join("public");
+        let private = root.path().join("private");
+        std::fs::create_dir(&public).unwrap();
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("secret"), "synthetic-secret").unwrap();
+        let original = public.join("secret");
+        std::fs::remove_dir(&public).unwrap();
+        std::os::unix::fs::symlink(&private, &public).unwrap();
+        assert!(super::read_regular(&original, true).is_err());
+    }
 }

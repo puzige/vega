@@ -32,11 +32,20 @@ impl Tools {
 
         for walked in walker(&start) {
             let entry = walked.map_err(|error| ToolError::Traversal(error.to_string()))?;
+            if self.check_credential_path(entry.path()).is_err() {
+                continue;
+            }
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
             }
             let display = relative_display(&self.root, entry.path())?;
-            append_file_matches(entry.path(), &display, &regex, &mut matches)?;
+            append_file_matches(
+                entry.path(),
+                &display,
+                &regex,
+                &mut matches,
+                self.credential_policy.is_some(),
+            )?;
             if matches.len() > MAX_RESULTS {
                 break;
             }
@@ -51,8 +60,9 @@ fn append_file_matches(
     display: &str,
     regex: &Regex,
     matches: &mut Vec<String>,
+    reject_hardlinks: bool,
 ) -> Result<(), ToolError> {
-    let mut file = File::open(path)?;
+    let mut file = crate::text_file::open_regular(path, reject_hardlinks)?;
     if binary_probe(&mut file)? {
         return Ok(());
     }

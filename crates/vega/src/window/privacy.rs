@@ -1,0 +1,117 @@
+use super::*;
+
+impl VegaWindow {
+    pub(crate) fn request_privacy(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &PrivacyRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .agent_controller
+            .active
+            .contains_key(&request.thread_id)
+        {
+            stream.update(cx, |stream, cx| {
+                stream.apply_privacy_review(Err("请等待当前任务完成或停止后检查".into()), cx)
+            });
+            return;
+        }
+        let Some(database) = self.context_database(cx) else {
+            stream.update(cx, |stream, cx| {
+                stream.apply_privacy_review(Err("无法读取对话，请重试".into()), cx)
+            });
+            return;
+        };
+        let request = request.clone();
+        let thread_id = request.thread_id.clone();
+        let generation = self.agent_controller.next_generation;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let store = vega_store::Store::open(database)
+                        .map_err(|_| "无法读取对话".to_string())?;
+                    let changed = !matches!(&request.action, PrivacyAction::Review);
+                    match request.action {
+                        PrivacyAction::Review => {}
+                        PrivacyAction::Exception {
+                            snapshot,
+                            index,
+                            allow,
+                        } => vega_conversation::privacy::set_exception(
+                            &store,
+                            &request.thread_id,
+                            &snapshot,
+                            index,
+                            allow,
+                        )
+                        .map_err(|error| error.to_string())?,
+                        PrivacyAction::Clean { snapshot } => {
+                            vega_conversation::privacy::permanently_clean(
+                                &store,
+                                &request.thread_id,
+                                &snapshot,
+                            )
+                            .map_err(|error| error.to_string())?
+                        }
+                    }
+                    let review = vega_conversation::privacy::review(&store, &request.thread_id)
+                        .map_err(|error| error.to_string())?;
+                    let page = if changed {
+                        Some(
+                            vega_conversation::history::latest_history_page(
+                                &store,
+                                &request.thread_id,
+                                vega_store::messages::PAGE_LIMIT,
+                            )
+                            .map_err(|error| error.to_string())?,
+                        )
+                    } else {
+                        None
+                    };
+                    Ok::<_, String>((review, page))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let stale = this.agent_controller.next_generation != generation
+                    || this.agent_controller.active.contains_key(&thread_id);
+                stream.update(cx, |stream, cx| {
+                    if stale {
+                        stream.apply_privacy_review(
+                            Err("任务状态已变化，请在任务结束后重新检查".into()),
+                            cx,
+                        );
+                        return;
+                    }
+                    match result {
+                        Ok((review, page)) => {
+                            if let Some(page) = page {
+                                let anchor =
+                                    page.entries.iter().rev().find_map(|entry| {
+                                        match entry {
+                            vega_conversation::history::HistoryEntry::UserText {
+                                message_id,
+                                ..
+                            }
+                            | vega_conversation::history::HistoryEntry::AssistantText {
+                                message_id,
+                                ..
+                            } => Some(message_id.clone()),
+                            _ => None,
+                        }
+                                    });
+                                if let Some(anchor) = anchor {
+                                    stream.replace_history_window(page, &anchor, cx);
+                                }
+                            }
+                            stream.apply_privacy_review(Ok(review), cx);
+                        }
+                        Err(error) => stream.apply_privacy_review(Err(error), cx),
+                    }
+                });
+            });
+        })
+        .detach();
+    }
+}

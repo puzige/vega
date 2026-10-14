@@ -86,6 +86,7 @@ pub fn thread_usage_seed(
 /// order. The synthetic approval instruction is a controller capability, not
 /// text the user typed, so it is deliberately excluded.
 pub fn composer_history(store: &Store, thread_id: &str) -> Result<Vec<String>, ConversationError> {
+    let projection = crate::privacy::DisplayProjection::load(store, thread_id)?;
     const HISTORY_WINDOW: usize = 200;
     let rows =
         store_messages::recent(store.conn(), thread_id, HISTORY_WINDOW).map_err(store_error)?;
@@ -93,7 +94,7 @@ pub fn composer_history(store: &Store, thread_id: &str) -> Result<Vec<String>, C
         .into_iter()
         .filter(|row| row.role == "user" && row.kind == "text" && row.status == "done")
         .filter(|row| row.content != crate::plans::APPROVAL_INSTRUCTION)
-        .map(|row| row.content)
+        .map(|row| projection.text(&row.content))
         .collect())
 }
 

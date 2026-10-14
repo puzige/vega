@@ -120,6 +120,10 @@ fn main() {
             .and_then(|store| store.database_path())
             .and_then(|database| {
                 vega_store::paths::config_dir().map(|config_root| {
+                    vega_conversation::privacy::register_database(
+                        database.to_path_buf(),
+                        config_root.clone(),
+                    );
                     vega_conversation::McpServerSettingsService::new(
                         database.to_path_buf(),
                         config_root,

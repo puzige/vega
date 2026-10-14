@@ -2315,6 +2315,7 @@ async fn issue73_issue74_m14_duplex_mcp_skill_registry_budget_and_authority() {
                 id.into(),
                 1,
                 vega_mcp::LocalServer {
+                    credential_policy: None,
                     executable: "/bin/sh".into(),
                     args: vec![
                         script.to_string_lossy().to_string(),

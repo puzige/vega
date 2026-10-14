@@ -47,6 +47,12 @@ pub enum VegaError {
     Cancelled,
     #[error("local credential safety block")]
     CredentialExposureBlocked,
+    #[error("credential safety check unavailable")]
+    CredentialCheckUnavailable,
+    #[error("credential continuation is unavailable")]
+    CredentialContinuationUnavailable,
+    #[error("credential projection requires tool configuration repair ({tool_index})")]
+    CredentialProjectionInvalid { tool_index: usize },
     /// A frozen provider/model thinking selection violated its explicit
     /// capability declaration before any request was sent.
     #[error("reasoning selection is invalid")]
@@ -121,6 +127,14 @@ impl fmt::Debug for VegaError {
                 .finish(),
             Self::Cancelled => formatter.write_str("Cancelled"),
             Self::CredentialExposureBlocked => formatter.write_str("CredentialExposureBlocked"),
+            Self::CredentialCheckUnavailable => formatter.write_str("CredentialCheckUnavailable"),
+            Self::CredentialContinuationUnavailable => {
+                formatter.write_str("CredentialContinuationUnavailable")
+            }
+            Self::CredentialProjectionInvalid { tool_index } => formatter
+                .debug_struct("CredentialProjectionInvalid")
+                .field("tool_index", tool_index)
+                .finish(),
             Self::ReasoningSelectionInvalid { message } => formatter
                 .debug_struct("ReasoningSelectionInvalid")
                 .field("message_bytes", &message.len())

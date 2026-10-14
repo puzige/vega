@@ -3,7 +3,6 @@
 #[cfg(any(test, feature = "test-support"))]
 use callback_fixture::Listener as StdTcpListener;
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
 #[cfg(not(any(test, feature = "test-support")))]
 use std::net::TcpListener as StdTcpListener;
 #[cfg(not(any(test, feature = "test-support")))]
@@ -39,6 +38,8 @@ pub enum McpSettingsError {
     Store,
     #[error("MCP credential storage is unavailable")]
     Credential,
+    #[error("MCP credential requires an authorized API destination binding")]
+    CredentialBindingRequired,
     #[error("MCP authorization is required")]
     AuthorizationRequired,
     #[error("this authorization server requires a public HTTPS Client ID Metadata identity")]
@@ -62,6 +63,7 @@ impl McpSettingsError {
             Self::Capacity => "capacity_exceeded",
             Self::Store => "storage_failed",
             Self::Credential => "credential_missing",
+            Self::CredentialBindingRequired => "credential_binding_required",
             Self::AuthorizationRequired => "authorization_required",
             Self::CimdUnavailable => "cimd_unavailable",
             Self::AuthorizationFailed => "authorization_failed",
@@ -370,6 +372,21 @@ impl McpServerSettingsService {
         self.reconcile_pending()?;
         let state = self.lock()?;
         view(&row, &state, &self.config_root)
+    }
+
+    pub fn local_credential_binding_template(&self, id: &str) -> Result<String, McpSettingsError> {
+        let store = self.store()?;
+        let row = mcp_servers::find(store.conn(), id)?.ok_or(McpSettingsError::NotFound)?;
+        let slots = env_slots_from_row(&row)?;
+        let mut template = String::new();
+        for slot in slots {
+            let reference =
+                serde_json::to_string(&slot.credential_ref).map_err(|_| McpSettingsError::Store)?;
+            let variable =
+                serde_json::to_string(&slot.variable).map_err(|_| McpSettingsError::Store)?;
+            template.push_str(&format!("[[credential_bindings]]\nkey_ref = {reference}\nenv = {variable}\norigin = \"\"\nheader = \"authorization\"\nprefix = \"Bearer \"\npath = \"/\"\n\n"));
+        }
+        Ok(template)
     }
 
     /// Install/rotate one local child environment value into a slot owned by
@@ -1589,7 +1606,7 @@ fn oauth_token_values(envelope: &str) -> Result<Vec<String>, McpSettingsError> {
     Ok(values)
 }
 
-fn all_owner_credentials(
+pub(crate) fn all_owner_credentials(
     config_root: &std::path::Path,
     store: &Store,
 ) -> Result<Vec<String>, McpSettingsError> {
@@ -1827,21 +1844,54 @@ async fn connect_row(
             environment: _,
         } => {
             let slots = env_slots_from_row(row)?;
-            let mut values = Vec::with_capacity(slots.len());
-            for slot in slots {
-                let secret = vega_store::keystore::get_key(config_root, &slot.credential_ref)
-                    .map_err(|_| McpSettingsError::Credential)?;
-                values.push((OsString::from(slot.variable), OsString::from(secret)));
-            }
+            let config_path = config_root.join("config.toml");
+            let config = if slots.is_empty() {
+                vega_store::config::AppConfig::default()
+            } else {
+                vega_store::config::read_from(&config_path)
+                    .map_err(|_| McpSettingsError::CredentialBindingRequired)?
+            };
+            let bindings = slots
+                .iter()
+                .map(|slot| {
+                    config
+                        .credential_bindings
+                        .iter()
+                        .find(|binding| {
+                            binding.env == slot.variable && binding.key_ref == slot.credential_ref
+                        })
+                        .cloned()
+                        .ok_or(McpSettingsError::CredentialBindingRequired)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let root = config_root.to_path_buf();
+            let approved = config.credential_bindings.clone();
+            let reader: vega_credentials::SecretReader = Arc::new(move |key_ref| {
+                let current = vega_store::config::read_from(&config_path)
+                    .map_err(|_| vega_credentials::CredentialError::Unavailable)?;
+                if current.credential_bindings != approved {
+                    return Err(vega_credentials::CredentialError::Unavailable);
+                }
+                vega_store::keystore::get_key(&root, key_ref)
+                    .map_err(|_| vega_credentials::CredentialError::Unavailable)
+            });
+            let policy = Some({
+                Arc::new(vega_credentials::ProcessPolicy {
+                    root: config_root.to_path_buf(),
+                    bindings,
+                    reader,
+                })
+            });
             let ready = McpReadyServer::connect_local(
                 row.id.clone(),
                 row.config_revision,
                 vega_mcp::LocalServer {
+                    credential_policy: policy,
                     executable,
                     args,
                     working_directory: working_directory
                         .unwrap_or_else(|| config_root.to_path_buf()),
-                    environment: values,
+                    environment: Vec::new(),
                 },
             )
             .await
@@ -2540,6 +2590,12 @@ mod tests {
                 DISABLED_MCP.into(),
             )
             .unwrap();
+        let template = service
+            .local_credential_binding_template(&disabled.id)
+            .unwrap();
+        assert!(template.contains("MCP_TOKEN"));
+        assert!(template.contains("origin = \"\""));
+        assert!(!template.contains(DISABLED_MCP));
         let known = service.enabled_known_credentials().unwrap();
         assert!(known.iter().any(|value| value == OTHER_PROVIDER));
         assert!(known.iter().any(|value| value == DISABLED_MCP));

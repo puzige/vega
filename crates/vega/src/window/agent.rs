@@ -657,7 +657,8 @@ impl VegaWindow {
                         stream.update(cx, ConversationStream::reject_composer_submission);
                         stream.update(cx, ConversationStream::apply_agent_error);
                     }
-                    PendingAgentRun::ApprovedPlan(_) => {
+                    PendingAgentRun::ApprovedPlan(_)
+                    | PendingAgentRun::CredentialContinuation(_) => {
                         stream.update(cx, ConversationStream::apply_agent_error);
                     }
                 }
@@ -705,7 +706,7 @@ impl VegaWindow {
                     stream.update(cx, ConversationStream::reject_composer_submission);
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
-                PendingAgentRun::ApprovedPlan(_) => {
+                PendingAgentRun::ApprovedPlan(_) | PendingAgentRun::CredentialContinuation(_) => {
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
             }
@@ -713,10 +714,10 @@ impl VegaWindow {
         }
         let pending_user_content = match &run {
             PendingAgentRun::UserMessage(content) => Some(content.content.clone()),
-            PendingAgentRun::ApprovedPlan(_) => None,
+            PendingAgentRun::ApprovedPlan(_) | PendingAgentRun::CredentialContinuation(_) => None,
         };
         let pending_approved_instruction = match &run {
-            PendingAgentRun::UserMessage(_) => None,
+            PendingAgentRun::UserMessage(_) | PendingAgentRun::CredentialContinuation(_) => None,
             PendingAgentRun::ApprovedPlan(instruction_id) => Some(instruction_id.clone()),
         };
         if stream.read(cx).has_pending_model_selection()
@@ -730,7 +731,7 @@ impl VegaWindow {
                     stream.update(cx, ConversationStream::reject_composer_submission);
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
-                PendingAgentRun::ApprovedPlan(_) => {
+                PendingAgentRun::ApprovedPlan(_) | PendingAgentRun::CredentialContinuation(_) => {
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
             }
@@ -1687,6 +1688,22 @@ impl VegaWindow {
             &thread_id,
             PendingAgentRun::UserMessage(crate::app_agent::UserSubmission { content, images }),
             reasoning,
+            cx,
+        );
+    }
+}
+
+impl VegaWindow {
+    pub(crate) fn resume_credential_continuation(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &vega_ui::conversation_stream::CredentialContinuationRequested,
+        cx: &mut Context<Self>,
+    ) {
+        self.start_agent_run(
+            stream,
+            &request.thread_id,
+            PendingAgentRun::CredentialContinuation(request.message_id.clone()),
             cx,
         );
     }

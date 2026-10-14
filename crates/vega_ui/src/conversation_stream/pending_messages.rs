@@ -874,8 +874,11 @@ impl ConversationStream {
         self.user_block_seq += 1;
         let index = self.entries.len();
         self.entries.push(StreamEntry::User {
-            copy: MessageCopy::new(content),
-            lines: user_message_lines(block_id, content),
+            copy: MessageCopy::new(&vega_conversation::privacy::safe_live_text(content)),
+            lines: user_message_lines(
+                block_id,
+                &vega_conversation::privacy::safe_live_text(content),
+            ),
         });
         self.list_append(index);
         self.set_entry_identity(

@@ -72,7 +72,8 @@ mod retry;
 pub use agent::{
     AgentOutcome, AgentRequest, BASH_INVALID_INPUT_OUTPUT, CALL_ID_CONFLICT_OUTPUT,
     CANCELLED_BEFORE_EXECUTION_OUTPUT, CompletedToolCall, ContextAccountingDecision,
-    ContextAccountingSource, ContextAccountingStage, CredentialReader, InvalidBashAudit,
+    ContextAccountingSource, ContextAccountingStage, CredentialConfidence,
+    CredentialExceptionFilter, CredentialFinding, CredentialReader, InvalidBashAudit,
     LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer, McpRevocationLease, PERMISSION_TIMEOUT,
     PROVIDER_CREDENTIAL_REDACTION_MARKER, REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES,
     REASONING_TURN_MAX_BYTES, RuntimeAssistantResponseKind, RuntimeDiagnosticAttempt,
@@ -80,8 +81,10 @@ pub use agent::{
     RuntimeDiagnosticState, RuntimeEvent, RuntimeExactRule, RuntimeFinishReason,
     RuntimePermissionHook, RuntimeSteeringInput, RuntimeSteeringSource, RuntimeTokenUsage,
     RuntimeToolCall, RuntimeToolConfig, RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing,
-    contains_sensitive_credential, redact_sensitive_credential_text,
-    redact_sensitive_credential_text_with_offsets, run_agent, run_agent_with_permission_sink,
+    contains_sensitive_credential, credential_stream_safe_end, inspect_credential_text,
+    redact_sensitive_credential_text, redact_sensitive_credential_text_with_offsets,
+    redact_sensitive_credential_text_with_offsets_and_policy,
+    redact_sensitive_credential_text_with_policy, run_agent, run_agent_with_permission_sink,
     run_agent_with_permission_sink_and_context, run_agent_with_sink, tool_definitions,
 };
 pub use context::{

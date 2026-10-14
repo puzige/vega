@@ -1048,23 +1048,6 @@ where
     let mut input_anchor: Option<InputAnchor> = None;
     let mut primary_revision = 0_u64;
 
-    if tool_config.legacy_credential_cleanup_detected {
-        emit!(
-            events,
-            sink,
-            RuntimeEvent::Error(Arc::new(VegaError::CredentialExposureBlocked))
-        );
-        return Ok(outcome(
-            events,
-            messages,
-            final_text,
-            tool_call_count,
-            executed_tool_call_count,
-            false,
-            true,
-        ));
-    }
-
     if !skill_authority_current(skill_config.as_ref()) {
         cancel.cancel();
     }
