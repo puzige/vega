@@ -59,6 +59,11 @@ jobs:
           shared-key: vega-master-build
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
+      - name: Test release scripts
+        run: |
+          python3 scripts/release_tests.py
+          python3 -m unittest discover -s scripts/tests -v
+
       - name: Test the workspace
         run: cargo nextest run --workspace
 

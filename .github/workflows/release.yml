@@ -164,6 +164,16 @@ jobs:
           RELEASE_VERSION: ${{ steps.plan.outputs.tag }}
         run: cargo xtask sign-update --version "${RELEASE_VERSION#v}"
 
+      - name: Generate and sign file delta assets
+        if: steps.plan.outputs.complete != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VEGA_UPDATE_PRIVATE_KEY: ${{ secrets.VEGA_UPDATE_PRIVATE_KEY }}
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          python3 scripts/release.py delta
+          cargo xtask sign-delta
+
       - name: Attach the artifact
         if: steps.plan.outputs.complete != 'true'
         uses: actions/upload-artifact@v4
@@ -174,6 +184,7 @@ jobs:
             dist/Vega-macos-arm64.zip.sha256
             dist/Vega-update.json
             dist/Vega-update.json.sig
+            dist/Vega-delta*
           if-no-files-found: error
 
       - name: Publish complete draft

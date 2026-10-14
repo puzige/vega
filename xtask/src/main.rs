@@ -51,6 +51,8 @@ fn dispatch(args: &[String]) -> Result<()> {
         Some("bench-p7") => bench_c1c2_only(),
         Some("bench-p2") => bench_p2_only(),
         Some("package") => package::run(&args[1..]),
+        Some("sign-delta") => sign_update::sign_delta(&args[1..]),
+        Some("verify-update") => sign_update::verify_update(&args[1..]),
         Some("sign-update") => sign_update::run(&args[1..]),
         Some("package-icon") => package::run_icon(&args[1..]),
         other => {
