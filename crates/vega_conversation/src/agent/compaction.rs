@@ -1491,6 +1491,9 @@ impl ConversationCompactionHook<'_> {
         if history
             .iter()
             .all(|message| message.content.trim().is_empty() && message.tool_calls.is_empty())
+            && checkpoint.as_ref().is_none_or(|previous| {
+                previous.model == self.model || previous.summary.trim().is_empty()
+            })
         {
             return Err(failure(
                 context_error(ContextRuntimeError::NoCompactablePrefix),

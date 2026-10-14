@@ -967,7 +967,6 @@ pub fn load_source_version_in_transaction(
     })
 }
 
-/// Loads the latest committed checkpoint for one exact identity.
 pub fn latest_checkpoint(
     conn: &Connection,
     thread_id: &str,
@@ -982,8 +981,8 @@ pub fn latest_checkpoint(
         "SELECT id, thread_id, model, source_version, covered_through_seq, \
                 source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
          FROM context_checkpoints \
-         WHERE thread_id = ?1 AND model = ?2 ORDER BY id DESC LIMIT 1",
-        params![thread_id, model],
+         WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1",
+        params![thread_id],
         checkpoint_from_row,
     )
     .optional()
@@ -1005,8 +1004,8 @@ pub fn latest_checkpoint_in_transaction(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
                     source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
              FROM context_checkpoints \
-             WHERE thread_id = ?1 AND model = ?2 ORDER BY id DESC LIMIT 1",
-            params![thread_id, model],
+             WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1",
+            params![thread_id],
             checkpoint_from_row,
         )
         .optional()
@@ -1183,14 +1182,15 @@ where
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
                     source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
-             FROM context_checkpoints WHERE thread_id = ?1 AND model = ?2 \
+             FROM context_checkpoints WHERE thread_id = ?1 \
              ORDER BY id DESC LIMIT 1",
-            params![checkpoint.thread_id, checkpoint.model],
+            params![checkpoint.thread_id],
             checkpoint_from_row,
         )
         .optional()?;
     if let Some(previous) = &previous {
-        if previous.source_version == checkpoint.source_version
+        if previous.model == checkpoint.model
+            && previous.source_version == checkpoint.source_version
             && previous.source_fingerprint == checkpoint.source_fingerprint
         {
             transaction.rollback()?;
@@ -2396,6 +2396,73 @@ mod tests {
             install_checkpoint(reopened.conn(), &second).unwrap(),
             ContextCheckpointInstall::AlreadyCommitted(row) if row.id == second_id
         ));
+    }
+
+    #[test]
+    fn model_switch_checkpoint_lookup_and_predecessor_are_thread_scoped() {
+        let (store, directory) = store();
+        add_message(&store, "goal", 1, "user", "task goal and progress");
+        let first = checkpoint(&store, None);
+        let ContextCheckpointInstall::Applied(first_row) =
+            install_checkpoint(store.conn(), &first).unwrap()
+        else {
+            panic!("first checkpoint");
+        };
+        assert_eq!(
+            latest_checkpoint(store.conn(), "t", "model-b")
+                .unwrap()
+                .unwrap()
+                .id,
+            first_row.id
+        );
+        store
+            .conn()
+            .execute("UPDATE threads SET model = 'model-b' WHERE id = 't'", [])
+            .unwrap();
+        let second = NewContextCheckpoint {
+            model: "model-b".into(),
+            summary: "goal and progress adapted to smaller budget".into(),
+            expected_previous_id: Some(first_row.id),
+            ..first.clone()
+        };
+        let stale = NewContextCheckpoint {
+            expected_previous_id: None,
+            ..second.clone()
+        };
+        assert_eq!(
+            install_checkpoint(store.conn(), &stale).unwrap(),
+            ContextCheckpointInstall::Stale
+        );
+        let ContextCheckpointInstall::Applied(second_row) =
+            install_checkpoint(store.conn(), &second).unwrap()
+        else {
+            panic!("cross-model checkpoint");
+        };
+        store
+            .conn()
+            .execute("UPDATE threads SET model = 'model-a' WHERE id = 't'", [])
+            .unwrap();
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        assert_eq!(
+            load_checkpoint(reopened.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .id,
+            second_row.id
+        );
+        assert!(
+            load_checkpoint(reopened.conn(), "other-thread", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        let transaction = reopened.conn().unchecked_transaction().unwrap();
+        assert_eq!(
+            latest_checkpoint_in_transaction(&transaction, "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .id,
+            second_row.id
+        );
     }
 
     #[test]

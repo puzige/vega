@@ -342,9 +342,6 @@ pub(crate) fn history_from_context_source(
     Ok(history)
 }
 
-/// Applies the latest exact-model checkpoint to one source projection.  The
-/// same helper is used by normal sends, read_context_projection, and manual
-/// compaction so restart/live requests never estimate a different wire tail.
 pub(crate) fn history_from_context_source_with_checkpoint(
     source: &vega_store::context_compaction::ContextSource,
     checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
@@ -846,9 +843,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     .map_err(runtime_store_error)?;
     let history = primary_history_from_context_source_with_checkpoint(
         &source,
-        checkpoint
-            .as_ref()
-            .filter(|checkpoint| checkpoint.model == thread.model),
+        checkpoint.as_ref(),
         &assistant_message_id,
     )?;
 
