@@ -108,7 +108,7 @@ fn assert_outer_scroll(cx: &mut TestAppContext, final_state: bool) {
     assert!(header.top() >= viewport.top() && header.bottom() <= viewport.bottom());
     if !final_state {
         assert!(visual.debug_bounds("run-stage-content-0").is_none());
-        assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
+        assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     }
     stream.read_with(&visual, |stream, cx| {
         assert!(!stream.list.is_following_tail());
@@ -522,7 +522,7 @@ async fn issue296_sticky_s03_artifact_gap_pushout_and_later_section(cx: &mut Tes
     click(&mut visual, "run-stage-toggle-0");
     assert!(visual.debug_bounds("run-stage-content-0-1").is_none());
     assert!(visual.debug_bounds(artifact_selector).is_some());
-    assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     assert!(visual.debug_bounds("run-stage-toggle-0").unwrap().top() >= viewport.top());
     stream.read_with(&visual, |stream, _| {
         assert_eq!(stream.list.logical_scroll_top().item_ix, 1);

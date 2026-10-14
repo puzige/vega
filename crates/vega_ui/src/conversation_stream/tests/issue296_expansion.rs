@@ -92,7 +92,7 @@ async fn issue296_expansion_p06_first_stage_uses_clock_spacing(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-async fn issue296_expansion_p07_summary_keeps_compact_tools_visible(cx: &mut TestAppContext) {
+async fn issue343_t9_summary_hides_tools_until_stage_opens(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "expansion-rows");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -109,13 +109,21 @@ async fn issue296_expansion_p07_summary_keeps_compact_tools_visible(cx: &mut Tes
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("thinking-toggle").is_none());
-    assert!(visual.debug_bounds("run-stage-chevron-0").is_none());
+    assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.segment_row_count(0, cx), 1);
+        assert_eq!(
+            group.estimated_segment_height(0, 736., cx),
+            Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
+        );
+    });
+    click(&mut visual, "run-stage-toggle-0");
     let first = visual.debug_bounds("run-stage-tool-0-0").unwrap();
     let second = visual.debug_bounds("run-stage-tool-0-1").unwrap();
     assert_eq!(second.top() - first.top(), px(25.));
-    click(&mut visual, "run-stage-toggle-0");
-    assert_eq!(visual.debug_bounds("run-stage-tool-0-0"), Some(first));
-    assert_eq!(visual.debug_bounds("run-stage-tool-0-1"), Some(second));
     assert!(visual.debug_bounds("thinking-content").is_none());
     assert!(visual.debug_bounds("stage-thinking-content").is_none());
     assert!(visual.debug_bounds("thinking-icon").is_none());
@@ -139,15 +147,14 @@ async fn raw_stage_manual_open_preserves_thinking_and_tool_order(cx: &mut TestAp
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("thinking-toggle").is_none());
-    let first = visual.debug_bounds("run-stage-tool-0-0").unwrap();
-    let second = visual.debug_bounds("run-stage-tool-0-1").unwrap();
-    assert_eq!(second.top() - first.top(), px(25.));
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.stage_title(0, cx), "Thinking");
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
-            Layout::CONVERSATION_STAGE_TOP + 3. * Layout::CONVERSATION_TOOL_HEIGHT
+            Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
         );
     });
     click(&mut visual, "run-stage-toggle-0");
@@ -159,8 +166,8 @@ async fn raw_stage_manual_open_preserves_thinking_and_tool_order(cx: &mut TestAp
     assert!(visual.debug_bounds("thinking-content").is_none());
     click(&mut visual, "run-stage-toggle-0");
     assert!(visual.debug_bounds("thinking-toggle").is_none());
-    assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
-    assert!(visual.debug_bounds("run-stage-tool-0-1").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
 }
 
 #[gpui_kit::test]
@@ -220,17 +227,13 @@ async fn tool_before_reasoning_keeps_arrival_order_inside_one_stage(cx: &mut Tes
         );
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
-            Layout::CONVERSATION_STAGE_TOP + 4. * Layout::CONVERSATION_TOOL_HEIGHT
+            Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
         );
-        assert_eq!(group.segment_row_count(0, cx), 4);
+        assert_eq!(group.segment_row_count(0, cx), 1);
     });
-    let first = visual.debug_bounds("run-stage-tool-0-0").unwrap();
-    let second = visual.debug_bounds("run-stage-tool-0-1").unwrap();
-    let header = visual.debug_bounds("run-stage-toggle-0").unwrap();
-    let third = visual.debug_bounds("run-stage-tool-0-2").unwrap();
-    assert_eq!(second.top() - first.top(), px(25.));
-    assert!(second.bottom() <= header.top());
-    assert!(header.bottom() <= third.top());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-2").is_none());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
     click(&mut visual, "run-stage-toggle-0");
     let first = visual.debug_bounds("run-stage-tool-0-0").unwrap();
@@ -239,8 +242,8 @@ async fn tool_before_reasoning_keeps_arrival_order_inside_one_stage(cx: &mut Tes
     let thinking = visual.debug_bounds("thinking-toggle").unwrap();
     let third = visual.debug_bounds("run-stage-tool-0-2").unwrap();
     assert_eq!(second.top() - first.top(), px(25.));
-    assert!(second.bottom() <= header.top());
-    assert!(header.bottom() <= thinking.top());
+    assert!(header.bottom() <= first.top());
+    assert!(second.bottom() <= thinking.top());
     assert_eq!(third.top() - thinking.top(), px(25.));
     stream.read_with(&visual, |stream, cx| {
         assert_eq!(
@@ -528,6 +531,19 @@ async fn issue296_expansion_p07_artifact_splits_sections_in_source_order(cx: &mu
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds(selector).is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        let artifact_rows = artifact.read(cx).row_count();
+        assert_eq!(group.segment_row_count(0, cx), 1 + artifact_rows);
+        assert_eq!(
+            group.estimated_segment_height(0, 736., cx),
+            Layout::CONVERSATION_STAGE_TOP
+                + Layout::CONVERSATION_TOOL_HEIGHT
+                + artifact_rows as f32 * ROW_HEIGHT
+        );
+    });
     click(&mut visual, "run-stage-toggle-0");
     let first = visual.debug_bounds("run-stage-content-0").unwrap();
     let middle = visual.debug_bounds(selector).unwrap();
@@ -545,6 +561,8 @@ async fn issue296_expansion_p07_artifact_splits_sections_in_source_order(cx: &mu
     });
     click(&mut visual, "run-stage-toggle-0");
     assert!(visual.debug_bounds(selector).is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
     assert!(visual.debug_bounds("run-stage-content-0").is_none());
     assert!(visual.debug_bounds("run-stage-content-0-1").is_none());
 }
@@ -781,10 +799,10 @@ async fn repeated_reasoning_and_commands_share_one_compact_stage(cx: &mut TestAp
         }
         assert_eq!(group.compact_tool_groups(0).len(), 1);
         assert_eq!(group.compact_tool_groups(0)[0].read(cx).aggregate_summary(cx), "已运行命令");
-        assert_eq!(group.segment_row_count(0, cx), 2);
+        assert_eq!(group.segment_row_count(0, cx), 1);
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
-            Layout::CONVERSATION_STAGE_TOP + 2. * Layout::CONVERSATION_TOOL_HEIGHT
+            Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
         );
         assert_eq!(
             group
@@ -809,20 +827,20 @@ async fn repeated_reasoning_and_commands_share_one_compact_stage(cx: &mut TestAp
         assert!(stream.entries.iter().any(|entry| matches!(entry, StreamEntry::Assistant { copy, .. } if copy.original_text() == " \n\t")));
     });
     assert!(visual.debug_bounds("run-stage-toggle-0").is_some());
-    assert!(visual.debug_bounds("tool-activity-group-toggle").is_some());
+    assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
-    click(&mut visual, "tool-activity-group-toggle");
-    assert!(visual.debug_bounds("tool-activity-child-0").is_some());
-    assert!(visual.debug_bounds("tool-activity-child-1").is_some());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.segment_row_count(0, cx), 4);
-        assert!(group.estimated_segment_height(0, 736., cx) > 100.);
+        assert_eq!(group.segment_row_count(0, cx), 1);
+        assert_eq!(
+            group.estimated_segment_height(0, 736., cx),
+            Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
+        );
     });
     visual.update(|window, cx| {
         let group = stream.read(cx).run_activity_groups["expansion"].read(cx);
-        assert!(group.reading(window, cx));
+        assert!(!group.reading(window, cx));
     });
     click(&mut visual, "run-stage-toggle-0");
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
@@ -895,7 +913,7 @@ async fn visible_body_splits_stage_after_preserved_blank_text(cx: &mut TestAppCo
         assert_eq!(group.compact_tool_groups(0).len(), 1);
         assert!(group.compact_tool_groups(1).is_empty());
     });
-    assert!(visual.debug_bounds("tool-activity-group-toggle").is_some());
+    assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("run-stage-toggle-1").is_some());
     visual.update(|window, cx| {
         stream.update(cx, |stream, cx| {
@@ -951,7 +969,7 @@ async fn summary_cycles_share_tools_without_duplicate_reasoning(cx: &mut TestApp
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.stage_title(0, cx), "Running checks");
-        assert_eq!(group.segment_row_count(0, cx), 2);
+        assert_eq!(group.segment_row_count(0, cx), 1);
         assert_eq!(group.compact_tool_groups(0).len(), 1);
         assert_eq!(
             stream
@@ -962,17 +980,214 @@ async fn summary_cycles_share_tools_without_duplicate_reasoning(cx: &mut TestApp
             1
         );
     });
-    assert!(visual.debug_bounds("run-stage-chevron-0").is_none());
+    assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
-    assert!(visual.debug_bounds("tool-activity-group-toggle").is_some());
-    click(&mut visual, "tool-activity-group-toggle");
-    assert!(visual.debug_bounds("tool-activity-child-0").is_some());
-    assert!(visual.debug_bounds("tool-activity-child-1").is_some());
+    assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
+    click(&mut visual, "run-stage-toggle-0");
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_some());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
 }
 
 #[gpui_kit::test]
-async fn running_group_yields_to_pending_and_failed_tool_rows(cx: &mut TestAppContext) {
+async fn issue343_t13_gpt_summary_nests_mixed_tools_and_failed_searches(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "gpt-summary-mixed-tools");
+    stream.update(cx, |stream, cx| {
+        begin(stream, cx);
+        summary(stream, "Checking files", cx);
+        let calls = [
+            ToolCall {
+                id: "find".into(),
+                tool: "glob".into(),
+                input_json: r#"{"pattern":"*.rs"}"#.into(),
+            },
+            ToolCall {
+                id: "read".into(),
+                tool: "read".into(),
+                input_json: r#"{"path":"synthetic.rs"}"#.into(),
+            },
+            bash_call("command", "pwd"),
+            ToolCall {
+                id: "edit".into(),
+                tool: "edit".into(),
+                input_json: serde_json::json!({
+                    "audit_version": "write_edit_v1",
+                    "tool": "edit",
+                    "path": "synthetic.rs",
+                    "old_string_bytes": 3,
+                    "new_string_bytes": 4,
+                    "fingerprint_v1": "a".repeat(64)
+                })
+                .to_string(),
+            },
+            ToolCall {
+                id: "search-first".into(),
+                tool: "grep".into(),
+                input_json: r#"{"pattern":"missing"}"#.into(),
+            },
+            ToolCall {
+                id: "search-second".into(),
+                tool: "grep".into(),
+                input_json: r#"{"pattern":"missing"}"#.into(),
+            },
+            ToolCall {
+                id: "search-third".into(),
+                tool: "grep".into(),
+                input_json: r#"{"pattern":"missing"}"#.into(),
+            },
+        ];
+        for call in calls {
+            let id = call.id.clone();
+            stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
+            stream.apply_event(
+                ConversationEvent::ToolCallApproved {
+                    call_id: id.clone(),
+                    approval: Approval::Once,
+                },
+                cx,
+            );
+            stream.apply_event(ConversationEvent::ToolCallRunning { call_id: id.clone() }, cx);
+            let (status, output, exit_code, duration_ms, truncated) = match id.as_str() {
+                "command" => (
+                    ToolCallStatus::Success,
+                    "synthetic result".to_owned(),
+                    Some(0),
+                    Some(1),
+                    Some(false),
+                ),
+                "edit" => (
+                    ToolCallStatus::Success,
+                    r#"{"path":"synthetic.rs","bytes_written":4,"replacements":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#.to_owned(),
+                    None,
+                    None,
+                    Some(false),
+                ),
+                id if id.starts_with("search-") => (
+                    ToolCallStatus::Failed,
+                    "synthetic failure".to_owned(),
+                    None,
+                    None,
+                    None,
+                ),
+                _ => (
+                    ToolCallStatus::Success,
+                    "synthetic result".to_owned(),
+                    None,
+                    None,
+                    Some(false),
+                ),
+            };
+            stream.apply_event(
+                ConversationEvent::ToolCallFinished {
+                    call_id: id.clone(),
+                    result: ToolResult {
+                        status,
+                        output,
+                        reused: false,
+                        exit_code,
+                        duration_ms,
+                        truncated,
+                        invalid: None,
+                    },
+                },
+                cx,
+            );
+        }
+        summary(stream, "Reviewing results", cx);
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Reviewing results");
+        assert_eq!(group.segment_row_count(0, cx), 1);
+        assert_eq!(
+            group.stage_tool_status_label(0, cx).as_deref(),
+            Some("3 项操作失败")
+        );
+        assert_eq!(
+            group.estimated_segment_height(0, 736., cx),
+            Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
+        );
+    });
+    assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
+    assert!(visual.debug_bounds("run-stage-status-0").is_some());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    visual.simulate_resize(gpui_kit::size(px(480.), px(800.)));
+    visual.run_until_parked();
+    let title = visual.debug_bounds("run-stage-title-0").unwrap();
+    let status = visual.debug_bounds("run-stage-status-0").unwrap();
+    let chevron = visual.debug_bounds("run-stage-chevron-0").unwrap();
+    assert!(title.size.width > px(0.));
+    assert!(title.right() <= status.left());
+    assert!(status.right() <= chevron.left());
+    for index in 0..7 {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("run-stage-tool-0-{index}").into_boxed_str()
+                ))
+                .is_none()
+        );
+    }
+    click(&mut visual, "run-stage-toggle-0");
+    let mut previous = visual.debug_bounds("run-stage-toggle-0").unwrap();
+    for index in 0..7 {
+        let row = visual
+            .debug_bounds(Box::leak(
+                format!("run-stage-tool-0-{index}").into_boxed_str(),
+            ))
+            .unwrap();
+        assert!(previous.bottom() <= row.top());
+        previous = row;
+    }
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    stream.read_with(&visual, |stream, cx| {
+        assert_eq!(
+            stream.run_activity_groups["expansion"]
+                .read(cx)
+                .segment_row_count(0, cx),
+            8
+        );
+        for id in ["search-first", "search-second", "search-third"] {
+            assert!(stream.tool_cards[id].read(cx).needs_attention());
+        }
+    });
+}
+
+#[gpui_kit::test]
+async fn issue343_t14_raw_thinking_stays_collapsed_after_new_tools(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "raw-thinking-follow-up-tools");
+    stream.update(cx, |stream, cx| {
+        begin(stream, cx);
+        reasoning(stream, "Checking input", cx);
+        completed_command(stream, "first", cx);
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    click(&mut visual, "run-stage-toggle-0");
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
+    click(&mut visual, "run-stage-toggle-0");
+    stream.update(&mut visual, |stream, cx| {
+        reasoning(stream, " and checking output", cx);
+        completed_command(stream, "second", cx);
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert!(!group.segment_expanded(0));
+        assert_eq!(group.segment_row_count(0, cx), 1);
+        assert_eq!(group.stage_title(0, cx), "Thinking");
+    });
+}
+
+#[gpui_kit::test]
+async fn folded_stage_signals_pending_and_failed_tools(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "compact-tool-attention");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -999,11 +1214,15 @@ async fn running_group_yields_to_pending_and_failed_tool_rows(cx: &mut TestAppCo
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("tool-activity-group-toggle").is_some());
+    assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.segment_row_count(0, cx), 2);
+        assert_eq!(group.segment_row_count(0, cx), 1);
+        assert_eq!(
+            group.stage_tool_status_label(0, cx).as_deref(),
+            Some("正在运行命令")
+        );
         assert_eq!(
             group.compact_tool_groups(0)[0]
                 .read(cx)
@@ -1021,10 +1240,15 @@ async fn running_group_yields_to_pending_and_failed_tool_rows(cx: &mut TestAppCo
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
-    assert!(visual.debug_bounds("run-stage-tool-0-2").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-2").is_none());
+    assert!(visual.debug_bounds("run-stage-status-0").is_some());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.segment_row_count(0, cx), 4);
+        assert_eq!(group.segment_row_count(0, cx), 1);
+        assert_eq!(
+            group.stage_tool_status_label(0, cx).as_deref(),
+            Some("1 项待确认")
+        );
         assert!(stream.tool_cards["pending"].read(cx).needs_attention());
     });
     stream.update(&mut visual, |stream, cx| {
@@ -1043,7 +1267,7 @@ async fn running_group_yields_to_pending_and_failed_tool_rows(cx: &mut TestAppCo
         );
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds("tool-activity-group-toggle").is_some());
+    assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     stream.update(&mut visual, |stream, cx| {
         stream.apply_event(
@@ -1064,7 +1288,8 @@ async fn running_group_yields_to_pending_and_failed_tool_rows(cx: &mut TestAppCo
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
-    assert!(visual.debug_bounds("run-stage-tool-0-2").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-2").is_none());
+    assert!(visual.debug_bounds("run-stage-status-0").is_some());
     stream.read_with(&visual, |stream, cx| {
         assert!(stream.tool_cards["pending"].read(cx).needs_attention());
         assert!(
@@ -1077,9 +1302,18 @@ async fn running_group_yields_to_pending_and_failed_tool_rows(cx: &mut TestAppCo
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .segment_row_count(0, cx),
-            4
+            1
+        );
+        assert_eq!(
+            stream.run_activity_groups["expansion"]
+                .read(cx)
+                .stage_tool_status_label(0, cx)
+                .as_deref(),
+            Some("1 项操作失败")
         );
     });
+    click(&mut visual, "run-stage-toggle-0");
+    assert!(visual.debug_bounds("run-stage-tool-0-2").is_some());
 }
 
 #[gpui_kit::test]
@@ -1093,16 +1327,14 @@ async fn tool_before_reasoning_keeps_its_position_when_compacted(cx: &mut TestAp
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    let compact = visual.debug_bounds("tool-activity-group-toggle").unwrap();
-    let header = visual.debug_bounds("run-stage-toggle-0").unwrap();
-    assert!(compact.bottom() <= header.top());
+    assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.segment_row_count(0, cx), 2);
+        assert_eq!(group.segment_row_count(0, cx), 1);
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
-            Layout::CONVERSATION_STAGE_TOP + 2. * Layout::CONVERSATION_TOOL_HEIGHT
+            Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
         );
     });
     click(&mut visual, "run-stage-toggle-0");
@@ -1111,7 +1343,7 @@ async fn tool_before_reasoning_keeps_its_position_when_compacted(cx: &mut TestAp
     let header = visual.debug_bounds("run-stage-toggle-0").unwrap();
     let thinking = visual.debug_bounds("thinking-toggle").unwrap();
     let second = visual.debug_bounds("run-stage-tool-0-1").unwrap();
-    assert!(first.bottom() <= header.top());
-    assert!(header.bottom() <= thinking.top());
+    assert!(header.bottom() <= first.top());
+    assert!(first.bottom() <= thinking.top());
     assert!(thinking.bottom() <= second.top());
 }
