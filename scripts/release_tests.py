@@ -2,6 +2,8 @@ import contextlib
 import copy
 import importlib.util
 import io
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -18,6 +20,7 @@ class PublicationTransport:
     def __init__(self, root):
         self.root = root
         self.module = None
+        self.asset_names = []
         self.record = {
             'id': 101,
             'tag_name': self.tag,
@@ -61,13 +64,13 @@ class PublicationTransport:
             self.events.append(('ancestor',))
             return subprocess.CompletedProcess(argv, 0)
         upload = ['gh', 'release', 'upload', self.tag, '--repo', 'fixture/vega', '--clobber',
-                  *(str(Path('dist') / name) for name in self.module.ASSETS)]
+                  *(str(Path('dist') / name) for name in self.asset_names)]
         if argv == upload and kwargs == {'check': True}:
             self.events.append(('upload',))
             self.uploads.append(list(argv))
             self.record['assets'] = [
                 {'name': name, 'state': 'uploaded', 'size': (self.root / 'dist' / name).stat().st_size}
-                for name in self.module.ASSETS
+                for name in self.asset_names
             ]
             return subprocess.CompletedProcess(argv, 0)
         raise AssertionError('Unexpected subprocess boundary')
@@ -103,8 +106,23 @@ class ReleasePublicationGuardTests(unittest.TestCase):
         self.stack.enter_context(patch.object(subprocess, 'run', side_effect=self.transport.subprocess_run))
         self.stdout = self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         (self.root / 'dist').mkdir()
-        for name in self.release.ASSETS:
+        patch_name = 'Vega-delta-0.1.62-to-0.1.63.zip'
+        self.transport.asset_names = [*self.release.ASSETS, patch_name]
+        for name in self.transport.asset_names:
             (self.root / 'dist' / name).write_bytes(b'owned release asset\n')
+        patch_bytes = (self.root / 'dist' / patch_name).read_bytes()
+        self.manifest = dict(schema=1, version='0.1.63', bundle_id='ai.vega',
+                             target='aarch64-apple-darwin',
+                             full_sha256=hashlib.sha256(patch_bytes).hexdigest(),
+                             files=[dict(path='Contents/MacOS/vega', size=len(patch_bytes),
+                                         sha256=hashlib.sha256(patch_bytes).hexdigest(), mode=0o755),
+                                    dict(path='Contents/Info.plist', size=len(patch_bytes),
+                                         sha256=hashlib.sha256(patch_bytes).hexdigest(), mode=0o644)],
+                             patches=[dict(from_version='0.1.62', archive=patch_name,
+                                           size=len(patch_bytes),
+                                           sha256=hashlib.sha256(patch_bytes).hexdigest(),
+                                           files=['Contents/Info.plist', 'Contents/MacOS/vega'])])
+        (self.root / 'dist' / 'Vega-delta.json').write_text(json.dumps(self.manifest))
 
     def reject_external_execution(self, *args, **kwargs):
         raise AssertionError('External execution is forbidden in publication UNIT tests')
@@ -120,7 +138,8 @@ class ReleasePublicationGuardTests(unittest.TestCase):
         self.assertEqual(self.transport.record['tag_name'], expected_tag)
         self.assertEqual(self.transport.publications, [], 'Changed refreshed identity must not publish')
         self.assertEqual(self.transport.record['draft'], expected_draft)
-        self.assertTrue(self.release.complete(self.transport.record))
+        self.assertEqual(self.release.complete(self.transport.record, manifest=self.manifest),
+                         expected_tag == self.transport.tag)
         self.assertIsInstance(error, RuntimeError)
         self.assertEqual(str(error), 'Draft asset upload incomplete or release changed externally')
         self.assertEqual(self.stdout.getvalue(), '')
@@ -133,6 +152,26 @@ class ReleasePublicationGuardTests(unittest.TestCase):
         self.transport.after_refresh = {'draft': False}
         self.assert_publication_rejected(self.transport.tag, False)
 
+    def test_referenced_patch_missing_after_upload_rejects_publication(self):
+        self.transport.after_refresh = {'assets': [
+            dict(name=name, state='uploaded', size=(self.root / 'dist' / name).stat().st_size)
+            for name in self.release.ASSETS]}
+        with self.assertRaisesRegex(RuntimeError, 'Draft asset upload incomplete'):
+            self.release.publish()
+        self.assertEqual(len(self.transport.uploads), 1)
+        self.assertEqual(self.transport.publications, [])
+        self.assertTrue(self.transport.record['draft'])
+
+    def test_referenced_patch_size_mismatch_rejects_publication(self):
+        self.transport.after_refresh = {'assets': [
+            dict(name=name, state='uploaded', size=(self.root / 'dist' / name).stat().st_size + 1)
+            for name in self.transport.asset_names]}
+        with self.assertRaisesRegex(RuntimeError, 'Draft asset upload incomplete'):
+            self.release.publish()
+        self.assertEqual(len(self.transport.uploads), 1)
+        self.assertEqual(self.transport.publications, [])
+        self.assertTrue(self.transport.record['draft'])
+
     def test_sig08_unchanged_identity_publishes_once(self):
         self.release.publish()
         self.assertEqual(self.transport.metadata_reads, 2)
@@ -142,7 +181,7 @@ class ReleasePublicationGuardTests(unittest.TestCase):
         }])
         self.assertEqual(self.transport.record['tag_name'], self.transport.tag)
         self.assertFalse(self.transport.record['draft'])
-        self.assertTrue(self.release.complete(self.transport.record))
+        self.assertTrue(self.release.complete(self.transport.record, manifest=self.manifest))
         self.assertEqual(self.transport.events[-1], ('api', 'releases/101', 'PATCH'))
         self.assertEqual(self.stdout.getvalue(), f'Published {self.transport.tag}\n')
 

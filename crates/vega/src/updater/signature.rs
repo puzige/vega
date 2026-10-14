@@ -40,28 +40,7 @@ pub(super) fn verify(
     {
         return Err(failure("更新签名数据超出限制"));
     }
-    let encoded = std::str::from_utf8(signature).map_err(|_| failure("更新签名格式无效"))?;
-    let signature = base64::engine::general_purpose::STANDARD
-        .decode(encoded.trim())
-        .map_err(|_| failure("更新签名格式无效"))?;
-    if signature.len() != 64 {
-        return Err(failure("更新签名长度无效"));
-    }
-    let hex = include_str!("../../../../assets/update-public-key.hex").trim();
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(failure("内置更新公钥无效"));
-    }
-    let mut key = [0_u8; 32];
-    for (index, byte) in key.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
-            .map_err(|_| failure("内置更新公钥无效"))?;
-    }
-    let mut message = Vec::with_capacity(DOMAIN.len() + bytes.len());
-    message.extend_from_slice(DOMAIN);
-    message.extend_from_slice(bytes);
-    UnparsedPublicKey::new(&ED25519, key)
-        .verify(&message, &signature)
-        .map_err(|_| failure("更新签名验证失败，已拒绝安装"))?;
+    verify_signature(bytes, signature, DOMAIN)?;
     let manifest: SignedManifest =
         serde_json::from_slice(bytes).map_err(|_| failure("已签名更新清单格式无效"))?;
     if manifest.schema != 1
@@ -83,6 +62,32 @@ pub(super) fn verify(
     Ok(manifest)
 }
 
+pub(super) fn verify_signature(bytes: &[u8], signature: &[u8], domain: &[u8]) -> UpdateResult<()> {
+    let encoded = std::str::from_utf8(signature).map_err(|_| failure("更新签名格式无效"))?;
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|_| failure("更新签名格式无效"))?;
+    if signature.len() != 64 {
+        return Err(failure("更新签名长度无效"));
+    }
+    let hex = include_str!("../../../../assets/update-public-key.hex").trim();
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(failure("内置更新公钥无效"));
+    }
+    let mut key = [0_u8; 32];
+    for (index, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+            .map_err(|_| failure("内置更新公钥无效"))?;
+    }
+    let mut message = Vec::with_capacity(domain.len() + bytes.len());
+    message.extend_from_slice(domain);
+    message.extend_from_slice(bytes);
+    UnparsedPublicKey::new(&ED25519, key)
+        .verify(&message, &signature)
+        .map_err(|_| failure("更新签名验证失败，已拒绝安装"))?;
+    Ok(())
+}
+
 pub(super) fn load(
     staging: &Path,
     expected_version: &str,
@@ -93,7 +98,7 @@ pub(super) fn load(
     verify(&manifest, &signature, expected_version, current_version)
 }
 
-fn bounded_file(path: &Path, limit: u64) -> UpdateResult<Vec<u8>> {
+pub(super) fn bounded_file(path: &Path, limit: u64) -> UpdateResult<Vec<u8>> {
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)

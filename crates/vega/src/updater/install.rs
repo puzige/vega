@@ -21,16 +21,33 @@ struct Manifest {
     device: u64,
     inode: u64,
     parent_pid: u32,
+    #[serde(default)]
+    delta: bool,
 }
 
-pub(super) fn prepare(bundle: &Bundle, staging: &Path, version: &str) -> UpdateResult<()> {
+pub(super) fn prepare(
+    bundle: &Bundle,
+    staging: &Path,
+    version: &str,
+    delta: bool,
+) -> UpdateResult<()> {
     platform::validate_target_path(&bundle.path)?;
     let team = platform::verified_team(&bundle.path, &bundle.version)?;
     if team != bundle.team {
         return Err(failure("当前应用签名身份已变化，请重新启动后检查更新"));
     }
     let authenticated = signature::load(staging, version, &bundle.version)?;
-    signature::archive_bytes(staging, &authenticated)?;
+    let prepared = platform::private_tempdir_in(staging, "prepare-")?;
+    prepare_candidate(
+        staging,
+        &bundle.path,
+        prepared.path(),
+        &authenticated,
+        &bundle.version,
+        delta,
+        team.as_deref(),
+    )?;
+    drop(prepared);
     let metadata = std::fs::symlink_metadata(&bundle.path)?;
     let manifest = Manifest {
         target: bundle.path.clone(),
@@ -41,6 +58,7 @@ pub(super) fn prepare(bundle: &Bundle, staging: &Path, version: &str) -> UpdateR
         device: metadata.dev(),
         inode: metadata.ino(),
         parent_pid: std::process::id(),
+        delta,
     };
     for name in ["helper-ready", "startup-ok"] {
         let path = staging.join(name);
@@ -169,7 +187,17 @@ fn helper(staging: &Path) -> UpdateResult<()> {
     }
     let team = validate_old(&manifest)?;
     let authenticated = signature::load(staging, &manifest.new_version, &manifest.old_version)?;
-    signature::archive_bytes(staging, &authenticated)?;
+    let prepared = platform::private_tempdir_in(staging, "helper-prepare-")?;
+    prepare_candidate(
+        staging,
+        &manifest.target,
+        prepared.path(),
+        &authenticated,
+        &manifest.old_version,
+        manifest.delta,
+        team.as_deref(),
+    )?;
+    drop(prepared);
     let previous = staging.join("previous.app");
     if previous.exists() || staging.join("startup-ok").exists() {
         return Err(failure("安装记录已被使用"));
@@ -209,11 +237,17 @@ fn replace_and_launch(
         return Err(failure("原应用签名身份已变化"));
     }
     let authenticated = signature::load(staging, &manifest.new_version, &manifest.old_version)?;
-    let archive = signature::archive_bytes(staging, &authenticated)?;
     let candidate_root = platform::private_tempdir_in(staging, "authenticated-")?;
     platform::private_dir(candidate_root.path())?;
-    let candidate = platform::extract(archive, candidate_root.path())?;
-    platform::verify_candidate(&candidate, &authenticated.version, team)?;
+    let candidate = prepare_candidate(
+        staging,
+        &manifest.target,
+        candidate_root.path(),
+        &authenticated,
+        &manifest.old_version,
+        manifest.delta,
+        team,
+    )?;
     manifest.new_hash = platform::hash(&candidate.join("Contents/MacOS/vega"))?;
     let bytes = serde_json::to_vec(manifest).map_err(|_| failure("无法保存安装身份"))?;
     let mut install_record = tempfile::NamedTempFile::new_in(staging)?;
@@ -265,6 +299,27 @@ fn replace_and_launch(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn prepare_candidate(
+    staging: &Path,
+    source: &Path,
+    destination: &Path,
+    authenticated: &signature::SignedManifest,
+    current: &str,
+    delta: bool,
+    team: Option<&str>,
+) -> UpdateResult<PathBuf> {
+    let candidate = if delta {
+        super::delta::reconstruct(staging, source, destination, authenticated, current)?
+    } else {
+        platform::extract(
+            signature::archive_bytes(staging, authenticated)?,
+            destination,
+        )?
+    };
+    platform::verify_candidate(&candidate, &authenticated.version, team)?;
+    Ok(candidate)
 }
 
 fn launch(
@@ -392,6 +447,7 @@ mod tests {
             device: 1,
             inode: 1,
             parent_pid: 1,
+            delta: false,
         };
 
         let error = fail_and_rollback(
