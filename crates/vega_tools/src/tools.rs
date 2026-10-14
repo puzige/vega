@@ -55,6 +55,7 @@ pub struct Tools {
     pub(crate) mutation: Option<MutationContext>,
     pub(crate) instance_id: u64,
     pub(crate) reads: ReadState,
+    pub(crate) credential_policy: Option<Arc<crate::credentials::ToolCredentialPolicy>>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) bash_executor: Option<crate::bash::BashTestExecutor>,
 }
@@ -80,6 +81,7 @@ impl Tools {
             #[cfg(any(test, feature = "test-support"))]
             bash_executor: None,
             reads: ReadState::default(),
+            credential_policy: None,
             instance_id: TOOL_INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         })
     }
@@ -118,8 +120,10 @@ impl Tools {
 
     /// Resolve an absolute or project-relative file path without creating it.
     pub fn file_path(&self, path: &str) -> Result<PathBuf, ToolError> {
-        crate::fence::resolve_file_path(&self.root, path)
-            .map_err(|code| MutationError::new(code).into())
+        let resolved =
+            crate::fence::resolve_file_path(&self.root, path).map_err(MutationError::new)?;
+        self.check_credential_path(&resolved)?;
+        Ok(resolved)
     }
 
     /// The canonical project root all tool paths resolve against.

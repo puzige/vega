@@ -858,6 +858,7 @@ async fn issue73_owned_stdio_reaches_durable_conversation_and_second_provider_ro
         server_id.into(),
         1,
         vega_mcp::LocalServer {
+            credential_policy: None,
             executable: "/bin/sh".into(),
             args: vec![
                 script.to_string_lossy().to_string(),
@@ -973,6 +974,7 @@ async fn issue73_owner_secret_echo_is_redacted_in_events_provider_and_restart_hi
         server_id.into(),
         1,
         vega_mcp::LocalServer {
+            credential_policy: None,
             executable: "/bin/sh".into(),
             args: vec![script.to_string_lossy().into_owned()],
             working_directory: data_dir.path().to_path_buf(),
@@ -1446,6 +1448,7 @@ async fn issue73_production_entry_exposes_same_name_server_provenance_to_model()
                 server_id.to_owned(),
                 1,
                 vega_mcp::LocalServer {
+                    credential_policy: None,
                     executable: "/bin/sh".into(),
                     args: vec![script_path],
                     working_directory,

@@ -25,6 +25,37 @@ const PROFILE: &str = r#"(version 1)
 (deny file-write* (subpath (param "GIT_DIR")))
 (allow network*)"#;
 
+pub(crate) struct ShellCredentialContext {
+    pub(crate) protected_root: PathBuf,
+    pub(crate) proxy_port: Option<u16>,
+    pub(crate) environment: std::collections::BTreeMap<String, String>,
+}
+
+fn protected_profile(
+    base: &str,
+    credentials: Option<&ShellCredentialContext>,
+) -> Result<String, BashError> {
+    let Some(credentials) = credentials else {
+        return Ok(base.into());
+    };
+    let root = credentials
+        .protected_root
+        .to_str()
+        .ok_or_else(|| BashError::new(BashErrorCode::SandboxUnavailable))?;
+    if root.contains(['"', '\\', '\n', '\r']) {
+        return Err(BashError::new(BashErrorCode::SandboxUnavailable));
+    }
+    let mut profile = format!(
+        "{base}\n(deny file-read* file-write* (subpath \"{root}\"))\n(deny process-info*)\n(deny mach-lookup (global-name \"com.apple.taskgated\"))"
+    );
+    if let Some(port) = credentials.proxy_port {
+        profile.push_str(&format!(
+            "\n(deny network*)\n(allow network-outbound (remote tcp \"127.0.0.1:{port}\"))"
+        ));
+    }
+    Ok(profile)
+}
+
 pub(crate) struct SandboxSelfTest {
     pub(crate) result: Result<(), BashError>,
     pub(crate) cleanup_safe: bool,
@@ -125,10 +156,19 @@ impl SandboxConfig {
         command_text: &str,
         temp_root: &TempRoot,
         hooks: &ExecutionHooks,
+        credentials: Option<&ShellCredentialContext>,
     ) -> Result<Child, BashError> {
-        let mut command = self.command(hooks.profile(), temp_root);
+        let profile = protected_profile(hooks.profile(), credentials)?;
+        let mut command = self.command(&profile, temp_root);
         command.arg("--").arg(SHELL);
-        spawn_shell(command, &self.project_root, command_text, temp_root, hooks)
+        spawn_shell(
+            command,
+            &self.project_root,
+            command_text,
+            temp_root,
+            hooks,
+            credentials,
+        )
     }
 
     fn command(&self, profile: &str, temp_root: &TempRoot) -> StdCommand {
@@ -157,6 +197,7 @@ pub(crate) fn spawn_full_access_shell(
     command_text: &str,
     temp_root: &TempRoot,
     hooks: &ExecutionHooks,
+    credentials: Option<&ShellCredentialContext>,
 ) -> Result<Child, BashError> {
     spawn_shell(
         StdCommand::new(SHELL),
@@ -164,6 +205,7 @@ pub(crate) fn spawn_full_access_shell(
         command_text,
         temp_root,
         hooks,
+        credentials,
     )
 }
 
@@ -173,10 +215,20 @@ fn spawn_shell(
     command_text: &str,
     temp_root: &TempRoot,
     hooks: &ExecutionHooks,
+    credentials: Option<&ShellCredentialContext>,
 ) -> Result<Child, BashError> {
     temp_root.validate_identity()?;
+    if let Some(credentials) = credentials.filter(|context| context.proxy_port.is_some()) {
+        command.env_clear().envs(&credentials.environment);
+    }
     command
-        .arg("-lc")
+        .arg(
+            if credentials.is_some_and(|context| context.proxy_port.is_some()) {
+                "-fc"
+            } else {
+                "-lc"
+            },
+        )
         .arg(format!("exec 2>&1\n{command_text}"))
         .current_dir(project_root)
         .env("TMPDIR", temp_root.param())

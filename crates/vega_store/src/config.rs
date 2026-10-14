@@ -316,6 +316,8 @@ fn codex_profile_arg_is_safe(value: &str) -> bool {
 /// Top-level configuration at the config root (tech-spec §6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AppConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_bindings: Vec<vega_credentials::CredentialBinding>,
     /// Configured providers.
     pub providers: Vec<ProviderConfig>,
     /// Default model / permission mode.
@@ -497,6 +499,7 @@ mod tests {
 
     fn sample_config() -> AppConfig {
         AppConfig {
+            credential_bindings: Vec::new(),
             providers: vec![ProviderConfig {
                 api: Default::default(),
                 enabled: true,

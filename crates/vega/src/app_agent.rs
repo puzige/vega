@@ -806,6 +806,30 @@ pub(crate) fn run_agent_worker_with_mcp(
         let config = config_path
             .as_deref()
             .and_then(|path| vega_store::config::read_from(path).ok());
+        let tools = if let Some(root) = config_path.as_deref().and_then(std::path::Path::parent) {
+            let root = root.to_path_buf();
+            let reader_root = root.clone();
+            let binding_path = config_path.clone().ok_or(())?;
+            let bindings = config
+                .as_ref()
+                .map(|config| config.credential_bindings.clone())
+                .unwrap_or_default();
+            let authorized = bindings.clone();
+            let reader: vega_credentials::SecretReader = Arc::new(move |key_ref| {
+                let current = vega_store::config::read_from(&binding_path)
+                    .map_err(|_| vega_credentials::CredentialError::Unavailable)?;
+                if current.credential_bindings != authorized {
+                    return Err(vega_credentials::CredentialError::Unavailable);
+                }
+                vega_store::keystore::get_key(&reader_root, key_ref)
+                    .map_err(|_| vega_credentials::CredentialError::Unavailable)
+            });
+            tools.with_credential_policy(
+                vega_tools::ToolCredentialPolicy::new(root, bindings, reader).map_err(|_| ())?,
+            )
+        } else {
+            tools
+        };
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));

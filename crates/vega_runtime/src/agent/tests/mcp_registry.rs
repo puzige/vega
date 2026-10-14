@@ -535,6 +535,7 @@ async fn issue73_mcp_dispatch_failures_are_typed_and_never_show_server_prose() {
             "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
             1,
             vega_mcp::LocalServer {
+                credential_policy: None,
                 executable: "/bin/sh".into(),
                 args: vec![script.to_string_lossy().into_owned()],
                 working_directory: owned.path().into(),
@@ -613,6 +614,7 @@ async fn issue73_catalog_reads_owner_credentials_once_for_multiple_tools() {
         "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
         1,
         vega_mcp::LocalServer {
+            credential_policy: None,
             executable: "/bin/sh".into(),
             args: vec![script.to_string_lossy().to_string()],
             working_directory: owned.path().to_path_buf(),
@@ -877,6 +879,7 @@ async fn issue73_mock_provider_calls_one_owned_duplex_mcp_server() {
         server_id.clone(),
         1,
         vega_mcp::LocalServer {
+            credential_policy: None,
             executable: "/bin/sh".into(),
             args: vec![
                 script.to_string_lossy().to_string(),
@@ -951,6 +954,7 @@ async fn issue73_mcp_catalog_echoing_owner_secret_is_never_advertised() {
         "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
         1,
         vega_mcp::LocalServer {
+            credential_policy: None,
             executable: "/bin/sh".into(),
             args: vec![script.to_string_lossy().to_string()],
             working_directory: owned.path().to_path_buf(),
@@ -1022,6 +1026,7 @@ async fn issue73_mcp_schema_secret_with_json_escapes_is_never_advertised() {
         "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
         1,
         vega_mcp::LocalServer {
+            credential_policy: None,
             executable: "/bin/sh".into(),
             args: vec![script.to_string_lossy().to_string()],
             working_directory: owned.path().to_path_buf(),
@@ -1074,6 +1079,7 @@ async fn issue73_mcp_success_result_echoing_owner_secret_is_redacted() {
         "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
         1,
         vega_mcp::LocalServer {
+            credential_policy: None,
             executable: "/bin/sh".into(),
             args: vec![script.to_string_lossy().to_string()],
             working_directory: owned.path().to_path_buf(),
@@ -1167,6 +1173,7 @@ async fn issue73_mcp_result_redacts_owner_secret_after_concurrent_rotation() {
         "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
         1,
         vega_mcp::LocalServer {
+            credential_policy: None,
             executable: "/bin/sh".into(),
             args: vec![script.to_string_lossy().to_string()],
             working_directory: owned.path().to_path_buf(),
@@ -1260,6 +1267,7 @@ async fn issue73_mcp_structured_secret_with_json_escapes_is_redacted_for_both_er
             "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
             1,
             vega_mcp::LocalServer {
+                credential_policy: None,
                 executable: "/bin/sh".into(),
                 args: vec![script.to_string_lossy().to_string()],
                 working_directory: owned.path().to_path_buf(),

@@ -3,7 +3,7 @@
 use crate::text_file::TextFile;
 use std::collections::BTreeSet;
 use std::fmt;
-use std::fs::{self, OpenOptions, Permissions};
+use std::fs::{self, Permissions};
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -1009,43 +1009,67 @@ fn atomic_replace(
     let Some(parent) = destination.parent() else {
         return Err(mutation_error(MutationErrorCode::AtomicWriteFailed).into());
     };
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let directory = crate::text_file::open_directory(parent)?;
+    let destination_name = std::ffi::CString::new(
+        destination
+            .file_name()
+            .ok_or_else(|| mutation_error(MutationErrorCode::AtomicWriteFailed))?
+            .as_bytes(),
+    )
+    .map_err(|_| mutation_error(MutationErrorCode::AtomicWriteFailed))?;
     for _ in 0..TEMP_ATTEMPTS {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temp = parent.join(format!(".vega-write-{}-{sequence}.tmp", std::process::id()));
-        let file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+        let name =
+            std::ffi::CString::new(format!(".vega-write-{}-{sequence}.tmp", std::process::id()))
+                .map_err(|_| mutation_error(MutationErrorCode::AtomicWriteFailed))?;
+        // SAFETY: directory is live and name is a NUL-terminated component; exclusive creation prevents alias substitution.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists {
                 continue;
             }
-            Err(_) => return Err(mutation_error(MutationErrorCode::AtomicWriteFailed).into()),
-        };
-        let operation = write_and_rename(file, &temp, destination, bytes, permissions.clone());
-        if operation.is_err() {
-            let _ = fs::remove_file(&temp);
+            return Err(mutation_error(MutationErrorCode::AtomicWriteFailed).into());
         }
-        return operation;
+        // SAFETY: successful openat returned a fresh descriptor exclusively owned by this File.
+        let mut file = unsafe { fs::File::from_raw_fd(fd) };
+        let operation = (|| -> Result<(), ToolError> {
+            if let Some(permissions) = &permissions {
+                file.set_permissions(permissions.clone())?;
+            }
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            // SAFETY: both names are single NUL-terminated components relative to the same live directory descriptor.
+            if unsafe {
+                libc::renameat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    directory.as_raw_fd(),
+                    destination_name.as_ptr(),
+                )
+            } < 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            Ok(())
+        })();
+        if operation.is_err() {
+            // SAFETY: name is the exclusive temporary entry created in this live directory descriptor.
+            unsafe {
+                libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0);
+            }
+        }
+        return operation.map_err(|_| mutation_error(MutationErrorCode::AtomicWriteFailed).into());
     }
     Err(mutation_error(MutationErrorCode::AtomicWriteFailed).into())
-}
-
-fn write_and_rename(
-    mut file: fs::File,
-    temp: &Path,
-    destination: &Path,
-    bytes: &[u8],
-    permissions: Option<Permissions>,
-) -> Result<(), ToolError> {
-    if let Some(permissions) = permissions {
-        file.set_permissions(permissions)
-            .map_err(|_| mutation_error(MutationErrorCode::AtomicWriteFailed))?;
-    }
-    file.write_all(bytes)
-        .map_err(|_| mutation_error(MutationErrorCode::AtomicWriteFailed))?;
-    file.sync_all()
-        .map_err(|_| mutation_error(MutationErrorCode::AtomicWriteFailed))?;
-    fs::rename(temp, destination)
-        .map_err(|_| mutation_error(MutationErrorCode::AtomicWriteFailed))?;
-    Ok(())
 }
 
 #[cfg(test)]

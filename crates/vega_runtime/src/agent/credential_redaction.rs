@@ -230,7 +230,7 @@ fn assignment_value_range(bytes: &[u8], lowercase: &[u8], start: usize) -> Optio
         }
         let value_start = cursor;
         let end = assignment_value_end(bytes, cursor);
-        if end.saturating_sub(value_start) >= 8 {
+        if high_confidence_token(&bytes[value_start..end]) {
             return Some((value_start, end));
         }
     }
@@ -252,7 +252,7 @@ fn bearer_value_range(bytes: &[u8], lowercase: &[u8], start: usize) -> Option<(u
     }
     let value_start = cursor;
     let end = credential_token_end(bytes, cursor);
-    (end.saturating_sub(value_start) >= 8).then_some((value_start, end))
+    high_confidence_token(&bytes[value_start..end]).then_some((value_start, end))
 }
 
 fn jwt_range(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
@@ -281,6 +281,33 @@ fn jwt_range(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
         return None;
     }
     Some((start, end))
+}
+
+fn high_confidence_token(value: &[u8]) -> bool {
+    if std::str::from_utf8(value).is_ok_and(vega_credentials::is_registered_alias) {
+        return false;
+    }
+    if value.len() < 20
+        || !value.iter().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(*byte, b'_' | b'-' | b'.' | b'+' | b'/' | b'=' | b'~')
+        })
+    {
+        return false;
+    }
+    let mut counts = [0usize; 256];
+    for byte in value {
+        counts[*byte as usize] += 1;
+    }
+    let entropy: f64 = counts
+        .iter()
+        .filter(|count| **count > 0)
+        .map(|count| {
+            let probability = *count as f64 / value.len() as f64;
+            -probability * probability.log2()
+        })
+        .sum();
+    entropy >= 3.0
 }
 
 fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
@@ -325,6 +352,20 @@ fn starts_with_ascii_case_insensitive(haystack: &[u8], start: usize, needle: &[u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue378_source_code_and_low_confidence_literals_are_preserved() {
+        for text in [
+            "password: String::new()",
+            "api_key: Option<String>",
+            "password=abcdefgh",
+            "Bearer documentation",
+        ] {
+            assert_eq!(redact_sensitive_credential_text(text, &[]), text);
+            assert!(!contains_sensitive_credential(text, &[]));
+            assert!(contains_sensitive_credential(text, &[text.to_string()]));
+        }
+    }
 
     const SECRET: &str = "canary-provider-credential-output-170-abcdefghijklmnopqrstuvwxyz";
 

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+vega_credentials = { workspace = true }
 # bundled：编译期自带 SQLite C 源码，首次构建耗时数分钟属正常（exec-guide §5 白名单）
 rusqlite = { workspace = true, features = ["bundled"] }
 ulid = { workspace = true }

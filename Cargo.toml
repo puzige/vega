@@ -9,6 +9,7 @@ members = [
     "crates/vega_tools",
     "crates/vega_markdown",
     "crates/vega_store",
+    "crates/vega_credentials",
     "crates/vega_token",
     "crates/vega_theme",
     "crates/vega_acp",
@@ -20,6 +21,11 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
+vega_credentials = { path = "crates/vega_credentials" }
+rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "=0.14.7", default-features = false, features = ["ring", "pem"] }
+httparse = "=1.10.1"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 base64 = "=0.22.1"
 # 基础依赖（exec-guide §5 白名单）：版本精确锁定（=x.y.z），crate 内以 `workspace = true` 引用

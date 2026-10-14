@@ -248,7 +248,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                         message.content
                     )
                 };
-                let values = credentials().map_err(|_| VegaError::CredentialExposureBlocked)?;
+                let values = credentials().map_err(|_| VegaError::CredentialCheckUnavailable)?;
                 if vega_runtime::contains_sensitive_credential(&content, &values) {
                     return Err(VegaError::CredentialExposureBlocked);
                 }

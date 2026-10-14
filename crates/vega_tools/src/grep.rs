@@ -32,6 +32,9 @@ impl Tools {
 
         for walked in walker(&start) {
             let entry = walked.map_err(|error| ToolError::Traversal(error.to_string()))?;
+            if self.check_credential_path(entry.path()).is_err() {
+                continue;
+            }
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
             }
@@ -52,7 +55,7 @@ fn append_file_matches(
     regex: &Regex,
     matches: &mut Vec<String>,
 ) -> Result<(), ToolError> {
-    let mut file = File::open(path)?;
+    let mut file = crate::text_file::open_regular(path)?;
     if binary_probe(&mut file)? {
         return Ok(());
     }

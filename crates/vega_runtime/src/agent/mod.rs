@@ -240,7 +240,7 @@ impl RuntimeToolConfig {
 
     pub(crate) fn redact_tool_output(&self, output: &str) -> Result<String, VegaError> {
         let credentials = match &self.credential_reader {
-            Some(reader) => reader().map_err(|_| VegaError::CredentialExposureBlocked)?,
+            Some(reader) => reader().map_err(|_| VegaError::CredentialCheckUnavailable)?,
             None => Vec::new(),
         };
         Ok(redact_sensitive_credential_text(output, &credentials))

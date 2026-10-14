@@ -255,6 +255,9 @@ fn mcp_error_label(error: McpSettingsError) -> &'static str {
         McpSettingsError::NotFound => "服务器已移除，列表已刷新",
         McpSettingsError::Capacity => "最多只能启用 8 个 MCP 服务器",
         McpSettingsError::Store => "本地配置存储失败，请重试或检查数据目录",
+        McpSettingsError::CredentialBindingRequired => {
+            "此服务的凭据尚未授权 API 目标；请在 Vega 配置的 credential_bindings 中指定目标后重新连接"
+        }
         McpSettingsError::Credential => "凭据存储不可用；已刷新状态，请重新录入",
         McpSettingsError::AuthorizationRequired => "该服务器需要显式授权，未建立连接",
         McpSettingsError::CimdUnavailable => {

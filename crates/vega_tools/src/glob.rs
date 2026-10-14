@@ -24,6 +24,9 @@ impl Tools {
 
         for walked in walker(&self.root) {
             let entry = walked.map_err(|error| ToolError::Traversal(error.to_string()))?;
+            if self.check_credential_path(entry.path()).is_err() {
+                continue;
+            }
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
             }

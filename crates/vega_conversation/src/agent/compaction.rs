@@ -1027,7 +1027,7 @@ fn reject_unprojected_shell_credentials(
         return Ok(());
     }
     let credentials = match credential_reader {
-        Some(reader) => reader().map_err(|_| VegaError::CredentialExposureBlocked)?,
+        Some(reader) => reader().map_err(|_| VegaError::CredentialCheckUnavailable)?,
         None => Vec::new(),
     };
     if outputs
@@ -1092,12 +1092,13 @@ impl ConversationCompactionHook<'_> {
         cancel: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<String, ContextCompactionFailure> {
-        if let Some(reader) = &self.credential_reader
-            && let Err(error) =
-                super::credential_guard::reject_owner_secret(&summary_request, reader.as_ref())
-        {
-            return Err(failure_with_usages(error, usages, *usage_complete));
-        }
+        let summary_request = match &self.credential_reader {
+            Some(reader) => {
+                super::credential_guard::project_owner_secrets(summary_request, reader.as_ref())
+                    .map_err(|error| failure_with_usages(error, usages, *usage_complete))?
+            }
+            None => summary_request,
+        };
         let attempt_id = ulid::Ulid::generate().to_string();
         let started_at = std::time::Instant::now();
         let empty_metrics = SummaryDiagnosticMetrics::default();
@@ -3154,13 +3155,13 @@ mod tests {
             SUMMARY_OPERATION_TIMEOUT,
         )
         .await;
-        assert!(matches!(
-            failure,
-            Err(ref failure)
-                if matches!(failure.error.as_ref(), VegaError::CredentialExposureBlocked)
-        ));
-        assert!(inner.requests().is_empty());
-
+        assert!(matches!(failure, Ok((ref text, _)) if text == "safe summary"));
+        assert_eq!(inner.requests().len(), 1);
+        assert!(
+            !inner.requests()[0].messages[0]
+                .content
+                .contains("rotated-owner-key")
+        );
         let clean = ChatRequest {
             model: "mock-model".to_string(),
             messages: vec![ChatMessage::tool_result("historic-mcp", "ordinary result")],
@@ -3176,8 +3177,8 @@ mod tests {
         .await;
         assert!(matches!(summary, Ok((ref text, _)) if text == "safe summary"));
         let requests = inner.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].messages[0].content, "ordinary result");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].messages[0].content, "ordinary result");
     }
 
     fn assistant(calls: &[&str]) -> ChatMessage {

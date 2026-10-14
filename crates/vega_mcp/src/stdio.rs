@@ -30,6 +30,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Owned stdio MCP session. Calls are serialized by its mutable borrow.
 pub struct StdioClient {
     child: Child,
+    _credential_process: Option<vega_credentials::ProtectedProcess>,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     version: ProtocolVersion,
@@ -62,11 +63,46 @@ impl StdioClient {
             return Err(McpError::InvalidConfig);
         }
         #[cfg(not(any(test, feature = "test-support")))]
-        let mut child = Command::new(&server.executable)
+        let credential_process = match &server.credential_policy {
+            Some(policy) => Some(
+                vega_credentials::ProtectedProcess::start(policy)
+                    .await
+                    .map_err(|_| McpError::InvalidConfig)?,
+            ),
+            None => None,
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        let credential_process = None;
+        #[cfg(not(any(test, feature = "test-support")))]
+        let mut command = match &credential_process {
+            Some(process) => Command::from(
+                process
+                    .command(&server.executable)
+                    .map_err(|_| McpError::InvalidConfig)?,
+            ),
+            None => {
+                let mut command = Command::new(&server.executable);
+                command
+                    .env_clear()
+                    .envs(server.environment.iter().map(|(name, value)| (name, value)));
+                command
+            }
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let mut child = command
             .args(&server.args)
-            .current_dir(&server.working_directory)
-            .env_clear()
-            .envs(server.environment.iter().map(|(name, value)| (name, value)))
+            .current_dir(
+                credential_process
+                    .as_ref()
+                    .filter(|_| {
+                        server.credential_policy.as_ref().is_some_and(|policy| {
+                            server.working_directory.starts_with(&policy.root)
+                        })
+                    })
+                    .map_or(server.working_directory.as_path(), |process| {
+                        process.directory()
+                    }),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -79,6 +115,7 @@ impl StdioClient {
         let stdout = child.stdout.take().ok_or(McpError::Transport)?;
         let mut client = Self {
             child,
+            _credential_process: credential_process,
             stdin,
             stdout: BufReader::new(stdout),
             version: ProtocolVersion::Modern,

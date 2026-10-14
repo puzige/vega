@@ -58,7 +58,7 @@ pub(crate) fn reject_owner_secret(
     request: &ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
 ) -> Result<(), VegaError> {
-    let known = reader().map_err(|_| blocked())?;
+    let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
     if request.messages.iter().any(|message| {
         vega_runtime::contains_sensitive_credential(&message.content, &known)
             || message
@@ -89,6 +89,62 @@ pub(crate) fn reject_owner_secret(
     Ok(())
 }
 
+fn project_json(value: &mut serde_json::Value, known: &[String]) -> Result<(), VegaError> {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = vega_runtime::redact_sensitive_credential_text(text, known)
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                project_json(item, known)?;
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                if vega_runtime::contains_sensitive_credential(key, known) {
+                    return Err(blocked());
+                }
+                project_json(value, known)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn project_owner_secrets(
+    mut request: ChatRequest,
+    reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
+) -> Result<ChatRequest, VegaError> {
+    let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+    for message in &mut request.messages {
+        message.content = vega_runtime::redact_sensitive_credential_text(&message.content, &known);
+        if let Some(reasoning) = &mut message.reasoning_content {
+            *reasoning = vega_runtime::redact_sensitive_credential_text(reasoning, &known);
+        }
+        for call in &mut message.tool_calls {
+            match serde_json::from_str::<serde_json::Value>(&call.input_json) {
+                Ok(mut value) => {
+                    project_json(&mut value, &known)?;
+                    call.input_json = serde_json::to_string(&value).map_err(|_| blocked())?;
+                }
+                Err(_) if vega_runtime::contains_sensitive_credential(&call.input_json, &known) => {
+                    return Err(blocked());
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    for (tool_index, tool) in request.tools.iter_mut().enumerate() {
+        tool.description =
+            vega_runtime::redact_sensitive_credential_text(&tool.description, &known);
+        if contains_json_secret(&tool.input_schema, &known) {
+            return Err(VegaError::CredentialProjectionInvalid { tool_index });
+        }
+    }
+    Ok(request)
+}
+
 impl Provider for OwnerCredentialProvider {
     fn chat_stream_recovering(
         &self,
@@ -98,6 +154,7 @@ impl Provider for OwnerCredentialProvider {
         let provider = self.provider.clone();
         let known = self.known.clone();
         Box::pin(async move {
+            let request = project_owner_secrets(request, known.as_ref())?;
             reject_owner_secret(&request, known.as_ref())?;
             provider.chat_stream_recovering(request, cancel).await
         })
@@ -110,6 +167,7 @@ impl Provider for OwnerCredentialProvider {
         let provider = self.provider.clone();
         let known = self.known.clone();
         Box::pin(async move {
+            let request = project_owner_secrets(request, known.as_ref())?;
             reject_owner_secret(&request, known.as_ref())?;
             provider.chat_stream_once(request, cancel).await
         })
@@ -123,6 +181,7 @@ impl Provider for OwnerCredentialProvider {
         let provider = self.provider.clone();
         let known = self.known.clone();
         Box::pin(async move {
+            let request = project_owner_secrets(request, known.as_ref())?;
             reject_owner_secret(&request, known.as_ref())?;
             provider.chat_stream(request, cancel).await
         })
@@ -146,7 +205,10 @@ mod tests {
                 .map(|key| vec![key])
                 .map_err(|_| ())
         });
-        let inner = Arc::new(MockProvider::new(vec![ScriptStep::text("safe")]));
+        let inner = Arc::new(MockProvider::new(vec![
+            ScriptStep::text("safe"),
+            ScriptStep::text("safe"),
+        ]));
         let guarded = OwnerCredentialProvider::new(inner.clone(), reader.clone());
         let guard = OwnerCredentialProvider::pre_attempt_guard(reader);
         let request = ChatRequest {
@@ -166,11 +228,15 @@ mod tests {
             guard(&request),
             Err(VegaError::CredentialExposureBlocked)
         ));
-        assert!(matches!(
-            guarded.chat_stream(request, CancellationToken::new()).await,
-            Err(VegaError::CredentialExposureBlocked)
-        ));
-        assert_eq!(inner.requests().len(), 1);
+        assert!(
+            guarded
+                .chat_stream(request, CancellationToken::new())
+                .await
+                .is_ok()
+        );
+        let requests = inner.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(!requests[1].messages[0].content.contains(ROTATED));
     }
 
     #[tokio::test]
@@ -186,13 +252,16 @@ mod tests {
             ..ChatRequest::default()
         };
 
-        let error = match guarded.chat_stream(request, CancellationToken::new()).await {
-            Ok(_) => panic!("legacy credential must be blocked before provider dispatch"),
-            Err(error) => error,
-        };
-
-        assert!(!matches!(error, VegaError::Provider { status: None, .. }));
-        assert!(inner.requests().is_empty());
+        let original = request.clone();
+        assert!(
+            guarded
+                .chat_stream(request, CancellationToken::new())
+                .await
+                .is_ok()
+        );
+        assert_eq!(original.messages[0].content, SECRET);
+        assert_eq!(inner.requests().len(), 1);
+        assert!(!inner.requests()[0].messages[0].content.contains(SECRET));
     }
 
     struct RecoveryOnlyProvider(std::sync::atomic::AtomicUsize);
@@ -244,12 +313,54 @@ mod tests {
             )],
             ..Default::default()
         };
-        assert!(matches!(
+        assert!(
             wrapped
                 .chat_stream_recovering(request, CancellationToken::new())
-                .await,
-            Err(VegaError::CredentialExposureBlocked)
+                .await
+                .is_ok()
+        );
+        assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+    #[test]
+    fn projection_preserves_json_structure_and_refuses_schema_semantic_changes() {
+        let secret = "synthetic-quoted-\"secret";
+        let reader = || Ok(vec![secret.to_string()]);
+        let mut request = ChatRequest::default();
+        request.messages.push(ChatMessage::assistant_with_tools(
+            "safe",
+            vec![vega_runtime::ChatToolCall {
+                id: "call-1".into(),
+                name: "bash".into(),
+                input_json: serde_json::json!({"command": format!("echo {secret}"), "count": 7})
+                    .to_string(),
+            }],
         ));
-        assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        request
+            .messages
+            .push(ChatMessage::tool_result("call-1", secret));
+        let projected = project_owner_secrets(request.clone(), &reader).unwrap();
+        assert_eq!(
+            projected.messages[1].tool_call_id.as_deref(),
+            Some("call-1")
+        );
+        let arguments: serde_json::Value =
+            serde_json::from_str(&projected.messages[0].tool_calls[0].input_json).unwrap();
+        assert_eq!(arguments["count"], 7);
+        assert!(!arguments["command"].as_str().unwrap().contains(secret));
+        assert!(request.messages[1].content.contains(secret));
+        assert!(project_json(&mut serde_json::json!({secret: "value"}), &[secret.into()]).is_err());
+    }
+
+    #[tokio::test]
+    async fn unavailable_authority_never_dispatches_or_becomes_transport_failure() {
+        let inner = Arc::new(MockProvider::new(vec![]));
+        let guarded = OwnerCredentialProvider::new(inner.clone(), Arc::new(|| Err(())));
+        assert!(matches!(
+            guarded
+                .chat_stream(ChatRequest::default(), CancellationToken::new())
+                .await,
+            Err(VegaError::CredentialCheckUnavailable)
+        ));
+        assert!(inner.requests().is_empty());
     }
 }
