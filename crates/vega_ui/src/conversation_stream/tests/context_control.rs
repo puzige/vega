@@ -794,7 +794,13 @@ async fn issue365_compaction_failure_deduplicates_only_owned_budget_error(cx: &m
             stream
                 .run_failures
                 .insert("owned-run".into(), RunFailureKind::ContextOverLimit);
-            assert!(stream.run_notice_projection(cx).is_empty());
+            stream.refresh_run_notices(cx);
+            assert_eq!(stream.run_notices.len(), 1);
+            assert!(matches!(
+                stream.run_notices[&index].kind,
+                run_notice::RunNoticeKind::ContextFailure
+            ));
+            assert!(stream.compaction_failure_is_represented(index));
             stream
                 .run_failures
                 .insert("owned-run".into(), RunFailureKind::ProviderTransport);
@@ -841,12 +847,20 @@ async fn issue365_compaction_states_keep_compact_natural_height(cx: &mut TestApp
         let row = visual
             .debug_bounds("context-compaction-row")
             .expect("status row");
-        let icon = visual
-            .debug_bounds("context-compaction-icon-slot")
-            .expect("icon");
-        assert_eq!(row.size.height, px(Layout::DISCLOSURE_HEADER_HEIGHT));
-        assert_eq!(icon.size.width, px(Layout::ICON_SIZE));
-        assert_eq!(icon.origin.y, row.origin.y);
+        if state != Status::Failed {
+            let icon = visual
+                .debug_bounds("context-compaction-icon-slot")
+                .expect("icon");
+            assert_eq!(row.size.height, px(Layout::DISCLOSURE_HEADER_HEIGHT));
+            assert_eq!(icon.size.width, px(Layout::ICON_SIZE));
+            assert_eq!(icon.origin.y, row.origin.y);
+        } else {
+            assert!(
+                visual
+                    .debug_bounds("context-compaction-icon-slot")
+                    .is_none()
+            );
+        }
         if state == Status::Failed {
             visual.simulate_resize(gpui_kit::size(px(160.), px(700.)));
             visual.run_until_parked();
@@ -857,14 +871,85 @@ async fn issue365_compaction_states_keep_compact_natural_height(cx: &mut TestApp
             let wrapped = visual
                 .debug_bounds("context-compaction-row")
                 .expect("wrapped status");
-            let icon = visual
-                .debug_bounds("context-compaction-icon-slot")
-                .expect("wrapped icon");
+
             assert!(
                 wrapped.size.height > row.size.height,
                 "wide={row:?}, narrow={wrapped:?}"
             );
-            assert_eq!(icon.origin.y, wrapped.origin.y);
         }
     }
+}
+
+#[gpui_kit::test]
+async fn issue365_reopened_context_error_uses_owned_shared_notice(cx: &mut TestAppContext) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            use vega_conversation::history::{AssistantStatus, HistoryEntry, HistoryPage};
+            stream.apply_history_page(
+                HistoryPage {
+                    entries: vec![
+                        HistoryEntry::AssistantText {
+                            seq: 1,
+                            message_id: "budget-run".into(),
+                            content: String::new(),
+                            status: AssistantStatus::Failed,
+                            execution_duration_ms: Some(1),
+                        },
+                        HistoryEntry::AssistantText {
+                            seq: 2,
+                            message_id: "provider-run".into(),
+                            content: String::new(),
+                            status: AssistantStatus::Failed,
+                            execution_duration_ms: Some(1),
+                        },
+                    ],
+                    older_cursor: None,
+                    newer_cursor: None,
+                    newest_seq: None,
+                },
+                cx,
+            );
+            stream.restore_context_run_failures(
+                &[("budget-run".into(), RunFailureKind::ContextOverLimit)],
+                cx,
+            );
+            let mut record = status(1, Status::Failed);
+            record.failure = Some(Failure::OverLimit);
+            assert!(stream.restore_owned_context_status(
+                "context-thread",
+                "mock",
+                record,
+                Some("budget-run"),
+                cx
+            ));
+            stream.refresh_run_notices(cx);
+            assert_eq!(stream.run_notices.len(), 2);
+            let budget = stream
+                .run_notices
+                .values()
+                .find(|notice| notice.message_id == "budget-run")
+                .unwrap();
+            assert!(matches!(
+                budget.kind,
+                run_notice::RunNoticeKind::ContextFailure
+            ));
+            assert!(budget.text().contains("上下文超出预算"));
+            let provider = stream
+                .run_notices
+                .values()
+                .find(|notice| notice.message_id == "provider-run")
+                .unwrap();
+            assert!(matches!(
+                provider.kind,
+                run_notice::RunNoticeKind::Failure(RunFailureKind::Persisted)
+            ));
+            assert!(stream.compaction_failure_is_represented(stream.entries.len() - 1));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-notice-budget-run").is_some());
+    assert!(visual.debug_bounds("run-notice-provider-run").is_some());
+    assert!(visual.debug_bounds("context-compaction-row").is_none());
 }

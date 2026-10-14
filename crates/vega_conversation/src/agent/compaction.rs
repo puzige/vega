@@ -220,8 +220,35 @@ pub fn read_context_projection_with_provider(
             .rposition(|message| message.role == ChatRole::User)
             .is_some_and(|index| index > 0);
     let status = latest_status(&transaction, thread_id, expected_model)
-        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
-        .map(context_status_record);
+        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
+    let last_status_message_id = status.as_ref().and_then(|status| {
+        let (owner, _) = status.operation_key.split_once(":context-generation-")?;
+        source
+            .messages
+            .iter()
+            .any(|message| message.id == owner && message.role == "assistant")
+            .then(|| owner.to_owned())
+    });
+    let diagnostics = vega_store::run_diagnostics::read_by_thread(&transaction, thread_id)
+        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
+    let run_failures = diagnostics
+        .into_iter()
+        .filter_map(|row| {
+            use vega_store::run_diagnostics::{
+                DiagnosticFailureCode, DiagnosticPhase, DiagnosticState,
+            };
+            let event = row.event;
+            (event.phase == DiagnosticPhase::Run
+                && event.state == DiagnosticState::Failed
+                && event.failure_code == Some(DiagnosticFailureCode::ContextOverLimit)
+                && source
+                    .messages
+                    .iter()
+                    .any(|message| message.id == event.run_id && message.role == "assistant"))
+            .then_some((event.run_id, crate::types::RunFailureKind::ContextOverLimit))
+        })
+        .collect();
+    let status = status.map(context_status_record);
     let unknown_usage = has_unknown_usage_for_thread(&transaction, thread_id)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
     transaction
@@ -233,6 +260,8 @@ pub fn read_context_projection_with_provider(
         estimated_tokens: Some(estimate.input_tokens),
         compactable,
         last_status: status,
+        last_status_message_id,
+        run_failures,
         unknown_usage,
         source_version: source.source_version,
         source_fingerprint: source.fingerprint,

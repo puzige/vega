@@ -160,6 +160,8 @@ pub struct ContextProjection {
     /// Last content-free status, with interrupted in-flight rows recovered as
     /// Cancelled so a restart cannot leave the UI permanently busy.
     pub last_status: Option<ContextCompactionStatusRecord>,
+    pub last_status_message_id: Option<String>,
+    pub run_failures: Vec<(String, super::RunFailureKind)>,
     /// Sticky durable accounting uncertainty from a summary with no Usage or
     /// an interrupted summary operation.
     pub unknown_usage: bool,

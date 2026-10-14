@@ -5,6 +5,7 @@ use vega_conversation::types::TaskSummaryOutcome;
 pub(crate) enum RunNoticeKind {
     Retrying { attempt: u32, max_retries: u32 },
     Failure(RunFailureKind),
+    ContextFailure,
     Interrupted,
 }
 
@@ -22,6 +23,11 @@ impl RunNotice {
                 max_retries,
             } => format!("正在重新连接… {attempt}/{max_retries}"),
             RunNoticeKind::Failure(failure) => failure.message(),
+            RunNoticeKind::ContextFailure => context_control::status_label_for(
+                vega_conversation::types::ContextCompactionStatus::Failed,
+                Some(vega_conversation::types::ContextCompactionFailureCode::OverLimit),
+            )
+            .into(),
             RunNoticeKind::Interrupted => "已中断".into(),
         }
     }
@@ -44,7 +50,7 @@ impl RunNotice {
         let message_id = self.message_id.clone();
         let color = match self.kind {
             RunNoticeKind::Retrying { .. } => colors.text_secondary,
-            RunNoticeKind::Failure(_) => colors.danger,
+            RunNoticeKind::Failure(_) | RunNoticeKind::ContextFailure => colors.danger,
             RunNoticeKind::Interrupted => colors.warning,
         };
         gpui_kit::div()
@@ -54,9 +60,13 @@ impl RunNotice {
             .py_1()
             .child(
                 gpui_kit::div()
-                    .when(matches!(self.kind, RunNoticeKind::Failure(_)), |row| {
-                        row.debug_selector(|| "assistant-run-failure".into())
-                    })
+                    .when(
+                        matches!(
+                            self.kind,
+                            RunNoticeKind::Failure(_) | RunNoticeKind::ContextFailure
+                        ),
+                        |row| row.debug_selector(|| "assistant-run-failure".into()),
+                    )
                     .when(matches!(self.kind, RunNoticeKind::Interrupted), |row| {
                         row.debug_selector(|| "task-outcome-status".into())
                     })
@@ -109,6 +119,26 @@ impl ConversationStream {
             })
     }
 
+    pub(crate) fn compaction_failure_is_represented(&self, index: usize) -> bool {
+        let Some(StreamEntry::ContextCompaction { record, .. }) = self.entries.get(index) else {
+            return false;
+        };
+        if record.status != vega_conversation::types::ContextCompactionStatus::Failed
+            || record.failure
+                != Some(vega_conversation::types::ContextCompactionFailureCode::OverLimit)
+        {
+            return false;
+        }
+        self.entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_ref())
+            .is_some_and(|id| {
+                self.run_notices.values().any(|notice| {
+                    notice.message_id == *id && notice.kind == RunNoticeKind::ContextFailure
+                })
+            })
+    }
+
     pub(crate) fn run_notice_projection(&self, cx: &App) -> HashMap<usize, RunNotice> {
         let mut ends = vec![self.entries.len(); self.entries.len()];
         let mut end = self.entries.len();
@@ -139,7 +169,10 @@ impl ConversationStream {
                 });
             if index < source.end && !self.process_entry_hidden(index, cx) {
                 let visible = !matches!(entry, StreamEntry::RunActivitySegment { group, segment } if group.read(cx).segment_row_count(*segment, cx) == 0);
-                if visible {
+                if visible
+                    && !(source.tail.is_some()
+                        && matches!(entry, StreamEntry::ContextCompaction { restored: true, .. }))
+                {
                     source.tail = Some(index);
                 }
             }
@@ -176,13 +209,20 @@ impl ConversationStream {
         sources
             .into_iter()
             .filter_map(|(message_id, source)| {
-                if source.failure.is_some_and(|failure| {
-                    self.compaction_reports_run_failure(&message_id, failure)
-                }) {
-                    return None;
-                }
                 let kind = if let Some(failure) = source.failure {
-                    Some(RunNoticeKind::Failure(failure))
+                    Some(
+                        if failure == RunFailureKind::ContextOverLimit
+                            || (failure == RunFailureKind::Persisted
+                                && self.compaction_reports_run_failure(
+                                    &message_id,
+                                    RunFailureKind::ContextOverLimit,
+                                ))
+                        {
+                            RunNoticeKind::ContextFailure
+                        } else {
+                            RunNoticeKind::Failure(failure)
+                        },
+                    )
                 } else if let Some((_, attempt, max_retries)) =
                     self.network_retry.as_ref().filter(|(id, _, _)| {
                         id == &message_id && source.status == Some(RunActivityStatus::Running)
@@ -229,7 +269,9 @@ impl ConversationStream {
                     && (self.compaction_reports_run_failure(message_id, *failure)
                         || self.run_notices.values().any(|notice| {
                             notice.message_id == *message_id
-                                && notice.kind == RunNoticeKind::Failure(*failure)
+                                && (notice.kind == RunNoticeKind::Failure(*failure)
+                                    || (*failure == RunFailureKind::ContextOverLimit
+                                        && notice.kind == RunNoticeKind::ContextFailure))
                         }))
             })
     }
