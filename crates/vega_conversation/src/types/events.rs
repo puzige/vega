@@ -31,6 +31,8 @@ pub enum RunFailureKind {
     #[allow(missing_docs)]
     CredentialExposureBlocked,
     ContextOverLimit,
+    #[allow(missing_docs)]
+    ReasoningLimit(Option<vega_runtime::ReasoningBudgetScope>),
     /// A durable failed row whose original reason was not persisted.
     Persisted,
 }
@@ -84,6 +86,10 @@ impl RunFailureKind {
                 | vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
                 | vega_runtime::ContextRuntimeError::ResultOverLimit { .. },
             ) => Self::ContextOverLimit,
+            vega_runtime::VegaError::ReasoningBudgetExceeded { scope, .. }
+            | vega_runtime::VegaError::ReasoningReplayBudgetExceeded { scope, .. } => {
+                Self::ReasoningLimit(Some(*scope))
+            }
             _ => Self::Runtime,
         }
     }
@@ -108,6 +114,15 @@ impl RunFailureKind {
             }
             Self::ContextOverLimit => {
                 "本地上下文超出预算；原始对话已保留。请调整上下文容量、缩小工具查询范围或在新对话中继续。".into()
+            }
+            Self::ReasoningLimit(Some(vega_runtime::ReasoningBudgetScope::Delta | vega_runtime::ReasoningBudgetScope::Turn)) => {
+                "模型本次思考内容超出限制；请降低思考强度后重试。".into()
+            }
+            Self::ReasoningLimit(Some(vega_runtime::ReasoningBudgetScope::Run)) => {
+                "保留的模型思考内容超出限制；请压缩上下文后继续，或降低思考强度后重试。".into()
+            }
+            Self::ReasoningLimit(None) => {
+                "模型思考内容超出限制；请降低思考强度，或压缩上下文后继续。".into()
             }
             Self::Runtime => "任务执行失败；请检查运行环境后重试".into(),
             Self::Persisted => "这条回复执行失败；请检查供应商状态、额度或运行环境后重试".into(),
@@ -469,6 +484,7 @@ pub(crate) fn from_runtime_event(
         RuntimeEvent::SteeringAccepted(_)
         | RuntimeEvent::ToolRoundCompleted { .. }
         | RuntimeEvent::DiagnosticAttempt(_)
+        | RuntimeEvent::ReasoningRetentionReleased
         | RuntimeEvent::BuiltinSkillActivated(_) => None,
         RuntimeEvent::ScreenshotDelivered { call_id, image, .. } => {
             Some(ConversationEvent::ScreenshotDelivered {
@@ -694,6 +710,9 @@ pub(crate) fn from_runtime_event(
                 }
                 Some(vega_runtime::ContextCompactionStatusFailure::OverLimit) => {
                     Some(ContextCompactionFailureCode::OverLimit)
+                }
+                Some(vega_runtime::ContextCompactionStatusFailure::ReasoningLimit) => {
+                    Some(ContextCompactionFailureCode::ReasoningLimit)
                 }
                 Some(vega_runtime::ContextCompactionStatusFailure::Unavailable) => {
                     Some(ContextCompactionFailureCode::Unavailable)

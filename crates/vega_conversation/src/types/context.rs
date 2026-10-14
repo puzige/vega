@@ -72,6 +72,8 @@ pub enum ContextCompactionFailureCode {
     ImagesUnsupported,
     /// The configured input/output budget could not be satisfied.
     OverLimit,
+    #[allow(missing_docs)]
+    ReasoningLimit,
     /// Another runtime or persistence failure occurred.
     Unavailable,
 }

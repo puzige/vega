@@ -109,23 +109,21 @@ impl ConversationStream {
         message_id: &str,
         failure: RunFailureKind,
     ) -> bool {
-        failure == RunFailureKind::ContextOverLimit
-            && self.entries.iter().zip(&self.entry_identities).any(|(entry, identity)| {
-                identity.message_id.as_deref() == Some(message_id)
-                    && matches!(entry, StreamEntry::ContextCompaction { record, .. }
-                        if record.status == vega_conversation::types::ContextCompactionStatus::Failed
-                        && record.failure == Some(vega_conversation::types::ContextCompactionFailureCode::OverLimit))
-            })
+        self.entries.iter().zip(&self.entry_identities).any(|(entry, identity)| {
+            identity.message_id.as_deref() == Some(message_id)
+                && matches!(entry, StreamEntry::ContextCompaction { record, .. }
+                    if record.status == vega_conversation::types::ContextCompactionStatus::Failed
+                    && matches!((record.failure, failure),
+                        (Some(vega_conversation::types::ContextCompactionFailureCode::OverLimit), RunFailureKind::ContextOverLimit)
+                        | (Some(vega_conversation::types::ContextCompactionFailureCode::ReasoningLimit), RunFailureKind::ReasoningLimit(_))))
+        })
     }
 
     pub(crate) fn compaction_failure_is_represented(&self, index: usize) -> bool {
         let Some(StreamEntry::ContextCompaction { record, .. }) = self.entries.get(index) else {
             return false;
         };
-        if record.status != vega_conversation::types::ContextCompactionStatus::Failed
-            || record.failure
-                != Some(vega_conversation::types::ContextCompactionFailureCode::OverLimit)
-        {
+        if record.status != vega_conversation::types::ContextCompactionStatus::Failed {
             return false;
         }
         self.entry_identities
@@ -133,7 +131,9 @@ impl ConversationStream {
             .and_then(|identity| identity.message_id.as_ref())
             .is_some_and(|id| {
                 self.run_notices.values().any(|notice| {
-                    notice.message_id == *id && notice.kind == RunNoticeKind::ContextFailure
+                    notice.message_id == *id && matches!((record.failure, &notice.kind),
+                        (Some(vega_conversation::types::ContextCompactionFailureCode::OverLimit), RunNoticeKind::ContextFailure)
+                        | (Some(vega_conversation::types::ContextCompactionFailureCode::ReasoningLimit), RunNoticeKind::Failure(RunFailureKind::ReasoningLimit(_))))
                 })
             })
     }
@@ -185,6 +185,13 @@ impl ConversationStream {
                     }
                 }
                 StreamEntry::RunActivity { group } => source.status = Some(group.read(cx).status()),
+                StreamEntry::ContextCompaction { record, .. }
+                    if record.status == vega_conversation::types::ContextCompactionStatus::Failed
+                        && record.failure == Some(vega_conversation::types::ContextCompactionFailureCode::ReasoningLimit)
+                        && matches!(source.failure, None | Some(RunFailureKind::Persisted)) =>
+                {
+                    source.failure = Some(RunFailureKind::ReasoningLimit(None));
+                }
                 StreamEntry::Summary { card }
                     if !matches!(
                         source.status,
@@ -269,6 +276,15 @@ impl ConversationStream {
                         || self.run_notices.values().any(|notice| {
                             notice.message_id == *message_id
                                 && (notice.kind == RunNoticeKind::Failure(*failure)
+                                    || matches!(
+                                        (&notice.kind, failure),
+                                        (
+                                            RunNoticeKind::Failure(RunFailureKind::ReasoningLimit(
+                                                _
+                                            )),
+                                            RunFailureKind::ReasoningLimit(_)
+                                        )
+                                    )
                                     || (*failure == RunFailureKind::ContextOverLimit
                                         && notice.kind == RunNoticeKind::ContextFailure))
                         }))

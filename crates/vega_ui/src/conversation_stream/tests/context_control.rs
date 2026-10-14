@@ -953,3 +953,179 @@ async fn issue365_reopened_context_error_uses_owned_shared_notice(cx: &mut TestA
     assert!(visual.debug_bounds("run-notice-provider-run").is_some());
     assert!(visual.debug_bounds("context-compaction-row").is_none());
 }
+
+#[gpui_kit::test]
+async fn issue372_live_reasoning_failure_has_one_owned_actionable_surface(cx: &mut TestAppContext) {
+    use vega_conversation::types::{ConversationEvent, ReasoningBudgetScope};
+    for scope in [
+        ReasoningBudgetScope::Delta,
+        ReasoningBudgetScope::Turn,
+        ReasoningBudgetScope::Run,
+    ] {
+        let window = setup(cx);
+        window
+            .update(cx, |stream, _, cx| {
+                stream.begin_composer_run(cx);
+                stream.apply_event(
+                    ConversationEvent::MessageStarted {
+                        message_id: "thinking-run".into(),
+                        seq: 1,
+                    },
+                    cx,
+                );
+                stream.apply_event(
+                    ConversationEvent::ThinkingDelta {
+                        message_id: "thinking-run".into(),
+                        delta: "owned thinking".into(),
+                    },
+                    cx,
+                );
+                if scope == ReasoningBudgetScope::Run {
+                    let mut record = status(1, Status::Failed);
+                    record.failure = Some(Failure::ReasoningLimit);
+                    stream.apply_context_status("context-thread", "mock", record, cx);
+                }
+                stream.apply_event(
+                    ConversationEvent::Error {
+                        message_id: Some("thinking-run".into()),
+                        error: std::sync::Arc::new(
+                            vega_runtime::VegaError::ReasoningBudgetExceeded {
+                                scope,
+                                limit_bytes: 1,
+                                observed_bytes: 2,
+                            },
+                        ),
+                        execution_duration_ms: Some(1),
+                    },
+                    cx,
+                );
+                stream.refresh_run_notices(cx);
+                assert_eq!(stream.run_notices.len(), 1);
+                let notice = stream.run_notices.values().next().unwrap();
+                assert_eq!(notice.message_id, "thinking-run");
+                assert!(notice.text().contains("思考内容超出限制"));
+                assert!(notice.text().contains("思考强度"));
+                assert!(!notice.text().contains("运行环境"));
+                assert!(!notice.text().contains("供应商"));
+                assert!(stream.controller_error_is_run_notice());
+                stream.actions.running = false;
+                stream.restore_context_run_failures(
+                    &[("thinking-run".into(), RunFailureKind::ReasoningLimit(None))],
+                    cx,
+                );
+                assert_eq!(stream.run_notices.len(), 1);
+                assert!(stream.controller_error_is_run_notice());
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("run-notice-thinking-run").is_some());
+        assert!(
+            visual
+                .debug_bounds("conversation-controller-error")
+                .is_none()
+        );
+        assert!(visual.debug_bounds("context-compaction-row").is_none());
+    }
+}
+
+#[gpui_kit::test]
+async fn issue372_reopened_steered_reasoning_error_keeps_one_card_and_independent_failure(
+    cx: &mut TestAppContext,
+) {
+    use vega_conversation::history::{AssistantStatus, HistoryEntry, HistoryPage};
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.apply_history_page(
+                HistoryPage {
+                    entries: vec![
+                        HistoryEntry::AssistantText {
+                            seq: 2,
+                            message_id: "original-run".into(),
+                            content: "completed before steer".into(),
+                            status: AssistantStatus::Done,
+                            execution_duration_ms: None,
+                        },
+                        HistoryEntry::AssistantText {
+                            seq: 4,
+                            message_id: "steered-failure".into(),
+                            content: String::new(),
+                            status: AssistantStatus::Failed,
+                            execution_duration_ms: Some(1),
+                        },
+                        HistoryEntry::AssistantText {
+                            seq: 6,
+                            message_id: "other-failure".into(),
+                            content: String::new(),
+                            status: AssistantStatus::Failed,
+                            execution_duration_ms: Some(1),
+                        },
+                    ],
+                    older_cursor: None,
+                    newer_cursor: None,
+                    newest_seq: None,
+                },
+                cx,
+            );
+            stream.restore_context_run_failures(
+                &[(
+                    "steered-failure".into(),
+                    RunFailureKind::ReasoningLimit(None),
+                )],
+                cx,
+            );
+            let mut record = status(1, Status::Failed);
+            record.failure = Some(Failure::ReasoningLimit);
+            assert!(stream.restore_owned_context_status(
+                "context-thread",
+                "mock",
+                record,
+                Some("steered-failure"),
+                cx
+            ));
+            stream.refresh_run_notices(cx);
+            assert_eq!(stream.run_notices.len(), 2);
+            let reasoning = stream
+                .run_notices
+                .values()
+                .filter(|notice| {
+                    matches!(
+                        notice.kind,
+                        run_notice::RunNoticeKind::Failure(RunFailureKind::ReasoningLimit(_))
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(reasoning.len(), 1);
+            assert_eq!(reasoning[0].message_id, "steered-failure");
+            assert!(reasoning[0].text().contains("思考内容超出限制"));
+            assert!(!reasoning[0].text().contains("运行环境"));
+            assert!(
+                stream
+                    .run_notices
+                    .values()
+                    .any(|notice| notice.message_id == "other-failure"
+                        && notice.kind
+                            == run_notice::RunNoticeKind::Failure(RunFailureKind::Persisted))
+            );
+            assert!(
+                !stream
+                    .run_notices
+                    .values()
+                    .any(|notice| notice.message_id == "original-run")
+            );
+            assert!(stream.compaction_failure_is_represented(stream.entries.len() - 1));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-notice-steered-failure").is_some());
+    assert!(visual.debug_bounds("run-notice-other-failure").is_some());
+    assert!(visual.debug_bounds("run-notice-original-run").is_none());
+    assert!(visual.debug_bounds("context-compaction-row").is_none());
+    assert!(
+        visual
+            .debug_bounds("conversation-controller-error")
+            .is_none()
+    );
+}

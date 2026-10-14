@@ -38,6 +38,7 @@ where
     let mut pending_text_bytes = 0usize;
     let mut batch_deadline = None;
     let mut response_start = None;
+    let mut reasoning_event_start = 0usize;
     let mut tool_attempts =
         std::collections::HashMap::<String, (String, std::time::Instant)>::new();
 
@@ -161,6 +162,29 @@ where
                         .await
                     {
                         Ok(()) => {
+                            if matches!(event, RuntimeEvent::AssistantResponseStarted { .. }) {
+                                reasoning_event_start = events.len();
+                            }
+                            let release_start = match &event {
+                                RuntimeEvent::ReasoningRetentionReleased => Some(0),
+                                RuntimeEvent::ResponseRetrying { .. } => {
+                                    Some(reasoning_event_start)
+                                }
+                                _ => None,
+                            };
+                            if let Some(start) = release_start {
+                                let mut index = 0usize;
+                                events.retain(|event| {
+                                    let keep = index < start
+                                        || !matches!(
+                                            event,
+                                            ConversationEvent::ThinkingDelta { .. }
+                                                | ConversationEvent::SummaryDelta { .. }
+                                        );
+                                    index += 1;
+                                    keep
+                                });
+                            }
                             if let RuntimeEvent::SteeringAccepted(input) = &event {
                                 let transitioned = [
                                     ConversationEvent::MessageFinished {
@@ -879,6 +903,7 @@ pub(crate) fn persist_runtime_event(
                     "no_compactable_prefix"
                 }
                 vega_runtime::ContextCompactionStatusFailure::TooLarge => "too_large",
+                vega_runtime::ContextCompactionStatusFailure::ReasoningLimit => "too_large",
                 vega_runtime::ContextCompactionStatusFailure::InvalidSummary => "invalid_summary",
                 vega_runtime::ContextCompactionStatusFailure::TimedOut => "summary_timeout",
                 vega_runtime::ContextCompactionStatusFailure::ImagesUnsupported => {
@@ -962,6 +987,7 @@ pub(crate) fn persist_runtime_event(
         RuntimeEvent::TextDelta(_)
         | RuntimeEvent::ThinkingDelta(_)
         | RuntimeEvent::SummaryDelta(_)
+        | RuntimeEvent::ReasoningRetentionReleased
         | RuntimeEvent::DiagnosticAttempt(_)
         | RuntimeEvent::ContextAccountingUpdated(_)
         | RuntimeEvent::ToolCallOutput { .. }

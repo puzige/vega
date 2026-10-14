@@ -83,6 +83,7 @@ impl ContextCompactionHook for RecordingCompactionHook {
 mod loop_tools;
 mod mcp_registry;
 mod permission_flow;
+mod reasoning_budget;
 mod response_phases;
 mod skills;
 mod skills_s16;
@@ -989,10 +990,49 @@ async fn i71_summary_shares_reasoning_budget_and_opaque_replay_is_run_bounded() 
         data.path().join("checkpoints"),
         Vec::new(),
     );
-    let result = run_agent(&provider, &tools, req, CancellationToken::new()).await;
-    assert!(matches!(result, Err(VegaError::Provider { .. })));
+    let result = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(result.failed);
+    assert!(!result.interrupted);
+    let errors = result
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::Error(error) => Some(error),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(errors.len(), 1);
+    assert!(
+        matches!(errors[0].as_ref(), VegaError::ReasoningReplayBudgetExceeded {
+        scope: ReasoningBudgetScope::Run,
+        limit_bytes,
+        observed_bytes,
+        limit_items: 256,
+        observed_items: 5,
+    } if *limit_bytes == REASONING_RUN_MAX_BYTES && observed_bytes > limit_bytes)
+    );
     assert_eq!(provider.requests().len(), 5);
+    assert_eq!(result.tool_call_count, 4);
+    assert_eq!(result.executed_tool_call_count, 4);
+    assert_eq!(
+        result
+            .events
+            .iter()
+            .filter(|event| matches!(event, RuntimeEvent::ToolCallProposed(_)))
+            .count(),
+        4
+    );
+    assert_eq!(result.events.iter().filter(|event| matches!(event, RuntimeEvent::ToolCallFinished(finished) if finished.status == RuntimeToolStatus::Success)).count(), 4);
+    assert!(
+        !result.events.iter().any(
+            |event| matches!(event, RuntimeEvent::ToolCallProposed(call) if call.id == "read-4")
+        )
+    );
+    assert_eq!(result.events.iter().filter(|event| matches!(event, RuntimeEvent::DiagnosticAttempt(attempt) if attempt.state == RuntimeDiagnosticState::Failed && attempt.failure == Some(RuntimeDiagnosticFailure::ReasoningLimit))).count(), 1);
     assert!(!format!("{:?}", provider.requests()).contains(&"x".repeat(100)));
+    assert!(!format!("{result:?}").contains(&"x".repeat(100)));
 }
 
 #[tokio::test]

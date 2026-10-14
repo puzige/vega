@@ -290,6 +290,10 @@ impl DiagnosticsWriter {
 
 pub(crate) fn run_failure(error: &vega_runtime::VegaError) -> DiagnosticFailureCode {
     match error {
+        vega_runtime::VegaError::ReasoningBudgetExceeded { .. }
+        | vega_runtime::VegaError::ReasoningReplayBudgetExceeded { .. } => {
+            DiagnosticFailureCode::ReasoningLimit
+        }
         vega_runtime::VegaError::Context(
             vega_runtime::ContextRuntimeError::OverLimit { .. }
             | vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
