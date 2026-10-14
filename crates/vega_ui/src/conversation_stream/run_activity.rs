@@ -1,8 +1,6 @@
 use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
-use crate::tool_card::ToolActivityState;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
-use vega_conversation::types::ToolCallStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunActivityStatus {
@@ -29,18 +27,6 @@ struct RunActivitySegment {
     focus: FocusHandle,
     header_focus: FocusHandle,
     scrolls: Vec<ScrollHandle>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StageToolStatusKind {
-    PendingApproval,
-    Failed,
-    Running,
-}
-
-struct StageToolStatus {
-    label: String,
-    kind: StageToolStatusKind,
 }
 
 #[derive(Clone)]
@@ -919,6 +905,7 @@ impl RunActivityGroup {
     fn activity_presentation(&self, cx: &App) -> (String, crate::icons::Icon, bool) {
         use crate::icons::Icon;
         use crate::tool_card::ToolActivityState;
+        use vega_conversation::types::ToolCallStatus;
         if self.terminal {
             return (
                 self.label(),
@@ -1231,68 +1218,6 @@ impl RunActivityGroup {
             .unwrap_or_else(|| "Thinking".to_owned())
     }
 
-    fn stage_tool_status(&self, segment: usize, cx: &App) -> Option<StageToolStatus> {
-        let mut pending = 0;
-        let mut failed = 0;
-        let mut rejected = 0;
-        let mut running = None;
-        for child in &self.segments.get(segment)?.children {
-            let cards = match child {
-                RunActivityChild::Tool(card) => vec![card.clone()],
-                RunActivityChild::ToolGroup(group) => group.read(cx).children(),
-                RunActivityChild::Thinking(_) | RunActivityChild::Artifact(_) => Vec::new(),
-            };
-            for card in cards {
-                let card = card.read(cx);
-                if card.call_status() == ToolCallStatus::PendingApproval {
-                    pending += 1;
-                }
-                match card.activity_state() {
-                    ToolActivityState::Failed => failed += 1,
-                    ToolActivityState::Rejected => rejected += 1,
-                    ToolActivityState::Active if card.call_status() == ToolCallStatus::Running => {
-                        running = Some(format!("正在{}", card.activity_category().action_phrase()));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if pending > 0 {
-            return Some(StageToolStatus {
-                label: format!("{pending} 项待确认"),
-                kind: StageToolStatusKind::PendingApproval,
-            });
-        }
-        if failed > 0 && rejected > 0 {
-            return Some(StageToolStatus {
-                label: format!("失败 {failed} · 拒绝 {rejected}"),
-                kind: StageToolStatusKind::Failed,
-            });
-        }
-        if failed > 0 {
-            return Some(StageToolStatus {
-                label: format!("{failed} 项操作失败"),
-                kind: StageToolStatusKind::Failed,
-            });
-        }
-        if rejected > 0 {
-            return Some(StageToolStatus {
-                label: format!("{rejected} 项调用被拒绝"),
-                kind: StageToolStatusKind::Failed,
-            });
-        }
-        running.map(|label| StageToolStatus {
-            label,
-            kind: StageToolStatusKind::Running,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn stage_tool_status_label(&self, segment: usize, cx: &App) -> Option<String> {
-        self.stage_tool_status(segment, cx)
-            .map(|status| status.label)
-    }
-
     #[cfg(test)]
     pub(crate) fn segment_expanded(&self, segment: usize) -> bool {
         self.segments[segment].expanded
@@ -1371,12 +1296,6 @@ impl RunActivityGroup {
         let mut rows = Vec::new();
         if thinking.is_some() {
             let title = state.stage_title(segment_index, cx);
-            let status = state.stage_tool_status(segment_index, cx);
-            let accessible_title = if let Some(status) = &status {
-                format!("{title}，{}", status.label)
-            } else {
-                title.clone()
-            };
             let disclosure_group: gpui_kit::SharedString =
                 format!("run-stage-{}-{segment_index}", group.entity_id()).into();
             let header_focus = state.segments[segment_index].header_focus.clone();
@@ -1393,11 +1312,11 @@ impl RunActivityGroup {
                     .when(can_expand, |row| row.aria_expanded(expanded))
                     .aria_label(if can_expand {
                         format!(
-                            "{accessible_title}，{}阶段过程",
+                            "{title}，{}阶段过程",
                             if expanded { "收起" } else { "展开" }
                         )
                     } else {
-                        accessible_title
+                        title.clone()
                     })
                     .when(can_expand, |row| {
                         row.focus_visible(move |row| row.bg(colors.bg_hover))
@@ -1440,20 +1359,6 @@ impl RunActivityGroup {
                                 div().child(title).into_any_element()
                             }),
                     )
-                    .when_some(status, move |row, status| {
-                        row.child(
-                            div()
-                                .debug_selector(move || format!("run-stage-status-{segment_index}"))
-                                .min_w_0()
-                                .flex_shrink(1.)
-                                .text_color(match status.kind {
-                                    StageToolStatusKind::PendingApproval => colors.warning,
-                                    StageToolStatusKind::Failed => colors.danger,
-                                    StageToolStatusKind::Running => colors.conversation_tool,
-                                })
-                                .child(format!("· {}", status.label)),
-                        )
-                    })
                     .when(can_expand, |row| {
                         row.child(crate::disclosure::inline_chevron(
                             disclosure_group,

@@ -1101,26 +1101,22 @@ async fn issue343_t13_gpt_summary_nests_mixed_tools_and_failed_searches(cx: &mut
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.stage_title(0, cx), "Reviewing results");
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(
-            group.stage_tool_status_label(0, cx).as_deref(),
-            Some("3 项操作失败")
-        );
+        assert!(stream.run_notice_projection(cx).is_empty());
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
             Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
         );
     });
     assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
-    assert!(visual.debug_bounds("run-stage-status-0").is_some());
+    assert!(visual.debug_bounds("run-stage-status-0").is_none());
+    assert!(visual.debug_bounds("assistant-run-failure").is_none());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
     visual.simulate_resize(gpui_kit::size(px(480.), px(800.)));
     visual.run_until_parked();
     let title = visual.debug_bounds("run-stage-title-0").unwrap();
-    let status = visual.debug_bounds("run-stage-status-0").unwrap();
     let chevron = visual.debug_bounds("run-stage-chevron-0").unwrap();
     assert!(title.size.width > px(0.));
-    assert!(title.right() <= status.left());
-    assert!(status.right() <= chevron.left());
+    assert!(title.right() <= chevron.left());
     for index in 0..7 {
         assert!(
             visual
@@ -1187,7 +1183,7 @@ async fn issue343_t14_raw_thinking_stays_collapsed_after_new_tools(cx: &mut Test
 }
 
 #[gpui_kit::test]
-async fn folded_stage_signals_pending_and_failed_tools(cx: &mut TestAppContext) {
+async fn folded_stage_hides_running_pending_and_failed_tool_status(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "compact-tool-attention");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -1219,10 +1215,8 @@ async fn folded_stage_signals_pending_and_failed_tools(cx: &mut TestAppContext) 
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(
-            group.stage_tool_status_label(0, cx).as_deref(),
-            Some("正在运行命令")
-        );
+        assert_eq!(group.stage_title(0, cx), "Thinking");
+        assert!(stream.run_notice_projection(cx).is_empty());
         assert_eq!(
             group.compact_tool_groups(0)[0]
                 .read(cx)
@@ -1241,14 +1235,12 @@ async fn folded_stage_signals_pending_and_failed_tools(cx: &mut TestAppContext) 
     visual.run_until_parked();
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("run-stage-tool-0-2").is_none());
-    assert!(visual.debug_bounds("run-stage-status-0").is_some());
+    assert!(visual.debug_bounds("run-stage-status-0").is_none());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(
-            group.stage_tool_status_label(0, cx).as_deref(),
-            Some("1 项待确认")
-        );
+        assert_eq!(group.stage_title(0, cx), "Thinking");
+        assert!(stream.run_notice_projection(cx).is_empty());
         assert!(stream.tool_cards["pending"].read(cx).needs_attention());
     });
     stream.update(&mut visual, |stream, cx| {
@@ -1289,7 +1281,8 @@ async fn folded_stage_signals_pending_and_failed_tools(cx: &mut TestAppContext) 
     visual.run_until_parked();
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("run-stage-tool-0-2").is_none());
-    assert!(visual.debug_bounds("run-stage-status-0").is_some());
+    assert!(visual.debug_bounds("run-stage-status-0").is_none());
+    assert!(visual.debug_bounds("assistant-run-failure").is_none());
     stream.read_with(&visual, |stream, cx| {
         assert!(stream.tool_cards["pending"].read(cx).needs_attention());
         assert!(
@@ -1307,13 +1300,57 @@ async fn folded_stage_signals_pending_and_failed_tools(cx: &mut TestAppContext) 
         assert_eq!(
             stream.run_activity_groups["expansion"]
                 .read(cx)
-                .stage_tool_status_label(0, cx)
-                .as_deref(),
-            Some("1 项操作失败")
+                .stage_title(0, cx),
+            "Thinking"
         );
+        assert!(stream.run_notice_projection(cx).is_empty());
     });
     click(&mut visual, "run-stage-toggle-0");
     assert!(visual.debug_bounds("run-stage-tool-0-2").is_some());
+}
+
+#[gpui_kit::test]
+async fn issue343_t16_permission_request_stays_outside_thinking_disclosure(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "permission-outside-thinking");
+    stream.update(cx, |stream, cx| {
+        begin(stream, cx);
+        reasoning(stream, "Checking a protected command", cx);
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("permission-command", "printf protected"),
+            },
+            cx,
+        );
+    });
+    let queue = stream.read_with(cx, |stream, _| stream.permission_queue());
+    let decision = request_permission(&queue, "permission-command", "printf protected");
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let stage = visual.debug_bounds("run-timeline-segment-0").unwrap();
+    let permission = visual.debug_bounds("conversation-permission-card").unwrap();
+    assert!(stage.bottom() <= permission.top());
+    assert!(visual.debug_bounds("run-stage-status-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    stream.read_with(&visual, |stream, cx| {
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::Permission { .. }))
+                .count(),
+            1
+        );
+        assert!(stream.active_permission.is_some());
+        assert!(stream.run_notice_projection(cx).is_empty());
+    });
+    click(&mut visual, "run-stage-toggle-0");
+    let stage = visual.debug_bounds("run-timeline-segment-0").unwrap();
+    let permission = visual.debug_bounds("conversation-permission-card").unwrap();
+    assert!(stage.bottom() <= permission.top());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
+    drop(decision);
 }
 
 #[gpui_kit::test]

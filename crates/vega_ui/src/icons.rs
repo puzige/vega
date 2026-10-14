@@ -39,6 +39,7 @@ pub enum Icon {
     Steer,
     Trash,
     Connection,
+    Wifi,
     Plug,
     Bot,
     Blocks,
@@ -95,6 +96,7 @@ const SUMMARY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
 
 const CHART_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16M8 16v-5m5 5V7m5 9V3"/></svg>"#;
 const PLUG_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v5m6-5v5M7 8h10v4a5 5 0 0 1-10 0V8Zm5 9v4"/></svg>"#;
+const WIFI_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.86a10 10 0 0 1 14 0"/><path d="M8.5 16.43a5 5 0 0 1 7 0"/></svg>"#;
 const BLOCKS_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/><path d="M14 6.5h7m-3.5-3.5v7"/></svg>"#;
 const PENCIL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l4 4M4 16 16 4a2.83 2.83 0 0 1 4 4L8 20l-5 1 1-5Z"/></svg>"#;
 const WRENCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94L14.7 6.3Z"/></svg>"#;
@@ -159,6 +161,7 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Minimize => IconName::Minimize,
         Icon::More => IconName::Ellipsis,
         Icon::Connection => IconName::Network,
+        Icon::Wifi => unreachable!("inline SVG icons are handled before mapping"),
         Icon::Bot => IconName::Bot,
         Icon::ArrowUpDown => IconName::ChevronsUpDown,
         Icon::GitBranch => unreachable!("inline SVG icons are handled before mapping"),
@@ -225,6 +228,7 @@ pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
     let glyph = match kind {
         Icon::Chart => inline_icon(CHART_SVG, color, size),
         Icon::Plug => inline_icon(PLUG_SVG, color, size),
+        Icon::Wifi => inline_icon(WIFI_SVG, color, size),
         Icon::Blocks => inline_icon(BLOCKS_SVG, color, size),
         Icon::Pin => inline_icon(PIN_SVG, color, size),
         Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color, size),

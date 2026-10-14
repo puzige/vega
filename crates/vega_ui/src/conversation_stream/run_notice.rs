@@ -1,4 +1,5 @@
 use super::*;
+use crate::icons::Icon;
 use vega_conversation::types::TaskSummaryOutcome;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -40,11 +41,13 @@ impl RunNotice {
                 .w_full()
                 .min_w_0()
                 .py_1()
-                .text_size(px(Typography::BODY))
-                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                .text_color(colors.text_secondary)
                 .aria_label(self.text())
-                .child(self.text())
+                .child(render_rows::status_notice_with_icon(
+                    self.text(),
+                    colors.warning,
+                    colors,
+                    Icon::Wifi,
+                ))
                 .into_any_element();
         }
         let message_id = self.message_id.clone();
@@ -76,10 +79,6 @@ impl RunNotice {
     }
 
     pub(crate) fn estimated_height(&self, width: f32) -> f32 {
-        if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
-            return Typography::BODY * Typography::BODY_LINE_HEIGHT
-                + 2. * Layout::CONVERSATION_INLINE_GAP;
-        }
         let content_width =
             (width - 2. * Layout::STATUS_PADDING - 2. - Layout::ICON_SIZE - Layout::STATUS_GAP)
                 .max(1.);
