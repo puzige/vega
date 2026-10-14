@@ -313,6 +313,16 @@ impl Render for VegaWindow {
                                 this.persist_composer_thinking(stream.clone(), request, cx);
                             })
                             .detach();
+                            cx.subscribe(
+                                &view,
+                                |this,
+                                 stream,
+                                 request: &vega_ui::conversation_stream::PrivacyRequested,
+                                 cx| {
+                                    this.request_privacy(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
                             cx.subscribe(&view, |this, stream, request: &vega_ui::conversation_stream::CredentialContinuationRequested, cx| {
                                 this.resume_credential_continuation(stream.clone(), request, cx);
                             }).detach();

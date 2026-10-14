@@ -193,6 +193,8 @@ SQLite WAL、备份、导出与已写出的外部文件可能仍含旧值。数�
 5. 新增 headless `vega_credentials` crate。架构评审批准最小 TLS 依赖 `rustls`、`tokio-rustls`、`rcgen`（ring 后端）及 HTTP 解析所需依赖；优先复用 lock 既有版本的 `hyper`、`hyper-util`、`http-body-util`，`httparse` 仅在有严格 framing 契约时使用。版本必须精确锁定，不禁用上游证书验证。具体版本和使用理由记录在交付文档。
 6. 首个可信配置入口使用 owner `config.toml` 的无秘密 `credential_bindings`，含 key_ref、环境变量、HTTPS 目标、认证头和可选路径约束。模型不能注册/修改授权；owner 配置与凭据文件都受工具访问保护。配置需有验证与可操作错误，不能仅实现无人调用的 Broker API。
 7. 代理须拒绝冲突 Content-Length/Transfer-Encoding、重复长度、目标与 Host 不一致、歧义 URL、CRLF 和不支持的协议升级；请求/响应均有大小与时间上限。只绑定回环端口不足以认证工具，必须校验运行态环境租约。
+8. 实施时冻结 Full access 边界：有凭据绑定的 Shell 调用要求切换受保护模式后执行，不在 Full access 隐式启动 Broker 租约。所有内置工具禁止读写 Vega owner 配置/凭据根；Full access 仅为内部资源保护施加最小限制，保留普通网络与项目外文件访问，不宣称强隔离。错误在相关操作位置说明切换方式。
+9. 首版透明代理支持有界 HTTPS HTTP/1 头认证，响应缓冲过滤后返回，不宣称增量 SSE、任意编码或签名协议透明兼容。HMAC/私钥等需要专门受信任操作的场景明确拒绝，不向脚本恢复真值；本任务不创建没有业务契约的通用签名服务。
 
 ## 12 参考入口
 

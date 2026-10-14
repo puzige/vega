@@ -30,6 +30,7 @@ mod model_context;
 pub(crate) mod navigation;
 mod pending_messages;
 mod pricing;
+mod privacy;
 mod reasoning;
 mod render;
 mod scroll_state;

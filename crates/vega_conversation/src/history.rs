@@ -301,6 +301,53 @@ fn assemble(
             "page size {limit} is outside the 1..=200 page contract"
         )));
     }
+    let mut page = page;
+    let projection = crate::privacy::DisplayProjection::load(store, thread_id)?;
+    for row in &mut page.rows {
+        let positions: Vec<_> = page
+            .tool_calls
+            .iter()
+            .enumerate()
+            .filter_map(|(index, call)| {
+                (call.message_id == row.id)
+                    .then_some((index, call.text_offset_bytes))
+                    .and_then(|(index, offset)| {
+                        offset
+                            .and_then(|offset| usize::try_from(offset).ok())
+                            .map(|offset| (index, offset))
+                    })
+            })
+            .collect();
+        let offsets: Vec<_> = positions.iter().map(|(_, offset)| *offset).collect();
+        for response in page
+            .assistant_responses
+            .iter_mut()
+            .filter(|response| response.message_id == row.id)
+        {
+            let (_, positions) = projection.offsets(
+                &row.content,
+                &[response.text_start_bytes, response.text_end_bytes],
+            );
+            if let [start, end] = positions.as_slice() {
+                response.text_start_bytes = *start;
+                response.text_end_bytes = *end;
+            }
+        }
+        let (content, offsets) = projection.offsets(&row.content, &offsets);
+        row.content = content;
+        for ((index, _), offset) in positions.into_iter().zip(offsets) {
+            page.tool_calls[index].text_offset_bytes = i64::try_from(offset).ok();
+        }
+        if let Some(note) = &mut row.plan_review_note {
+            *note = projection.text(note);
+        }
+    }
+    for call in &mut page.tool_calls {
+        call.input_json = projection.json(&call.input_json);
+        if let Some(output) = &mut call.output_text {
+            *output = projection.text(output);
+        }
+    }
     let newest_seq = page.rows.last().map(|row| row.seq);
     let mut entries = project_rows(&page)?;
     if let (Some(oldest), Some(newest)) = (page.rows.first(), page.rows.last()) {
@@ -371,7 +418,9 @@ fn assemble(
         if let Some(receipt) = vega_store::credential_continuation::find(store.conn(), &row.id)
             .map_err(|error| ConversationError::Store(error.to_string()))?
         {
-            let failure = if receipt.state == "unknown" {
+            let failure = if receipt.reason == "source_changed" {
+                crate::types::RunFailureKind::CredentialContinuationUnavailable
+            } else if receipt.state == "unknown" {
                 crate::types::RunFailureKind::CredentialOutcomeUnknown
             } else if receipt.state == "ready" {
                 match receipt.reason.as_str() {

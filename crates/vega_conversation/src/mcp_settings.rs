@@ -374,6 +374,21 @@ impl McpServerSettingsService {
         view(&row, &state, &self.config_root)
     }
 
+    pub fn local_credential_binding_template(&self, id: &str) -> Result<String, McpSettingsError> {
+        let store = self.store()?;
+        let row = mcp_servers::find(store.conn(), id)?.ok_or(McpSettingsError::NotFound)?;
+        let slots = env_slots_from_row(&row)?;
+        let mut template = String::new();
+        for slot in slots {
+            let reference =
+                serde_json::to_string(&slot.credential_ref).map_err(|_| McpSettingsError::Store)?;
+            let variable =
+                serde_json::to_string(&slot.variable).map_err(|_| McpSettingsError::Store)?;
+            template.push_str(&format!("[[credential_bindings]]\nkey_ref = {reference}\nenv = {variable}\norigin = \"\"\nheader = \"authorization\"\nprefix = \"Bearer \"\npath = \"/\"\n\n"));
+        }
+        Ok(template)
+    }
+
     /// Install/rotate one local child environment value into a slot owned by
     /// this exact server. The old value is durably queued for deletion before
     /// the new one is written, and the server remains disabled until reapproved.
@@ -1591,7 +1606,7 @@ fn oauth_token_values(envelope: &str) -> Result<Vec<String>, McpSettingsError> {
     Ok(values)
 }
 
-fn all_owner_credentials(
+pub(crate) fn all_owner_credentials(
     config_root: &std::path::Path,
     store: &Store,
 ) -> Result<Vec<String>, McpSettingsError> {
@@ -2575,6 +2590,12 @@ mod tests {
                 DISABLED_MCP.into(),
             )
             .unwrap();
+        let template = service
+            .local_credential_binding_template(&disabled.id)
+            .unwrap();
+        assert!(template.contains("MCP_TOKEN"));
+        assert!(template.contains("origin = \"\""));
+        assert!(!template.contains(DISABLED_MCP));
         let known = service.enabled_known_credentials().unwrap();
         assert!(known.iter().any(|value| value == OTHER_PROVIDER));
         assert!(known.iter().any(|value| value == DISABLED_MCP));

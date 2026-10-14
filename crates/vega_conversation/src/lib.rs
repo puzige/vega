@@ -56,3 +56,5 @@ pub use git_workspace::{
 };
 
 pub mod pending_messages;
+
+pub mod privacy;

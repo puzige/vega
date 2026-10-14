@@ -206,6 +206,9 @@ fn public_address(ip: IpAddr) -> bool {
                 && ip.octets()[0] != 0
                 && ip.octets()[0] < 224
                 && !(ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
+                && !(ip.octets()[0] == 198 && (18..=19).contains(&ip.octets()[1]))
+                && !(ip.octets()[0] == 192 && ip.octets()[1] == 0 && ip.octets()[2] == 0)
+                && !(ip.octets()[0] == 192 && ip.octets()[1] == 88 && ip.octets()[2] == 99)
         }
         IpAddr::V6(ip) => {
             ip.to_ipv4_mapped().is_none()
@@ -213,7 +216,10 @@ fn public_address(ip: IpAddr) -> bool {
                 && !ip.is_unspecified()
                 && !ip.is_multicast()
                 && (ip.segments()[0] & 0xe000) == 0x2000
-                && !(ip.segments()[0] == 0x2001 && ip.segments()[1] == 0xdb8)
+                && !(ip.segments()[0] == 0x2001
+                    && (ip.segments()[1] < 0x0200 || ip.segments()[1] == 0xdb8))
+                && ip.segments()[0] != 0x2002
+                && ip.segments()[0] != 0x3fff
         }
     }
 }

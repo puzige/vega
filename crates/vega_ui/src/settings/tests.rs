@@ -354,7 +354,7 @@ async fn issue73_mcp_settings_requires_confirmation_before_activation_or_remove(
     assert!(authority.contains("[0] \"--fixture\""));
     assert!(authority.contains("[1] \"two words\""));
     assert!(authority.contains("MCP_TOKEN"));
-    assert!(authority.contains("不受 Vega 内置 bash 沙箱约束"));
+    assert!(authority.contains("凭据调用仅访问已授权的 API"));
     assert!(authority.contains("不要把 token 写进命令参数"));
     assert!(
         VisualTestContext::from_window(window.into(), cx)

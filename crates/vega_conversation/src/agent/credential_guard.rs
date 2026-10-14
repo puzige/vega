@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use futures::future::BoxFuture;
+use futures::{StreamExt, future::BoxFuture};
 use tokio_util::sync::CancellationToken;
 use vega_runtime::{ChatRequest, EventStream, Provider, VegaError};
 
@@ -11,6 +11,7 @@ use vega_runtime::{ChatRequest, EventStream, Provider, VegaError};
 pub struct OwnerCredentialProvider {
     provider: Arc<dyn Provider>,
     known: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>,
+    exceptions: Option<vega_runtime::CredentialExceptionFilter>,
 }
 
 impl OwnerCredentialProvider {
@@ -19,7 +20,26 @@ impl OwnerCredentialProvider {
         provider: Arc<dyn Provider>,
         known: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>,
     ) -> Self {
-        Self { provider, known }
+        Self {
+            provider,
+            known,
+            exceptions: None,
+        }
+    }
+
+    pub fn with_credential_exceptions(
+        mut self,
+        filter: vega_runtime::CredentialExceptionFilter,
+    ) -> Self {
+        self.exceptions = Some(filter);
+        self
+    }
+
+    pub fn pre_attempt_guard_with_exceptions(
+        known: vega_runtime::CredentialReader,
+        filter: vega_runtime::CredentialExceptionFilter,
+    ) -> impl Fn(&ChatRequest) -> Result<(), VegaError> + Send + Sync + 'static {
+        move |request| reject_owner_secret_with_policy(request, known.as_ref(), Some(&filter))
     }
 
     /// The same final projection check for transports with internal retries.
@@ -36,17 +56,19 @@ fn blocked() -> VegaError {
     VegaError::CredentialExposureBlocked
 }
 
-fn contains_json_secret(value: &serde_json::Value, credentials: &[String]) -> bool {
+fn contains_json_secret(
+    value: &serde_json::Value,
+    credentials: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> bool {
     match value {
-        serde_json::Value::String(text) => {
-            vega_runtime::contains_sensitive_credential(text, credentials)
-        }
+        serde_json::Value::String(text) => contains_with_policy(text, credentials, exceptions),
         serde_json::Value::Array(items) => items
             .iter()
-            .any(|item| contains_json_secret(item, credentials)),
+            .any(|item| contains_json_secret(item, credentials, exceptions)),
         serde_json::Value::Object(fields) => fields.iter().any(|(key, value)| {
-            vega_runtime::contains_sensitive_credential(key, credentials)
-                || contains_json_secret(value, credentials)
+            contains_with_policy(key, credentials, exceptions)
+                || contains_json_secret(value, credentials, exceptions)
         }),
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
             false
@@ -58,30 +80,44 @@ pub(crate) fn reject_owner_secret(
     request: &ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
 ) -> Result<(), VegaError> {
+    reject_owner_secret_with_policy(request, reader, None)
+}
+
+fn contains_with_policy(
+    text: &str,
+    known: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> bool {
+    vega_runtime::redact_sensitive_credential_text_with_policy(text, known, exceptions) != text
+}
+
+fn reject_owner_secret_with_policy(
+    request: &ChatRequest,
+    reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> Result<(), VegaError> {
     let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
     if request.messages.iter().any(|message| {
-        vega_runtime::contains_sensitive_credential(&message.content, &known)
+        contains_with_policy(&message.content, &known, exceptions)
             || message
                 .tool_call_id
                 .as_deref()
-                .is_some_and(|id| vega_runtime::contains_sensitive_credential(id, &known))
+                .is_some_and(|id| contains_with_policy(id, &known, exceptions))
             || message
                 .reasoning_content
                 .as_deref()
-                .is_some_and(|reasoning| {
-                    vega_runtime::contains_sensitive_credential(reasoning, &known)
-                })
+                .is_some_and(|reasoning| contains_with_policy(reasoning, &known, exceptions))
             || message.tool_calls.iter().any(|call| {
-                vega_runtime::contains_sensitive_credential(&call.id, &known)
-                    || vega_runtime::contains_sensitive_credential(&call.name, &known)
-                    || vega_runtime::contains_sensitive_credential(&call.input_json, &known)
+                contains_with_policy(&call.id, &known, exceptions)
+                    || contains_with_policy(&call.name, &known, exceptions)
+                    || contains_with_policy(&call.input_json, &known, exceptions)
             })
     }) || request.tools.iter().any(|tool| {
-        vega_runtime::contains_sensitive_credential(&tool.name, &known)
-            || vega_runtime::contains_sensitive_credential(&tool.description, &known)
-            || contains_json_secret(&tool.input_schema, &known)
+        contains_with_policy(&tool.name, &known, exceptions)
+            || contains_with_policy(&tool.description, &known, exceptions)
+            || contains_json_secret(&tool.input_schema, &known, exceptions)
             || serde_json::to_string(&tool.input_schema).map_or(true, |schema| {
-                vega_runtime::contains_sensitive_credential(&schema, &known)
+                contains_with_policy(&schema, &known, exceptions)
             })
     }) {
         return Err(blocked());
@@ -89,22 +125,27 @@ pub(crate) fn reject_owner_secret(
     Ok(())
 }
 
-fn project_json(value: &mut serde_json::Value, known: &[String]) -> Result<(), VegaError> {
+fn project_json(
+    value: &mut serde_json::Value,
+    known: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> Result<(), VegaError> {
     match value {
         serde_json::Value::String(text) => {
-            *text = vega_runtime::redact_sensitive_credential_text(text, known)
+            *text =
+                vega_runtime::redact_sensitive_credential_text_with_policy(text, known, exceptions)
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                project_json(item, known)?;
+                project_json(item, known, exceptions)?;
             }
         }
         serde_json::Value::Object(fields) => {
             for (key, value) in fields {
-                if vega_runtime::contains_sensitive_credential(key, known) {
+                if contains_with_policy(key, known, exceptions) {
                     return Err(blocked());
                 }
-                project_json(value, known)?;
+                project_json(value, known, exceptions)?;
             }
         }
         _ => {}
@@ -112,23 +153,38 @@ fn project_json(value: &mut serde_json::Value, known: &[String]) -> Result<(), V
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn project_owner_secrets(
+    request: ChatRequest,
+    reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
+) -> Result<ChatRequest, VegaError> {
+    project_owner_secrets_with_policy(request, reader, None)
+}
+
+pub(crate) fn project_owner_secrets_with_policy(
     mut request: ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
 ) -> Result<ChatRequest, VegaError> {
     let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
     for message in &mut request.messages {
-        message.content = vega_runtime::redact_sensitive_credential_text(&message.content, &known);
+        message.content = vega_runtime::redact_sensitive_credential_text_with_policy(
+            &message.content,
+            &known,
+            exceptions,
+        );
         if let Some(reasoning) = &mut message.reasoning_content {
-            *reasoning = vega_runtime::redact_sensitive_credential_text(reasoning, &known);
+            *reasoning = vega_runtime::redact_sensitive_credential_text_with_policy(
+                reasoning, &known, exceptions,
+            );
         }
         for call in &mut message.tool_calls {
             match serde_json::from_str::<serde_json::Value>(&call.input_json) {
                 Ok(mut value) => {
-                    project_json(&mut value, &known)?;
+                    project_json(&mut value, &known, exceptions)?;
                     call.input_json = serde_json::to_string(&value).map_err(|_| blocked())?;
                 }
-                Err(_) if vega_runtime::contains_sensitive_credential(&call.input_json, &known) => {
+                Err(_) if contains_with_policy(&call.input_json, &known, exceptions) => {
                     return Err(blocked());
                 }
                 Err(_) => {}
@@ -136,13 +192,156 @@ pub(crate) fn project_owner_secrets(
         }
     }
     for (tool_index, tool) in request.tools.iter_mut().enumerate() {
-        tool.description =
-            vega_runtime::redact_sensitive_credential_text(&tool.description, &known);
-        if contains_json_secret(&tool.input_schema, &known) {
+        tool.description = vega_runtime::redact_sensitive_credential_text_with_policy(
+            &tool.description,
+            &known,
+            exceptions,
+        );
+        if contains_json_secret(&tool.input_schema, &known, exceptions) {
             return Err(VegaError::CredentialProjectionInvalid { tool_index });
         }
     }
     Ok(request)
+}
+
+fn protected_stream(
+    stream: EventStream,
+    known: Vec<String>,
+    exceptions: Option<vega_runtime::CredentialExceptionFilter>,
+) -> EventStream {
+    use vega_runtime::ProviderEvent;
+    let known = Arc::new(known);
+    let state = (
+        stream,
+        [String::new(), String::new(), String::new()],
+        std::collections::VecDeque::new(),
+        false,
+    );
+    Box::pin(futures::stream::unfold(
+        state,
+        move |(mut stream, mut pending, mut ready, mut ended)| {
+            let known = known.clone();
+            let exceptions = exceptions.clone();
+            async move {
+                loop {
+                    if let Some(event) = ready.pop_front() {
+                        return Some((event, (stream, pending, ready, ended)));
+                    }
+                    if ended {
+                        return None;
+                    }
+                    let event = stream.next().await;
+                    let part = match &event {
+                        Some(Ok(ProviderEvent::TextDelta(text))) => Some((0, text)),
+                        Some(Ok(ProviderEvent::ThinkingDelta(text))) => Some((1, text)),
+                        Some(Ok(ProviderEvent::SummaryDelta(text))) => Some((2, text)),
+                        _ => None,
+                    };
+                    if let Some((index, text)) = part {
+                        pending[index].push_str(text);
+                        pending[index] = vega_runtime::redact_sensitive_credential_text_with_policy(
+                            &pending[index],
+                            &known,
+                            exceptions.as_ref(),
+                        );
+                        let end = vega_runtime::credential_stream_safe_end(&pending[index], &known);
+                        if end > 0 {
+                            let output: String = pending[index].drain(..end).collect();
+                            ready.push_back(Ok(match index {
+                                0 => ProviderEvent::TextDelta(output),
+                                1 => ProviderEvent::ThinkingDelta(output),
+                                _ => ProviderEvent::SummaryDelta(output),
+                            }));
+                        }
+                        continue;
+                    }
+                    let flush = event.is_none()
+                        || matches!(&event, Some(Err(_)) | Some(Ok(ProviderEvent::Done { .. })));
+                    if flush {
+                        for (index, text) in pending.iter_mut().enumerate() {
+                            if !text.is_empty() {
+                                let output =
+                                    vega_runtime::redact_sensitive_credential_text_with_policy(
+                                        text,
+                                        &known,
+                                        exceptions.as_ref(),
+                                    );
+                                text.clear();
+                                ready.push_back(Ok(match index {
+                                    0 => ProviderEvent::TextDelta(output),
+                                    1 => ProviderEvent::ThinkingDelta(output),
+                                    _ => ProviderEvent::SummaryDelta(output),
+                                }));
+                            }
+                        }
+                    }
+                    match event {
+                        Some(Ok(ProviderEvent::ResponseMetadata(mut metadata))) => {
+                            if let Some(id) = &mut metadata.request_id {
+                                *id = vega_runtime::redact_sensitive_credential_text_with_policy(
+                                    id,
+                                    &known,
+                                    exceptions.as_ref(),
+                                );
+                            }
+                            ready.push_back(Ok(ProviderEvent::ResponseMetadata(metadata)));
+                        }
+                        Some(Ok(ProviderEvent::ToolUse {
+                            id,
+                            name,
+                            input_json,
+                        })) => {
+                            let projected = (|| {
+                                if contains_with_policy(&id, &known, exceptions.as_ref())
+                                    || contains_with_policy(&name, &known, exceptions.as_ref())
+                                {
+                                    return Err(blocked());
+                                }
+                                let input_json = if contains_with_policy(
+                                    &input_json,
+                                    &known,
+                                    exceptions.as_ref(),
+                                ) {
+                                    let mut value: serde_json::Value =
+                                        serde_json::from_str(&input_json).map_err(|_| blocked())?;
+                                    project_json(&mut value, &known, exceptions.as_ref())?;
+                                    serde_json::to_string(&value).map_err(|_| blocked())?
+                                } else {
+                                    input_json
+                                };
+                                Ok(ProviderEvent::ToolUse {
+                                    id,
+                                    name,
+                                    input_json,
+                                })
+                            })();
+                            if projected.is_err() {
+                                ended = true;
+                            }
+                            ready.push_back(projected);
+                        }
+                        Some(Ok(ProviderEvent::ReasoningReplay(values))) => {
+                            if values.iter().any(|value| {
+                                contains_json_secret(value, &known, exceptions.as_ref())
+                            }) {
+                                ready.push_back(Err(blocked()));
+                                ended = true;
+                            } else {
+                                ready.push_back(Ok(ProviderEvent::ReasoningReplay(values)));
+                            }
+                        }
+                        Some(event) => {
+                            if event.is_err() {
+                                ended = true;
+                            }
+                            ready.push_back(event);
+                        }
+                        None => ended = true,
+                    }
+                }
+            }
+        },
+    ))
 }
 
 impl Provider for OwnerCredentialProvider {
@@ -153,10 +352,22 @@ impl Provider for OwnerCredentialProvider {
     ) -> BoxFuture<'static, Result<vega_runtime::ProviderStream, VegaError>> {
         let provider = self.provider.clone();
         let known = self.known.clone();
+        let exceptions = self.exceptions.clone();
         Box::pin(async move {
-            let request = project_owner_secrets(request, known.as_ref())?;
-            reject_owner_secret(&request, known.as_ref())?;
-            provider.chat_stream_recovering(request, cancel).await
+            let request =
+                project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())?;
+            reject_owner_secret_with_policy(&request, known.as_ref(), exceptions.as_ref())?;
+            let credentials = known().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+            let mut response = provider.chat_stream_recovering(request, cancel).await?;
+            if let Some(id) = &mut response.metadata.request_id {
+                *id = vega_runtime::redact_sensitive_credential_text_with_policy(
+                    id,
+                    &credentials,
+                    exceptions.as_ref(),
+                );
+            }
+            response.events = protected_stream(response.events, credentials, exceptions);
+            Ok(response)
         })
     }
     fn chat_stream_once(
@@ -166,10 +377,14 @@ impl Provider for OwnerCredentialProvider {
     ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
         let provider = self.provider.clone();
         let known = self.known.clone();
+        let exceptions = self.exceptions.clone();
         Box::pin(async move {
-            let request = project_owner_secrets(request, known.as_ref())?;
-            reject_owner_secret(&request, known.as_ref())?;
-            provider.chat_stream_once(request, cancel).await
+            let request =
+                project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())?;
+            reject_owner_secret_with_policy(&request, known.as_ref(), exceptions.as_ref())?;
+            let credentials = known().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+            let stream = provider.chat_stream_once(request, cancel).await?;
+            Ok(protected_stream(stream, credentials, exceptions))
         })
     }
 
@@ -180,10 +395,14 @@ impl Provider for OwnerCredentialProvider {
     ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
         let provider = self.provider.clone();
         let known = self.known.clone();
+        let exceptions = self.exceptions.clone();
         Box::pin(async move {
-            let request = project_owner_secrets(request, known.as_ref())?;
-            reject_owner_secret(&request, known.as_ref())?;
-            provider.chat_stream(request, cancel).await
+            let request =
+                project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())?;
+            reject_owner_secret_with_policy(&request, known.as_ref(), exceptions.as_ref())?;
+            let credentials = known().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+            let stream = provider.chat_stream(request, cancel).await?;
+            Ok(protected_stream(stream, credentials, exceptions))
         })
     }
 }
@@ -348,7 +567,14 @@ mod tests {
         assert_eq!(arguments["count"], 7);
         assert!(!arguments["command"].as_str().unwrap().contains(secret));
         assert!(request.messages[1].content.contains(secret));
-        assert!(project_json(&mut serde_json::json!({secret: "value"}), &[secret.into()]).is_err());
+        assert!(
+            project_json(
+                &mut serde_json::json!({(secret): "value"}),
+                &[secret.into()],
+                None
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -362,5 +588,133 @@ mod tests {
             Err(VegaError::CredentialCheckUnavailable)
         ));
         assert!(inner.requests().is_empty());
+    }
+    #[test]
+    fn schema_enum_const_required_and_property_keys_are_never_rewritten() {
+        let secret = "synthetic-schema-secret";
+        let reader = || Ok(vec![secret.to_string()]);
+        for schema in [
+            serde_json::json!({"enum": [secret]}),
+            serde_json::json!({"const": secret}),
+            serde_json::json!({"required": [secret]}),
+            serde_json::json!({"properties": {(secret): {"type": "string"}}}),
+        ] {
+            let request = ChatRequest {
+                tools: vec![vega_runtime::ToolDefinition {
+                    name: "fixture".into(),
+                    description: "safe".into(),
+                    input_schema: schema.clone(),
+                    strict: false,
+                }],
+                ..Default::default()
+            };
+            assert!(matches!(
+                project_owner_secrets(request.clone(), &reader),
+                Err(VegaError::CredentialProjectionInvalid { tool_index: 0 })
+            ));
+            assert_eq!(request.tools[0].input_schema, schema);
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_boundary_tests {
+    use super::*;
+    use vega_runtime::ProviderEvent;
+    #[tokio::test]
+    async fn ordinary_delta_is_delivered_before_waiting_for_the_next_chunk() {
+        let source = futures::stream::once(async {
+            Ok(ProviderEvent::TextDelta("ordinary first chunk ".into()))
+        })
+        .chain(futures::stream::pending());
+        let mut stream = protected_stream(
+            Box::pin(source),
+            vec!["synthetic-unrelated-owner-secret".into()],
+            None,
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, ProviderEvent::TextDelta(text) if text == "ordinary first chunk "));
+    }
+    #[tokio::test]
+    async fn split_unknown_token_is_filtered_without_buffering_ordinary_prose() {
+        let token = "sk-proj-synthetic0123456789abcdef";
+        let source = [
+            ProviderEvent::TextDelta("ordinary text ".into()),
+            ProviderEvent::TextDelta("sk-pr".into()),
+            ProviderEvent::TextDelta("oj-synthetic0123456789abcdef".into()),
+            ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ];
+        let stream = Box::pin(futures::stream::iter(source.into_iter().map(Ok)));
+        let events = protected_stream(stream, Vec::new(), None)
+            .collect::<Vec<_>>()
+            .await;
+        let output = events
+            .into_iter()
+            .filter_map(|event| match event.unwrap() {
+                ProviderEvent::TextDelta(text) => Some(text),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(output.starts_with("ordinary text "));
+        assert!(!output.contains(token));
+        assert!(output.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER));
+    }
+    #[tokio::test]
+    async fn response_metadata_preserves_status_without_exposing_owner_value() {
+        let secret = "synthetic-request-identifier-secret".to_string();
+        let source = [ProviderEvent::ResponseMetadata(
+            vega_runtime::ProviderResponseMetadata {
+                http_status: Some(200),
+                request_id: Some(format!("request-{secret}")),
+                retry_count: Some(2),
+            },
+        )];
+        let stream: EventStream = Box::pin(futures::stream::iter(source.into_iter().map(Ok)));
+        let events = protected_stream(stream, vec![secret.clone()], None)
+            .collect::<Vec<_>>()
+            .await;
+        let ProviderEvent::ResponseMetadata(metadata) = events.into_iter().next().unwrap().unwrap()
+        else {
+            panic!("expected response metadata");
+        };
+        assert_eq!(metadata.http_status, Some(200));
+        assert_eq!(metadata.retry_count, Some(2));
+        let request_id = metadata.request_id.unwrap();
+        assert!(!request_id.contains(&secret));
+        assert!(request_id.starts_with("request-"));
+    }
+    #[tokio::test]
+    async fn split_owner_value_never_reaches_visible_events() {
+        let secret = "known-stream-value-with-quotation\"and-slash\\".to_string();
+        let source = [
+            ProviderEvent::TextDelta("先说 ".into()),
+            ProviderEvent::TextDelta(secret[..10].into()),
+            ProviderEvent::ThinkingDelta(secret.clone()),
+            ProviderEvent::TextDelta(secret[10..].into()),
+            ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ];
+        let stream: EventStream = Box::pin(futures::stream::iter(source.into_iter().map(Ok)));
+        let events = protected_stream(stream, vec![secret.clone()], None)
+            .collect::<Vec<_>>()
+            .await;
+        let mut visible = String::new();
+        for event in events {
+            match event.unwrap() {
+                ProviderEvent::TextDelta(text) | ProviderEvent::ThinkingDelta(text) => {
+                    visible.push_str(&text)
+                }
+                _ => {}
+            }
+        }
+        assert!(!visible.contains(&secret));
+        assert!(visible.contains("先说"));
     }
 }

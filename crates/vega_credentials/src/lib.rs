@@ -264,34 +264,21 @@ impl CredentialBroker {
     }
 
     pub fn redact(&self, bytes: &[u8]) -> Vec<u8> {
-        let mut substitutions = Vec::new();
-        for record in &self.records {
-            substitutions.push((record.secret.clone(), record.alias.clone()));
-            if let Ok(encoded) = serde_json::to_string(&record.secret) {
-                substitutions.push((
-                    encoded[1..encoded.len() - 1].to_string(),
-                    record.alias.clone(),
-                ));
-            }
-            let encoded: String = record
-                .secret
-                .bytes()
-                .map(|byte| {
-                    if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-                        (byte as char).to_string()
-                    } else {
-                        format!("%{byte:02X}")
-                    }
-                })
-                .collect();
-            substitutions.push((encoded.clone(), record.alias.clone()));
-            substitutions.push((encoded.to_ascii_lowercase(), record.alias.clone()));
-        }
-        substitutions.sort_by_key(|(secret, _)| std::cmp::Reverse(secret.len()));
-        substitutions.dedup();
+        let mut records = self.records.iter().collect::<Vec<_>>();
+        records.sort_by_key(|record| std::cmp::Reverse(record.secret.len()));
         let mut output = bytes.to_vec();
-        for (secret, alias) in substitutions {
-            output = replace_bytes(&output, secret.as_bytes(), alias.as_bytes());
+        for record in records {
+            let mut forms = vec![record.secret.clone()];
+            if let Ok(encoded) = serde_json::to_string(&record.secret) {
+                forms.push(encoded[1..encoded.len() - 1].to_string());
+            }
+            forms.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+            forms.dedup();
+            for secret in forms {
+                output = replace_bytes(&output, secret.as_bytes(), record.alias.as_bytes());
+            }
+            output =
+                replace_percent_encoded(&output, record.secret.as_bytes(), record.alias.as_bytes());
         }
         output
     }
@@ -315,76 +302,40 @@ fn replace_bytes(input: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
     output
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn binding() -> CredentialBinding {
-        CredentialBinding {
-            key_ref: "test".into(),
-            env: "GITHUB_TOKEN".into(),
-            origin: "https://api.github.com".into(),
-            header: "authorization".into(),
-            prefix: "Bearer ".into(),
-            path: "/repos".into(),
+fn replace_percent_encoded(input: &[u8], secret: &[u8], replacement: &[u8]) -> Vec<u8> {
+    fn hex(byte: u8) -> Option<u8> {
+        (byte as char).to_digit(16).map(|value| value as u8)
+    }
+    let mut output = Vec::with_capacity(input.len());
+    let mut cursor = 0;
+    while cursor < input.len() {
+        let mut end = cursor;
+        let matched = secret.iter().all(|expected| {
+            if input.get(end) == Some(&b'%')
+                && let (Some(high), Some(low)) = (
+                    input.get(end + 1).and_then(|byte| hex(*byte)),
+                    input.get(end + 2).and_then(|byte| hex(*byte)),
+                )
+                && high * 16 + low == *expected
+            {
+                end += 3;
+                true
+            } else if input.get(end) == Some(expected) {
+                end += 1;
+                true
+            } else {
+                false
+            }
+        });
+        if matched && end > cursor {
+            output.extend_from_slice(replacement);
+            cursor = end;
+        } else {
+            output.push(input[cursor]);
+            cursor += 1;
         }
     }
-    #[test]
-    fn scoped_aliases_targets_rotation_and_revocation() {
-        let current = Arc::new(std::sync::Mutex::new("synthetic-private-value".to_string()));
-        let source = current.clone();
-        let reader: SecretReader = Arc::new(move |_| Ok(source.lock().unwrap().clone()));
-        let one = CredentialBroker::new(&[binding()], reader.clone()).unwrap();
-        let two = CredentialBroker::new(&[binding()], reader).unwrap();
-        let alias = one.environment().unwrap()["GITHUB_TOKEN"].clone();
-        let headers = || {
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("authorization", format!("Bearer {alias}").parse().unwrap());
-            headers
-        };
-        let url = Url::parse("https://api.github.com/repos/test").unwrap();
-        assert!(two.inject(&url, &mut headers()).is_err());
-        assert!(
-            one.inject(
-                &Url::parse("https://api.github.com/repositories").unwrap(),
-                &mut headers()
-            )
-            .is_err()
-        );
-        assert!(
-            one.inject(
-                &Url::parse("https://example.com/repos").unwrap(),
-                &mut headers()
-            )
-            .is_err()
-        );
-        let mut good = headers();
-        one.inject(&url, &mut good).unwrap();
-        assert_eq!(good["authorization"], "Bearer synthetic-private-value");
-        *current.lock().unwrap() = "rotated-synthetic-value".into();
-        assert!(one.inject(&url, &mut headers()).is_err());
-        two.revoke();
-        assert!(two.environment().is_err());
-    }
-    #[test]
-    fn no_alias_does_not_add_or_override_authentication() {
-        let broker = CredentialBroker::new(
-            &[binding()],
-            Arc::new(|_| Ok("synthetic-private-value".into())),
-        )
-        .unwrap();
-        let url = Url::parse("https://api.github.com/repos").unwrap();
-        let mut headers = reqwest::header::HeaderMap::new();
-        broker.inject(&url, &mut headers).unwrap();
-        assert!(headers.is_empty());
-        headers.insert("authorization", "Bearer explicit".parse().unwrap());
-        broker.inject(&url, &mut headers).unwrap();
-        assert_eq!(headers["authorization"], "Bearer explicit");
-        assert!(
-            !String::from_utf8(broker.redact(b"echo synthetic-private-value end"))
-                .unwrap()
-                .contains("synthetic-private-value")
-        );
-    }
+    output
 }
 
 pub struct ProcessPolicy {
@@ -497,5 +448,130 @@ impl Drop for ProtectedProcess {
             lease.cancel();
         }
         let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn binding() -> CredentialBinding {
+        CredentialBinding {
+            key_ref: "test".into(),
+            env: "GITHUB_TOKEN".into(),
+            origin: "https://api.github.com".into(),
+            header: "authorization".into(),
+            prefix: "Bearer ".into(),
+            path: "/repos".into(),
+        }
+    }
+    #[test]
+    fn scoped_aliases_targets_rotation_and_revocation() {
+        let current = Arc::new(std::sync::Mutex::new("synthetic-private-value".to_string()));
+        let source = current.clone();
+        let reader: SecretReader = Arc::new(move |_| Ok(source.lock().unwrap().clone()));
+        let one = CredentialBroker::new(&[binding()], reader.clone()).unwrap();
+        let two = CredentialBroker::new(&[binding()], reader).unwrap();
+        let alias = one.environment().unwrap()["GITHUB_TOKEN"].clone();
+        let headers = || {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("authorization", format!("Bearer {alias}").parse().unwrap());
+            headers
+        };
+        let url = Url::parse("https://api.github.com/repos/test").unwrap();
+        assert!(two.inject(&url, &mut headers()).is_err());
+        assert!(
+            one.inject(
+                &Url::parse("https://api.github.com/repositories").unwrap(),
+                &mut headers()
+            )
+            .is_err()
+        );
+        assert!(
+            one.inject(
+                &Url::parse("https://example.com/repos").unwrap(),
+                &mut headers()
+            )
+            .is_err()
+        );
+        let mut good = headers();
+        one.inject(&url, &mut good).unwrap();
+        assert_eq!(good["authorization"], "Bearer synthetic-private-value");
+        *current.lock().unwrap() = "rotated-synthetic-value".into();
+        assert!(one.inject(&url, &mut headers()).is_err());
+        two.revoke();
+        assert!(two.environment().is_err());
+    }
+    #[test]
+    fn no_alias_does_not_add_or_override_authentication() {
+        let broker = CredentialBroker::new(
+            &[binding()],
+            Arc::new(|_| Ok("synthetic-private-value".into())),
+        )
+        .unwrap();
+        let url = Url::parse("https://api.github.com/repos").unwrap();
+        let mut headers = reqwest::header::HeaderMap::new();
+        broker.inject(&url, &mut headers).unwrap();
+        assert!(headers.is_empty());
+        headers.insert("authorization", "Bearer explicit".parse().unwrap());
+        broker.inject(&url, &mut headers).unwrap();
+        assert_eq!(headers["authorization"], "Bearer explicit");
+        assert!(
+            !String::from_utf8(broker.redact(b"echo synthetic-private-value end"))
+                .unwrap()
+                .contains("synthetic-private-value")
+        );
+    }
+    #[test]
+    fn response_redaction_handles_overlaps_json_and_percent_encoding() {
+        let first = binding();
+        let mut second = binding();
+        second.key_ref = "second".into();
+        second.env = "OTHER_TOKEN".into();
+        let broker = CredentialBroker::new(
+            &[first, second],
+            Arc::new(|id| {
+                Ok(if id == "second" {
+                    "synthetic-\"secret\\value"
+                } else {
+                    "synthetic-"
+                }
+                .into())
+            }),
+        )
+        .unwrap();
+        let json = serde_json::to_string("synthetic-\"secret\\value").unwrap();
+        for bytes in [
+            b"synthetic-\"secret\\value".to_vec(),
+            json.into_bytes(),
+            b"synthetic-%22secret%5Cvalue".to_vec(),
+        ] {
+            let output = String::from_utf8(broker.redact(&bytes)).unwrap();
+            assert!(!output.contains("secret"));
+            assert!(!output.contains("value"));
+        }
+    }
+
+    #[test]
+    fn percent_encoding_preserves_literal_case_and_accepts_mixed_hex_case() {
+        let broker =
+            CredentialBroker::new(&[binding()], Arc::new(|_| Ok("AbC/Def;XYZ".into()))).unwrap();
+        for response in ["AbC%2fDef%3BXYZ", "AbC%2FDef%3bXYZ", "%41bC%2fDef%3BXYZ"] {
+            let output = String::from_utf8(broker.redact(response.as_bytes())).unwrap();
+            assert!(!output.contains("AbC"));
+            assert!(!output.contains("Def"));
+            assert!(!output.contains("XYZ"));
+        }
+    }
+
+    #[test]
+    fn only_active_registered_aliases_are_recognized() {
+        let broker =
+            CredentialBroker::new(&[binding()], Arc::new(|_| Ok("synthetic-secret".into())))
+                .unwrap();
+        let alias = broker.environment().unwrap()["GITHUB_TOKEN"].clone();
+        assert!(is_registered_alias(&alias));
+        assert!(!is_registered_alias("vega_alias_forged-placeholder"));
+        drop(broker);
+        assert!(!is_registered_alias(&alias));
     }
 }

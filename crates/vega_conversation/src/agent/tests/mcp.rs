@@ -369,7 +369,7 @@ fn issue73_external_call_persists_all_critical_transitions_and_safe_card() {
 }
 
 #[tokio::test]
-async fn issue73_rotated_provider_secret_in_historical_mcp_result_is_blocked_after_restart() {
+async fn issue73_rotated_provider_secret_in_historical_mcp_result_is_projected_after_restart() {
     const SECRET: &str = "fake-rotated-provider-secret-in-old-mcp-result-73";
     let (store, project, data, project_id) = setup_external("confirm");
     let database_path = data.path().join("vega.db");
@@ -465,9 +465,10 @@ async fn issue73_rotated_provider_secret_in_historical_mcp_result_is_blocked_aft
         "no MCP server is enabled or configured"
     );
     let owner = service.clone();
-    let inner = Arc::new(MockProvider::new(vec![ScriptStep::text(
-        "unrelated history still works",
-    )]));
+    let inner = Arc::new(MockProvider::new(vec![
+        ScriptStep::text("safe projected history continues"),
+        ScriptStep::text("unrelated history still works"),
+    ]));
     let guarded = OwnerCredentialProvider::new(
         inner.clone(),
         Arc::new(move || owner.current_owner_credential_values().map_err(|_| ())),
@@ -495,11 +496,22 @@ async fn issue73_rotated_provider_secret_in_historical_mcp_result_is_blocked_aft
         Vec::new(),
     )
     .await;
-    assert!(attempt.is_err() || attempt.is_ok_and(|run| run.failed));
+    assert!(!attempt.unwrap().failed);
+    let requests = inner.requests();
+    assert_eq!(requests.len(), 1);
     assert!(
-        inner.requests().is_empty(),
-        "no provider request may contain the rotated key"
+        requests[0]
+            .messages
+            .iter()
+            .all(|message| !message.content.contains(SECRET))
     );
+    assert!(requests[0].messages.iter().any(|message| {
+        message
+            .content
+            .contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+    }));
+    assert_eq!(hook.calls.load(Ordering::SeqCst), 0);
+
     assert_eq!(
         tool_calls::find_state(reopened.conn(), &call.id)
             .unwrap()
@@ -532,7 +544,7 @@ async fn issue73_rotated_provider_secret_in_historical_mcp_result_is_blocked_aft
     .await
     .unwrap();
     assert!(!resumed.failed);
-    assert_eq!(inner.requests().len(), 1);
+    assert_eq!(inner.requests().len(), 2);
 }
 
 #[test]

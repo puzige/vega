@@ -29,15 +29,51 @@ pub fn recover_thread(
     thread_id: &str,
     now_ms: i64,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let continuations = {
-        let mut query = tx.prepare("SELECT c.continuation_message_id, c.reason FROM credential_continuations c JOIN messages m ON m.id = c.continuation_message_id WHERE c.thread_id = ?1 AND c.state = 'claimed' AND m.status = 'streaming' AND c.user_message_id = (SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' ORDER BY seq DESC LIMIT 1)")?;
+        let mut query = tx.prepare("SELECT c.continuation_message_id, c.reason, c.source_version, c.source_fingerprint, c.user_message_id, c.raw_user_fingerprint FROM credential_continuations c JOIN messages m ON m.id = c.continuation_message_id WHERE c.thread_id = ?1 AND c.state = 'claimed' AND m.status = 'streaming' AND c.user_message_id = (SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' ORDER BY seq DESC LIMIT 1)")?;
         query
             .query_map([thread_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?
     };
+    let continuations = continuations
+        .into_iter()
+        .map(
+            |(
+                message_id,
+                reason,
+                source_version,
+                fingerprint,
+                user_message_id,
+                raw_fingerprint,
+            )| {
+                let current = crate::context_compaction::source_version_without_continuation(
+                    &tx,
+                    thread_id,
+                    &message_id,
+                )?;
+                let source_version = u64::try_from(source_version).map_err(|_| {
+                    rusqlite::Error::InvalidParameterName(
+                        "negative continuation source version".into(),
+                    )
+                })?;
+                let unchanged = current.source_version == source_version
+                    && current.fingerprint == fingerprint
+                    && crate::credential_continuation::raw_user_fingerprint(&tx, &user_message_id)?
+                        == raw_fingerprint;
+                Ok((message_id, reason, unchanged))
+            },
+        )
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let messages_interrupted = tx.execute(
         "UPDATE messages SET status = 'interrupted' \
          WHERE thread_id = ?1 AND status = 'streaming'",
@@ -59,8 +95,11 @@ pub fn recover_thread(
          WHERE thread_id = ?3 AND status IN ('approved', 'running')",
         params![RECOVERY_CANCELLED_OUTPUT, now_ms, thread_id],
     )?;
-    for (message_id, reason) in continuations {
+    for (message_id, reason, unchanged) in continuations {
         crate::credential_continuation::suspend(&tx, thread_id, &message_id, &reason, now_ms)?;
+        if !unchanged {
+            tx.execute("UPDATE credential_continuations SET state = 'unknown', reason = 'source_changed' WHERE id = ?1", [&message_id])?;
+        }
         crate::credential_continuation::complete(&tx, &message_id)?;
     }
     tx.commit()?;
@@ -80,6 +119,44 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         store.migrate().unwrap();
         store
+    }
+
+    #[test]
+    fn concurrent_thread_recovery_serializes_before_reading_continuations() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("recovery.db");
+        let setup = Store::open(&path).unwrap();
+        setup.migrate().unwrap();
+        seed_thread(&setup, "thread-a");
+        seed_thread(&setup, "thread-b");
+        let stores = [Store::open(&path).unwrap(), Store::open(&path).unwrap()];
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles = stores
+            .into_iter()
+            .zip(["thread-a", "thread-b"])
+            .map(|(store, thread)| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let counts = recover_thread(store.conn(), thread, 42).unwrap();
+                    assert_eq!(counts.messages_interrupted, 1);
+                    assert_eq!(counts.tools_rejected, 0);
+                    assert_eq!(counts.tools_cancelled, 0);
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let interrupted: i64 = setup
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE status='interrupted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(interrupted, 2);
     }
 
     fn seed_thread(store: &Store, thread_id: &str) {

@@ -37,6 +37,8 @@ impl PaletteService {
         }
         let query: String = query.chars().take(256).collect();
         let store = self.store()?;
+        let projection = crate::privacy::DisplayProjection::load(&store, "")
+            .map_err(|_| PaletteError::Unavailable)?;
         let tasks = vega_store::palette::search(store.conn(), project, &query)
             .map_err(|_| PaletteError::Unavailable)?
             .into_iter()
@@ -45,8 +47,8 @@ impl PaletteService {
             .map(|row| PaletteTask {
                 id: row.id,
                 project_id: row.project_id,
-                title: row.title,
-                project_name: row.project_name,
+                title: projection.text(&row.title),
+                project_name: projection.text(&row.project_name),
             })
             .collect();
         let mut result = PaletteSearch {

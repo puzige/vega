@@ -49,6 +49,8 @@ pub enum VegaError {
     CredentialExposureBlocked,
     #[error("credential safety check unavailable")]
     CredentialCheckUnavailable,
+    #[error("credential continuation is unavailable")]
+    CredentialContinuationUnavailable,
     #[error("credential projection requires tool configuration repair ({tool_index})")]
     CredentialProjectionInvalid { tool_index: usize },
     /// A frozen provider/model thinking selection violated its explicit
@@ -126,6 +128,9 @@ impl fmt::Debug for VegaError {
             Self::Cancelled => formatter.write_str("Cancelled"),
             Self::CredentialExposureBlocked => formatter.write_str("CredentialExposureBlocked"),
             Self::CredentialCheckUnavailable => formatter.write_str("CredentialCheckUnavailable"),
+            Self::CredentialContinuationUnavailable => {
+                formatter.write_str("CredentialContinuationUnavailable")
+            }
             Self::CredentialProjectionInvalid { tool_index } => formatter
                 .debug_struct("CredentialProjectionInvalid")
                 .field("tool_index", tool_index)

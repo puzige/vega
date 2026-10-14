@@ -1,23 +1,36 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use sha2::{Digest, Sha256};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CredentialContinuation {
     pub id: String,
     pub thread_id: String,
     pub user_message_id: String,
     pub source_version: u64,
     pub source_fingerprint: String,
+    pub raw_user_fingerprint: String,
     pub state: String,
     pub reason: String,
 }
 
+impl std::fmt::Debug for CredentialContinuation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CredentialContinuation")
+            .field("id_bytes", &self.id.len())
+            .field("source_version", &self.source_version)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
 pub fn find(conn: &Connection, id: &str) -> rusqlite::Result<Option<CredentialContinuation>> {
     conn.query_row(
-        "SELECT id, thread_id, user_message_id, source_version, source_fingerprint, state, reason FROM credential_continuations WHERE id = ?1",
+        "SELECT id, thread_id, user_message_id, source_version, source_fingerprint, state, reason, raw_user_fingerprint FROM credential_continuations WHERE id = ?1",
         [id],
         |row| Ok(CredentialContinuation {
             id: row.get(0)?, thread_id: row.get(1)?, user_message_id: row.get(2)?,
-            source_version: row.get(3)?, source_fingerprint: row.get(4)?, state: row.get(5)?, reason: row.get(6)?,
+            source_version: u64::try_from(row.get::<_, i64>(3)?).map_err(|_| rusqlite::Error::InvalidParameterName("negative continuation source version".into()))?, source_fingerprint: row.get(4)?, state: row.get(5)?, reason: row.get(6)?, raw_user_fingerprint: row.get(7)?,
         }),
     ).optional()
 }
@@ -34,12 +47,32 @@ pub fn suspend(
         "SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < (SELECT seq FROM messages WHERE id = ?2) ORDER BY seq DESC LIMIT 1",
         params![thread_id, message_id], |row| row.get(0),
     )?;
+    let raw_user_fingerprint = raw_user_fingerprint(tx, &user_message_id)?;
+    let source_version = sql_source_version(source.source_version)?;
     let unknown = has_unknown_effects(tx, thread_id, &user_message_id)?;
     tx.execute(
-        "INSERT INTO credential_continuations (id, thread_id, user_message_id, source_version, source_fingerprint, state, reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(id) DO NOTHING",
-        params![message_id, thread_id, user_message_id, source.source_version, source.fingerprint, if unknown { "unknown" } else { "ready" }, reason, now],
+        "INSERT INTO credential_continuations (id, thread_id, user_message_id, source_version, source_fingerprint, state, reason, created_at, raw_user_fingerprint) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO NOTHING",
+        params![message_id, thread_id, user_message_id, source_version, source.fingerprint, if unknown { "unknown" } else { "ready" }, reason, now, raw_user_fingerprint],
     )?;
     Ok(())
+}
+
+fn sql_source_version(version: u64) -> rusqlite::Result<i64> {
+    i64::try_from(version).map_err(|_| {
+        rusqlite::Error::InvalidParameterName("continuation source version overflow".into())
+    })
+}
+
+pub(crate) fn raw_user_fingerprint(
+    conn: &Connection,
+    user_message_id: &str,
+) -> rusqlite::Result<String> {
+    let content: String = conn.query_row(
+        "SELECT content FROM messages WHERE id = ?1 AND role = 'user'",
+        [user_message_id],
+        |row| row.get(0),
+    )?;
+    Ok(format!("{:x}", Sha256::digest(content.as_bytes())))
 }
 
 pub fn has_unknown_effects(
@@ -62,13 +95,14 @@ pub fn claim(
         crate::context_compaction::load_source_version_in_transaction(tx, &receipt.thread_id)?;
     if current.source_version != receipt.source_version
         || current.fingerprint != receipt.source_fingerprint
+        || raw_user_fingerprint(tx, &receipt.user_message_id)? != receipt.raw_user_fingerprint
         || has_unknown_effects(tx, &receipt.thread_id, &receipt.user_message_id)?
     {
         return Ok(false);
     }
     Ok(tx.execute(
         "UPDATE credential_continuations SET state = 'claimed', operation_id = ?2 WHERE id = ?1 AND state = 'ready' AND source_version = ?3 AND source_fingerprint = ?4",
-        params![receipt.id, operation_id, receipt.source_version, receipt.source_fingerprint],
+        params![receipt.id, operation_id, sql_source_version(receipt.source_version)?, receipt.source_fingerprint],
     )? == 1)
 }
 
@@ -212,5 +246,98 @@ mod tests {
         store.conn().execute("INSERT INTO messages (id,thread_id,seq,role,content,status,created_at) VALUES ('new-user','t',3,'user','reviewed previous operation','done',0)", []).unwrap();
         assert!(has_unknown_effects(store.conn(), "t", "u").unwrap());
         assert!(!has_unknown_effects(store.conn(), "t", "new-user").unwrap());
+    }
+    #[test]
+    fn restart_does_not_reauthorize_a_claim_after_original_user_is_edited() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = fixture(&path);
+        let receipt = find(store.conn(), "a").unwrap().unwrap();
+        let tx = store.immediate_transaction().unwrap();
+        assert!(claim(&tx, &receipt, "operation").unwrap());
+        tx.execute("INSERT INTO messages (id,thread_id,seq,role,content,status,created_at) VALUES ('continued','t',3,'assistant','partial continuation','streaming',0)", []).unwrap();
+        attach(&tx, "a", "continued").unwrap();
+        tx.commit().unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE messages SET content = 'withdraw previous instruction' WHERE id = 'u'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let store = Store::open(path).unwrap();
+        crate::recovery::recover_thread(store.conn(), "t", 10).unwrap();
+        let recovered = find(store.conn(), "continued").unwrap().unwrap();
+        assert_eq!(recovered.state, "unknown");
+        assert_eq!(recovered.reason, "source_changed");
+        let tx = store.immediate_transaction().unwrap();
+        assert!(!claim(&tx, &recovered, "operation-after-restart").unwrap());
+        let original: String = tx
+            .query_row("SELECT content FROM messages WHERE id = 'u'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(original, "withdraw previous instruction");
+    }
+    #[test]
+    fn queued_user_raw_edit_invalidates_claim_and_restart_with_frozen_model_input() {
+        for edit_after_claim in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let store = fixture(&path);
+            store.conn().execute_batch("DELETE FROM credential_continuations;
+                INSERT INTO pending_messages (id,thread_id,ordinal,behavior,generation,payload,model_content,state,created_at)
+                VALUES ('u','t',1,'queue','generation','{}','frozen expanded model input','delivered',0);").unwrap();
+            let tx = store.immediate_transaction().unwrap();
+            suspend(&tx, "t", "a", "unavailable", 0).unwrap();
+            tx.commit().unwrap();
+            let receipt = find(store.conn(), "a").unwrap().unwrap();
+            if edit_after_claim {
+                let tx = store.immediate_transaction().unwrap();
+                assert!(claim(&tx, &receipt, "operation").unwrap());
+                tx.execute("INSERT INTO messages (id,thread_id,seq,role,content,status,created_at) VALUES ('continued','t',3,'assistant','','streaming',0)", []).unwrap();
+                attach(&tx, "a", "continued").unwrap();
+                tx.commit().unwrap();
+            }
+            let before = crate::context_compaction::load_source_version(store.conn(), "t").unwrap();
+            store
+                .conn()
+                .execute(
+                    "UPDATE messages SET content = 'withdraw queued instruction' WHERE id = 'u'",
+                    [],
+                )
+                .unwrap();
+            let after = crate::context_compaction::load_source_version(store.conn(), "t").unwrap();
+            assert_eq!(before, after);
+            drop(store);
+            let store = Store::open(path).unwrap();
+            if edit_after_claim {
+                crate::recovery::recover_thread(store.conn(), "t", 10).unwrap();
+                let recovered = find(store.conn(), "continued").unwrap().unwrap();
+                assert_eq!(recovered.state, "unknown");
+                assert_eq!(recovered.reason, "source_changed");
+                let tx = store.immediate_transaction().unwrap();
+                assert!(!claim(&tx, &recovered, "after-restart").unwrap());
+            } else {
+                let tx = store.immediate_transaction().unwrap();
+                assert!(!claim(&tx, &receipt, "after-edit").unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn continuation_source_version_rejects_signed_storage_overflow() {
+        assert!(sql_source_version(u64::MAX).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let store = fixture(&dir.path().join("state.db"));
+        store
+            .conn()
+            .execute(
+                "UPDATE credential_continuations SET source_version = -1 WHERE id = 'a'",
+                [],
+            )
+            .unwrap();
+        assert!(find(store.conn(), "a").is_err());
     }
 }

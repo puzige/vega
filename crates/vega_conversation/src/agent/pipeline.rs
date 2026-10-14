@@ -855,10 +855,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             &transaction,
             &thread_id,
             |text, offsets| {
-                vega_runtime::redact_sensitive_credential_text_with_offsets(
+                vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
                     text,
                     &credential_values,
                     offsets,
+                    config.credential_exceptions.as_ref(),
                 )
             },
         )
@@ -997,6 +998,8 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     Some(reader) => runtime_config.with_credential_reader(reader),
                     None => runtime_config,
                 };
+                let runtime_config =
+                    runtime_config.with_credential_exceptions(config.credential_exceptions.clone());
                 let runtime_config = if legacy_credential_cleanup_detected {
                     runtime_config.with_legacy_credential_cleanup_detected()
                 } else {

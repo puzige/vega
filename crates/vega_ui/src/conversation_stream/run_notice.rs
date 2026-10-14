@@ -1,6 +1,6 @@
+use super::privacy::PrivacyButton;
 use super::*;
 use crate::icons::Icon;
-use gpui_kit::component::{Sizable, button::Button};
 use vega_conversation::types::TaskSummaryOutcome;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -100,24 +100,30 @@ impl RunNotice {
                         .flex()
                         .gap_2()
                         .child(
-                            Button::new(format!("credential-continue-{}", self.message_id))
-                                .small()
-                                .child("继续")
-                                .on_click(cx.listener(move |_, _, _, cx| {
+                            PrivacyButton::new(
+                                format!("credential-continue-{}", self.message_id),
+                                *colors,
+                            )
+                            .label("继续")
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
                                     cx.emit(CredentialContinuationRequested {
                                         thread_id: thread_id.clone(),
                                         message_id: recovery_id.clone(),
                                     });
-                                })),
+                                },
+                            )),
                         )
                         .child(
-                            Button::new(format!("credential-settings-{}", self.message_id))
-                                .small()
-                                .child("检查凭据设置")
-                                .on_click(|_, _, cx| {
-                                    cx.set_global(crate::settings::SettingsOpen(true));
-                                    cx.refresh_windows();
-                                }),
+                            PrivacyButton::new(
+                                format!("credential-settings-{}", self.message_id),
+                                *colors,
+                            )
+                            .label("检查凭据设置")
+                            .on_click(|_, _, cx| {
+                                cx.set_global(crate::settings::SettingsOpen(true));
+                                cx.refresh_windows();
+                            }),
                         ),
                 )
             })

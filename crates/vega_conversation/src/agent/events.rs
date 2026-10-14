@@ -1008,7 +1008,7 @@ pub(crate) fn persist_runtime_event(
                 )?;
             }
             vega_store::credential_continuation::complete(&transaction, message_id)?;
-            vega_store::threads::open_thread(&transaction, thread_id, now_ms())?;
+            vega_store::threads::open_thread_in_transaction(&transaction, thread_id, now_ms())?;
             transaction.commit()?;
         }
         RuntimeEvent::TextDelta(_)

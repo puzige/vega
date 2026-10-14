@@ -230,7 +230,8 @@ impl ConversationStream {
         self.pending_submission_revision = None;
         self.pending_behavior_override = None;
         if self.composer_history.last().map(String::as_str) != Some(content) {
-            self.composer_history.push(content.to_string());
+            self.composer_history
+                .push(vega_conversation::privacy::safe_live_text(content));
         }
         self.history_cursor = None;
         self.history_draft = None;
@@ -241,8 +242,11 @@ impl ConversationStream {
         self.user_block_seq += 1;
         let index = self.entries.len();
         self.entries.push(StreamEntry::User {
-            copy: MessageCopy::new(content),
-            lines: user_message_lines(block_id, content),
+            copy: MessageCopy::new(&vega_conversation::privacy::safe_live_text(content)),
+            lines: user_message_lines(
+                block_id,
+                &vega_conversation::privacy::safe_live_text(content),
+            ),
         });
         self.list_append(index);
         let submitted = std::mem::take(&mut self.submitted_attachments);

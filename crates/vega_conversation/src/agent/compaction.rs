@@ -66,6 +66,7 @@ pub struct ConversationCompactionHook<'a> {
     reasoning: Option<FrozenReasoning>,
     pricing_catalog: Option<vega_token::PricingCatalog>,
     credential_reader: Option<vega_runtime::CredentialReader>,
+    credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     diagnostics: Option<super::diagnostics::DiagnosticsContext>,
 }
 
@@ -87,8 +88,17 @@ impl<'a> ConversationCompactionHook<'a> {
             reasoning,
             pricing_catalog,
             credential_reader: None,
+            credential_exceptions: None,
             diagnostics: None,
         }
+    }
+
+    pub(crate) fn with_credential_exceptions(
+        mut self,
+        filter: Option<vega_runtime::CredentialExceptionFilter>,
+    ) -> Self {
+        self.credential_exceptions = filter;
+        self
     }
 
     pub(crate) fn with_credential_reader(
@@ -425,6 +435,13 @@ pub async fn compact_thread_manually_with_credential_reader(
     let preparation_thread_id = thread_id_owned.clone();
     let preparation_expected_model = expected_model.to_string();
     let preparation_credential_reader = credential_reader.clone();
+    let exceptions = crate::privacy::registered_root(store)
+        .map(|root| {
+            crate::privacy::exception_filter(database_path.clone(), thread_id.to_owned(), root)
+        })
+        .transpose()
+        .map_err(|_| failure(VegaError::CredentialCheckUnavailable, None))?;
+    let preparation_exceptions = exceptions.clone();
     let (model, source, history) = tokio::task::spawn_blocking({
         let database_path = database_path.clone();
         move || {
@@ -460,6 +477,7 @@ pub async fn compact_thread_manually_with_credential_reader(
                 checkpoint.as_ref(),
                 None,
                 preparation_credential_reader.as_ref(),
+                preparation_exceptions.as_ref(),
             )?;
             let history =
                 crate::agent::pipeline::primary_history_from_context_source_with_checkpoint(
@@ -511,6 +529,7 @@ pub async fn compact_thread_manually_with_credential_reader(
         pricing_catalog,
     )
     .with_credential_reader(credential_reader)
+    .with_credential_exceptions(exceptions)
     .with_diagnostics(diagnostics_context);
     let result = hook
         .compact(
@@ -1001,6 +1020,7 @@ fn reject_unprojected_shell_credentials(
     checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
     source_owner_id: Option<&str>,
     credential_reader: Option<&vega_runtime::CredentialReader>,
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
 ) -> Result<(), VegaError> {
     let checkpoint = checkpoint.filter(|checkpoint| {
         checkpoint.source_version <= source.source_version
@@ -1030,10 +1050,10 @@ fn reject_unprojected_shell_credentials(
         Some(reader) => reader().map_err(|_| VegaError::CredentialCheckUnavailable)?,
         None => Vec::new(),
     };
-    if outputs
-        .iter()
-        .any(|output| vega_runtime::contains_sensitive_credential(output, &credentials))
-    {
+    if outputs.iter().any(|output| {
+        vega_runtime::redact_sensitive_credential_text_with_policy(output, &credentials, exceptions)
+            != **output
+    }) {
         return Err(VegaError::CredentialExposureBlocked);
     }
     Ok(())
@@ -1093,10 +1113,12 @@ impl ConversationCompactionHook<'_> {
         deadline: tokio::time::Instant,
     ) -> Result<String, ContextCompactionFailure> {
         let summary_request = match &self.credential_reader {
-            Some(reader) => {
-                super::credential_guard::project_owner_secrets(summary_request, reader.as_ref())
-                    .map_err(|error| failure_with_usages(error, usages, *usage_complete))?
-            }
+            Some(reader) => super::credential_guard::project_owner_secrets_with_policy(
+                summary_request,
+                reader.as_ref(),
+                self.credential_exceptions.as_ref(),
+            )
+            .map_err(|error| failure_with_usages(error, usages, *usage_complete))?,
             None => summary_request,
         };
         let attempt_id = ulid::Ulid::generate().to_string();
@@ -1168,7 +1190,7 @@ impl ConversationCompactionHook<'_> {
                         Ok(credentials) => credentials,
                         Err(()) => {
                             return Err(failure_with_usages(
-                                VegaError::CredentialExposureBlocked,
+                                VegaError::CredentialCheckUnavailable,
                                 usages,
                                 *usage_complete,
                             ));
@@ -1176,9 +1198,10 @@ impl ConversationCompactionHook<'_> {
                     },
                     None => Vec::new(),
                 };
-                let summary = vega_runtime::redact_sensitive_credential_text(
+                let summary = vega_runtime::redact_sensitive_credential_text_with_policy(
                     &collection.summary,
                     &credentials,
+                    self.credential_exceptions.as_ref(),
                 );
                 if let Some(diagnostics) = &self.diagnostics {
                     diagnostics.stage_event(
@@ -1273,6 +1296,7 @@ impl ConversationCompactionHook<'_> {
             checkpoint.as_ref(),
             request.source_owner_id.as_deref(),
             self.credential_reader.as_ref(),
+            self.credential_exceptions.as_ref(),
         )
         .map_err(|error| failure(error, None))?;
         *source_guard = Some(SummarySourceGuard {

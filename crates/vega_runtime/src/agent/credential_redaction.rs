@@ -4,6 +4,146 @@ pub const PROVIDER_CREDENTIAL_REDACTION_MARKER: &str = "[REDACTED:provider_crede
 
 pub type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CredentialConfidence {
+    Low,
+    High,
+    KnownExact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialFinding {
+    pub rule_id: &'static str,
+    pub start: usize,
+    pub end: usize,
+    pub confidence: CredentialConfidence,
+}
+
+pub type CredentialExceptionFilter = Arc<dyn Fn(&str, &CredentialFinding) -> bool + Send + Sync>;
+
+pub fn credential_stream_safe_end(text: &str, known: &[String]) -> usize {
+    let mut safe_end = text.len();
+    for secret in known.iter().filter(|secret| !secret.is_empty()) {
+        let mut forms = vec![secret.clone()];
+        if let Ok(encoded) = serde_json::to_string(secret) {
+            forms.push(encoded[1..encoded.len() - 1].into());
+        }
+        for form in forms {
+            let lower_bound = text.len().saturating_sub(form.len());
+            for (start, _) in text
+                .char_indices()
+                .filter(|(start, _)| *start >= lower_bound)
+            {
+                if form.starts_with(&text[start..]) {
+                    safe_end = safe_end.min(start);
+                    break;
+                }
+            }
+        }
+    }
+    let lowercase = text.to_ascii_lowercase();
+    let lower_bound = text.len().saturating_sub(256);
+    for (start, _) in text
+        .char_indices()
+        .filter(|(start, _)| *start >= lower_bound)
+    {
+        if !has_token_boundary_before(text.as_bytes(), start) {
+            continue;
+        }
+        let suffix = &lowercase[start..];
+        let potential = COMMON_PREFIXES
+            .iter()
+            .chain(ASSIGNMENT_KEYS.iter())
+            .copied()
+            .chain(["bearer", "eyj"])
+            .any(|prefix| {
+                let prefix = prefix.to_ascii_lowercase();
+                prefix.starts_with(suffix)
+                    || (suffix.starts_with(&prefix)
+                        && !suffix[prefix.len()..].contains(['\n', '\r', ';', ',', '}', ']']))
+            });
+        if potential {
+            safe_end = safe_end.min(start);
+        }
+    }
+    safe_end
+}
+
+pub fn inspect_credential_text(text: &str, known: &[String]) -> Vec<CredentialFinding> {
+    let mut findings = Vec::new();
+    for secret in known.iter().filter(|secret| !secret.is_empty()) {
+        let mut forms = vec![secret.clone()];
+        if let Ok(encoded) = serde_json::to_string(secret) {
+            forms.push(encoded[1..encoded.len() - 1].into());
+        }
+        for form in forms {
+            for (start, _) in text.match_indices(&form) {
+                findings.push(CredentialFinding {
+                    rule_id: "owner_exact",
+                    start,
+                    end: start + form.len(),
+                    confidence: CredentialConfidence::KnownExact,
+                });
+            }
+        }
+    }
+    let lowercase = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let candidate = if let Some((start, end)) =
+            credential_range_at(bytes, lowercase.as_bytes(), cursor)
+        {
+            Some((start, end, CredentialConfidence::High, "credential_format"))
+        } else {
+            assignment_candidate_range(bytes, lowercase.as_bytes(), cursor).map(|(start, end)| {
+                (
+                    start,
+                    end,
+                    CredentialConfidence::Low,
+                    "credential_assignment",
+                )
+            })
+        };
+        if let Some((start, end, confidence, rule_id)) = candidate {
+            let value = &text[start..end];
+            if value != PROVIDER_CREDENTIAL_REDACTION_MARKER
+                && !vega_credentials::is_registered_alias(value)
+            {
+                findings.push(CredentialFinding {
+                    rule_id,
+                    start,
+                    end,
+                    confidence,
+                });
+            }
+            cursor = if confidence == CredentialConfidence::Low {
+                cursor + text[cursor..].chars().next().map_or(1, char::len_utf8)
+            } else {
+                end
+            };
+        } else {
+            cursor += text[cursor..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    findings.sort_by_key(|finding| (finding.start, std::cmp::Reverse(finding.end)));
+    let mut merged: Vec<CredentialFinding> = Vec::new();
+    for finding in findings {
+        if let Some(last) = merged.last_mut()
+            && finding.start < last.end
+        {
+            last.end = last.end.max(finding.end);
+            if finding.confidence > last.confidence {
+                last.confidence = finding.confidence;
+                last.rule_id = finding.rule_id;
+            }
+        } else {
+            merged.push(finding);
+        }
+    }
+    merged
+}
+
 const COMMON_PREFIXES: [&str; 20] = [
     "github_pat_",
     "sk-svcacct-",
@@ -54,6 +194,23 @@ pub fn redact_sensitive_credential_text_with_offsets(
     credentials: &[String],
     offsets: &[usize],
 ) -> (String, Vec<usize>) {
+    redact_sensitive_credential_text_with_offsets_and_policy(text, credentials, offsets, None)
+}
+
+pub fn redact_sensitive_credential_text_with_policy(
+    text: &str,
+    credentials: &[String],
+    exceptions: Option<&CredentialExceptionFilter>,
+) -> String {
+    redact_sensitive_credential_text_with_offsets_and_policy(text, credentials, &[], exceptions).0
+}
+
+pub fn redact_sensitive_credential_text_with_offsets_and_policy(
+    text: &str,
+    credentials: &[String],
+    offsets: &[usize],
+    exceptions: Option<&CredentialExceptionFilter>,
+) -> (String, Vec<usize>) {
     let mut redacted = text.to_string();
     let mut mapped_offsets = offsets.to_vec();
     let mut ordered = credentials
@@ -82,7 +239,7 @@ pub fn redact_sensitive_credential_text_with_offsets(
             &mapped_offsets,
         );
     }
-    redact_common_credential_formats_with_offsets(&redacted, &mapped_offsets)
+    redact_common_credential_formats_with_offsets(&redacted, &mapped_offsets, exceptions)
 }
 
 pub fn contains_sensitive_credential(text: &str, credentials: &[String]) -> bool {
@@ -92,24 +249,16 @@ pub fn contains_sensitive_credential(text: &str, credentials: &[String]) -> bool
 fn redact_common_credential_formats_with_offsets(
     text: &str,
     offsets: &[usize],
+    exceptions: Option<&CredentialExceptionFilter>,
 ) -> (String, Vec<usize>) {
-    let lowercase = text.to_ascii_lowercase();
-    let bytes = text.as_bytes();
-    let lowercase_bytes = lowercase.as_bytes();
-    let mut cursor = 0usize;
-    let mut ranges = Vec::new();
-    while cursor < bytes.len() {
-        if let Some((start, end)) = credential_range_at(bytes, lowercase_bytes, cursor) {
-            ranges.push((start, end));
-            cursor = end;
-        } else {
-            let next = text[cursor..]
-                .chars()
-                .next()
-                .map_or(bytes.len(), |character| cursor + character.len_utf8());
-            cursor = next;
-        }
-    }
+    let ranges = inspect_credential_text(text, &[])
+        .into_iter()
+        .filter(|finding| {
+            finding.confidence != CredentialConfidence::Low
+                && !exceptions.is_some_and(|filter| filter(text, finding))
+        })
+        .map(|finding| (finding.start, finding.end))
+        .collect::<Vec<_>>();
     replace_ranges_with_offsets(text, &ranges, PROVIDER_CREDENTIAL_REDACTION_MARKER, offsets)
 }
 
@@ -203,6 +352,15 @@ fn credential_range_at(bytes: &[u8], lowercase: &[u8], start: usize) -> Option<(
 }
 
 fn assignment_value_range(bytes: &[u8], lowercase: &[u8], start: usize) -> Option<(usize, usize)> {
+    assignment_candidate_range(bytes, lowercase, start)
+        .filter(|(start, end)| high_confidence_token(&bytes[*start..*end]))
+}
+
+fn assignment_candidate_range(
+    bytes: &[u8],
+    lowercase: &[u8],
+    start: usize,
+) -> Option<(usize, usize)> {
     if !has_token_boundary_before(bytes, start) {
         return None;
     }
@@ -230,7 +388,7 @@ fn assignment_value_range(bytes: &[u8], lowercase: &[u8], start: usize) -> Optio
         }
         let value_start = cursor;
         let end = assignment_value_end(bytes, cursor);
-        if high_confidence_token(&bytes[value_start..end]) {
+        if end.saturating_sub(value_start) >= 8 {
             return Some((value_start, end));
         }
     }
@@ -504,5 +662,35 @@ mod tests {
             redact_sensitive_credential_text("token=short", &[]),
             "token=short"
         );
+    }
+}
+
+#[cfg(test)]
+mod broker_policy_tests {
+    use super::*;
+    #[test]
+    fn low_assignment_does_not_hide_nested_high_token() {
+        let text = "password=prefix:sk-proj-abcdefghijklmnopqrstuvwx";
+        assert!(
+            !redact_sensitive_credential_text(text, &[])
+                .contains("sk-proj-abcdefghijklmnopqrstuvwx")
+        );
+    }
+    #[test]
+    fn exceptions_never_release_owner_values_and_ranges_are_utf8_boundaries() {
+        let known = vec!["秘密OwnerValue\"Backslash\\Canary".to_string()];
+        let encoded = serde_json::to_string(&known[0]).unwrap();
+        let text = format!("中文 password=普通说明 {} {}", known[0], encoded);
+        let filter: CredentialExceptionFilter = std::sync::Arc::new(|_, _| true);
+        let findings = inspect_credential_text(&text, &known);
+        assert!(
+            findings
+                .iter()
+                .all(|finding| text.is_char_boundary(finding.start)
+                    && text.is_char_boundary(finding.end))
+        );
+        let result = redact_sensitive_credential_text_with_policy(&text, &known, Some(&filter));
+        assert!(!result.contains(&known[0]));
+        assert!(!result.contains(&encoded[1..encoded.len() - 1]));
     }
 }

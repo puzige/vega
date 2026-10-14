@@ -199,8 +199,16 @@ pub(crate) fn spawn_full_access_shell(
     hooks: &ExecutionHooks,
     credentials: Option<&ShellCredentialContext>,
 ) -> Result<Child, BashError> {
+    let command = if let Some(context) = credentials {
+        let profile = protected_profile("(version 1)(allow default)", Some(context))?;
+        let mut command = StdCommand::new(SANDBOX_EXEC);
+        command.arg("-p").arg(profile).arg("--").arg(SHELL);
+        command
+    } else {
+        StdCommand::new(SHELL)
+    };
     spawn_shell(
-        StdCommand::new(SHELL),
+        command,
         project_root,
         command_text,
         temp_root,

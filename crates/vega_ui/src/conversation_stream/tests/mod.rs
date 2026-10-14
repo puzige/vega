@@ -512,3 +512,47 @@ fn confirm_test_final(
         cx,
     );
 }
+
+#[gpui_kit::test]
+fn privacy_controls_render_and_disable_without_component_theme(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "privacy-theme");
+    cx.update(|cx| assert!(!cx.has_global::<gpui_kit::component::Theme>()));
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("credential-review-close").is_none());
+    let plus = visual.debug_bounds("composer-add").expect("composer menu");
+    visual.simulate_click(plus.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("composer-action-credentials")
+        .expect("review menu action");
+    visual.simulate_click(button.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, _| {
+        assert!(stream.privacy.opened);
+        assert!(stream.privacy.pending);
+    });
+    let button = visual
+        .debug_bounds("credential-review-close")
+        .expect("disabled close");
+    visual.simulate_click(button.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, _| assert!(stream.privacy.opened));
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_privacy_review(
+            Ok(vega_conversation::types::PrivacyReview {
+                source_fingerprint: "synthetic".into(),
+                findings: vec![],
+            }),
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("credential-review-close")
+        .expect("enabled close");
+    visual.simulate_click(button.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, _| assert!(!stream.privacy.opened));
+    assert!(visual.debug_bounds("credential-review-close").is_none());
+}

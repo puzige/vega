@@ -39,7 +39,13 @@ impl Tools {
                 continue;
             }
             let display = relative_display(&self.root, entry.path())?;
-            append_file_matches(entry.path(), &display, &regex, &mut matches)?;
+            append_file_matches(
+                entry.path(),
+                &display,
+                &regex,
+                &mut matches,
+                self.credential_policy.is_some(),
+            )?;
             if matches.len() > MAX_RESULTS {
                 break;
             }
@@ -54,8 +60,9 @@ fn append_file_matches(
     display: &str,
     regex: &Regex,
     matches: &mut Vec<String>,
+    reject_hardlinks: bool,
 ) -> Result<(), ToolError> {
-    let mut file = crate::text_file::open_regular(path)?;
+    let mut file = crate::text_file::open_regular(path, reject_hardlinks)?;
     if binary_probe(&mut file)? {
         return Ok(());
     }

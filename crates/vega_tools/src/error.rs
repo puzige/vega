@@ -298,6 +298,7 @@ pub enum BashErrorCode {
     ScopeMismatch,
     HardlinkPreflight,
     SandboxUnavailable,
+    CredentialProtectionRequired,
     TempUnavailable,
     CleanupFailed,
     SpawnFailed,
@@ -315,6 +316,7 @@ impl BashErrorCode {
             Self::ScopeMismatch => "scope_mismatch",
             Self::HardlinkPreflight => "hardlink_preflight",
             Self::SandboxUnavailable => "sandbox_unavailable",
+            Self::CredentialProtectionRequired => "credential_protection_required",
             Self::TempUnavailable => "temp_unavailable",
             Self::CleanupFailed => "cleanup_failed",
             Self::SpawnFailed => "spawn_failed",
@@ -359,6 +361,11 @@ impl fmt::Debug for BashError {
 
 impl fmt::Display for BashError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.code == BashErrorCode::CredentialProtectionRequired {
+            return formatter.write_str(
+                "此凭据调用需要受保护执行，请切换权限模式后继续 (credential_protection_required)",
+            );
+        }
         write!(formatter, "bash failed ({})", self.code.as_str())
     }
 }

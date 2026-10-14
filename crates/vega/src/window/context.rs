@@ -680,11 +680,29 @@ fn run_manual_context_worker(
     let configured = unique_provider_for_model(&config, &model).ok_or(())?;
     let credential_root = config_path.parent().ok_or(())?.to_path_buf();
     let credential_key_ref = configured.key_ref.clone();
+    vega_conversation::privacy::register_database(database.clone(), credential_root.clone());
+    let exceptions: vega_runtime::CredentialExceptionFilter =
+        vega_conversation::privacy::exception_filter(
+            database.clone(),
+            thread_id.clone(),
+            credential_root.clone(),
+        )
+        .unwrap_or_else(|_| Arc::new(|_, _| false));
+    let authority_database = database.clone();
+    let owner_service =
+        vega_conversation::McpServerSettingsService::new(database.clone(), credential_root.clone());
     let provider_credential_reader: vega_runtime::CredentialReader =
         std::sync::Arc::new(move || {
-            vega_store::keystore::get_key(&credential_root, &credential_key_ref)
-                .map(|key| vec![key])
-                .map_err(|_| ())
+            vega_conversation::privacy::refresh_authority(&authority_database, &credential_root)
+                .map_err(|_| ())?;
+            let mut values = owner_service
+                .current_owner_credential_values()
+                .map_err(|_| ())?;
+            values.push(
+                vega_store::keystore::get_key(&credential_root, &credential_key_ref)
+                    .map_err(|_| ())?,
+            );
+            Ok(values)
         });
     let reasoning = match reasoning {
         Some(reasoning) => {
@@ -712,8 +730,9 @@ fn run_manual_context_worker(
             vega_store::keystore::get_key(config_path.parent().ok_or(())?, &configured.key_ref)
                 .map_err(|_| ())?;
         let pre_attempt_guard =
-            vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard(
+            vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard_with_exceptions(
                 provider_credential_reader.clone(),
+                exceptions.clone(),
             );
         let provider = vega_runtime::OpenAiProvider::new(configured.base_url, key)
             .map_err(|_| ())?
@@ -721,7 +740,11 @@ fn run_manual_context_worker(
             .with_pre_attempt_guard(pre_attempt_guard);
         Ok(Arc::new(provider))
     };
-    let provider = make_provider()?;
+    let provider = vega_conversation::agent::OwnerCredentialProvider::new(
+        make_provider()?,
+        provider_credential_reader.clone(),
+    )
+    .with_credential_exceptions(exceptions);
     let store = Store::open(database).map_err(|_| ())?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -731,7 +754,7 @@ fn run_manual_context_worker(
         .block_on(
             vega_conversation::agent::compact_thread_manually_accounted_with_credential_reader(
                 &store,
-                provider.as_ref(),
+                &provider,
                 &thread_id,
                 &model,
                 SYSTEM_PROMPT,

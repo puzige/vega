@@ -139,6 +139,14 @@ impl Tools {
             return Err(BashError::new(BashErrorCode::Cancelled));
         }
 
+        if full_access
+            && self
+                .credential_policy
+                .as_ref()
+                .is_some_and(|policy| policy.has_bindings())
+        {
+            return Err(BashError::new(BashErrorCode::CredentialProtectionRequired));
+        }
         let sandbox = if full_access {
             None
         } else {

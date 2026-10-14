@@ -4,6 +4,7 @@ CREATE TABLE credential_continuations (
     user_message_id TEXT NOT NULL REFERENCES messages(id),
     source_version INTEGER NOT NULL,
     source_fingerprint TEXT NOT NULL,
+    raw_user_fingerprint TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('ready', 'claimed', 'completed', 'unknown')),
     operation_id TEXT UNIQUE,
     continuation_message_id TEXT REFERENCES messages(id),

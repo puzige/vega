@@ -42,6 +42,7 @@ pub mod computer_use_delivery;
 pub mod config;
 pub mod context_compaction;
 pub mod credential_continuation;
+pub mod credential_privacy;
 pub mod git_detect;
 pub mod image_attachments;
 pub mod keystore;
@@ -95,6 +96,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0021_tool_call_rounds.sql"),
     include_str!("../migrations/0022_partial_compaction.sql"),
     include_str!("../migrations/0023_credential_continuations.sql"),
+    include_str!("../migrations/0024_credential_privacy.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -425,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_thirty_three_tables() {
+    fn migrate_creates_exactly_the_thirty_six_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -451,6 +453,9 @@ mod tests {
                 "context_checkpoints",
                 "context_compaction_status",
                 "context_settings",
+                "credential_continuations",
+                "credential_privacy_epoch",
+                "credential_privacy_exceptions",
                 "image_attachments",
                 "mcp_secret_cleanup",
                 "mcp_servers",
@@ -717,7 +722,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 33);
+        assert_eq!(tables, 36);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
@@ -808,7 +813,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 33);
+        assert_eq!(tables, 36);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {

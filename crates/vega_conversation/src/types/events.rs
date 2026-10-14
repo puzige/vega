@@ -31,6 +31,7 @@ pub enum RunFailureKind {
     #[allow(missing_docs)]
     CredentialExposureBlocked,
     CredentialCheckUnavailable,
+    CredentialContinuationUnavailable,
     CredentialProjectionInvalid(usize),
     CredentialOutcomeUnknown,
     ContextOverLimit,
@@ -85,6 +86,9 @@ impl RunFailureKind {
             } => Self::ProviderTransport,
             vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
             vega_runtime::VegaError::CredentialCheckUnavailable => Self::CredentialCheckUnavailable,
+            vega_runtime::VegaError::CredentialContinuationUnavailable => {
+                Self::CredentialContinuationUnavailable
+            }
             vega_runtime::VegaError::CredentialProjectionInvalid { tool_index } => {
                 Self::CredentialProjectionInvalid(*tool_index)
             }
@@ -122,6 +126,7 @@ impl RunFailureKind {
             Self::CredentialCheckUnavailable => "无法读取凭据配置；请在设置中检查凭据后继续，已完成的操作仍然保留。".into(),
             Self::CredentialProjectionInvalid(index) => format!("第 {} 个工具的定义含有敏感值，无法安全发送；请检查工具配置后继续。", index + 1),
             Self::CredentialOutcomeUnknown => "部分操作的结果未知，请检查工具记录后再决定下一步".into(),
+            Self::CredentialContinuationUnavailable => "恢复记录已使用、对话已变化或操作结果未知。请检查工具记录，再发送新消息继续。".into(),
             Self::ContextOverLimit => {
                 "本地上下文超出预算；原始对话已保留。请调整上下文容量、缩小工具查询范围或在新对话中继续。".into()
             }

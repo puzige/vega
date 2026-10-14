@@ -40,7 +40,7 @@ impl Tools {
         if canonical.is_dir() {
             return Err(ToolError::InvalidInput(format!("{path} is a directory")));
         }
-        let bytes = read_text_head_probed(&canonical, path)?;
+        let bytes = read_text_head_probed(&canonical, path, self.credential_policy.is_some())?;
         let text = TextFile::decode(&bytes)?;
         self.reads.record(&canonical, &bytes)?;
         Ok(render_numbered(&text.content, offset.unwrap_or(1), limit))
@@ -48,13 +48,20 @@ impl Tools {
 }
 
 /// Read a bounded regular text file. Unsupported encodings are never decoded lossily.
-fn read_text_head_probed(canonical: &Path, display: &str) -> Result<Vec<u8>, ToolError> {
-    let bytes = crate::text_file::read_regular(canonical).map_err(|error| match error {
-        ToolError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            ToolError::NotFound(display.into())
-        }
-        other => other,
-    })?;
+fn read_text_head_probed(
+    canonical: &Path,
+    display: &str,
+    reject_hardlinks: bool,
+) -> Result<Vec<u8>, ToolError> {
+    let bytes =
+        crate::text_file::read_regular(canonical, reject_hardlinks).map_err(
+            |error| match error {
+                ToolError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    ToolError::NotFound(display.into())
+                }
+                other => other,
+            },
+        )?;
     if bytes
         .iter()
         .take(BINARY_PROBE_LEN as usize)

@@ -108,6 +108,7 @@ pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerActionRow {
     AddImages,
+    CredentialReview,
     ComputerTakeover,
     /// `@` project-file reference (menu only).
     FileReference,
@@ -121,6 +122,7 @@ impl ComposerActionRow {
     fn label(self) -> &'static str {
         match self {
             Self::AddImages => "添加图片",
+            Self::CredentialReview => "凭据检查",
             Self::ComputerTakeover => "接管电脑操作",
             Self::FileReference => "项目文件引用",
             Self::Mode(mode) => mode_command(mode),
@@ -131,7 +133,7 @@ impl ComposerActionRow {
     /// Whether this row shows the thread's current authoritative value.
     fn is_selected(self, thread: &Thread) -> bool {
         match self {
-            Self::AddImages | Self::ComputerTakeover => false,
+            Self::AddImages | Self::ComputerTakeover | Self::CredentialReview => false,
             Self::FileReference => false,
             Self::Mode(mode) => thread.mode == mode,
             Self::Permission(mode) => thread.permission_mode == mode,
@@ -142,6 +144,7 @@ impl ComposerActionRow {
     fn selector(self) -> &'static str {
         match self {
             Self::AddImages => "composer-action-images",
+            Self::CredentialReview => "composer-action-credentials",
             Self::ComputerTakeover => "composer-action-computer-takeover",
             Self::FileReference => "composer-action-file",
             Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask",
@@ -161,6 +164,7 @@ impl ComposerActionRow {
     fn check_selector(self) -> &'static str {
         match self {
             Self::AddImages => "composer-action-images-check",
+            Self::CredentialReview => "composer-action-credentials-check",
             Self::ComputerTakeover => "composer-action-computer-takeover-check",
             Self::FileReference => "composer-action-file-check",
             Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask-check",
@@ -411,6 +415,11 @@ impl ConversationStream {
                     .menu_rows
                     .push(ComposerActionRow::ComputerTakeover);
             }
+            if self.thread.backend == TaskBackend::Native {
+                self.actions
+                    .menu_rows
+                    .push(ComposerActionRow::CredentialReview);
+            }
         }
         self.actions.highlight = 0;
         self.focus_composer(window, cx);
@@ -608,6 +617,12 @@ impl ConversationStream {
                     self.focus_composer(window, cx);
                     cx.notify();
                 }
+            }
+            ComposerActionRow::CredentialReview => {
+                self.actions.close_menu();
+                self.request_privacy(PrivacyAction::Review, cx);
+                self.focus_composer(window, cx);
+                cx.notify();
             }
             ComposerActionRow::AddImages => {
                 self.actions.close_menu();

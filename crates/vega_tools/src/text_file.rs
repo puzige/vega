@@ -77,10 +77,13 @@ fn unsupported() -> ToolError {
 }
 
 /// Open only regular files, without following the final component or blocking on FIFOs.
-pub(crate) fn read_regular(path: &std::path::Path) -> Result<Vec<u8>, ToolError> {
+pub(crate) fn read_regular(
+    path: &std::path::Path,
+    reject_hardlinks: bool,
+) -> Result<Vec<u8>, ToolError> {
     use std::io::Read;
     const MAX_BYTES: u64 = 1024 * 1024 * 1024;
-    let file = open_regular(path)?;
+    let file = open_regular(path, reject_hardlinks)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(MutationError::new(MutationErrorCode::PathNotFile).into());
@@ -129,7 +132,10 @@ pub(crate) fn open_directory(path: &std::path::Path) -> Result<std::fs::File, To
     Ok(directory)
 }
 
-pub(crate) fn open_regular(path: &std::path::Path) -> Result<std::fs::File, ToolError> {
+pub(crate) fn open_regular(
+    path: &std::path::Path,
+    reject_hardlinks: bool,
+) -> Result<std::fs::File, ToolError> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
     let parent = path
@@ -155,7 +161,7 @@ pub(crate) fn open_regular(path: &std::path::Path) -> Result<std::fs::File, Tool
     // SAFETY: successful openat returned a new descriptor owned only by this File.
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.nlink() != 1 {
+    if !metadata.is_file() || (reject_hardlinks && metadata.nlink() != 1) {
         return Err(MutationError::new(MutationErrorCode::PathNotFile).into());
     }
     Ok(file)
@@ -174,6 +180,6 @@ mod credential_path_tests {
         let original = public.join("secret");
         std::fs::remove_dir(&public).unwrap();
         std::os::unix::fs::symlink(&private, &public).unwrap();
-        assert!(super::read_regular(&original).is_err());
+        assert!(super::read_regular(&original, true).is_err());
     }
 }

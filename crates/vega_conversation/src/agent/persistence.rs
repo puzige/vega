@@ -12,6 +12,7 @@ pub struct PersistenceActorConfig {
     /// unlimited (Issue #114, mirrors Claude Code's `--max-turns`). Carried
     /// from `[agent] turn_limit` in config.toml through to the runtime.
     pub turn_limit: u32,
+    pub(crate) credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     pub(crate) owner_credential_reader: Option<vega_runtime::CredentialReader>,
     #[cfg(test)]
     pub(crate) snapshot_writes: Option<Arc<AtomicUsize>>,
@@ -59,6 +60,14 @@ impl PersistenceActorConfig {
     }
     pub fn with_owner_credential_reader(mut self, reader: vega_runtime::CredentialReader) -> Self {
         self.owner_credential_reader = Some(reader);
+        self
+    }
+
+    pub fn with_credential_exceptions(
+        mut self,
+        filter: Option<vega_runtime::CredentialExceptionFilter>,
+    ) -> Self {
+        self.credential_exceptions = filter;
         self
     }
 

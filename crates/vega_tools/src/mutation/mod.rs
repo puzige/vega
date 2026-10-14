@@ -298,7 +298,8 @@ impl Tools {
         let target = self
             .file_path(path)
             .map_err(|_| invalid_error(tool, raw, MutationErrorCode::FilesystemError))?;
-        let bytes = match crate::text_file::read_regular(&target) {
+        let bytes = match crate::text_file::read_regular(&target, self.credential_policy.is_some())
+        {
             Ok(bytes) => bytes,
             Err(ToolError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(());
@@ -384,8 +385,9 @@ impl Tools {
                 .transpose()?
                 .unwrap_or(content.len())
         } else if target.metadata.is_some() {
-            let bytes = crate::text_file::read_regular(&target.absolute)
-                .map_err(|error| tool_to_invalid(error, MutationTool::Write, raw_input))?;
+            let bytes =
+                crate::text_file::read_regular(&target.absolute, self.credential_policy.is_some())
+                    .map_err(|error| tool_to_invalid(error, MutationTool::Write, raw_input))?;
             TextFile::decode(&bytes)
                 .map_err(|error| tool_to_invalid(error, MutationTool::Write, raw_input))?
                 .encode(&content, false)
@@ -608,7 +610,9 @@ impl Tools {
         let preimage = target
             .metadata
             .as_ref()
-            .map(|_| crate::text_file::read_regular(&target.absolute))
+            .map(|_| {
+                crate::text_file::read_regular(&target.absolute, self.credential_policy.is_some())
+            })
             .transpose()
             .map_err(|_| mutation_error(MutationErrorCode::FilesystemError))?;
         if let Some(bytes) = preimage.as_deref() {
@@ -673,7 +677,9 @@ impl Tools {
         let original = target
             .metadata
             .as_ref()
-            .map(|_| crate::text_file::read_regular(&target.absolute))
+            .map(|_| {
+                crate::text_file::read_regular(&target.absolute, self.credential_policy.is_some())
+            })
             .transpose()
             .map_err(|_| mutation_error(MutationErrorCode::FilesystemError))?;
         if let Some(bytes) = original.as_deref() {
@@ -853,8 +859,11 @@ fn revalidate_target(
         (Some(before), Some(after), Some(bytes))
             if before.dev() == after.dev() && before.ino() == after.ino() && after.nlink() == 1 =>
         {
-            let current_bytes = crate::text_file::read_regular(&current.absolute)
-                .map_err(|_| mutation_error(MutationErrorCode::TargetChanged))?;
+            let current_bytes = crate::text_file::read_regular(
+                &current.absolute,
+                tools.credential_policy.is_some(),
+            )
+            .map_err(|_| mutation_error(MutationErrorCode::TargetChanged))?;
             if current_bytes == bytes {
                 Ok(())
             } else {

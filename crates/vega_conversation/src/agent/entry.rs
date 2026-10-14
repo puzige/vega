@@ -791,6 +791,7 @@ where
             prepared.request.pricing_catalog.clone(),
         )
         .with_credential_reader(prepared.request.tool_config.credential_reader())
+        .with_credential_exceptions(prepared.request.tool_config.credential_exceptions())
         .with_diagnostics(diagnostics_context.clone())
     });
     let context_hook_ref = context_hook

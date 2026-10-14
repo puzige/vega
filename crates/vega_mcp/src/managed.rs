@@ -36,7 +36,10 @@ pub struct ManagedClient {
 
 impl ManagedClient {
     pub fn spawn(server: LocalServer) -> Result<Self, McpError> {
-        if !server.executable.is_absolute() || !server.working_directory.is_absolute() {
+        if server.credential_policy.is_some()
+            || !server.executable.is_absolute()
+            || !server.working_directory.is_absolute()
+        {
             return Err(McpError::InvalidConfig);
         }
         let mut child = Command::new(server.executable)

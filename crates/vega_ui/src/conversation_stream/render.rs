@@ -1652,6 +1652,7 @@ impl Render for ConversationStream {
                                                 let item = if let Some(notice) =
                                                     this.run_notices.get(&index)
                                                 {
+                let colors = theme(cx).colors;
                                                     div()
                                                         .w_full()
                                                         .min_w_0()
@@ -1659,7 +1660,7 @@ impl Render for ConversationStream {
                                                         .flex()
                                                         .flex_col()
                                                         .child(item)
-                                                        .child(notice.render(&theme(cx).colors, this.thread.id.clone(), cx))
+                                                        .child(notice.render(&colors, this.thread.id.clone(), cx))
                                                         .into_any_element()
                                                 } else {
                                                     item
@@ -1755,6 +1756,9 @@ impl Render for ConversationStream {
             )
             .when(!self.entries.is_empty(), |root| {
                 root.child(self.render_resume_tail(cx))
+            })
+            .when(self.privacy.opened, |view| {
+                view.child(self.render_privacy_control(cx))
             })
             .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))

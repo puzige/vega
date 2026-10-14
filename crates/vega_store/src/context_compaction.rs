@@ -1325,6 +1325,29 @@ fn load_source_inner(
     })
 }
 
+pub(crate) fn source_version_without_continuation(
+    conn: &Connection,
+    thread_id: &str,
+    continuation_message_id: &str,
+) -> rusqlite::Result<ContextSourceVersion> {
+    let mut messages = load_messages(conn, thread_id)?;
+    let mut tool_calls = load_tool_calls(conn, thread_id)?;
+    messages.retain(|message| message.id != continuation_message_id);
+    tool_calls.retain(|call| call.message_id != continuation_message_id);
+    let (fingerprint, _) = fingerprint_source(conn, &messages, &tool_calls, thread_id, false)?;
+    let source_version = messages
+        .iter()
+        .map(|row| row.seq)
+        .chain(tool_calls.iter().map(|row| row.seq))
+        .fold(0_i64, i64::max);
+    Ok(ContextSourceVersion {
+        source_version: u64::try_from(source_version).map_err(|_| {
+            rusqlite::Error::InvalidParameterName("negative source sequence".into())
+        })?,
+        fingerprint,
+    })
+}
+
 fn load_messages(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<MessageRow>> {
     let (count, content_bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(CAST(COALESCE((SELECT p.model_content FROM pending_messages p WHERE p.thread_id = messages.thread_id AND p.id = messages.id AND messages.role = 'user' AND p.state = 'delivered'), content) AS BLOB))), 0) \
