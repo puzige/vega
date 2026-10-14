@@ -738,7 +738,7 @@ pub async fn run_agent(
 pub(super) fn reasoning_budget_violation(
     delta_bytes: usize,
     turn_bytes: usize,
-    run_bytes: usize,
+    _run_bytes: usize,
 ) -> Option<(ReasoningBudgetScope, usize)> {
     if delta_bytes > REASONING_DELTA_MAX_BYTES {
         return Some((ReasoningBudgetScope::Delta, delta_bytes));
@@ -749,13 +749,6 @@ pub(super) fn reasoning_budget_violation(
     };
     if next_turn > REASONING_TURN_MAX_BYTES {
         return Some((ReasoningBudgetScope::Turn, next_turn));
-    }
-    let next_run = match run_bytes.checked_add(delta_bytes) {
-        Some(next) => next,
-        None => return Some((ReasoningBudgetScope::Run, usize::MAX)),
-    };
-    if next_run > REASONING_RUN_MAX_BYTES {
-        return Some((ReasoningBudgetScope::Run, next_run));
     }
     None
 }
@@ -794,20 +787,14 @@ fn reasoning_projection_counts(
             });
         }
         reasoning_bytes = reasoning_bytes.saturating_add(message_bytes);
-        if reasoning_bytes > REASONING_RUN_MAX_BYTES {
-            return Err(VegaError::ReasoningBudgetExceeded {
-                scope: ReasoningBudgetScope::Run,
-                limit_bytes: REASONING_RUN_MAX_BYTES,
-                observed_bytes: reasoning_bytes,
-            });
-        }
         let message_replay_bytes = message
             .response_reasoning
             .iter()
             .fold(0usize, |total, item| {
                 total.saturating_add(item.to_string().len())
             });
-        if message_replay_bytes > REASONING_TURN_MAX_BYTES {
+        if message_replay_bytes > REASONING_TURN_MAX_BYTES || message.response_reasoning.len() > 256
+        {
             return Err(replay_budget_error(
                 message_replay_bytes,
                 message.response_reasoning.len(),
@@ -816,13 +803,6 @@ fn reasoning_projection_counts(
         }
         replay_bytes = replay_bytes.saturating_add(message_replay_bytes);
         replay_items = replay_items.saturating_add(message.response_reasoning.len());
-        if replay_bytes > REASONING_RUN_MAX_BYTES || replay_items > 256 {
-            return Err(replay_budget_error(
-                replay_bytes,
-                replay_items,
-                ReasoningBudgetScope::Run,
-            ));
-        }
     }
     Ok((reasoning_bytes, replay_bytes, replay_items))
 }
@@ -1031,6 +1011,8 @@ where
     let mut live_projection_revision = 0_u64;
     let mut attempted_context_source = None::<(u64, Option<String>, u64)>;
     let mut automatic_compaction_failures = 0_u8;
+    let mut provider_overflow_recovered = false;
+    let mut force_provider_compaction = false;
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
     let skill_config = tool_config.skills.clone();
@@ -1245,7 +1227,7 @@ where
         }
     }
 
-    loop {
+    'primary: loop {
         turn_index += 1;
         if tool_config.turn_limit > 0 && turn_index > tool_config.turn_limit {
             let notice = format!(
@@ -1322,7 +1304,8 @@ where
             let check = budget
                 .check(estimate)
                 .map_err(|error| VegaError::Context(error.into()))?;
-            let should_compact = matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit)
+            let should_compact = (force_provider_compaction
+                || matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit))
                 && budget.automatic_compaction();
             if should_compact {
                 let source_version = context_source_version.unwrap_or_default();
@@ -1335,7 +1318,7 @@ where
                             live_projection_revision,
                         ))
                 {
-                    if matches!(check, ContextCheck::OverLimit) {
+                    if force_provider_compaction || matches!(check, ContextCheck::OverLimit) {
                         return Err(VegaError::Context(ContextRuntimeError::OverLimit {
                             estimated_tokens: estimate.input_tokens,
                             input_budget: budget.input_budget(),
@@ -1481,6 +1464,9 @@ where
                                 },
                             }
                         );
+                        if force_provider_compaction {
+                            return Err(*failure.error);
+                        }
                         if recoverable_compaction_failure(failure.error.as_ref()) {
                             automatic_compaction_failures =
                                 automatic_compaction_failures.saturating_add(1);
@@ -1558,7 +1544,9 @@ where
                 let target_tokens = budget
                     .target_tokens()
                     .map_err(|error| VegaError::Context(error.into()))?;
-                if compacted_estimate.input_tokens > target_tokens
+                if (force_provider_compaction
+                    && compacted_estimate.input_tokens >= estimate.input_tokens)
+                    || compacted_estimate.input_tokens > target_tokens
                     || compacted_estimate.input_tokens > budget.input_budget()
                 {
                     emit!(
@@ -1648,6 +1636,10 @@ where
                         return Err(error);
                     }
                 };
+                if force_provider_compaction && next_messages == messages {
+                    return Err(VegaError::Context(ContextRuntimeError::NoCompactablePrefix));
+                }
+                force_provider_compaction = false;
                 automatic_compaction_failures = 0;
                 messages = next_messages;
                 (reasoning_run_bytes, replay_run_bytes, replay_run_items) = retained_reasoning;
@@ -1715,6 +1707,7 @@ where
             cancel.cancel();
         }
         let response_text_start = final_text.len();
+        discard_reasoning_events(&mut events, 0);
         let reasoning_event_start = events.len();
         emit!(
             events,
@@ -1822,6 +1815,20 @@ where
                         Some(&error),
                     )
                 );
+                if !provider_overflow_recovered
+                    && error.context_input_overflow().is_some()
+                    && context_budget.is_some_and(|budget| budget.automatic_compaction())
+                    && external_context_hook
+                        .or(request_context_hook.as_deref())
+                        .is_some()
+                {
+                    provider_overflow_recovered = true;
+                    force_provider_compaction = true;
+                    attempted_context_source = None;
+                    drop(input_anchor.take());
+                    turn_index = turn_index.saturating_sub(1);
+                    continue 'primary;
+                }
                 emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
                 return Ok(outcome(
                     events,
@@ -1946,17 +1953,11 @@ where
                             retry_count: None,
                             request_id: None,
                         })
-                    } else if bytes > REASONING_TURN_MAX_BYTES {
+                    } else if bytes > REASONING_TURN_MAX_BYTES || items.len() > 256 {
                         Some(replay_budget_error(
                             bytes,
                             items.len(),
                             ReasoningBudgetScope::Turn,
-                        ))
-                    } else if next_bytes > REASONING_RUN_MAX_BYTES || next_items > 256 {
-                        Some(replay_budget_error(
-                            next_bytes,
-                            next_items,
-                            ReasoningBudgetScope::Run,
                         ))
                     } else {
                         None
@@ -2025,7 +2026,7 @@ where
                         ));
                     }
                     reasoning_turn_bytes += delta.len();
-                    reasoning_run_bytes += delta.len();
+                    reasoning_run_bytes = reasoning_run_bytes.saturating_add(delta.len());
                     if preserve_reasoning_content && !is_summary {
                         assistant_reasoning.push_str(&delta);
                     }
@@ -2249,6 +2250,26 @@ where
                             Some(&error),
                         )
                     );
+                    if !provider_overflow_recovered
+                        && error.context_input_overflow().is_some()
+                        && context_budget.is_some_and(|budget| budget.automatic_compaction())
+                        && external_context_hook
+                            .or(request_context_hook.as_deref())
+                            .is_some()
+                        && assistant_text.is_empty()
+                        && assistant_reasoning.is_empty()
+                        && response_reasoning.is_empty()
+                        && calls.is_empty()
+                        && final_text.len() == response_text_start
+                        && reasoning_turn_bytes == 0
+                    {
+                        provider_overflow_recovered = true;
+                        force_provider_compaction = true;
+                        attempted_context_source = None;
+                        drop(input_anchor.take());
+                        turn_index = turn_index.saturating_sub(1);
+                        continue 'primary;
+                    }
                     emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
                     return Ok(outcome(
                         events,
@@ -2308,6 +2329,7 @@ where
                 false,
             ));
         }
+        provider_overflow_recovered = false;
         let normal_terminal = matches!(
             (stop_reason, calls.is_empty()),
             (Some(StopReason::End), true) | (Some(StopReason::ToolUse), false)

@@ -46,7 +46,6 @@ pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 pub const REASONING_DELTA_MAX_BYTES: usize = 64 * 1024;
 /// Maximum bytes retained for one logical provider call/assistant turn.
 pub const REASONING_TURN_MAX_BYTES: usize = 256 * 1024;
-/// Maximum bytes retained across all logical provider calls in one run.
 pub const REASONING_RUN_MAX_BYTES: usize = 1024 * 1024;
 /// Stable content-free result for a provider call id that conflicts with
 /// persisted owner, tool, or safe input identity.

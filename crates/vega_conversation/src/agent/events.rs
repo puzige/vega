@@ -163,6 +163,13 @@ where
                     {
                         Ok(()) => {
                             if matches!(event, RuntimeEvent::AssistantResponseStarted { .. }) {
+                                events.retain(|event| {
+                                    !matches!(
+                                        event,
+                                        ConversationEvent::ThinkingDelta { .. }
+                                            | ConversationEvent::SummaryDelta { .. }
+                                    )
+                                });
                                 reasoning_event_start = events.len();
                             }
                             let release_start = match &event {
