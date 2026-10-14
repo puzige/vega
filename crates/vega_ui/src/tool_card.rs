@@ -518,6 +518,7 @@ impl ToolCard {
         self.activity_category().action_phrase().to_owned()
     }
 
+    #[cfg(test)]
     pub(crate) fn call_status(&self) -> ToolCallStatus {
         self.status
     }
