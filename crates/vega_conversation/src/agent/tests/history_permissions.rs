@@ -2313,23 +2313,34 @@ async fn issue88_long_completed_tool_history_compacts_and_continues_same_run() {
     let requests = provider.requests();
     assert_eq!(
         requests.len(),
-        2,
-        "one direct summary and one primary request"
+        3,
+        "two summary stages and one primary request"
     );
-    assert!(requests[0].tools.is_empty());
+    let summaries = &requests[..2];
+    assert!(summaries.iter().all(|request| request.tools.is_empty()));
+    for seq in 1..=8 {
+        let marker = format!("historical-{seq}-");
+        assert!(
+            summaries
+                .iter()
+                .flat_map(|request| &request.messages)
+                .any(|message| message.content.contains(&marker)),
+            "every historical goal and progress row reaches summarization"
+        );
+    }
     for seq in 1..=120_i64 {
         let call_id = format!("old-call-{seq:03}");
         assert!(
-            requests[0]
-                .messages
+            summaries
                 .iter()
+                .flat_map(|request| &request.messages)
                 .flat_map(|message| &message.tool_calls)
                 .any(|call| call.id == call_id)
         );
         assert!(
-            requests[0]
-                .messages
+            summaries
                 .iter()
+                .flat_map(|request| &request.messages)
                 .any(|message| message.tool_call_id.as_deref() == Some(call_id.as_str()))
         );
     }
@@ -4174,7 +4185,7 @@ async fn claude_direct_summary_preserves_roles_and_uses_20k_cap() {
 }
 
 #[tokio::test]
-async fn claude_prompt_too_long_trims_complete_round_then_retries() {
+async fn claude_prompt_too_long_retries_without_discarding_complete_rounds() {
     let (store, _dir, _) = setup();
     seed_issue88_large_tool_result(&store, "{}", "full tool result");
     let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
@@ -4207,11 +4218,20 @@ async fn claude_prompt_too_long_trims_complete_round_then_retries() {
     .unwrap();
     let calls = provider.requests();
     assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0].messages, calls[1].messages,
+        "provider overflow must not discard unsummarized history"
+    );
+    assert!(!calls[1].messages.iter().any(|message| {
+        message
+            .content
+            .contains("Earlier historical API rounds omitted")
+    }));
     assert!(
         calls[1]
             .messages
             .iter()
-            .any(|m| m.content.contains("Earlier historical API rounds omitted"))
+            .any(|message| message.content == "message-1")
     );
     assert!(
         calls[1]
@@ -4291,7 +4311,7 @@ async fn claude_failed_summary_rechecks_source_before_soft_fallback() {
 }
 
 #[tokio::test]
-async fn claude_local_preflight_and_provider_overflow_share_three_trims() {
+async fn claude_local_preflight_rejects_indivisible_history_without_provider_or_checkpoint() {
     let (store, _dir, _) = setup();
     seed_manual_compaction_history(&store);
     store
@@ -4311,7 +4331,7 @@ async fn claude_local_preflight_and_provider_overflow_share_three_trims() {
         message: r#"{"error":{"code":"context_length_exceeded"}}"#.into(),
         retryable: false,
     }]);
-    compact_thread_manually(
+    let failure = compact_thread_manually(
         &store,
         &provider,
         "thread-1",
@@ -4325,39 +4345,15 @@ async fn claude_local_preflight_and_provider_overflow_share_three_trims() {
     )
     .await
     .unwrap_err();
-    let requests = provider.requests();
-    assert_eq!(
-        requests.len(),
-        3,
-        "one trim already used before any HTTP request"
+    assert!(matches!(
+        failure.error.as_ref(),
+        VegaError::Context(vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. })
+    ));
+    assert!(
+        provider.requests().is_empty(),
+        "an indivisible oversized goal must fail before any provider request"
     );
-    let mut previous = usize::MAX;
-    for request in &requests {
-        assert!(
-            vega_runtime::estimate_wire_context(&request.messages, &[])
-                .unwrap()
-                .input_tokens
-                <= 19_000
-        );
-        assert_eq!(
-            request
-                .messages
-                .iter()
-                .filter(|m| m.content.contains("Earlier historical API rounds omitted"))
-                .count(),
-            1
-        );
-        let retained = request
-            .messages
-            .iter()
-            .filter(|m| !m.content.contains("Earlier historical API rounds omitted"))
-            .count();
-        assert!(
-            retained < previous,
-            "each retry removes real history, not its own marker"
-        );
-        previous = retained;
-    }
+    assert!(failure.usages.is_empty());
     assert_eq!(
         vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
         before
