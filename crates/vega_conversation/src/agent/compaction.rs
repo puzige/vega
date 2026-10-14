@@ -1514,6 +1514,7 @@ impl ConversationCompactionHook<'_> {
         let mut cursor = 0usize;
         let mut aggregate = String::new();
         let mut stage_limit = request.budget.input_budget();
+        let mut overflow_retries = 0usize;
         while cursor < groups.len() {
             if cancel.is_cancelled() {
                 return Err(failure_with_usages(
@@ -1590,10 +1591,15 @@ impl ConversationCompactionHook<'_> {
                 Ok(summary) => {
                     aggregate = summary;
                     cursor = end;
+                    overflow_retries = 0;
                 }
                 Err(failure) => {
                     if let Some(overflow) = classify_summary_input_overflow(failure.error.as_ref())
                     {
+                        if overflow_retries >= 3 {
+                            return Err(failure);
+                        }
+                        overflow_retries += 1;
                         let reduction = overflow.token_gap.unwrap_or(stage_limit / 5).max(1);
                         stage_limit = stage_limit.saturating_sub(reduction);
                         continue;

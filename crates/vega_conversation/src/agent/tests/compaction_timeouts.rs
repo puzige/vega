@@ -637,7 +637,7 @@ async fn issue362_staged_summary_preserves_early_goal_and_every_progress_group()
         "mock-model",
         "system",
         Vec::new(),
-        ContextBudget::new(8_000, 1_000, false).unwrap(),
+        ContextBudget::new(10_000, 1_000, false).unwrap(),
         CancellationToken::new(),
         None,
         None,
