@@ -1494,7 +1494,7 @@ async fn issue343_t18_pure_summary_aggregate_shows_latest_only_in_title(cx: &mut
                 RunActivityChild::Thinking(card) => Some(card),
                 _ => None,
             })
-            .last()
+            .next_back()
             .unwrap()
     });
     visual.update(|window, cx| {
