@@ -1,7 +1,6 @@
 use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
-use vega_conversation::types::ToolCallStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunActivityStatus {
@@ -906,6 +905,7 @@ impl RunActivityGroup {
     fn activity_presentation(&self, cx: &App) -> (String, crate::icons::Icon, bool) {
         use crate::icons::Icon;
         use crate::tool_card::ToolActivityState;
+        use vega_conversation::types::ToolCallStatus;
         if self.terminal {
             return (
                 self.label(),

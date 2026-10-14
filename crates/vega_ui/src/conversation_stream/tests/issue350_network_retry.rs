@@ -52,9 +52,15 @@ fn assert_retry_outside_stage(visual: &mut VisualTestContext) {
     let stage = visual.debug_bounds("run-timeline-segment-0").unwrap();
     let title = visual.debug_bounds("run-stage-title-0").unwrap();
     let retry = visual.debug_bounds("assistant-network-retry").unwrap();
+    let wifi = visual.debug_bounds("assistant-retry-wifi-icon").unwrap();
     assert!(stage.bottom() <= retry.top());
     assert!(retry.left() <= title.left());
     assert!(retry.size.height > px(Typography::BODY));
+    assert_eq!(
+        wifi.size,
+        gpui_kit::size(px(Layout::ICON_SIZE), px(Layout::ICON_SIZE))
+    );
+    assert!(wifi.left() >= retry.left() && wifi.right() <= retry.right());
 }
 
 #[gpui_kit::test]
@@ -141,6 +147,7 @@ async fn issue343_t15_retry_notice_stays_outside_folded_and_expanded_thinking(
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("assistant-network-retry").is_none());
+    assert!(visual.debug_bounds("assistant-retry-wifi-icon").is_none());
     stream.update(&mut visual, |stream, cx| {
         retry(stream, 0, 3, cx);
         stream.apply_event(
@@ -160,7 +167,9 @@ async fn issue343_t15_retry_notice_stays_outside_folded_and_expanded_thinking(
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("assistant-network-retry").is_none());
+    assert!(visual.debug_bounds("assistant-retry-wifi-icon").is_none());
     assert!(visual.debug_bounds("assistant-run-failure").is_some());
+    assert!(visual.debug_bounds("conversation-status-icon").is_some());
     assert!(visual.debug_bounds("run-stage-status-0").is_none());
 }
 

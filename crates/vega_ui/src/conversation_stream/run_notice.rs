@@ -1,4 +1,5 @@
 use super::*;
+use crate::icons::Icon;
 use vega_conversation::types::TaskSummaryOutcome;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -41,10 +42,11 @@ impl RunNotice {
                 .min_w_0()
                 .py_1()
                 .aria_label(self.text())
-                .child(render_rows::status_notice(
+                .child(render_rows::status_notice_with_icon(
                     self.text(),
                     colors.warning,
                     colors,
+                    Icon::Wifi,
                 ))
                 .into_any_element();
         }

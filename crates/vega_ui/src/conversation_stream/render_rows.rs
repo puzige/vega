@@ -410,6 +410,15 @@ thread_local! {
 }
 
 pub(super) fn status_notice(message: String, color: Rgba, colors: &ThemeColors) -> AnyElement {
+    status_notice_with_icon(message, color, colors, Icon::Warning)
+}
+
+pub(super) fn status_notice_with_icon(
+    message: String,
+    color: Rgba,
+    colors: &ThemeColors,
+    icon_kind: Icon,
+) -> AnyElement {
     div()
         .w_full()
         .min_w_0()
@@ -425,7 +434,13 @@ pub(super) fn status_notice(message: String, color: Rgba, colors: &ThemeColors) 
         .text_color(color)
         .child(
             div()
-                .debug_selector(|| "conversation-status-icon".into())
+                .debug_selector(move || {
+                    if icon_kind == Icon::Wifi {
+                        "assistant-retry-wifi-icon".into()
+                    } else {
+                        "conversation-status-icon".into()
+                    }
+                })
                 .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
                     - Layout::ICON_SIZE)
                     / 2.0))
@@ -434,7 +449,7 @@ pub(super) fn status_notice(message: String, color: Rgba, colors: &ThemeColors) 
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(Icon::Warning, color)),
+                .child(icon(icon_kind, color)),
         )
         .child(
             div()
