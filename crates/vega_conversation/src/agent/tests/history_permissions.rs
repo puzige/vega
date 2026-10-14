@@ -4899,7 +4899,7 @@ fn issue365_reopened_projection_recovers_exact_context_owner_and_run_failure() {
                         },
                     ),
                     occurred_at: seq,
-                    duration_ms: None,
+                    duration_ms: (state == DiagnosticState::Failed).then_some(1),
                     metrics: DiagnosticMetrics::default(),
                 },
             )
