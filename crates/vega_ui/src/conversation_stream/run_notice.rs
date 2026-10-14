@@ -95,6 +95,20 @@ struct RunNoticeSource {
 }
 
 impl ConversationStream {
+    pub(super) fn compaction_reports_run_failure(
+        &self,
+        message_id: &str,
+        failure: RunFailureKind,
+    ) -> bool {
+        failure == RunFailureKind::ContextOverLimit
+            && self.entries.iter().zip(&self.entry_identities).any(|(entry, identity)| {
+                identity.message_id.as_deref() == Some(message_id)
+                    && matches!(entry, StreamEntry::ContextCompaction { record, .. }
+                        if record.status == vega_conversation::types::ContextCompactionStatus::Failed
+                        && record.failure == Some(vega_conversation::types::ContextCompactionFailureCode::OverLimit))
+            })
+    }
+
     pub(crate) fn run_notice_projection(&self, cx: &App) -> HashMap<usize, RunNotice> {
         let mut ends = vec![self.entries.len(); self.entries.len()];
         let mut end = self.entries.len();
@@ -162,6 +176,11 @@ impl ConversationStream {
         sources
             .into_iter()
             .filter_map(|(message_id, source)| {
+                if source.failure.is_some_and(|failure| {
+                    self.compaction_reports_run_failure(&message_id, failure)
+                }) {
+                    return None;
+                }
                 let kind = if let Some(failure) = source.failure {
                     Some(RunNoticeKind::Failure(failure))
                 } else if let Some((_, attempt, max_retries)) =
@@ -207,10 +226,11 @@ impl ConversationStream {
             .as_ref()
             .is_some_and(|(message_id, failure)| {
                 self.controller_error.as_deref() == Some(failure.message().as_str())
-                    && self.run_notices.values().any(|notice| {
-                        notice.message_id == *message_id
-                            && notice.kind == RunNoticeKind::Failure(*failure)
-                    })
+                    && (self.compaction_reports_run_failure(message_id, *failure)
+                        || self.run_notices.values().any(|notice| {
+                            notice.message_id == *message_id
+                                && notice.kind == RunNoticeKind::Failure(*failure)
+                        }))
             })
     }
 }

@@ -677,7 +677,18 @@ pub(super) fn estimate_entry_height(
         {
             1.0
         }
-        StreamEntry::ContextCompaction { .. } | StreamEntry::SkillActivation { .. } => 30.0,
+        StreamEntry::ContextCompaction {
+            record, restored, ..
+        } => {
+            let label = context_compaction_label(record.status, record.failure, *restored);
+            let width = (text_width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
+            let columns = (width / (Typography::BODY * 0.56)).max(1.) as usize;
+            (display_width(&label).div_ceil(columns).max(1) as f32
+                * Typography::BODY
+                * Typography::BODY_LINE_HEIGHT)
+                .max(Layout::DISCLOSURE_HEADER_HEIGHT)
+        }
+        StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),
     }
 }

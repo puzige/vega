@@ -165,13 +165,10 @@ fn status(generation: u64, status: Status) -> ContextCompactionStatusRecord {
 
 #[test]
 fn issue88_internal_stage_limit_and_model_budget_have_distinct_copy() {
-    assert!(status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("安全分段上限"));
+    assert!(status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("无法安全压缩"));
     assert!(!status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("模型容量"));
-    assert!(
-        status_label_for(Status::Failed, Some(Failure::OverLimit))
-            .contains("本地上下文预算检查未通过")
-    );
-    assert!(!status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("安全分段上限"));
+    assert!(status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("上下文超出预算"));
+    assert!(!status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("无法安全压缩"));
 }
 
 #[gpui_kit::test]
@@ -202,7 +199,7 @@ async fn issue356_timeout_label_survives_restoration_and_keeps_invalid_summary_d
             assert_eq!(record.failure, Some(Failure::TimedOut));
             assert_eq!(
                 context_compaction_label(record.status, record.failure, *restored),
-                "已恢复 · 上下文压缩超时，请重试"
+                "上下文压缩超时，请重试"
             );
             assert!(!stream.context_operation_busy());
         })
@@ -219,7 +216,7 @@ fn issue117_compaction_copy_matches_reference_and_marks_restored_rows() {
     );
     assert_eq!(
         status_label_for(Status::Cancelled, None),
-        "上下文压缩已取消，原始对话未更改"
+        "上下文压缩已取消"
     );
     assert_eq!(
         status_label_for(Status::Failed, Some(Failure::InvalidSummary)),
@@ -227,11 +224,11 @@ fn issue117_compaction_copy_matches_reference_and_marks_restored_rows() {
     );
     assert_eq!(
         context_compaction_label(Status::Succeeded, None, true),
-        "已恢复 · 上下文已压缩"
+        "上下文已压缩"
     );
     assert_eq!(
         context_compaction_label(Status::Failed, Some(Failure::SourceChanged), true),
-        "已恢复 · 历史已变化，请重试压缩"
+        "历史已变化，请重试压缩"
     );
     assert_eq!(
         context_compaction_label(Status::Succeeded, None, false),
@@ -749,7 +746,7 @@ async fn issue117_restore_is_historical_idempotent_and_rejects_late_results(
 }
 
 #[gpui_kit::test]
-async fn issue117_compaction_row_icon_and_label_are_vertically_centered(cx: &mut TestAppContext) {
+async fn issue365_compaction_row_icon_and_label_align_to_first_line(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
         .update(cx, |stream, _, cx| {
@@ -774,13 +771,100 @@ async fn issue117_compaction_row_icon_and_label_are_vertically_centered(cx: &mut
         .expect("label bounds");
     let slot_center = f32::from(slot.origin.y) + f32::from(slot.size.height) / 2.0;
     let label_center = f32::from(label.origin.y) + f32::from(label.size.height) / 2.0;
-    let row_center = f32::from(row.origin.y) + f32::from(row.size.height) / 2.0;
+
     assert!(
         (slot_center - label_center).abs() < 0.5,
         "icon center {slot_center} and label center {label_center} must share one optical center"
     );
-    assert!(
-        (slot_center - row_center).abs() < 3.0,
-        "icon center {slot_center} must sit near the row center {row_center}"
-    );
+    assert_eq!(slot.origin.y, row.origin.y);
+    assert_eq!(label.origin.y, row.origin.y);
+}
+
+#[gpui_kit::test]
+async fn issue365_compaction_failure_deduplicates_only_owned_budget_error(cx: &mut TestAppContext) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            let mut record = status(1, Status::Failed);
+            record.failure = Some(Failure::OverLimit);
+            stream.apply_context_status("context-thread", "mock", record, cx);
+            let index = stream.entries.len() - 1;
+            let identity = stream.durable_entry_identity("owned-run", "compaction-1", None);
+            stream.set_entry_identity(index, identity);
+            stream
+                .run_failures
+                .insert("owned-run".into(), RunFailureKind::ContextOverLimit);
+            assert!(stream.run_notice_projection(cx).is_empty());
+            stream
+                .run_failures
+                .insert("owned-run".into(), RunFailureKind::ProviderTransport);
+            let notices = stream.run_notice_projection(cx);
+            assert_eq!(notices.len(), 1);
+            assert!(matches!(
+                notices[&index].kind,
+                run_notice::RunNoticeKind::Failure(RunFailureKind::ProviderTransport)
+            ));
+            stream.run_failures.clear();
+            stream
+                .run_failures
+                .insert("other-run".into(), RunFailureKind::ContextOverLimit);
+            assert!(
+                !stream
+                    .compaction_reports_run_failure("other-run", RunFailureKind::ContextOverLimit)
+            );
+            assert!(!stream.compaction_reports_run_failure("owned-run", RunFailureKind::Persisted));
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn issue365_compaction_states_keep_compact_natural_height(cx: &mut TestAppContext) {
+    for (generation, state) in [
+        Status::Compacting,
+        Status::Succeeded,
+        Status::Cancelled,
+        Status::Failed,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let window = setup(cx);
+        window
+            .update(cx, |stream, _, cx| {
+                let mut record = status(generation as u64 + 1, state);
+                record.failure = (state == Status::Failed).then_some(Failure::OverLimit);
+                stream.apply_context_status("context-thread", "mock", record, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let row = visual
+            .debug_bounds("context-compaction-row")
+            .expect("status row");
+        let icon = visual
+            .debug_bounds("context-compaction-icon-slot")
+            .expect("icon");
+        assert_eq!(row.size.height, px(Layout::DISCLOSURE_HEADER_HEIGHT));
+        assert_eq!(icon.size.width, px(Layout::ICON_SIZE));
+        assert_eq!(icon.origin.y, row.origin.y);
+        if state == Status::Failed {
+            visual.simulate_resize(gpui_kit::size(px(160.), px(700.)));
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let wrapped = visual
+                .debug_bounds("context-compaction-row")
+                .expect("wrapped status");
+            let icon = visual
+                .debug_bounds("context-compaction-icon-slot")
+                .expect("wrapped icon");
+            assert!(
+                wrapped.size.height > row.size.height,
+                "wide={row:?}, narrow={wrapped:?}"
+            );
+            assert_eq!(icon.origin.y, wrapped.origin.y);
+        }
+    }
 }
