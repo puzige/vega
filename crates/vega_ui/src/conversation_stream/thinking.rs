@@ -273,6 +273,7 @@ impl ThinkingBlock {
             .w_full()
             .min_w_0()
             .pt(px(Layout::PROCESS_ITEM_GAP))
+            .track_focus(&focus)
             .on_action(move |_: &CopySelectedText, _, cx| {
                 card.update(cx, ThinkingBlock::copy_selected_source);
             })

@@ -327,6 +327,7 @@ async fn issue296_expansion_p07_markdown_selection_and_original_copy(cx: &mut Te
     visual.simulate_mouse_move(end, Some(gpui_kit::MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(end, gpui_kit::MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert!(copy.has_selected_text());
     visual.simulate_keystrokes("cmd-c");
     assert_eq!(
         visual

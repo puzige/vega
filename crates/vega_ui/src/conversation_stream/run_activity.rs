@@ -1926,14 +1926,6 @@ impl RunActivityGroup {
             })
             .debug_selector(move || format!("run-timeline-segment-{segment_index}"))
             .track_focus(&focus)
-            .when_some(
-                single_thinking.then_some(thinking).flatten(),
-                |surface, card| {
-                    surface.on_action(move |_: &CopySelectedText, _, cx| {
-                        card.update(cx, ThinkingBlock::copy_selected_source);
-                    })
-                },
-            )
             .child(content)
             .into_any_element()
     }
