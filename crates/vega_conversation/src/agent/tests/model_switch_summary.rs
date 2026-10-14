@@ -254,13 +254,13 @@ async fn smaller_target_model_automatically_compacts_then_sends_primary_within_b
     let budget = vega_runtime::ContextBudget::new(input_budget + 1_000, 1_000, true).unwrap();
     assert!(initial_estimate >= budget.trigger_tokens().unwrap());
     assert!(initial_estimate < budget.input_budget());
-    context_compaction::save_settings(
+    context_compaction::save_model_policy(
         store.conn(),
-        &context_compaction::ContextSettings {
-            thread_id: "thread-1".into(),
+        &context_compaction::ModelContextPolicy {
+            provider: "mock-provider".into(),
             model: "deepseek-model".into(),
-            context_limit: Some(input_budget + 1_000),
-            output_reserve: 1_000,
+            input_limit: Some(input_budget),
+            output_reserve: Some(1_000),
             automatic_compaction: true,
             updated_at: 1,
         },
@@ -281,7 +281,7 @@ async fn smaller_target_model_automatically_compacts_then_sends_primary_within_b
         ])],
     ]);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    run_thread_task(
+    run_thread_task_with_permission_config_and_reasoning(
         &store,
         &provider,
         &tools,
@@ -289,6 +289,12 @@ async fn smaller_target_model_automatically_compacts_then_sends_primary_within_b
         "continue",
         "system",
         CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        Some(FrozenReasoning::unknown("mock-provider", "deepseek-model")),
     )
     .await
     .unwrap();
