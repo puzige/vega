@@ -238,23 +238,38 @@ async fn issue372_retry_discards_partial_thinking_replay_and_tools_before_rechar
             stop_reason: StopReason::End,
         }])],
     ]);
-    let outcome = run_agent(
+    let mut accepted_thinking = 0;
+    let mut retry_count = 0;
+    let outcome = run_agent_with_sink(
         &provider,
         &tools,
         request(Vec::new()),
         CancellationToken::new(),
+        |event| {
+            match event {
+                RuntimeEvent::ThinkingDelta(_) => accepted_thinking += 1,
+                RuntimeEvent::ResponseRetrying { .. } => {
+                    accepted_thinking = 0;
+                    retry_count += 1;
+                }
+                _ => {}
+            }
+            async { Ok(()) }
+        },
     )
     .await
     .unwrap();
     assert!(!outcome.failed);
     assert_eq!(outcome.executed_tool_call_count, 1);
+    assert_eq!(retry_count, 5);
+    assert_eq!(accepted_thinking, 4);
     assert_eq!(
         outcome
             .events
             .iter()
             .filter(|event| matches!(event, RuntimeEvent::ThinkingDelta(_)))
             .count(),
-        4
+        0
     );
     assert!(
         provider.requests()[1]
@@ -290,13 +305,6 @@ async fn issue372_thinking_and_summary_limits_emit_failed_primary_once() {
                     .chain([ProviderEvent::SummaryDelta("x".into())])
                     .collect(),
             ],
-        ),
-        (
-            ReasoningBudgetScope::Run,
-            (0..4)
-                .map(|index| tool_round(index, "", false))
-                .chain([vec![ProviderEvent::SummaryDelta("x".into())]])
-                .collect(),
         ),
     ] {
         let project = tempdir().unwrap();
@@ -388,17 +396,9 @@ impl ContextCompactionHook for BoundaryHook {
                     vec![ChatMessage::new(ChatRole::User, "summary")]
                 }
                 Boundary::ReasoningOverflow => {
-                    let mut messages = (0..4)
-                        .map(|_| {
-                            let mut message = ChatMessage::new(ChatRole::Assistant, "");
-                            message.reasoning_content = Some("r".repeat(REASONING_TURN_MAX_BYTES));
-                            message
-                        })
-                        .collect::<Vec<_>>();
-                    let mut extra = ChatMessage::new(ChatRole::Assistant, "");
-                    extra.reasoning_content = Some("r".into());
-                    messages.push(extra);
-                    messages
+                    let mut message = ChatMessage::new(ChatRole::Assistant, "");
+                    message.reasoning_content = Some("r".repeat(REASONING_TURN_MAX_BYTES + 1));
+                    vec![message]
                 }
                 Boundary::ReplayOverflow => {
                     let mut message = ChatMessage::new(ChatRole::Assistant, "");
@@ -451,6 +451,9 @@ async fn issue372_rejected_projection_and_cancellation_never_release_retained_ca
         req.context_compaction_hook = Some(Arc::new(BoundaryHook(behavior)));
         let provider = MockProvider::new(vec![ScriptStep::events(vec![
             ProviderEvent::ThinkingDelta("x".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
         ])]);
         let mut observed = Vec::new();
         let result =
@@ -467,10 +470,15 @@ async fn issue372_rejected_projection_and_cancellation_never_release_retained_ca
         match behavior {
             Boundary::Timeout => {
                 let outcome = result.unwrap();
-                assert!(outcome.failed);
-                assert_eq!(&outcome.messages[1..], history);
+                assert!(!outcome.failed);
+                assert_eq!(&outcome.messages[1..1 + history.len()], history);
                 assert_eq!(provider.requests().len(), 1);
-                assert!(outcome.events.iter().any(|event| matches!(event, RuntimeEvent::Error(error) if matches!(error.as_ref(), VegaError::ReasoningBudgetExceeded { scope: ReasoningBudgetScope::Run, .. }))));
+                assert!(
+                    !outcome
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, RuntimeEvent::Error(_)))
+                );
             }
             Boundary::Cancelled => {
                 let outcome = result.unwrap();
@@ -515,9 +523,12 @@ async fn issue372_retry_does_not_release_reasoning_retained_before_the_current_c
         vec![ScriptStep::events(first)],
         vec![ScriptStep::events(tool_round(1, "", false))],
         vec![ScriptStep::events(tool_round(2, "", false))],
-        vec![ScriptStep::events(vec![ProviderEvent::SummaryDelta(
-            "x".into(),
-        )])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::SummaryDelta("x".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
     ]);
     let outcome = run_agent(
         &provider,
@@ -527,10 +538,23 @@ async fn issue372_retry_does_not_release_reasoning_retained_before_the_current_c
     )
     .await
     .unwrap();
-    assert!(outcome.failed);
+    assert!(!outcome.failed);
     assert_eq!(provider.requests().len(), 4);
     assert_eq!(outcome.executed_tool_call_count, 3);
-    assert!(outcome.events.iter().any(|event| matches!(event, RuntimeEvent::Error(error) if matches!(error.as_ref(), VegaError::ReasoningBudgetExceeded { scope: ReasoningBudgetScope::Run, observed_bytes, .. } if *observed_bytes == REASONING_RUN_MAX_BYTES + 1))));
+    assert_eq!(
+        provider.requests()[3].messages[1]
+            .reasoning_content
+            .as_ref()
+            .unwrap()
+            .len(),
+        REASONING_TURN_MAX_BYTES
+    );
+    assert!(
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::Error(_)))
+    );
 }
 
 #[tokio::test]
@@ -572,4 +596,101 @@ async fn issue372_replay_item_edge_and_duplicate_protocol_failure_stay_distinct(
         });
         assert_eq!(failed, expected);
     }
+}
+
+#[tokio::test]
+async fn issue375_non_replayed_thinking_exceeds_old_run_limit_without_context_pressure() {
+    let project = tempdir().unwrap();
+    fs::write(project.path().join("source.txt"), "source result").unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let mut rounds = (0..10)
+        .map(|index| vec![ScriptStep::events(tool_round(index, "progress", false))])
+        .collect::<Vec<_>>();
+    rounds.push(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("finished".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let provider = MockProvider::new_rounds(rounds);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut req = request(vec![ChatMessage::new(
+        ChatRole::User,
+        "Task goal: finish implementation",
+    )]);
+    req.context_budget = Some(ContextBudget::new(10_000_000, 1_000, true).unwrap());
+    req.context_compaction_hook = Some(Arc::new(RetainLastRound {
+        calls: calls.clone(),
+        seen: Arc::new(Mutex::new(Vec::new())),
+    }));
+    let mut observed_bytes = 0;
+    let result = run_agent_with_sink(&provider, &tools, req, CancellationToken::new(), |event| {
+        if let RuntimeEvent::ThinkingDelta(text) = event {
+            observed_bytes += text.len();
+        }
+        async { Ok(()) }
+    })
+    .await
+    .unwrap();
+    assert!(!result.failed);
+    assert!(result.final_text.ends_with("finished"));
+    assert_eq!(result.executed_tool_call_count, 10);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.requests().len(), 11);
+    assert!(observed_bytes > REASONING_RUN_MAX_BYTES * 2);
+    assert!(
+        provider
+            .requests()
+            .iter()
+            .flat_map(|request| &request.messages)
+            .all(|message| message.reasoning_content.is_none())
+    );
+    let retained = result
+        .events
+        .iter()
+        .map(|event| match event {
+            RuntimeEvent::ThinkingDelta(text) | RuntimeEvent::SummaryDelta(text) => text.len(),
+            _ => 0,
+        })
+        .sum::<usize>();
+    assert!(retained <= REASONING_TURN_MAX_BYTES);
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::ReasoningRetentionReleased))
+    );
+}
+
+#[tokio::test]
+async fn issue375_replay_items_across_rounds_follow_context_budget_not_lifetime_count() {
+    let project = tempdir().unwrap();
+    fs::write(project.path().join("source.txt"), "source result").unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let mut rounds = (0..6).map(|index| {
+        let mut events = tool_round(index, "progress", false);
+        events.retain(|event| !matches!(event, ProviderEvent::ThinkingDelta(_)));
+        events.insert(0, ProviderEvent::ReasoningReplay((0..64).map(|item| serde_json::json!({"type":"reasoning", "id":format!("replay-{index}-{item}")})).collect()));
+        vec![ScriptStep::events(events)]
+    }).collect::<Vec<_>>();
+    rounds.push(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
+    let provider = MockProvider::new_rounds(rounds);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "task goal")]);
+    req.context_budget = Some(ContextBudget::new(1_000_000, 1_000, true).unwrap());
+    let result = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!result.failed);
+    assert_eq!(result.executed_tool_call_count, 6);
+    assert_eq!(provider.requests().len(), 7);
+    assert_eq!(
+        provider.requests()[6]
+            .messages
+            .iter()
+            .map(|message| message.response_reasoning.len())
+            .sum::<usize>(),
+        384
+    );
 }

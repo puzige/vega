@@ -1830,56 +1830,9 @@ struct SummaryInputOverflow {
 /// Only explicit input-context errors qualify. Never interpret Length, generic
 /// HTTP failures, or diagnostic text from an unrelated status as input overflow.
 fn classify_summary_input_overflow(error: &VegaError) -> Option<SummaryInputOverflow> {
-    let (status, message) = match error {
-        VegaError::Provider {
-            status: Some(status @ (400 | 413)),
-            message,
-            ..
-        }
-        | VegaError::ProviderDiagnostic {
-            status: Some(status @ (400 | 413)),
-            message,
-            ..
-        } => (*status, message),
-        _ => return None,
-    };
-    if message.len() > 4_096 {
-        return None;
-    }
-    let prefix = format!("chat/completions request failed (HTTP {status}): ");
-    let body = message.strip_prefix(&prefix).unwrap_or(message).trim();
-    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
-    let details = parsed
-        .as_ref()
-        .map(|value| value.get("error").unwrap_or(value));
-    let known_code = details.is_some_and(|details| {
-        ["code", "type"].iter().any(|field| {
-            matches!(
-                details.get(*field).and_then(serde_json::Value::as_str),
-                Some("context_length_exceeded" | "prompt_too_long" | "input_too_long")
-            )
-        })
-    });
-    let diagnostic = details
-        .and_then(|details| details.get("message"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_else(|| {
-            body.strip_prefix("{\"error\":{\"message\":\"")
-                .unwrap_or(body)
-        });
-    let lower = diagnostic.to_ascii_lowercase();
-    let known_phrase = lower.starts_with("prompt is too long")
-        || lower.starts_with("prompt too long")
-        || lower.starts_with("this model's maximum context length is ");
-    if !known_code && !known_phrase {
-        return None;
-    }
-    let token_gap = details.and_then(|details| {
-        let requested = details.get("requested_tokens")?.as_u64()?;
-        let limit = details.get("max_context_tokens")?.as_u64()?;
-        requested.checked_sub(limit).filter(|gap| *gap > 0)
-    });
-    Some(SummaryInputOverflow { token_gap })
+    error
+        .context_input_overflow()
+        .map(|token_gap| SummaryInputOverflow { token_gap })
 }
 
 fn normalize_completed_live_groups(

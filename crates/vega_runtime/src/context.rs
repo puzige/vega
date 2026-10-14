@@ -565,6 +565,9 @@ pub fn estimate_chat_context(
         if let Some(reasoning) = &message.reasoning_content {
             input_tokens = checked_add(input_tokens, estimate_text(reasoning)?)?;
         }
+        for item in &message.response_reasoning {
+            input_tokens = checked_add(input_tokens, estimate_json(&item.to_string())?)?;
+        }
         for call in &message.tool_calls {
             input_tokens = checked_add(input_tokens, estimate_text(&call.id)?)?;
             input_tokens = checked_add(input_tokens, estimate_text(&call.name)?)?;
@@ -631,6 +634,9 @@ pub fn estimate_wire_context(
         input_tokens = checked_add(input_tokens, estimate_text(&message.content)?)?;
         if let Some(reasoning) = &message.reasoning_content {
             input_tokens = checked_add(input_tokens, estimate_text(reasoning)?)?;
+        }
+        for item in &message.response_reasoning {
+            input_tokens = checked_add(input_tokens, estimate_json(&item.to_string())?)?;
         }
         for call in &message.tool_calls {
             input_tokens = checked_add(input_tokens, estimate_text(&call.id)?)?;

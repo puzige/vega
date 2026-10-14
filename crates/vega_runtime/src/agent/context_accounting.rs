@@ -136,6 +136,14 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
             Some(value) => tagged(&mut hasher, 4, value.as_bytes()),
             None => tagged(&mut hasher, 5, &[]),
         }
+        tagged(
+            &mut hasher,
+            22,
+            &(message.response_reasoning.len() as u64).to_le_bytes(),
+        );
+        for item in &message.response_reasoning {
+            tagged(&mut hasher, 23, item.to_string().as_bytes());
+        }
         match &message.tool_call_id {
             Some(value) => tagged(&mut hasher, 6, value.as_bytes()),
             None => tagged(&mut hasher, 7, &[]),
@@ -388,5 +396,25 @@ mod tests {
         b.images[0] = encode([3, 2, 1]);
         assert_eq!(a.images[0].bytes().len(), b.images[0].bytes().len());
         assert_ne!(fingerprint(&[a], &[]), fingerprint(&[b], &[]));
+    }
+    #[test]
+    fn issue375_opaque_replay_is_accounted_and_invalidates_same_size_anchor() {
+        let mut message = ChatMessage::new(crate::ChatRole::Assistant, "progress");
+        let plain = crate::estimate_wire_context(&[message.clone()], &[])
+            .unwrap()
+            .input_tokens;
+        message
+            .response_reasoning
+            .push(serde_json::json!({"type":"reasoning", "encrypted_content":"a".repeat(4000)}));
+        let charged = crate::estimate_wire_context(&[message.clone()], &[])
+            .unwrap()
+            .input_tokens;
+        assert!(charged > plain + 2000);
+        let standalone = crate::estimate_chat_context("", &[message.clone()], &[]).unwrap();
+        assert_eq!(standalone.input_tokens, charged);
+        let before = fingerprint(&[message.clone()], &[]);
+        message.response_reasoning[0]["encrypted_content"] =
+            serde_json::Value::String("b".repeat(4000));
+        assert_ne!(before, fingerprint(&[message], &[]));
     }
 }

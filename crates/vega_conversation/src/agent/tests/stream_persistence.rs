@@ -20,7 +20,8 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     let (store, dir, _project_id) = setup();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = scripted_provider("call-1", r#"{"pattern":"TODO","path":"lib.rs"}"#);
-    let run = run_thread_task(
+    let mut live_thinking = Vec::new();
+    let run = run_thread_task_with_sink(
         &store,
         &provider,
         &tools,
@@ -28,12 +29,22 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
         "Find TODO",
         "You inspect repositories.",
         CancellationToken::new(),
+        |event| {
+            if let ConversationEvent::ThinkingDelta { delta, .. } = event {
+                live_thinking.push(delta.clone());
+            }
+            Ok(())
+        },
     )
     .await
     .unwrap();
 
     assert_eq!(run.content, "Checking. Found the TODO.");
-    assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ThinkingDelta { delta, .. } if delta == "Need grep")));
+    assert_eq!(live_thinking, ["Need grep"]);
+    assert!(!run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ThinkingDelta { .. } | ConversationEvent::SummaryDelta { .. }
+    )));
     assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ToolCallApproved { call_id, .. } if call_id == "call-1")));
     assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ToolCallRunning { call_id } if call_id == "call-1")));
     assert!(run.events.iter().any(|event| matches!(

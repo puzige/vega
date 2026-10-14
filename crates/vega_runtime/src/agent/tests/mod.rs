@@ -83,6 +83,7 @@ impl ContextCompactionHook for RecordingCompactionHook {
 mod loop_tools;
 mod mcp_registry;
 mod permission_flow;
+mod provider_overflow;
 mod reasoning_budget;
 mod response_phases;
 mod skills;
@@ -938,16 +939,13 @@ fn reasoning_budget_boundaries_are_byte_exact() {
         reasoning_budget_violation(1, REASONING_TURN_MAX_BYTES, 0),
         Some((ReasoningBudgetScope::Turn, observed)) if observed == REASONING_TURN_MAX_BYTES + 1
     ));
-    assert!(matches!(
-        reasoning_budget_violation(1, 0, REASONING_RUN_MAX_BYTES),
-        Some((ReasoningBudgetScope::Run, observed)) if observed == REASONING_RUN_MAX_BYTES + 1
-    ));
+    assert!(reasoning_budget_violation(1, 0, usize::MAX).is_none());
 }
 
 mod claude_compaction;
 
 #[tokio::test]
-async fn i71_summary_shares_reasoning_budget_and_opaque_replay_is_run_bounded() {
+async fn i71_summary_response_is_bounded_and_opaque_replay_can_span_many_rounds() {
     let project = tempdir().unwrap();
     let data = tempdir().unwrap();
     fs::write(project.path().join("source.txt"), "owned").unwrap();
@@ -975,11 +973,14 @@ async fn i71_summary_shares_reasoning_budget_and_opaque_replay_is_run_bounded() 
             .count(),
         4
     );
-    let rounds = (0..5).map(|i| vec![ScriptStep::events(vec![
+    let mut rounds: Vec<_> = (0..5).map(|i| vec![ScriptStep::events(vec![
         ProviderEvent::ReasoningReplay(vec![serde_json::json!({"type":"reasoning","encrypted_content":"x".repeat(220*1024)})]),
         ProviderEvent::ToolUse { id:format!("read-{i}"),name:"read".into(),input_json:r#"{"path":"source.txt"}"#.into() },
         ProviderEvent::Done { stop_reason:StopReason::ToolUse },
     ])]).collect();
+    rounds.push(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
     let provider = MockProvider::new_rounds(rounds);
     let mut req = request(Vec::new());
     req.tool_config = RuntimeToolConfig::new(
@@ -993,44 +994,18 @@ async fn i71_summary_shares_reasoning_budget_and_opaque_replay_is_run_bounded() 
     let result = run_agent(&provider, &tools, req, CancellationToken::new())
         .await
         .unwrap();
-    assert!(result.failed);
+    assert!(!result.failed);
     assert!(!result.interrupted);
-    let errors = result
-        .events
-        .iter()
-        .filter_map(|event| match event {
-            RuntimeEvent::Error(error) => Some(error),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(errors.len(), 1);
+    assert_eq!(provider.requests().len(), 6);
+    assert_eq!(result.tool_call_count, 5);
+    assert_eq!(result.executed_tool_call_count, 5);
+    assert_eq!(result.events.iter().filter(|event| matches!(event, RuntimeEvent::ToolCallFinished(finished) if finished.status == RuntimeToolStatus::Success)).count(), 5);
     assert!(
-        matches!(errors[0].as_ref(), VegaError::ReasoningReplayBudgetExceeded {
-        scope: ReasoningBudgetScope::Run,
-        limit_bytes,
-        observed_bytes,
-        limit_items: 256,
-        observed_items: 5,
-    } if *limit_bytes == REASONING_RUN_MAX_BYTES && observed_bytes > limit_bytes)
-    );
-    assert_eq!(provider.requests().len(), 5);
-    assert_eq!(result.tool_call_count, 4);
-    assert_eq!(result.executed_tool_call_count, 4);
-    assert_eq!(
-        result
+        !result
             .events
             .iter()
-            .filter(|event| matches!(event, RuntimeEvent::ToolCallProposed(_)))
-            .count(),
-        4
+            .any(|event| matches!(event, RuntimeEvent::Error(_)))
     );
-    assert_eq!(result.events.iter().filter(|event| matches!(event, RuntimeEvent::ToolCallFinished(finished) if finished.status == RuntimeToolStatus::Success)).count(), 4);
-    assert!(
-        !result.events.iter().any(
-            |event| matches!(event, RuntimeEvent::ToolCallProposed(call) if call.id == "read-4")
-        )
-    );
-    assert_eq!(result.events.iter().filter(|event| matches!(event, RuntimeEvent::DiagnosticAttempt(attempt) if attempt.state == RuntimeDiagnosticState::Failed && attempt.failure == Some(RuntimeDiagnosticFailure::ReasoningLimit))).count(), 1);
     assert!(!format!("{:?}", provider.requests()).contains(&"x".repeat(100)));
     assert!(!format!("{result:?}").contains(&"x".repeat(100)));
 }
