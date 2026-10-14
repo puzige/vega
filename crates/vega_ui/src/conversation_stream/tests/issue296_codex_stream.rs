@@ -260,7 +260,7 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
             stream.run_activity_groups["visual"]
                 .read(cx)
                 .stage_title(0, cx),
-            "Full summary continuation."
+            "Waiting to run 2 commands"
         );
     });
     stream.update(&mut visual, |stream, cx| {
@@ -275,7 +275,7 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["visual"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "Full summary continuation.");
+        assert_eq!(group.stage_title(0, cx), "Waiting to run 2 commands");
         assert_eq!(
             group
                 .segment_children(0)
@@ -291,6 +291,13 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
     click_stage(&mut visual);
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
     assert!(visual.debug_bounds("run-stage-tool-0-1").is_some());
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("run-stage-source-{}", second.entity_id()).into_boxed_str(),
+            ))
+            .is_some()
+    );
 }
 
 #[gpui_kit::test]

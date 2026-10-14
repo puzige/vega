@@ -1638,11 +1638,32 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
     assert!(visual.debug_bounds("run-stage-icon-0").is_some());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
     click(&mut visual, "run-stage-toggle-0");
-    let summary_row = visual.debug_bounds("thinking-toggle").unwrap();
+    let summaries = stream.read_with(&visual, |stream, cx| {
+        stream.run_activity_groups["expansion"]
+            .read(cx)
+            .segment_children(0)
+            .into_iter()
+            .filter_map(|child| match child {
+                RunActivityChild::Thinking(card) => Some(card.entity_id()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    });
+    let first_summary = visual
+        .debug_bounds(Box::leak(
+            format!("run-stage-source-{}", summaries[0]).into_boxed_str(),
+        ))
+        .unwrap();
+    let latest_summary = visual
+        .debug_bounds(Box::leak(
+            format!("run-stage-source-{}", summaries[1]).into_boxed_str(),
+        ))
+        .unwrap();
     let read = visual.debug_bounds("run-stage-tool-0-0").unwrap();
     let shell = visual.debug_bounds("run-stage-tool-0-1").unwrap();
-    assert!(summary_row.bottom() <= read.top());
+    assert!(first_summary.bottom() <= read.top());
     assert!(read.bottom() <= shell.top());
+    assert!(shell.bottom() <= latest_summary.top());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 5);
@@ -1752,11 +1773,7 @@ async fn issue343_t19_second_tool_promotes_focused_single_row_and_retry_restores
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("run-stage-toggle-0").is_none());
     assert!(visual.debug_bounds("tool-activity-single-row").is_some());
-    let first_id = stream.read_with(&visual, |stream, _| stream.tool_cards["first"].entity_id());
-    visual.update(|window, cx| {
-        crate::disclosure::focus(format!("tool-disclosure-{first_id}").into(), window, cx)
-            .focus(window, cx);
-    });
+    super::issue296_stream_polish::focus_row(&mut visual, "tool-activity-single-row");
     stream.update(&mut visual, |stream, cx| {
         stream.apply_event(
             ConversationEvent::AssistantResponseStarted {
@@ -1804,10 +1821,13 @@ async fn issue343_t19_second_tool_promotes_focused_single_row_and_retry_restores
     assert!(visual.debug_bounds("run-stage-toggle-0").is_none());
     assert!(visual.debug_bounds("tool-activity-single-row").is_some());
     assert!(visual.debug_bounds("assistant-network-retry").is_some());
-    visual.update(|window, cx| {
-        let focused =
-            crate::disclosure::focus(format!("tool-disclosure-{first_id}").into(), window, cx);
-        assert!(focused.is_focused(window));
+    stream.read_with(&visual, |stream, cx| {
+        assert!(!stream.tool_cards["first"].read(cx).is_expanded());
+    });
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        assert!(stream.tool_cards["first"].read(cx).is_expanded());
     });
 }
 

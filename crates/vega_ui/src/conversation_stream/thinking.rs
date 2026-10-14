@@ -239,6 +239,13 @@ impl ThinkingBlock {
             .any(|character| !character.is_whitespace())
     }
 
+    pub(crate) fn copy_selected_source(&mut self, cx: &mut Context<Self>) {
+        if self.source_copy.has_selected_text() {
+            self.source_copy.copy_selected_text(cx);
+            cx.stop_propagation();
+        }
+    }
+
     pub(crate) fn render_stage_source(
         card: Entity<Self>,
         window: &mut Window,
@@ -267,12 +274,7 @@ impl ThinkingBlock {
             .min_w_0()
             .pt(px(Layout::PROCESS_ITEM_GAP))
             .on_action(move |_: &CopySelectedText, _, cx| {
-                card.update(cx, |card, cx| {
-                    if card.source_copy.has_selected_text() {
-                        card.source_copy.copy_selected_text(cx);
-                        cx.stop_propagation();
-                    }
-                });
+                card.update(cx, ThinkingBlock::copy_selected_source);
             })
             .child(
                 div()
