@@ -620,7 +620,7 @@ async fn summary_takeover_releases_hidden_stage_reading_focus(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-async fn summary_stage_keeps_tools_visible_without_duplicate_reasoning(cx: &mut TestAppContext) {
+async fn summary_stage_nests_tools_without_duplicate_reasoning(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "summary-stage-tools");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
@@ -652,7 +652,8 @@ async fn summary_stage_keeps_tools_visible_without_duplicate_reasoning(cx: &mut 
         );
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
+    assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
     stream.update(&mut visual, |stream, cx| {
         stream.apply_event(summary("m", "Writing the fix"), cx);
@@ -677,6 +678,10 @@ async fn summary_stage_keeps_tools_visible_without_duplicate_reasoning(cx: &mut 
         let group = stream.run_activity_groups["m"].read(app);
         assert_eq!(group.stage_title(0, app), "Writing the fix");
         assert!(!group.segment_expanded(0));
+        assert_eq!(
+            group.stage_tool_status_label(0, app).as_deref(),
+            Some("1 项调用被拒绝")
+        );
         let kinds = group
             .segment_children(0)
             .into_iter()
@@ -688,6 +693,12 @@ async fn summary_stage_keeps_tools_visible_without_duplicate_reasoning(cx: &mut 
             .collect::<Vec<_>>();
         assert_eq!(kinds, ["thinking", "tool", "thinking"]);
     });
+    assert!(visual.debug_bounds("run-stage-status-0").is_some());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    let stage = visual.debug_bounds("run-stage-toggle-0").unwrap();
+    visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
     stream.update(&mut visual, |stream, cx| {

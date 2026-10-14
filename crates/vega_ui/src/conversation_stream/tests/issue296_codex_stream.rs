@@ -49,7 +49,7 @@ async fn issue296_visual_v01_clock_divider_column_and_no_role(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-async fn issue296_visual_v03_summary_keeps_flat_tools_visible(cx: &mut TestAppContext) {
+async fn issue296_visual_v03_summary_nests_tools_until_open(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "visual-stage");
     stream.update(cx, |stream, cx| {
         begin(stream, cx);
@@ -75,9 +75,13 @@ async fn issue296_visual_v03_summary_keeps_flat_tools_visible(cx: &mut TestAppCo
         .debug_bounds("run-stage-toggle-0")
         .expect("inline stage");
     assert!(visual.debug_bounds("run-stage-title-0").is_some());
-    assert!(visual.debug_bounds("run-stage-chevron-0").is_none());
+    assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("tool-activity-single-row").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
+    visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
     let first = visual
         .debug_bounds("run-stage-tool-0-0")
         .expect("first direct tool");
@@ -86,10 +90,7 @@ async fn issue296_visual_v03_summary_keeps_flat_tools_visible(cx: &mut TestAppCo
         .expect("second direct tool");
     assert_eq!(second.top() - first.top(), px(25.));
     assert_eq!(first.left(), stage.left());
-    visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
-    assert_eq!(visual.debug_bounds("run-stage-tool-0-0"), Some(first));
-    assert_eq!(visual.debug_bounds("run-stage-tool-0-1"), Some(second));
+    assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
     assert!(visual.debug_bounds("thinking-content").is_none());
@@ -233,7 +234,7 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
             ))
             .is_none()
     );
-    let first_tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     assert!(
         visual
             .debug_bounds(Box::leak(
@@ -241,9 +242,7 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
             ))
             .is_none()
     );
-    let second_tool = visual.debug_bounds("run-stage-tool-0-1").unwrap();
-    assert!(first_tool.bottom() <= second_tool.top());
-    assert_eq!(second_tool.top() - first_tool.top(), px(25.));
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
     first.read_with(&visual, |card, _| {
         assert_eq!(card.source_text(), "First phase")
     });
@@ -287,6 +286,9 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
         );
     });
     assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
+    click_stage(&mut visual);
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
     assert!(visual.debug_bounds("run-stage-tool-0-1").is_some());
 }
@@ -305,6 +307,8 @@ async fn issue296_visual_v06_visible_tool_reading_defers_final(cx: &mut TestAppC
         );
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
+    click_stage(&mut visual);
     let tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
     visual.simulate_click(tool.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
@@ -331,6 +335,7 @@ async fn issue296_visual_v06_visible_tool_reading_defers_final(cx: &mut TestAppC
     let tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
     visual.simulate_click(tool.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
+    click_stage(&mut visual);
     visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
@@ -379,6 +384,7 @@ async fn issue296_visual_v06_stage_anchor_reveals_inline_and_focus_defers_final(
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_some());
     click_stage(&mut visual);
+    click_stage(&mut visual);
     stream.update(&mut visual, |stream, cx| {
         stream.resume_tail(cx);
         confirm_test_final(stream, "visual", cx);
@@ -391,6 +397,7 @@ async fn issue296_visual_v06_stage_anchor_reveals_inline_and_focus_defers_final(
                 .collapse_pending()
         )
     });
+    click_stage(&mut visual);
     visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
