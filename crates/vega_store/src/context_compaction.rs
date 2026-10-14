@@ -1423,8 +1423,12 @@ fn checkpoint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextCheck
         source_version,
         covered_through_seq,
         covered_assistant_id: row.get(10)?,
-        covered_assistant_text_bytes: row.get(11)?,
-        covered_assistant_tool_seq: row.get(12)?,
+        covered_assistant_text_bytes: u64::try_from(row.get::<_, i64>(11)?).map_err(|_| {
+            rusqlite::Error::InvalidParameterName("negative checkpoint text cursor".into())
+        })?,
+        covered_assistant_tool_seq: u64::try_from(row.get::<_, i64>(12)?).map_err(|_| {
+            rusqlite::Error::InvalidParameterName("negative checkpoint tool cursor".into())
+        })?,
         source_fingerprint: row.get(5)?,
         summary: row.get(6)?,
         estimator_version: row.get(7)?,
