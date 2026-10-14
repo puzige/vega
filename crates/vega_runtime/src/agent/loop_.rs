@@ -2103,6 +2103,16 @@ where
         } else {
             None
         };
+        if !calls.is_empty() {
+            emit!(
+                events,
+                sink,
+                RuntimeEvent::ToolRoundCompleted {
+                    response_id: attempt_id.clone(),
+                    call_ids: calls.iter().map(|call| call.id.clone()).collect(),
+                }
+            );
+        }
         let response_kind = if !calls.is_empty() {
             Some(RuntimeAssistantResponseKind::Commentary)
         } else if stop_reason == Some(StopReason::End)
