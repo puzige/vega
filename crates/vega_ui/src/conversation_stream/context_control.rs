@@ -294,6 +294,14 @@ impl ConversationStream {
                     restored: false,
                 });
                 self.list_append(index);
+                if let Some((message_id, _)) = &self.active_agent_message {
+                    let identity = self.durable_entry_identity(
+                        message_id,
+                        &format!("compaction-{}", record.generation),
+                        None,
+                    );
+                    self.set_entry_identity(index, identity);
+                }
             }
         }
         // Keep only the newest transition for fencing/busy state. The list
@@ -403,14 +411,12 @@ pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'st
         Status::Ready => "上下文已就绪",
         Status::Compacting => "正在压缩上下文",
         Status::Succeeded => "上下文已压缩",
-        Status::Cancelled => "上下文压缩已取消，原始对话未更改",
+        Status::Cancelled => "上下文压缩已取消",
         Status::Failed => match failure {
             Some(Failure::SourceChanged) => "历史已变化，请重试压缩",
             Some(Failure::NoCompactablePrefix) => "暂无可压缩的完整历史",
-            Some(Failure::TooLarge) => "历史内容已达到安全分段上限，原始对话已保留；请在新会话继续",
-            Some(Failure::OverLimit) => {
-                "本地上下文预算检查未通过，原始对话已保留；请调整容量或缩短当前输入"
-            }
+            Some(Failure::TooLarge) => "历史过长，无法安全压缩；请在新对话继续",
+            Some(Failure::OverLimit) => "上下文超出容量，请缩短输入或在新对话继续",
             Some(Failure::ImagesUnsupported) => "历史图片无法安全压缩，请使用新的会话",
             Some(Failure::InvalidSummary) => "压缩结果无效，请重试",
             Some(Failure::TimedOut) => "上下文压缩超时，请重试",

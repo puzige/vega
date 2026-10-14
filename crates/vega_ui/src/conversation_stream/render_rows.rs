@@ -49,12 +49,8 @@ pub(crate) fn context_compaction_label(
     failure: Option<vega_conversation::types::ContextCompactionFailureCode>,
     restored: bool,
 ) -> String {
-    let base = context_control::status_label_for(status, failure);
-    if restored {
-        format!("已恢复 · {base}")
-    } else {
-        base.to_owned()
-    }
+    let _ = restored;
+    context_control::status_label_for(status, failure).to_owned()
 }
 
 /// Renders one visible semantic entry as a single variable-height list item
@@ -150,16 +146,21 @@ fn render_entry_internal(
                 .debug_selector(|| "context-compaction-row".into())
                 .w_full()
                 .flex_shrink_0()
-                .pt_1()
-                .pb_2()
+                .min_w_0()
+                .min_h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
                 .flex()
-                .items_center()
-                .gap_2()
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.text_secondary)
+                .items_start()
+                .gap(px(Layout::CONVERSATION_INLINE_GAP))
+                .text_size(px(Typography::BODY))
+                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+                .text_color(color)
                 .child(
                     div()
                         .debug_selector(|| "context-compaction-icon-slot".into())
+                        .w(px(Layout::ICON_SIZE))
+                        .h(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
+                        .flex()
+                        .items_center()
                         .flex_shrink_0()
                         .child(icon(glyph, color)),
                 )
