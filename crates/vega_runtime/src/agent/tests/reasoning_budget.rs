@@ -254,7 +254,7 @@ async fn issue372_retry_discards_partial_thinking_replay_and_tools_before_rechar
                 }
                 _ => {}
             }
-            Ok(())
+            async { Ok(()) }
         },
     )
     .await
