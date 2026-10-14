@@ -92,7 +92,7 @@ async fn issue296_visual_v03_summary_nests_tools_until_open(cx: &mut TestAppCont
     assert_eq!(first.left(), stage.left());
     assert!(visual.debug_bounds("run-stage-chevron-0").is_some());
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
-    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
     assert!(visual.debug_bounds("thinking-content").is_none());
 }
 

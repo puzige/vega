@@ -328,10 +328,8 @@ async fn issue151_v3_manual_expansion_survives_text_segments(cx: &mut TestAppCon
 
     open_run_details(window, cx);
     click(window, "run-stage-toggle-0", cx);
-    assert_eq!(stream.read_with(cx, activity_expansion), [false]);
-    assert!(!mounted(window, "thinking-content", cx));
-    click(window, "thinking-toggle", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [true]);
+    assert!(mounted(window, "thinking-content", cx));
 
     stream.update(cx, |stream, cx| {
         stream.apply_event(text("m", "同段继续"), cx);
@@ -366,15 +364,12 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
     assert!(!mounted(window, "thinking-content", cx));
     open_run_details(window, cx);
     click(window, "run-stage-toggle-0", cx);
-    assert_eq!(stream.read_with(cx, activity_expansion), [false]);
-    assert!(!mounted(window, "thinking-content", cx));
-    click(window, "thinking-toggle", cx);
+    assert_eq!(stream.read_with(cx, activity_expansion), [true]);
     assert!(mounted(window, "thinking-content", cx));
 
-    click(window, "thinking-toggle", cx);
+    click(window, "run-stage-toggle-0", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [false]);
     assert!(!mounted(window, "thinking-content", cx));
-    click(window, "run-stage-toggle-0", cx);
     assert!(!mounted(window, "thinking-toggle", cx));
 
     stream.update(cx, |stream, cx| {
@@ -388,9 +383,9 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
     );
     assert!(!mounted(window, "thinking-toggle", cx));
     click(window, "run-stage-toggle-0", cx);
-    assert!(mounted(window, "thinking-toggle", cx));
-    assert!(!mounted(window, "thinking-content", cx));
-    assert_eq!(stream.read_with(cx, activity_expansion), [false]);
+    assert!(!mounted(window, "thinking-toggle", cx));
+    assert!(mounted(window, "thinking-content", cx));
+    assert_eq!(stream.read_with(cx, activity_expansion), [true]);
     assert_eq!(
         stream.read_with(cx, thinking_sources),
         ["第一段第二段第三段"]

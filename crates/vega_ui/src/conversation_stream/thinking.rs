@@ -220,6 +220,73 @@ impl ThinkingBlock {
         self.visible_text().to_owned()
     }
 
+    pub(crate) fn has_source_text(&self) -> bool {
+        self.source_copy.has_text()
+    }
+
+    pub(crate) fn has_meaningful_source_text(&self) -> bool {
+        self.visible_text()
+            .chars()
+            .any(|character| !character.is_whitespace())
+    }
+
+    pub(crate) fn render_stage_source(
+        card: Entity<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let (model, copy, focus, scroll) = {
+            let state = card.read(cx);
+            (
+                StreamModel {
+                    committed_lines: state.source_model.committed_lines.clone(),
+                    pending_lines: state.source_model.pending_lines.clone(),
+                    ..StreamModel::default()
+                },
+                state.source_copy.clone(),
+                state.focus.clone(),
+                state.scroll.clone(),
+            )
+        };
+        let colors = theme(cx).colors;
+        let content = render_rows::selectable_markdown_content(
+            &model, &copy, &focus, &colors, true, window, cx,
+        );
+        div()
+            .relative()
+            .w_full()
+            .min_w_0()
+            .pt(px(Layout::PROCESS_ITEM_GAP))
+            .on_action(move |_: &CopySelectedText, _, cx| {
+                card.update(cx, |card, cx| {
+                    if card.source_copy.has_selected_text() {
+                        card.source_copy.copy_selected_text(cx);
+                        cx.stop_propagation();
+                    }
+                });
+            })
+            .child(
+                div()
+                    .id("thinking-content")
+                    .debug_selector(|| "thinking-content".into())
+                    .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
+                    .overflow_x_hidden()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
+                    .w_full()
+                    .min_w_0()
+                    .pl(px(Layout::DISCLOSURE_PADDING_X))
+                    .pr(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER))
+                    .text_size(px(Typography::CONVERSATION))
+                    .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+                    .text_color(colors.text_secondary)
+                    .child(content),
+            )
+            .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
+            .into_any_element()
+    }
+
     #[cfg(test)]
     pub(crate) fn scroll_handle(&self) -> ScrollHandle {
         self.scroll.clone()
@@ -255,6 +322,11 @@ impl ThinkingBlock {
             self.expanded_rendered = false;
             cx.notify();
         }
+    }
+
+    pub(crate) fn set_stage_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        self.set_expanded(expanded, cx);
+        self.expanded_rendered = expanded;
     }
 
     pub(crate) fn row_count(&self) -> usize {

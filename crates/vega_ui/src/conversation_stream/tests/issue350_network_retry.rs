@@ -120,7 +120,8 @@ async fn issue343_t15_retry_notice_stays_outside_folded_and_expanded_thinking(
     let toggle = visual.debug_bounds("run-stage-toggle-0").unwrap();
     visual.simulate_click(toggle.center(), Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    assert!(visual.debug_bounds("thinking-content").is_some());
     assert_retry_outside_stage(&mut visual);
     stream.update(&mut visual, |stream, cx| {
         retry(stream, 0, 2, cx);
