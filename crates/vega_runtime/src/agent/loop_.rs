@@ -96,7 +96,10 @@ fn diagnostic_failure(error: &VegaError) -> RuntimeDiagnosticFailure {
         VegaError::Provider {
             status: Some(_), ..
         } => RuntimeDiagnosticFailure::ProviderHttp,
-        VegaError::ReasoningBudgetExceeded { .. } => RuntimeDiagnosticFailure::ReasoningLimit,
+        VegaError::ReasoningBudgetExceeded { .. }
+        | VegaError::ReasoningReplayBudgetExceeded { .. } => {
+            RuntimeDiagnosticFailure::ReasoningLimit
+        }
         VegaError::Context(
             ContextRuntimeError::OverLimit { .. }
             | ContextRuntimeError::SummaryInputOverLimit { .. }
@@ -307,6 +310,9 @@ async fn compact_before_skill_rejection<F, Fut>(
     projection_revision: &mut u64,
     attempted_source: &mut Option<(u64, Option<String>, u64)>,
     automatic_failures: &mut u8,
+    reasoning_bytes: &mut usize,
+    replay_bytes: &mut usize,
+    replay_items: &mut usize,
     cancel: &CancellationToken,
     events: &mut Vec<RuntimeEvent>,
     sink: &mut F,
@@ -485,6 +491,31 @@ where
         .map_err(|error| VegaError::Context(error.into()))?;
     let fits = compacted_estimate.input_tokens <= target_tokens
         && compacted_estimate.input_tokens <= budget.input_budget();
+    let retained_reasoning = if fits {
+        match validate_reasoning_projection(&next_projected, &operation_key, events, sink).await {
+            Ok(counts) => Some(counts),
+            Err(error) => {
+                let event = RuntimeEvent::ContextCompactionStatusUpdated {
+                    status: crate::ContextCompactionStatusUpdate {
+                        operation_key,
+                        generation,
+                        phase: crate::ContextCompactionPhase::Failed,
+                        source_version: source,
+                        estimated_tokens: estimate.input_tokens,
+                        input_budget: budget.input_budget(),
+                        target_tokens,
+                        usage: usage_state,
+                        failure: Some(crate::ContextCompactionStatusFailure::ReasoningLimit),
+                    },
+                };
+                sink(event.clone()).await?;
+                events.push(event);
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
     let event = RuntimeEvent::ContextCompactionStatusUpdated {
         status: crate::ContextCompactionStatusUpdate {
             operation_key,
@@ -522,6 +553,12 @@ where
     {
         messages.pop();
     }
+    if let Some(retained_reasoning) = retained_reasoning {
+        (*reasoning_bytes, *replay_bytes, *replay_items) = retained_reasoning;
+    }
+    discard_reasoning_events(events, 0);
+    sink(RuntimeEvent::ReasoningRetentionReleased).await?;
+    events.push(RuntimeEvent::ReasoningRetentionReleased);
     *projection_revision = generation;
     *source_version = Some(compacted.source_version);
     *source_fingerprint = compacted.source_fingerprint;
@@ -731,6 +768,110 @@ fn reasoning_budget_limit(scope: ReasoningBudgetScope) -> usize {
     }
 }
 
+fn replay_budget_error(bytes: usize, items: usize, scope: ReasoningBudgetScope) -> VegaError {
+    VegaError::ReasoningReplayBudgetExceeded {
+        scope,
+        limit_bytes: reasoning_budget_limit(scope),
+        observed_bytes: bytes,
+        limit_items: 256,
+        observed_items: items,
+    }
+}
+
+fn reasoning_projection_counts(
+    messages: &[ChatMessage],
+) -> Result<(usize, usize, usize), VegaError> {
+    let mut reasoning_bytes = 0usize;
+    let mut replay_bytes = 0usize;
+    let mut replay_items = 0usize;
+    for message in messages {
+        let message_bytes = message.reasoning_content.as_ref().map_or(0, String::len);
+        if message_bytes > REASONING_TURN_MAX_BYTES {
+            return Err(VegaError::ReasoningBudgetExceeded {
+                scope: ReasoningBudgetScope::Turn,
+                limit_bytes: REASONING_TURN_MAX_BYTES,
+                observed_bytes: message_bytes,
+            });
+        }
+        reasoning_bytes = reasoning_bytes.saturating_add(message_bytes);
+        if reasoning_bytes > REASONING_RUN_MAX_BYTES {
+            return Err(VegaError::ReasoningBudgetExceeded {
+                scope: ReasoningBudgetScope::Run,
+                limit_bytes: REASONING_RUN_MAX_BYTES,
+                observed_bytes: reasoning_bytes,
+            });
+        }
+        let message_replay_bytes = message
+            .response_reasoning
+            .iter()
+            .fold(0usize, |total, item| {
+                total.saturating_add(item.to_string().len())
+            });
+        if message_replay_bytes > REASONING_TURN_MAX_BYTES {
+            return Err(replay_budget_error(
+                message_replay_bytes,
+                message.response_reasoning.len(),
+                ReasoningBudgetScope::Turn,
+            ));
+        }
+        replay_bytes = replay_bytes.saturating_add(message_replay_bytes);
+        replay_items = replay_items.saturating_add(message.response_reasoning.len());
+        if replay_bytes > REASONING_RUN_MAX_BYTES || replay_items > 256 {
+            return Err(replay_budget_error(
+                replay_bytes,
+                replay_items,
+                ReasoningBudgetScope::Run,
+            ));
+        }
+    }
+    Ok((reasoning_bytes, replay_bytes, replay_items))
+}
+
+fn discard_reasoning_events(events: &mut Vec<RuntimeEvent>, start: usize) {
+    let mut index = 0usize;
+    events.retain(|event| {
+        let keep = index < start
+            || !matches!(
+                event,
+                RuntimeEvent::ThinkingDelta(_) | RuntimeEvent::SummaryDelta(_)
+            );
+        index += 1;
+        keep
+    });
+}
+
+async fn validate_reasoning_projection<F, Fut>(
+    messages: &[ChatMessage],
+    operation_key: &str,
+    events: &mut Vec<RuntimeEvent>,
+    sink: &mut F,
+) -> Result<(usize, usize, usize), VegaError>
+where
+    F: FnMut(RuntimeEvent) -> Fut,
+    Fut: Future<Output = Result<(), VegaError>>,
+{
+    let result = reasoning_projection_counts(messages);
+    if result.is_err() {
+        for state in [
+            RuntimeDiagnosticState::Started,
+            RuntimeDiagnosticState::Failed,
+        ] {
+            let event = RuntimeEvent::DiagnosticAttempt(RuntimeDiagnosticAttempt {
+                attempt_id: operation_key.to_string(),
+                phase: RuntimeDiagnosticPhase::ContextSummary,
+                state,
+                failure: (state == RuntimeDiagnosticState::Failed)
+                    .then_some(RuntimeDiagnosticFailure::ReasoningLimit),
+                duration_ms: (state == RuntimeDiagnosticState::Failed).then_some(0),
+                metrics: RuntimeDiagnosticMetrics::default(),
+            });
+            sink(event.clone()).await?;
+            events.push(event);
+        }
+    }
+    result
+}
+
 /// Runs the agent and delivers each owned runtime event to an async sink at
 /// its real lifecycle boundary before the loop may continue when required.
 ///
@@ -921,9 +1062,6 @@ where
     // `--max-turns` default); a positive value soft-stops before issuing the
     // (limit + 1)th request.
     let mut turn_index = 0usize;
-    let mut reasoning_run_bytes = 0usize;
-    let mut replay_run_bytes = 0usize;
-    let mut replay_run_items = 0usize;
     let mut direct_user_skill_round = true;
     let mut input_anchor: Option<InputAnchor> = None;
     let mut primary_revision = 0_u64;
@@ -961,6 +1099,8 @@ where
         ));
     }
 
+    let (mut reasoning_run_bytes, mut replay_run_bytes, mut replay_run_items) =
+        reasoning_projection_counts(&messages)?;
     if builtin_cua {
         emit!(
             events,
@@ -1049,6 +1189,9 @@ where
                         &mut live_projection_revision,
                         &mut attempted_context_source,
                         &mut automatic_compaction_failures,
+                        &mut reasoning_run_bytes,
+                        &mut replay_run_bytes,
+                        &mut replay_run_items,
                         &cancel,
                         &mut events,
                         &mut sink,
@@ -1473,8 +1616,43 @@ where
                         false,
                     ));
                 }
+                let retained_reasoning = match validate_reasoning_projection(
+                    &next_messages,
+                    &operation_key,
+                    &mut events,
+                    &mut sink,
+                )
+                .await
+                {
+                    Ok(counts) => counts,
+                    Err(error) => {
+                        emit!(
+                            events,
+                            sink,
+                            RuntimeEvent::ContextCompactionStatusUpdated {
+                                status: crate::ContextCompactionStatusUpdate {
+                                    operation_key,
+                                    generation,
+                                    phase: crate::ContextCompactionPhase::Failed,
+                                    source_version,
+                                    estimated_tokens: estimate.input_tokens,
+                                    input_budget: budget.input_budget(),
+                                    target_tokens,
+                                    usage: usage_state,
+                                    failure: Some(
+                                        crate::ContextCompactionStatusFailure::ReasoningLimit
+                                    ),
+                                },
+                            }
+                        );
+                        return Err(error);
+                    }
+                };
                 automatic_compaction_failures = 0;
                 messages = next_messages;
+                (reasoning_run_bytes, replay_run_bytes, replay_run_items) = retained_reasoning;
+                discard_reasoning_events(&mut events, 0);
+                emit!(events, sink, RuntimeEvent::ReasoningRetentionReleased);
                 if let Some(run) = &tool_config.computer_use {
                     run.invalidate_observations();
                     run.trim_messages(&mut messages);
@@ -1537,6 +1715,7 @@ where
             cancel.cancel();
         }
         let response_text_start = final_text.len();
+        let reasoning_event_start = events.len();
         emit!(
             events,
             sink,
@@ -1709,6 +1888,16 @@ where
                     attempt,
                     max_retries,
                 }) => {
+                    reasoning_run_bytes = reasoning_run_bytes.saturating_sub(reasoning_turn_bytes);
+                    replay_run_bytes =
+                        replay_run_bytes.saturating_sub(response_reasoning.iter().fold(
+                            0usize,
+                            |bytes, item: &serde_json::Value| {
+                                bytes.saturating_add(item.to_string().len())
+                            },
+                        ));
+                    replay_run_items = replay_run_items.saturating_sub(response_reasoning.len());
+                    discard_reasoning_events(&mut events, reasoning_event_start);
                     final_text.truncate(response_text_start);
                     assistant_text.clear();
                     assistant_reasoning.clear();
@@ -1743,23 +1932,61 @@ where
                     emit!(events, sink, RuntimeEvent::TextDelta(delta));
                 }
                 Ok(ProviderEvent::ReasoningReplay(items)) => {
-                    let bytes = items
-                        .iter()
-                        .map(|item| item.to_string().len())
-                        .sum::<usize>();
-                    replay_run_bytes = replay_run_bytes.saturating_add(bytes);
-                    replay_run_items = replay_run_items.saturating_add(items.len());
-                    if bytes > 256 * 1024
-                        || replay_run_bytes > 1024 * 1024
-                        || replay_run_items > 256
-                        || !response_reasoning.is_empty()
-                    {
-                        return Err(VegaError::Provider {
+                    let bytes = items.iter().fold(0usize, |total, item| {
+                        total.saturating_add(item.to_string().len())
+                    });
+                    let next_bytes = replay_run_bytes.saturating_add(bytes);
+                    let next_items = replay_run_items.saturating_add(items.len());
+                    let error = if !response_reasoning.is_empty() {
+                        Some(VegaError::ProviderDiagnostic {
+                            kind: crate::ProviderFailureKind::Protocol,
                             status: None,
-                            message: "Responses replay budget exceeded".into(),
+                            message: "duplicate reasoning replay in one provider call".into(),
                             retryable: false,
-                        });
+                            retry_count: None,
+                            request_id: None,
+                        })
+                    } else if bytes > REASONING_TURN_MAX_BYTES {
+                        Some(replay_budget_error(
+                            bytes,
+                            items.len(),
+                            ReasoningBudgetScope::Turn,
+                        ))
+                    } else if next_bytes > REASONING_RUN_MAX_BYTES || next_items > 256 {
+                        Some(replay_budget_error(
+                            next_bytes,
+                            next_items,
+                            ReasoningBudgetScope::Run,
+                        ))
+                    } else {
+                        None
+                    };
+                    if let Some(error) = error {
+                        emit!(
+                            events,
+                            sink,
+                            primary_attempt_event(
+                                &attempt_id,
+                                RuntimeDiagnosticState::Failed,
+                                Some(diagnostic_failure(&error)),
+                                attempt_started_at,
+                                &diagnostic_metrics,
+                                Some(&error)
+                            )
+                        );
+                        emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
+                        return Ok(outcome(
+                            events,
+                            messages,
+                            final_text,
+                            tool_call_count,
+                            executed_tool_call_count,
+                            false,
+                            true,
+                        ));
                     }
+                    replay_run_bytes = next_bytes;
+                    replay_run_items = next_items;
                     response_reasoning = items;
                 }
                 Ok(ProviderEvent::ThinkingDelta(delta) | ProviderEvent::SummaryDelta(delta)) => {
@@ -2138,6 +2365,13 @@ where
             );
         }
         if calls.is_empty() {
+            replay_run_bytes = replay_run_bytes.saturating_sub(
+                response_reasoning.iter().fold(0usize, |bytes, item| {
+                    bytes.saturating_add(item.to_string().len())
+                }),
+            );
+            replay_run_items = replay_run_items.saturating_sub(response_reasoning.len());
+            response_reasoning.clear();
             messages.push(ChatMessage::new(ChatRole::Assistant, assistant_text));
             let finish = match stop_reason.unwrap_or(StopReason::End) {
                 StopReason::Length => RuntimeFinishReason::Length,
@@ -2598,6 +2832,9 @@ where
                                         &mut live_projection_revision,
                                         &mut attempted_context_source,
                                         &mut automatic_compaction_failures,
+                                        &mut reasoning_run_bytes,
+                                        &mut replay_run_bytes,
+                                        &mut replay_run_items,
                                         &cancel,
                                         &mut events,
                                         &mut sink,

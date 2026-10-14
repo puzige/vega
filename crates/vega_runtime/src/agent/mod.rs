@@ -736,6 +736,8 @@ pub enum RuntimeEvent {
         kind: RuntimeAssistantResponseKind,
     },
     DiagnosticAttempt(RuntimeDiagnosticAttempt),
+    #[allow(missing_docs)]
+    ReasoningRetentionReleased,
     /// Visible assistant delta.
     TextDelta(String),
     /// Reasoning delta.
@@ -875,6 +877,7 @@ impl fmt::Debug for RuntimeEvent {
                 .debug_tuple("DiagnosticAttempt")
                 .field(attempt)
                 .finish(),
+            Self::ReasoningRetentionReleased => formatter.write_str("ReasoningRetentionReleased"),
             Self::TextDelta(value) => formatter
                 .debug_tuple("TextDelta")
                 .field(&format_args!("{} bytes", value.len()))

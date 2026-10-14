@@ -236,13 +236,44 @@ pub fn read_context_projection_with_provider(
         .map(|message| message.id.as_str())
         .collect::<std::collections::HashSet<_>>();
     let run_failures =
-        vega_store::run_diagnostics::context_over_limit_run_ids(&transaction, thread_id)
+        vega_store::run_diagnostics::budget_failure_message_ids(&transaction, thread_id)
             .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
             .into_iter()
-            .filter(|run_id| assistant_ids.contains(run_id.as_str()))
-            .map(|run_id| (run_id, crate::types::RunFailureKind::ContextOverLimit))
+            .filter(|(message_id, _)| assistant_ids.contains(message_id.as_str()))
+            .filter_map(|(message_id, failure)| {
+                let kind = match failure {
+                    vega_store::run_diagnostics::DiagnosticFailureCode::ContextOverLimit => {
+                        crate::types::RunFailureKind::ContextOverLimit
+                    }
+                    vega_store::run_diagnostics::DiagnosticFailureCode::ReasoningLimit => {
+                        crate::types::RunFailureKind::ReasoningLimit(None)
+                    }
+                    _ => return None,
+                };
+                Some((message_id, kind))
+            })
             .collect();
-    let status = status.map(context_status_record);
+    let reasoning_failure = match (status.as_ref(), last_status_message_id.as_deref()) {
+        (Some(status), Some(owner))
+            if status.phase == "failed" && status.failure.as_deref() == Some("too_large") =>
+        {
+            vega_store::run_diagnostics::projection_reasoning_failure(
+                &transaction,
+                thread_id,
+                &status.operation_key,
+                owner,
+            )
+            .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
+        }
+        _ => false,
+    };
+    let status = status.map(|status| {
+        let mut record = context_status_record(status);
+        if reasoning_failure {
+            record.failure = Some(crate::types::ContextCompactionFailureCode::ReasoningLimit);
+        }
+        record
+    });
     let unknown_usage = has_unknown_usage_for_thread(&transaction, thread_id)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
     transaction
@@ -877,6 +908,9 @@ fn context_failure_code(error: &VegaError) -> crate::types::ContextCompactionFai
         vega_runtime::ContextCompactionStatusFailure::OverLimit => {
             crate::types::ContextCompactionFailureCode::OverLimit
         }
+        vega_runtime::ContextCompactionStatusFailure::ReasoningLimit => {
+            crate::types::ContextCompactionFailureCode::ReasoningLimit
+        }
         vega_runtime::ContextCompactionStatusFailure::Unavailable => {
             crate::types::ContextCompactionFailureCode::Unavailable
         }
@@ -893,6 +927,7 @@ fn context_failure_name(failure: crate::types::ContextCompactionFailureCode) -> 
         crate::types::ContextCompactionFailureCode::TimedOut => "summary_timeout",
         crate::types::ContextCompactionFailureCode::ImagesUnsupported => "images_unsupported",
         crate::types::ContextCompactionFailureCode::OverLimit => "over_limit",
+        crate::types::ContextCompactionFailureCode::ReasoningLimit => "too_large",
         crate::types::ContextCompactionFailureCode::Unavailable => "unavailable",
     }
 }
@@ -2418,6 +2453,8 @@ fn summary_diagnostic_failure(
     use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
     match error {
         VegaError::Cancelled => None,
+        VegaError::ReasoningBudgetExceeded { .. }
+        | VegaError::ReasoningReplayBudgetExceeded { .. } => Some(Code::ReasoningLimit),
         VegaError::ProviderDiagnostic { kind, .. } => Some(match kind {
             vega_runtime::ProviderFailureKind::Http => Code::ProviderHttp,
             vega_runtime::ProviderFailureKind::Transport => Code::ProviderTransportOrStream,

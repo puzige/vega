@@ -24,6 +24,7 @@ mod model_switch_summary;
 mod network_retry;
 mod permissions;
 mod plan_approval;
+mod reasoning_budget;
 mod responses;
 mod skills;
 mod stream_persistence;

@@ -404,7 +404,9 @@ pub enum ContextCompactionStatusFailure {
     ImagesUnsupported,
     /// The configured budget could not fit the request/result.
     OverLimit,
-    /// Other typed runtime/store failure.
+    #[allow(missing_docs)]
+    ReasoningLimit,
+    #[allow(missing_docs)]
     Unavailable,
 }
 
@@ -413,6 +415,8 @@ impl ContextCompactionStatusFailure {
     pub fn from_error(error: &VegaError) -> Self {
         match error {
             VegaError::Cancelled => Self::Cancelled,
+            VegaError::ReasoningBudgetExceeded { .. }
+            | VegaError::ReasoningReplayBudgetExceeded { .. } => Self::ReasoningLimit,
             VegaError::Context(ContextRuntimeError::SourceChanged) => Self::SourceChanged,
             VegaError::Context(ContextRuntimeError::NoCompactablePrefix) => {
                 Self::NoCompactablePrefix

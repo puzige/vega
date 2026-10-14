@@ -1,6 +1,9 @@
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
+mod failure_ownership;
+pub use failure_ownership::{budget_failure_message_ids, projection_reasoning_failure};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticPhase {

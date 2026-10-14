@@ -65,6 +65,15 @@ pub enum VegaError {
         /// Observed count at failure (metadata only).
         observed_bytes: usize,
     },
+    #[allow(missing_docs)]
+    #[error("reasoning replay exceeded the {scope:?} retention budget")]
+    ReasoningReplayBudgetExceeded {
+        scope: crate::provider::ReasoningBudgetScope,
+        limit_bytes: usize,
+        observed_bytes: usize,
+        limit_items: usize,
+        observed_items: usize,
+    },
     /// Context budget or compaction hook failure.  The nested type is
     /// metadata-only and deliberately excludes historical prompt content.
     #[error(transparent)]
@@ -125,6 +134,20 @@ impl fmt::Debug for VegaError {
                 .field("scope", scope)
                 .field("limit_bytes", limit_bytes)
                 .field("observed_bytes", observed_bytes)
+                .finish(),
+            Self::ReasoningReplayBudgetExceeded {
+                scope,
+                limit_bytes,
+                observed_bytes,
+                limit_items,
+                observed_items,
+            } => formatter
+                .debug_struct("ReasoningReplayBudgetExceeded")
+                .field("scope", scope)
+                .field("limit_bytes", limit_bytes)
+                .field("observed_bytes", observed_bytes)
+                .field("limit_items", limit_items)
+                .field("observed_items", observed_items)
                 .finish(),
             Self::Context(error) => formatter.debug_tuple("Context").field(error).finish(),
         }

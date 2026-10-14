@@ -463,6 +463,9 @@ pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'st
             Some(Failure::NoCompactablePrefix) => "暂无可压缩的完整历史",
             Some(Failure::TooLarge) => "历史过长，无法安全压缩；请在新对话继续",
             Some(Failure::OverLimit) => "上下文超出预算，请缩短输入或在新对话继续",
+            Some(Failure::ReasoningLimit) => {
+                "模型思考内容超出限制；请降低思考强度，或压缩上下文后继续。"
+            }
             Some(Failure::ImagesUnsupported) => "历史图片无法安全压缩，请使用新的会话",
             Some(Failure::InvalidSummary) => "压缩结果无效，请重试",
             Some(Failure::TimedOut) => "上下文压缩超时，请重试",
