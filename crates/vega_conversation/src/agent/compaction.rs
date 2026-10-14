@@ -229,25 +229,19 @@ pub fn read_context_projection_with_provider(
             .any(|message| message.id == owner && message.role == "assistant")
             .then(|| owner.to_owned())
     });
-    let diagnostics = vega_store::run_diagnostics::read_by_thread(&transaction, thread_id)
-        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
-    let run_failures = diagnostics
-        .into_iter()
-        .filter_map(|row| {
-            use vega_store::run_diagnostics::{
-                DiagnosticFailureCode, DiagnosticPhase, DiagnosticState,
-            };
-            let event = row.event;
-            (event.phase == DiagnosticPhase::Run
-                && event.state == DiagnosticState::Failed
-                && event.failure_code == Some(DiagnosticFailureCode::ContextOverLimit)
-                && source
-                    .messages
-                    .iter()
-                    .any(|message| message.id == event.run_id && message.role == "assistant"))
-            .then_some((event.run_id, crate::types::RunFailureKind::ContextOverLimit))
-        })
-        .collect();
+    let assistant_ids = source
+        .messages
+        .iter()
+        .filter(|message| message.role == "assistant")
+        .map(|message| message.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let run_failures =
+        vega_store::run_diagnostics::context_over_limit_run_ids(&transaction, thread_id)
+            .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
+            .into_iter()
+            .filter(|run_id| assistant_ids.contains(run_id.as_str()))
+            .map(|run_id| (run_id, crate::types::RunFailureKind::ContextOverLimit))
+            .collect();
     let status = status.map(context_status_record);
     let unknown_usage = has_unknown_usage_for_thread(&transaction, thread_id)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
