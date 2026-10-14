@@ -671,6 +671,7 @@ impl ConversationStream {
         self.active_segment_ordinal = 0;
         self.active_response_start = None;
         self.active_segment_has_text = false;
+        self.active_segment_has_visible_text = false;
         self.active_thinking = None;
         self.thinking_bytes = 0;
         self.thinking_blocks = 0;
@@ -1130,7 +1131,7 @@ impl ConversationStream {
         self.clear_recovered_retry(&event);
         let phase = match &event {
             ConversationEvent::TextDelta { message_id, delta }
-                if !delta.is_empty()
+                if delta.chars().any(|character| !character.is_whitespace())
                     && self
                         .active_agent_message
                         .as_ref()
@@ -1221,6 +1222,7 @@ impl ConversationStream {
                 );
                 self.active_agent_message = Some((message_id, usize::MAX));
                 self.active_segment_has_text = false;
+                self.active_segment_has_visible_text = false;
                 cx.notify();
             }
             ConversationEvent::RunStarted {
@@ -1247,7 +1249,9 @@ impl ConversationStream {
                     return;
                 }
                 let entry_index = *entry_index;
-                if !self.active_segment_has_text {
+                let starts_visible_text = !self.active_segment_has_visible_text
+                    && delta.chars().any(|character| !character.is_whitespace());
+                if starts_visible_text {
                     self.active_run_activity_segment = None;
                 }
                 self.active_thinking = None;
@@ -1293,6 +1297,7 @@ impl ConversationStream {
                     stream.append(&delta);
                     copy.append(&delta);
                     self.active_segment_has_text = true;
+                    self.active_segment_has_visible_text |= starts_visible_text;
                     cx.notify();
                 }
             }
@@ -1532,6 +1537,7 @@ impl ConversationStream {
             .take()
             .filter(|(_, index)| *index != usize::MAX);
         self.active_segment_has_text = false;
+        self.active_segment_has_visible_text = false;
         self.active_segment_ordinal = 0;
         self.active_response_start = None;
         self.active_agent_sequence = None;
@@ -1578,6 +1584,7 @@ impl ConversationStream {
             *active_index = usize::MAX;
         }
         self.active_segment_has_text = false;
+        self.active_segment_has_visible_text = false;
     }
 
     pub(crate) fn close_active_segment_at_response(&mut self, end: usize) {

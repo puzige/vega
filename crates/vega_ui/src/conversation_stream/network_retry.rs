@@ -4,7 +4,7 @@ pub(crate) struct ResponseCheckpoint {
     message_id: String,
     text_start_bytes: usize,
     entries: HashSet<String>,
-    segments: usize,
+    activity: run_activity::RunActivityCheckpoint,
     thinking_bytes: usize,
     thinking_blocks: usize,
     segment_ordinal: usize,
@@ -25,8 +25,8 @@ impl ConversationStream {
         }
         self.close_active_segment_at_response(text_start_bytes);
         self.active_thinking = None;
-        self.active_run_activity_segment = None;
         self.network_retry = None;
+        let active_segment = self.active_run_activity_segment;
         self.response_checkpoint = Some(ResponseCheckpoint {
             message_id: message_id.into(),
             text_start_bytes,
@@ -36,7 +36,9 @@ impl ConversationStream {
                 .filter(|identity| identity.message_id.as_deref() == Some(message_id))
                 .map(|identity| identity.key.clone())
                 .collect(),
-            segments: group.update(cx, |group, cx| group.response_checkpoint(cx)),
+            activity: group.update(cx, |group, cx| {
+                group.response_checkpoint(active_segment, cx)
+            }),
             thinking_bytes: self.thinking_bytes,
             thinking_blocks: self.thinking_blocks,
             segment_ordinal: self.active_segment_ordinal,
@@ -75,7 +77,7 @@ impl ConversationStream {
                 .then_some(index)
             })
             .collect::<Vec<_>>();
-        let segments = checkpoint.segments;
+        let activity = checkpoint.activity.clone();
         self.thinking_bytes = checkpoint.thinking_bytes;
         self.thinking_blocks = checkpoint.thinking_blocks;
         self.active_segment_ordinal = checkpoint.segment_ordinal;
@@ -85,12 +87,13 @@ impl ConversationStream {
             self.list_remove(index);
         }
         if let Some((_, group)) = &self.active_run_activity {
-            group.update(cx, |group, cx| group.rollback_response(segments, cx));
+            group.update(cx, |group, cx| group.rollback_response(&activity, cx));
         }
         self.active_agent_message = Some((message_id.into(), usize::MAX));
         self.active_response_start = Some(text_start_bytes);
-        self.active_run_activity_segment = None;
+        self.active_run_activity_segment = activity.active_segment();
         self.active_segment_has_text = false;
+        self.active_segment_has_visible_text = false;
         self.active_thinking = None;
         self.network_retry = Some((message_id.into(), attempt, max_retries));
         self.refresh_run_notices(cx);

@@ -312,3 +312,123 @@ async fn issue350_empty_and_thinking_only_retry_clear_on_recovery_and_ignore_sta
         assert!(stream.network_retry.is_none());
     });
 }
+
+#[gpui_kit::test]
+async fn response_retry_restores_shared_stage_without_losing_prior_commands(
+    cx: &mut TestAppContext,
+) {
+    let (_window, stream, _) = open_controller_stream(cx, "retry-shared-stage");
+    stream.update(cx, |stream, cx| {
+        start(stream, cx);
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "retry".into(),
+                delta: "First response".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("prior-command", "pwd"),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: "prior-command".into(),
+                result: ToolResult {
+                    status: ToolCallStatus::Success,
+                    output: String::new(),
+                    reused: false,
+                    exit_code: Some(0),
+                    duration_ms: Some(1),
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        );
+        let prior = stream.tool_cards["prior-command"].clone();
+        stream.apply_event(
+            ConversationEvent::AssistantResponseStarted {
+                message_id: "retry".into(),
+                text_start_bytes: 0,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "retry".into(),
+                delta: "Abandoned response".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("abandoned-command", "pwd"),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: "abandoned-command".into(),
+                result: ToolResult {
+                    status: ToolCallStatus::Success,
+                    output: String::new(),
+                    reused: false,
+                    exit_code: Some(0),
+                    duration_ms: Some(1),
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        );
+        let group = stream.run_activity_groups["retry"].read(cx);
+        assert_eq!(stream.active_run_activity_segment, Some(0));
+        assert_eq!(group.segment_children(0).len(), 4);
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::RunActivitySegment { .. }))
+                .count(),
+            1
+        );
+        retry(stream, 0, 1, cx);
+        let group = stream.run_activity_groups["retry"].read(cx);
+        assert_eq!(stream.active_run_activity_segment, Some(0));
+        assert_eq!(group.segment_children(0).len(), 2);
+        assert!(group.contains_tool(&prior, cx));
+        assert!(!group.contains_tool(&stream.tool_cards["abandoned-command"], cx));
+        assert_eq!(stream.thinking_blocks, 1);
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "retry".into(),
+                delta: "Recovered response".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("replacement-command", "pwd"),
+            },
+            cx,
+        );
+        assert_eq!(
+            stream.run_activity_groups["retry"]
+                .read(cx)
+                .segment_children(0)
+                .len(),
+            4
+        );
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::RunActivitySegment { .. }))
+                .count(),
+            1
+        );
+    });
+}
