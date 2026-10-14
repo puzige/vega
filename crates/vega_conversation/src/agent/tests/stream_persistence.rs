@@ -234,6 +234,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "thread_skill_pins",
             "threads",
             "token_usage",
+            "tool_call_rounds",
             "tool_calls"
         ]
     );

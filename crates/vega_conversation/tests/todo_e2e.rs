@@ -364,6 +364,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
             "thread_skill_pins",
             "threads",
             "token_usage",
+            "tool_call_rounds",
             "tool_calls",
         ]
     );
