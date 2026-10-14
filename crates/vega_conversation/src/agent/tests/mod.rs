@@ -20,6 +20,7 @@ mod history_permissions;
 mod images;
 mod mcp;
 mod model_context;
+mod model_switch_summary;
 mod network_retry;
 mod permissions;
 mod plan_approval;

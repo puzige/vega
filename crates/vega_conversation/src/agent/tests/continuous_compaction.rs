@@ -23,6 +23,15 @@ fn append_round(store: &Store, round: i64) {
 
 #[tokio::test]
 async fn continuous_compaction_twice_same_assistant_reopens_without_duplicate_or_missing_rounds() {
+    repeated_partial_compaction(false).await;
+}
+
+#[tokio::test]
+async fn model_switch_partial_cursor_reopens_and_advances_without_replaying_covered_rounds() {
+    repeated_partial_compaction(true).await;
+}
+
+async fn repeated_partial_compaction(switch_model: bool) {
     let (store, dir, _) = setup();
     store.conn().execute("INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at) VALUES ('goal', 'thread-1', 1, 'user', 'text', 'Implement task goal; preserve progress', 'done', 1), ('active', 'thread-1', 2, 'assistant', 'text', '', 'done', 2)", []).unwrap();
     append_round(&store, 1);
@@ -61,17 +70,29 @@ async fn continuous_compaction_twice_same_assistant_reopens_without_duplicate_or
         ProviderEvent::TextDelta("Task goal: implement task. Progress: completed prior read rounds. Next: continue remaining rounds.".into()),
         ProviderEvent::Done { stop_reason: StopReason::End },
     ])]).collect());
-    let hook = ConversationCompactionHook::new(
-        &provider,
-        dir.path().join("vega.db"),
-        "thread-1",
-        "mock-model",
-        None,
-        None,
-    );
     let budget = vega_runtime::ContextBudget::new(428_000, 128_000, true).unwrap();
     let mut history = history;
     for iteration in 0..2 {
+        let model = if switch_model && iteration == 1 {
+            "deepseek-model"
+        } else {
+            "mock-model"
+        };
+        store
+            .conn()
+            .execute(
+                "UPDATE threads SET model = ?1 WHERE id = 'thread-1'",
+                [model],
+            )
+            .unwrap();
+        let hook = ConversationCompactionHook::new(
+            &provider,
+            dir.path().join("vega.db"),
+            "thread-1",
+            model,
+            None,
+            None,
+        );
         let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
         let estimate = vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
         let result = vega_runtime::ContextCompactionHook::compact(
@@ -99,6 +120,7 @@ async fn continuous_compaction_twice_same_assistant_reopens_without_duplicate_or
         )
         .unwrap()
         .unwrap();
+        assert_eq!(checkpoint.model, model);
         assert_eq!(checkpoint.covered_assistant_id.as_deref(), Some("active"));
         assert_eq!(
             checkpoint.covered_assistant_tool_seq,
