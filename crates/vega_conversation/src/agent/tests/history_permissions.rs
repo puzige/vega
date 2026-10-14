@@ -4854,3 +4854,108 @@ async fn issue302_compaction_accepts_redacted_shell_markers_and_skips_covered_ra
         source
     );
 }
+
+#[test]
+fn issue365_reopened_projection_recovers_exact_context_owner_and_run_failure() {
+    use vega_store::run_diagnostics::{
+        self, DiagnosticFailureCode, DiagnosticMetrics, DiagnosticPhase, DiagnosticState,
+        NewDiagnosticEvent,
+    };
+    let (store, dir, _) = setup();
+    for (seq, id) in [(1, "budget-run"), (2, "provider-run")] {
+        vega_store::messages::insert(
+            store.conn(),
+            &vega_store::messages::MessageRow {
+                id: id.into(),
+                thread_id: "thread-1".into(),
+                seq,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "failed".into(),
+                created_at: seq,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+        for state in [DiagnosticState::Started, DiagnosticState::Failed] {
+            run_diagnostics::insert(
+                store.conn(),
+                &NewDiagnosticEvent {
+                    thread_id: "thread-1".into(),
+                    run_id: id.into(),
+                    attempt_id: format!("{id}-attempt"),
+                    parent_attempt_id: None,
+                    tool_call_id: None,
+                    phase: DiagnosticPhase::Run,
+                    state,
+                    failure_code: (state == DiagnosticState::Failed).then_some(
+                        if id == "budget-run" {
+                            DiagnosticFailureCode::ContextOverLimit
+                        } else {
+                            DiagnosticFailureCode::ProviderHttp
+                        },
+                    ),
+                    occurred_at: seq,
+                    duration_ms: (state == DiagnosticState::Failed).then_some(1),
+                    metrics: DiagnosticMetrics::default(),
+                },
+            )
+            .unwrap();
+        }
+    }
+    vega_store::context_compaction::insert_status(
+        store.conn(),
+        vega_store::context_compaction::NewContextCompactionStatus {
+            thread_id: "thread-1",
+            model: "mock-model",
+            operation_key: "budget-run:context-generation-1:attempt-fixture",
+            generation: 1,
+            phase: "failed",
+            usage_state: "unknown",
+            failure: Some("over_limit"),
+            source_version: 1,
+            estimated_tokens: 100,
+            input_budget: 90,
+            target_tokens: 80,
+            created_at: 3,
+        },
+    )
+    .unwrap();
+    drop(store);
+    let store = Store::open(dir.path().join("vega.db")).unwrap();
+    let projection = read_context_projection(&store, "thread-1", "mock-model", "system").unwrap();
+    assert_eq!(
+        projection.last_status_message_id.as_deref(),
+        Some("budget-run")
+    );
+    assert_eq!(
+        projection.run_failures,
+        vec![(
+            "budget-run".into(),
+            crate::types::RunFailureKind::ContextOverLimit
+        )]
+    );
+    vega_store::context_compaction::insert_status(
+        store.conn(),
+        vega_store::context_compaction::NewContextCompactionStatus {
+            thread_id: "thread-1",
+            model: "mock-model",
+            operation_key: "manual-generation-2-attempt-fixture",
+            generation: 2,
+            phase: "failed",
+            usage_state: "unknown",
+            failure: Some("over_limit"),
+            source_version: 1,
+            estimated_tokens: 100,
+            input_budget: 90,
+            target_tokens: 80,
+            created_at: 4,
+        },
+    )
+    .unwrap();
+    let manual = read_context_projection(&store, "thread-1", "mock-model", "system").unwrap();
+    assert!(manual.last_status_message_id.is_none());
+}

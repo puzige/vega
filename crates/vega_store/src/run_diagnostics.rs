@@ -321,6 +321,17 @@ pub fn read_by_thread(
         .collect()
 }
 
+pub fn context_over_limit_run_ids(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Vec<String>, DiagnosticError> {
+    validate_identity(thread_id, "thread_id")?;
+    let mut statement = conn.prepare("SELECT DISTINCT run_id FROM run_diagnostic_events WHERE thread_id = ?1 AND phase = 'run' AND state = 'failed' AND failure_code = 'context_over_limit' ORDER BY run_id")?;
+    Ok(statement
+        .query_map([thread_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
 pub fn export_run(
     conn: &Connection,
     thread_id: &str,

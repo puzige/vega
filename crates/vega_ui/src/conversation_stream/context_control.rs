@@ -371,6 +371,52 @@ impl ConversationStream {
     /// Restore the latest durable result at the loaded history tail. Legacy
     /// records have no transcript anchor, so the row is explicitly historical.
     /// The controller must also accept the original owner/load-sequence fence.
+    pub fn restore_context_run_failures(
+        &mut self,
+        failures: &[(String, RunFailureKind)],
+        cx: &mut Context<Self>,
+    ) {
+        if self.actions.running || self.active_agent_message.is_some() {
+            return;
+        }
+        for (message_id, failure) in failures {
+            if self
+                .entry_identities
+                .iter()
+                .any(|identity| identity.message_id.as_ref() == Some(message_id))
+            {
+                self.run_failures.insert(message_id.clone(), *failure);
+            }
+        }
+        self.refresh_run_notices(cx);
+        cx.notify();
+    }
+
+    pub fn restore_owned_context_status(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        record: ContextCompactionStatusRecord,
+        message_id: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.restore_context_status(thread_id, model, record, cx) {
+            return false;
+        }
+        if let Some(message_id) = message_id.filter(|id| {
+            self.entry_identities
+                .iter()
+                .any(|identity| identity.message_id.as_deref() == Some(id))
+        }) {
+            let index = self.entries.len() - 1;
+            let identity = self.durable_entry_identity(message_id, "restored-compaction", None);
+            self.set_entry_identity(index, identity);
+        }
+        self.refresh_run_notices(cx);
+        cx.notify();
+        true
+    }
+
     pub fn restore_context_status(
         &mut self,
         thread_id: &str,

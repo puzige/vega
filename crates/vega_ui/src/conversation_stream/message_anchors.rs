@@ -681,12 +681,24 @@ pub(super) fn estimate_entry_height(
             record, restored, ..
         } => {
             let label = context_compaction_label(record.status, record.failure, *restored);
-            let width = (text_width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
+            let failed = record.status == vega_conversation::types::ContextCompactionStatus::Failed;
+            let inset = if failed {
+                2. * Layout::STATUS_PADDING + 2.
+            } else {
+                0.
+            };
+            let gap = if failed {
+                Layout::STATUS_GAP
+            } else {
+                Layout::CONVERSATION_INLINE_GAP
+            };
+            let width = (text_width - Layout::ICON_SIZE - gap - inset).max(1.);
             let columns = (width / (Typography::BODY * 0.56)).max(1.) as usize;
             (display_width(&label).div_ceil(columns).max(1) as f32
                 * Typography::BODY
                 * Typography::BODY_LINE_HEIGHT)
                 .max(Layout::DISCLOSURE_HEADER_HEIGHT)
+                + inset
         }
         StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),

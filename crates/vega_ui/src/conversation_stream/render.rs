@@ -1618,7 +1618,7 @@ impl Render for ConversationStream {
                                                   cx| {
                                                 let row_t0 = Instant::now();
                                                 let entry = this.entries.get(index);
-                                                let item = if this.process_entry_hidden(index, cx) {
+                                                let item = if this.process_entry_hidden(index, cx) || this.compaction_failure_is_represented(index) {
                                                     div().h_0().into_any_element()
                                                 } else {
                                                     match entry {

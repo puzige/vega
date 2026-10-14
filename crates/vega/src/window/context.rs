@@ -438,11 +438,15 @@ impl VegaWindow {
                                 projection.compactable,
                                 cx,
                             );
+                            if restore_status {
+                                stream.restore_context_run_failures(&projection.run_failures, cx);
+                            }
                             if restore_status && let Some(record) = projection.last_status {
-                                stream.restore_context_status(
+                                stream.restore_owned_context_status(
                                     &owner.thread_id,
                                     &owner.model,
                                     record,
+                                    projection.last_status_message_id.as_deref(),
                                     cx,
                                 );
                             }

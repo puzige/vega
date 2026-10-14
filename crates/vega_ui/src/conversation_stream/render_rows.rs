@@ -139,6 +139,18 @@ fn render_entry_internal(
         StreamEntry::ContextCompaction {
             record, restored, ..
         } => {
+            if record.status == vega_conversation::types::ContextCompactionStatus::Failed {
+                return div()
+                    .debug_selector(|| "context-compaction-row".into())
+                    .w_full()
+                    .min_w_0()
+                    .child(status_notice(
+                        context_compaction_label(record.status, record.failure, *restored),
+                        colors.danger,
+                        &colors,
+                    ))
+                    .into_any_element();
+            }
             let (glyph, color) = context_compaction_visual(record.status, &colors);
             let restored = *restored;
             let label = context_compaction_label(record.status, record.failure, restored);

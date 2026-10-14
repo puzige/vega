@@ -19,3 +19,11 @@ Implementation subagent traces materialization + virtual list gap + row renderer
 Local: cargo fmt --all -- --check and git diff --check only; no builds, tests, clippy or cargo check. Cloud PR check runs all compilation/tests. Native visual acceptance remains user hand-test after merge. No claim of pixel validation from static checks.
 
 Validation pending.
+
+## User correction: one unified failure presentation (2026-10-14)
+
+User hand-test found restored failed runs showing a generic run failure card plus context-budget error row. The previous live-only duplicate suppression is insufficient and its choice of retaining a separate context error is superseded.
+
+Context failures now belong in the shared run error presentation, with their specific actionable reason replacing generic provider/credit suggestions. Suppress the redundant compaction failure row only when represented in that owned error card. Keep active/success/cancelled process states compact. Standalone manual compaction failures without a run must still have one visible actionable error. Preserve independent errors from other runs. Restored history must recover typed failure/ownership using durable evidence, not guess by latest visual adjacency; add a minimal additive durable anchor only if current evidence cannot reliably supply ownership. Never misattribute an unowned historical context status. Preserve all raw audit and status semantics.
+
+Regression coverage required: live context failure, same failure after reopen, two adjacent failed runs, independent provider failure, manual/unowned compaction failure, running/success/cancelled states. Assert one error surface with specific cause and no misleading generic copy for a known context failure. No local build/test; cloud CI only.

@@ -220,8 +220,29 @@ pub fn read_context_projection_with_provider(
             .rposition(|message| message.role == ChatRole::User)
             .is_some_and(|index| index > 0);
     let status = latest_status(&transaction, thread_id, expected_model)
-        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
-        .map(context_status_record);
+        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
+    let last_status_message_id = status.as_ref().and_then(|status| {
+        let (owner, _) = status.operation_key.split_once(":context-generation-")?;
+        source
+            .messages
+            .iter()
+            .any(|message| message.id == owner && message.role == "assistant")
+            .then(|| owner.to_owned())
+    });
+    let assistant_ids = source
+        .messages
+        .iter()
+        .filter(|message| message.role == "assistant")
+        .map(|message| message.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let run_failures =
+        vega_store::run_diagnostics::context_over_limit_run_ids(&transaction, thread_id)
+            .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
+            .into_iter()
+            .filter(|run_id| assistant_ids.contains(run_id.as_str()))
+            .map(|run_id| (run_id, crate::types::RunFailureKind::ContextOverLimit))
+            .collect();
+    let status = status.map(context_status_record);
     let unknown_usage = has_unknown_usage_for_thread(&transaction, thread_id)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
     transaction
@@ -233,6 +254,8 @@ pub fn read_context_projection_with_provider(
         estimated_tokens: Some(estimate.input_tokens),
         compactable,
         last_status: status,
+        last_status_message_id,
+        run_failures,
         unknown_usage,
         source_version: source.source_version,
         source_fingerprint: source.fingerprint,
