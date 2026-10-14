@@ -143,6 +143,9 @@ pub fn finish_streaming_in_transaction(
             params![id, duration],
         )?;
     }
+    if updated == 1 {
+        crate::credential_continuation::complete(tx, id)?;
+    }
     Ok(updated)
 }
 
@@ -204,6 +207,7 @@ pub fn complete_plan(
     if touched != 1 {
         return Err(PlanTransitionError::CorruptState);
     }
+    crate::credential_continuation::complete(&tx, message_id)?;
     tx.commit()?;
     Ok(())
 }

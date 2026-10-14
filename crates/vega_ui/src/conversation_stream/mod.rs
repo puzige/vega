@@ -390,3 +390,8 @@ pub use vega_conversation::types::ThreadScrollAnchor;
 pub struct ComposerStopRequested {
     pub thread_id: String,
 }
+
+pub struct CredentialContinuationRequested {
+    pub thread_id: String,
+    pub message_id: String,
+}

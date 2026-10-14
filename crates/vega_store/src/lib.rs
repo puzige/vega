@@ -41,6 +41,7 @@ pub mod codex_tasks;
 pub mod computer_use_delivery;
 pub mod config;
 pub mod context_compaction;
+pub mod credential_continuation;
 pub mod git_detect;
 pub mod image_attachments;
 pub mod keystore;
@@ -93,6 +94,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0020_context_compaction_timeout.sql"),
     include_str!("../migrations/0021_tool_call_rounds.sql"),
     include_str!("../migrations/0022_partial_compaction.sql"),
+    include_str!("../migrations/0023_credential_continuations.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

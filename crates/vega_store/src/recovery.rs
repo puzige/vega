@@ -30,6 +30,14 @@ pub fn recover_thread(
     now_ms: i64,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
     let tx = conn.unchecked_transaction()?;
+    let continuations = {
+        let mut query = tx.prepare("SELECT c.continuation_message_id, c.reason FROM credential_continuations c JOIN messages m ON m.id = c.continuation_message_id WHERE c.thread_id = ?1 AND c.state = 'claimed' AND m.status = 'streaming' AND c.user_message_id = (SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' ORDER BY seq DESC LIMIT 1)")?;
+        query
+            .query_map([thread_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
     let messages_interrupted = tx.execute(
         "UPDATE messages SET status = 'interrupted' \
          WHERE thread_id = ?1 AND status = 'streaming'",
@@ -51,6 +59,10 @@ pub fn recover_thread(
          WHERE thread_id = ?3 AND status IN ('approved', 'running')",
         params![RECOVERY_CANCELLED_OUTPUT, now_ms, thread_id],
     )?;
+    for (message_id, reason) in continuations {
+        crate::credential_continuation::suspend(&tx, thread_id, &message_id, &reason, now_ms)?;
+        crate::credential_continuation::complete(&tx, &message_id)?;
+    }
     tx.commit()?;
     Ok(RecoveryCounts {
         messages_interrupted,

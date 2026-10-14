@@ -33,6 +33,11 @@ use crate::types::{
 /// segments; legacy audits retain their original text-then-tools order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryEntry {
+    CredentialContinuation {
+        seq: i64,
+        message_id: String,
+        failure: crate::types::RunFailureKind,
+    },
     AssistantScreenshot {
         seq: i64,
         message_id: String,
@@ -361,6 +366,32 @@ fn assemble(
                 summary,
             },
         );
+    }
+    for row in page.rows.iter().filter(|row| row.role == "assistant") {
+        if let Some(receipt) = vega_store::credential_continuation::find(store.conn(), &row.id)
+            .map_err(|error| ConversationError::Store(error.to_string()))?
+        {
+            let failure = if receipt.state == "unknown" {
+                crate::types::RunFailureKind::CredentialOutcomeUnknown
+            } else if receipt.state == "ready" {
+                match receipt.reason.as_str() {
+                    "unavailable" => crate::types::RunFailureKind::CredentialCheckUnavailable,
+                    reason if reason.starts_with("projection:") => reason
+                        .strip_prefix("projection:")
+                        .and_then(|value| value.parse().ok())
+                        .map(crate::types::RunFailureKind::CredentialProjectionInvalid)
+                        .unwrap_or(crate::types::RunFailureKind::CredentialExposureBlocked),
+                    _ => crate::types::RunFailureKind::CredentialExposureBlocked,
+                }
+            } else {
+                crate::types::RunFailureKind::Persisted
+            };
+            entries.push(HistoryEntry::CredentialContinuation {
+                seq: row.seq,
+                message_id: row.id.clone(),
+                failure,
+            });
+        }
     }
     Ok(HistoryPage {
         entries,

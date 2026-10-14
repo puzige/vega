@@ -258,3 +258,60 @@ async fn foreign_thread_summary_is_dropped_and_failure_pauses(cx: &mut TestAppCo
     assert_eq!(request_at_top, None, "a failed load pauses auto-retry");
     assert_eq!(cursor, None);
 }
+
+#[gpui_kit::test]
+async fn credential_receipt_restores_recovery_actions_without_starting_a_run(
+    cx: &mut TestAppContext,
+) {
+    let (_, stream, _) = open_controller_stream(cx, "credential-history");
+    stream.update(cx, |stream, cx| {
+        stream.apply_history_page(
+            hydration_page(
+                vec![
+                    hydration_user(1, "continue task"),
+                    HistoryEntry::AssistantText {
+                        seq: 2,
+                        message_id: "blocked".into(),
+                        content: String::new(),
+                        status: vega_conversation::history::AssistantStatus::Failed,
+                        execution_duration_ms: None,
+                    },
+                    HistoryEntry::CredentialContinuation {
+                        seq: 2,
+                        message_id: "blocked".into(),
+                        failure: RunFailureKind::CredentialCheckUnavailable,
+                    },
+                ],
+                None,
+            ),
+            cx,
+        );
+        let notices = stream.run_notice_projection(cx);
+        assert_eq!(notices.len(), 1);
+        let notice = notices.values().next().unwrap();
+        assert!(notice.can_resume_credentials());
+        assert!(!stream.actions.running);
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::User { .. }))
+                .count(),
+            1
+        );
+    });
+}
+
+#[test]
+fn unknown_or_consumed_receipt_does_not_offer_automatic_resume() {
+    for failure in [
+        RunFailureKind::CredentialOutcomeUnknown,
+        RunFailureKind::Persisted,
+    ] {
+        let notice = run_notice::RunNotice {
+            message_id: "blocked".into(),
+            kind: run_notice::RunNoticeKind::Failure(failure),
+        };
+        assert!(!notice.can_resume_credentials());
+    }
+}

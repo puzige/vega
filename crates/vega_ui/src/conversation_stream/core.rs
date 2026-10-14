@@ -1736,3 +1736,5 @@ fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
         effort => ReasoningChoice::Effort(effort.to_string()),
     }
 }
+
+impl EventEmitter<CredentialContinuationRequested> for ConversationStream {}

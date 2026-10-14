@@ -564,8 +564,18 @@ where
             "cannot replace persisted instruction images".into(),
         ));
     }
-    let user_message_id = persisted_user_message_id
-        .clone()
+    let continuation = actor_config
+        .credential_continuation_id
+        .as_deref()
+        .map(|id| {
+            vega_store::credential_continuation::find(store.conn(), id).map_err(runtime_store_error)
+        })
+        .transpose()?
+        .flatten();
+    let user_message_id = continuation
+        .as_ref()
+        .map(|receipt| receipt.user_message_id.clone())
+        .or_else(|| persisted_user_message_id.clone())
         .or_else(|| actor_config.pending_message_id.clone())
         .unwrap_or_else(|| ulid::Ulid::generate().to_string());
     let assistant_message_id = ulid::Ulid::generate().to_string();
@@ -633,7 +643,7 @@ where
         &prepared.project_id,
         thread_id,
         &prepared.assistant_message_id,
-        persisted_user_message_id.is_none(),
+        persisted_user_message_id.is_none() && continuation.is_none(),
     );
     let skill_launch = match skill_launch {
         Ok(launch) => launch,
@@ -975,4 +985,46 @@ where
         interrupted: outcome.interrupted,
         failed: outcome.failed,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resume_credential_continuation_with_mcp<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    receipt_id: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    mut actor_config: PersistenceActorConfig,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
+    mcp_servers: Vec<vega_runtime::McpReadyServer>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    actor_config.credential_continuation_id = Some(receipt_id.to_owned());
+    actor_config.pending_message_id = None;
+    actor_config.automatic_title = None;
+    run_thread_task_with_images_reasoning_and_mcp(
+        store,
+        provider,
+        tools,
+        thread_id,
+        "",
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        actor_config,
+        None,
+        pricing_catalog,
+        reasoning,
+        Vec::new(),
+        mcp_servers,
+    )
+    .await
 }

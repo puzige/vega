@@ -1659,7 +1659,7 @@ impl Render for ConversationStream {
                                                         .flex()
                                                         .flex_col()
                                                         .child(item)
-                                                        .child(notice.render(&theme(cx).colors))
+                                                        .child(notice.render(&theme(cx).colors, this.thread.id.clone(), cx))
                                                         .into_any_element()
                                                 } else {
                                                     item

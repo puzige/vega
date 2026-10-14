@@ -541,7 +541,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .execute_batch("PRAGMA query_only = ON")
             .map_err(runtime_store_error)?;
     }
-    if !uses_existing_user {
+    if !uses_existing_user && config.credential_continuation_id.is_none() {
         vega_store::recovery::recover_thread(store.conn(), &thread_id, now_ms())
             .map_err(runtime_store_error)?;
     }
@@ -689,6 +689,33 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         })
         .transpose()?;
     let pending_model_content = pending_original.as_ref().map(|_| user_content.clone());
+    let continuation = config
+        .credential_continuation_id
+        .as_deref()
+        .map(|id| {
+            let receipt = vega_store::credential_continuation::find(&transaction, id)
+                .map_err(runtime_store_error)?
+                .ok_or_else(|| {
+                    ConversationError::Runtime(Arc::new(
+                        VegaError::CredentialContinuationUnavailable,
+                    ))
+                })?;
+            if receipt.thread_id != thread_id
+                || receipt.user_message_id != user_message_id
+                || !vega_store::credential_continuation::claim(
+                    &transaction,
+                    &receipt,
+                    &assistant_message_id,
+                )
+                .map_err(runtime_store_error)?
+            {
+                return Err(ConversationError::Runtime(Arc::new(
+                    VegaError::CredentialContinuationUnavailable,
+                )));
+            }
+            Ok::<_, ConversationError>(receipt)
+        })
+        .transpose()?;
     let now = now_ms();
     let title_eligible_payload = !user_content.trim().is_empty() || !images.is_empty();
     if uses_existing_user {
@@ -728,7 +755,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 "approved instruction has no matching plan".to_string(),
             ));
         }
-    } else {
+    } else if continuation.is_none() {
         let user_seq = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
         messages::insert(
             &transaction,
@@ -758,7 +785,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         .map_err(runtime_store_error)?;
     }
     // R1/R4: claim inside the accepted first-user transaction, before assistant insertion.
-    let title_request = if !uses_existing_user && title_eligible_payload {
+    let title_request = if !uses_existing_user && continuation.is_none() && title_eligible_payload {
         match config.automatic_title.clone() {
             Some(request)
                 if vega_store::threads::claim_auto_title(
@@ -808,9 +835,18 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     )
     .map_err(runtime_store_error)?;
 
+    if let Some(receipt) = &continuation {
+        vega_store::credential_continuation::attach(
+            &transaction,
+            &receipt.id,
+            &assistant_message_id,
+        )
+        .map_err(runtime_store_error)?;
+    }
+
     let credential_values = match &config.owner_credential_reader {
         Some(reader) => reader().map_err(|_| {
-            ConversationError::Runtime(Arc::new(VegaError::CredentialExposureBlocked))
+            ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
         })?,
         None => Vec::new(),
     };

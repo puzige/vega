@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    pub(crate) credential_continuation_id: Option<String>,
     pub(crate) steering_cancel: Option<CancellationToken>,
     pub(crate) pending_message_id: Option<String>,
     pub(crate) steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
