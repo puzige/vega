@@ -29,7 +29,7 @@
 
 | ID | 输入与状态 | 预期 | 验证 |
 |---|---|---|---|
-| T1 | content 先有 `## 旧小标题`，随后普通段落分片继续 | 标题逐步转为最新可读段落，不停在小标题 | 进程内预览与 GPUI 回归；云端 PR Check |
+| T1 | content 先有 `## 旧小标题`，随后普通段落分片继续 | 内层预览逐步转为最新可读段落，不停在小标题；没有 summary 时外层仍为 `Thinking` | 进程内预览与 GPUI 回归；云端 PR Check |
 | T2 | content → summary → content → summary | 外层先显示 `Thinking`，再切换并持续跟随可读 summary；后续 content 不覆盖；无固定前缀 | 进程内 GPUI 回归；云端 PR Check |
 | T3 | summary 先追加空白、未完成标记或围栏代码 | 外层维持 `Thinking` 或既有可读 summary，直到新的 summary 产生可读预览 | 单元与 GPUI 回归；云端 PR Check |
 | T4 | 超长中英文段落、跨 UTF-8 delta、标题行 | 不超过 96 标量，长普通段落显示最新尾部，标题行保留开头 | 单元与现有界限回归；云端 PR Check |
