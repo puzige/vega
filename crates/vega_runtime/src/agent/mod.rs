@@ -725,6 +725,10 @@ pub enum RuntimeEvent {
         epoch: u64,
         cancel: CancellationToken,
     },
+    ToolRoundCompleted {
+        response_id: String,
+        call_ids: Vec<String>,
+    },
     AssistantResponseCompleted {
         response_id: String,
         text_start_bytes: usize,
@@ -847,6 +851,14 @@ impl fmt::Debug for RuntimeEvent {
                 .debug_struct("ScreenshotDelivered")
                 .field("image_bytes", &image.bytes().len())
                 .finish_non_exhaustive(),
+            Self::ToolRoundCompleted {
+                response_id,
+                call_ids,
+            } => formatter
+                .debug_struct("ToolRoundCompleted")
+                .field("response_id", response_id)
+                .field("call_count", &call_ids.len())
+                .finish(),
             Self::AssistantResponseCompleted {
                 response_id,
                 text_start_bytes,

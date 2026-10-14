@@ -257,11 +257,6 @@ pub(crate) fn history_from_context_source(
             continue;
         }
 
-        // A tool call is a boundary in the provider transcript.  Split the
-        // assistant text at persisted UTF-8 byte offsets and emit one
-        // assistant/tool-result group per offset.  This preserves
-        // textA -> call/result -> textB ordering and keeps calls sharing an
-        // offset indivisible.
         let content = message.content.as_str();
         let mut groups = Vec::<(
             Option<usize>,
@@ -287,7 +282,12 @@ pub(crate) fn history_from_context_source(
                 }
                 None => None,
             };
-            if let Some((_, existing)) = groups.iter_mut().find(|(key, _)| *key == offset) {
+            if let Some((_, existing)) = groups.iter_mut().find(|(key, existing)| {
+                *key == offset
+                    && existing
+                        .first()
+                        .is_some_and(|first| first.response_id == call.response_id)
+            }) {
                 existing.push(call);
             } else {
                 groups.push((offset, vec![call]));
@@ -352,10 +352,11 @@ pub(crate) fn history_from_context_source_with_checkpoint(
 ) -> Result<Vec<vega_runtime::ChatMessage>, ConversationError> {
     let checkpoint = checkpoint.filter(|checkpoint| {
         checkpoint.source_version <= source.source_version
-            && checkpoint.covered_through_seq < source.source_version
+            && checkpoint.covered_through_seq <= source.source_version
     });
+    let projected_source = source_after_checkpoint(source, checkpoint)?;
     let mut history = history_from_context_source(
-        source,
+        &projected_source,
         current_assistant_id,
         checkpoint.map(|checkpoint| checkpoint.covered_through_seq),
     )?;
@@ -1638,3 +1639,50 @@ pub(crate) fn forward_pipeline_error_with_duration<F>(
 
 #[cfg(test)]
 mod asset_metadata_tests;
+
+pub(crate) fn source_after_checkpoint(
+    source: &vega_store::context_compaction::ContextSource,
+    checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
+) -> Result<vega_store::context_compaction::ContextSource, ConversationError> {
+    let mut projected = source.clone();
+    let Some(checkpoint) = checkpoint else {
+        return Ok(projected);
+    };
+    let Some(owner) = checkpoint.covered_assistant_id.as_deref() else {
+        return Ok(projected);
+    };
+    let message = projected
+        .messages
+        .iter_mut()
+        .find(|message| message.id == owner)
+        .ok_or_else(|| ConversationError::CorruptRow("checkpoint assistant missing".into()))?;
+    let cursor = usize::try_from(checkpoint.covered_assistant_text_bytes)
+        .map_err(|_| ConversationError::CorruptRow("checkpoint text cursor overflow".into()))?;
+    if !message.content.is_char_boundary(cursor) {
+        return Err(ConversationError::CorruptRow(
+            "checkpoint text cursor invalid".into(),
+        ));
+    }
+    message.content = message.content[cursor..].to_string();
+    if message.status == "streaming" {
+        message.status = "done".to_string();
+    }
+    projected.tool_calls.retain(|call| {
+        call.message_id != owner || call.seq as u64 > checkpoint.covered_assistant_tool_seq
+    });
+    for call in projected
+        .tool_calls
+        .iter_mut()
+        .filter(|call| call.message_id == owner)
+    {
+        if let Some(offset) = call.text_offset_bytes {
+            if offset < cursor as i64 {
+                return Err(ConversationError::CorruptRow(
+                    "checkpoint tool cursor invalid".into(),
+                ));
+            }
+            call.text_offset_bytes = Some(offset - cursor as i64);
+        }
+    }
+    Ok(projected)
+}

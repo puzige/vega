@@ -91,6 +91,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0018_computer_use_delivery.sql"),
     include_str!("../migrations/0019_pending_messages.sql"),
     include_str!("../migrations/0020_context_compaction_timeout.sql"),
+    include_str!("../migrations/0021_tool_call_rounds.sql"),
+    include_str!("../migrations/0022_partial_compaction.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -273,7 +275,7 @@ mod tests {
         let before_schema = schema_identity(&store);
         store.migrate().unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         assert_eq!(schema_identity(&store), before_schema);
         for (index, failure) in failures.iter().enumerate() {
             let legacy = latest_status(store.conn(), "t", failure).unwrap().unwrap();
@@ -397,7 +399,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         let settings = skills::read_settings(store.conn()).unwrap();
         assert!(!settings.global_enabled);
         assert!(!settings.automatic_enabled);
@@ -421,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_thirty_two_tables() {
+    fn migrate_creates_exactly_the_thirty_three_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -469,6 +471,7 @@ mod tests {
                 "thread_skill_pins",
                 "threads",
                 "token_usage",
+                "tool_call_rounds",
                 "tool_calls",
             ]
         );
@@ -488,7 +491,7 @@ mod tests {
     #[test]
     fn migrated_store_is_wal_at_user_version_20() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -604,7 +607,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         let after: String = store
             .conn()
             .query_row(
@@ -633,7 +636,7 @@ mod tests {
         store.conn().pragma_update(None, "user_version", 7).unwrap();
         store.conn().execute_batch("INSERT INTO threads (id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) VALUES ('named','手动','ask','confirm','m','active',0,0,1,1),('populated','','ask','confirm','m','active',0,0,1,1),('empty','','ask','confirm','m','active',0,0,1,1); INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','populated',1,'user','text','hi','done',1);").unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         let rows: Vec<(String, String, String)> = store
             .conn()
             .prepare("SELECT id,title,auto_title_state FROM threads ORDER BY id")
@@ -658,7 +661,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -694,7 +697,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -712,7 +715,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 32);
+        assert_eq!(tables, 33);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
@@ -766,7 +769,7 @@ mod tests {
                VALUES ('old','t','m',1,'read','{}','success',1);"
         ).unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         let old: Option<i64> = store
             .conn()
             .query_row(
@@ -803,7 +806,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 32);
+        assert_eq!(tables, 33);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
@@ -849,7 +852,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 20);
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
         for table in [
             "messages",
             "tool_calls",

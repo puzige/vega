@@ -467,6 +467,7 @@ pub(crate) fn from_runtime_event(
             max_retries: *max_retries,
         }),
         RuntimeEvent::SteeringAccepted(_)
+        | RuntimeEvent::ToolRoundCompleted { .. }
         | RuntimeEvent::DiagnosticAttempt(_)
         | RuntimeEvent::BuiltinSkillActivated(_) => None,
         RuntimeEvent::ScreenshotDelivered { call_id, image, .. } => {

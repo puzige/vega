@@ -519,6 +519,19 @@ pub(crate) fn persist_runtime_event(
                 .map_err(|_| safe_audit_error("ComputerScreenshot"))?
                 .map_err(|_| safe_audit_error("ComputerScreenshot"))?;
         }
+        RuntimeEvent::ToolRoundCompleted {
+            response_id,
+            call_ids,
+        } => {
+            let transaction = store.conn().unchecked_transaction()?;
+            for call_id in call_ids {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO tool_call_rounds (message_id, call_id, response_id) VALUES (?1, ?2, ?3)",
+                    (message_id, &call_id, &response_id),
+                )?;
+            }
+            transaction.commit()?;
+        }
         RuntimeEvent::AssistantResponseCompleted {
             response_id,
             text_start_bytes,

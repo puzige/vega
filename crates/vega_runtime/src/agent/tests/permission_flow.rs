@@ -403,9 +403,9 @@ async fn invalid_write_is_atomic_validation_rejection_before_any_proposal() {
         .events
         .iter()
         .filter_map(|event| match event {
-            RuntimeEvent::DiagnosticAttempt(_) | RuntimeEvent::AssistantResponseStarted { .. } => {
-                None
-            }
+            RuntimeEvent::DiagnosticAttempt(_)
+            | RuntimeEvent::AssistantResponseStarted { .. }
+            | RuntimeEvent::ToolRoundCompleted { .. } => None,
             event => Some(event.clone()),
         })
         .collect::<Vec<_>>();

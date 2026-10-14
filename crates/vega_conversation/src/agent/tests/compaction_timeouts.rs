@@ -410,7 +410,7 @@ async fn issue356_input_overflow_retry_shares_operation_deadline_without_partial
             .any(|message| message.content == "old request")
     );
     assert!(
-        !requests[1]
+        requests[1]
             .messages
             .iter()
             .any(|message| message.content == "old request")
@@ -420,14 +420,6 @@ async fn issue356_input_overflow_retry_shares_operation_deadline_without_partial
             .messages
             .iter()
             .any(|message| message.content == "later request")
-    );
-    assert_eq!(
-        requests[1]
-            .messages
-            .iter()
-            .filter(|message| message.content == SUMMARY_TRUNCATION_MARKER)
-            .count(),
-        1
     );
     assert_eq!(
         events
@@ -597,4 +589,90 @@ fn issue356_automatic_status_events_persist_and_restore_timeout_without_reclassi
         assert_eq!(projection.last_status.unwrap().failure, Some(expected));
         assert!(projection.unknown_usage);
     }
+}
+
+#[tokio::test]
+async fn issue362_staged_summary_preserves_early_goal_and_every_progress_group() {
+    let (store, _directory) = fixture();
+    for (id, marker) in [
+        ("message-2", "EARLY_PROGRESS"),
+        ("message-4", "RECENT_PROGRESS"),
+    ] {
+        store
+            .conn()
+            .execute(
+                "UPDATE messages SET content = ?1 WHERE id = ?2",
+                (format!("{marker} {}", "abcdefgh ".repeat(2000)), id),
+            )
+            .unwrap();
+    }
+    let provider = TimedSummaryProvider::new(
+        vec![
+            vec![
+                ScriptStep::text("old request; EARLY_PROGRESS; pending later request"),
+                usage(3),
+                done(),
+            ],
+            vec![
+                ScriptStep::text(
+                    "old request; EARLY_PROGRESS; RECENT_PROGRESS; continue pending work",
+                ),
+                usage(4),
+                done(),
+            ],
+            vec![
+                ScriptStep::text(
+                    "old request; EARLY_PROGRESS; RECENT_PROGRESS; continue pending work",
+                ),
+                usage(5),
+                done(),
+            ],
+        ],
+        0,
+    );
+    let result = compact_thread_manually(
+        &store,
+        &provider,
+        "timeout-thread",
+        "mock-model",
+        "system",
+        Vec::new(),
+        ContextBudget::new(10_000, 1_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let requests = provider.inner.requests();
+    assert!(requests.len() > 1);
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content == "old request")
+    );
+    for marker in ["EARLY_PROGRESS", "RECENT_PROGRESS"] {
+        assert_eq!(
+            requests
+                .iter()
+                .flat_map(|request| &request.messages)
+                .filter(|message| message.content.starts_with(marker))
+                .count(),
+            1
+        );
+    }
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("old request; EARLY_PROGRESS"))
+    );
+    assert!(
+        result
+            .messages
+            .iter()
+            .any(|message| message.content.contains("RECENT_PROGRESS"))
+    );
+    assert_eq!(result.usages.len(), requests.len());
 }

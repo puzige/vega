@@ -11,6 +11,7 @@ use super::*;
 use crate::types::{ConversationEvent, PermissionOptionChoice, ToolCallStatus};
 
 mod automatic_titles;
+mod continuous_compaction;
 mod credential_redaction;
 mod cua_usability;
 mod failure_paths;
