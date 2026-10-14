@@ -15,9 +15,9 @@ fn append_round(store: &Store, round: i64) {
         let id = format!("call-{seq}");
         store.conn().execute(
             "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) VALUES (?1, 'thread-1', 'active', ?2, 'read', '{\"path\":\"test.txt\"}', ?3, 'success', ?4, 2, 2, 0)",
-            rusqlite::params![id, seq, format!("progress round {round} item {parallel}"), approval],
+            (&id, seq, format!("progress round {round} item {parallel}"), &approval),
         ).unwrap();
-        store.conn().execute("INSERT INTO tool_call_rounds (message_id, call_id, response_id) VALUES ('active', ?1, ?2)", rusqlite::params![id, format!("round-{round}")]).unwrap();
+        store.conn().execute("INSERT INTO tool_call_rounds (message_id, call_id, response_id) VALUES ('active', ?1, ?2)", (&id, format!("round-{round}"))).unwrap();
     }
 }
 

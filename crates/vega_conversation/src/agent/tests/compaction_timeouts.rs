@@ -602,7 +602,7 @@ async fn issue362_staged_summary_preserves_early_goal_and_every_progress_group()
             .conn()
             .execute(
                 "UPDATE messages SET content = ?1 WHERE id = ?2",
-                rusqlite::params![format!("{marker} {}", "abcdefgh ".repeat(2000)), id],
+                (format!("{marker} {}", "abcdefgh ".repeat(2000)), id),
             )
             .unwrap();
     }

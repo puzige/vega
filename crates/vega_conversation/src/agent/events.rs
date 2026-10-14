@@ -527,7 +527,7 @@ pub(crate) fn persist_runtime_event(
             for call_id in call_ids {
                 transaction.execute(
                     "INSERT OR IGNORE INTO tool_call_rounds (message_id, call_id, response_id) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![message_id, call_id, response_id],
+                    (message_id, &call_id, &response_id),
                 )?;
             }
             transaction.commit()?;
