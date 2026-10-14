@@ -5,11 +5,16 @@ import re
 import subprocess
 import sys
 import tomllib
+import tempfile
+import zipfile
 
-REPO = os.environ['GITHUB_REPOSITORY']
+import delta_update
+
+REPO = os.environ.get('GITHUB_REPOSITORY', 'puzige/vega')
 MAXIMUM = 18446744073709551615
 LEGACY_ASSETS = ('Vega-macos-arm64.zip', 'Vega-macos-arm64.zip.sha256')
-ASSETS = (*LEGACY_ASSETS, 'Vega-update.json', 'Vega-update.json.sig')
+SIGNED_ASSETS = (*LEGACY_ASSETS, 'Vega-update.json', 'Vega-update.json.sig')
+ASSETS = (*SIGNED_ASSETS, 'Vega-delta.json', 'Vega-delta.json.sig')
 
 
 def run(*args):
@@ -77,15 +82,87 @@ def matching_release(tag, items):
     return matches[0] if matches else None
 
 
-def complete(release, allow_legacy=False):
+def delta_assets(manifest):
+    names = []
+    if len(manifest['patches']) > 5:
+        raise ValueError('Too many delta patches')
+    for patch in manifest['patches']:
+        if version('v' + patch['from_version']) is None or version('v' + manifest['version']) is None:
+            raise ValueError('Invalid delta version')
+        expected = f"Vega-delta-{patch['from_version']}-to-{manifest['version']}.zip"
+        if patch['archive'] != expected or expected in names:
+            raise ValueError('Invalid delta asset name')
+        names.append(expected)
+    return names
+
+
+def complete(release, allow_legacy=False, manifest=None):
     assets = {asset['name']: asset for asset in release['assets']}
-    historical = allow_legacy and not run(
-        'git', 'ls-tree', '--name-only', f"refs/tags/{release['tag_name']}",
-        '--', 'assets/update-public-key.hex')
-    required = LEGACY_ASSETS if historical else ASSETS
-    return not release['prerelease'] and all(
-        name in assets and assets[name]['state'] == 'uploaded' and assets[name]['size'] > 0
-        for name in required)
+    required = ASSETS
+    if allow_legacy:
+        tree = run('git', 'ls-tree', '-r', '--name-only', f"refs/tags/{release['tag_name']}",
+                   '--', 'assets/update-public-key.hex', 'scripts/delta_update.py').splitlines()
+        if 'scripts/delta_update.py' not in tree:
+            required = SIGNED_ASSETS if 'assets/update-public-key.hex' in tree else LEGACY_ASSETS
+    if release['prerelease'] or any(
+            name not in assets or assets[name]['state'] != 'uploaded' or assets[name]['size'] <= 0
+            for name in required):
+        return False
+    if required != ASSETS:
+        return True
+    try:
+        if manifest is None:
+            with tempfile.TemporaryDirectory() as directory:
+                subprocess.run(['gh', 'release', 'download', release['tag_name'], '--repo', REPO,
+                                '--pattern', 'Vega-delta.json', '--dir', directory], check=True)
+                with (Path(directory) / 'Vega-delta.json').open('rb') as source:
+                    raw = source.read(delta_update.MAX_MANIFEST + 1)
+                if len(raw) > delta_update.MAX_MANIFEST:
+                    return False
+                manifest = json.loads(raw)
+        if manifest['version'] != release['tag_name'].removeprefix('v'):
+            return False
+        names = delta_assets(manifest)
+        return all(name in assets and assets[name]['state'] == 'uploaded'
+                   and type(patch['size']) is int and 0 < patch['size'] <= delta_update.MAX_ARCHIVE
+                   and assets[name]['size'] == patch['size']
+                   for name, patch in zip(names, manifest['patches']))
+    except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError):
+        return False
+
+
+def generate_delta():
+    tag = os.environ['RELEASE_TAG']
+    if version(tag) is None:
+        raise ValueError('Invalid target version')
+    subprocess.run(['cargo', 'xtask', 'verify-update', 'dist', tag[1:]], check=True)
+    candidates = sorted((item for item in releases()
+                         if not item['draft'] and not item['prerelease']
+                         and version(item['tag_name']) is not None
+                         and version(item['tag_name']) < version(tag)),
+                        key=lambda item: version(item['tag_name']), reverse=True)[:5]
+    with tempfile.TemporaryDirectory() as directory:
+        bases = []
+        for item in candidates:
+            base_tag = item['tag_name']
+            destination = Path(directory) / base_tag
+            destination.mkdir()
+            try:
+                limits = {delta_update.ARCHIVE: delta_update.MAX_ARCHIVE,
+                          'Vega-update.json': 64 * 1024, 'Vega-update.json.sig': 256}
+                assets = {asset['name']: asset for asset in item['assets']}
+                if any(name not in assets or assets[name]['state'] != 'uploaded'
+                       or not 0 < assets[name]['size'] <= limit for name, limit in limits.items()):
+                    raise ValueError('Baseline assets missing or exceed limits')
+                subprocess.run(['gh', 'release', 'download', base_tag, '--repo', REPO,
+                                '--pattern', delta_update.ARCHIVE, '--pattern', 'Vega-update.json',
+                                '--pattern', 'Vega-update.json.sig', '--dir', str(destination)], check=True)
+                subprocess.run(['cargo', 'xtask', 'verify-update', str(destination), base_tag[1:]], check=True)
+                delta_update.inventory(destination / delta_update.ARCHIVE)
+                bases.append((base_tag[1:], destination / delta_update.ARCHIVE))
+            except (OSError, ValueError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
+                print(f'Skipping delta base {base_tag}: {type(error).__name__}')
+        delta_update.generate(Path('dist'), tag[1:], bases)
 
 
 def prepare():
@@ -148,7 +225,9 @@ def publish():
         notes = api('releases/generate-notes', 'POST', {'tag_name': tag, 'target_commitish': sha})
         release = api('releases', 'POST', {'tag_name': tag, 'target_commitish': sha,
                       'name': tag, 'body': notes['body'], 'draft': True, 'prerelease': False})
-    for name in ASSETS:
+    manifest = json.loads(Path('dist/Vega-delta.json').read_bytes())
+    upload_assets = (*ASSETS, *delta_assets(manifest))
+    for name in upload_assets:
         path = Path('dist') / name
         if not path.is_file() or path.stat().st_size == 0:
             raise RuntimeError('Missing completed release asset')
@@ -156,9 +235,9 @@ def publish():
     if not before_upload['draft'] or before_upload['tag_name'] != tag:
         raise RuntimeError('Release changed externally; refusing to replace assets')
     subprocess.run(['gh', 'release', 'upload', tag, '--repo', REPO, '--clobber',
-                    *(str(Path('dist') / name) for name in ASSETS)], check=True)
+                    *(str(Path('dist') / name) for name in upload_assets)], check=True)
     refreshed = api(f"releases/{release['id']}")
-    if not refreshed['draft'] or refreshed['tag_name'] != tag or not complete(refreshed):
+    if not refreshed['draft'] or refreshed['tag_name'] != tag or not complete(refreshed, manifest=manifest):
         raise RuntimeError('Draft asset upload incomplete or release changed externally')
     validate_publication(tag, sha, releases())
     api(f"releases/{release['id']}", 'PATCH', {'draft': False, 'prerelease': False, 'make_latest': 'true'})
@@ -166,9 +245,9 @@ def publish():
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2 or sys.argv[1] not in ('prepare', 'publish'):
-        sys.exit('Expected prepare or publish')
+    if len(sys.argv) != 2 or sys.argv[1] not in ('prepare', 'publish', 'delta'):
+        sys.exit('Expected prepare, publish or delta')
     try:
-        {'prepare': prepare, 'publish': publish}[sys.argv[1]]()
-    except (RuntimeError, subprocess.CalledProcessError, OSError, KeyError) as error:
+        {'prepare': prepare, 'publish': publish, 'delta': generate_delta}[sys.argv[1]]()
+    except (RuntimeError, subprocess.CalledProcessError, OSError, KeyError, ValueError) as error:
         sys.exit(str(error))

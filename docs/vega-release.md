@@ -100,3 +100,26 @@ master 调用方没有同组锁，避免 reusable workflow 等待自身。GitHub
 无桌面会话，但 AppKit 位图渲染不依赖 QuickLook satellite；首次 tag 发布时
 仍应留意该步骤日志（见
 [vega-packaging.md](vega-packaging.md) §2 的图标链路说明）。
+
+## 文件级增量资产
+
+发布在完整包完成签名、公证及 staple 后，先生成原有 `Vega-update.json`，再执行
+`python3 scripts/release.py delta` 与 `cargo xtask sign-delta`。新增
+`Vega-delta.json`、`Vega-delta.json.sig` 和清单引用的
+`Vega-delta-FROM-to-TO.zip`；旧版完整包及签名协议保持不变。
+
+生成器选择最近五个较旧稳定正式版本，下载官方完整包及旧签名清单，通过
+`cargo xtask verify-update <directory> <version>` 验证固定公钥签名、版本及包摘要。
+获取失败、不完整或不支持的基线被跳过并记录。每个补丁只携带变化/新增的应用文件，
+发布前从基线和补丁逐文件重建验证目标内容及补丁权限；目标权限变更由客户端按签名清单设置。
+不发布大小达到全量包的补丁。路径、特殊文件或权限超出增量协议支持范围时，发布已签名空补丁表，
+仍允许全量更新，不修改签名后的应用内容。
+
+新 draft 必须上传增量清单、签名及所有引用的补丁后才允许转为正式发布。
+重跑已发布的历史版本时，根据该 tag 是否包含增量生成器判定资产要求，
+不会因历史版本缺少增量资产而拒绝幂等完成。已有正式资产不覆盖。
+
+脚本进程内回归由 PR Nextest job 在 Rust 测试前执行：
+`python3 scripts/release_tests.py` 与
+`python3 -m unittest discover -s scripts/tests -v`。Rust 签名测试由云端 nextest 执行。
+实际下载节省量、跨版本升级和全量回退由发布后的用户手测确认。
