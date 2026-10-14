@@ -44,7 +44,9 @@ async fn i71_response_replay_tool_loop_and_private_history() {
             },
         ])],
     ]);
-    let run = run_thread_task(
+    let mut live_thinking = Vec::new();
+    let mut live_summaries = Vec::new();
+    let run = run_thread_task_with_sink(
         &store,
         &provider,
         &tools,
@@ -52,23 +54,25 @@ async fn i71_response_replay_tool_loop_and_private_history() {
         "Read lib.rs",
         "Owned system",
         CancellationToken::new(),
+        |event| {
+            match event {
+                ConversationEvent::ThinkingDelta { delta, .. } => live_thinking.push(delta.clone()),
+                ConversationEvent::SummaryDelta { delta, .. } => live_summaries.push(delta.clone()),
+                _ => {}
+            }
+            Ok(())
+        },
     )
     .await
     .unwrap();
     assert!(!run.failed);
     assert_eq!(run.content, "Found the TODO.");
-    assert_eq!(
-        run.events
-            .iter()
-            .filter(|event| matches!(event, ConversationEvent::SummaryDelta { .. }))
-            .count(),
-        1
-    );
-    assert!(
-        run.events
-            .iter()
-            .any(|event| matches!(event, ConversationEvent::ThinkingDelta { .. }))
-    );
+    assert_eq!(live_thinking, ["raw owned thinking"]);
+    assert_eq!(live_summaries, ["owned summary"]);
+    assert!(!run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ThinkingDelta { .. } | ConversationEvent::SummaryDelta { .. }
+    )));
     assert!(run.events.iter().any(|event| matches!(
         event,
         ConversationEvent::ToolCallFinished { result, .. }

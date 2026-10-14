@@ -238,23 +238,38 @@ async fn issue372_retry_discards_partial_thinking_replay_and_tools_before_rechar
             stop_reason: StopReason::End,
         }])],
     ]);
-    let outcome = run_agent(
+    let mut accepted_thinking = 0;
+    let mut retry_count = 0;
+    let outcome = run_agent_with_sink(
         &provider,
         &tools,
         request(Vec::new()),
         CancellationToken::new(),
+        |event| {
+            match event {
+                RuntimeEvent::ThinkingDelta(_) => accepted_thinking += 1,
+                RuntimeEvent::ResponseRetrying { .. } => {
+                    accepted_thinking = 0;
+                    retry_count += 1;
+                }
+                _ => {}
+            }
+            Ok(())
+        },
     )
     .await
     .unwrap();
     assert!(!outcome.failed);
     assert_eq!(outcome.executed_tool_call_count, 1);
+    assert_eq!(retry_count, 5);
+    assert_eq!(accepted_thinking, 4);
     assert_eq!(
         outcome
             .events
             .iter()
             .filter(|event| matches!(event, RuntimeEvent::ThinkingDelta(_)))
             .count(),
-        4
+        0
     );
     assert!(
         provider.requests()[1]
