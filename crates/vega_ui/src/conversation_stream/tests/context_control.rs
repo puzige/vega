@@ -746,7 +746,7 @@ async fn issue117_restore_is_historical_idempotent_and_rejects_late_results(
 }
 
 #[gpui_kit::test]
-async fn issue117_compaction_row_icon_and_label_are_vertically_centered(cx: &mut TestAppContext) {
+async fn issue365_compaction_row_icon_and_label_align_to_first_line(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
         .update(cx, |stream, _, cx| {
@@ -771,15 +771,13 @@ async fn issue117_compaction_row_icon_and_label_are_vertically_centered(cx: &mut
         .expect("label bounds");
     let slot_center = f32::from(slot.origin.y) + f32::from(slot.size.height) / 2.0;
     let label_center = f32::from(label.origin.y) + f32::from(label.size.height) / 2.0;
-    let row_center = f32::from(row.origin.y) + f32::from(row.size.height) / 2.0;
+
     assert!(
         (slot_center - label_center).abs() < 0.5,
         "icon center {slot_center} and label center {label_center} must share one optical center"
     );
-    assert!(
-        (slot_center - row_center).abs() < 3.0,
-        "icon center {slot_center} must sit near the row center {row_center}"
-    );
+    assert_eq!(slot.origin.y, row.origin.y);
+    assert_eq!(label.origin.y, row.origin.y);
 }
 
 #[gpui_kit::test]
@@ -850,15 +848,22 @@ async fn issue365_compaction_states_keep_compact_natural_height(cx: &mut TestApp
         assert_eq!(icon.size.width, px(Layout::ICON_SIZE));
         assert_eq!(icon.origin.y, row.origin.y);
         if state == Status::Failed {
-            visual.simulate_resize(gpui_kit::size(px(300.), px(700.)));
+            visual.simulate_resize(gpui_kit::size(px(160.), px(700.)));
             visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
             let wrapped = visual
                 .debug_bounds("context-compaction-row")
                 .expect("wrapped status");
             let icon = visual
                 .debug_bounds("context-compaction-icon-slot")
                 .expect("wrapped icon");
-            assert!(wrapped.size.height > row.size.height);
+            assert!(
+                wrapped.size.height > row.size.height,
+                "wide={row:?}, narrow={wrapped:?}"
+            );
             assert_eq!(icon.origin.y, wrapped.origin.y);
         }
     }

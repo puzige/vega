@@ -175,6 +175,7 @@ fn render_entry_internal(
                         })
                         .min_w_0()
                         .flex_1()
+                        .whitespace_normal()
                         .child(label),
                 )
                 .into_any_element()
