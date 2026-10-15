@@ -1657,16 +1657,8 @@ mod tests {
                 "等待批准运行 printf 'ok'",
             ),
             ("read", r#"{"file_path":"src/main.rs"}"#, "等待读取 main.rs"),
-            (
-                "glob",
-                r#"{"pattern":"src/**/*.rs"}"#,
-                "等待查找文件 src/**/*.rs",
-            ),
-            (
-                "grep",
-                r#"{"pattern":"TODO","path":"src"}"#,
-                "等待搜索 TODO · src",
-            ),
+            ("glob", r#"{"pattern":"src/**/*.rs"}"#, "等待查找文件"),
+            ("grep", r#"{"pattern":"TODO","path":"src"}"#, "等待搜索内容"),
         ] {
             let card = ToolCard::proposed(&ToolCall {
                 id: "object-row".into(),

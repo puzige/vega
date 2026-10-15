@@ -540,13 +540,7 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                                     .file_name()
                                     .map(|name| name.to_string_lossy().into_owned())
                             }),
-                            ReadOnlyToolKind::Glob => field("pattern").map(str::to_owned),
-                            ReadOnlyToolKind::Grep => field("pattern").map(|pattern| {
-                                field("path").filter(|path| !path.is_empty()).map_or_else(
-                                    || pattern.to_owned(),
-                                    |path| format!("{pattern} · {path}"),
-                                )
-                            }),
+                            ReadOnlyToolKind::Glob | ReadOnlyToolKind::Grep => None,
                         }
                     })
                     .filter(|target| !target.trim().is_empty());

@@ -544,7 +544,7 @@ async fn issue381_long_bash_elides_title_and_preserves_disclosure(cx: &mut TestA
     assert!(title.right() <= running_chevron.left());
     assert!(running_chevron.right() <= row.right());
     assert!(title.size.height <= row.size.height);
-    assert!(body_text_width(window, format!("正在运行 {command}").into(), cx) > title.size.width);
+    assert!(body_text_width(window, format!("正在运行 {command}"), cx) > title.size.width);
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["long-running"].read(cx);
         assert_eq!(card.visible_text(), format!("正在运行 {command}"));
@@ -1190,11 +1190,9 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
                 .aggregate_summary(cx)
                 .starts_with("存在失败的调用：")
         );
-        assert!(
-            stream.tool_cards["second"]
-                .read(cx)
-                .visible_text()
-                .contains("exit 1")
+        assert_eq!(
+            stream.tool_cards["second"].read(cx).compact_visible_text(),
+            "运行失败 false"
         );
         assert_eq!(
             stream.tool_cards["second"].read(cx).detail_footer_state(),
@@ -1235,6 +1233,17 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
         );
         assert!(group.read(cx).expanded());
         assert_eq!(group.read(cx).row_count(cx), 3);
+    });
+    stream.update(cx, |stream, cx| {
+        stream.tool_cards["second"].update(cx, |card, cx| card.set_expanded(true, cx));
+    });
+    stream.read_with(cx, |stream, cx| {
+        assert!(
+            stream.tool_cards["second"]
+                .read(cx)
+                .visible_text()
+                .contains("运行失败 · exit 1 · 4 毫秒")
+        );
     });
 }
 
