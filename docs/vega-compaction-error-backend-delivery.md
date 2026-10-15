@@ -44,3 +44,11 @@ Pipeline：processor/runtime 两支错误组合中，真实错误优先于 Cance
 CI 待运行：`cargo nextest run -p vega_runtime -p vega_conversation` 与仓库完整 pr-check；上述新回归目前均 NOT RUN，不能标记通过。无真实外部模型/进程自动测试。UI外观、用户真实停止和新消息替换由用户手测。
 
 非取消错误继续走既有错误返回、恢复策略与安全脱敏；可恢复压缩失败策略仍不变，token确实取消时可以随后中断，但先前具体Failed状态不会被改写成Cancelled。没有新公共类型、依赖或数据库结构。未修改 types/events.rs 或 UI executor 文件。
+
+## PR #398 首轮 CI 修正
+
+2026-10-15 15:51 UTC，首轮 Nextest 与 Clippy 编译失败，原始日志保留 `/tmp/vega-398-failed.log`。并非测试通过：E0433 为 compaction_timeouts.rs 新用例缺少 ConversationEvent 导入；E0599 为 failure_paths.rs 使用不存在的 ToolCallStarted 变体。
+
+已在 fetch 并 fast-forward 核对分支后修复：手动压缩测试显式导入 crate::types::ConversationEvent；pipeline 取消测试改为真实 ToolCallProposed 事件，并使用 fixture 已创建的 lib.rs 的绝对 file_path、null offset/limit。该事件在 runtime 提议点发出，经 runtime_event_requires_ack 返回 true，processor 完成前置文本 flush 后，sink 返回 Cancelled 并通过 ack 保留同一错误类型；无需实际读取文件或到达权限批准才能触发测试。
+
+静态逐项核对新测试引用的 ConversationEvent、RuntimeEvent、ContextCompactionPhase、ContextCompactionStatusFailure 变体定义，未发现其他不存在的名称。定向 rustfmt --check 与 git diff --check 均 exit 0。未运行本地编译或测试；修正后的编译与测试仍待新一轮 CI，不覆盖或隐藏本轮失败。

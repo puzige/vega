@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::ConversationEvent;
 use futures::future::BoxFuture;
 use std::sync::Mutex;
 use vega_runtime::{

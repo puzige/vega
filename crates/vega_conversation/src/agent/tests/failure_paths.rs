@@ -329,7 +329,7 @@ async fn issue397_pipeline_cancellation_returns_interrupted_run_with_content_and
         ProviderEvent::ToolUse {
             id: "cancel-at-ack".into(),
             name: "read".into(),
-            input_json: r#"{"path":"missing"}"#.into(),
+            input_json: serde_json::json!({"file_path": dir.path().join("lib.rs"), "offset": null, "limit": null}).to_string(),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::ToolUse,
@@ -345,7 +345,7 @@ async fn issue397_pipeline_cancellation_returns_interrupted_run_with_content_and
         "system",
         CancellationToken::new(),
         |event| {
-            if matches!(event, ConversationEvent::ToolCallStarted { .. }) {
+            if matches!(event, ConversationEvent::ToolCallProposed { .. }) {
                 return Err(VegaError::Cancelled);
             }
             observed.push(event.clone());
