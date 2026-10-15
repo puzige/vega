@@ -614,21 +614,12 @@ impl ToolCard {
         cx: &mut App,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let (
-            title,
-            trailing_duration,
-            leading_icon,
-            leading_icon_color,
-            expanded,
-            expandable,
-            detail,
-        ) = {
+        let (title, leading_icon, leading_icon_color, expanded, expandable, detail) = {
             let card_ref = card.read(cx);
             let expanded = card_ref.expanded;
-            let (title, trailing_duration) = card_ref.compact_row_content();
+            let title = card_ref.summary.clone();
             (
                 title,
-                trailing_duration,
                 card_ref.leading_icon(),
                 card_ref.leading_icon_color(&colors),
                 expanded,
@@ -643,7 +634,6 @@ impl ToolCard {
         let debug_selector = selector.clone();
         let icon_selector = format!("{selector}-icon");
         let title_selector = format!("{selector}-title");
-        let duration_selector = format!("{selector}-duration");
         let chevron_selector = format!("{selector}-chevron");
         let disclosure_group: gpui_kit::SharedString =
             format!("tool-disclosure-{}", card.entity_id()).into();
@@ -713,17 +703,6 @@ impl ToolCard {
                     .text_color(colors.conversation_tool)
                     .child(title),
             )
-            .when_some(trailing_duration, |row, duration| {
-                row.child(
-                    div()
-                        .debug_selector(move || duration_selector.clone())
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .text_size(px(Typography::CONVERSATION))
-                        .text_color(colors.conversation_tool)
-                        .child(format!("· {duration}")),
-                )
-            })
             .child(crate::disclosure::inline_chevron(
                 disclosure_group,
                 chevron_selector,
@@ -772,9 +751,10 @@ impl ToolCard {
             (_, Some(ToolCardResultProjection::InvalidRejected { tool, code, .. })) => {
                 format!("已拒绝{}：{}", invalid_action(*tool), code.as_str())
             }
-            (Some(ToolCardInputProjection::Bash { .. }), _) => self.build_bash_summary(true),
-            (Some(ToolCardInputProjection::ReadOnly { tool, .. }), _) => {
-                readonly_summary(*tool, self.activity_state(), self.status)
+            (Some(ToolCardInputProjection::Bash { .. }), _) => self.build_bash_summary(),
+            (Some(ToolCardInputProjection::ReadOnly { tool, display_target, .. }), _) => {
+                let summary = readonly_summary(*tool, self.activity_state(), self.status, display_target.is_some());
+                display_target.as_ref().map_or(summary.clone(), |target| format!("{summary} {}", compact_object(target)))
             }
             (
                 Some(ToolCardInputProjection::Write {
@@ -893,55 +873,22 @@ impl ToolCard {
         matches!(self.input, Some(ToolCardInputProjection::Bash { .. }))
     }
 
-    fn compact_row_content(&self) -> (String, Option<String>) {
-        let Some(duration) = self.compact_bash_duration() else {
-            return (self.summary.clone(), None);
-        };
-        if !self.is_bash() {
-            return (self.summary.clone(), None);
-        }
-        (self.build_bash_summary(false), Some(duration))
-    }
-
-    fn compact_bash_duration(&self) -> Option<String> {
-        if self.status == ToolCallStatus::Running {
-            return self.running_elapsed_seconds.map(human_elapsed);
-        }
-        let Some(ToolCardResultProjection::Bash {
-            duration_ms: Some(duration_ms),
-            ..
-        }) = &self.result
-        else {
-            return None;
-        };
-        Some(human_duration(*duration_ms))
-    }
-
-    fn build_bash_summary(&self, include_duration: bool) -> String {
-        let mut summary = match self.activity_state() {
+    fn build_bash_summary(&self) -> String {
+        let action = match self.activity_state() {
             ToolActivityState::Superseded => "接管后未执行",
-            ToolActivityState::Success => "已运行命令",
-            ToolActivityState::Active => {
-                if self.status == ToolCallStatus::PendingApproval {
-                    "等待批准运行命令"
-                } else {
-                    "正在运行命令"
-                }
+            ToolActivityState::Success => "已运行",
+            ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => {
+                "等待批准运行"
             }
-            ToolActivityState::Rejected => "已拒绝运行命令",
-            ToolActivityState::Cancelled => "已取消运行命令",
-            ToolActivityState::Failed => "运行命令失败",
-        }
-        .to_string();
-        if include_duration
-            && self.status == ToolCallStatus::Running
-            && let Some(elapsed_seconds) = self.running_elapsed_seconds
-        {
-            summary.push_str(" · ");
-            summary.push_str(&human_elapsed(elapsed_seconds));
-        }
-        self.push_bash_metadata(&mut summary, true, include_duration);
-        summary
+            ToolActivityState::Active => "正在运行",
+            ToolActivityState::Rejected => "已拒绝运行",
+            ToolActivityState::Cancelled => "已取消运行",
+            ToolActivityState::Failed => "运行失败",
+        };
+        let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
+            return action.into();
+        };
+        format!("{action} {}", compact_object(command))
     }
 
     fn stop_live_elapsed(&mut self) {
@@ -993,6 +940,11 @@ impl ToolCard {
             ToolActivityState::Cancelled => "已取消".to_string(),
             ToolActivityState::Failed => "运行失败".to_string(),
         };
+        if self.status == ToolCallStatus::Running
+            && let Some(seconds) = self.running_elapsed_seconds
+        {
+            footer.push_str(&format!(" · {}", human_elapsed(seconds)));
+        }
         self.push_bash_metadata(&mut footer, false, true);
         footer
     }
@@ -1094,12 +1046,28 @@ fn mutation_verb(action: &'static str, state: ToolActivityState, status: ToolCal
     generic_verb(action, state, status)
 }
 
+fn compact_object(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 fn readonly_summary(
     tool: ReadOnlyToolKind,
     state: ToolActivityState,
     status: ToolCallStatus,
+    has_target: bool,
 ) -> String {
     let action = match tool {
+        ReadOnlyToolKind::Read if has_target => "读取",
+        ReadOnlyToolKind::Grep if has_target => "搜索",
         ReadOnlyToolKind::Read => "读取文件",
         ReadOnlyToolKind::Glob => "查找文件",
         ReadOnlyToolKind::Grep => "搜索内容",
@@ -1681,6 +1649,28 @@ mod tests {
     }
 
     #[test]
+    fn codex_tool_rows_identify_safe_objects_and_keep_metadata_in_details() {
+        for (tool, input, expected) in [
+            (
+                "bash",
+                r#"{"cmd":"printf 'ok'"}"#,
+                "等待批准运行 printf 'ok'",
+            ),
+            ("read", r#"{"file_path":"src/main.rs"}"#, "等待读取 main.rs"),
+            ("glob", r#"{"pattern":"src/**/*.rs"}"#, "等待查找文件"),
+            ("grep", r#"{"pattern":"TODO","path":"src"}"#, "等待搜索内容"),
+        ] {
+            let card = ToolCard::proposed(&ToolCall {
+                id: "object-row".into(),
+                tool: tool.into(),
+                input_json: input.into(),
+            });
+            assert_eq!(card.visible_text(), expected);
+            assert_eq!(card.row_count(), 1);
+        }
+    }
+
+    #[test]
     fn bash_output_starts_collapsed_and_metadata_is_structured() {
         let call = ToolCall {
             id: "bash-call".into(),
@@ -1695,8 +1685,8 @@ mod tests {
         terminal.truncated = Some(false);
         assert!(card.apply_finished(&terminal));
         assert_eq!(card.row_count(), 1);
-        assert_eq!(card.visible_text(), "已运行命令 · 12 毫秒");
-        assert!(!card.visible_text().contains("printf 'ok'"));
+        assert_eq!(card.visible_text(), "已运行 printf 'ok'");
+        assert!(card.visible_text().contains("printf 'ok'"));
         assert!(!card.visible_text().contains("\nok"));
         card.expanded = true;
         assert_eq!(card.row_count(), 5);
@@ -1721,129 +1711,106 @@ mod tests {
         terminal.truncated = Some(false);
         assert!(card.apply_finished(&terminal));
         assert_eq!(card.status, ToolCallStatus::Success);
-        assert!(
-            card.visible_text()
-                .contains("运行命令失败 · exit 1 · 4 毫秒")
-        );
+        assert!(card.visible_text().contains("运行失败 false"));
     }
 
     #[test]
-    fn bash_compact_summary_shows_generic_action_and_real_state_without_command() {
-        let command = "/example/worktree/bin/tool --secret \"private value\"\nprintf done";
-        let input = || {
-            Some(ToolCardInputProjection::Bash {
-                command: command.into(),
-            })
-        };
-        let terminal = |status, exit_code| {
-            Some(ToolCardResultProjection::Bash {
-                status,
-                output: String::new(),
-                exit_code,
-                duration_ms: Some(1_200),
-                truncated: Some(false),
-                reused: false,
-            })
-        };
-        let cases = [
-            (
-                ToolCallStatus::PendingApproval,
-                None,
-                None,
-                "等待批准运行命令",
-            ),
-            (
-                ToolCallStatus::Running,
-                Some(Approval::Once),
-                None,
-                "正在运行命令",
-            ),
-            (
-                ToolCallStatus::Success,
-                Some(Approval::Once),
-                terminal(ToolCallStatus::Success, Some(0)),
-                "已运行命令 · 1.2 秒",
-            ),
-            (
-                ToolCallStatus::Success,
-                Some(Approval::Once),
-                terminal(ToolCallStatus::Success, Some(1)),
-                "运行命令失败 · exit 1 · 1.2 秒",
-            ),
+    fn bash_pending_running_and_terminal_failure_preserve_safe_command() {
+        let command = "printf 'a  b'\nprintf\t'done'";
+        for (status, result, expected) in [
+            (ToolCallStatus::PendingApproval, None, "等待批准运行"),
+            (ToolCallStatus::Running, None, "正在运行"),
             (
                 ToolCallStatus::Rejected,
-                None,
                 Some(ToolCardResultProjection::Bash {
                     status: ToolCallStatus::Rejected,
-                    output: String::new(),
+                    output: "denied".into(),
                     exit_code: None,
                     duration_ms: None,
                     truncated: Some(false),
                     reused: false,
                 }),
-                "已拒绝运行命令",
-            ),
-            (
-                ToolCallStatus::Cancelled,
-                Some(Approval::Once),
-                terminal(ToolCallStatus::Cancelled, None),
-                "已取消运行命令 · 1.2 秒",
+                "已拒绝运行",
             ),
             (
                 ToolCallStatus::Failed,
-                Some(Approval::Once),
-                terminal(ToolCallStatus::Failed, None),
-                "运行命令失败 · 1.2 秒",
+                Some(ToolCardResultProjection::Bash {
+                    status: ToolCallStatus::Failed,
+                    output: "spawn failed".into(),
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    reused: false,
+                }),
+                "运行失败",
             ),
-        ];
-
-        for (status, approval, result, expected) in cases {
-            let card = ToolCard::hydrated(input(), status, approval, result);
-            assert_eq!(card.visible_text(), expected, "status: {status:?}");
-            assert!(!card.visible_text().contains("/example/worktree"));
-            assert!(!card.visible_text().contains("--secret"));
-            assert!(!card.visible_text().contains("private value"));
-            assert!(!card.visible_text().contains("printf done"));
+            (
+                ToolCallStatus::Cancelled,
+                Some(ToolCardResultProjection::Bash {
+                    status: ToolCallStatus::Cancelled,
+                    output: "cancelled".into(),
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    reused: false,
+                }),
+                "已取消运行",
+            ),
+        ] {
+            let mut card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::Bash {
+                    command: command.into(),
+                }),
+                status,
+                None,
+                result,
+            );
+            assert_eq!(
+                card.visible_text(),
+                format!("{expected} printf 'a  b' printf 'done'")
+            );
+            assert_eq!(card.row_count(), 1);
+            card.expanded = true;
+            assert!(card.visible_text().contains(&format!("$ {command}")));
         }
-
-        let metadata = ToolCard::hydrated(
-            input(),
-            ToolCallStatus::Success,
-            Some(Approval::Once),
-            Some(ToolCardResultProjection::Bash {
-                status: ToolCallStatus::Success,
-                output: String::new(),
-                exit_code: Some(0),
-                duration_ms: Some(1_200),
-                truncated: Some(true),
-                reused: true,
-            }),
-        );
-        assert_eq!(
-            metadata.visible_text(),
-            "已运行命令 · 1.2 秒 · 已截断 · 已复用"
-        );
     }
 
     #[test]
-    fn bash_compact_summary_hides_multiline_command_and_expanded_detail_preserves_it() {
-        let command =
-            "/example/worktree/bin/tool --label \"private value\"\nprintf 'a  b'\nprintf done";
-        let call = ToolCall {
-            id: "bash-multiline".into(),
-            tool: "bash".into(),
-            input_json: serde_json::json!({ "cmd": command }).to_string(),
-        };
-        let mut card = ToolCard::proposed(&call);
-        assert_eq!(card.visible_text(), "等待批准运行命令");
-        assert!(!card.visible_text().contains("/example/worktree"));
-        assert!(!card.visible_text().contains("--label"));
-        assert!(!card.visible_text().contains("private value"));
-        assert!(!card.visible_text().contains("a  b"));
-        assert!(!card.visible_text().contains("printf"));
-
-        card.expanded = true;
-        assert!(card.visible_text().contains(&format!("$ {command}")));
+    fn bash_compact_summary_identifies_command_and_preserves_terminal_metadata() {
+        let command = "printf 'a  b'\nprintf done";
+        for (status, exit, action) in [
+            (ToolCallStatus::Success, Some(0), "已运行"),
+            (ToolCallStatus::Success, Some(1), "运行失败"),
+            (ToolCallStatus::Success, Some(-1), "运行失败"),
+        ] {
+            let mut card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::Bash {
+                    command: command.into(),
+                }),
+                status,
+                Some(Approval::Once),
+                Some(ToolCardResultProjection::Bash {
+                    status,
+                    output: "result".into(),
+                    exit_code: exit,
+                    duration_ms: Some(1200),
+                    truncated: Some(true),
+                    reused: true,
+                }),
+            );
+            assert_eq!(
+                card.visible_text(),
+                format!("{action} printf 'a  b' printf done")
+            );
+            assert_eq!(card.row_count(), 1);
+            card.expanded = true;
+            assert!(card.visible_text().contains(&format!("$ {command}")));
+            assert!(card.visible_text().contains("1.2 秒 · 已截断 · 已复用"));
+            assert!(card.visible_text().contains("result"));
+            if let Some(exit) = exit {
+                assert!(card.visible_text().contains(&format!("exit {exit}")));
+            }
+        }
     }
 
     #[test]
@@ -2095,8 +2062,8 @@ mod tests {
         let card = ToolCard::proposed(&call);
         assert!(!card.summary.contains('\n'));
         assert_eq!(card.row_count(), 1);
-        assert_eq!(card.visible_text(), "等待批准运行命令");
-        assert!(!card.visible_text().contains(&command));
+        assert_eq!(card.visible_text(), format!("等待批准运行 {command}"));
+        assert!(card.visible_text().contains(&command));
         assert!(!card.visible_text().contains("SECRET_CALL_ID"));
         let mut card = card;
         card.expanded = true;
@@ -2112,7 +2079,7 @@ mod tests {
             input_json: serde_json::json!({ "cmd": command }).to_string(),
         };
         let mut card = ToolCard::proposed(&call);
-        assert_eq!(card.summary, "等待批准运行命令");
+        assert_eq!(card.summary, "等待批准运行 printf 'a  b' printf 'done'");
         assert!(!card.summary.contains('\n'));
         assert!(!card.summary.contains('\r'));
         assert!(!card.summary.contains('\t'));

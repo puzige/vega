@@ -225,3 +225,135 @@ async fn full_access_preserves_scope_binding_and_precancel() {
     );
     assert!(!project.path().join("marker").exists());
 }
+
+#[test]
+fn completed_shell_output_distinguishes_signal_from_exit_code() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+    use std::time::Instant;
+
+    for (raw, code, diagnostic) in [
+        (0, 0, None),
+        (7 << 8, 7, None),
+        (libc::SIGTRAP, -1, Some("Process terminated by signal 5\n")),
+        (libc::SIGTERM, -1, Some("Process terminated by signal 15\n")),
+    ] {
+        for text in ["", "output", "output\n"] {
+            let mut collector = crate::output::BashOutputCollector::new();
+            collector.push(text.as_bytes());
+            let collected = collector.finish();
+            let original = collected.text.clone();
+            let output = super::build_output(ExitStatus::from_raw(raw), Instant::now(), collected);
+            assert_eq!(output.exit_code, code);
+            assert!(output.text.starts_with(&original));
+            assert!(!output.truncated);
+            if let Some(diagnostic) = diagnostic {
+                assert!(output.text.ends_with(diagnostic));
+                if !original.is_empty() {
+                    assert!(output.text.contains("output\nProcess terminated"));
+                }
+            } else {
+                assert_eq!(output.text, original);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn shell_reader_retains_startup_stderr_and_drains_both_streams() {
+    for (stdout, stderr) in [
+        ("command output\n", "startup diagnostic\n"),
+        ("", "startup diagnostic\n"),
+        ("command output\n", ""),
+    ] {
+        let output = super::read_output(
+            stdout.as_bytes(),
+            stderr.as_bytes(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(output.text.contains(stdout.trim_end()));
+        assert!(output.text.contains(stderr.trim_end()));
+        assert_eq!(output.text.len(), stdout.len() + stderr.len() - 1);
+        assert!(!output.truncated);
+    }
+}
+
+#[tokio::test]
+async fn shell_reader_cancels_while_both_streams_remain_open() {
+    let (stdout, _stdout_writer) = tokio::io::duplex(64);
+    let (stderr, _stderr_writer) = tokio::io::duplex(64);
+    let stop = CancellationToken::new();
+    stop.cancel();
+    let output = super::read_output(stdout, stderr, stop).await.unwrap();
+    assert!(output.text.is_empty());
+    assert!(!output.truncated);
+}
+
+#[tokio::test]
+async fn shell_reader_applies_one_output_limit_to_both_streams() {
+    let stdout = "stdout\n".repeat(crate::output::BASH_MAX_LINES_PER_SIDE * 2);
+    let stderr = "stderr\n".repeat(crate::output::BASH_MAX_LINES_PER_SIDE * 2);
+    let output = super::read_output(
+        stdout.as_bytes(),
+        stderr.as_bytes(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(output.truncated);
+    assert!(
+        output
+            .text
+            .contains(crate::output::BASH_OUTPUT_MIDDLE_MARKER)
+    );
+    assert!(output.text.lines().count() <= crate::output::BASH_MAX_LINES_PER_SIDE * 2 + 1);
+}
+
+#[tokio::test]
+async fn shell_reader_preserves_each_stream_order() {
+    let stdout = "stdout-first\nstdout-second\n";
+    let stderr = "stderr-first\nstderr-second\n";
+    let output = super::read_output(
+        stdout.as_bytes(),
+        stderr.as_bytes(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    for stream in ["stdout", "stderr"] {
+        assert!(
+            output.text.find(&format!("{stream}-first")).unwrap()
+                < output.text.find(&format!("{stream}-second")).unwrap()
+        );
+    }
+}
+
+#[test]
+fn signal_diagnostic_has_fixed_overhead_on_truncated_output() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+    use std::time::Instant;
+
+    let mut collector = crate::output::BashOutputCollector::new();
+    let line = "x".repeat(crate::output::BASH_MAX_LINE_BYTES / 2) + "\n";
+    for _ in 0..300 {
+        collector.push(line.as_bytes());
+    }
+    let collected = collector.finish();
+    let payload_len = collected.text.len();
+    assert!(collected.truncated);
+    assert!(payload_len <= 2 * crate::output::BASH_MAX_BYTES_PER_SIDE);
+    let output = super::build_output(
+        ExitStatus::from_raw(libc::SIGTRAP),
+        Instant::now(),
+        collected,
+    );
+    assert!(output.truncated);
+    assert_eq!(
+        output.text.len() - payload_len,
+        "\nProcess terminated by signal 5\n".len()
+    );
+    assert!(output.text.len() <= 2 * crate::output::BASH_MAX_BYTES_PER_SIDE + 42);
+}

@@ -374,6 +374,7 @@ fn build_mixed_entries(
                     ToolCard::hydrated(
                         Some(ToolCardInputProjection::ReadOnly {
                             tool: ReadOnlyToolKind::Read,
+                            display_target: None,
                             permission_path: None,
                         }),
                         ToolCallStatus::Success,

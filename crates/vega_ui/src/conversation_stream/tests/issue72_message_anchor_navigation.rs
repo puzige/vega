@@ -68,6 +68,7 @@ async fn anchors_use_unique_durable_message_ids_and_safe_text_projections(cx: &m
                         approval: None,
                         input: Some(ToolCardInputProjection::ReadOnly {
                             tool: ReadOnlyToolKind::Read,
+                            display_target: None,
                             permission_path: Some("/private/tool/input".into()),
                         }),
                         result: Some(ToolCardResultProjection::ReadOnly {

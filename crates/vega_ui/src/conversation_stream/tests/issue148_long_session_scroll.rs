@@ -223,6 +223,7 @@ async fn prepend_and_column_remeasure_restore_stable_pixel_anchor(cx: &mut TestA
             approval: None,
             input: Some(ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Read,
+                display_target: None,
                 permission_path: None,
             }),
             result: Some(ToolCardResultProjection::ReadOnly {
@@ -414,6 +415,7 @@ async fn target_window_replacement_drops_old_cards_and_preserves_thread_state(
                 approval: None,
                 input: Some(ToolCardInputProjection::ReadOnly {
                     tool: ReadOnlyToolKind::Read,
+                    display_target: None,
                     permission_path: None,
                 }),
                 result: Some(ToolCardResultProjection::ReadOnly {

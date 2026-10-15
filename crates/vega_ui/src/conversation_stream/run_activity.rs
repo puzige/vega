@@ -34,31 +34,19 @@ struct RunActivitySegment {
 fn format_stage_tool_categories(categories: &[ToolActivityCategory]) -> String {
     let mut title = String::new();
     for (index, category) in categories.iter().enumerate() {
-        let (first, subsequent) = match category {
-            ToolActivityCategory::Shell => ("Commands", "commands"),
-            ToolActivityCategory::Read => ("Read files", "read files"),
-            ToolActivityCategory::Find => ("File searches", "file searches"),
-            ToolActivityCategory::Search => ("Content searches", "content searches"),
-            ToolActivityCategory::Write => ("Write files", "write files"),
-            ToolActivityCategory::Edit => ("Edit files", "edit files"),
-            ToolActivityCategory::Mcp => ("MCP tools", "MCP tools"),
-            ToolActivityCategory::CodexAcp => ("Codex ACP tasks", "Codex ACP tasks"),
-            ToolActivityCategory::ComputerUse => ("Computer actions", "computer actions"),
-            ToolActivityCategory::Skill => ("Skills", "skills"),
-            ToolActivityCategory::Other => ("Tools", "tools"),
-        };
+        let action = category.action_phrase();
         let candidate = if title.is_empty() {
-            first.to_owned()
+            action.to_owned()
         } else {
-            format!("{title}, {subsequent}")
+            format!("{title}、{action}")
         };
         let ellipsis_length = if index + 1 < categories.len() { 3 } else { 0 };
         if candidate.chars().count() + ellipsis_length > 96 {
             if title.is_empty() {
-                title = first.chars().take(95).collect();
+                title = action.chars().take(95).collect();
                 title.push('…');
             } else {
-                title.push_str(", …");
+                title.push_str("、…");
             }
             break;
         }
@@ -86,8 +74,10 @@ mod category_title_tests {
             ToolActivityCategory::Skill,
             ToolActivityCategory::Other,
         ]);
-        assert!(title.starts_with("Read files, commands"));
-        assert!(title.ends_with(", …"));
+        assert!(title.starts_with("读取文件、运行命令"));
+        let long_title = format_stage_tool_categories(&[ToolActivityCategory::Read; 30]);
+        assert!(long_title.ends_with("、…"));
+        assert!(long_title.chars().count() <= 96);
         assert!(title.chars().count() <= 96);
         assert!(!title.chars().any(|character| character.is_ascii_digit()));
     }

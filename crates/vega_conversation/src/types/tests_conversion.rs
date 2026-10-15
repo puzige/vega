@@ -628,3 +628,46 @@ fn issue299_delivered_user_input_does_not_change_usage_or_start_a_meter_round() 
     assert!(!meter.apply(&delivered));
     assert_eq!(meter.snapshot(), streaming);
 }
+
+#[test]
+fn readonly_display_target_preserves_search_redaction_boundary() {
+    use super::{ToolCall, ToolCardInputProjection, tool_card_input_projection};
+    for (tool, input, expected) in [
+        (
+            "read",
+            r#"{"file_path":"src/main.rs","ignored":"hidden"}"#,
+            Some("main.rs"),
+        ),
+        (
+            "grep",
+            r#"{"pattern":"TODO","path":"src","ignored":"hidden"}"#,
+            None,
+        ),
+        (
+            "glob",
+            r#"{"pattern":"src/**/*.rs","path":"private-root"}"#,
+            None,
+        ),
+        ("grep", r#"{"pattern":123,"path":[]}"#, None),
+        ("read", "{}", None),
+    ] {
+        let projection = tool_card_input_projection(&ToolCall {
+            id: "display".into(),
+            tool: tool.into(),
+            input_json: input.into(),
+        });
+        let ToolCardInputProjection::ReadOnly {
+            display_target,
+            permission_path,
+            ..
+        } = projection
+        else {
+            panic!("expected read-only projection");
+        };
+        assert_eq!(display_target.as_deref(), expected);
+        if tool != "read" {
+            assert!(display_target.is_none());
+            assert!(permission_path.is_none());
+        }
+    }
+}

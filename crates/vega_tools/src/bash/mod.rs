@@ -1,13 +1,14 @@
 //! Strict, permission-handoff-friendly bash execution with a sandboxed default.
 
 use std::fmt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use tokio::io::AsyncReadExt;
-use tokio::process::{Child, ChildStdout, Command};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -251,7 +252,7 @@ impl Tools {
                 cleanup_safe: reaped,
             };
         };
-        let Some(stdout) = child.stdout.take() else {
+        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
             let termination = terminate_group(&mut child, pgid, hooks).await;
             return BashAttempt {
                 result: Err(termination
@@ -261,7 +262,7 @@ impl Tools {
             };
         };
         let reader_stop = CancellationToken::new();
-        let mut reader = tokio::spawn(read_output(stdout, reader_stop.clone()));
+        let mut reader = tokio::spawn(read_output(stdout, stderr, reader_stop.clone()));
         let timeout = tokio::time::sleep(Duration::from_millis(prepared.timeout_ms));
         tokio::pin!(timeout);
 
@@ -373,21 +374,29 @@ impl BashAttempt {
 }
 
 async fn read_output(
-    mut stdout: ChildStdout,
+    mut stdout: impl AsyncRead + Unpin,
+    mut stderr: impl AsyncRead + Unpin,
     stop: CancellationToken,
 ) -> Result<CollectedBashOutput, BashError> {
     let mut collector = BashOutputCollector::new();
-    let mut chunk = [0_u8; BASH_READ_CHUNK_BYTES];
-    loop {
-        let read = tokio::select! {
-            result = stdout.read(&mut chunk) => result,
+    let mut stdout_chunk = [0_u8; BASH_READ_CHUNK_BYTES];
+    let mut stderr_chunk = [0_u8; BASH_READ_CHUNK_BYTES];
+    let mut stdout_open = true;
+    let mut stderr_open = true;
+    while stdout_open || stderr_open {
+        tokio::select! {
+            result = stdout.read(&mut stdout_chunk), if stdout_open => {
+                let read = result.map_err(|_| BashError::new(BashErrorCode::OutputFailed))?;
+                stdout_open = read != 0;
+                collector.push(&stdout_chunk[..read]);
+            }
+            result = stderr.read(&mut stderr_chunk), if stderr_open => {
+                let read = result.map_err(|_| BashError::new(BashErrorCode::OutputFailed))?;
+                stderr_open = read != 0;
+                collector.push(&stderr_chunk[..read]);
+            }
             _ = stop.cancelled() => break,
         }
-        .map_err(|_| BashError::new(BashErrorCode::OutputFailed))?;
-        if read == 0 {
-            break;
-        }
-        collector.push(&chunk[..read]);
     }
     Ok(collector.finish())
 }
@@ -497,8 +506,16 @@ async fn group_exists(target: &str) -> Result<bool, BashError> {
 fn build_output(
     status: ExitStatus,
     started: Instant,
-    collected: CollectedBashOutput,
+    mut collected: CollectedBashOutput,
 ) -> BashOutput {
+    if let Some(signal) = status.signal() {
+        if !collected.text.is_empty() && !collected.text.ends_with('\n') {
+            collected.text.push('\n');
+        }
+        collected
+            .text
+            .push_str(&format!("Process terminated by signal {signal}\n"));
+    }
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     BashOutput {
         text: collected.text,

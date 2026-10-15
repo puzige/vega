@@ -376,6 +376,7 @@ fn final_history() -> HistoryPage {
             approval: Some(Approval::Once),
             input: Some(ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Read,
+                display_target: None,
                 permission_path: None,
             }),
             result: Some(ToolCardResultProjection::ReadOnly {
