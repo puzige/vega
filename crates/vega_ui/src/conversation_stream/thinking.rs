@@ -3,21 +3,13 @@ use super::*;
 
 #[path = "thinking_body.rs"]
 mod body;
+#[path = "thinking_window.rs"]
+mod window;
 
-// Match the runtime's delta/turn/run byte ceilings, with an additional bound
-// on retained block count. The view budget is not reset between messages.
 pub(crate) const THINKING_DELTA_BYTES: usize = 64 * 1024;
 pub(crate) const THINKING_BLOCK_BYTES: usize = 256 * 1024;
 pub(crate) const THINKING_VIEW_BYTES: usize = 1024 * 1024;
 pub(crate) const THINKING_VIEW_BLOCKS: usize = 256;
-
-fn accepted_prefix_len(delta: &str, limit: usize) -> usize {
-    let mut end = delta.len().min(THINKING_DELTA_BYTES).min(limit);
-    while !delta.is_char_boundary(end) {
-        end -= 1;
-    }
-    end
-}
 
 #[derive(Default)]
 struct Preview {
@@ -191,6 +183,9 @@ pub(crate) struct ThinkingBlock {
     pub(crate) text: String,
     pub(crate) shimmer_epoch: Option<Instant>,
     summary: String,
+    raw_window: window::SourceWindow,
+    summary_window: window::SourceWindow,
+    source_identity: u64,
     summary_has_content: bool,
     thinking_has_content: bool,
     thinking_preview: Preview,
@@ -299,6 +294,9 @@ impl ThinkingBlock {
             text: String::new(),
             shimmer_epoch: None,
             summary: String::new(),
+            raw_window: window::SourceWindow::default(),
+            summary_window: window::SourceWindow::default(),
+            source_identity: 0,
             summary_has_content: false,
             thinking_has_content: false,
             thinking_preview: Preview::default(),
@@ -321,6 +319,7 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        let expanded = expanded && self.has_source_text();
         if self.expanded != expanded {
             self.expanded = expanded;
             self.body.visibility_changed();
@@ -362,41 +361,106 @@ impl ThinkingBlock {
             }
     }
 
-    pub(crate) fn append(&mut self, delta: &str, summary: bool, remaining: usize) -> usize {
-        let end = accepted_prefix_len(
-            delta,
-            THINKING_BLOCK_BYTES
-                .saturating_sub(self.text.len() + self.summary.len())
-                .min(remaining),
-        );
-        let source_switched = summary && !self.summary_has_content;
-        if summary {
-            self.summary_has_content |= delta[..end].chars().any(|ch| !ch.is_whitespace());
-            self.summary.push_str(&delta[..end]);
-            self.summary_preview.append(&delta[..end]);
-        } else {
-            self.thinking_has_content |= delta[..end].chars().any(|ch| !ch.is_whitespace());
-            self.text.push_str(&delta[..end]);
-            self.thinking_preview.append(&delta[..end]);
-        }
-        if end > 0 {
-            if summary && self.summary_has_content {
-                if source_switched {
-                    self.body.replace_source();
-                }
-                if self.source_copy.original_len() == self.summary.len() - end && !source_switched {
-                    self.source_copy.append(&delta[..end]);
-                } else {
-                    self.source_copy.replace_text(&self.summary);
-                }
-                self.source_revision = self.source_revision.wrapping_add(1);
-            } else if !summary && !self.summary_has_content {
-                self.source_copy.append(&delta[..end]);
-                self.source_revision = self.source_revision.wrapping_add(1);
+    pub(crate) fn append(&mut self, delta: &str, summary: bool, _remaining: usize) -> usize {
+        let was_summary = self.summary_has_content;
+        let previous_start = self.visible_window().start;
+        let previous_len = self.visible_text().len();
+        let removed = if summary {
+            if self.summary.len().saturating_add(delta.len())
+                > THINKING_BLOCK_BYTES.saturating_sub(self.text.len())
+            {
+                self.raw_window.clear(&mut self.text);
+                self.thinking_has_content = false;
+                self.truncated = true;
             }
+            self.summary_preview.append(delta);
+            let removed = self.summary_window.append(
+                &mut self.summary,
+                delta,
+                THINKING_BLOCK_BYTES - self.text.len(),
+            );
+            self.summary_has_content = if removed {
+                self.summary.chars().any(|ch| !ch.is_whitespace())
+            } else {
+                self.summary_has_content || delta.chars().any(|ch| !ch.is_whitespace())
+            };
+            removed
+        } else {
+            self.thinking_preview.append(delta);
+            let removed = self.raw_window.append(
+                &mut self.text,
+                delta,
+                THINKING_BLOCK_BYTES - self.summary.len(),
+            );
+            self.thinking_has_content = if removed {
+                self.text.chars().any(|ch| !ch.is_whitespace())
+            } else {
+                self.thinking_has_content || delta.chars().any(|ch| !ch.is_whitespace())
+            };
+            removed
+        };
+        self.truncated |= removed;
+        if was_summary != self.summary_has_content {
+            self.source_identity = self.source_identity.wrapping_add(1);
+            self.body.replace_source();
+            self.source_copy.replace_text(self.visible_text());
+            self.source_revision = self.source_revision.wrapping_add(1);
+        } else if previous_start != self.visible_window().start
+            || previous_len != self.visible_text().len()
+        {
+            let window_changed = previous_start != self.visible_window().start;
+            if window_changed {
+                self.source_copy.replace_retained(self.visible_text());
+                self.slide_body();
+            } else {
+                self.source_copy
+                    .append_retained(&self.visible_text()[previous_len..]);
+            }
+            self.source_revision = self.source_revision.wrapping_add(1);
         }
-        self.truncated |= end < delta.len();
-        end
+        self.retained_bytes()
+    }
+
+    fn visible_window(&self) -> &window::SourceWindow {
+        if self.summary_has_content {
+            &self.summary_window
+        } else {
+            &self.raw_window
+        }
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.text.len() + self.summary.len()
+    }
+
+    fn evict(&mut self, cx: &mut Context<Self>) {
+        self.text = String::new();
+        self.summary = String::new();
+        self.raw_window = window::SourceWindow::default();
+        self.summary_window = window::SourceWindow::default();
+        self.thinking_preview = Preview {
+            title: std::mem::take(&mut self.thinking_preview.title),
+            ..Default::default()
+        };
+        self.summary_preview = Preview {
+            title: std::mem::take(&mut self.summary_preview.title),
+            ..Default::default()
+        };
+        self.summary_has_content = false;
+        self.thinking_has_content = false;
+        self.source_identity = self.source_identity.wrapping_add(1);
+        self.source_revision = self.source_revision.wrapping_add(1);
+        self.body.evict();
+        self.source_copy.clear_retained();
+        self.scroll = ScrollHandle::new();
+        self.expanded = false;
+        self.truncated = true;
+        cx.emit(ThinkingChanged {
+            header: false,
+            stage: true,
+            geometry: true,
+        });
+        cx.notify();
     }
 }
 
@@ -404,6 +468,7 @@ impl Render for ThinkingBlock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let title = self.title().to_owned();
+        let can_expand = self.has_source_text();
         div()
             .w_full()
             .min_w_0()
@@ -425,18 +490,22 @@ impl Render for ThinkingBlock {
                         cx.entity_id()
                     )))
                     .track_focus(&self.focus)
-                    .aria_expanded(self.expanded)
-                    .tab_stop(true)
+                    .when(can_expand, |row| row.aria_expanded(self.expanded))
+                    .tab_stop(can_expand)
                     .focus_visible(move |row| row.bg(colors.bg_hover))
                     .debug_selector(|| "thinking-toggle".into())
-                    .aria_label(format!("{}, expand or collapse thinking", title))
+                    .aria_label(if can_expand {
+                        format!("{}, expand or collapse thinking", title)
+                    } else {
+                        title.clone()
+                    })
                     .flex()
                     .items_center()
                     .gap(px(Layout::CONVERSATION_INLINE_GAP))
                     .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
                     .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
                     .rounded(px(Layout::DISCLOSURE_RADIUS))
-                    .cursor_pointer()
+                    .when(can_expand, |row| row.cursor_pointer())
                     .text_size(px(Typography::CONVERSATION))
                     .text_color(colors.conversation_tool)
                     .on_mouse_up(
@@ -482,7 +551,7 @@ impl Render for ThinkingBlock {
                         "thinking-chevron".into(),
                         &self.focus,
                         self.expanded,
-                        true,
+                        self.has_source_text(),
                         colors,
                         window,
                     )),
@@ -503,7 +572,7 @@ impl Render for ThinkingBlock {
                         .debug_selector(|| "thinking-truncated".into())
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("Thinking display limit reached"),
+                        .child("Earlier thinking omitted"),
                 )
             })
     }
@@ -535,39 +604,6 @@ impl ConversationStream {
             return;
         }
         if self.active_thinking.is_none() {
-            if accepted_prefix_len(
-                delta,
-                THINKING_VIEW_BYTES.saturating_sub(self.thinking_bytes),
-            ) == 0
-                || self.thinking_blocks >= THINKING_VIEW_BLOCKS
-            {
-                if let Some((active_id, group)) = self.active_run_activity.clone()
-                    && active_id == message_id
-                    && let Some(card) =
-                        group
-                            .read(cx)
-                            .children()
-                            .into_iter()
-                            .rev()
-                            .find_map(|child| match child {
-                                RunActivityChild::Thinking(card) => Some(card),
-                                _ => None,
-                            })
-                {
-                    card.update(cx, |card, cx| {
-                        if !card.truncated {
-                            card.truncated = true;
-                            cx.emit(ThinkingChanged {
-                                header: false,
-                                stage: true,
-                                geometry: true,
-                            });
-                            cx.notify();
-                        }
-                    });
-                }
-                return;
-            }
             if self.active_response_start.is_none() || self.active_segment_has_text {
                 self.close_active_segment_before_tool();
             }
@@ -580,20 +616,30 @@ impl ConversationStream {
                 group.append_thinking(segment, card.clone(), cx)
             });
             self.thinking_blocks += 1;
+            self.retained_thinking.push_back(card.downgrade());
             self.active_thinking = Some(card);
         }
-        if let Some(card) = &self.active_thinking {
+        if let Some(card) = self.active_thinking.clone() {
             if let Some((_, group)) = &self.active_run_activity {
                 group.update(cx, |group, cx| group.set_thinking(card.clone(), cx));
             }
-            let remaining = THINKING_VIEW_BYTES.saturating_sub(self.thinking_bytes);
-            self.thinking_bytes += card.update(cx, |card, cx| {
+            let before = card.read(cx).retained_bytes();
+            let retained = card.update(cx, |card, cx| {
                 let title = card.title().to_owned();
                 let summary_title = card.summary_title().map(str::to_owned);
                 let source_present = card.has_source_text();
                 let truncated = card.truncated;
-                let appended = card.append(delta, summary, remaining);
-                let header_changed = title != card.title();
+                let source_start = card.visible_window().start;
+                let previous_height = card
+                    .body
+                    .height()
+                    .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT);
+                let appended = card.append(delta, summary, THINKING_BLOCK_BYTES);
+                let window_changed = source_start != card.visible_window().start
+                    && card.expanded
+                    && card.ancestor_visible
+                    && card.body.painted.get();
+                let header_changed = title != card.title() || window_changed;
                 let stage_changed = summary_title.as_deref() != card.summary_title()
                     || source_present != card.has_source_text()
                     || truncated != card.truncated;
@@ -603,12 +649,36 @@ impl ConversationStream {
                         stage: stage_changed,
                         geometry: truncated != card.truncated
                             || card.expanded
-                                && (summary_title.is_some() != card.summary_title().is_some()),
+                                && (summary_title.is_some() != card.summary_title().is_some()
+                                    || source_present != card.has_source_text()
+                                    || previous_height
+                                        != card
+                                            .body
+                                            .height()
+                                            .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)),
                     });
+                }
+                if window_changed {
+                    cx.notify();
                 }
                 card.prepare_body(cx);
                 appended
             });
+            self.thinking_bytes = self.thinking_bytes.saturating_sub(before) + retained;
+            while self.thinking_bytes > THINKING_VIEW_BYTES
+                || self.thinking_blocks > THINKING_VIEW_BLOCKS
+            {
+                let Some(old) = self.retained_thinking.pop_front() else {
+                    break;
+                };
+                if let Some(old) = old.upgrade() {
+                    self.thinking_bytes = self
+                        .thinking_bytes
+                        .saturating_sub(old.read(cx).retained_bytes());
+                    old.update(cx, ThinkingBlock::evict);
+                }
+                self.thinking_blocks = self.thinking_blocks.saturating_sub(1);
+            }
         }
     }
 }

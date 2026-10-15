@@ -28,6 +28,8 @@ pub(super) struct ThinkingBody {
     task: Option<gpui_kit::Task<()>>,
     epoch: u64,
     prepared_revision: u64,
+    projection_revision: u64,
+    pending_follow: Option<bool>,
     prepared_epoch: u64,
     pub(super) painted: Rc<Cell<bool>>,
     rendered: Rc<Cell<usize>>,
@@ -37,7 +39,15 @@ pub(super) struct ThinkingBody {
 impl ThinkingBody {
     pub(super) fn replace_source(&mut self) {
         self.horizontal_scrolls.borrow_mut().clear();
+        self.prepared = None;
+        self.pending_follow = None;
         self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    pub(super) fn evict(&mut self) {
+        self.replace_source();
+        self.rendered.set(0);
+        self.painted.set(false);
     }
 
     pub(super) fn visibility_changed(&mut self) {
@@ -67,60 +77,170 @@ impl ThinkingBlock {
         let Some(style) = self.body.style.clone() else {
             return;
         };
-        let source = self.source_text();
+        let prefix = self.visible_window().prefix();
+        let prefix_len = prefix.len();
+        let source = format!("{prefix}{}", self.visible_text());
+        let source_start = self.visible_window().start;
+        let source_identity = self.source_identity;
         let revision = self.source_revision;
         let epoch = self.body.epoch;
         let system = cx.text_system().clone();
         let work = cx.background_executor().spawn(async move {
             let text_system = WindowTextSystem::new(system);
-            PreparedBody::new(&source, &style, &text_system)
+            PreparedBody::new(&source, prefix_len, source_start, &style, &text_system)
         });
         self.body.task = Some(cx.spawn(async move |this, cx| {
             let prepared = work.await;
             let _ = this.update(cx, |card, cx| {
                 card.body.task = None;
-                if card.expanded
-                    && card.ancestor_visible
-                    && card.body.painted.get()
-                    && card.body.epoch == epoch
-                {
-                    let previous_height = card.body.height();
-                    let following = card.body.prepared.is_some()
-                        && card.scroll.offset().y + card.scroll.max_offset().y <= px(1.);
-                    let anchor = card
-                        .body
-                        .prepared
-                        .as_ref()
-                        .and_then(|old| old.anchor(-card.scroll.offset().y));
-                    card.body.prepared = Some(Arc::new(prepared));
-                    card.body.prepared_revision = revision;
-                    card.body.prepared_epoch = epoch;
-                    if following {
-                        card.scroll.set_offset(point(px(0.), px(-f32::MAX)));
-                    } else if let Some((byte, offset)) = anchor
-                        && let Some(y) = card
-                            .body
-                            .prepared
-                            .as_ref()
-                            .and_then(|body| body.anchor_y(byte))
-                    {
-                        card.scroll.set_offset(point(px(0.), -(y + offset)));
-                    }
-                    let geometry = previous_height.min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
-                        != card
-                            .body
-                            .height()
-                            .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT);
-                    cx.emit(ThinkingChanged {
-                        header: true,
-                        stage: false,
-                        geometry,
-                    });
-                    cx.notify();
-                }
+                card.complete_preparation(prepared, revision, epoch, source_identity, cx);
                 card.prepare_body(cx);
             });
         }));
+    }
+
+    fn complete_preparation(
+        &mut self,
+        prepared: PreparedBody,
+        revision: u64,
+        epoch: u64,
+        source_identity: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.expanded
+            && self.ancestor_visible
+            && self.body.painted.get()
+            && self.body.epoch == epoch
+            && self.source_identity == source_identity
+            && let Some(prepared) = prepared.clip(self.visible_window().start)
+        {
+            self.publish_body(prepared, cx);
+            self.body.prepared_revision = revision;
+            self.body.prepared_epoch = epoch;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn slide_body(&mut self) {
+        let Some(previous) = self.body.prepared.take() else {
+            return;
+        };
+        let following = self.scroll.offset().y + self.scroll.max_offset().y <= px(1.);
+        let anchor = previous
+            .anchor(-self.scroll.offset().y)
+            .and_then(|(byte, offset)| {
+                previous
+                    .source_position(byte)
+                    .map(|position| (position, offset))
+            });
+        let prepared = (*previous).clone().clip(self.visible_window().start);
+        if let Some(prepared) = prepared {
+            self.body
+                .horizontal_scrolls
+                .borrow_mut()
+                .retain(|index, _| {
+                    prepared
+                        .block_source_range(*index)
+                        .is_some_and(|range| range.end > prepared.source.start)
+                });
+            self.body.projection_revision = self.body.projection_revision.wrapping_add(1);
+            self.source_copy.publish_retained(
+                self.body.projection_revision,
+                prepared.text.clone(),
+                |range| previous.map_selection(&prepared, range),
+            );
+            self.restore_body_anchor(&prepared, following, anchor);
+            self.body.prepared = Some(Arc::new(prepared));
+        } else {
+            self.body.pending_follow = Some(following);
+            self.body.horizontal_scrolls.borrow_mut().clear();
+            self.source_copy.publish_retained(
+                self.body.projection_revision.wrapping_add(1),
+                Arc::from(""),
+                |_| None,
+            );
+            self.scroll.set_offset(point(px(0.), px(0.)));
+        }
+    }
+
+    fn restore_body_anchor(
+        &self,
+        prepared: &PreparedBody,
+        following: bool,
+        anchor: Option<(vega_markdown::SourcePosition, Pixels)>,
+    ) {
+        let y = if following {
+            px(-f32::MAX)
+        } else {
+            anchor
+                .and_then(|(position, offset)| {
+                    prepared
+                        .rendered_position(&position)
+                        .and_then(|byte| prepared.anchor_y(byte))
+                        .map(|y| -(y + offset))
+                })
+                .unwrap_or(px(0.))
+        };
+        self.scroll.set_offset(point(px(0.), y));
+    }
+
+    fn publish_body(&mut self, prepared: PreparedBody, cx: &mut Context<Self>) {
+        let previous_height = self.body.height();
+        let previous = self.body.prepared.take();
+        let following = self.body.pending_follow.take().unwrap_or_else(|| {
+            previous.is_some() && self.scroll.offset().y + self.scroll.max_offset().y <= px(1.)
+        });
+        let anchor = previous.as_ref().and_then(|body| {
+            body.anchor(-self.scroll.offset().y)
+                .and_then(|(byte, offset)| {
+                    body.source_position(byte)
+                        .map(|position| (position, offset))
+                })
+        });
+        let mut horizontal = self.body.horizontal_scrolls.borrow_mut();
+        let previous_scrolls = std::mem::take(&mut *horizontal);
+        if let Some(previous) = &previous {
+            for (index, scroll) in previous_scrolls {
+                let code = previous.blocks[index].code;
+                if let Some(old_range) = previous.block_source_range(index)
+                    && let Some((range, index)) = prepared.horizontal_ranges.get(
+                        prepared
+                            .horizontal_ranges
+                            .partition_point(|(range, _)| range.end <= old_range.start),
+                    )
+                    && range.start < old_range.end
+                    && prepared.blocks[*index].code == code
+                {
+                    horizontal.insert(*index, scroll);
+                }
+            }
+        }
+        drop(horizontal);
+        self.body.projection_revision = self.body.projection_revision.wrapping_add(1);
+        self.source_copy.publish_retained(
+            self.body.projection_revision,
+            prepared.text.clone(),
+            |range| {
+                previous
+                    .as_ref()
+                    .and_then(|old| old.map_selection(&prepared, range))
+            },
+        );
+        self.restore_body_anchor(&prepared, following, anchor);
+        self.body.prepared = Some(Arc::new(prepared));
+        let geometry = previous_height.min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+            != self
+                .body
+                .height()
+                .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT);
+        cx.emit(ThinkingChanged {
+            header: true,
+            stage: false,
+            geometry,
+        });
+        cx.notify();
     }
 
     pub(crate) fn reset_body_visibility(&self) {
@@ -150,7 +270,7 @@ impl ThinkingBlock {
                 self.focus.clone(),
                 selection_color,
                 prepared.text.clone(),
-                self.body.prepared_revision,
+                self.body.projection_revision,
             );
             let element = BodyElement {
                 prepared,
@@ -229,6 +349,8 @@ impl ThinkingBlock {
     #[cfg(test)]
     pub(crate) fn test_replace_source(&mut self, source: &str, cx: &mut Context<Self>) {
         self.text = source.into();
+        self.raw_window = window::SourceWindow::default();
+        self.source_identity = self.source_identity.wrapping_add(1);
         self.thinking_has_content = source.chars().any(|ch| !ch.is_whitespace());
         self.body.replace_source();
         self.source_copy.replace_text(source);
@@ -238,6 +360,7 @@ impl ThinkingBlock {
     }
 }
 
+#[derive(Clone)]
 struct PreparedFragment {
     range: Range<usize>,
     logical_range: Range<usize>,
@@ -248,12 +371,13 @@ struct PreparedFragment {
     line_width: Pixels,
 }
 
+#[derive(Clone)]
 struct Decoration {
     bounds: Bounds<Pixels>,
     color: Rgba,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PreparedBlock {
     origin: Point<Pixels>,
     size: Size<Pixels>,
@@ -261,18 +385,32 @@ struct PreparedBlock {
     code: bool,
     fragments: Vec<PreparedFragment>,
     decorations: Vec<Decoration>,
+    source_ranges: Vec<Range<usize>>,
+    source_range: Option<Range<usize>>,
 }
 
+#[derive(Clone)]
 struct PreparedBody {
     text: Arc<str>,
+    source: Range<usize>,
+    mapping: Arc<[vega_markdown::SourceSpan]>,
+    text_start: usize,
+    y_offset: Pixels,
     width: Pixels,
     height: Pixels,
-    blocks: Vec<PreparedBlock>,
+    blocks: Arc<[PreparedBlock]>,
+    horizontal_ranges: Arc<[(Range<usize>, usize)]>,
     colors: ThemeColors,
 }
 
 impl PreparedBody {
-    fn new(source: &str, style: &PreparationStyle, text_system: &WindowTextSystem) -> Self {
+    fn new(
+        source: &str,
+        prefix: usize,
+        source_start: usize,
+        style: &PreparationStyle,
+        text_system: &WindowTextSystem,
+    ) -> Self {
         let mut stream = MarkdownStream::new();
         stream.append(source);
         let mut model = StreamModel::default();
@@ -378,6 +516,7 @@ impl PreparedBody {
                             style,
                             text_system,
                         );
+                        block.source_ranges.pop();
                         x += px(Layout::MARKDOWN_LIST_INDENT);
                         if let Some(checked) = line.checked {
                             let start = block.fragments.len();
@@ -395,6 +534,7 @@ impl PreparedBody {
                                 style,
                                 text_system,
                             );
+                            block.source_ranges.pop();
                             x = block
                                 .fragments
                                 .get(start)
@@ -436,16 +576,119 @@ impl PreparedBody {
             y += block.size.height;
             blocks.push(block);
         }
+        let mut mapper = vega_markdown::SourceTextMap::new(source);
+        let mut mapping = Vec::new();
+        for block in &blocks {
+            for range in &block.source_ranges {
+                for mut span in mapper.take(&content[range.clone()], range.start) {
+                    if span.source.start >= prefix {
+                        span.source = span.source.start - prefix + source_start
+                            ..span.source.end - prefix + source_start;
+                        mapping.push(span);
+                    }
+                }
+            }
+        }
+        let mut horizontal_ranges = Vec::new();
+        for (index, block) in blocks.iter_mut().enumerate() {
+            if let (Some(first), Some(last)) = (block.fragments.first(), block.fragments.last()) {
+                let start = mapping.partition_point(|span| span.rendered.end <= first.range.start);
+                let end = mapping.partition_point(|span| span.rendered.start < last.range.end);
+                if start < end {
+                    block.source_range =
+                        Some(mapping[start].source.start..mapping[end - 1].source.end);
+                    if block.horizontal {
+                        horizontal_ranges.push((
+                            mapping[start].source.start..mapping[end - 1].source.end,
+                            index,
+                        ));
+                    }
+                }
+            }
+            block.source_ranges.clear();
+            block.source_ranges.shrink_to_fit();
+        }
         Self {
             text: content.into(),
+            source: source_start..source_start + source.len() - prefix,
+            mapping: mapping.into(),
+            text_start: 0,
+            y_offset: px(0.),
             width: style.width,
             height: y,
-            blocks,
+            blocks: blocks.into(),
+            horizontal_ranges: horizontal_ranges.into(),
             colors: style.colors,
         }
     }
 
+    fn block_source_range(&self, index: usize) -> Option<Range<usize>> {
+        self.blocks
+            .get(index)?
+            .source_range
+            .as_ref()
+            .filter(|range| range.end > self.source.start)
+            .map(|range| range.start.max(self.source.start)..range.end)
+    }
+
+    fn source_position(&self, byte: usize) -> Option<vega_markdown::SourcePosition> {
+        let byte = byte + self.text_start;
+        self.mapping
+            .iter()
+            .find(|span| span.rendered.contains(&byte))
+            .or_else(|| {
+                self.mapping
+                    .iter()
+                    .rev()
+                    .find(|span| span.rendered.end == byte)
+            })
+            .map(|span| span.position(byte))
+    }
+
+    fn rendered_position(&self, position: &vega_markdown::SourcePosition) -> Option<usize> {
+        self.mapping
+            .iter()
+            .find_map(|span| span.rendered_position(position))
+            .and_then(|byte| byte.checked_sub(self.text_start))
+            .filter(|byte| *byte <= self.text.len())
+    }
+
+    fn map_selection(&self, next: &Self, range: Range<usize>) -> Option<Range<usize>> {
+        let start = next.rendered_position(&self.source_position(range.start)?)?;
+        let end = next.rendered_position(&self.source_position(range.end)?)?;
+        let mapped = start..end;
+        (self.text.get(range)? == next.text.get(mapped.clone())?).then_some(mapped)
+    }
+
+    fn clip(mut self, start: usize) -> Option<Self> {
+        if self.source.end <= start {
+            return None;
+        }
+        if self.source.start >= start {
+            return Some(self);
+        }
+        let first = self
+            .mapping
+            .iter()
+            .find(|span| span.source.end > start && (span.literal || span.source.start >= start))?;
+        let cut = first.rendered.start
+            + if first.literal {
+                start.saturating_sub(first.source.start)
+            } else {
+                0
+            };
+        let removed = cut - self.text_start;
+        let y = self.anchor_y(removed).unwrap_or(px(0.));
+        self.text = Arc::from(&self.text[removed..]);
+        self.source.start = start;
+        self.text_start = cut;
+        self.y_offset += y;
+        self.height = (self.height - y).max(px(0.));
+        Some(self)
+    }
+
     fn anchor(&self, y: Pixels) -> Option<(usize, Pixels)> {
+        let y = y + self.y_offset;
         let block = self
             .blocks
             .iter()
@@ -454,19 +697,27 @@ impl PreparedBody {
             .fragments
             .iter()
             .find(|fragment| block.origin.y + fragment.bounds.bottom() > y)?;
-        Some((
-            fragment.range.start,
-            y - block.origin.y - fragment.bounds.top(),
-        ))
+        let byte = fragment.range.start.max(self.text_start);
+        let byte = self
+            .mapping
+            .iter()
+            .find(|span| span.rendered.end > byte)
+            .map_or(byte, |span| byte.max(span.rendered.start));
+        let relative = byte - self.text_start;
+        let mapped_y = self
+            .anchor_y(relative)
+            .unwrap_or(block.origin.y + fragment.bounds.top() - self.y_offset);
+        Some((relative, y - self.y_offset - mapped_y))
     }
 
     fn anchor_y(&self, byte: usize) -> Option<Pixels> {
+        let byte = byte + self.text_start;
         self.blocks.iter().find_map(|block| {
             block
                 .fragments
                 .iter()
                 .find(|fragment| fragment.range.contains(&byte))
-                .map(|fragment| block.origin.y + fragment.bounds.top())
+                .map(|fragment| block.origin.y + fragment.bounds.top() - self.y_offset)
         })
     }
 }
@@ -562,6 +813,7 @@ fn layout_text(
     let start = content.len();
     content.push_str(&text);
     let logical_range = start..content.len();
+    block.source_ranges.push(logical_range.clone());
     let mut text_style = match kind {
         LineKind::Code => render_rows::code_run_style(style.colors.text_primary),
         LineKind::Heading(level) => render_rows::heading_run_style(level, &style.colors),
@@ -764,11 +1016,12 @@ impl Element for BodyElement {
         self.rendered.set(0);
         let mask = window.content_mask().bounds;
         let first = self.prepared.blocks.partition_point(|block| {
-            bounds.top() + block.origin.y + block.size.height < mask.top() - px(VIEWPORT_OVERSCAN)
+            bounds.top() + block.origin.y - self.prepared.y_offset + block.size.height
+                < mask.top() - px(VIEWPORT_OVERSCAN)
         });
         let mut elements = Vec::new();
         for (index, block) in self.prepared.blocks.iter().enumerate().skip(first) {
-            let origin = bounds.origin + block.origin;
+            let origin = bounds.origin + block.origin - point(px(0.), self.prepared.y_offset);
             if origin.y > mask.bottom() + px(VIEWPORT_OVERSCAN) {
                 break;
             }
@@ -897,12 +1150,31 @@ impl Element for FragmentsElement {
             {
                 continue;
             }
-            let text = &self.prepared.text[fragment.range.clone()];
+            if fragment.range.end <= self.prepared.text_start {
+                continue;
+            }
+            let start = fragment.range.start.max(self.prepared.text_start);
+            let range =
+                start - self.prepared.text_start..fragment.range.end - self.prepared.text_start;
+            let text = &self.prepared.text[range.clone()];
+            let runs = if start > fragment.range.start {
+                inline_code::RunIndex::new(fragment.runs.clone())
+                    .slice(start - fragment.range.start..fragment.range.len())
+            } else {
+                fragment.runs.clone()
+            };
             let mut element = self.document.append_positioned(
                 text,
-                fragment.runs.clone(),
-                fragment.range.clone(),
-                fragment.logical_range.clone(),
+                runs,
+                range,
+                fragment
+                    .logical_range
+                    .start
+                    .saturating_sub(self.prepared.text_start)
+                    ..fragment
+                        .logical_range
+                        .end
+                        .saturating_sub(self.prepared.text_start),
             );
             window.with_text_style(
                 Some(TextStyleRefinement {
@@ -1055,3 +1327,7 @@ impl Element for VisibilityElement {
         self.content.paint(window, cx);
     }
 }
+
+#[cfg(test)]
+#[path = "thinking_body_window_tests.rs"]
+mod window_tests;

@@ -3,7 +3,7 @@ use crate::conversation_stream::thinking::{
     THINKING_BLOCK_BYTES, THINKING_DELTA_BYTES, THINKING_VIEW_BLOCKS, THINKING_VIEW_BYTES,
 };
 
-fn thinking(id: &str, delta: &str) -> ConversationEvent {
+pub(super) fn thinking(id: &str, delta: &str) -> ConversationEvent {
     ConversationEvent::ThinkingDelta {
         message_id: id.into(),
         delta: delta.into(),
@@ -17,14 +17,14 @@ fn summary(id: &str, delta: &str) -> ConversationEvent {
     }
 }
 
-fn start(id: &str) -> ConversationEvent {
+pub(super) fn start(id: &str) -> ConversationEvent {
     ConversationEvent::MessageStarted {
         message_id: id.into(),
         seq: 2,
     }
 }
 
-fn finish(id: &str) -> ConversationEvent {
+pub(super) fn finish(id: &str) -> ConversationEvent {
     ConversationEvent::MessageFinished {
         message_id: id.into(),
         stop_reason: vega_conversation::types::ConversationStopReason::End,
@@ -32,7 +32,7 @@ fn finish(id: &str) -> ConversationEvent {
     }
 }
 
-fn cards(stream: &ConversationStream, cx: &App) -> Vec<Entity<ThinkingBlock>> {
+pub(super) fn cards(stream: &ConversationStream, cx: &App) -> Vec<Entity<ThinkingBlock>> {
     stream
         .entries
         .iter()
@@ -252,7 +252,7 @@ async fn i61_thinking_acceptance_fences_and_terminal_cleanup(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
-async fn i61_utf8_near_view_limit_does_not_create_empty_thinking_block(cx: &mut TestAppContext) {
+async fn i61_utf8_near_view_limit_yields_old_body_for_latest_thinking(cx: &mut TestAppContext) {
     let (_, stream, _) = open_controller_stream(cx, "thinking-utf8-limit");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
@@ -275,20 +275,12 @@ async fn i61_utf8_near_view_limit_does_not_create_empty_thinking_block(cx: &mut 
         }
         assert_eq!(stream.thinking_bytes, THINKING_VIEW_BYTES - 1);
         stream.apply_event(thinking("m", "界"), cx);
-        assert_eq!(cards(stream, cx).len(), 4);
-        assert!(
-            cards(stream, cx)
-                .iter()
-                .all(|card| !card.read(cx).text.is_empty())
-        );
-        assert!(
-            cards(stream, cx)
-                .last()
-                .expect("retained block")
-                .read(cx)
-                .truncated
-        );
-        assert!(stream.active_thinking.is_none());
+        assert_eq!(cards(stream, cx).len(), 5);
+        assert!(cards(stream, cx)[0].read(cx).text.is_empty());
+        assert!(cards(stream, cx)[0].read(cx).truncated);
+        assert_eq!(cards(stream, cx)[4].read(cx).text, "界");
+        assert!(stream.active_thinking.is_some());
+        assert!(stream.thinking_bytes <= THINKING_VIEW_BYTES);
     });
 }
 
@@ -299,8 +291,8 @@ async fn i61_thinking_bounds_are_utf8_safe_and_cumulative(cx: &mut TestAppContex
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", &"界".repeat(THINKING_DELTA_BYTES)), cx);
         let card = cards(stream, cx)[0].clone();
-        assert!(card.read(cx).text.len() <= THINKING_DELTA_BYTES);
-        assert!(card.read(cx).truncated);
+        assert_eq!(card.read(cx).text.len(), 3 * THINKING_DELTA_BYTES);
+        assert!(!card.read(cx).truncated);
         for _ in 0..8 {
             stream.apply_event(thinking("m", &"x".repeat(THINKING_DELTA_BYTES)), cx);
         }
@@ -336,14 +328,22 @@ async fn i61_thinking_bounds_are_utf8_safe_and_cumulative(cx: &mut TestAppContex
                 cx,
             );
         }
-        assert_eq!(cards(stream, cx).len(), THINKING_VIEW_BLOCKS);
-        assert!(
-            cards(stream, cx)
-                .last()
-                .expect("last bounded block")
-                .read(cx)
-                .truncated
+        let retained = cards(stream, cx);
+        assert_eq!(retained.len(), THINKING_VIEW_BLOCKS + 10);
+        assert_eq!(
+            retained
+                .iter()
+                .filter(|card| card.read(cx).has_source_text())
+                .count(),
+            THINKING_VIEW_BLOCKS
         );
+        assert!(
+            retained
+                .iter()
+                .take(10)
+                .all(|card| card.read(cx).truncated && !card.read(cx).has_source_text())
+        );
+        assert_eq!(retained.last().expect("latest block").read(cx).text, "x");
     });
 }
 

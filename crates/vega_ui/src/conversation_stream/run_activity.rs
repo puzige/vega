@@ -1823,7 +1823,7 @@ impl RunActivityGroup {
                         .pt(px(Layout::PROCESS_ITEM_GAP))
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("Thinking display limit reached")
+                        .child("Earlier thinking omitted")
                         .into_any_element(),
                 ));
             }

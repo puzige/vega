@@ -513,6 +513,9 @@ impl Element for SelectableMessage {
                     })
                 })
         });
+        if self.projected {
+            self.copy.set_projected_selection(selected.clone());
+        }
         let selection_text = selected
             .and_then(|range| self.content.get(range))
             .unwrap_or_default()
