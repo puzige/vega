@@ -47,6 +47,7 @@ mod issue296_stream_polish;
 mod issue299_pending_messages;
 mod issue342_model_name_width;
 mod issue350_network_retry;
+mod issue395_thinking_performance;
 mod issue64_context_usage;
 mod issue70_tool_activity;
 mod issue72_message_anchor_navigation;

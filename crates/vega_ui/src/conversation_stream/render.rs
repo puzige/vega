@@ -1507,6 +1507,13 @@ impl Render for ConversationStream {
             self.focus_composer(window, cx);
         }
         self.reset_image_visibility(cx);
+        for group in self.run_activity_groups.values() {
+            for child in group.read(cx).children() {
+                if let RunActivityChild::Thinking(card) = child {
+                    card.read(cx).reset_body_visibility();
+                }
+            }
+        }
         let render_t0 = Instant::now();
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
@@ -1515,12 +1522,14 @@ impl Render for ConversationStream {
         //    diff —— 冻结段内容在终结后不再变化，永不重物化（P3/C4 白名
         //    单）；尾项高度可能随内容变化 → 显式失效重测。user 回显等行数
         //    变化在各自的 apply 路径上已登记。
-        if let Some((_, index)) = self.active_agent_message.as_ref()
+        if std::mem::take(&mut self.assistant_model_dirty)
+            && let Some((_, index)) = self.active_agent_message.as_ref()
             && let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.get_mut(*index)
         {
             let snapshot = stream.snapshot();
-            model.sync(&snapshot, &self.counters);
-            self.invalidate_item(Some(*index));
+            if model.sync(&snapshot, &self.counters) {
+                self.invalidate_item(Some(*index));
+            }
         }
         self.settle_final_presentation(window, cx);
         self.refresh_run_notices(cx);

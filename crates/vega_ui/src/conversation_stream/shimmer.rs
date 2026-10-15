@@ -1,6 +1,38 @@
 use super::*;
 use gpui_kit::{TextAlign, point};
 
+pub(crate) struct StageText {
+    title: String,
+    epoch: Option<Instant>,
+}
+
+impl StageText {
+    pub(crate) fn new() -> Self {
+        Self {
+            title: String::new(),
+            epoch: None,
+        }
+    }
+
+    pub(crate) fn set(&mut self, title: String, epoch: Option<Instant>, cx: &mut Context<Self>) {
+        if self.title != title || self.epoch != epoch {
+            self.title = title;
+            self.epoch = epoch;
+            cx.notify();
+        }
+    }
+}
+
+impl Render for StageText {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(epoch) = self.epoch {
+            stage_text(self.title.clone(), epoch, window, cx)
+        } else {
+            div().child(self.title.clone()).into_any_element()
+        }
+    }
+}
+
 pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> AnyElement {
     let colors = theme(cx).colors;
     styled_text(

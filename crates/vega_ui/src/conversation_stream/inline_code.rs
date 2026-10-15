@@ -255,13 +255,13 @@ pub(super) fn flow(
     .into_any_element()
 }
 
-struct RunIndex {
+pub(super) struct RunIndex {
     runs: Vec<(Range<usize>, TextRun)>,
     code: Vec<Range<usize>>,
 }
 
 impl RunIndex {
-    fn new(runs: Vec<TextRun>) -> Self {
+    pub(super) fn new(runs: Vec<TextRun>) -> Self {
         let mut offset = 0;
         let runs = runs
             .into_iter()
@@ -279,7 +279,7 @@ impl RunIndex {
         Self { runs, code }
     }
 
-    fn slice(&self, range: Range<usize>) -> Vec<TextRun> {
+    pub(super) fn slice(&self, range: Range<usize>) -> Vec<TextRun> {
         let start = self
             .runs
             .partition_point(|(source, _)| source.end <= range.start);
@@ -310,17 +310,17 @@ impl RunIndex {
 }
 
 #[derive(Clone)]
-struct Fragment {
-    range: Range<usize>,
-    origin: gpui_kit::Point<Pixels>,
-    width: Pixels,
-    line_width: Pixels,
+pub(super) struct Fragment {
+    pub(super) range: Range<usize>,
+    pub(super) origin: gpui_kit::Point<Pixels>,
+    pub(super) width: Pixels,
+    pub(super) line_width: Pixels,
 }
 
 #[derive(Default)]
-struct FlowLayout {
-    fragments: Vec<Fragment>,
-    size: gpui_kit::Size<Pixels>,
+pub(super) struct FlowLayout {
+    pub(super) fragments: Vec<Fragment>,
+    pub(super) size: gpui_kit::Size<Pixels>,
 }
 
 type FragmentRenderer = dyn Fn(Range<usize>, SharedString, Vec<TextRun>) -> AnyElement;
@@ -467,18 +467,32 @@ fn layout_flow(
             .line_height
             .to_pixels(font_size.into(), window.rem_size()),
     );
+    shape_flow(
+        content,
+        runs,
+        font_size,
+        line_height,
+        width,
+        window.text_system(),
+    )
+}
+
+pub(super) fn shape_flow(
+    content: &SharedString,
+    runs: &RunIndex,
+    font_size: Pixels,
+    line_height: Pixels,
+    width: Option<Pixels>,
+    text_system: &gpui_kit::WindowTextSystem,
+) -> FlowLayout {
     let all_runs = runs.slice(0..content.len());
-    let lines =
-        match window
-            .text_system()
-            .shape_text(content.clone(), font_size, &all_runs, None, None)
-        {
-            Ok(lines) => lines,
-            Err(error) => {
-                tracing::error!(%error, "failed to measure inline styled text");
-                return FlowLayout::default();
-            }
-        };
+    let lines = match text_system.shape_text(content.clone(), font_size, &all_runs, None, None) {
+        Ok(lines) => lines,
+        Err(error) => {
+            tracing::error!(%error, "failed to measure inline styled text");
+            return FlowLayout::default();
+        }
+    };
     let mut result = FlowLayout::default();
     let mut offset = 0;
     let mut y = px(0.);
@@ -523,7 +537,7 @@ fn layout_flow(
                 let prefix_end = offset + indices[fit_ix + 1];
                 let prefix_start = offset + start;
                 let prefix = SharedString::from(content[prefix_start..prefix_end].to_owned());
-                if let Ok(wrapped) = window.text_system().shape_text(
+                if let Ok(wrapped) = text_system.shape_text(
                     prefix,
                     font_size,
                     &runs.slice(prefix_start..prefix_end),
@@ -544,21 +558,16 @@ fn layout_flow(
                 offset + start..offset + end,
                 font_size,
                 y,
-                window,
+                text_system,
             );
             while let Some(width) = width.filter(|width| actual_width > *width) {
                 let range = offset + start..offset + end;
                 let text = SharedString::from(content[range.clone()].to_owned());
                 let row_runs = runs.slice(range.clone());
-                let shaped =
-                    window
-                        .text_system()
-                        .shape_line(text.clone(), font_size, &row_runs, None);
+                let shaped = text_system.shape_line(text.clone(), font_size, &row_runs, None);
                 let budget = (shaped.width() - (actual_width - width) - px(0.01)).max(px(0.01));
                 let wrapped =
-                    window
-                        .text_system()
-                        .shape_text(text, font_size, &row_runs, Some(budget), None);
+                    text_system.shape_text(text, font_size, &row_runs, Some(budget), None);
                 let candidate = wrapped.ok().and_then(|lines| {
                     lines.first().and_then(|line| {
                         line.wrap_boundaries.first().map(|boundary| {
@@ -578,7 +587,7 @@ fn layout_flow(
                     offset + start..offset + end,
                     font_size,
                     y,
-                    window,
+                    text_system,
                 );
             }
             result.fragments.extend(fragments);
@@ -598,7 +607,7 @@ fn position_fragments(
     range: Range<usize>,
     font_size: Pixels,
     y: Pixels,
-    window: &mut Window,
+    text_system: &gpui_kit::WindowTextSystem,
 ) -> (Vec<Fragment>, Pixels) {
     let mut boundaries = vec![range.start];
     for code in runs.code_ranges(range.clone()) {
@@ -623,7 +632,7 @@ fn position_fragments(
         } else {
             px(0.)
         };
-        let shaped = window.text_system().shape_line(
+        let shaped = text_system.shape_line(
             SharedString::from(content[range.clone()].to_owned()),
             font_size,
             &fragment_runs,
