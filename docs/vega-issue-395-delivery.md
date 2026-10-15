@@ -61,7 +61,36 @@ FAIL [ 0.081s] vega_ui conversation_stream::tests::issue296_expansion::issue296_
 
 The three initial Issue #395 cases passed in that run. The failure exposed an existing copy-interface regression: projected selection had not registered complete rendered text, so `visible_text()` returned `None`. The follow-up checkpoint fixes this by sharing the prepared `Arc<str>` through that interface. It does not alter the failing assertion or restore full-text copies in prepaint. Additional selection, viewport recycling, table and typed-invalidation cases are included in the follow-up checkpoint.
 
-The follow-up checkpoint and additional tests are **PENDING CLOUD CI**. The first run’s success on other tests is not evidence that these later changes pass. The main agent records the final cloud result after integration.
+The follow-up checkpoint ran in [PR Check run 38718350457](https://github.com/puzige/vega/actions/runs/38718350457). Its format/Clippy job passed, and the original Issue #296 copy regression passed. Nextest completed at `2026-10-15 10:17:37 UTC`:
+
+```text
+Summary [ 134.265s] 2706 tests run: 2704 passed, 2 failed, 5 skipped
+FAIL vega_ui conversation_stream::tests::issue395_thinking_performance::issue395_code_horizontal_offset_survives_vertical_recycling
+FAIL vega_ui conversation_stream::tests::issue395_thinking_performance::issue395_virtual_thinking_selection_keeps_logical_paragraph_and_rejects_new_source
+```
+
+Both failures identified production defects rather than fixture timing:
+
+- The horizontal fragment surface used an automatic block width. Pinned GPUI/Taffy resolves that width to the containing viewport before applying the measure result, and GPUI calculates scroll extent from child layout bounds. The oversized code therefore had no horizontal scroll range. The surface now declares its prepared content dimensions explicitly while its wrapper retains viewport width.
+- The visibility/width canvas was a child of the scrolling disclosure. GPUI applies the content scroll offset to all children, including absolute children, so a large vertical offset moved the probe out of the viewport and incorrectly disabled new preparation. The visibility lease now measures and schedules from the outer disclosure viewport prepaint. Replacing a long source while reading the tail prepares and publishes the shorter body, allowing normal scroll clamping.
+
+The failing assertions and fixture setup remain unchanged. Additional assertions verify a nonzero horizontal range, zero vertical range after replacement, and the newly rendered replacement text. No explicit test scroll reset masks the shrink behavior.
+
+## Third checkpoint freeze
+
+- Recorded at UTC `2026-10-15 10:25:53`, local `2026-10-15 18:25:53 +08:00`.
+- Remote was fetched and `git rebase origin/master` reported `Current branch feat/thinking-ui-performance is up to date.` before changes.
+- Code diff SHA-256, using the same command above: `4ad881d24b70ae1286c3896245d30fb70e8aacff629fcd465842bf205e0f0259`.
+- Exact quick checks:
+
+```sh
+rustfmt --edition 2024 --check crates/vega_ui/src/conversation_stream/thinking_body.rs crates/vega_ui/src/conversation_stream/tests/issue395_thinking_performance.rs
+git diff --check
+```
+
+Both commands exited `0` with empty stdout/stderr; combined duration `0.023 s`. No local compilation, tests or packaging were run.
+
+The third checkpoint is **PENDING CLOUD CI**. Earlier results do not establish that the latest repairs pass. The main agent records the final cloud result after integration.
 
 ## Limits and manual validation
 

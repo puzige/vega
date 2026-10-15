@@ -137,7 +137,6 @@ impl ThinkingBlock {
         let colors = theme(cx).colors;
         let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
         let prepared = self.body.prepared.clone();
-        let painted = self.body.painted.clone();
         let rendered = self.body.rendered.clone();
         let style = PreparationStyle {
             width: px(0.),
@@ -181,40 +180,6 @@ impl ThinkingBlock {
                 .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
                 .text_color(colors.text_secondary)
                 .child(body)
-                .child(
-                    gpui_kit::canvas(
-                        |_, _, _| (),
-                        move |bounds, _, window, cx| {
-                            let visible =
-                                !bounds.intersect(&window.content_mask().bounds).is_empty();
-                            painted.set(visible);
-                            let width = bounds.size.width
-                                - px(Layout::DISCLOSURE_PADDING_X
-                                    + Layout::DISCLOSURE_SCROLLBAR_GUTTER);
-                            if visible && width > px(0.) {
-                                let _ = card.update(cx, |card, cx| {
-                                    let changed = card.body.style.as_ref().is_none_or(|old| {
-                                        old.width != width
-                                            || old.scale != style.scale
-                                            || old.font != style.font
-                                            || old.colors.bg_base != style.colors.bg_base
-                                            || old.colors.text_primary != style.colors.text_primary
-                                    });
-                                    if changed {
-                                        card.body.epoch = card.body.epoch.wrapping_add(1);
-                                        card.body.style = Some(PreparationStyle {
-                                            width,
-                                            ..style.clone()
-                                        });
-                                    }
-                                    card.prepare_body(cx);
-                                });
-                            }
-                        },
-                    )
-                    .absolute()
-                    .inset_0(),
-                )
                 .into_any_element(),
             &self.source_copy,
             true,
@@ -222,6 +187,8 @@ impl ThinkingBlock {
         VisibilityElement {
             content,
             visible: self.body.painted.clone(),
+            card,
+            style,
         }
         .into_any_element()
     }
@@ -894,7 +861,14 @@ impl Element for FragmentsElement {
     ) -> (LayoutId, ()) {
         let dimensions = self.prepared.blocks[self.block].size;
         (
-            window.request_measured_layout(Default::default(), move |_, _, _, _| dimensions),
+            window.request_measured_layout(
+                gpui_kit::Style {
+                    size: dimensions.map(Into::into),
+                    flex_shrink: 0.,
+                    ..Default::default()
+                },
+                move |_, _, _, _| dimensions,
+            ),
             (),
         )
     }
@@ -1001,6 +975,8 @@ impl Drop for VisibilityLease {
 struct VisibilityElement {
     content: AnyElement,
     visible: Rc<Cell<bool>>,
+    card: gpui_kit::WeakEntity<ThinkingBlock>,
+    style: PreparationStyle,
 }
 impl IntoElement for VisibilityElement {
     type Element = Self;
@@ -1035,16 +1011,36 @@ impl Element for VisibilityElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let visible = !bounds.intersect(&window.content_mask().bounds).is_empty();
+        self.visible.set(visible);
         if let Some(id) = id {
-            window.with_element_state(id, |lease: Option<VisibilityLease>, window| {
+            window.with_element_state(id, |lease: Option<VisibilityLease>, _| {
                 let lease = lease.unwrap_or_else(|| VisibilityLease(self.visible.clone()));
-                lease
-                    .0
-                    .set(!bounds.intersect(&window.content_mask().bounds).is_empty());
                 ((), lease)
             });
         }
         self.content.prepaint(window, cx);
+        let width = bounds.size.width
+            - px(Layout::DISCLOSURE_PADDING_X + Layout::DISCLOSURE_SCROLLBAR_GUTTER);
+        if visible && width > px(0.) {
+            let _ = self.card.update(cx, |card, cx| {
+                let changed = card.body.style.as_ref().is_none_or(|old| {
+                    old.width != width
+                        || old.scale != self.style.scale
+                        || old.font != self.style.font
+                        || old.colors.bg_base != self.style.colors.bg_base
+                        || old.colors.text_primary != self.style.colors.text_primary
+                });
+                if changed {
+                    card.body.epoch = card.body.epoch.wrapping_add(1);
+                    card.body.style = Some(PreparationStyle {
+                        width,
+                        ..self.style.clone()
+                    });
+                }
+                card.prepare_body(cx);
+            });
+        }
     }
     fn paint(
         &mut self,

@@ -262,6 +262,8 @@ fn issue395_virtual_thinking_selection_keeps_logical_paragraph_and_rejects_new_s
             .is_empty()
     );
     assert_eq!(scroll.offset().y, px(0.));
+    assert_eq!(scroll.max_offset().y, px(0.));
+    assert_eq!(copy.visible_text().as_deref(), Some("replacement"));
 }
 
 #[gpui_kit::test]
@@ -287,6 +289,7 @@ fn issue395_code_horizontal_offset_survives_vertical_recycling(cx: &mut TestAppC
     let horizontal = card
         .read_with(&visual, |card, _| card.test_horizontal_scroll())
         .expect("horizontal code scroll");
+    assert!(horizontal.max_offset().x > px(100.));
     horizontal.set_offset(gpui_kit::point(px(-100.), px(0.)));
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();
