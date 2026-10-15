@@ -1003,8 +1003,8 @@ async fn issue372_live_reasoning_failure_has_one_owned_actionable_surface(cx: &m
                 assert_eq!(stream.run_notices.len(), 1);
                 let notice = stream.run_notices.values().next().unwrap();
                 assert_eq!(notice.message_id, "thinking-run");
-                assert!(notice.text().contains("思考内容超出限制"));
-                assert!(notice.text().contains("思考强度"));
+                assert!(notice.text().contains("此前运行因本地思考内容限制而中断"));
+                assert!(notice.text().contains("重新发送消息继续"));
                 assert!(!notice.text().contains("运行环境"));
                 assert!(!notice.text().contains("供应商"));
                 assert!(stream.controller_error_is_run_notice());
@@ -1098,7 +1098,11 @@ async fn issue372_reopened_steered_reasoning_error_keeps_one_card_and_independen
                 .collect::<Vec<_>>();
             assert_eq!(reasoning.len(), 1);
             assert_eq!(reasoning[0].message_id, "steered-failure");
-            assert!(reasoning[0].text().contains("思考内容超出限制"));
+            assert!(
+                reasoning[0]
+                    .text()
+                    .contains("此前运行因本地思考内容限制而中断")
+            );
             assert!(!reasoning[0].text().contains("运行环境"));
             assert!(
                 stream
@@ -1128,4 +1132,32 @@ async fn issue372_reopened_steered_reasoning_error_keeps_one_card_and_independen
             .debug_bounds("conversation-controller-error")
             .is_none()
     );
+}
+
+#[gpui_kit::test]
+async fn restored_provider_failures_keep_the_specific_notice(cx: &mut TestAppContext) {
+    let window = setup(cx);
+    window.update(cx, |stream, _, cx| {
+        use vega_conversation::history::{AssistantStatus, HistoryEntry, HistoryPage};
+        let kinds = [RunFailureKind::ProviderOutputLimit, RunFailureKind::ProviderProtocol, RunFailureKind::ProviderTransport, RunFailureKind::ProviderRejected, RunFailureKind::ProviderUnknown];
+        stream.apply_history_page(HistoryPage {
+            entries: kinds.iter().enumerate().map(|(index, _)| HistoryEntry::AssistantText {
+                seq: index as i64 + 1,
+                message_id: format!("failure-{index}"),
+                content: String::new(),
+                status: AssistantStatus::Failed,
+                execution_duration_ms: Some(1),
+            }).collect(), older_cursor: None, newer_cursor: None, newest_seq: None,
+        }, cx);
+        let failures = kinds.iter().enumerate().map(|(index, kind)| (format!("failure-{index}"), *kind)).collect::<Vec<_>>();
+        stream.restore_context_run_failures(&failures, cx);
+        stream.refresh_run_notices(cx);
+        assert_eq!(stream.run_notices.len(), kinds.len());
+        for (message_id, kind) in failures {
+            let notice = stream.run_notices.values().find(|notice| notice.message_id == message_id).unwrap();
+            assert!(matches!(notice.kind, run_notice::RunNoticeKind::Failure(value) if value == kind));
+            assert_eq!(notice.text(), kind.message());
+            assert!(!notice.text().contains("压缩上下文"));
+        }
+    }).unwrap();
 }

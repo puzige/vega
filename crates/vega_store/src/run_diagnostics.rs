@@ -2,7 +2,9 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 
 mod failure_ownership;
-pub use failure_ownership::{budget_failure_message_ids, projection_reasoning_failure};
+pub use failure_ownership::{
+    budget_failure_message_ids, classified_failure_message_ids, projection_reasoning_failure,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,6 +125,16 @@ impl DiagnosticStopReason {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DiagnosticMetrics {
+    pub failure_tool_index: Option<u64>,
+    pub failure_source: Option<String>,
+    pub failure_kind: Option<String>,
+    pub failure_scope: Option<String>,
+    pub failure_observed: Option<u64>,
+    pub failure_limit: Option<u64>,
+    pub failure_units: Option<String>,
+    pub failure_observed_items: Option<u64>,
+    pub failure_limit_items: Option<u64>,
+
     pub stop_reason: Option<DiagnosticStopReason>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -218,10 +230,10 @@ pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, Diag
           thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state,
           failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens,
           cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes,
-          tool_truncated, http_status, request_id, retry_count
+          tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-          ?17, ?18, ?19, ?20, ?21
+          ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
         )",
         params![
             event.thread_id,
@@ -291,6 +303,16 @@ pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, Diag
             event.metrics.http_status.map(i64::from),
             event.metrics.request_id,
             event.metrics.retry_count.map(i64::from),
+            event.metrics.failure_source,
+            event.metrics.failure_kind,
+            event.metrics.failure_scope,
+            event.metrics.failure_observed.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_observed" })?,
+            event.metrics.failure_limit.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_limit" })?,
+            event.metrics.failure_units,
+            event.metrics.failure_observed_items.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_observed_items" })?,
+            event.metrics.failure_limit_items.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_limit_items" })?,
+            event.metrics.failure_tool_index.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_tool_index" })?,
+
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -303,7 +325,7 @@ pub fn read_by_run(
 ) -> Result<Vec<DiagnosticEvent>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
     validate_identity(run_id, "run_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count FROM run_diagnostic_events WHERE thread_id = ?1 AND run_id = ?2 ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 AND run_id = ?2 ORDER BY id")?;
     let rows = statement.query_map(params![thread_id, run_id], read_row)?;
     rows.collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -316,7 +338,7 @@ pub fn read_by_thread(
     thread_id: &str,
 ) -> Result<Vec<DiagnosticEvent>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count FROM run_diagnostic_events WHERE thread_id = ?1 ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 ORDER BY id")?;
     let rows = statement.query_map([thread_id], read_row)?;
     rows.collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -429,6 +451,68 @@ fn validate(event: &NewDiagnosticEvent) -> Result<(), DiagnosticError> {
     }
     if event
         .metrics
+        .failure_source
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "runtime" | "provider"))
+    {
+        return Err(DiagnosticError::InvalidField {
+            field: "failure_source",
+        });
+    }
+    if event.metrics.failure_kind.as_deref().is_some_and(|value| {
+        !matches!(
+            value,
+            "unknown"
+                | "http"
+                | "transport"
+                | "protocol"
+                | "rejected"
+                | "output_limit"
+                | "reasoning_limit"
+                | "context_over_limit"
+                | "cancelled"
+                | "quota"
+                | "authorization"
+                | "rate_limited"
+                | "credential_exposure"
+                | "credential_check"
+                | "credential_continuation"
+                | "credential_projection"
+        )
+    }) {
+        return Err(DiagnosticError::InvalidField {
+            field: "failure_kind",
+        });
+    }
+    if event.metrics.failure_scope.as_deref().is_some_and(|value| {
+        !matches!(
+            value,
+            "delta"
+                | "response"
+                | "run"
+                | "request_input"
+                | "request_context"
+                | "summary_input"
+                | "compaction_result"
+                | "sse_frame"
+        )
+    }) {
+        return Err(DiagnosticError::InvalidField {
+            field: "failure_scope",
+        });
+    }
+    if event
+        .metrics
+        .failure_units
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "bytes" | "tokens"))
+    {
+        return Err(DiagnosticError::InvalidField {
+            field: "failure_units",
+        });
+    }
+    if event
+        .metrics
         .http_status
         .is_some_and(|status| !(100..=599).contains(&status))
     {
@@ -471,6 +555,16 @@ fn sql_i64(value: u64) -> Result<i64, std::num::TryFromIntError> {
 }
 
 struct RawEvent {
+    failure_tool_index: Option<i64>,
+    failure_source: Option<String>,
+    failure_kind: Option<String>,
+    failure_scope: Option<String>,
+    failure_observed: Option<i64>,
+    failure_limit: Option<i64>,
+    failure_units: Option<String>,
+    failure_observed_items: Option<i64>,
+    failure_limit_items: Option<i64>,
+
     id: i64,
     thread_id: String,
     run_id: String,
@@ -518,7 +612,16 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEvent> {
         tool_truncated: row.get(18)?,
         http_status: row.get(19)?,
         request_id: row.get(20)?,
+        failure_tool_index: row.get(30)?,
         retry_count: row.get(21)?,
+        failure_source: row.get(22)?,
+        failure_kind: row.get(23)?,
+        failure_scope: row.get(24)?,
+        failure_observed: row.get(25)?,
+        failure_limit: row.get(26)?,
+        failure_units: row.get(27)?,
+        failure_observed_items: row.get(28)?,
+        failure_limit_items: row.get(29)?,
     })
 }
 
@@ -564,7 +667,19 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
                     tool_truncated: raw.tool_truncated,
                     http_status: raw.http_status,
                     request_id: raw.request_id,
+                    failure_tool_index: opt_u64(raw.failure_tool_index, "failure_tool_index")?,
                     retry_count: raw.retry_count,
+                    failure_source: raw.failure_source,
+                    failure_kind: raw.failure_kind,
+                    failure_scope: raw.failure_scope,
+                    failure_observed: opt_u64(raw.failure_observed, "failure_observed")?,
+                    failure_limit: opt_u64(raw.failure_limit, "failure_limit")?,
+                    failure_units: raw.failure_units,
+                    failure_observed_items: opt_u64(
+                        raw.failure_observed_items,
+                        "failure_observed_items",
+                    )?,
+                    failure_limit_items: opt_u64(raw.failure_limit_items, "failure_limit_items")?,
                 },
             },
         })
@@ -685,6 +800,57 @@ mod tests {
             duration_ms: (state != DiagnosticState::Started).then_some(4),
             metrics: DiagnosticMetrics::default(),
         }
+    }
+
+    #[test]
+    fn failure_details_round_trip_with_legacy_unknowns_and_closed_vocabulary() {
+        let store = store();
+        insert(store.conn(), &event(DiagnosticState::Started, "details")).unwrap();
+        let mut failed = event(DiagnosticState::Failed, "details");
+        failed.failure_code = Some(DiagnosticFailureCode::ReasoningLimit);
+        failed.metrics.failure_source = Some("runtime".into());
+        failed.metrics.failure_kind = Some("reasoning_limit".into());
+        failed.metrics.failure_scope = Some("response".into());
+        failed.metrics.failure_observed = Some(262145);
+        failed.metrics.failure_limit = Some(262144);
+        failed.metrics.failure_units = Some("bytes".into());
+        failed.metrics.failure_observed_items = Some(257);
+        failed.metrics.failure_limit_items = Some(256);
+        insert(store.conn(), &failed).unwrap();
+        insert(store.conn(), &event(DiagnosticState::Started, "legacy")).unwrap();
+        let mut legacy = event(DiagnosticState::Failed, "legacy");
+        legacy.failure_code = Some(DiagnosticFailureCode::ReasoningLimit);
+        insert(store.conn(), &legacy).unwrap();
+        let loaded = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
+        assert_eq!(loaded[1].event.metrics, failed.metrics);
+        assert_eq!(loaded[3].event.metrics, DiagnosticMetrics::default());
+        let export = export_run(store.conn(), "thread-171", "run-171").unwrap();
+        assert!(export.contains("262145"));
+        assert!(export.contains("\"failure_scope\":null"));
+        let mut unsafe_event = event(DiagnosticState::Started, "unsafe");
+        unsafe_event.metrics.failure_kind = Some("PRIVATE_PROVIDER_BODY".into());
+        assert!(matches!(
+            insert(store.conn(), &unsafe_event),
+            Err(DiagnosticError::InvalidField {
+                field: "failure_kind"
+            })
+        ));
+    }
+
+    #[test]
+    fn additive_failure_migration_leaves_existing_reasoning_detail_unknown() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE run_diagnostic_events (failure_code TEXT); INSERT INTO run_diagnostic_events VALUES ('reasoning_limit');").unwrap();
+        conn.execute_batch(include_str!("../migrations/0025_failure_details.sql"))
+            .unwrap();
+        let detail: (String, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT failure_code, failure_scope, failure_observed FROM run_diagnostic_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(detail, ("reasoning_limit".into(), None, None));
     }
 
     #[test]

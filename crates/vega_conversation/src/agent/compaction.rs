@@ -245,7 +245,7 @@ pub fn read_context_projection_with_provider(
         .filter(|message| message.role == "assistant")
         .map(|message| message.id.as_str())
         .collect::<std::collections::HashSet<_>>();
-    let run_failures =
+    let mut run_failures: Vec<_> =
         vega_store::run_diagnostics::budget_failure_message_ids(&transaction, thread_id)
             .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
             .into_iter()
@@ -263,6 +263,18 @@ pub fn read_context_projection_with_provider(
                 Some((message_id, kind))
             })
             .collect();
+    for (message_id, metrics) in
+        vega_store::run_diagnostics::classified_failure_message_ids(&transaction, thread_id)
+            .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
+    {
+        if assistant_ids.contains(message_id.as_str()) {
+            run_failures.retain(|(owner, _)| owner != &message_id);
+            run_failures.push((
+                message_id,
+                crate::types::RunFailureKind::from_diagnostic(&metrics),
+            ));
+        }
+    }
     let reasoning_failure = match (status.as_ref(), last_status_message_id.as_deref()) {
         (Some(status), Some(owner))
             if status.phase == "failed" && status.failure.as_deref() == Some("too_large") =>
@@ -511,7 +523,7 @@ pub async fn compact_thread_manually_with_credential_reader(
         &run_id,
         &root_attempt_id,
         vega_store::run_diagnostics::DiagnosticState::Started,
-        None,
+        (None, Default::default()),
         run_started_at,
     );
     let diagnostics_context = super::diagnostics::DiagnosticsContext {
@@ -567,7 +579,14 @@ pub async fn compact_thread_manually_with_credential_reader(
         &run_id,
         &root_attempt_id,
         state,
-        failure_code,
+        (
+            failure_code,
+            result
+                .as_ref()
+                .err()
+                .map(|failure| super::diagnostics::failure_metrics(&failure.error))
+                .unwrap_or_default(),
+        ),
         run_started_at,
     );
     diagnostics.flush_to(store);
@@ -1007,7 +1026,16 @@ impl ContextCompactionHook for ConversationCompactionHook<'_> {
                     state,
                     failure_code,
                     operation_started_at,
-                    summary_store_metrics(&empty_metrics),
+                    result
+                        .as_ref()
+                        .err()
+                        .map(|failure| {
+                            super::diagnostics::with_failure_metrics(
+                                summary_store_metrics(&empty_metrics),
+                                &failure.error,
+                            )
+                        })
+                        .unwrap_or_else(|| summary_store_metrics(&empty_metrics)),
                 );
             }
             result
@@ -1231,7 +1259,10 @@ impl ConversationCompactionHook<'_> {
                         state,
                         summary_diagnostic_failure(stage_failure.failure.error.as_ref()),
                         started_at,
-                        summary_store_metrics(&stage_failure.metrics),
+                        super::diagnostics::with_failure_metrics(
+                            summary_store_metrics(&stage_failure.metrics),
+                            &stage_failure.failure.error,
+                        ),
                     );
                 }
                 Err(failure_with_usages(
@@ -2429,15 +2460,20 @@ fn summary_diagnostic_failure(
     error: &VegaError,
 ) -> Option<vega_store::run_diagnostics::DiagnosticFailureCode> {
     use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
+    if error.context_input_overflow().is_some() {
+        return Some(Code::ContextOverLimit);
+    }
     match error {
         VegaError::Cancelled => None,
+        VegaError::ProviderPayloadTooLarge { .. } => Some(Code::ProviderProtocol),
         VegaError::ReasoningBudgetExceeded { .. }
         | VegaError::ReasoningReplayBudgetExceeded { .. } => Some(Code::ReasoningLimit),
         VegaError::ProviderDiagnostic { kind, .. } => Some(match kind {
             vega_runtime::ProviderFailureKind::Http => Code::ProviderHttp,
             vega_runtime::ProviderFailureKind::Transport => Code::ProviderTransportOrStream,
             vega_runtime::ProviderFailureKind::Protocol => Code::ProviderProtocol,
-            vega_runtime::ProviderFailureKind::Rejected => Code::ProviderRejected,
+            vega_runtime::ProviderFailureKind::Rejected
+            | vega_runtime::ProviderFailureKind::OutputLimit => Code::ProviderRejected,
         }),
         VegaError::Provider {
             status: Some(_), ..

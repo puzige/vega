@@ -16,6 +16,10 @@ pub enum ConversationStopReason {
 /// HTTP metadata is allowed to cross into rendered conversation state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunFailureKind {
+    ProviderUnknown,
+    ProviderProtocol,
+    ProviderRejected,
+    ProviderOutputLimit,
     /// The provider explicitly reported an exhausted account quota.
     ProviderQuota,
     /// The provider rejected the local credential or account permissions.
@@ -42,11 +46,62 @@ pub enum RunFailureKind {
 }
 
 impl RunFailureKind {
+    pub(crate) fn from_diagnostic(
+        metrics: &vega_store::run_diagnostics::DiagnosticMetrics,
+    ) -> Self {
+        match metrics.failure_kind.as_deref() {
+            Some("quota") => Self::ProviderQuota,
+            Some("authorization") => Self::ProviderAuthorization,
+            Some("rate_limited") => Self::ProviderRateLimited,
+            Some("http") => metrics
+                .http_status
+                .map(Self::ProviderHttp)
+                .unwrap_or(Self::ProviderRejected),
+            Some("transport") => Self::ProviderTransport,
+            Some("protocol") => Self::ProviderProtocol,
+            Some("rejected") => Self::ProviderRejected,
+            Some("output_limit") => Self::ProviderOutputLimit,
+            Some("context_over_limit") => Self::ContextOverLimit,
+            Some("reasoning_limit") => {
+                Self::ReasoningLimit(match metrics.failure_scope.as_deref() {
+                    Some("delta") => Some(vega_runtime::ReasoningBudgetScope::Delta),
+                    Some("response") => Some(vega_runtime::ReasoningBudgetScope::Turn),
+                    Some("run") => Some(vega_runtime::ReasoningBudgetScope::Run),
+                    _ => None,
+                })
+            }
+            Some("credential_exposure") => Self::CredentialExposureBlocked,
+            Some("credential_check") => Self::CredentialCheckUnavailable,
+            Some("credential_continuation") => Self::CredentialContinuationUnavailable,
+            Some("credential_projection") => metrics
+                .failure_tool_index
+                .and_then(|value| usize::try_from(value).ok())
+                .map(Self::CredentialProjectionInvalid)
+                .unwrap_or(Self::Runtime),
+            Some("unknown") if metrics.failure_source.as_deref() == Some("provider") => {
+                Self::ProviderUnknown
+            }
+            _ => Self::Runtime,
+        }
+    }
+
     /// Reduces the typed runtime error without retaining or displaying its
     /// provider-supplied body. A quota diagnosis requires the exact structured
     /// code in an HTTP 400 response; free-form prose is never trusted.
     pub fn from_runtime(error: &vega_runtime::VegaError) -> Self {
+        if error.context_input_overflow().is_some() {
+            return Self::ContextOverLimit;
+        }
         match error {
+            vega_runtime::VegaError::ProviderPayloadTooLarge { .. } => Self::ProviderProtocol,
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::OutputLimit,
+                ..
+            } => Self::ProviderOutputLimit,
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Protocol,
+                ..
+            } => Self::ProviderProtocol,
             vega_runtime::VegaError::Provider {
                 status: Some(400),
                 message,
@@ -63,7 +118,7 @@ impl RunFailureKind {
                 status: Some(status),
                 ..
             } => Self::ProviderHttp(*status),
-            vega_runtime::VegaError::Provider { status: None, .. } => Self::ProviderTransport,
+            vega_runtime::VegaError::Provider { status: None, .. } => Self::ProviderUnknown,
             vega_runtime::VegaError::ProviderDiagnostic {
                 status: Some(400),
                 message,
@@ -84,6 +139,10 @@ impl RunFailureKind {
                 kind: vega_runtime::ProviderFailureKind::Transport,
                 ..
             } => Self::ProviderTransport,
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Rejected,
+                ..
+            } => Self::ProviderRejected,
             vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
             vega_runtime::VegaError::CredentialCheckUnavailable => Self::CredentialCheckUnavailable,
             vega_runtime::VegaError::CredentialContinuationUnavailable => {
@@ -108,6 +167,10 @@ impl RunFailureKind {
     /// Actionable text made entirely from local vocabulary and HTTP metadata.
     pub fn message(self) -> String {
         match self {
+            Self::ProviderUnknown => "供应商请求失败，原因未明确；请重试或切换供应商。".into(),
+            Self::ProviderProtocol => "供应商返回的数据无效；请重试或切换模型。".into(),
+            Self::ProviderRejected => "供应商未完成本次响应；请检查模型设置后重试或切换模型。".into(),
+            Self::ProviderOutputLimit => "模型已达到本次输出上限；请继续任务或调整模型输出额度。".into(),
             Self::ProviderQuota => {
                 "供应商额度不足；请充值或在设置 → Providers 切换可用供应商后重试".into()
             }
@@ -128,16 +191,10 @@ impl RunFailureKind {
             Self::CredentialOutcomeUnknown => "部分操作的结果未知，请检查工具记录后再决定下一步".into(),
             Self::CredentialContinuationUnavailable => "恢复记录已使用、对话已变化或操作结果未知。请检查工具记录，再发送新消息继续。".into(),
             Self::ContextOverLimit => {
-                "本地上下文超出预算；原始对话已保留。请调整上下文容量、缩小工具查询范围或在新对话中继续。".into()
+                "上下文超出可用容量；原始对话已保留。请调整上下文容量、缩小工具查询范围或在新对话中继续。".into()
             }
-            Self::ReasoningLimit(Some(vega_runtime::ReasoningBudgetScope::Delta | vega_runtime::ReasoningBudgetScope::Turn)) => {
-                "模型本次思考内容超出限制；请降低思考强度后重试。".into()
-            }
-            Self::ReasoningLimit(Some(vega_runtime::ReasoningBudgetScope::Run)) => {
-                "保留的模型思考内容超出限制；请压缩上下文后继续，或降低思考强度后重试。".into()
-            }
-            Self::ReasoningLimit(None) => {
-                "模型思考内容超出限制；请降低思考强度，或压缩上下文后继续。".into()
+            Self::ReasoningLimit(_) => {
+                "此前运行因本地思考内容限制而中断；请重新发送消息继续。".into()
             }
             Self::Runtime => "任务执行失败；请检查运行环境后重试".into(),
             Self::Persisted => "这条回复执行失败；请检查供应商状态、额度或运行环境后重试".into(),
@@ -949,7 +1006,7 @@ mod run_failure_tests {
         ] {
             let kind = RunFailureKind::from_runtime(&VegaError::Context(error));
             assert_eq!(kind, RunFailureKind::ContextOverLimit);
-            assert!(kind.message().contains("本地上下文超出预算"));
+            assert!(kind.message().contains("上下文超出可用容量"));
             assert!(kind.message().contains("原始对话已保留"));
             assert!(!kind.message().contains("运行环境"));
             assert!(!kind.message().contains("供应商"));
@@ -1015,7 +1072,7 @@ mod run_failure_tests {
             (Some(403), RunFailureKind::ProviderAuthorization),
             (Some(429), RunFailureKind::ProviderRateLimited),
             (Some(503), RunFailureKind::ProviderHttp(503)),
-            (None, RunFailureKind::ProviderTransport),
+            (None, RunFailureKind::ProviderUnknown),
         ] {
             let kind = RunFailureKind::from_runtime(&provider(status, "SECRET_SENTINEL"));
             assert_eq!(kind, expected);

@@ -191,7 +191,7 @@ impl DiagnosticsWriter {
         run_id: &str,
         attempt_id: &str,
         state: DiagnosticState,
-        failure_code: Option<DiagnosticFailureCode>,
+        failure: (Option<DiagnosticFailureCode>, DiagnosticMetrics),
         started_at: Instant,
     ) {
         self.record(NewDiagnosticEvent {
@@ -202,11 +202,11 @@ impl DiagnosticsWriter {
             tool_call_id: None,
             phase: DiagnosticPhase::Run,
             state,
-            failure_code: failure_code.or_else(|| terminal_failure(state)),
+            failure_code: failure.0.or_else(|| terminal_failure(state)),
             occurred_at: now_ms(),
             duration_ms: (state != DiagnosticState::Started)
                 .then(|| u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)),
-            metrics: DiagnosticMetrics::default(),
+            metrics: failure.1,
         });
     }
 
@@ -247,6 +247,15 @@ impl DiagnosticsWriter {
             occurred_at: now_ms(),
             duration_ms: attempt.duration_ms,
             metrics: DiagnosticMetrics {
+                failure_tool_index: attempt.metrics.failure_tool_index,
+                failure_source: attempt.metrics.failure_source.map(str::to_owned),
+                failure_kind: attempt.metrics.failure_kind.map(str::to_owned),
+                failure_scope: attempt.metrics.failure_scope.map(str::to_owned),
+                failure_observed: attempt.metrics.failure_observed,
+                failure_limit: attempt.metrics.failure_limit,
+                failure_units: attempt.metrics.failure_units.map(str::to_owned),
+                failure_observed_items: attempt.metrics.failure_observed_items,
+                failure_limit_items: attempt.metrics.failure_limit_items,
                 stop_reason: attempt.metrics.stop_reason.and_then(stop_reason),
                 input_tokens: attempt.metrics.input_tokens,
                 output_tokens: attempt.metrics.output_tokens,
@@ -289,18 +298,67 @@ impl DiagnosticsWriter {
 }
 
 pub(crate) fn run_failure(error: &vega_runtime::VegaError) -> DiagnosticFailureCode {
-    match error {
-        vega_runtime::VegaError::ReasoningBudgetExceeded { .. }
-        | vega_runtime::VegaError::ReasoningReplayBudgetExceeded { .. } => {
-            DiagnosticFailureCode::ReasoningLimit
-        }
-        vega_runtime::VegaError::Context(
-            vega_runtime::ContextRuntimeError::OverLimit { .. }
-            | vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
-            | vega_runtime::ContextRuntimeError::ResultOverLimit { .. },
-        ) => DiagnosticFailureCode::ContextOverLimit,
+    let metrics = error.diagnostic_metrics();
+    match metrics.failure_kind {
+        Some("reasoning_limit") => DiagnosticFailureCode::ReasoningLimit,
+        Some("context_over_limit") => DiagnosticFailureCode::ContextOverLimit,
+        Some("http") => DiagnosticFailureCode::ProviderHttp,
+        Some("transport") => DiagnosticFailureCode::ProviderTransportOrStream,
+        Some("protocol") => DiagnosticFailureCode::ProviderProtocol,
+        Some("rejected" | "output_limit") => DiagnosticFailureCode::ProviderRejected,
         _ => DiagnosticFailureCode::UnknownSafeFailure,
     }
+}
+
+pub(crate) fn failure_metrics(error: &vega_runtime::VegaError) -> DiagnosticMetrics {
+    let detail = error.diagnostic_metrics();
+    let mut metrics = DiagnosticMetrics {
+        failure_tool_index: detail.failure_tool_index,
+        failure_source: detail.failure_source.map(str::to_owned),
+        failure_kind: detail.failure_kind.map(str::to_owned),
+        failure_scope: detail.failure_scope.map(str::to_owned),
+        failure_observed: detail.failure_observed,
+        failure_limit: detail.failure_limit,
+        failure_units: detail.failure_units.map(str::to_owned),
+        failure_observed_items: detail.failure_observed_items,
+        failure_limit_items: detail.failure_limit_items,
+        http_status: detail.provider.http_status,
+        retry_count: detail.provider.retry_count,
+        request_id: detail.provider.request_id,
+        ..DiagnosticMetrics::default()
+    };
+    metrics.failure_kind = Some(
+        match crate::types::RunFailureKind::from_runtime(error) {
+            crate::types::RunFailureKind::ProviderHttp(_) => "http",
+            crate::types::RunFailureKind::ProviderQuota => "quota",
+            crate::types::RunFailureKind::ProviderAuthorization => "authorization",
+            crate::types::RunFailureKind::ProviderRateLimited => "rate_limited",
+            crate::types::RunFailureKind::ContextOverLimit => "context_over_limit",
+            _ => return metrics,
+        }
+        .into(),
+    );
+    metrics
+}
+
+pub(crate) fn with_failure_metrics(
+    mut metrics: DiagnosticMetrics,
+    error: &vega_runtime::VegaError,
+) -> DiagnosticMetrics {
+    let detail = failure_metrics(error);
+    metrics.failure_source = detail.failure_source;
+    metrics.failure_kind = detail.failure_kind;
+    metrics.failure_scope = detail.failure_scope;
+    metrics.failure_observed = detail.failure_observed;
+    metrics.failure_limit = detail.failure_limit;
+    metrics.failure_units = detail.failure_units;
+    metrics.failure_observed_items = detail.failure_observed_items;
+    metrics.failure_limit_items = detail.failure_limit_items;
+    metrics.failure_tool_index = detail.failure_tool_index;
+    metrics.http_status = detail.http_status.or(metrics.http_status);
+    metrics.retry_count = detail.retry_count.or(metrics.retry_count);
+    metrics.request_id = detail.request_id.or(metrics.request_id);
+    metrics
 }
 
 fn runtime_failure(value: RuntimeDiagnosticFailure) -> DiagnosticFailureCode {
@@ -369,6 +427,144 @@ mod tests {
             duration_ms: None,
             metrics: DiagnosticMetrics::default(),
         }
+    }
+
+    #[test]
+    fn classified_failures_preserve_live_kind_and_measurements_after_storage() {
+        use crate::types::RunFailureKind;
+        use vega_runtime::{ProviderFailureKind, VegaError};
+        let errors = vec![
+            VegaError::ReasoningBudgetExceeded {
+                scope: vega_runtime::ReasoningBudgetScope::Turn,
+                observed_bytes: 262145,
+                limit_bytes: 262144,
+            },
+            VegaError::ProviderPayloadTooLarge {
+                observed_bytes: 4194305,
+                limit_bytes: 4194304,
+            },
+            VegaError::Context(vega_runtime::ContextRuntimeError::OverLimit {
+                estimated_tokens: 101,
+                input_budget: 100,
+            }),
+            VegaError::CredentialExposureBlocked,
+            VegaError::CredentialCheckUnavailable,
+            VegaError::CredentialContinuationUnavailable,
+            VegaError::CredentialProjectionInvalid { tool_index: 4 },
+            VegaError::Provider {
+                status: None,
+                message: "PRIVATE_PROVIDER_BODY".into(),
+                retryable: false,
+            },
+        ]
+        .into_iter()
+        .chain(
+            [
+                ProviderFailureKind::Protocol,
+                ProviderFailureKind::Transport,
+                ProviderFailureKind::OutputLimit,
+                ProviderFailureKind::Rejected,
+            ]
+            .into_iter()
+            .map(|kind| VegaError::ProviderDiagnostic {
+                kind,
+                status: None,
+                message: "PRIVATE_PROVIDER_BODY".into(),
+                retryable: false,
+                retry_count: Some(2),
+                request_id: Some("safe-id".into()),
+            }),
+        );
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let store = vega_store::Store::open(temp.path()).unwrap();
+        store.migrate().unwrap();
+        vega_store::threads::create_standalone(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let mut expected = Vec::new();
+        for (index, error) in errors.enumerate() {
+            let mut start = event();
+            start.attempt_id = format!("failure-{index}");
+            start.run_id = start.attempt_id.clone();
+            vega_store::messages::insert(
+                store.conn(),
+                &vega_store::messages::MessageRow {
+                    id: start.run_id.clone(),
+                    thread_id: "thread".into(),
+                    seq: index as i64 + 1,
+                    role: "assistant".into(),
+                    kind: "text".into(),
+                    content: String::new(),
+                    status: "failed".into(),
+                    created_at: 1,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+            vega_store::run_diagnostics::insert(store.conn(), &start).unwrap();
+            let mut terminal = start;
+            terminal.state = DiagnosticState::Failed;
+            terminal.duration_ms = Some(1);
+            terminal.failure_code = Some(run_failure(&error));
+            terminal.metrics = failure_metrics(&error);
+            expected.push((
+                RunFailureKind::from_runtime(&error),
+                terminal.metrics.clone(),
+            ));
+            vega_store::run_diagnostics::insert(store.conn(), &terminal).unwrap();
+        }
+        drop(store);
+        let reopened = vega_store::Store::open(temp.path()).unwrap();
+        let rows = vega_store::run_diagnostics::read_by_thread(reopened.conn(), "thread").unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.event.state == DiagnosticState::Failed)
+                .count(),
+            expected.len()
+        );
+        let projection = super::super::compaction::read_context_projection(
+            &reopened, "thread", "mock", "system",
+        )
+        .unwrap();
+        assert_eq!(projection.run_failures.len(), expected.len());
+        for (index, (kind, _)) in expected.iter().enumerate() {
+            assert!(
+                projection
+                    .run_failures
+                    .contains(&(format!("failure-{index}"), *kind))
+            );
+        }
+        for (row, (kind, metrics)) in rows
+            .iter()
+            .filter(|row| row.event.state == DiagnosticState::Failed)
+            .zip(expected)
+        {
+            assert_eq!(row.event.metrics, metrics);
+            let restored = RunFailureKind::from_diagnostic(&row.event.metrics);
+            assert_eq!(restored, kind);
+            assert_eq!(restored.message(), kind.message());
+            assert!(!restored.message().contains("PRIVATE_PROVIDER_BODY"));
+        }
+        let export =
+            vega_store::run_diagnostics::export_run(reopened.conn(), "thread", "failure-0")
+                .unwrap();
+        assert!(!export.contains("PRIVATE_PROVIDER_BODY"));
     }
 
     #[test]

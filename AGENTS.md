@@ -84,6 +84,13 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - `.config/nextest.toml` 用于云端 PR gate：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
 - **本地仅做快速 check，功能点测试与全量门禁交给云端 `pr-check`**（2026-10-13 用户裁决，取代 2026-09-23 的本地定向测试要求）。任务级 production-root 回归与测试矩阵仍须覆盖；保留既有安全断言、失败输出及任务验收矩阵，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
 
+## PR 检查轮询节奏（2026-10-15 用户裁决）
+
+- **PR 的云端检查启动后，每 5 分钟查询一次状态**；适用于主 agent、子 agent 和所有 worktree，不使用更短间隔的轮询或 watch。
+- 等待期间继续独立的审查、文档等工作；没有新结果时不反复查询或播报相同状态。
+- 收到 CI 完成/失败通知，或用户明确要求立即查看时，可以立即检查；发现失败后读取日志并修复，新一轮检查启动后恢复 5 分钟间隔。
+- 此规则只调整检查频率，不降低门禁：仍须确认待合并的最新提交通过 required checks，才能合并。
+
 ## 应用安装入口（2026-09-25 用户更新约定）
 
 - 用户明确批准 `/Applications/Vega.app`、`~/Applications/Vega.app`，兼容 `~/Documents/Vega/Vega.app`；bundle ID 保持 `ai.vega`。只更新实际运行的 canonical app；不得迁移或修改其他副本。独立更新签名与路径规则见 [规格](docs/vega-issue-181-independent-update-signing.md)。

@@ -20,7 +20,7 @@ use vega_token::{PricingCatalog, PricingProfile};
 use crate::error::VegaError;
 use crate::provider::{
     ChatMessage, ChatRequest, ChatRole, ChatToolCall, FrozenReasoning, Provider, ProviderEvent,
-    ReasoningBudgetScope, StopReason, ToolDefinition,
+    StopReason, ToolDefinition,
 };
 use crate::skills::{
     ActivationAudit, ActiveSkillSummary, RunBinding, SkillRun, SkillRunSnapshot, SkillSelection,
@@ -46,11 +46,10 @@ pub use credential_redaction::{
 };
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
-/// Maximum bytes accepted from one streamed reasoning delta.
 pub const REASONING_DELTA_MAX_BYTES: usize = 64 * 1024;
-/// Maximum bytes retained for one logical provider call/assistant turn.
 pub const REASONING_TURN_MAX_BYTES: usize = 256 * 1024;
 pub const REASONING_RUN_MAX_BYTES: usize = 1024 * 1024;
+const REASONING_DISPLAY_MAX_BYTES: usize = 256 * 1024;
 /// Stable content-free result for a provider call id that conflicts with
 /// persisted owner, tool, or safe input identity.
 pub const CALL_ID_CONFLICT_OUTPUT: &str = "Tool error: persisted call identity conflict";
@@ -682,6 +681,16 @@ pub enum RuntimeDiagnosticFailure {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeDiagnosticMetrics {
+    pub failure_tool_index: Option<u64>,
+    pub failure_source: Option<&'static str>,
+    pub failure_kind: Option<&'static str>,
+    pub failure_scope: Option<&'static str>,
+    pub failure_observed: Option<u64>,
+    pub failure_limit: Option<u64>,
+    pub failure_units: Option<&'static str>,
+    pub failure_observed_items: Option<u64>,
+    pub failure_limit_items: Option<u64>,
+
     pub provider: crate::ProviderResponseMetadata,
     pub stop_reason: Option<StopReason>,
     pub input_tokens: Option<u64>,
