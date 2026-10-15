@@ -434,7 +434,7 @@ async fn issue296_timeline_t04_hydrated_split_preserves_existing_keys_and_reload
         );
         assert_eq!(
             stream.run_activity_groups["timeline"].read(cx).test_label(),
-            "已完成"
+            "Completed"
         );
         originals
     });

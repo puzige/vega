@@ -662,7 +662,7 @@ async fn summary_stage_nests_tools_without_duplicate_reasoning(cx: &mut TestAppC
     visual.run_until_parked();
     stream.read_with(&visual, |stream, app| {
         let group = stream.run_activity_groups["m"].read(app);
-        assert_eq!(group.stage_title(0, app), "运行命令");
+        assert_eq!(group.stage_title(0, app), "run commands");
         assert!(!group.segment_expanded(0));
         assert!(stream.run_notice_projection(app).is_empty());
         let kinds = group
@@ -940,7 +940,7 @@ async fn i71_fenced_summary_keeps_received_content(cx: &mut TestAppContext) {
     });
     stream.read_with(cx, |stream, app| {
         let card = cards(stream, app)[0].read(app);
-        assert_eq!(card.title(), "思考过程");
+        assert_eq!(card.title(), "Thinking");
         assert_eq!(card.visible_text(), content);
     });
     cx.run_until_parked();

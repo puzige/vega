@@ -33,9 +33,9 @@ async fn issue90_bash_validation_terminal_is_actionable_and_never_prompts(cx: &m
         })
         .expect("stream window");
     assert!(text.contains(
-        "已拒绝运行：参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+        "Command rejected: invalid input · cmd must be a non-empty string; timeout_ms must be a positive integer when provided; other fields are unsupported"
     ));
-    assert!(!text.contains("工具结果损坏"));
+    assert!(!text.contains("Tool result corrupted"));
     assert!(!queue.has_pending());
     assert!(!has_active_permission(window, cx));
 }
@@ -188,9 +188,9 @@ async fn issue73_mcp_proposal_mounts_once_approval_and_keeps_terminal_card(
             stream.tool_cards[call_id].read(cx).visible_text()
         })
         .expect("stream window");
-    assert!(pending.contains("等待批准调用 echo"));
+    assert!(pending.contains("Awaiting approval to call echo"));
     assert!(pending.contains("echo"));
-    assert!(!pending.contains("工具结果损坏"));
+    assert!(!pending.contains("Tool result corrupted"));
 
     cx.simulate_keystrokes(window.into(), "enter");
     assert_eq!(decision.await.unwrap(), PermissionDecision::Once);
@@ -227,8 +227,8 @@ async fn issue73_mcp_proposal_mounts_once_approval_and_keeps_terminal_card(
             stream.tool_cards[call_id].read(cx).visible_text()
         })
         .expect("stream window");
-    assert!(terminal.contains("已调用 echo"));
-    assert!(!terminal.contains("工具结果损坏"));
+    assert!(terminal.contains("Called echo"));
+    assert!(!terminal.contains("Tool result corrupted"));
 }
 
 #[gpui_kit::test]
@@ -415,7 +415,7 @@ async fn permission_target_mismatch_times_out_and_corrupts_tool_card(cx: &mut Te
             stream.tool_cards["call-mismatch"].read(cx).visible_text()
         })
         .expect("stream window");
-    assert!(visible.contains("工具结果损坏"));
+    assert!(visible.contains("Tool result corrupted"));
     assert!(!visible.contains("printf different"));
 }
 
@@ -712,7 +712,7 @@ async fn issue75_observation_live_events_keep_success_and_failure_cards(cx: &mut
                     ToolActivityState::Failed
                 }
             );
-            assert!(!text.contains("工具结果损坏"), "{text}");
+            assert!(!text.contains("Tool result corrupted"), "{text}");
         }
     }
     assert!(!queue.has_pending());

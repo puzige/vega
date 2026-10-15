@@ -148,21 +148,21 @@ async fn issue296_single_activity_tracks_real_parallel_states_and_discards_old_s
         for call in [bash_call("shell", "pwd"), ToolCall { id: "read".into(), tool: "read".into(), input_json: r#"{"path":"safe.txt"}"#.into() }, bash_call("queued", "pwd")] {
             stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
         }
-        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::Hand, false) if label == "等待确认"));
+        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::Hand, false) if label == "Awaiting confirmation"));
         for id in ["shell", "read", "queued"] {
             stream.apply_event(ConversationEvent::ToolCallApproved { call_id: id.into(), approval: Approval::Once }, cx);
         }
-        assert_eq!(group.read(cx).test_activity_label(cx), "准备调用工具");
+        assert_eq!(group.read(cx).test_activity_label(cx), "Preparing tool call");
         for id in ["shell", "read"] {
             stream.apply_event(ConversationEvent::ToolCallRunning { call_id: id.into() }, cx);
         }
-        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::Summary, false) if label == "正在运行命令、读取文件"));
+        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::Summary, false) if label == "In progress: run commands, read files"));
         stream.apply_event(ConversationEvent::ToolCallProposed { call: bash_call("pending", "pwd") }, cx);
-        assert_eq!(group.read(cx).test_activity_label(cx), "正在运行命令、读取文件");
+        assert_eq!(group.read(cx).test_activity_label(cx), "In progress: run commands, read files");
         stream.apply_event(finish_tool("shell"), cx);
-        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::BookOpen, false) if label == "正在读取文件"));
+        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::BookOpen, false) if label == "In progress: read files"));
         stream.apply_event(finish_tool("read"), cx);
-        assert_eq!(group.read(cx).test_activity_label(cx), "等待确认");
+        assert_eq!(group.read(cx).test_activity_label(cx), "Awaiting confirmation");
         for id in ["pending", "queued"] { stream.apply_event(finish_tool(id), cx); }
         stream.apply_event(ConversationEvent::ThinkingDelta { message_id: "single".into(), delta: "New thought without summary".into() }, cx);
         assert_eq!(group.read(cx).test_activity_label(cx), "Thinking");
@@ -656,7 +656,7 @@ async fn issue296_single_activity_mcp_names_are_safe_bounded_and_deduplicated(
             stream.apply_event(ConversationEvent::ToolCallRunning { call_id: id.into() }, cx);
         }
         let label = stream.run_activity_groups["single"].read(cx).test_activity_label(cx);
-        assert_eq!(label, "正在调用 MCP · lookup、调用 MCP · query等 3 项");
+        assert_eq!(label, "In progress: call MCP · lookup, call MCP · query and more (3 total)");
         assert!(!label.contains("01ARZ") && !label.contains("query: string") && !label.contains(&"b".repeat(64)));
     });
 }

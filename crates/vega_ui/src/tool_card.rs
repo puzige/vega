@@ -14,7 +14,7 @@ use vega_theme::{Layout, ThemeColors, Typography, theme};
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT};
 use crate::icons::Icon;
 
-const CORRUPT_LABEL: &str = "工具结果损坏";
+const CORRUPT_LABEL: &str = "Tool result corrupted";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolActivityCategory {
@@ -34,17 +34,17 @@ pub(crate) enum ToolActivityCategory {
 impl ToolActivityCategory {
     pub(crate) const fn action_phrase(self) -> &'static str {
         match self {
-            Self::Shell => "运行命令",
-            Self::Read => "读取文件",
-            Self::Find => "查找文件",
-            Self::Search => "搜索内容",
-            Self::Write => "写入文件",
-            Self::Edit => "编辑文件",
-            Self::Mcp => "调用 MCP",
+            Self::Shell => "run commands",
+            Self::Read => "read files",
+            Self::Find => "find files",
+            Self::Search => "search content",
+            Self::Write => "write files",
+            Self::Edit => "edit files",
+            Self::Mcp => "call MCP",
             Self::CodexAcp => "Codex ACP",
-            Self::ComputerUse => "操控电脑或浏览器",
-            Self::Skill => "使用 Skill",
-            Self::Other => "处理工具",
+            Self::ComputerUse => "use computer or browser",
+            Self::Skill => "use Skill",
+            Self::Other => "use tools",
         }
     }
 
@@ -503,13 +503,13 @@ impl ToolCard {
     pub(crate) fn activity_action_name(&self) -> String {
         let named = match &self.input {
             Some(ToolCardInputProjection::ComputerUse { action, .. }) => {
-                Some(("操控", action.as_str()))
+                Some(("control", action.as_str()))
             }
             Some(ToolCardInputProjection::Mcp { identity, .. }) => {
-                Some(("调用 MCP", identity.exact_tool_name.as_str()))
+                Some(("call MCP", identity.exact_tool_name.as_str()))
             }
             Some(ToolCardInputProjection::CodexAcp { identity, .. }) => {
-                Some(("运行 Codex ACP", identity.kind.as_str()))
+                Some(("run Codex ACP", identity.kind.as_str()))
             }
             _ => None,
         };
@@ -615,9 +615,35 @@ impl ToolCard {
     }
 
     fn compact_row_text(&self) -> String {
+        if !self.expanded
+            || !self.is_bash()
+            || matches!(
+                self.result,
+                Some(
+                    ToolCardResultProjection::Corrupt
+                        | ToolCardResultProjection::InvalidRejected { .. }
+                )
+            )
+        {
+            return self.summary.clone();
+        }
+        let (label, connector) = match self.activity_state() {
+            ToolActivityState::Success => ("Ran command", "in"),
+            ToolActivityState::Failed => ("Command failed", "after"),
+            ToolActivityState::Cancelled => ("Command cancelled", "after"),
+            ToolActivityState::Rejected => ("Command rejected", "after"),
+            ToolActivityState::Superseded => ("Not run after takeover", "after"),
+            ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => {
+                ("Awaiting command approval", "for")
+            }
+            ToolActivityState::Active if self.status == ToolCallStatus::Approved => {
+                ("Ready to run command", "for")
+            }
+            ToolActivityState::Active => ("Running command", "for"),
+        };
         self.bash_duration().map_or_else(
-            || self.summary.clone(),
-            |duration| format!("{} · {duration}", self.summary),
+            || label.to_owned(),
+            |duration| format!("{label} {connector} {duration}"),
         )
     }
 
@@ -645,13 +671,12 @@ impl ToolCard {
         cx: &mut App,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let (title, duration, leading_icon, leading_icon_color, expanded, expandable, detail) = {
+        let (title, leading_icon, leading_icon_color, expanded, expandable, detail) = {
             let card_ref = card.read(cx);
             let expanded = card_ref.expanded;
-            let title = card_ref.summary.clone();
+            let title = card_ref.compact_row_text();
             (
                 title,
-                card_ref.bash_duration(),
                 card_ref.leading_icon(),
                 card_ref.leading_icon_color(&colors),
                 expanded,
@@ -666,7 +691,6 @@ impl ToolCard {
         let debug_selector = selector.clone();
         let icon_selector = format!("{selector}-icon");
         let title_selector = format!("{selector}-title");
-        let duration_selector = format!("{selector}-duration");
         let chevron_selector = format!("{selector}-chevron");
         let disclosure_group: gpui_kit::SharedString =
             format!("tool-disclosure-{}", card.entity_id()).into();
@@ -678,8 +702,8 @@ impl ToolCard {
             .track_focus(&focus)
             .aria_expanded(expanded)
             .aria_label(format!(
-                "{title}，{}工具详情",
-                if expanded { "收起" } else { "展开" }
+                "{title}, {} tool details",
+                if expanded { "collapse" } else { "expand" }
             ))
             .tab_stop(expandable)
             .focus_visible(move |row| row.bg(colors.bg_hover))
@@ -736,16 +760,6 @@ impl ToolCard {
                     .text_color(colors.conversation_tool)
                     .child(title),
             )
-            .when_some(duration, |row, duration| {
-                row.child(
-                    div()
-                        .debug_selector(move || duration_selector.clone())
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .text_color(colors.conversation_tool)
-                        .child(format!("· {duration}")),
-                )
-            })
             .child(crate::disclosure::inline_chevron(
                 disclosure_group,
                 chevron_selector,
@@ -789,10 +803,10 @@ impl ToolCard {
                     tool: InvalidToolKind::Bash,
                     ..
                 }),
-            ) => "已拒绝运行：参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+            ) => "Command rejected: invalid input · cmd must be a non-empty string; timeout_ms must be a positive integer when provided; other fields are unsupported"
                 .to_string(),
             (_, Some(ToolCardResultProjection::InvalidRejected { tool, code, .. })) => {
-                format!("已拒绝{}：{}", invalid_action(*tool), code.as_str())
+                format!("Rejected {}: {}", invalid_action(*tool), code.as_str())
             }
             (Some(ToolCardInputProjection::Bash { .. }), _) => self.build_bash_summary(),
             (Some(ToolCardInputProjection::ReadOnly { tool, display_target, .. }), _) => {
@@ -807,7 +821,7 @@ impl ToolCard {
                 None,
             ) => format!(
                 "{} {path} · {content_bytes} bytes",
-                mutation_verb("写入", self.activity_state(), self.status)
+                mutation_verb("write", self.activity_state(), self.status)
             ),
             (
                 Some(ToolCardInputProjection::Edit {
@@ -818,7 +832,7 @@ impl ToolCard {
                 None,
             ) => format!(
                 "{} {path} · {old_string_bytes}→{new_string_bytes} bytes",
-                mutation_verb("编辑", self.activity_state(), self.status)
+                mutation_verb("edit", self.activity_state(), self.status)
             ),
             (
                 _,
@@ -827,7 +841,7 @@ impl ToolCard {
                     bytes_written,
                     ..
                 }),
-            ) => format!("已写入 {path} · {bytes_written} bytes"),
+            ) => format!("Wrote {path} · {bytes_written} bytes"),
             (
                 _,
                 Some(ToolCardResultProjection::EditSuccess {
@@ -837,21 +851,21 @@ impl ToolCard {
                     ..
                 }),
             ) => format!(
-                "已编辑 {path} · {bytes_written} bytes · {replacements} replacements"
+                "Edited {path} · {bytes_written} bytes · {replacements} replacements"
             ),
             (
                 Some(ToolCardInputProjection::Write { path, .. }),
                 Some(ToolCardResultProjection::MutationTerminal { .. }),
             ) => format!(
                 "{} {path}",
-                mutation_verb("写入", self.activity_state(), self.status)
+                mutation_verb("write", self.activity_state(), self.status)
             ),
             (
                 Some(ToolCardInputProjection::Edit { path, .. }),
                 Some(ToolCardResultProjection::MutationTerminal { .. }),
             ) => format!(
                 "{} {path}",
-                mutation_verb("编辑", self.activity_state(), self.status)
+                mutation_verb("edit", self.activity_state(), self.status)
             ),
             (
                 Some(ToolCardInputProjection::Skill { name, .. }),
@@ -859,29 +873,25 @@ impl ToolCard {
             ) => skill_summary(name.as_deref(), outcome),
             (Some(ToolCardInputProjection::Skill { name, .. }), None) => format!(
                 "{} Skill {}",
-                if self.status == ToolCallStatus::PendingApproval {
-                    "等待使用"
-                } else {
-                    "正在使用"
-                },
-                name.as_deref().unwrap_or("未知")
+                generic_verb("use", self.activity_state(), self.status),
+                name.as_deref().unwrap_or("unknown")
             ),
             (Some(ToolCardInputProjection::ComputerUse { tool, action }), _) => {
                 if self.activity_state() == ToolActivityState::Superseded {
-                    return "接管后未执行".into();
+                    return "Not run after takeover".into();
                 }
                 let verb = match tool.as_str() {
-                    "ComputerObserve" | "BrowserObserve" => "观察",
-                    "ComputerScreenshot" => "截图",
-                    _ => "操控",
+                    "ComputerObserve" | "BrowserObserve" => "observe",
+                    "ComputerScreenshot" => "capture",
+                    _ => "control",
                 };
                 format!(
                     "{} {} · {}{}",
                     generic_verb(verb, self.activity_state(), self.status),
-                    if tool.starts_with("Computer") { "电脑" } else { "浏览器" },
+                    if tool.starts_with("Computer") { "computer" } else { "browser" },
                     action,
-                    if verb == "操控" && self.approval == Some(Approval::Once) {
-                        " · 本次操控授权"
+                    if verb == "control" && self.approval == Some(Approval::Once) {
+                        " · approved for this action"
                     } else {
                         ""
                     }
@@ -889,13 +899,13 @@ impl ToolCard {
             }
             (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => format!(
                 "{} {} · server {}",
-                generic_verb("调用", self.activity_state(), self.status),
+                generic_verb("call", self.activity_state(), self.status),
                 identity.exact_tool_name,
                 identity.server_id
             ),
             (Some(ToolCardInputProjection::CodexAcp { identity, .. }), _) => format!(
                 "{} Codex ACP · {}",
-                generic_verb("运行", self.activity_state(), self.status),
+                generic_verb("run", self.activity_state(), self.status),
                 identity.kind
             ),
             _ => CORRUPT_LABEL.to_string(),
@@ -918,15 +928,16 @@ impl ToolCard {
 
     fn build_bash_summary(&self) -> String {
         let action = match self.activity_state() {
-            ToolActivityState::Superseded => "接管后未执行",
-            ToolActivityState::Success => "已运行",
+            ToolActivityState::Superseded => "Not run after takeover",
+            ToolActivityState::Success => "Ran",
             ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => {
-                "等待批准运行"
+                "Awaiting approval to run"
             }
-            ToolActivityState::Active => "正在运行",
-            ToolActivityState::Rejected => "已拒绝运行",
-            ToolActivityState::Cancelled => "已取消运行",
-            ToolActivityState::Failed => "运行失败",
+            ToolActivityState::Active if self.status == ToolCallStatus::Approved => "Ready to run",
+            ToolActivityState::Active => "Running",
+            ToolActivityState::Rejected => "Command rejected:",
+            ToolActivityState::Cancelled => "Command cancelled:",
+            ToolActivityState::Failed => "Command failed:",
         };
         let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
             return action.into();
@@ -947,10 +958,10 @@ impl ToolCard {
         }) = &self.result
         {
             if *truncated == Some(true) {
-                title.push_str(" · 已截断");
+                title.push_str(" · truncated");
             }
             if *reused {
-                title.push_str(" · 已复用");
+                title.push_str(" · reused");
             }
         }
         title
@@ -958,14 +969,15 @@ impl ToolCard {
 
     fn terminal_footer(&self) -> String {
         match self.activity_state() {
-            ToolActivityState::Superseded => "接管后未执行",
+            ToolActivityState::Superseded => "Not run after takeover",
             ToolActivityState::Success => "Success",
             ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => {
-                "等待批准"
+                "Awaiting approval"
             }
-            ToolActivityState::Active => "正在运行",
-            ToolActivityState::Rejected => "已拒绝",
-            ToolActivityState::Cancelled => "已取消",
+            ToolActivityState::Active if self.status == ToolCallStatus::Approved => "Ready to run",
+            ToolActivityState::Active => "Running",
+            ToolActivityState::Rejected => "Rejected",
+            ToolActivityState::Cancelled => "Cancelled",
             ToolActivityState::Failed => "Failure",
         }
         .to_string()
@@ -1001,7 +1013,7 @@ impl ToolCard {
                 output: if self.output_rows.is_empty()
                     && self.activity_state() != ToolActivityState::Active
                 {
-                    vec!["无输出".to_string()]
+                    vec!["No output".to_string()]
                 } else {
                     self.output_rows.clone()
                 },
@@ -1044,23 +1056,42 @@ impl ToolCard {
 
 fn invalid_action(tool: InvalidToolKind) -> &'static str {
     match tool {
-        InvalidToolKind::Bash => "运行",
-        InvalidToolKind::Write => "写入",
-        InvalidToolKind::Edit => "编辑",
+        InvalidToolKind::Bash => "run",
+        InvalidToolKind::Write => "write",
+        InvalidToolKind::Edit => "edit",
     }
 }
 
 fn generic_verb(action: &'static str, state: ToolActivityState, status: ToolCallStatus) -> String {
+    let (past, ongoing) = match action {
+        "write" => ("Wrote", "Writing"),
+        "edit" => ("Edited", "Editing"),
+        "call" => ("Called", "Calling"),
+        "run" => ("Ran", "Running"),
+        "use" => ("Used", "Using"),
+        "observe" => ("Observed", "Observing"),
+        "capture" => ("Captured", "Capturing"),
+        "control" => ("Controlled", "Controlling"),
+        "read" => ("Read", "Reading"),
+        "read files" => ("Read files", "Reading files"),
+        "find files" => ("Found files", "Finding files"),
+        "search" => ("Searched", "Searching"),
+        "search content" => ("Searched content", "Searching content"),
+        _ => (action, action),
+    };
     match state {
-        ToolActivityState::Superseded => "接管后未执行".to_string(),
-        ToolActivityState::Success => format!("已{action}"),
+        ToolActivityState::Superseded => "Not run after takeover".to_string(),
+        ToolActivityState::Success => past.to_owned(),
         ToolActivityState::Active if status == ToolCallStatus::PendingApproval => {
-            format!("等待批准{action}")
+            format!("Awaiting approval to {action}")
         }
-        ToolActivityState::Active => format!("正在{action}"),
-        ToolActivityState::Rejected => format!("已拒绝{action}"),
-        ToolActivityState::Cancelled => format!("已取消{action}"),
-        ToolActivityState::Failed => format!("{action}失败"),
+        ToolActivityState::Active if status == ToolCallStatus::Approved => {
+            format!("Ready to {action}")
+        }
+        ToolActivityState::Active => ongoing.to_owned(),
+        ToolActivityState::Rejected => format!("Rejected: {action}"),
+        ToolActivityState::Cancelled => format!("Cancelled: {action}"),
+        ToolActivityState::Failed => format!("Failed to {action}"),
     }
 }
 
@@ -1088,74 +1119,65 @@ fn readonly_summary(
     has_target: bool,
 ) -> String {
     let action = match tool {
-        ReadOnlyToolKind::Read if has_target => "读取",
-        ReadOnlyToolKind::Grep if has_target => "搜索",
-        ReadOnlyToolKind::Read => "读取文件",
-        ReadOnlyToolKind::Glob => "查找文件",
-        ReadOnlyToolKind::Grep => "搜索内容",
+        ReadOnlyToolKind::Read if has_target => "read",
+        ReadOnlyToolKind::Grep if has_target => "search",
+        ReadOnlyToolKind::Read => "read files",
+        ReadOnlyToolKind::Glob => "find files",
+        ReadOnlyToolKind::Grep => "search content",
     };
-    match state {
-        ToolActivityState::Superseded => "接管后未执行".to_string(),
-        ToolActivityState::Success => format!("已{action}"),
-        ToolActivityState::Active if status == ToolCallStatus::PendingApproval => {
-            format!("等待{action}")
-        }
-        ToolActivityState::Active => format!("正在{action}"),
-        ToolActivityState::Rejected => format!("已拒绝{action}"),
-        ToolActivityState::Cancelled => format!("已取消{action}"),
-        ToolActivityState::Failed => format!("{action}失败"),
-    }
+    generic_verb(action, state, status)
 }
 
 fn skill_summary(name: Option<&str>, outcome: &SkillCardOutcome) -> String {
-    let name = name.unwrap_or("未知");
+    let name = name.unwrap_or("unknown");
     match outcome {
-        SkillCardOutcome::Loaded => format!("已加载 Skill {name}"),
-        SkillCardOutcome::AlreadyLoaded => format!("已加载 Skill {name} · 已复用"),
+        SkillCardOutcome::Loaded => format!("Loaded Skill {name}"),
+        SkillCardOutcome::AlreadyLoaded => format!("Loaded Skill {name} · reused"),
         SkillCardOutcome::ResourceRead { text_bytes, sha256 } => format!(
-            "已读取 Skill {name} 引用 · {text_bytes} bytes · SHA-256 {}…",
+            "Read Skill {name} reference · {text_bytes} bytes · SHA-256 {}…",
             sha256.get(..12).unwrap_or("invalid")
         ),
         SkillCardOutcome::AssetMetadata { size_bytes } => {
-            format!("已查看 Skill {name} 资源元数据 · {size_bytes} bytes · 类型未知 · 未读取内容")
+            format!(
+                "Viewed Skill {name} asset metadata · {size_bytes} bytes · unknown type · content not read"
+            )
         }
-        SkillCardOutcome::Failed { code } => format!("Skill {name} 失败 · {code}"),
-        SkillCardOutcome::Rejected => format!("已拒绝 Skill {name}"),
-        SkillCardOutcome::Cancelled => format!("已取消 Skill {name}"),
+        SkillCardOutcome::Failed { code } => format!("Skill {name} failed · {code}"),
+        SkillCardOutcome::Rejected => format!("Rejected Skill {name}"),
+        SkillCardOutcome::Cancelled => format!("Cancelled Skill {name}"),
     }
 }
 
 fn human_duration(duration_ms: u64) -> String {
-    if duration_ms < 1_000 {
-        return format!("{duration_ms} 毫秒");
+    if duration_ms < 1000 {
+        return format!("{duration_ms}ms");
     }
-    if duration_ms < 60_000 {
-        let seconds = duration_ms as f64 / 1_000.0;
-        return if duration_ms.is_multiple_of(1_000) {
-            format!("{} 秒", duration_ms / 1_000)
-        } else {
-            format!("{seconds:.1} 秒")
-        };
+    if duration_ms < 60_000 && !duration_ms.is_multiple_of(1000) {
+        return format!("{:.1}s", duration_ms as f64 / 1000.0);
     }
-    let minutes = duration_ms / 60_000;
-    let seconds = duration_ms % 60_000 / 1_000;
-    if seconds == 0 {
-        format!("{minutes} 分钟")
-    } else {
-        format!("{minutes} 分 {seconds} 秒")
-    }
+    human_elapsed(duration_ms / 1000)
 }
 
 fn human_elapsed(seconds: u64) -> String {
     if seconds < 60 {
-        return format!("{seconds} 秒");
+        return format!("{seconds}s");
     }
     let minutes = seconds / 60;
-    let seconds = seconds % 60;
-    if seconds == 0 {
-        format!("{minutes} 分钟")
-    } else {
-        format!("{minutes} 分 {seconds} 秒")
+    let remaining_seconds = seconds % 60;
+    if minutes < 60 {
+        return if remaining_seconds == 0 {
+            format!("{minutes}m")
+        } else {
+            format!("{minutes}m {remaining_seconds}s")
+        };
+    }
+    let hours = minutes / 60;
+    let remaining_minutes = minutes % 60;
+    match (remaining_minutes, remaining_seconds) {
+        (0, 0) => format!("{hours}h"),
+        (_, 0) => format!("{hours}h {remaining_minutes}m"),
+        (0, _) => format!("{hours}h {remaining_seconds}s"),
+        _ => format!("{hours}h {remaining_minutes}m {remaining_seconds}s"),
     }
 }
 
@@ -1348,11 +1370,17 @@ mod tests {
     #[test]
     fn issue75_readonly_tool_cards_distinguish_observation_screenshot_and_input() {
         for (tool, action, verb, surface, authorized) in [
-            ("ComputerObserve", "observe", "观察", "电脑", false),
-            ("BrowserObserve", "observe", "观察", "浏览器", false),
-            ("ComputerScreenshot", "screenshot", "截图", "电脑", false),
-            ("ComputerAct", "type_text", "操控", "电脑", true),
-            ("BrowserAct", "click", "操控", "浏览器", true),
+            ("ComputerObserve", "observe", "observe", "computer", false),
+            ("BrowserObserve", "observe", "observe", "browser", false),
+            (
+                "ComputerScreenshot",
+                "screenshot",
+                "capture",
+                "computer",
+                false,
+            ),
+            ("ComputerAct", "type_text", "control", "computer", true),
+            ("BrowserAct", "click", "control", "browser", true),
         ] {
             for status in [
                 ToolCallStatus::Running,
@@ -1378,7 +1406,11 @@ mod tests {
                     )),
                     "{tool}: {text}"
                 );
-                assert_eq!(text.contains("本次操控授权"), authorized, "{tool}: {text}");
+                assert_eq!(
+                    text.contains("approved for this action"),
+                    authorized,
+                    "{tool}: {text}"
+                );
             }
         }
     }
@@ -1522,7 +1554,7 @@ mod tests {
         );
         loaded.truncated = Some(false);
         assert!(load_card.apply_finished(&loaded));
-        assert!(load_card.visible_text().contains("已加载 Skill reviewer"));
+        assert!(load_card.visible_text().contains("Loaded Skill reviewer"));
         assert!(!load_card.visible_text().contains(CORRUPT_LABEL));
 
         let read = ToolCall {
@@ -1539,7 +1571,7 @@ mod tests {
         returned.truncated = Some(false);
         assert!(read_card.apply_finished(&returned));
         let visible = read_card.visible_text();
-        assert!(visible.contains("已读取 Skill reviewer 引用"));
+        assert!(visible.contains("Read Skill reviewer reference"));
         assert!(!visible.contains(CORRUPT_LABEL));
         assert!(!visible.contains("PRIVATE REFERENCE"));
         assert!(!visible.contains("references/notes.md"));
@@ -1671,7 +1703,7 @@ mod tests {
         };
         let card = ToolCard::invalid_terminal(&result);
         assert!(card.is_invalid_terminal());
-        assert_eq!(card.visible_text(), "已拒绝写入：malformed_json");
+        assert_eq!(card.visible_text(), "Rejected write: malformed_json");
     }
 
     #[test]
@@ -1689,7 +1721,7 @@ mod tests {
         assert!(card.is_invalid_terminal());
         assert_eq!(
             card.visible_text(),
-            "已拒绝运行：参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+            "Command rejected: invalid input · cmd must be a non-empty string; timeout_ms must be a positive integer when provided; other fields are unsupported"
         );
         assert!(card.permission_identity().is_none());
     }
@@ -1700,11 +1732,23 @@ mod tests {
             (
                 "bash",
                 r#"{"cmd":"printf 'ok'"}"#,
-                "等待批准运行 printf 'ok'",
+                "Awaiting approval to run printf 'ok'",
             ),
-            ("read", r#"{"file_path":"src/main.rs"}"#, "等待读取 main.rs"),
-            ("glob", r#"{"pattern":"src/**/*.rs"}"#, "等待查找文件"),
-            ("grep", r#"{"pattern":"TODO","path":"src"}"#, "等待搜索内容"),
+            (
+                "read",
+                r#"{"file_path":"src/main.rs"}"#,
+                "Awaiting approval to read main.rs",
+            ),
+            (
+                "glob",
+                r#"{"pattern":"src/**/*.rs"}"#,
+                "Awaiting approval to find files",
+            ),
+            (
+                "grep",
+                r#"{"pattern":"TODO","path":"src"}"#,
+                "Awaiting approval to search content",
+            ),
         ] {
             let card = ToolCard::proposed(&ToolCall {
                 id: "object-row".into(),
@@ -1713,6 +1757,52 @@ mod tests {
             });
             assert_eq!(card.visible_text(), expected);
             assert_eq!(card.row_count(), 1);
+        }
+    }
+
+    #[test]
+    fn compact_duration_uses_english_units_without_changing_clock_values() {
+        for (milliseconds, expected) in [
+            (0, "0ms"),
+            (12, "12ms"),
+            (1234, "1.2s"),
+            (3000, "3s"),
+            (65000, "1m 5s"),
+            (3600000, "1h"),
+            (3665000, "1h 1m 5s"),
+        ] {
+            assert_eq!(human_duration(milliseconds), expected);
+        }
+        assert_eq!(human_elapsed(0), "0s");
+    }
+
+    #[test]
+    fn expanded_shell_title_projects_current_state_without_mutating_command() {
+        for (exit_code, collapsed, expanded) in [
+            (0, "Ran echo hello", "Ran command in 3s"),
+            (1, "Command failed: echo hello", "Command failed after 3s"),
+        ] {
+            let mut card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::Bash {
+                    command: "echo hello".into(),
+                }),
+                ToolCallStatus::Success,
+                Some(Approval::Once),
+                Some(ToolCardResultProjection::Bash {
+                    status: ToolCallStatus::Success,
+                    output: "原始输出".into(),
+                    exit_code: Some(exit_code),
+                    duration_ms: Some(3000),
+                    truncated: Some(false),
+                    reused: false,
+                }),
+            );
+            assert_eq!(card.compact_visible_text(), collapsed);
+            card.expanded = true;
+            assert_eq!(card.compact_visible_text(), expanded);
+            assert!(card.visible_text().contains("$ echo hello\n原始输出"));
+            card.expanded = false;
+            assert_eq!(card.compact_visible_text(), collapsed);
         }
     }
 
@@ -1734,11 +1824,11 @@ mod tests {
             }),
         );
         assert_eq!(card.bash_duration(), None);
-        assert_eq!(card.visible_text(), "已运行 true");
+        assert_eq!(card.visible_text(), "Ran true");
         assert!(!card.live_elapsed_active());
         card.expanded = true;
         assert!(card.visible_text().ends_with("Success"));
-        assert!(!card.visible_text().contains("秒"));
+        assert_eq!(card.compact_visible_text(), "Ran command");
     }
 
     #[test]
@@ -1756,7 +1846,7 @@ mod tests {
         terminal.truncated = Some(false);
         assert!(card.apply_finished(&terminal));
         assert_eq!(card.row_count(), 1);
-        assert_eq!(card.visible_text(), "已运行 printf 'ok' · 12 毫秒");
+        assert_eq!(card.visible_text(), "Ran printf 'ok'");
         assert!(card.visible_text().contains("printf 'ok'"));
         assert!(!card.visible_text().contains("\nok"));
         card.expanded = true;
@@ -1782,15 +1872,20 @@ mod tests {
         terminal.truncated = Some(false);
         assert!(card.apply_finished(&terminal));
         assert_eq!(card.status, ToolCallStatus::Success);
-        assert!(card.visible_text().contains("运行失败 false"));
+        assert!(card.visible_text().contains("Command failed: false"));
     }
 
     #[test]
     fn bash_pending_running_and_terminal_failure_preserve_safe_command() {
         let command = "printf 'a  b'\nprintf\t'done'";
         for (status, result, expected) in [
-            (ToolCallStatus::PendingApproval, None, "等待批准运行"),
-            (ToolCallStatus::Running, None, "正在运行"),
+            (
+                ToolCallStatus::PendingApproval,
+                None,
+                "Awaiting approval to run",
+            ),
+            (ToolCallStatus::Approved, None, "Ready to run"),
+            (ToolCallStatus::Running, None, "Running"),
             (
                 ToolCallStatus::Rejected,
                 Some(ToolCardResultProjection::Bash {
@@ -1801,7 +1896,7 @@ mod tests {
                     truncated: Some(false),
                     reused: false,
                 }),
-                "已拒绝运行",
+                "Command rejected:",
             ),
             (
                 ToolCallStatus::Failed,
@@ -1813,7 +1908,7 @@ mod tests {
                     truncated: Some(false),
                     reused: false,
                 }),
-                "运行失败",
+                "Command failed:",
             ),
             (
                 ToolCallStatus::Cancelled,
@@ -1825,7 +1920,7 @@ mod tests {
                     truncated: Some(false),
                     reused: false,
                 }),
-                "已取消运行",
+                "Command cancelled:",
             ),
         ] {
             let mut card = ToolCard::hydrated(
@@ -1842,7 +1937,24 @@ mod tests {
             );
             assert_eq!(card.row_count(), 1);
             card.expanded = true;
+            let expanded = match status {
+                ToolCallStatus::PendingApproval => "Awaiting command approval",
+                ToolCallStatus::Approved => "Ready to run command",
+                ToolCallStatus::Running => "Running command",
+                ToolCallStatus::Rejected => "Command rejected",
+                ToolCallStatus::Failed => "Command failed",
+                ToolCallStatus::Cancelled => "Command cancelled",
+                _ => unreachable!(),
+            };
+            assert_eq!(card.compact_visible_text(), expanded);
             assert!(card.visible_text().contains(&format!("$ {command}")));
+            assert_eq!(card.status, status);
+            assert!(!card.live_elapsed_active());
+            card.expanded = false;
+            assert_eq!(
+                card.compact_visible_text(),
+                format!("{expected} printf 'a  b' printf 'done'")
+            );
         }
     }
 
@@ -1850,9 +1962,9 @@ mod tests {
     fn bash_compact_summary_identifies_command_and_preserves_terminal_metadata() {
         let command = "printf 'a  b'\nprintf done";
         for (status, exit, action) in [
-            (ToolCallStatus::Success, Some(0), "已运行"),
-            (ToolCallStatus::Success, Some(1), "运行失败"),
-            (ToolCallStatus::Success, Some(-1), "运行失败"),
+            (ToolCallStatus::Success, Some(0), "Ran"),
+            (ToolCallStatus::Success, Some(1), "Command failed:"),
+            (ToolCallStatus::Success, Some(-1), "Command failed:"),
         ] {
             let mut card = ToolCard::hydrated(
                 Some(ToolCardInputProjection::Bash {
@@ -1871,12 +1983,12 @@ mod tests {
             );
             assert_eq!(
                 card.visible_text(),
-                format!("{action} printf 'a  b' printf done · 1.2 秒")
+                format!("{action} printf 'a  b' printf done")
             );
             assert_eq!(card.row_count(), 1);
             card.expanded = true;
             assert!(card.visible_text().contains(&format!("$ {command}")));
-            assert!(card.visible_text().contains("Shell · 已截断 · 已复用"));
+            assert!(card.visible_text().contains("Shell · truncated · reused"));
             assert_eq!(
                 card.terminal_footer(),
                 if exit == Some(0) {
@@ -2144,7 +2256,10 @@ mod tests {
         let card = ToolCard::proposed(&call);
         assert!(!card.summary.contains('\n'));
         assert_eq!(card.row_count(), 1);
-        assert_eq!(card.visible_text(), format!("等待批准运行 {command}"));
+        assert_eq!(
+            card.visible_text(),
+            format!("Awaiting approval to run {command}")
+        );
         assert!(card.visible_text().contains(&command));
         assert!(!card.visible_text().contains("SECRET_CALL_ID"));
         let mut card = card;
@@ -2161,7 +2276,10 @@ mod tests {
             input_json: serde_json::json!({ "cmd": command }).to_string(),
         };
         let mut card = ToolCard::proposed(&call);
-        assert_eq!(card.summary, "等待批准运行 printf 'a  b' printf 'done'");
+        assert_eq!(
+            card.summary,
+            "Awaiting approval to run printf 'a  b' printf 'done'"
+        );
         assert!(!card.summary.contains('\n'));
         assert!(!card.summary.contains('\r'));
         assert!(!card.summary.contains('\t'));
@@ -2187,7 +2305,7 @@ mod tests {
         assert!(card.visible_text().contains("SECRET_BASH_OUTPUT"));
 
         assert!(!card.apply_approved(Approval::Once));
-        assert_eq!(card.visible_text(), "工具结果损坏");
+        assert_eq!(card.visible_text(), "Tool result corrupted");
         assert_eq!(card.row_count(), 1);
         assert!(!card.visible_text().contains("SECRET_BASH_OUTPUT"));
         assert!(!card.visible_text().contains("SECRET_COMMAND"));

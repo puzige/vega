@@ -384,8 +384,8 @@ async fn issue296_phase_history_round_trip_is_conservative_and_duration_is_optio
             assert_eq!(
                 stream.run_activity_groups["run"].read(cx).test_label(),
                 match mode {
-                    "missing-duration" => "已完成",
-                    "interrupted" => "已停止 · 用时 23s",
+                    "missing-duration" => "Completed",
+                    "interrupted" => "Stopped after 23s",
                     _ => "Worked for 23s",
                 }
             );
@@ -446,7 +446,7 @@ async fn issue296_phase_rejected_tools_and_permissions_survive_final_collapse(
             stream.tool_cards["rejected"]
                 .read(cx)
                 .visible_text()
-                .contains("拒绝")
+                .contains("Command rejected")
         );
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -700,7 +700,7 @@ async fn issue296_phase_permission_wait_takes_priority_over_parallel_tools_and_t
         stream.read_with(cx, |stream, cx| {
             let group = stream.run_activity_groups["run"].read(cx);
             assert!(group.test_clock().2 == run_activity::RunPhase::Waiting);
-            assert_eq!(group.test_label(), "等待确认 · 已用 22s");
+            assert_eq!(group.test_label(), "Awaiting confirmation for 22s");
             assert!(stream.active_permission.is_some());
             assert!(group.children().iter().all(|child| match child {
                 RunActivityChild::Thinking(card) => card.read(cx).shimmer_epoch.is_none(),

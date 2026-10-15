@@ -398,8 +398,8 @@ async fn issue146_terminal_failure_cancel_and_hydration_restore_truthful_statuse
             (status, Some(duration), false, true)
         );
         let expected = match status {
-            RunActivityStatus::Failed => "已失败 · 用时 1s",
-            RunActivityStatus::Interrupted => "已停止 · 用时 2s",
+            RunActivityStatus::Failed => "Failed after 1s",
+            RunActivityStatus::Interrupted => "Stopped after 2s",
             _ => unreachable!(),
         };
         assert_eq!(group.read_with(cx, |group, _| group.test_label()), expected);
