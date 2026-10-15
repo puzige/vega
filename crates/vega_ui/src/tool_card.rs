@@ -736,6 +736,16 @@ impl ToolCard {
                     .text_color(colors.conversation_tool)
                     .child(title),
             )
+            .when_some(duration, |row, duration| {
+                row.child(
+                    div()
+                        .debug_selector(move || duration_selector.clone())
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_color(colors.conversation_tool)
+                        .child(format!("· {duration}")),
+                )
+            })
             .child(crate::disclosure::inline_chevron(
                 disclosure_group,
                 chevron_selector,
@@ -744,17 +754,7 @@ impl ToolCard {
                 expandable,
                 colors,
                 window,
-            ))
-            .when_some(duration, |row, duration| {
-                row.child(div().flex_1().min_w_0()).child(
-                    div()
-                        .debug_selector(move || duration_selector.clone())
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .text_color(colors.conversation_tool)
-                        .child(duration),
-                )
-            });
+            ));
         div()
             .w_full()
             .min_w_0()

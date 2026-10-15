@@ -250,6 +250,22 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         );
     });
     cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(
+        visual
+            .debug_bounds("tool-activity-single-row-duration")
+            .is_none()
+    );
+    let title = visual
+        .debug_bounds("tool-activity-single-row-title")
+        .expect("title without duration");
+    let chevron = visual
+        .debug_bounds("tool-activity-single-row-chevron")
+        .expect("original chevron");
+    assert_eq!(
+        chevron.left() - title.right(),
+        px(Layout::CONVERSATION_INLINE_GAP)
+    );
     let frames_before_running = stream.read_with(cx, |stream, _| {
         stream.counters.frames.load(Ordering::Relaxed)
     });
@@ -1989,8 +2005,8 @@ async fn issue103_tool_status_update_preserves_reading_offset(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-async fn issue381_duration_stays_at_row_right_for_short_and_long_commands(cx: &mut TestAppContext) {
-    let (window, stream, _) = open_controller_stream(cx, "issue381-duration-right");
+async fn issue381_duration_follows_title_before_existing_chevron(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue381-duration-inline");
     let long_command = format!("printf '{}'", "long command ".repeat(80));
     stream.update(cx, |stream, cx| {
         for (id, command) in [("short", "true"), ("long", long_command.as_str())] {
@@ -2033,19 +2049,28 @@ async fn issue381_duration_stays_at_row_right_for_short_and_long_commands(cx: &m
             })
             .expect("resize");
         cx.run_until_parked();
-        let mut rights = Vec::new();
+        let mut duration_widths = Vec::new();
         for (index, selector) in selectors.iter().enumerate() {
             let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
             let row = visual.debug_bounds(selector[0]).expect("row");
             let title = visual.debug_bounds(selector[1]).expect("title");
             let chevron = visual.debug_bounds(selector[2]).expect("chevron");
             let duration = visual.debug_bounds(selector[3]).expect("duration");
-            assert_eq!(duration.right(), row.right());
-            assert!(title.right() <= chevron.left());
-            assert!(chevron.right() <= duration.left());
+            assert_eq!(
+                duration.left() - title.right(),
+                px(Layout::CONVERSATION_INLINE_GAP)
+            );
+            assert_eq!(
+                chevron.left() - duration.right(),
+                px(Layout::CONVERSATION_INLINE_GAP)
+            );
+            assert!(chevron.right() <= row.right());
+            if index == 0 {
+                assert!(chevron.right() < row.right());
+            }
             assert!(title.size.height <= row.size.height);
-            assert!(duration.size.width >= body_text_width(window, "0 秒".into(), cx));
-            rights.push(duration.right());
+            assert!(duration.size.width >= body_text_width(window, "· 0 秒".into(), cx));
+            duration_widths.push(duration.size.width);
             if index == 1 {
                 assert!(
                     body_text_width(window, format!("正在运行 {long_command}"), cx)
@@ -2053,7 +2078,7 @@ async fn issue381_duration_stays_at_row_right_for_short_and_long_commands(cx: &m
                 );
             }
         }
-        assert_eq!(rights[0], rights[1]);
+        assert_eq!(duration_widths[0], duration_widths[1]);
     }
     stream.update(cx, |stream, cx| {
         for (id, exit_code) in [("short", 0), ("long", 1)] {
@@ -2098,7 +2123,17 @@ async fn issue381_duration_stays_at_row_right_for_short_and_long_commands(cx: &m
         let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         let row = visual.debug_bounds(selector[0]).expect("terminal row");
         let duration = visual.debug_bounds(selector[3]).expect("terminal duration");
-        assert_eq!(row.right(), duration.right());
+        let title = visual.debug_bounds(selector[1]).expect("terminal title");
+        let chevron = visual.debug_bounds(selector[2]).expect("terminal chevron");
+        assert_eq!(
+            duration.left() - title.right(),
+            px(Layout::CONVERSATION_INLINE_GAP)
+        );
+        assert_eq!(
+            chevron.left() - duration.right(),
+            px(Layout::CONVERSATION_INLINE_GAP)
+        );
+        assert!(chevron.right() <= row.right());
         let detail = visual.debug_bounds(selector[4]).expect("detail");
         let footer = visual.debug_bounds(selector[5]).expect("footer row");
         let status = visual.debug_bounds(selector[6]).expect("footer status");
