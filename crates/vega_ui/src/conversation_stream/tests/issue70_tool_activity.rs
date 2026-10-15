@@ -273,8 +273,11 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
     let _mounted_zero_second_row = bounds(window, "tool-activity-single-row", cx);
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["elapsed"].read(cx);
-        assert_eq!(card.compact_visible_text(), "正在运行 printf 'tick'");
-        assert!(card.visible_text().contains("正在运行 · 0 秒"));
+        assert_eq!(card.compact_visible_text(), "正在运行 printf 'tick' · 0 秒");
+        assert!(
+            card.visible_text()
+                .contains("正在运行 printf 'tick' · 0 秒")
+        );
         assert!(card.live_elapsed_active());
         let colors = theme(cx).colors;
         assert!(matches!(card.leading_icon(), Icon::Terminal));
@@ -288,14 +291,14 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
             stream.tool_cards["elapsed"]
                 .read(cx)
                 .visible_text()
-                .contains("正在运行 · 1 秒")
+                .contains("正在运行 printf 'tick' · 1 秒")
         );
     });
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行 printf 'tick'"
+        "正在运行 printf 'tick' · 1 秒"
     );
 
     cx.executor().advance_clock(Duration::from_secs(1));
@@ -305,15 +308,15 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
             stream.tool_cards["elapsed"]
                 .read(cx)
                 .visible_text()
-                .contains("正在运行 · 2 秒")
+                .contains("正在运行 printf 'tick' · 2 秒")
         );
     });
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行 printf 'tick'",
-        "the command stays stable while detail timing advances"
+        "正在运行 printf 'tick' · 2 秒",
+        "the title duration follows the running clock"
     );
 
     cx.executor().advance_clock(Duration::from_secs(63));
@@ -323,14 +326,14 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
             stream.tool_cards["elapsed"]
                 .read(cx)
                 .visible_text()
-                .contains("正在运行 · 1 分 5 秒")
+                .contains("正在运行 printf 'tick' · 1 分 5 秒")
         );
     });
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行 printf 'tick'"
+        "正在运行 printf 'tick' · 1 分 5 秒"
     );
 
     stream.update(cx, |stream, cx| {
@@ -358,13 +361,13 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         );
         card.compact_visible_text()
     });
-    assert_eq!(terminal, "已运行 printf 'tick'");
+    assert_eq!(terminal, "已运行 printf 'tick' · 1.2 秒");
     stream.read_with(cx, |stream, cx| {
         assert!(
             stream.tool_cards["elapsed"]
                 .read(cx)
                 .visible_text()
-                .contains("已完成 · exit 0 · 1.2 秒")
+                .contains("\nSuccess")
         );
     });
     cx.executor().advance_clock(Duration::from_secs(30));
@@ -434,8 +437,8 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
     assert!(expanded.contains("正在读取文件"), "{expanded}");
     assert_eq!(
         expanded.matches(" · ").count(),
-        0,
-        "compact children keep timing in details"
+        2,
+        "each running command has its own title duration"
     );
     stream.update(cx, |stream, cx| {
         for id in ["first", "second"] {
@@ -447,13 +450,13 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
             stream.tool_cards["first"]
                 .read(cx)
                 .visible_text()
-                .contains("正在运行 · 5 秒")
+                .contains("正在运行 sleep first · 5 秒")
         );
         assert!(
             stream.tool_cards["second"]
                 .read(cx)
                 .visible_text()
-                .contains("正在运行 · 3 秒")
+                .contains("正在运行 sleep second · 3 秒")
         );
     });
     stream.read_with(cx, |stream, cx| {
@@ -544,10 +547,10 @@ async fn issue381_long_bash_elides_title_and_preserves_disclosure(cx: &mut TestA
     assert!(title.right() <= running_chevron.left());
     assert!(running_chevron.right() <= row.right());
     assert!(title.size.height <= row.size.height);
-    assert!(body_text_width(window, format!("正在运行 {command}"), cx) > title.size.width);
+    assert!(body_text_width(window, format!("正在运行 {command} · 0 秒"), cx) > title.size.width);
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["long-running"].read(cx);
-        assert_eq!(card.visible_text(), format!("正在运行 {command}"));
+        assert_eq!(card.visible_text(), format!("正在运行 {command} · 0 秒"));
         assert!(matches!(card.leading_icon(), Icon::Terminal));
         assert_eq!(
             card.leading_icon_color(&theme(cx).colors),
@@ -585,7 +588,7 @@ async fn issue381_long_bash_elides_title_and_preserves_disclosure(cx: &mut TestA
     stream.read_with(cx, |stream, cx| {
         assert_eq!(
             stream.tool_cards["long-running"].read(cx).visible_text(),
-            format!("已运行 {command}")
+            format!("已运行 {command} · 1.2 秒")
         );
         let aggregate = group(stream, cx).read(cx).aggregate_summary(cx);
         assert!(
@@ -734,7 +737,7 @@ async fn issue70_t70_1_single_shell_is_one_surface_free_compact_row(cx: &mut Tes
         });
     assert!(!expanded, "v3 single-call detail defaults collapsed");
     assert_eq!(rows, 1, "one compact row with detail available on demand");
-    assert_eq!(compact, "已运行 printf ok");
+    assert_eq!(compact, "已运行 printf ok · 12 毫秒");
     assert!(
         matches!(leading_icon, Icon::Terminal),
         "successful Shell keeps its category icon instead of Check"
@@ -1084,7 +1087,7 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
         "$ printf 'full command'",
         "line one",
         "line two",
-        "已完成 · exit 0 · 25 毫秒",
+        "Success",
     ] {
         assert!(shell_text.contains(expected), "missing detail {expected:?}");
     }
@@ -1192,7 +1195,7 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
         );
         assert_eq!(
             stream.tool_cards["second"].read(cx).compact_visible_text(),
-            "运行失败 false"
+            "运行失败 false · 4 毫秒"
         );
         assert_eq!(
             stream.tool_cards["second"].read(cx).detail_footer_state(),
@@ -1242,7 +1245,7 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
             stream.tool_cards["second"]
                 .read(cx)
                 .visible_text()
-                .contains("运行失败 · exit 1 · 4 毫秒")
+                .contains("\nFailure")
         );
     });
 }
@@ -1906,7 +1909,8 @@ async fn issue103_short_empty_error_body_keeps_natural_height_and_chains(cx: &mu
     assert!(body.size.height > px(0.) && body.size.height < px(240.));
     let scroll = stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["short"].read(cx);
-        assert!(card.visible_text().contains("exit 1"));
+        assert!(card.visible_text().contains("Failure"));
+        assert_eq!(card.detail_footer_state(), Some(ToolActivityState::Failed));
         card.scroll_handle()
     });
     assert_eq!(scroll.max_offset().y, px(0.));
@@ -1979,7 +1983,141 @@ async fn issue103_tool_status_update_preserves_reading_offset(cx: &mut TestAppCo
             stream.tool_cards["status"]
                 .read(cx)
                 .visible_text()
-                .contains("已完成")
+                .contains("Success")
         );
     });
+}
+
+#[gpui_kit::test]
+async fn issue381_duration_stays_at_row_right_for_short_and_long_commands(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue381-duration-right");
+    let long_command = format!("printf '{}'", "long command ".repeat(80));
+    stream.update(cx, |stream, cx| {
+        for (id, command) in [("short", "true"), ("long", long_command.as_str())] {
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: bash_call(id, command),
+                },
+                cx,
+            );
+            approve_and_run(stream, id, cx);
+        }
+        group(stream, cx).update(cx, |group, cx| group.set_expanded(true, cx));
+    });
+    let selectors = [
+        [
+            "tool-activity-child-0",
+            "tool-activity-child-0-title",
+            "tool-activity-child-0-chevron",
+            "tool-activity-child-0-duration",
+            "tool-activity-child-0-detail",
+            "tool-activity-child-0-detail-footer-row",
+            "tool-activity-child-0-detail-footer-status",
+            "tool-activity-child-0-detail-footer-icon",
+        ],
+        [
+            "tool-activity-child-1",
+            "tool-activity-child-1-title",
+            "tool-activity-child-1-chevron",
+            "tool-activity-child-1-duration",
+            "tool-activity-child-1-detail",
+            "tool-activity-child-1-detail-footer-row",
+            "tool-activity-child-1-detail-footer-status",
+            "tool-activity-child-1-detail-footer-icon",
+        ],
+    ];
+    for width in [480., 1000.] {
+        window
+            .update(cx, |_, window, _| {
+                window.resize(gpui_kit::size(px(width), px(800.)))
+            })
+            .expect("resize");
+        cx.run_until_parked();
+        let mut rights = Vec::new();
+        for (index, selector) in selectors.iter().enumerate() {
+            let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            let row = visual.debug_bounds(selector[0]).expect("row");
+            let title = visual.debug_bounds(selector[1]).expect("title");
+            let chevron = visual.debug_bounds(selector[2]).expect("chevron");
+            let duration = visual.debug_bounds(selector[3]).expect("duration");
+            assert_eq!(duration.right(), row.right());
+            assert!(title.right() <= chevron.left());
+            assert!(chevron.right() <= duration.left());
+            assert!(title.size.height <= row.size.height);
+            assert!(duration.size.width >= body_text_width(window, "0 秒".into(), cx));
+            rights.push(duration.right());
+            if index == 1 {
+                assert!(
+                    body_text_width(window, format!("正在运行 {long_command}"), cx)
+                        > title.size.width
+                );
+            }
+        }
+        assert_eq!(rights[0], rights[1]);
+    }
+    stream.update(cx, |stream, cx| {
+        for (id, exit_code) in [("short", 0), ("long", 1)] {
+            stream.apply_event(
+                ConversationEvent::ToolCallFinished {
+                    call_id: id.into(),
+                    result: ToolResult {
+                        status: ToolCallStatus::Success,
+                        output: "output".into(),
+                        reused: false,
+                        exit_code: Some(exit_code),
+                        duration_ms: Some(1234),
+                        truncated: Some(false),
+                        invalid: None,
+                    },
+                },
+                cx,
+            );
+        }
+    });
+    cx.run_until_parked();
+    for (index, id, expected, expected_icon) in [
+        (0, "short", "Success", Icon::Check),
+        (1, "long", "Failure", Icon::Close),
+    ] {
+        stream.update(cx, |stream, cx| {
+            for candidate in ["short", "long"] {
+                stream.tool_cards[candidate]
+                    .update(cx, |card, cx| card.set_expanded(candidate == id, cx));
+            }
+        });
+        cx.run_until_parked();
+        let selector = selectors[index];
+        let body = bounds(window, selector[4], cx);
+        let scroll = stream.read_with(cx, |stream, cx| {
+            stream.tool_cards[id].read(cx).scroll_handle()
+        });
+        if scroll.max_offset().y > px(0.) {
+            issue103_wheel(window, body.center(), -10000., cx);
+        }
+        assert_eq!(scroll.offset().y, -scroll.max_offset().y);
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let row = visual.debug_bounds(selector[0]).expect("terminal row");
+        let duration = visual.debug_bounds(selector[3]).expect("terminal duration");
+        assert_eq!(row.right(), duration.right());
+        let detail = visual.debug_bounds(selector[4]).expect("detail");
+        let footer = visual.debug_bounds(selector[5]).expect("footer row");
+        let status = visual.debug_bounds(selector[6]).expect("footer status");
+        let icon = visual.debug_bounds(selector[7]).expect("footer icon");
+        assert_eq!(status.right(), footer.right());
+        assert!(status.size.width < footer.size.width);
+        assert!(icon.left() >= status.left() && icon.right() < status.right());
+        assert!(footer.bottom() <= detail.bottom());
+        assert!(footer.top() > detail.top());
+        stream.read_with(&visual, |stream, cx| {
+            let card = stream.tool_cards[id].read(cx);
+            assert!(card.visible_text().ends_with(expected));
+            assert!(card.compact_visible_text().ends_with("1.2 秒"));
+            assert_eq!(
+                card.detail_footer_state()
+                    .and_then(|state| state.terminal_icon()),
+                Some(expected_icon)
+            );
+            assert!(!card.visible_text().contains("exit "));
+        });
+    }
 }

@@ -86,6 +86,14 @@ impl ToolActivityState {
         }
     }
 
+    pub(crate) const fn terminal_icon(self) -> Option<Icon> {
+        match self {
+            Self::Success => Some(Icon::Check),
+            Self::Failed => Some(Icon::Close),
+            _ => None,
+        }
+    }
+
     pub(crate) fn terminal_color(self, colors: &ThemeColors) -> gpui_kit::Rgba {
         match self {
             Self::Success => colors.success,
@@ -579,7 +587,7 @@ impl ToolCard {
 
     /// Content rendered by the card, used by leak-focused tests.
     pub fn visible_text(&self) -> String {
-        let mut text = self.summary.clone();
+        let mut text = self.compact_row_text();
         if self.expanded
             && let Some(detail) = self.detail()
         {
@@ -603,7 +611,30 @@ impl ToolCard {
     /// read this instead of [`Self::visible_text`].
     #[cfg(test)]
     pub(crate) fn compact_visible_text(&self) -> String {
-        self.summary.clone()
+        self.compact_row_text()
+    }
+
+    fn compact_row_text(&self) -> String {
+        self.bash_duration().map_or_else(
+            || self.summary.clone(),
+            |duration| format!("{} · {duration}", self.summary),
+        )
+    }
+
+    fn bash_duration(&self) -> Option<String> {
+        if !self.is_bash() {
+            return None;
+        }
+        if self.status == ToolCallStatus::Running {
+            return self.running_elapsed_seconds.map(human_elapsed);
+        }
+        match &self.result {
+            Some(ToolCardResultProjection::Bash {
+                duration_ms: Some(duration),
+                ..
+            }) => Some(human_duration(*duration)),
+            _ => None,
+        }
     }
 
     pub(crate) fn render(
@@ -614,12 +645,13 @@ impl ToolCard {
         cx: &mut App,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let (title, leading_icon, leading_icon_color, expanded, expandable, detail) = {
+        let (title, duration, leading_icon, leading_icon_color, expanded, expandable, detail) = {
             let card_ref = card.read(cx);
             let expanded = card_ref.expanded;
             let title = card_ref.summary.clone();
             (
                 title,
+                card_ref.bash_duration(),
                 card_ref.leading_icon(),
                 card_ref.leading_icon_color(&colors),
                 expanded,
@@ -634,6 +666,7 @@ impl ToolCard {
         let debug_selector = selector.clone();
         let icon_selector = format!("{selector}-icon");
         let title_selector = format!("{selector}-title");
+        let duration_selector = format!("{selector}-duration");
         let chevron_selector = format!("{selector}-chevron");
         let disclosure_group: gpui_kit::SharedString =
             format!("tool-disclosure-{}", card.entity_id()).into();
@@ -711,7 +744,17 @@ impl ToolCard {
                 expandable,
                 colors,
                 window,
-            ));
+            ))
+            .when_some(duration, |row, duration| {
+                row.child(div().flex_1().min_w_0()).child(
+                    div()
+                        .debug_selector(move || duration_selector.clone())
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_color(colors.conversation_tool)
+                        .child(duration),
+                )
+            });
         div()
             .w_full()
             .min_w_0()
@@ -897,56 +940,35 @@ impl ToolCard {
         self.elapsed_refresh_task = None;
     }
 
-    fn push_bash_metadata(&self, label: &mut String, compact: bool, include_duration: bool) {
-        let Some(ToolCardResultProjection::Bash {
-            exit_code,
-            duration_ms,
-            truncated,
-            reused,
-            ..
+    fn bash_detail_title(&self) -> String {
+        let mut title = "Shell".to_string();
+        if let Some(ToolCardResultProjection::Bash {
+            truncated, reused, ..
         }) = &self.result
-        else {
-            return;
-        };
-        if let Some(code) = exit_code
-            && (!compact || *code != 0)
         {
-            label.push_str(&format!(" · exit {code}"));
+            if *truncated == Some(true) {
+                title.push_str(" · 已截断");
+            }
+            if *reused {
+                title.push_str(" · 已复用");
+            }
         }
-        if include_duration && let Some(duration_ms) = duration_ms {
-            label.push_str(" · ");
-            label.push_str(&human_duration(*duration_ms));
-        }
-        if *truncated == Some(true) {
-            label.push_str(" · 已截断");
-        }
-        if *reused {
-            label.push_str(" · 已复用");
-        }
+        title
     }
 
     fn terminal_footer(&self) -> String {
-        let mut footer = match self.activity_state() {
-            ToolActivityState::Superseded => "接管后未执行".to_string(),
-            ToolActivityState::Success => "已完成".to_string(),
-            ToolActivityState::Active => {
-                if self.status == ToolCallStatus::PendingApproval {
-                    "等待批准".to_string()
-                } else {
-                    "正在运行".to_string()
-                }
+        match self.activity_state() {
+            ToolActivityState::Superseded => "接管后未执行",
+            ToolActivityState::Success => "Success",
+            ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => {
+                "等待批准"
             }
-            ToolActivityState::Rejected => "已拒绝".to_string(),
-            ToolActivityState::Cancelled => "已取消".to_string(),
-            ToolActivityState::Failed => "运行失败".to_string(),
-        };
-        if self.status == ToolCallStatus::Running
-            && let Some(seconds) = self.running_elapsed_seconds
-        {
-            footer.push_str(&format!(" · {}", human_elapsed(seconds)));
+            ToolActivityState::Active => "正在运行",
+            ToolActivityState::Rejected => "已拒绝",
+            ToolActivityState::Cancelled => "已取消",
+            ToolActivityState::Failed => "Failure",
         }
-        self.push_bash_metadata(&mut footer, false, true);
-        footer
+        .to_string()
     }
 
     fn has_detail(&self) -> bool {
@@ -974,7 +996,7 @@ impl ToolCard {
     fn detail(&self) -> Option<ToolDetail> {
         match &self.input {
             Some(ToolCardInputProjection::Bash { command }) => Some(ToolDetail {
-                title: Some("Shell".to_string()),
+                title: Some(self.bash_detail_title()),
                 command: Some(format!("$ {command}")),
                 output: if self.output_rows.is_empty()
                     && self.activity_state() != ToolActivityState::Active
@@ -1200,21 +1222,45 @@ fn render_detail(
         )
     }));
     if let Some((footer, state)) = detail.footer {
+        let color = if state == ToolActivityState::Success {
+            colors.text_secondary
+        } else {
+            state.terminal_color(colors)
+        };
+        let row_selector = format!("{selector}-footer-row");
+        let status_selector = format!("{selector}-footer-status");
+        let icon_selector = format!("{selector}-footer-icon");
         rows.push(
             div()
+                .debug_selector(move || row_selector.clone())
                 .w_full()
+                .min_h(px(ROW_HEIGHT))
+                .flex_shrink_0()
                 .flex()
                 .justify_end()
-                .child(detail_row(
-                    "tool-detail-result",
-                    footer,
-                    if state == ToolActivityState::Success {
-                        colors.text_secondary
-                    } else {
-                        state.terminal_color(colors)
-                    },
-                    false,
-                ))
+                .child(
+                    div()
+                        .debug_selector(move || status_selector.clone())
+                        .flex()
+                        .items_center()
+                        .gap(px(Layout::CONVERSATION_INLINE_GAP))
+                        .text_size(px(Typography::CONVERSATION))
+                        .text_color(color)
+                        .when_some(state.terminal_icon(), |row, icon| {
+                            row.child(
+                                div()
+                                    .debug_selector(move || icon_selector.clone())
+                                    .size(px(Layout::ICON_SIZE))
+                                    .flex_shrink_0()
+                                    .child(crate::icons::sized_icon(
+                                        icon,
+                                        color,
+                                        Layout::ICON_SIZE,
+                                    )),
+                            )
+                        })
+                        .child(footer),
+                )
                 .into_any_element(),
         );
     }
@@ -1671,6 +1717,31 @@ mod tests {
     }
 
     #[test]
+    fn hydrated_terminal_without_duration_keeps_status_without_inventing_time() {
+        let mut card = ToolCard::hydrated(
+            Some(ToolCardInputProjection::Bash {
+                command: "true".into(),
+            }),
+            ToolCallStatus::Success,
+            Some(Approval::Once),
+            Some(ToolCardResultProjection::Bash {
+                status: ToolCallStatus::Success,
+                output: String::new(),
+                exit_code: Some(0),
+                duration_ms: None,
+                truncated: Some(false),
+                reused: false,
+            }),
+        );
+        assert_eq!(card.bash_duration(), None);
+        assert_eq!(card.visible_text(), "已运行 true");
+        assert!(!card.live_elapsed_active());
+        card.expanded = true;
+        assert!(card.visible_text().ends_with("Success"));
+        assert!(!card.visible_text().contains("秒"));
+    }
+
+    #[test]
     fn bash_output_starts_collapsed_and_metadata_is_structured() {
         let call = ToolCall {
             id: "bash-call".into(),
@@ -1685,14 +1756,14 @@ mod tests {
         terminal.truncated = Some(false);
         assert!(card.apply_finished(&terminal));
         assert_eq!(card.row_count(), 1);
-        assert_eq!(card.visible_text(), "已运行 printf 'ok'");
+        assert_eq!(card.visible_text(), "已运行 printf 'ok' · 12 毫秒");
         assert!(card.visible_text().contains("printf 'ok'"));
         assert!(!card.visible_text().contains("\nok"));
         card.expanded = true;
         assert_eq!(card.row_count(), 5);
         assert!(
             card.visible_text()
-                .contains("\nShell\n$ printf 'ok'\nok\n已完成")
+                .contains("\nShell\n$ printf 'ok'\nok\nSuccess")
         );
     }
 
@@ -1800,15 +1871,26 @@ mod tests {
             );
             assert_eq!(
                 card.visible_text(),
-                format!("{action} printf 'a  b' printf done")
+                format!("{action} printf 'a  b' printf done · 1.2 秒")
             );
             assert_eq!(card.row_count(), 1);
             card.expanded = true;
             assert!(card.visible_text().contains(&format!("$ {command}")));
-            assert!(card.visible_text().contains("1.2 秒 · 已截断 · 已复用"));
+            assert!(card.visible_text().contains("Shell · 已截断 · 已复用"));
+            assert_eq!(
+                card.terminal_footer(),
+                if exit == Some(0) {
+                    "Success"
+                } else {
+                    "Failure"
+                }
+            );
             assert!(card.visible_text().contains("result"));
             if let Some(exit) = exit {
-                assert!(card.visible_text().contains(&format!("exit {exit}")));
+                assert!(!card.visible_text().contains(&format!("exit {exit}")));
+                assert!(
+                    matches!(card.result, Some(ToolCardResultProjection::Bash { exit_code: Some(actual), .. }) if actual == exit)
+                );
             }
         }
     }
