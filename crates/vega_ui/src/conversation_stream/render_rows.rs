@@ -752,7 +752,11 @@ pub(crate) fn markdown_block_gap(
     after.max(before)
 }
 
-fn selection_context_menu(body: AnyElement, copy: &MessageCopy, copy_original: bool) -> AnyElement {
+pub(super) fn selection_context_menu(
+    body: AnyElement,
+    copy: &MessageCopy,
+    copy_original: bool,
+) -> AnyElement {
     use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 
     let copy_for_menu = copy.clone();
@@ -1057,7 +1061,7 @@ fn markdown_text(spans: &[StreamSpan], style: TextStyle, colors: &ThemeColors) -
     )
 }
 
-fn block_text_runs(
+pub(super) fn block_text_runs(
     spans: &[StreamSpan],
     default_style: TextStyle,
     colors: &ThemeColors,
@@ -1113,7 +1117,7 @@ pub(crate) fn heading_style(level: u8) -> (f32, FontWeight) {
     }
 }
 
-fn heading_run_style(level: u8, colors: &ThemeColors) -> TextStyle {
+pub(super) fn heading_run_style(level: u8, colors: &ThemeColors) -> TextStyle {
     let (size, weight) = heading_style(level);
     TextStyle {
         font_size: AbsoluteLength::Pixels(px(size)),

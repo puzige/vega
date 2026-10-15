@@ -1507,6 +1507,13 @@ impl Render for ConversationStream {
             self.focus_composer(window, cx);
         }
         self.reset_image_visibility(cx);
+        for group in self.run_activity_groups.values() {
+            for child in group.read(cx).children() {
+                if let RunActivityChild::Thinking(card) = child {
+                    card.read(cx).reset_body_visibility();
+                }
+            }
+        }
         let render_t0 = Instant::now();
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
@@ -1519,8 +1526,9 @@ impl Render for ConversationStream {
             && let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.get_mut(*index)
         {
             let snapshot = stream.snapshot();
-            model.sync(&snapshot, &self.counters);
-            self.invalidate_item(Some(*index));
+            if model.sync(&snapshot, &self.counters) {
+                self.invalidate_item(Some(*index));
+            }
         }
         self.settle_final_presentation(window, cx);
         self.refresh_run_notices(cx);

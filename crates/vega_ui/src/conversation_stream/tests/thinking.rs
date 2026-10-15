@@ -419,9 +419,7 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     visual.run_until_parked();
     assert_eq!(scroll.offset().y, px(-100.), "reopen retains offset");
     block.update(&mut visual, |block, cx| {
-        block.text = "short".into();
-        block.append("", false, 0);
-        cx.notify();
+        block.test_replace_source("short", cx);
     });
     visual.run_until_parked();
     assert_eq!(scroll.offset().y, px(0.));
@@ -435,9 +433,7 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
             < px(240.)
     );
     block.update(&mut visual, |block, cx| {
-        block.text.clear();
-        block.append("", false, 0);
-        cx.notify();
+        block.test_replace_source("", cx);
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("thinking-content").is_none());

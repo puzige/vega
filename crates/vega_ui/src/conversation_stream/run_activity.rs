@@ -20,6 +20,7 @@ pub(crate) enum RunActivityChild {
 }
 
 struct RunActivitySegment {
+    title_view: Entity<shimmer::StageText>,
     sticky: StickyState,
     expanded: bool,
     manually_expanded: bool,
@@ -113,6 +114,14 @@ pub(crate) enum StickyCollapse {
     Segment(usize),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct RunActivityDisplayChanged {
+    pub(crate) segment: Option<usize>,
+    pub(crate) geometry: bool,
+}
+
+impl gpui_kit::EventEmitter<RunActivityDisplayChanged> for RunActivityGroup {}
+
 pub(crate) struct RunActivityGroup {
     sticky: StickyState,
     collapsed_sticky: Option<StickyCollapse>,
@@ -140,6 +149,22 @@ pub(crate) struct RunActivityGroup {
 }
 
 impl RunActivityGroup {
+    fn sync_thinking_visibility(&self, cx: &mut App) {
+        for (index, segment) in self.segments.iter().enumerate() {
+            let visible = if self.process_in_details() {
+                self.expanded
+            } else {
+                self.segment_can_expand(index, cx)
+                    && (!self.stage_is_aggregate(index, cx) || segment.expanded)
+            };
+            for child in &segment.children {
+                if let RunActivityChild::Thinking(card) = child {
+                    card.update(cx, |card, _| card.set_ancestor_visible(visible));
+                }
+            }
+        }
+    }
+
     pub(crate) fn response_checkpoint(
         &mut self,
         active_segment: Option<usize>,
@@ -214,6 +239,7 @@ impl RunActivityGroup {
             }
         }
         self.phase = RunPhase::Thinking;
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -223,6 +249,7 @@ impl RunActivityGroup {
                 card.shimmer_epoch = None;
                 cx.notify();
             });
+            self.sync_thinking_visibility(cx);
             cx.notify();
         }
     }
@@ -230,6 +257,7 @@ impl RunActivityGroup {
         if self.started_at.is_none() && !self.terminal {
             self.started_at = Some(started_at);
             self.animation_epoch = started_at;
+            self.sync_thinking_visibility(cx);
             cx.notify();
         }
     }
@@ -247,7 +275,10 @@ impl RunActivityGroup {
                     group.clock_ticks += 1;
                 }
                 if !group.terminal {
-                    cx.notify();
+                    cx.emit(RunActivityDisplayChanged {
+                        segment: None,
+                        geometry: false,
+                    });
                 }
             });
         }));
@@ -257,6 +288,7 @@ impl RunActivityGroup {
         if !self.terminal && self.phase != phase {
             self.phase = phase;
             self.finish_thinking(cx);
+            self.sync_thinking_visibility(cx);
             cx.notify();
         }
     }
@@ -272,17 +304,21 @@ impl RunActivityGroup {
                 cx.notify();
             });
         }
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
     pub(crate) fn set_thinking(&mut self, card: Entity<ThinkingBlock>, cx: &mut Context<Self>) {
+        if self.phase == RunPhase::Thinking && self.current_thinking.as_ref() == Some(&card) {
+            return;
+        }
         self.phase = RunPhase::Thinking;
-        card.update(cx, |card, cx| {
-            card.shimmer_epoch = None;
-            cx.notify();
-        });
+        card.update(cx, |card, _| card.shimmer_epoch = None);
         self.current_thinking = Some(card);
-        cx.notify();
+        cx.emit(RunActivityDisplayChanged {
+            segment: None,
+            geometry: false,
+        });
     }
 
     pub(crate) fn confirm_final(
@@ -301,6 +337,7 @@ impl RunActivityGroup {
             self.expanded = false;
             self.body_in_details = true;
         }
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -321,6 +358,7 @@ impl RunActivityGroup {
         self.collapse_pending = false;
         self.expanded = false;
         self.body_in_details = true;
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -332,12 +370,14 @@ impl RunActivityGroup {
         self.final_confirmed = false;
         self.collapse_pending = false;
         self.body_in_details = false;
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
     pub(crate) fn reveal(&mut self, cx: &mut Context<Self>) {
         self.expanded = true;
         self.manually_expanded = true;
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -360,6 +400,7 @@ impl RunActivityGroup {
             px(0.),
             y.max(-self.scroll.max_offset().y).min(px(0.)),
         ));
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -639,6 +680,7 @@ impl RunActivityGroup {
 
     pub(crate) fn start_segment(&mut self, cx: &mut Context<Self>) -> usize {
         self.segments.push(RunActivitySegment {
+            title_view: cx.new(|_| shimmer::StageText::new()),
             sticky: StickyState::default(),
             expanded: false,
             manually_expanded: false,
@@ -649,6 +691,7 @@ impl RunActivityGroup {
             header_focus: cx.focus_handle().tab_stop(true),
             scrolls: vec![ScrollHandle::new()],
         });
+        self.sync_thinking_visibility(cx);
         cx.notify();
         self.segments.len() - 1
     }
@@ -664,7 +707,33 @@ impl RunActivityGroup {
                 .stage_tool_calls(segment, cx)
                 .first()
                 .is_some_and(|card| card.read(cx).is_expanded());
-        cx.observe(&card, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(
+            &card,
+            move |group, card, change: &thinking::ThinkingChanged, cx| {
+                group.sync_thinking_visibility(cx);
+                let details = group.process_in_details();
+                let visible = if details {
+                    group.expanded
+                } else {
+                    group
+                        .segments
+                        .get(segment)
+                        .is_some_and(|state| state.expanded)
+                };
+                if change.stage || visible && (change.header || change.geometry) {
+                    cx.emit(RunActivityDisplayChanged {
+                        segment: (!details).then_some(segment),
+                        geometry: change.geometry
+                            && (visible
+                                || change.stage
+                                    && !details
+                                    && !group.stage_is_aggregate(segment, cx)),
+                    });
+                }
+                let _ = card;
+            },
+        )
+        .detach();
         if let Some(segment) = self.segments.get_mut(segment) {
             segment.children.push(RunActivityChild::Thinking(card));
             if preserve_open {
@@ -672,6 +741,7 @@ impl RunActivityGroup {
                 segment.manually_expanded = true;
             }
         }
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -718,6 +788,7 @@ impl RunActivityGroup {
             segment_state.manually_expanded = true;
         }
         self.refresh_compact_tool_groups(segment, cx);
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -749,6 +820,7 @@ impl RunActivityGroup {
             }
         }
         self.refresh_compact_tool_groups(segment, cx);
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -826,6 +898,7 @@ impl RunActivityGroup {
             .scrolls
             .push(ScrollHandle::new());
         self.refresh_compact_tool_groups(segment_index, cx);
+        self.sync_thinking_visibility(cx);
         cx.notify();
         true
     }
@@ -1097,6 +1170,7 @@ impl RunActivityGroup {
             });
         }
         self.clock_task = None;
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -1109,6 +1183,7 @@ impl RunActivityGroup {
         if self.final_confirmed {
             self.body_in_details = true;
         }
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -1512,6 +1587,7 @@ impl RunActivityGroup {
             if let Some(card) = single_card {
                 card.update(cx, |card, cx| card.set_stage_expanded(true, cx));
             }
+            self.sync_thinking_visibility(cx);
             cx.notify();
         }
         true
@@ -1532,6 +1608,7 @@ impl RunActivityGroup {
         if let Some(card) = single_card {
             card.update(cx, |card, cx| card.set_stage_expanded(expanded, cx));
         }
+        self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
@@ -1567,6 +1644,7 @@ impl RunActivityGroup {
         let can_expand = state.segment_can_expand(segment_index, cx);
         let expanded = state.segments[segment_index].expanded && can_expand;
         let header_focus = state.segments[segment_index].header_focus.clone();
+        let title_view = state.segments[segment_index].title_view.clone();
         let tool_ids = state
             .stage_tool_calls(segment_index, cx)
             .iter()
@@ -1622,6 +1700,9 @@ impl RunActivityGroup {
         let mut header = None;
         let mut rows = Vec::new();
         if let Some(title) = title {
+            title_view.update(cx, |view, cx| {
+                view.set(title.clone(), shimmering.then_some(epoch), cx)
+            });
             let disclosure_group: gpui_kit::SharedString =
                 format!("run-stage-{}-{segment_index}", group.entity_id()).into();
             let toggle = group.clone();
@@ -1690,11 +1771,7 @@ impl RunActivityGroup {
                             .min_w_0()
                             .flex_shrink(1.)
                             .truncate()
-                            .child(if shimmering {
-                                shimmer::stage_text(title, epoch, window, cx)
-                            } else {
-                                div().child(title).into_any_element()
-                            }),
+                            .child(title_view),
                     )
                     .when(can_expand, |row| {
                         row.child(crate::disclosure::inline_chevron(

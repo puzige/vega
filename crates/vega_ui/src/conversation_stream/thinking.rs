@@ -1,6 +1,9 @@
 //! Bounded, memory-only reasoning content, separate from answer Markdown.
 use super::*;
 
+#[path = "thinking_body.rs"]
+mod body;
+
 // Match the runtime's delta/turn/run byte ceilings, with an additional bound
 // on retained block count. The view budget is not reset between messages.
 pub(crate) const THINKING_DELTA_BYTES: usize = 64 * 1024;
@@ -175,19 +178,28 @@ impl Preview {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ThinkingChanged {
+    pub(crate) header: bool,
+    pub(crate) stage: bool,
+    pub(crate) geometry: bool,
+}
+
+impl gpui_kit::EventEmitter<ThinkingChanged> for ThinkingBlock {}
+
 pub(crate) struct ThinkingBlock {
     pub(crate) text: String,
     pub(crate) shimmer_epoch: Option<Instant>,
     summary: String,
     summary_has_content: bool,
+    thinking_has_content: bool,
     thinking_preview: Preview,
     summary_preview: Preview,
-    source_stream: MarkdownStream,
-    source_model: StreamModel,
+    body: body::ThinkingBody,
     source_copy: MessageCopy,
-    source_counters: StreamCounters,
+    source_revision: u64,
+    ancestor_visible: bool,
     pub(crate) expanded: bool,
-    expanded_rendered: bool,
     pub(crate) truncated: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
@@ -234,9 +246,7 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn has_meaningful_source_text(&self) -> bool {
-        self.visible_text()
-            .chars()
-            .any(|character| !character.is_whitespace())
+        self.summary_has_content || self.thinking_has_content
     }
 
     pub(crate) fn copy_selected_source(&mut self, cx: &mut Context<Self>) {
@@ -251,23 +261,11 @@ impl ThinkingBlock {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let (model, copy, focus, scroll) = {
+        let (focus, scroll) = {
             let state = card.read(cx);
-            (
-                StreamModel {
-                    committed_lines: state.source_model.committed_lines.clone(),
-                    pending_lines: state.source_model.pending_lines.clone(),
-                    ..StreamModel::default()
-                },
-                state.source_copy.clone(),
-                state.focus.clone(),
-                state.scroll.clone(),
-            )
+            (state.focus.clone(), state.scroll.clone())
         };
-        let colors = theme(cx).colors;
-        let content = render_rows::selectable_markdown_content(
-            &model, &copy, &focus, &colors, true, window, cx,
-        );
+        let content = Self::render_source(card.clone(), window, cx);
         div()
             .relative()
             .w_full()
@@ -277,26 +275,13 @@ impl ThinkingBlock {
             .on_action(move |_: &CopySelectedText, _, cx| {
                 card.update(cx, ThinkingBlock::copy_selected_source);
             })
-            .child(
-                div()
-                    .id("thinking-content")
-                    .debug_selector(|| "thinking-content".into())
-                    .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
-                    .overflow_x_hidden()
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll)
-                    .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
-                    .w_full()
-                    .min_w_0()
-                    .pl(px(Layout::DISCLOSURE_PADDING_X))
-                    .pr(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER))
-                    .text_size(px(Typography::CONVERSATION))
-                    .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-                    .text_color(colors.text_secondary)
-                    .child(content),
-            )
+            .child(content)
             .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
             .into_any_element()
+    }
+
+    fn render_source(card: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
+        card.update(cx, |card, cx| card.render_body(window, cx))
     }
 
     #[cfg(test)]
@@ -315,30 +300,41 @@ impl ThinkingBlock {
             shimmer_epoch: None,
             summary: String::new(),
             summary_has_content: false,
+            thinking_has_content: false,
             thinking_preview: Preview::default(),
             summary_preview: Preview::default(),
-            source_stream: MarkdownStream::new(),
-            source_model: StreamModel::default(),
+            body: body::ThinkingBody::default(),
             source_copy: MessageCopy::default(),
-            source_counters: StreamCounters::default(),
+            source_revision: 0,
+            ancestor_visible: true,
             expanded: false,
-            expanded_rendered: false,
             truncated: false,
             focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
         }
     }
+    pub(crate) fn set_ancestor_visible(&mut self, visible: bool) {
+        if self.ancestor_visible != visible {
+            self.ancestor_visible = visible;
+            self.body.visibility_changed();
+        }
+    }
+
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         if self.expanded != expanded {
             self.expanded = expanded;
-            self.expanded_rendered = false;
+            self.body.visibility_changed();
+            cx.emit(ThinkingChanged {
+                header: false,
+                stage: false,
+                geometry: true,
+            });
             cx.notify();
         }
     }
 
     pub(crate) fn set_stage_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         self.set_expanded(expanded, cx);
-        self.expanded_rendered = expanded;
     }
 
     pub(crate) fn row_count(&self) -> usize {
@@ -346,11 +342,10 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn estimated_source_height(&self, width: f32) -> f32 {
-        message_anchors::estimate_markdown_height(
-            &self.source_model,
-            width - Layout::DISCLOSURE_PADDING_X - Layout::DISCLOSURE_SCROLLBAR_GUTTER,
-        )
-        .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+        let _ = width;
+        self.body
+            .height()
+            .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
     }
 
     pub(crate) fn estimated_height(&self, width: f32) -> f32 {
@@ -374,34 +369,31 @@ impl ThinkingBlock {
                 .saturating_sub(self.text.len() + self.summary.len())
                 .min(remaining),
         );
+        let source_switched = summary && !self.summary_has_content;
         if summary {
             self.summary_has_content |= delta[..end].chars().any(|ch| !ch.is_whitespace());
             self.summary.push_str(&delta[..end]);
             self.summary_preview.append(&delta[..end]);
         } else {
+            self.thinking_has_content |= delta[..end].chars().any(|ch| !ch.is_whitespace());
             self.text.push_str(&delta[..end]);
             self.thinking_preview.append(&delta[..end]);
         }
-        let source = self.source_text();
-        let previous = self.source_copy.original_text();
-        if source != previous {
-            if let Some(delta) = source.strip_prefix(&previous) {
-                self.source_stream.append(delta);
-            } else {
-                self.source_stream = MarkdownStream::new();
-                self.source_model = StreamModel::default();
-                self.source_stream.append(&source);
+        if end > 0 {
+            if summary && self.summary_has_content {
+                if source_switched {
+                    self.body.replace_source();
+                }
+                if self.source_copy.original_len() == self.summary.len() - end && !source_switched {
+                    self.source_copy.append(&delta[..end]);
+                } else {
+                    self.source_copy.replace_text(&self.summary);
+                }
+                self.source_revision = self.source_revision.wrapping_add(1);
+            } else if !summary && !self.summary_has_content {
+                self.source_copy.append(&delta[..end]);
+                self.source_revision = self.source_revision.wrapping_add(1);
             }
-            self.source_copy.replace_text(&source);
-            self.source_model
-                .sync(&self.source_stream.snapshot(), &self.source_counters);
-        }
-        if self.expanded
-            && self.expanded_rendered
-            && self.scroll.offset().y + self.scroll.max_offset().y <= px(1.)
-        {
-            self.scroll
-                .set_offset(gpui_kit::point(px(0.), px(-f32::MAX)));
         }
         self.truncated |= end < delta.len();
         end
@@ -410,7 +402,6 @@ impl ThinkingBlock {
 
 impl Render for ThinkingBlock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.expanded_rendered = self.expanded;
         let colors = theme(cx).colors;
         let title = self.title().to_owned();
         div()
@@ -502,36 +493,7 @@ impl Render for ThinkingBlock {
                         .relative()
                         .w_full()
                         .min_w_0()
-                        .child(
-                            div()
-                                .id("thinking-content")
-                                .debug_selector(|| "thinking-content".into())
-                                .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
-                                .overflow_x_hidden()
-                                .overflow_y_scroll()
-                                .track_scroll(&self.scroll)
-                                .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(
-                                    &self.scroll,
-                                ))
-                                .w_full()
-                                .min_w_0()
-                                .pl(px(Layout::DISCLOSURE_PADDING_X))
-                                .pr(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER))
-                                .text_size(px(Typography::CONVERSATION))
-                                .line_height(gpui_kit::relative(
-                                    Typography::CONVERSATION_LINE_HEIGHT,
-                                ))
-                                .text_color(colors.text_secondary)
-                                .child(render_rows::selectable_markdown_content(
-                                    &self.source_model,
-                                    &self.source_copy,
-                                    &self.focus,
-                                    &colors,
-                                    true,
-                                    window,
-                                    cx,
-                                )),
-                        )
+                        .child(self.render_body(window, cx))
                         .child(crate::tool_card::disclosure_scrollbar(&self.scroll, cx)),
                 )
             })
@@ -621,8 +583,23 @@ impl ConversationStream {
             }
             let remaining = THINKING_VIEW_BYTES.saturating_sub(self.thinking_bytes);
             self.thinking_bytes += card.update(cx, |card, cx| {
+                let title = card.title().to_owned();
+                let summary_title = card.summary_title().map(str::to_owned);
+                let source_present = card.has_source_text();
+                let truncated = card.truncated;
                 let appended = card.append(delta, summary, remaining);
-                cx.notify();
+                let header_changed = title != card.title();
+                let stage_changed = summary_title.as_deref() != card.summary_title()
+                    || source_present != card.has_source_text()
+                    || truncated != card.truncated;
+                if header_changed || stage_changed {
+                    cx.emit(ThinkingChanged {
+                        header: header_changed,
+                        stage: stage_changed,
+                        geometry: truncated != card.truncated,
+                    });
+                }
+                card.prepare_body(cx);
                 appended
             });
         }

@@ -1,8 +1,8 @@
-use std::{cell::RefCell, ops::Range, rc::Rc};
+use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
 
 use gpui_kit::base::{
-    TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun,
-    TextSelectionScopeId,
+    TextSelection, TextSelectionContentKey, TextSelectionCoverage, TextSelectionHandle,
+    TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId,
 };
 use gpui_kit::{
     App, BorderStyle, Bounds, Corners, Edges, Element, ElementId, FocusHandle, GlobalElementId,
@@ -29,10 +29,12 @@ struct LaidOutRun {
     selected: Rc<RefCell<Option<Range<usize>>>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct SelectionDocumentBuilder {
     copy: MessageCopy,
     focus: FocusHandle,
     content: String,
+    projected_content: Option<Arc<str>>,
     next_run_order: u64,
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
     selection_color: Hsla,
@@ -44,10 +46,49 @@ impl SelectionDocumentBuilder {
             copy,
             focus,
             content: String::new(),
+            projected_content: None,
             next_run_order: 0,
             runs: Rc::new(RefCell::new(Vec::new())),
             selection_color,
         }
+    }
+
+    pub(super) fn projected(
+        copy: MessageCopy,
+        focus: FocusHandle,
+        selection_color: Hsla,
+        content: Arc<str>,
+    ) -> Self {
+        Self {
+            projected_content: Some(content),
+            ..Self::new(copy, focus, selection_color)
+        }
+    }
+
+    pub(super) fn append_positioned(
+        &self,
+        text: &str,
+        runs: Vec<TextRun>,
+        content_range: Range<usize>,
+        logical_range: Range<usize>,
+    ) -> gpui_kit::AnyElement {
+        let paint_runs = runs
+            .iter()
+            .any(|run| run.background_color.is_some())
+            .then(|| runs.clone());
+        SelectableStyledText {
+            id: ElementId::Name(format!("thinking-selection-{}", content_range.start).into()),
+            text: StyledText::new(text.to_owned()).with_runs(runs),
+            content: text.to_owned().into(),
+            order: (content_range.start as u64, 0),
+            content_range,
+            logical_range,
+            runs: self.runs.clone(),
+            selected: Rc::new(RefCell::new(None)),
+            selection_color: self.selection_color,
+            paint_runs,
+        }
+        .into_any_element()
     }
 
     pub(crate) fn append_literal(&mut self, text: &str) {
@@ -146,7 +187,12 @@ impl SelectionDocumentBuilder {
     ) -> gpui_kit::AnyElement {
         let id = self.copy.id;
         let generation = self.copy.selection_generation();
-        let previous = self.copy.visible_text();
+        let projected = self.projected_content.is_some();
+        let clear_projected_selection = self
+            .projected_content
+            .as_ref()
+            .is_some_and(|text| self.copy.set_projected_identity(text.as_ptr() as usize));
+        let previous = (!projected).then(|| self.copy.visible_text()).flatten();
         SelectableMessage {
             id: ElementId::Name(format!("selectable-message-{id}").into()),
             body,
@@ -154,7 +200,11 @@ impl SelectionDocumentBuilder {
             handle: self.copy.ensure_selection_handle(&self.focus, window, cx),
             scope: self.copy.selection_scope(),
             focus: self.focus,
-            content: self.content,
+            content: self
+                .projected_content
+                .unwrap_or_else(|| self.content.into()),
+            projected,
+            clear_projected_selection,
             generation,
             previous_visible_text: previous,
             runs: self.runs,
@@ -286,7 +336,9 @@ struct SelectableMessage {
     handle: TextSelectionHandle,
     scope: TextSelectionScopeId,
     focus: FocusHandle,
-    content: String,
+    content: Arc<str>,
+    projected: bool,
+    clear_projected_selection: bool,
     generation: u64,
     previous_visible_text: Option<String>,
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
@@ -337,16 +389,20 @@ impl Element for SelectableMessage {
     ) -> Self::PrepaintState {
         self.runs.borrow_mut().clear();
         self.body.prepaint(window, cx);
-        if self
-            .previous_visible_text
-            .as_ref()
-            .is_some_and(|text| text != &self.content)
+        if (self.clear_projected_selection
+            || self
+                .previous_visible_text
+                .as_ref()
+                .is_some_and(|text| text.as_str() != self.content.as_ref()))
             && (self.handle.snapshot(cx).is_some() || self.handle.has_local_selection(cx))
         {
             self.copy.invalidate_selection();
             TextSelection::clear(window, cx);
+            self.generation = self.copy.selection_generation();
         }
-        self.copy.set_visible_text(self.content.clone());
+        if !self.projected {
+            self.copy.set_visible_text(self.content.to_string());
+        }
         let mut runs = self.runs.borrow().clone();
         runs.sort_by_key(|run| run.order);
         let text_runs = runs
@@ -358,10 +414,77 @@ impl Element for SelectableMessage {
             })
             .collect::<Vec<_>>();
         let projection = self.handle.update_runs(&text_runs, cx);
+        if self.projected {
+            let resolver_runs = self.runs.clone();
+            self.handle.resolve_content_key_with(
+                move |point, _| {
+                    let position = point + bounds.origin;
+                    resolver_runs
+                        .borrow()
+                        .iter()
+                        .min_by(|left, right| {
+                            let distance = |run: &LaidOutRun| {
+                                let y = if position.y < run.bounds.top() {
+                                    run.bounds.top() - position.y
+                                } else if position.y > run.bounds.bottom() {
+                                    position.y - run.bounds.bottom()
+                                } else {
+                                    gpui_kit::px(0.)
+                                };
+                                let x = if position.x < run.bounds.left() {
+                                    run.bounds.left() - position.x
+                                } else if position.x > run.bounds.right() {
+                                    position.x - run.bounds.right()
+                                } else {
+                                    gpui_kit::px(0.)
+                                };
+                                (f32::from(y), f32::from(x))
+                            };
+                            distance(left)
+                                .partial_cmp(&distance(right))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|run| {
+                            TextSelectionContentKey::new(
+                                (run.content_range.start
+                                    + run
+                                        .layout
+                                        .index_for_position(position)
+                                        .unwrap_or_else(|index| index)
+                                        .min(run.content_range.len()))
+                                    as u64,
+                            )
+                        })
+                },
+                cx,
+            );
+        }
+        let projected_range = self
+            .projected
+            .then(|| self.handle.snapshot(cx))
+            .flatten()
+            .and_then(|snapshot| {
+                let index = |endpoint: gpui_kit::base::TextSelectionEndpoint| {
+                    (endpoint.entity_id() == Some(self.handle.entity_id()))
+                        .then(|| endpoint.content_key().map(|key| key.value() as usize))
+                        .flatten()
+                };
+                let anchor = index(snapshot.anchor());
+                let cursor = index(snapshot.cursor());
+                match snapshot.coverage() {
+                    TextSelectionCoverage::Full => Some(0..self.content.len()),
+                    TextSelectionCoverage::FromStart => Some(0..anchor.or(cursor)?),
+                    TextSelectionCoverage::ToEnd => Some(anchor.or(cursor)?..self.content.len()),
+                    TextSelectionCoverage::Bounded => {
+                        Some(anchor?.min(cursor?)..anchor?.max(cursor?))
+                    }
+                }
+            });
         let local = self.copy.local_selection_range();
+        let visible_selection = local.clone().or(projected_range);
         self.handle.set_local_selection(local.is_some(), cx);
         for (run, range) in runs.iter().zip(projection.ranges()) {
-            *run.selected.borrow_mut() = if let Some(local) = &local {
+            *run.selected.borrow_mut() = if let Some(local) = &visible_selection {
                 let start = local.start.max(run.content_range.start);
                 let end = local.end.min(run.content_range.end);
                 (start < end).then_some(
@@ -371,7 +494,7 @@ impl Element for SelectableMessage {
                 range.clone()
             };
         }
-        let selected = local.or_else(|| {
+        let selected = visible_selection.or_else(|| {
             projection
                 .ranges()
                 .iter()
@@ -418,6 +541,8 @@ impl Element for SelectableMessage {
         let hitbox = prepaint.hitbox.clone();
         let runs = self.runs.clone();
         let content = self.content.clone();
+        let projected = self.projected;
+        let generation = self.copy.content_generation();
         let copy = self.copy.clone();
         let handle = self.handle.clone();
         let focus = self.focus.clone();
@@ -453,7 +578,10 @@ impl Element for SelectableMessage {
                         let focus = focus.clone();
                         let content = content.clone();
                         window.defer(cx, move |window, cx| {
-                            if copy.visible_text().as_deref() == Some(content.as_str()) {
+                            if (projected && copy.content_generation() == generation)
+                                || (!projected
+                                    && copy.visible_text().as_deref() == Some(content.as_ref()))
+                            {
                                 copy.set_local_selection_range(range.clone());
                                 copy.set_selected_text(
                                     copy.selection_generation(),

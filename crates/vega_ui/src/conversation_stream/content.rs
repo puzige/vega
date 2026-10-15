@@ -1045,6 +1045,38 @@ impl ConversationStream {
         group: &Entity<RunActivityGroup>,
         cx: &mut Context<Self>,
     ) {
+        cx.subscribe(
+            group,
+            |this, group, change: &run_activity::RunActivityDisplayChanged, cx| {
+                if change.geometry {
+                    let indexes = this
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, entry)| match (entry, change.segment) {
+                            (StreamEntry::RunActivity { group: owned }, None)
+                                if owned == &group =>
+                            {
+                                Some(index)
+                            }
+                            (
+                                StreamEntry::RunActivitySegment {
+                                    group: owned,
+                                    segment,
+                                },
+                                Some(changed),
+                            ) if owned == &group && *segment == changed => Some(index),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    for index in indexes {
+                        this.invalidate_item(Some(index));
+                    }
+                }
+                cx.notify();
+            },
+        )
+        .detach();
         cx.observe(group, |this, group, cx| {
             let indexes = this
                 .entries
