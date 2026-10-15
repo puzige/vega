@@ -744,9 +744,9 @@ pub(crate) struct MessageCopy {
     selection_generation: std::rc::Rc<std::cell::Cell<u64>>,
     selected_text: std::rc::Rc<std::cell::RefCell<Option<(u64, String)>>>,
     local_selection_range: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
-    visible_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    visible_text: std::rc::Rc<std::cell::RefCell<Option<Arc<str>>>>,
     content_generation: std::rc::Rc<std::cell::Cell<u64>>,
-    projected_identity: std::rc::Rc<std::cell::Cell<Option<(usize, u64)>>>,
+    projected_identity: std::rc::Rc<std::cell::Cell<Option<(u64, u64)>>>,
     selection_subscriptions: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Subscription>>>,
 }
 
@@ -772,7 +772,7 @@ impl MessageCopy {
         self.content_generation.get()
     }
 
-    pub(super) fn set_projected_identity(&self, identity: usize) -> bool {
+    pub(super) fn set_projected_identity(&self, identity: u64) -> bool {
         let next = (identity, self.content_generation());
         self.projected_identity
             .replace(Some(next))
@@ -860,10 +860,13 @@ impl MessageCopy {
     }
 
     pub(crate) fn visible_text(&self) -> Option<String> {
-        self.visible_text.borrow().clone()
+        self.visible_text
+            .borrow()
+            .as_ref()
+            .map(|text| text.to_string())
     }
 
-    pub(crate) fn set_visible_text(&self, text: String) {
+    pub(crate) fn set_visible_text(&self, text: Arc<str>) {
         *self.visible_text.borrow_mut() = Some(text);
     }
 

@@ -1341,6 +1341,7 @@ impl ConversationStream {
                 {
                     stream.append(&delta);
                     copy.append(&delta);
+                    self.assistant_model_dirty = true;
                     self.active_segment_has_text = true;
                     self.active_segment_has_visible_text |= starts_visible_text;
                     cx.notify();

@@ -4,7 +4,11 @@ use gpui_kit::{
     AvailableSpace, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId,
     Pixels, Point, Size, TextAlign, TextStyleRefinement, WindowTextSystem, point, size,
 };
-use std::{cell::Cell, ops::Range, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    rc::Rc,
+};
 
 const HORIZONTAL_FRAGMENT_BYTES: usize = 1024;
 const VIEWPORT_OVERSCAN: f32 = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
@@ -27,10 +31,12 @@ pub(super) struct ThinkingBody {
     prepared_epoch: u64,
     pub(super) painted: Rc<Cell<bool>>,
     rendered: Rc<Cell<usize>>,
+    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
 }
 
 impl ThinkingBody {
     pub(super) fn replace_source(&mut self) {
+        self.horizontal_scrolls.borrow_mut().clear();
         self.epoch = self.epoch.wrapping_add(1);
     }
 
@@ -145,17 +151,19 @@ impl ThinkingBlock {
                 self.focus.clone(),
                 selection_color,
                 prepared.text.clone(),
+                self.body.prepared_revision,
             );
             let element = BodyElement {
                 prepared,
                 document: document.clone(),
                 rendered,
+                horizontal_scrolls: self.body.horizontal_scrolls.clone(),
             };
             document.wrap(element.into_any_element(), window, cx)
         } else {
             div().w_full().h(px(VIEWPORT_OVERSCAN)).into_any_element()
         };
-        render_rows::selection_context_menu(
+        let content = render_rows::selection_context_menu(
             div()
                 .id("thinking-content")
                 .debug_selector(|| "thinking-content".into())
@@ -210,7 +218,12 @@ impl ThinkingBlock {
                 .into_any_element(),
             &self.source_copy,
             true,
-        )
+        );
+        VisibilityElement {
+            content,
+            visible: self.body.painted.clone(),
+        }
+        .into_any_element()
     }
 
     #[cfg(test)]
@@ -232,6 +245,21 @@ impl ThinkingBlock {
         self.body.prepared_revision
     }
     #[cfg(test)]
+    pub(crate) fn test_horizontal_scroll(&self) -> Option<ScrollHandle> {
+        self.body
+            .horizontal_scrolls
+            .borrow()
+            .values()
+            .find(|scroll| scroll.max_offset().x > px(0.))
+            .cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_prepared_text(&self) -> Option<Arc<str>> {
+        self.body.prepared.as_ref().map(|body| body.text.clone())
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_replace_source(&mut self, source: &str, cx: &mut Context<Self>) {
         self.text = source.into();
         self.thinking_has_content = source.chars().any(|ch| !ch.is_whitespace());
@@ -250,6 +278,7 @@ struct PreparedFragment {
     runs: Vec<TextRun>,
     font_size: Pixels,
     line_height: Pixels,
+    line_width: Pixels,
 }
 
 struct Decoration {
@@ -305,8 +334,18 @@ impl PreparedBody {
                 lists.contains(&line.block_id),
                 previous.is_some_and(|line| lists.contains(&line.block_id)),
             ));
+            let inset = if lists.contains(&line.block_id) && line.kind != LineKind::ListItem {
+                px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT)
+            } else {
+                px(0.)
+            };
+            let block_style = PreparationStyle {
+                width: (style.width - inset).max(px(1.)),
+                ..style.clone()
+            };
+            let style = &block_style;
             let mut block = PreparedBlock {
-                origin: point(px(0.), y),
+                origin: point(inset, y),
                 ..Default::default()
             };
             if line.kind == LineKind::Code {
@@ -345,11 +384,7 @@ impl PreparedBody {
                 layout_table(&mut block, &mut content, table, style, text_system);
                 index += 1;
             } else {
-                let mut x = if lists.contains(&line.block_id) && line.kind != LineKind::ListItem {
-                    px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT)
-                } else {
-                    px(0.)
-                };
+                let mut x = px(0.);
                 if line.kind == LineKind::Rule {
                     block.size = size(style.width, px(9.));
                     block.decorations.push(Decoration {
@@ -519,9 +554,8 @@ fn layout_table(
             );
             height = height.max(cell_height + px(2. * Layout::MARKDOWN_TABLE_PADDING_Y));
             for fragment in &mut block.fragments[start..] {
-                let extra = cell_width
-                    - px(2. * Layout::MARKDOWN_TABLE_PADDING_X)
-                    - fragment.bounds.size.width;
+                let extra =
+                    cell_width - px(2. * Layout::MARKDOWN_TABLE_PADDING_X) - fragment.line_width;
                 fragment.bounds.origin.x += match table.alignments[column] {
                     TableAlignment::Center => extra / 2.,
                     TableAlignment::Right => extra,
@@ -607,6 +641,7 @@ fn layout_text(
                 fragment.range,
                 origin + fragment.origin,
                 fragment.width,
+                fragment.line_width,
                 font_size,
                 line_height,
                 system,
@@ -636,6 +671,7 @@ fn layout_text(
                 offset + from..offset + to,
                 point(origin.x, y),
                 line.unwrapped_layout.x_for_index(to) - line.unwrapped_layout.x_for_index(from),
+                line.unwrapped_layout.x_for_index(to) - line.unwrapped_layout.x_for_index(from),
                 font_size,
                 line_height,
                 system,
@@ -658,6 +694,7 @@ fn add_fragment(
     range: Range<usize>,
     origin: Point<Pixels>,
     width: Pixels,
+    line_width: Pixels,
     font_size: Pixels,
     line_height: Pixels,
     system: &WindowTextSystem,
@@ -706,12 +743,14 @@ fn add_fragment(
             runs: runs.slice(from..end),
             font_size,
             line_height,
+            line_width,
         });
         from = end;
     }
 }
 
 struct BodyElement {
+    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
     prepared: Arc<PreparedBody>,
     document: SelectionDocumentBuilder,
     rendered: Rc<Cell<usize>>,
@@ -775,8 +814,16 @@ impl Element for BodyElement {
             let mut element = if block.horizontal {
                 div()
                     .id(("thinking-horizontal", index))
-                    .w(self.prepared.width)
+                    .w(self.prepared.width - block.origin.x)
                     .h(block.size.height)
+                    .track_scroll(
+                        &self
+                            .horizontal_scrolls
+                            .borrow_mut()
+                            .entry(index)
+                            .or_default()
+                            .clone(),
+                    )
                     .overflow_x_scroll()
                     .overflow_y_hidden()
                     .when(block.code, |row| {
@@ -791,7 +838,7 @@ impl Element for BodyElement {
             element.prepaint_as_root(
                 origin,
                 size(
-                    AvailableSpace::Definite(self.prepared.width),
+                    AvailableSpace::Definite(self.prepared.width - block.origin.x),
                     AvailableSpace::Definite(block.size.height),
                 ),
                 window,
@@ -941,5 +988,74 @@ impl Element for FragmentsElement {
                 }
             },
         );
+    }
+}
+
+struct VisibilityLease(Rc<Cell<bool>>);
+impl Drop for VisibilityLease {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+struct VisibilityElement {
+    content: AnyElement,
+    visible: Rc<Cell<bool>>,
+}
+impl IntoElement for VisibilityElement {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for VisibilityElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        Some("thinking-body-presence".into())
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.content.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(id) = id {
+            window.with_element_state(id, |lease: Option<VisibilityLease>, window| {
+                let lease = lease.unwrap_or_else(|| VisibilityLease(self.visible.clone()));
+                lease
+                    .0
+                    .set(!bounds.intersect(&window.content_mask().bounds).is_empty());
+                ((), lease)
+            });
+        }
+        self.content.prepaint(window, cx);
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.content.paint(window, cx);
     }
 }

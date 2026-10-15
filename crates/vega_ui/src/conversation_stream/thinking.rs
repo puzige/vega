@@ -557,6 +557,11 @@ impl ConversationStream {
                     card.update(cx, |card, cx| {
                         if !card.truncated {
                             card.truncated = true;
+                            cx.emit(ThinkingChanged {
+                                header: false,
+                                stage: true,
+                                geometry: true,
+                            });
                             cx.notify();
                         }
                     });
@@ -596,7 +601,9 @@ impl ConversationStream {
                     cx.emit(ThinkingChanged {
                         header: header_changed,
                         stage: stage_changed,
-                        geometry: truncated != card.truncated,
+                        geometry: truncated != card.truncated
+                            || card.expanded
+                                && (summary_title.is_some() != card.summary_title().is_some()),
                     });
                 }
                 card.prepare_body(cx);

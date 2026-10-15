@@ -106,6 +106,7 @@ pub struct ConversationStream {
     pub(crate) message_location_status: Option<MessageLocationStatus>,
     /// Exact active durable assistant id and its stream-entry index.
     pub(crate) active_agent_message: Option<(String, usize)>,
+    pub(crate) assistant_model_dirty: bool,
     pub(crate) active_run_activity: Option<(String, Entity<RunActivityGroup>)>,
     pub(crate) active_run_activity_segment: Option<usize>,
     pub(crate) active_agent_sequence: Option<i64>,
@@ -482,6 +483,7 @@ impl ConversationStream {
             hydration: HistoryHydration::default(),
             message_location_status: None,
             active_agent_message: None,
+            assistant_model_dirty: false,
             active_run_activity: None,
             active_run_activity_segment: None,
             active_agent_sequence: None,

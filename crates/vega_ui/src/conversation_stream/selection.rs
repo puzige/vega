@@ -35,6 +35,7 @@ pub(crate) struct SelectionDocumentBuilder {
     focus: FocusHandle,
     content: String,
     projected_content: Option<Arc<str>>,
+    projected_identity: u64,
     next_run_order: u64,
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
     selection_color: Hsla,
@@ -47,6 +48,7 @@ impl SelectionDocumentBuilder {
             focus,
             content: String::new(),
             projected_content: None,
+            projected_identity: 0,
             next_run_order: 0,
             runs: Rc::new(RefCell::new(Vec::new())),
             selection_color,
@@ -58,9 +60,11 @@ impl SelectionDocumentBuilder {
         focus: FocusHandle,
         selection_color: Hsla,
         content: Arc<str>,
+        identity: u64,
     ) -> Self {
         Self {
             projected_content: Some(content),
+            projected_identity: identity,
             ..Self::new(copy, focus, selection_color)
         }
     }
@@ -191,7 +195,7 @@ impl SelectionDocumentBuilder {
         let clear_projected_selection = self
             .projected_content
             .as_ref()
-            .is_some_and(|text| self.copy.set_projected_identity(text.as_ptr() as usize));
+            .is_some_and(|_| self.copy.set_projected_identity(self.projected_identity));
         let previous = (!projected).then(|| self.copy.visible_text()).flatten();
         SelectableMessage {
             id: ElementId::Name(format!("selectable-message-{id}").into()),
@@ -400,9 +404,7 @@ impl Element for SelectableMessage {
             TextSelection::clear(window, cx);
             self.generation = self.copy.selection_generation();
         }
-        if !self.projected {
-            self.copy.set_visible_text(self.content.to_string());
-        }
+        self.copy.set_visible_text(self.content.clone());
         let mut runs = self.runs.borrow().clone();
         runs.sort_by_key(|run| run.order);
         let text_runs = runs
