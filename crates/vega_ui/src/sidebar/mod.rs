@@ -805,9 +805,9 @@ impl Render for Sidebar {
                                     }
                                     // Nothing left to append: skip the defer so an
                                     // already-fully-loaded list stops scheduling work.
-                                    if !sessions.read_with(cx, |block, _| {
-                                        block.recents_visible < block.recents_total
-                                    }) {
+                                    if !sessions
+                                        .read_with(cx, |block, _| block.has_lazy_list_growth())
+                                    {
                                         return;
                                     }
                                     let sessions = sessions.clone();
@@ -817,7 +817,7 @@ impl Render for Sidebar {
                                     // the follow-up draw in the same flush.
                                     cx.defer(move |cx| {
                                         sessions.update(cx, |block, cx| {
-                                            block.grow_recents(cx);
+                                            block.grow_lazy_lists(cx);
                                         });
                                     });
                                 }

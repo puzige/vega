@@ -68,8 +68,8 @@ pub struct ThreadsBlock {
     /// for the lifetime of this block.
     pub(crate) recents_visible: usize,
     /// Issue #57: the number of eligible Recents rows observed by the last
-    /// render. Written during render; read by [`Self::grow_recents`] so the
-    /// outer scroller never asks for more than exists.
+    /// render. Written during render; read by [`Self::has_lazy_list_growth`] so
+    /// the outer scroller never asks for more than exists.
     pub(crate) recents_total: usize,
     /// Thread id whose compact low-frequency action menu is open.
     pub(crate) actions_open: Option<String>,
@@ -137,25 +137,6 @@ impl ThreadsBlock {
         };
         view.reload(cx);
         view
-    }
-
-    /// Issue #57: appends one page to the Recents render window when the
-    /// outer Sidebar scroller has reached the bottom and more eligible rows
-    /// exist. Returns whether the window changed; a change notifies so the
-    /// next frame paints the appended rows.
-    ///
-    /// The window only ever grows, so already-painted rows keep their
-    /// positions and the stable sort is never re-ordered.
-    pub(crate) fn grow_recents(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.recents_visible >= self.recents_total {
-            return false;
-        }
-        self.recents_visible = self
-            .recents_visible
-            .saturating_add(organization::RECENTS_PAGE)
-            .min(self.recents_total);
-        cx.notify();
-        true
     }
 
     /// Re-reads the selected project's thread lists: active rows for the

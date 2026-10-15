@@ -126,9 +126,34 @@ impl ThreadsBlock {
                 }
             }
             MenuCommand::ToggleArchive => {
-                if let Some(org) = self.organization.as_mut() {
-                    org.archive = !org.archive;
-                }
+                let show_archived = if let Some(organization) = self.organization.as_mut() {
+                    organization.archive = !organization.archive;
+                    organization.archive
+                } else {
+                    false
+                };
+                let projects: Vec<_> =
+                    self.organization
+                        .as_ref()
+                        .and_then(|organization| organization.snapshot.as_ref())
+                        .map(|snapshot| {
+                            let mut projects: Vec<_> = snapshot
+                                .project_order
+                                .iter()
+                                .filter_map(|id| {
+                                    snapshot.projects.iter().find(|project| &project.id == id)
+                                })
+                                .collect();
+                            projects.extend(
+                                snapshot.projects.iter().filter(|project| {
+                                    !snapshot.project_order.contains(&project.id)
+                                }),
+                            );
+                            projects.into_iter().cloned().collect()
+                        })
+                        .unwrap_or_default();
+                let project_refs: Vec<_> = projects.iter().collect();
+                self.sync_project_task_windows(&project_refs, show_archived);
             }
         }
         cx.notify();

@@ -356,26 +356,12 @@ impl ThreadsBlock {
                     .into_iter()
                     .filter(|t| t.project_id == project.id)
                     .collect();
-                let count = self
-                    .organization
-                    .as_ref()
-                    .and_then(|o| o.more.get(&project.id).copied())
-                    .unwrap_or(5);
                 if rows.is_empty() {
                     body = body.child(self.section_label("暂无任务", cx));
                 }
-                for thread in rows.iter().take(count) {
-                    body =
-                        body.child(self.organization_thread(thread, None, false, false, false, cx));
-                }
-                if rows.len() > count {
-                    body = body.child(self.organization_control(
-                        format!("project-more-{}", project.id),
-                        "显示更多",
-                        Control::More(project.id.clone()),
-                        false,
-                        cx,
-                    ));
+                for thread in rows {
+                    body = body
+                        .child(self.organization_thread(&thread, None, false, false, false, cx));
                 }
             }
         }
