@@ -683,6 +683,7 @@ impl ConversationStream {
         self.active_thinking = None;
         self.thinking_bytes = 0;
         self.thinking_blocks = 0;
+        self.retained_thinking.clear();
         self.last_finished_agent_message = None;
         self.active_permission = None;
         self.active_permission_call_id = None;

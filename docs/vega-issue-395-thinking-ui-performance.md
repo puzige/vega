@@ -4,6 +4,8 @@
 
 Issue #395 records the 2026-10-15 user request to fix slow animations and scrolling both with thinking collapsed and after expanding long thinking, and to audit virtual scrolling. Observed in installed Vega 0.1.122. A short sample found GPUI/Taffy layout activity on the main thread; it does not establish the complete runtime bottleneck. Static review finds unconditional full-source copies/Markdown synchronization on thinking deltas and full-body construction inside a height-capped disclosure.
 
+The user-authorized [2026-10-16 sliding-window follow-up](vega-issue-395-thinking-sliding-window.md) supersedes prefix retention with bounded latest-content retention. Its eviction, omission indication, source-position and retained-copy rules take precedence over the corresponding older assumptions below; this document remains the responsiveness and viewport-rendering baseline.
+
 This task owns UI processing, notification and disclosure virtualization. Runtime/provider limits and diagnostic changes belong to #393 and are not changed here. No new dependencies, schema changes, runtime configuration changes, user-content rewriting, or unsolicited UI copy.
 
 ## Behavior contract

@@ -747,6 +747,7 @@ pub(crate) struct MessageCopy {
     visible_text: std::rc::Rc<std::cell::RefCell<Option<Arc<str>>>>,
     content_generation: std::rc::Rc<std::cell::Cell<u64>>,
     projected_identity: std::rc::Rc<std::cell::Cell<Option<(u64, u64)>>>,
+    projected_selection: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
     selection_subscriptions: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Subscription>>>,
 }
 
@@ -764,6 +765,7 @@ impl MessageCopy {
             visible_text: std::rc::Rc::new(std::cell::RefCell::new(None)),
             content_generation: std::rc::Rc::new(std::cell::Cell::new(0)),
             projected_identity: std::rc::Rc::new(std::cell::Cell::new(None)),
+            projected_selection: Default::default(),
             selection_subscriptions: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
     }
@@ -777,10 +779,6 @@ impl MessageCopy {
         self.projected_identity
             .replace(Some(next))
             .is_some_and(|previous| previous != next)
-    }
-
-    pub(super) fn original_len(&self) -> usize {
-        self.text.borrow().len()
     }
 
     pub(crate) fn original_text(&self) -> String {
@@ -799,6 +797,48 @@ impl MessageCopy {
         self.content_generation
             .set(self.content_generation.get().wrapping_add(1));
         self.invalidate_selection();
+    }
+
+    pub(super) fn append_retained(&self, delta: &str) {
+        self.text.borrow_mut().push_str(delta);
+    }
+
+    pub(super) fn replace_retained(&self, text: &str) {
+        *self.text.borrow_mut() = text.to_owned();
+    }
+
+    pub(super) fn clear_retained(&self) {
+        self.replace_text("");
+        *self.visible_text.borrow_mut() = None;
+        *self.projected_selection.borrow_mut() = None;
+        self.selection_subscriptions.borrow_mut().clear();
+        self.selection_handle.borrow_mut().take();
+        self.projected_identity.set(None);
+    }
+
+    pub(super) fn set_projected_selection(&self, range: Option<std::ops::Range<usize>>) {
+        *self.projected_selection.borrow_mut() = range;
+    }
+
+    pub(super) fn publish_retained(
+        &self,
+        identity: u64,
+        text: Arc<str>,
+        map: impl FnOnce(std::ops::Range<usize>) -> Option<std::ops::Range<usize>>,
+    ) {
+        let selection = self.projected_selection.borrow().clone().and_then(map);
+        self.content_generation
+            .set(self.content_generation.get().wrapping_add(1));
+        if let Some(range) = selection.filter(|range| text.get(range.clone()).is_some()) {
+            self.set_local_selection_range(range.clone());
+            self.set_selected_text(self.selection_generation(), text[range.clone()].to_owned());
+            self.set_projected_selection(Some(range));
+            self.projected_identity
+                .set(Some((identity, self.content_generation())));
+        } else {
+            self.invalidate_selection();
+        }
+        self.set_visible_text(text);
     }
 
     pub(crate) fn selection_scope(&self) -> gpui_kit::base::TextSelectionScopeId {
@@ -837,6 +877,7 @@ impl MessageCopy {
         let selected = self.selected_text.clone();
         let generation = self.selection_generation.clone();
         let local_range = self.local_selection_range.clone();
+        let projected_range = self.projected_selection.clone();
         let subscription = handle.subscribe(
             move |event, _| {
                 if matches!(
@@ -846,6 +887,7 @@ impl MessageCopy {
                 ) {
                     *selected.borrow_mut() = None;
                     *local_range.borrow_mut() = None;
+                    *projected_range.borrow_mut() = None;
                     generation.set(generation.get().wrapping_add(1));
                 }
             },
@@ -879,6 +921,7 @@ impl MessageCopy {
             .set(self.selection_generation.get().wrapping_add(1));
         *self.selected_text.borrow_mut() = None;
         *self.local_selection_range.borrow_mut() = None;
+        *self.projected_selection.borrow_mut() = None;
     }
 
     pub(super) fn local_selection_range(&self) -> Option<std::ops::Range<usize>> {

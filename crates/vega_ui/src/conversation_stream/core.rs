@@ -121,6 +121,7 @@ pub struct ConversationStream {
     pub(crate) active_thinking: Option<Entity<ThinkingBlock>>,
     pub(crate) thinking_bytes: usize,
     pub(crate) thinking_blocks: usize,
+    pub(crate) retained_thinking: std::collections::VecDeque<gpui_kit::WeakEntity<ThinkingBlock>>,
     /// Most recently finished assistant entry, retained until the typed Plan
     /// projection can replace it in place.
     pub(crate) last_finished_agent_message: Option<(String, usize)>,
@@ -494,6 +495,7 @@ impl ConversationStream {
             active_thinking: None,
             thinking_bytes: 0,
             thinking_blocks: 0,
+            retained_thinking: Default::default(),
             active_segment_has_text: false,
             active_segment_has_visible_text: false,
             last_finished_agent_message: None,
