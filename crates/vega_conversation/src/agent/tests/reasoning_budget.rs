@@ -3,25 +3,47 @@ use crate::types::{PendingMessage, PendingMessageBehavior, RunFailureKind};
 use vega_runtime::{ChatRequest, EventStream, REASONING_DELTA_MAX_BYTES, ReasoningBudgetScope};
 use vega_store::run_diagnostics::{DiagnosticFailureCode, DiagnosticPhase, DiagnosticState};
 
-fn turn_failure() -> Vec<ProviderEvent> {
-    (0..4)
-        .map(|_| {
-            ProviderEvent::ThinkingDelta(
-                "private reasoning ".repeat(REASONING_DELTA_MAX_BYTES / 18),
-            )
-        })
-        .chain([
-            ProviderEvent::SummaryDelta("s".repeat(100)),
-            ProviderEvent::ThinkingDelta("x".repeat(REASONING_DELTA_MAX_BYTES)),
-        ])
-        .collect()
+struct LegacyReasoningFailureProvider {
+    initial_response: bool,
+    calls: AtomicUsize,
+}
+
+impl Provider for LegacyReasoningFailureProvider {
+    fn chat_stream(
+        &self,
+        _request: ChatRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        let events = if self.initial_response && first {
+            vec![
+                Ok(ProviderEvent::TextDelta("first response".into())),
+                Ok(ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                }),
+            ]
+        } else {
+            vec![
+                Ok(ProviderEvent::ThinkingDelta("private reasoning".into())),
+                Err(VegaError::ReasoningBudgetExceeded {
+                    scope: ReasoningBudgetScope::Turn,
+                    limit_bytes: vega_runtime::REASONING_TURN_MAX_BYTES,
+                    observed_bytes: vega_runtime::REASONING_TURN_MAX_BYTES + 1,
+                }),
+            ]
+        };
+        Box::pin(async move { Ok(Box::pin(futures::stream::iter(events)) as EventStream) })
+    }
 }
 
 #[tokio::test]
 async fn issue372_budget_failure_agrees_between_live_primary_root_and_reopen() {
     let (store, dir, _) = setup();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    let provider = MockProvider::new(vec![ScriptStep::events(turn_failure())]);
+    let provider = LegacyReasoningFailureProvider {
+        initial_response: false,
+        calls: AtomicUsize::new(0),
+    };
     let run = run_thread_task(
         &store,
         &provider,
@@ -71,6 +93,26 @@ async fn issue372_budget_failure_agrees_between_live_primary_root_and_reopen() {
             terminal.event.failure_code,
             Some(DiagnosticFailureCode::ReasoningLimit)
         );
+        assert_eq!(
+            terminal.event.metrics.failure_source.as_deref(),
+            Some("runtime")
+        );
+        assert_eq!(
+            terminal.event.metrics.failure_scope.as_deref(),
+            Some("response")
+        );
+        assert_eq!(
+            terminal.event.metrics.failure_observed,
+            Some((vega_runtime::REASONING_TURN_MAX_BYTES + 1) as u64)
+        );
+        assert_eq!(
+            terminal.event.metrics.failure_limit,
+            Some(vega_runtime::REASONING_TURN_MAX_BYTES as u64)
+        );
+        assert_eq!(
+            terminal.event.metrics.failure_units.as_deref(),
+            Some("bytes")
+        );
     }
     let export = vega_store::run_diagnostics::export_run(
         store.conn(),
@@ -88,7 +130,7 @@ async fn issue372_budget_failure_agrees_between_live_primary_root_and_reopen() {
         projection.run_failures,
         [(
             run.assistant_message_id,
-            RunFailureKind::ReasoningLimit(None)
+            RunFailureKind::ReasoningLimit(Some(ReasoningBudgetScope::Turn))
         )]
     );
     let raw = messages::recent(reopened.conn(), "thread-1", 20).unwrap();
@@ -122,15 +164,10 @@ async fn issue372_legacy_failure_after_steer_owns_only_the_final_failed_assistan
         Arc::new(|| Ok(Vec::new())),
         CancellationToken::new(),
     );
-    let provider = MockProvider::new_rounds(vec![
-        vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta("first response".into()),
-            ProviderEvent::Done {
-                stop_reason: StopReason::End,
-            },
-        ])],
-        vec![ScriptStep::events(turn_failure())],
-    ]);
+    let provider = LegacyReasoningFailureProvider {
+        initial_response: true,
+        calls: AtomicUsize::new(0),
+    };
     let run = run_thread_task_with_images_and_reasoning(
         &store,
         &provider,
@@ -164,7 +201,7 @@ async fn issue372_legacy_failure_after_steer_owns_only_the_final_failed_assistan
             .any(|event| event.event.phase == DiagnosticPhase::PrimaryModel
                 && event.event.failure_code == Some(DiagnosticFailureCode::ReasoningLimit))
     );
-    assert_eq!(store.conn().execute("UPDATE run_diagnostic_events SET failure_code = 'unknown_safe_failure' WHERE thread_id = 'thread-1' AND run_id = ?1 AND phase = 'run' AND state = 'failed'", [&initial.id]).unwrap(), 1);
+    assert_eq!(store.conn().execute("UPDATE run_diagnostic_events SET failure_code = 'unknown_safe_failure', failure_source = NULL, failure_kind = NULL, failure_scope = NULL, failure_observed = NULL, failure_limit = NULL, failure_units = NULL, failure_observed_items = NULL, failure_limit_items = NULL, failure_tool_index = NULL WHERE thread_id = 'thread-1' AND run_id = ?1 AND phase = 'run' AND state = 'failed'", [&initial.id]).unwrap(), 1);
     assert_eq!(
         read_context_projection(&store, "thread-1", "mock-model", "system")
             .unwrap()
@@ -207,6 +244,7 @@ async fn issue372_legacy_failure_after_steer_owns_only_the_final_failed_assistan
     validation.duration_ms = Some(0);
     vega_store::run_diagnostics::insert(store.conn(), &validation).unwrap();
     root.failure_code = Some(DiagnosticFailureCode::ReasoningLimit);
+    root.metrics = vega_store::run_diagnostics::DiagnosticMetrics::default();
     vega_store::run_diagnostics::insert(store.conn(), &root).unwrap();
     vega_store::context_compaction::insert_status(
         store.conn(),
@@ -258,17 +296,24 @@ async fn issue372_legacy_failure_after_steer_owns_only_the_final_failed_assistan
     );
     assert_eq!(
         projection.run_failures,
-        [(
-            run.assistant_message_id.clone(),
-            RunFailureKind::ReasoningLimit(None)
-        )]
+        [
+            (
+                run.assistant_message_id.clone(),
+                RunFailureKind::ReasoningLimit(None)
+            ),
+            (
+                unrelated.assistant_message_id.clone(),
+                RunFailureKind::ProviderUnknown
+            ),
+        ]
     );
     assert!(
         !projection
             .run_failures
             .iter()
-            .any(|(message_id, _)| message_id == &initial.id
-                || message_id == &unrelated.assistant_message_id)
+            .any(|(message_id, kind)| message_id == &initial.id
+                || (message_id == &unrelated.assistant_message_id
+                    && matches!(kind, RunFailureKind::ReasoningLimit(_))))
     );
     assert!(crate::history::latest_history_page(&reopened, "thread-1", 20).unwrap().entries.iter().any(|entry| matches!(entry, crate::history::HistoryEntry::AssistantText { message_id, status: crate::history::AssistantStatus::Failed, .. } if message_id == &run.assistant_message_id)));
     let stale_operation = format!("{}:context-generation-2:attempt-two", initial.id);
@@ -328,8 +373,10 @@ impl Provider for LongThinkingTask {
                     },
                 ]
             } else {
-                let mut events = (0..4)
-                    .map(|_| ProviderEvent::ThinkingDelta("r".repeat(REASONING_DELTA_MAX_BYTES)))
+                let mut events = (0..5)
+                    .map(|_| {
+                        ProviderEvent::ThinkingDelta("r".repeat(REASONING_DELTA_MAX_BYTES + 1))
+                    })
                     .collect::<Vec<_>>();
                 events.extend([
                     ProviderEvent::TextDelta("progress ".repeat(4_000)),

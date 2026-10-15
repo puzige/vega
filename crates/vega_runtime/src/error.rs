@@ -11,6 +11,11 @@ use thiserror::Error;
 /// never carry the API key (red line: keys never reach logs or errors).
 #[derive(Error)]
 pub enum VegaError {
+    #[error("provider frame exceeded parser capacity")]
+    ProviderPayloadTooLarge {
+        observed_bytes: usize,
+        limit_bytes: usize,
+    },
     /// Provider (LLM API) failure. `status` is the HTTP status code when the
     /// failure came from an HTTP response (`None` for transport-level or
     /// protocol-level failures); `retryable` hints whether an automatic
@@ -89,6 +94,14 @@ pub enum VegaError {
 impl fmt::Debug for VegaError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ProviderPayloadTooLarge {
+                observed_bytes,
+                limit_bytes,
+            } => formatter
+                .debug_struct("ProviderPayloadTooLarge")
+                .field("observed_bytes", observed_bytes)
+                .field("limit_bytes", limit_bytes)
+                .finish(),
             Self::Provider {
                 status,
                 message,
@@ -169,7 +182,151 @@ impl fmt::Debug for VegaError {
 }
 
 impl VegaError {
+    pub fn diagnostic_metrics(&self) -> crate::RuntimeDiagnosticMetrics {
+        let mut metrics = crate::RuntimeDiagnosticMetrics::default();
+        let (source, kind, scope) = match self {
+            Self::ProviderPayloadTooLarge {
+                observed_bytes,
+                limit_bytes,
+            } => {
+                metrics.failure_observed = u64::try_from(*observed_bytes).ok();
+                metrics.failure_limit = u64::try_from(*limit_bytes).ok();
+                metrics.failure_units = Some("bytes");
+                ("provider", "protocol", Some("sse_frame"))
+            }
+            Self::ProviderDiagnostic {
+                kind,
+                status,
+                retry_count,
+                request_id,
+                ..
+            } => {
+                metrics.provider.http_status = *status;
+                metrics.provider.retry_count = *retry_count;
+                metrics.provider.request_id = request_id.clone();
+                (
+                    "provider",
+                    match kind {
+                        crate::ProviderFailureKind::Http => "http",
+                        crate::ProviderFailureKind::Transport => "transport",
+                        crate::ProviderFailureKind::Protocol => "protocol",
+                        crate::ProviderFailureKind::Rejected => "rejected",
+                        crate::ProviderFailureKind::OutputLimit => "output_limit",
+                    },
+                    Some("response"),
+                )
+            }
+            Self::Provider { status, .. } => {
+                metrics.provider.http_status = *status;
+                (
+                    "provider",
+                    if status.is_some() { "http" } else { "unknown" },
+                    None,
+                )
+            }
+            Self::ReasoningBudgetExceeded {
+                scope,
+                limit_bytes,
+                observed_bytes,
+            }
+            | Self::ReasoningReplayBudgetExceeded {
+                scope,
+                limit_bytes,
+                observed_bytes,
+                ..
+            } => {
+                metrics.failure_observed = u64::try_from(*observed_bytes).ok();
+                metrics.failure_limit = u64::try_from(*limit_bytes).ok();
+                metrics.failure_units = Some("bytes");
+                if let Self::ReasoningReplayBudgetExceeded {
+                    observed_items,
+                    limit_items,
+                    ..
+                } = self
+                {
+                    metrics.failure_observed_items = u64::try_from(*observed_items).ok();
+                    metrics.failure_limit_items = u64::try_from(*limit_items).ok();
+                }
+                (
+                    "runtime",
+                    "reasoning_limit",
+                    Some(match scope {
+                        crate::ReasoningBudgetScope::Delta => "delta",
+                        crate::ReasoningBudgetScope::Turn => "response",
+                        crate::ReasoningBudgetScope::Run => "run",
+                    }),
+                )
+            }
+            Self::Context(
+                crate::ContextRuntimeError::OverLimit {
+                    estimated_tokens,
+                    input_budget,
+                }
+                | crate::ContextRuntimeError::SummaryInputOverLimit {
+                    estimated_tokens,
+                    input_budget,
+                },
+            ) => {
+                metrics.failure_observed = Some(*estimated_tokens);
+                metrics.failure_limit = Some(*input_budget);
+                metrics.failure_units = Some("tokens");
+                (
+                    "runtime",
+                    "context_over_limit",
+                    Some(
+                        if matches!(
+                            self,
+                            Self::Context(crate::ContextRuntimeError::SummaryInputOverLimit { .. })
+                        ) {
+                            "summary_input"
+                        } else {
+                            "request_input"
+                        },
+                    ),
+                )
+            }
+            Self::Context(crate::ContextRuntimeError::ResultOverLimit {
+                estimated_tokens,
+                target_tokens,
+            }) => {
+                metrics.failure_observed = Some(*estimated_tokens);
+                metrics.failure_limit = Some(*target_tokens);
+                metrics.failure_units = Some("tokens");
+                ("runtime", "context_over_limit", Some("compaction_result"))
+            }
+            Self::CredentialExposureBlocked => ("runtime", "credential_exposure", None),
+            Self::CredentialCheckUnavailable => ("runtime", "credential_check", None),
+            Self::CredentialContinuationUnavailable => ("runtime", "credential_continuation", None),
+            Self::CredentialProjectionInvalid { tool_index } => {
+                metrics.failure_tool_index = u64::try_from(*tool_index).ok();
+                ("runtime", "credential_projection", None)
+            }
+            Self::Cancelled => ("runtime", "cancelled", None),
+            _ => ("runtime", "unknown", None),
+        };
+        metrics.failure_source = Some(source);
+        metrics.failure_kind = Some(kind);
+        metrics.failure_scope = scope;
+        if let Some((observed, limit)) = self.context_overflow_token_counts() {
+            metrics.failure_kind = Some("context_over_limit");
+            metrics.failure_scope = Some("request_context");
+            metrics.failure_observed = observed;
+            metrics.failure_limit = limit;
+            metrics.failure_units = (observed.is_some() || limit.is_some()).then_some("tokens");
+        }
+        metrics
+    }
+
     pub fn context_input_overflow(&self) -> Option<Option<u64>> {
+        self.context_overflow_token_counts()
+            .map(|(requested, limit)| {
+                requested.zip(limit).and_then(|(requested, limit)| {
+                    requested.checked_sub(limit).filter(|gap| *gap > 0)
+                })
+            })
+    }
+
+    fn context_overflow_token_counts(&self) -> Option<(Option<u64>, Option<u64>)> {
         let (status, message) = match self {
             VegaError::Provider {
                 status: Some(status @ (400 | 413)),
@@ -188,9 +345,11 @@ impl VegaError {
         }
         let prefix = format!("chat/completions request failed (HTTP {status}): ");
         let responses_prefix = format!("responses request failed (HTTP {status}): ");
+        let provider_prefix = format!("provider request failed (HTTP {status}): ");
         let body = message
             .strip_prefix(&prefix)
             .or_else(|| message.strip_prefix(&responses_prefix))
+            .or_else(|| message.strip_prefix(&provider_prefix))
             .unwrap_or(message)
             .trim();
         let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
@@ -219,12 +378,14 @@ impl VegaError {
         if !known_code && !known_phrase {
             return None;
         }
-        let token_gap = details.and_then(|details| {
-            let requested = details.get("requested_tokens")?.as_u64()?;
-            let limit = details.get("max_context_tokens")?.as_u64()?;
-            requested.checked_sub(limit).filter(|gap| *gap > 0)
-        });
-        Some(token_gap)
+        Some((
+            details
+                .and_then(|details| details.get("requested_tokens"))
+                .and_then(serde_json::Value::as_u64),
+            details
+                .and_then(|details| details.get("max_context_tokens"))
+                .and_then(serde_json::Value::as_u64),
+        ))
     }
 }
 
@@ -311,6 +472,52 @@ mod tests {
             for sentinel in [IO_SENTINEL, TOOL_SENTINEL, TOOL_MESSAGE_SENTINEL] {
                 assert!(!rendered.contains(sentinel), "error Debug leaked payload");
             }
+        }
+    }
+
+    #[test]
+    fn provider_context_diagnostics_preserve_only_explicit_token_measurements() {
+        for prefix in [
+            "",
+            "provider request failed (HTTP 400): ",
+            "chat/completions request failed (HTTP 400): ",
+        ] {
+            let error = VegaError::Provider {
+                status: Some(400),
+                message: format!(
+                    "{prefix}{}",
+                    r#"{"error":{"code":"context_length_exceeded","requested_tokens":130000,"max_context_tokens":128000,"message":"PRIVATE_BODY"}}"#
+                ),
+                retryable: false,
+            };
+            let metrics = error.diagnostic_metrics();
+            assert_eq!(error.context_input_overflow(), Some(Some(2000)));
+            assert_eq!(metrics.failure_source, Some("provider"));
+            assert_eq!(metrics.failure_kind, Some("context_over_limit"));
+            assert_eq!(metrics.failure_scope, Some("request_context"));
+            assert_eq!(metrics.failure_observed, Some(130000));
+            assert_eq!(metrics.failure_limit, Some(128000));
+            assert_eq!(metrics.failure_units, Some("tokens"));
+            assert!(!format!("{metrics:?}").contains("PRIVATE_BODY"));
+        }
+        for body in [
+            r#"{"error":{"code":"context_length_exceeded","max_tokens":128000}}"#,
+            r#"{"error":{"code":"context_length_exceeded","requested_tokens":"130000","max_context_tokens":-1}}"#,
+        ] {
+            let error = VegaError::ProviderDiagnostic {
+                kind: crate::ProviderFailureKind::Rejected,
+                status: Some(400),
+                message: body.into(),
+                retryable: false,
+                retry_count: None,
+                request_id: None,
+            };
+            let metrics = error.diagnostic_metrics();
+            assert_eq!(metrics.failure_kind, Some("context_over_limit"));
+            assert_eq!(metrics.failure_observed, None);
+            assert_eq!(metrics.failure_limit, None);
+            assert_eq!(metrics.failure_units, None);
+            assert_eq!(error.context_input_overflow(), Some(None));
         }
     }
 

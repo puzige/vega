@@ -84,14 +84,20 @@ fn compaction_usage_state(
 }
 
 fn diagnostic_failure(error: &VegaError) -> RuntimeDiagnosticFailure {
+    if error.context_input_overflow().is_some() {
+        return RuntimeDiagnosticFailure::ContextOverLimit;
+    }
     match error {
+        VegaError::ProviderPayloadTooLarge { .. } => RuntimeDiagnosticFailure::ProviderProtocol,
         VegaError::ProviderDiagnostic { kind, .. } => match kind {
             crate::ProviderFailureKind::Http => RuntimeDiagnosticFailure::ProviderHttp,
             crate::ProviderFailureKind::Transport => {
                 RuntimeDiagnosticFailure::ProviderTransportOrStream
             }
             crate::ProviderFailureKind::Protocol => RuntimeDiagnosticFailure::ProviderProtocol,
-            crate::ProviderFailureKind::Rejected => RuntimeDiagnosticFailure::ProviderRejected,
+            crate::ProviderFailureKind::Rejected | crate::ProviderFailureKind::OutputLimit => {
+                RuntimeDiagnosticFailure::ProviderRejected
+            }
         },
         VegaError::Provider {
             status: Some(_), ..
@@ -119,6 +125,18 @@ fn primary_attempt_event(
     error: Option<&VegaError>,
 ) -> RuntimeEvent {
     let mut metrics = metrics.clone();
+    if let Some(error) = error {
+        let detail = error.diagnostic_metrics();
+        metrics.failure_tool_index = detail.failure_tool_index;
+        metrics.failure_source = detail.failure_source;
+        metrics.failure_kind = detail.failure_kind;
+        metrics.failure_scope = detail.failure_scope;
+        metrics.failure_observed = detail.failure_observed;
+        metrics.failure_limit = detail.failure_limit;
+        metrics.failure_units = detail.failure_units;
+        metrics.failure_observed_items = detail.failure_observed_items;
+        metrics.failure_limit_items = detail.failure_limit_items;
+    }
     match error {
         Some(VegaError::ProviderDiagnostic {
             status,

@@ -17,7 +17,7 @@ See [thinking stream and diagnostics specification](vega-issue-393-thinking-stre
 | Runtime `cargo fmt --all -- --check` and `git diff --check` | PASS |
 | Python SQLite in-memory execution of all migration SQL through 0025, plus populated prior-schema upgrade | PASS; legacy reasoning_limit detail stays NULL; no live database accessed |
 | Local compilation, Clippy, Rust/GPUI tests, app packaging | NOT RUN per user local CPU restriction |
-| Cloud PR Check | Pending |
+| Cloud PR Check | First completed run: Clippy PASS; Nextest 2694 passed, 4 failed, 5 skipped. Four stale contract assertions updated; latest run pending |
 | Real-model user acceptance / installed application | Pending; no app update or restart performed |
 
 Regression coverage: single 1 MiB UTF-8 thinking/summary delta completes; >256 KiB reasoning and 300 replay items reach next tool continuation intact; cancellation prevents tool execution; runtime display duplicate retention remains bounded; done-only/partial/duplicate/mismatched Responses snapshots; >6 MiB cumulative stream; generic oversized frame diagnosis; LF/CR/CRLF and multiline framing; diagnostic storage/reopen/redaction and owner-specific restored failures. Tests are cloud-only until PR Check completes.
@@ -25,3 +25,5 @@ Regression coverage: single 1 MiB UTF-8 thinking/summary delta completes; >256 K
 ## Residuals
 
 Required model-visible replay remains resident until normal safe compaction and is governed by actual request context accounting. This change does not promise unlimited model output or bypass genuine protocol/parser, context, transport or tool-input failures. Public implementation comparison and its limits are recorded in the specification. User hand-test follows green merge, issue remains open/In review until accepted.
+
+First CI failure evidence: https://github.com/puzige/vega/actions/runs/38711532972 . Two old oversized-thinking failure fixtures now inject explicit legacy typed errors while preserving ownership and reopen assertions; actual conversation continuation coverage now exceeds both old delta and response caps. Updated legacy action text and exact migration version (25). No test removed or ignored.

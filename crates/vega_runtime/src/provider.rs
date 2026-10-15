@@ -248,6 +248,7 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<ProviderEvent, VegaError
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderFailureKind {
+    OutputLimit,
     Http,
     Transport,
     Protocol,

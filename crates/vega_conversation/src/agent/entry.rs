@@ -772,7 +772,7 @@ where
         &prepared.assistant_message_id,
         &root_attempt_id,
         vega_store::run_diagnostics::DiagnosticState::Started,
-        None,
+        (None, Default::default()),
         runtime_started_at,
     );
     let diagnostics_context = super::diagnostics::DiagnosticsContext {
@@ -892,7 +892,20 @@ where
                 &prepared.assistant_message_id,
                 &root_attempt_id,
                 state,
-                failure_code,
+                (
+                    failure_code,
+                    outcome
+                        .events
+                        .iter()
+                        .rev()
+                        .find_map(|event| match event {
+                            RuntimeEvent::Error(error) => {
+                                Some(super::diagnostics::failure_metrics(error))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_default(),
+                ),
                 runtime_started_at,
             );
             diagnostics.close().await;
@@ -933,8 +946,11 @@ where
                 &prepared.assistant_message_id,
                 &root_attempt_id,
                 diagnostic_state,
-                (diagnostic_state == vega_store::run_diagnostics::DiagnosticState::Failed)
-                    .then(|| super::diagnostics::run_failure(&error)),
+                (
+                    (diagnostic_state == vega_store::run_diagnostics::DiagnosticState::Failed)
+                        .then(|| super::diagnostics::run_failure(&error)),
+                    super::diagnostics::failure_metrics(&error),
+                ),
                 runtime_started_at,
             );
             diagnostics.close().await;

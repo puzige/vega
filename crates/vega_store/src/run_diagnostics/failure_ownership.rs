@@ -172,6 +172,25 @@ fn failed_assistant_owner(
     Ok(None)
 }
 
+pub fn classified_failure_message_ids(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Vec<(String, DiagnosticMetrics)>, DiagnosticError> {
+    validate_identity(thread_id, "thread_id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 AND phase = 'run' AND state = 'failed' AND failure_kind IS NOT NULL ORDER BY id")?;
+    let rows = statement.query_map([thread_id], read_row)?;
+    let mut failures = Vec::new();
+    for row in rows {
+        let event = DiagnosticEvent::try_from(row?)?.event;
+        if let Some(owner) =
+            failed_assistant_owner(conn, thread_id, &event.run_id, &event.attempt_id)?
+        {
+            failures.push((owner, event.metrics));
+        }
+    }
+    Ok(failures)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +333,43 @@ mod tests {
         );
         finish(conn, primary, Some(DiagnosticFailureCode::ReasoningLimit));
         finish(conn, root, Some(DiagnosticFailureCode::UnknownSafeFailure));
+    }
+
+    #[test]
+    fn classified_failure_details_only_restore_the_failed_owner() {
+        let store = store();
+        message(store.conn(), "run", 1, "assistant", "failed", "");
+        let mut root = start(store.conn(), "run", "root", "root", DiagnosticPhase::Run);
+        root.metrics.failure_source = Some("provider".into());
+        root.metrics.failure_kind = Some("output_limit".into());
+        root.metrics.failure_scope = Some("response".into());
+        finish(
+            store.conn(),
+            root,
+            Some(DiagnosticFailureCode::ProviderRejected),
+        );
+        start(
+            store.conn(),
+            "run",
+            "root",
+            "unrelated-tool",
+            DiagnosticPhase::Tool,
+        );
+        store.conn().execute_batch("PRAGMA ignore_check_constraints = ON; UPDATE run_diagnostic_events SET input_tokens = -1 WHERE attempt_id = 'unrelated-tool'; PRAGMA ignore_check_constraints = OFF;").unwrap();
+        assert!(read_by_thread(store.conn(), "thread").is_err());
+        let failures = classified_failure_message_ids(store.conn(), "thread").unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, "run");
+        assert_eq!(failures[0].1.failure_kind.as_deref(), Some("output_limit"));
+        store
+            .conn()
+            .execute("UPDATE messages SET status = 'done' WHERE id = 'run'", [])
+            .unwrap();
+        assert!(
+            classified_failure_message_ids(store.conn(), "thread")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

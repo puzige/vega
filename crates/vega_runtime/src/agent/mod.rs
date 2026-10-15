@@ -681,6 +681,16 @@ pub enum RuntimeDiagnosticFailure {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeDiagnosticMetrics {
+    pub failure_tool_index: Option<u64>,
+    pub failure_source: Option<&'static str>,
+    pub failure_kind: Option<&'static str>,
+    pub failure_scope: Option<&'static str>,
+    pub failure_observed: Option<u64>,
+    pub failure_limit: Option<u64>,
+    pub failure_units: Option<&'static str>,
+    pub failure_observed_items: Option<u64>,
+    pub failure_limit_items: Option<u64>,
+
     pub provider: crate::ProviderResponseMetadata,
     pub stop_reason: Option<StopReason>,
     pub input_tokens: Option<u64>,

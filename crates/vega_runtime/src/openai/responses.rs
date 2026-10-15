@@ -67,10 +67,17 @@ impl fmt::Display for ResponseBytesError {
 }
 
 fn invalid() -> VegaError {
-    VegaError::Provider {
+    response_error(crate::ProviderFailureKind::Protocol)
+}
+
+fn response_error(kind: crate::ProviderFailureKind) -> VegaError {
+    VegaError::ProviderDiagnostic {
+        kind,
         status: None,
-        message: "invalid, incomplete, or oversized Responses stream".into(),
+        message: String::new(),
         retryable: false,
+        retry_count: None,
+        request_id: None,
     }
 }
 
@@ -241,7 +248,21 @@ impl Assembler {
         let kind = event["type"].as_str().ok_or_else(invalid)?;
         let mut out = Vec::new();
         match kind {
-            "response.failed" | "response.incomplete" | "error" => return Err(invalid()),
+            "response.incomplete" => {
+                let kind = if event
+                    .pointer("/response/incomplete_details/reason")
+                    .and_then(Value::as_str)
+                    == Some("max_output_tokens")
+                {
+                    crate::ProviderFailureKind::OutputLimit
+                } else {
+                    crate::ProviderFailureKind::Rejected
+                };
+                return Err(response_error(kind));
+            }
+            "response.failed" | "error" => {
+                return Err(response_error(crate::ProviderFailureKind::Rejected));
+            }
             "response.reasoning_summary_text.delta"
             | "response.reasoning_text.delta"
             | "response.output_text.delta"
@@ -425,7 +446,7 @@ pub(super) fn event_stream_with_recovery(
                         pending.push_back(Err(if recoverable {
                             recovery::incomplete_stream_error()
                         } else {
-                            invalid()
+                            response_error(crate::ProviderFailureKind::Transport)
                         }));
                     }
                     Some(Err(EventStreamError::Transport(ResponseBytesError::Limit {
@@ -478,5 +499,40 @@ mod frame_budget_tests {
         assert!(
             matches!(budget.consume(line.as_bytes()),Err(ResponseBytesError::Limit {observed_bytes}) if observed_bytes == WIRE_LIMIT+1)
         );
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_output_and_malformed_payload_have_distinct_safe_diagnostics() {
+        let mut parser = Assembler::default();
+        let error = parser.absorb(r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#).unwrap_err();
+        assert!(matches!(
+            error,
+            VegaError::ProviderDiagnostic {
+                kind: crate::ProviderFailureKind::OutputLimit,
+                ..
+            }
+        ));
+        let detail = error.diagnostic_metrics();
+        assert_eq!(detail.failure_source, Some("provider"));
+        assert_eq!(detail.failure_kind, Some("output_limit"));
+        assert_eq!(detail.failure_scope, Some("response"));
+        assert_eq!(detail.failure_observed, None);
+        assert_eq!(detail.failure_limit, None);
+        let error = Assembler::default()
+            .absorb("PRIVATE_INVALID_BODY")
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            VegaError::ProviderDiagnostic {
+                kind: crate::ProviderFailureKind::Protocol,
+                ..
+            }
+        ));
+        assert!(!format!("{error:?}").contains("PRIVATE_INVALID_BODY"));
     }
 }
