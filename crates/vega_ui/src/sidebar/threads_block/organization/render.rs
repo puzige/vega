@@ -9,7 +9,6 @@ pub(super) enum Control {
     NewGroup,
     AddProject,
     Collapse(SidebarCollapseTarget),
-    More(String),
     Project(String),
     NewStandalone,
     NewProjectTask(String),
@@ -61,11 +60,6 @@ impl ThreadsBlock {
                 }
             }
             Control::Collapse(target) => self.toggle_organization_collapse(target, cx),
-            Control::More(id) => {
-                if let Some(org) = self.organization.as_mut() {
-                    *org.more.entry(id).or_insert(5) += 5;
-                }
-            }
             Control::Project(id) => {
                 if crate::navigation::allow_task_navigation(None, cx)
                     && let Some(org) = &self.organization
@@ -374,8 +368,6 @@ impl ThreadsBlock {
         )
     }
 
-    /// Issue #57: `&mut self` because the lazy render window records the live
-    /// eligible total (`recents_total`) for [`Self::grow_recents`].
     fn render_recents_pi(
         &mut self,
         snapshot: &SidebarOrganizationSnapshot,
@@ -513,7 +505,7 @@ impl ThreadsBlock {
     }
 
     fn render_projects_pi(
-        &self,
+        &mut self,
         snapshot: &SidebarOrganizationSnapshot,
         show_archived: bool,
         cx: &mut Context<Self>,
@@ -580,8 +572,10 @@ impl ThreadsBlock {
         } else {
             5
         };
+        let all_projects: Vec<_> = ordered.into_iter().collect();
+        self.sync_project_task_windows(&all_projects, show_archived);
         let mut rows = div().id("organization-projects-scroll").flex().flex_col();
-        for project in ordered.into_iter().take(visible_count) {
+        for project in all_projects.into_iter().take(visible_count) {
             rows = rows.child(self.render_pi_project(project, snapshot, show_archived, cx));
         }
         rows = rows.children(
@@ -651,82 +645,13 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// Issue #57: only Projects still has a progressive control, so the toggle
-    /// no longer takes a section parameter.
     fn toggle_progressive_section(&mut self, cx: &mut Context<Self>) {
         self.projects_expanded = !self.projects_expanded;
         cx.notify();
     }
 
-    fn render_project_progressive_control(
-        &self,
-        project_id: &str,
-        expanded: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let state_name = if expanded { "less" } else { "more" };
-        let label = if expanded { "收起" } else { "展开更多" };
-        let id = format!("project-{project_id}-show-{state_name}");
-        let label_id = format!("project-{project_id}-progressive-label");
-        let mouse_project_id = project_id.to_owned();
-        let keyboard_project_id = project_id.to_owned();
-        div()
-            .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
-            .focusable()
-            .tab_stop(true)
-            .role(gpui_kit::Role::Button)
-            .aria_label(label)
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            // R48: per-project Show More / Show Less shares the child column.
-            .pl(px(Layout::SIDEBAR_ROW_INSET))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_tertiary)
-            .hover(move |style| style.bg(colors.bg_hover).text_color(colors.text_secondary))
-            .focus_visible(move |style| {
-                style
-                    .bg(colors.bg_active)
-                    .text_color(colors.text_primary)
-                    .border_1()
-                    .border_color(colors.border_subtle)
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.toggle_project_progressive(&mouse_project_id, cx);
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        this.toggle_project_progressive(&keyboard_project_id, cx);
-                    }
-                }),
-            )
-            .child(div().debug_selector(move || label_id.clone()).child(label))
-            .into_any_element()
-    }
-
-    fn toggle_project_progressive(&mut self, project_id: &str, cx: &mut Context<Self>) {
-        if let Some(organization) = self.organization.as_mut()
-            && !organization.project_threads_expanded.remove(project_id)
-        {
-            organization
-                .project_threads_expanded
-                .insert(project_id.to_owned());
-        }
-        cx.notify();
-    }
-
     fn render_pi_project(
-        &self,
+        &mut self,
         project: &SidebarProject,
         snapshot: &SidebarOrganizationSnapshot,
         show_archived: bool,
@@ -736,6 +661,7 @@ impl ThreadsBlock {
         let target = SidebarCollapseTarget::Project(project.id.clone());
         let collapsed = snapshot.collapsed.contains(&target);
         let project_id = project.id.clone();
+        let project_for_hover = project.id.clone();
         let project_for_toggle = project.id.clone();
         let project_for_keyboard = project.id.clone();
         let project_for_add = project.id.clone();
@@ -749,7 +675,6 @@ impl ThreadsBlock {
                     Some(OrganizationMenu::Project(id)) if id == &project.id
                 )
             });
-        let project_for_hover = project.id.clone();
         let row = div()
             .id(ElementId::Name(
                 format!("project-header-{}", project.id).into(),
@@ -929,11 +854,18 @@ impl ThreadsBlock {
                 );
             }
             tasks = super::projections::sorted_threads(&tasks, snapshot.preferences.sort);
-            let expanded = self.organization.as_ref().is_some_and(|organization| {
-                organization.project_threads_expanded.contains(&project.id)
-            });
-            let has_hidden = tasks.len() > 5;
-            let visible_count = if expanded { tasks.len() } else { 5 };
+            let visible_count = if let Some(organization) = self.organization.as_mut() {
+                organization
+                    .project_threads_total
+                    .insert(project.id.clone(), tasks.len());
+                let visible_window = *organization
+                    .project_threads_visible
+                    .entry(project.id.clone())
+                    .or_insert(super::PROJECT_TASKS_PAGE);
+                visible_window.min(tasks.len())
+            } else {
+                super::PROJECT_TASKS_PAGE.min(tasks.len())
+            };
             let has_pinned = self
                 .eligible_threads(show_archived)
                 .iter()
@@ -956,13 +888,6 @@ impl ThreadsBlock {
                         cx,
                     )
                 }));
-                if has_hidden {
-                    section = section.child(self.render_project_progressive_control(
-                        &project.id,
-                        expanded,
-                        cx,
-                    ));
-                }
             }
         }
         section.into_any_element()

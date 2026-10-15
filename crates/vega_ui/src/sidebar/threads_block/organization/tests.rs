@@ -525,9 +525,6 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
         Box::leak(format!("project-thread-row-{}", f.first.id).into_boxed_str());
     let standalone_project_selector: &'static str =
         Box::leak(format!("standalone-thread-row-{}", f.first.id).into_boxed_str());
-    if !absent(&f, cx, "project-p-show-more") {
-        click(&f, cx, "project-p-show-more");
-    }
     assert!(
         visual.debug_bounds(project_selector).is_some(),
         "the project's existing durable rows stay listed"
@@ -1466,21 +1463,18 @@ async fn r157_task_right_click_reuses_full_menu_and_keyboard_actions(
 }
 
 #[gpui_kit::test]
-async fn r33_project_tasks_expand_independently_and_preserve_mounted_state(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    let f = fixture(cx);
+async fn project_tasks_grow_lazily_and_independently(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture_with_size(cx, 1200., 400.);
+    cx.run_until_parked();
     let store = Store::open(f.dir.path().join("organization.db")).unwrap();
     conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
-    for _ in 0..3 {
+    for _ in 0..15 {
         conversation::create_thread(&store, "p", "model", "confirm").unwrap();
+        conversation::create_thread(&store, "q", "model", "confirm").unwrap();
     }
     let newest_p = conversation::create_thread(&store, "p", "model", "confirm").unwrap();
     conversation::set_thread_status(&store, &newest_p.id, ThreadStatus::Archived).unwrap();
     conversation::set_thread_pinned(&store, &f.other.id, true).unwrap();
-    for _ in 0..6 {
-        conversation::create_thread(&store, "q", "model", "confirm").unwrap();
-    }
     sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
     cx.run_until_parked();
 
@@ -1499,15 +1493,26 @@ async fn r33_project_tasks_expand_independently_and_preserve_mounted_state(
     };
     let p_ids = active_ids("p");
     let q_ids = active_ids("q");
-    assert_eq!(p_ids.len(), 7);
-    assert_eq!(q_ids.len(), 6);
-    let mounted = |ids: &[String], cx: &mut gpui_kit::TestAppContext| {
-        ids.iter()
-            .filter(|id| !absent(&f, cx, format!("project-thread-row-{id}")))
-            .count()
+    assert_eq!(p_ids.len(), 19);
+    assert_eq!(q_ids.len(), 15);
+    let window = |project_id: &str, cx: &gpui_kit::TestAppContext| {
+        sessions(&f, cx).read_with(cx, |block, _| {
+            block
+                .organization
+                .as_ref()
+                .unwrap()
+                .project_threads_visible
+                .get(project_id)
+                .copied()
+                .unwrap()
+        })
     };
-    assert_eq!(mounted(&p_ids, cx), 5);
-    assert_eq!(mounted(&q_ids, cx), 5);
+    assert_eq!(window("p", cx), 5);
+    assert_eq!(window("q", cx), 5);
+    assert!(absent(&f, cx, "project-p-show-more"));
+    assert!(absent(&f, cx, "project-p-show-less"));
+    assert!(absent(&f, cx, "project-q-show-more"));
+    assert!(absent(&f, cx, "project-q-show-less"));
     assert!(absent(&f, cx, format!("project-thread-row-{}", f.first.id)));
     assert!(absent(&f, cx, format!("project-thread-row-{}", f.other.id)));
     assert!(absent(
@@ -1516,35 +1521,103 @@ async fn r33_project_tasks_expand_independently_and_preserve_mounted_state(
         format!("project-thread-row-{}", newest_p.id)
     ));
 
-    let more = bounds(&f, cx, "project-p-show-more");
-    let more_label = bounds(&f, cx, "project-p-progressive-label");
-    assert_eq!(
-        f32::from(more_label.left() - more.left()),
-        Layout::SIDEBAR_ROW_INSET
-    );
-    click(&f, cx, "project-p-show-more");
-    assert_eq!(mounted(&p_ids, cx), p_ids.len());
-    assert_eq!(mounted(&q_ids, cx), 5);
-    assert!(!absent(&f, cx, "project-p-show-less"));
-    assert!(!absent(&f, cx, "project-q-show-more"));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let mounted = |ids: &[String], cx: &mut gpui_kit::TestAppContext| {
+        ids.iter()
+            .filter(|id| !absent(&f, cx, format!("project-thread-row-{id}")))
+            .count()
+    };
+    let scroll_to_bottom = |visual: &mut gpui_kit::VisualTestContext| {
+        let viewport = visual.debug_bounds("sidebar-scroll").unwrap();
+        visual.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(-100_000.),
+            )),
+            modifiers: gpui_kit::Modifiers::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    };
+    let scroll_to_top = |visual: &mut gpui_kit::VisualTestContext| {
+        let viewport = visual.debug_bounds("sidebar-scroll").unwrap();
+        visual.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(100_000.),
+            )),
+            modifiers: gpui_kit::Modifiers::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    };
 
+    // The first project's header stays inside this short viewport, so the real
+    // collapse control is reachable without scrolling.
     click(&f, cx, "project-header-p");
     assert_eq!(mounted(&p_ids, cx), 0);
-    click(&f, cx, "project-header-p");
-    assert_eq!(mounted(&p_ids, cx), p_ids.len());
-    assert!(!absent(&f, cx, "project-p-show-less"));
-
-    click(&f, cx, "project-p-show-less");
-    assert_eq!(mounted(&p_ids, cx), 5);
+    assert_eq!(window("p", cx), 5, "a collapsed project keeps its window");
     assert_eq!(mounted(&q_ids, cx), 5);
+
+    scroll_to_bottom(&mut visual);
+    assert_eq!(window("p", cx), 5, "a collapsed project never grows");
+    assert_eq!(window("q", cx), 10);
+
+    scroll_to_top(&mut visual);
+    click(&f, cx, "project-header-p");
+    assert_eq!(mounted(&p_ids, cx), 5, "reopening resumes the window");
+    assert_eq!(mounted(&q_ids, cx), 10);
+
+    scroll_to_bottom(&mut visual);
+    assert_eq!(window("q", cx), q_ids.len());
+    assert_eq!(window("p", cx), 10);
+
+    scroll_to_bottom(&mut visual);
+    assert_eq!(window("p", cx), 15);
+
+    scroll_to_bottom(&mut visual);
+    assert_eq!(mounted(&p_ids, cx), p_ids.len());
+    assert_eq!(mounted(&q_ids, cx), q_ids.len());
+    assert!(absent(
+        &f,
+        cx,
+        format!("project-thread-row-{}", newest_p.id)
+    ));
+    assert!(absent(&f, cx, "project-p-show-more"));
+    assert!(absent(&f, cx, "project-p-show-less"));
+
+    let preferences = snapshot(&f).preferences;
+    for (project_id, ids) in [("p", p_ids.as_slice()), ("q", q_ids.as_slice())] {
+        let expected: Vec<String> = super::projections::sorted_threads(
+            &state
+                .threads
+                .iter()
+                .filter(|thread| {
+                    thread.project_id == project_id
+                        && thread.status == ThreadStatus::Active
+                        && !thread.pinned
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+            preferences.sort,
+        )
+        .into_iter()
+        .map(|thread| thread.id)
+        .collect();
+        let mut painted = ids.to_vec();
+        painted.sort_by_key(|id| bounds(&f, cx, format!("project-thread-row-{id}")).top());
+        assert_eq!(painted, expected);
+    }
 
     sessions(&f, cx).update(cx, |block, _| {
         block
             .organization
             .as_mut()
             .unwrap()
-            .project_threads_expanded
-            .insert("removed-project".into());
+            .project_threads_visible
+            .insert("removed-project".into(), 10);
     });
     sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
     cx.run_until_parked();
@@ -1553,9 +1626,53 @@ async fn r33_project_tasks_expand_independently_and_preserve_mounted_state(
             .organization
             .as_ref()
             .unwrap()
-            .project_threads_expanded
-            .contains("removed-project")
+            .project_threads_visible
+            .contains_key("removed-project")
     }));
+}
+
+#[gpui_kit::test]
+async fn project_tasks_fill_a_tall_viewport_without_controls(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture_with_size(cx, 1200., 2600.);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    for _ in 0..12 {
+        conversation::create_thread(&store, "p", "model", "confirm").unwrap();
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let project_ids: Vec<String> = snapshot(&f)
+        .threads
+        .into_iter()
+        .filter(|thread| {
+            thread.project_id == "p" && thread.status == ThreadStatus::Active && !thread.pinned
+        })
+        .map(|thread| thread.id)
+        .collect();
+    assert_eq!(project_ids.len(), 17);
+    for id in &project_ids {
+        assert!(!absent(&f, cx, format!("project-thread-row-{id}")));
+    }
+    assert!(absent(&f, cx, "project-p-show-more"));
+    assert!(absent(&f, cx, "project-p-show-less"));
+}
+
+#[gpui_kit::test]
+async fn project_task_page_growth_stops_when_all_rows_are_loaded(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    for _ in 0..5 {
+        conversation::create_thread(&store, "p", "model", "confirm").unwrap();
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let sessions = sessions(&f, cx);
+    let _ = sessions.update(cx, |block, cx| block.grow_lazy_lists(cx));
+    assert!(!sessions.read_with(cx, |block, _| block.has_lazy_list_growth()));
+    assert!(absent(&f, cx, "project-p-show-more"));
 }
 
 #[gpui_kit::test]

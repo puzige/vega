@@ -21,8 +21,8 @@ pub(super) struct Organization {
     pending: bool,
     refresh_queued: bool,
     generation: u64,
-    more: HashMap<String, usize>,
-    project_threads_expanded: HashSet<String>,
+    project_threads_visible: HashMap<String, usize>,
+    project_threads_total: HashMap<String, usize>,
     editor: Option<GroupEditor>,
     menu: Option<OrganizationMenu>,
     menu_focus: FocusHandle,
@@ -30,6 +30,61 @@ pub(super) struct Organization {
     menu_scroll: gpui_kit::ScrollHandle,
     archive: bool,
     reveal_project: Option<(String, std::rc::Rc<std::cell::Cell<bool>>)>,
+}
+impl Organization {
+    fn has_project_tasks_to_grow(
+        &self,
+        visible_project_ids: &HashSet<String>,
+        collapsed: &[SidebarCollapseTarget],
+    ) -> bool {
+        self.project_threads_total
+            .iter()
+            .any(|(project_id, total)| {
+                visible_project_ids.contains(project_id)
+                    && !collapsed.contains(&SidebarCollapseTarget::Project(project_id.clone()))
+                    && self
+                        .project_threads_visible
+                        .get(project_id)
+                        .copied()
+                        .unwrap_or(PROJECT_TASKS_PAGE)
+                        < *total
+            })
+    }
+
+    fn grow_project_tasks(
+        &mut self,
+        visible_project_ids: &HashSet<String>,
+        collapsed: &[SidebarCollapseTarget],
+    ) -> bool {
+        let mut changed = false;
+        for (project_id, total) in &self.project_threads_total {
+            if !visible_project_ids.contains(project_id)
+                || collapsed.contains(&SidebarCollapseTarget::Project(project_id.clone()))
+            {
+                continue;
+            }
+            let visible = self
+                .project_threads_visible
+                .entry(project_id.clone())
+                .or_insert(PROJECT_TASKS_PAGE);
+            if *visible < *total {
+                *visible = visible.saturating_add(PROJECT_TASKS_PAGE).min(*total);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn sync_project_task_totals(&mut self, totals: HashMap<String, usize>) {
+        self.project_threads_visible
+            .retain(|id, _| totals.contains_key(id));
+        for project_id in totals.keys() {
+            self.project_threads_visible
+                .entry(project_id.clone())
+                .or_insert(PROJECT_TASKS_PAGE);
+        }
+        self.project_threads_total = totals;
+    }
 }
 struct GroupEditor {
     group_id: Option<String>,
@@ -51,6 +106,7 @@ pub(crate) enum OrganizationSection {
 /// scroller reaches the bottom, or immediately while the content still fits
 /// the viewport.
 pub(crate) const RECENTS_PAGE: usize = 10;
+pub(crate) const PROJECT_TASKS_PAGE: usize = 5;
 #[derive(Clone)]
 enum MenuCommand {
     Apply(SidebarOrganizationAction),
@@ -109,8 +165,8 @@ impl ThreadsBlock {
             pending: false,
             refresh_queued: false,
             generation: 0,
-            more: HashMap::new(),
-            project_threads_expanded: HashSet::new(),
+            project_threads_visible: HashMap::new(),
+            project_threads_total: HashMap::new(),
             editor: None,
             menu: None,
             menu_focus: cx.focus_handle(),
@@ -135,6 +191,27 @@ impl ThreadsBlock {
         })
         .detach();
     }
+    pub(super) fn sync_project_task_windows(
+        &mut self,
+        projects: &[&SidebarProject],
+        show_archived: bool,
+    ) {
+        let mut totals = HashMap::new();
+        for project in projects {
+            let total = self
+                .threads
+                .iter()
+                .chain(self.archived.iter())
+                .filter(|thread| thread.project_id == project.id && !thread.pinned)
+                .filter(|thread| thread.status == ThreadStatus::Active || show_archived)
+                .count();
+            totals.insert(project.id.clone(), total);
+        }
+        if let Some(organization) = self.organization.as_mut() {
+            organization.sync_project_task_totals(totals);
+        }
+    }
+
     pub(crate) fn reveal_registered_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         if let Some(org) = &mut self.organization {
             org.reveal_project = Some((
@@ -143,6 +220,73 @@ impl ThreadsBlock {
             ));
         }
         self.refresh_organization(cx);
+    }
+
+    fn visible_project_ids(
+        snapshot: &SidebarOrganizationSnapshot,
+        projects_expanded: bool,
+    ) -> HashSet<String> {
+        let mut projects: Vec<_> = snapshot
+            .project_order
+            .iter()
+            .filter_map(|id| snapshot.projects.iter().find(|project| &project.id == id))
+            .collect();
+        projects.extend(
+            snapshot
+                .projects
+                .iter()
+                .filter(|project| !snapshot.project_order.contains(&project.id)),
+        );
+        let visible_count = if projects_expanded { projects.len() } else { 5 };
+        projects
+            .into_iter()
+            .take(visible_count)
+            .filter(|project| {
+                !snapshot
+                    .collapsed
+                    .contains(&SidebarCollapseTarget::Project(project.id.clone()))
+            })
+            .map(|project| project.id.clone())
+            .collect()
+    }
+
+    pub(crate) fn has_lazy_list_growth(&self) -> bool {
+        self.recents_visible < self.recents_total
+            || self.organization.as_ref().is_some_and(|organization| {
+                let Some(snapshot) = organization.snapshot.as_ref() else {
+                    return false;
+                };
+                let projects = Self::visible_project_ids(snapshot, self.projects_expanded);
+                organization.has_project_tasks_to_grow(&projects, &snapshot.collapsed)
+            })
+    }
+
+    pub(crate) fn grow_lazy_lists(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut changed = false;
+        if self.recents_visible < self.recents_total {
+            self.recents_visible = self
+                .recents_visible
+                .saturating_add(organization::RECENTS_PAGE)
+                .min(self.recents_total);
+            changed = true;
+        }
+        let projects_expanded = self.projects_expanded;
+        let project_growth = self.organization.as_ref().and_then(|organization| {
+            let snapshot = organization.snapshot.as_ref()?;
+            Some((
+                Self::visible_project_ids(snapshot, projects_expanded),
+                snapshot.collapsed.clone(),
+            ))
+        });
+        if let (Some(organization), Some((visible_project_ids, collapsed))) =
+            (self.organization.as_mut(), project_growth)
+        {
+            changed |= organization.grow_project_tasks(&visible_project_ids, &collapsed);
+        }
+        if changed {
+            cx.notify();
+        }
+        changed
     }
 
     pub(super) fn refresh_organization(&mut self, cx: &mut Context<Self>) {
@@ -278,12 +422,24 @@ impl ThreadsBlock {
                             .as_ref()
                             .is_none_or(|old| old.revision <= snapshot.revision)
                         {
-                            org.project_threads_expanded.retain(|project_id| {
-                                snapshot
-                                    .projects
-                                    .iter()
-                                    .any(|project| &project.id == project_id)
-                            });
+                            let totals: HashMap<String, usize> = snapshot
+                                .projects
+                                .iter()
+                                .map(|project| {
+                                    let total = snapshot
+                                        .threads
+                                        .iter()
+                                        .filter(|thread| {
+                                            thread.project_id == project.id
+                                                && !thread.pinned
+                                                && (thread.status == ThreadStatus::Active
+                                                    || org.archive)
+                                        })
+                                        .count();
+                                    (project.id.clone(), total)
+                                })
+                                .collect();
+                            org.sync_project_task_totals(totals);
                             if !metadata_stale {
                                 this.threads = snapshot
                                     .threads
