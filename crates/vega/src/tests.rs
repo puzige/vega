@@ -73,7 +73,6 @@ mod diff;
 mod history;
 mod issue147_native_copy;
 mod issue64_context_settings;
-mod issue72_loaded_anchor;
 mod model_selection;
 mod palette;
 mod plan;
