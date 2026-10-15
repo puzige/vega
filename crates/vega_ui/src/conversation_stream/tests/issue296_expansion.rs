@@ -1295,7 +1295,7 @@ async fn folded_stage_hides_running_pending_and_failed_tool_status(cx: &mut Test
             stream.tool_cards["pending"]
                 .read(cx)
                 .visible_text()
-                .contains("失败")
+                .contains("Command failed")
         );
         assert_eq!(
             stream.run_activity_groups["expansion"]

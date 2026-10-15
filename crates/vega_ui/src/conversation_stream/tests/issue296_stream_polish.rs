@@ -309,20 +309,57 @@ async fn issue296_polish_p02_all_disclosures_theme_keyboard_and_disabled(cx: &mu
                 issue296_single_activity::chevron_painted(&mut visual, arrow),
                 "{target} hover"
             );
+            assert_eq!(
+                visual.debug_bounds(arrow).unwrap(),
+                bounds,
+                "hover preserves geometry"
+            );
             click(&mut visual, toggle);
             leave(&mut visual);
             assert!(
                 issue296_single_activity::chevron_painted(&mut visual, arrow),
                 "{target} expanded"
             );
-            assert_eq!(visual.debug_bounds(arrow).unwrap(), bounds);
+            let expanded_bounds = visual.debug_bounds(arrow).unwrap();
+            assert_eq!(expanded_bounds.size, bounds.size);
+            assert_eq!(expanded_bounds.origin.y, bounds.origin.y);
+            if target == "tool" {
+                let title = visual
+                    .debug_bounds("tool-activity-single-row-title")
+                    .unwrap();
+                assert_eq!(
+                    expanded_bounds.left() - title.right(),
+                    px(Layout::CONVERSATION_INLINE_GAP)
+                );
+                assert!(expanded_bounds.right() <= visual.debug_bounds(toggle).unwrap().right());
+                stream.read_with(&visual, |stream, cx| {
+                    assert!(
+                        stream.tool_cards["one"]
+                            .read(cx)
+                            .compact_visible_text()
+                            .starts_with("Ran command")
+                    );
+                });
+            } else {
+                assert_eq!(expanded_bounds, bounds);
+            }
             click(&mut visual, toggle);
             leave(&mut visual);
             assert!(
                 !issue296_single_activity::chevron_painted(&mut visual, arrow),
                 "{target} collapsed again"
             );
+            assert_eq!(
+                visual.debug_bounds(arrow).unwrap(),
+                bounds,
+                "collapse restores original title geometry"
+            );
             focus_row(&mut visual, toggle);
+            assert_eq!(
+                visual.debug_bounds(arrow).unwrap(),
+                bounds,
+                "focus preserves geometry"
+            );
             visual.simulate_keystrokes("enter");
             visual.run_until_parked();
             leave(&mut visual);
@@ -330,12 +367,14 @@ async fn issue296_polish_p02_all_disclosures_theme_keyboard_and_disabled(cx: &mu
                 issue296_single_activity::chevron_painted(&mut visual, arrow),
                 "{target} keyboard expands"
             );
+            assert_eq!(visual.debug_bounds(arrow).unwrap(), expanded_bounds);
             visual.simulate_keystrokes("space");
             visual.run_until_parked();
             assert!(
                 issue296_single_activity::chevron_painted(&mut visual, arrow),
                 "{target} keyboard focus"
             );
+            assert_eq!(visual.debug_bounds(arrow).unwrap(), bounds);
             visual.update(|window, cx| {
                 stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
             });

@@ -656,7 +656,7 @@ async fn issue296_single_activity_mcp_names_are_safe_bounded_and_deduplicated(
             stream.apply_event(ConversationEvent::ToolCallRunning { call_id: id.into() }, cx);
         }
         let label = stream.run_activity_groups["single"].read(cx).test_activity_label(cx);
-        assert_eq!(label, "正在调用 MCP · lookup、调用 MCP · query等 3 项");
+        assert_eq!(label, "In progress: call MCP · lookup, call MCP · query and more (3 total)");
         assert!(!label.contains("01ARZ") && !label.contains("query: string") && !label.contains(&"b".repeat(64)));
     });
 }

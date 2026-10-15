@@ -446,7 +446,7 @@ async fn issue296_phase_rejected_tools_and_permissions_survive_final_collapse(
             stream.tool_cards["rejected"]
                 .read(cx)
                 .visible_text()
-                .contains("拒绝")
+                .contains("Command rejected")
         );
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);

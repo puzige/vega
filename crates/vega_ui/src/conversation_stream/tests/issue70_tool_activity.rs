@@ -1427,7 +1427,7 @@ async fn issue70_t70_6_hydration_matches_live_and_reopen_resets_expansion(cx: &m
         hydrated_text,
         [
             "Completed: read files, find files, run commands",
-            "Completed: search content"
+            "Searched content"
         ],
         "live and hydrated activity copy preserves boundaries, categories, and terminal state"
     );
@@ -2189,18 +2189,8 @@ async fn issue381_mouse_keyboard_and_programmatic_expansion_share_title_projecti
             "Running command for 0s"
         )
     });
-    let card = stream.read_with(cx, |stream, _| stream.tool_cards["toggle"].clone());
-    window
-        .update(cx, |_, window, cx| {
-            let focus = crate::disclosure::focus(
-                format!("tool-disclosure-{}", card.entity_id()).into(),
-                window,
-                cx,
-            );
-            focus.focus(window, cx);
-        })
-        .expect("focus tool");
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    issue296_stream_polish::focus_row(&mut visual, "tool-activity-single-row");
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
