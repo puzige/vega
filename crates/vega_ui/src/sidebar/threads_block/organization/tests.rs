@@ -1540,19 +1540,43 @@ async fn project_tasks_grow_lazily_and_independently(cx: &mut gpui_kit::TestAppC
         });
         visual.run_until_parked();
     };
+    let scroll_to_top = |visual: &mut gpui_kit::VisualTestContext| {
+        let viewport = visual.debug_bounds("sidebar-scroll").unwrap();
+        visual.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(100_000.),
+            )),
+            modifiers: gpui_kit::Modifiers::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    };
 
-    click(&f, cx, "project-header-q");
-    assert_eq!(mounted(&q_ids, cx), 0);
-    assert_eq!(window("q", cx), 5);
-    scroll_to_bottom(&mut visual);
-    assert_eq!(window("p", cx), 10);
-    assert_eq!(window("q", cx), 5, "collapsed project window is preserved");
-    click(&f, cx, "project-header-q");
+    // The first project's header stays inside this short viewport, so the real
+    // collapse control is reachable without scrolling.
+    click(&f, cx, "project-header-p");
+    assert_eq!(mounted(&p_ids, cx), 0);
+    assert_eq!(window("p", cx), 5, "a collapsed project keeps its window");
     assert_eq!(mounted(&q_ids, cx), 5);
+
+    scroll_to_bottom(&mut visual);
+    assert_eq!(window("p", cx), 5, "a collapsed project never grows");
+    assert_eq!(window("q", cx), 10);
+
+    scroll_to_top(&mut visual);
+    click(&f, cx, "project-header-p");
+    assert_eq!(mounted(&p_ids, cx), 5, "reopening resumes the window");
+    assert_eq!(mounted(&q_ids, cx), 10);
+
+    scroll_to_bottom(&mut visual);
+    assert_eq!(window("q", cx), q_ids.len());
+    assert_eq!(window("p", cx), 10);
+
     scroll_to_bottom(&mut visual);
     assert_eq!(window("p", cx), 15);
-    assert_eq!(window("q", cx), 10);
-    assert_eq!(mounted(&q_ids, cx), 10);
+
     scroll_to_bottom(&mut visual);
     assert_eq!(mounted(&p_ids, cx), p_ids.len());
     assert_eq!(mounted(&q_ids, cx), q_ids.len());
