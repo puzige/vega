@@ -847,6 +847,7 @@ mod tests {
         let wire =
             estimate_wire_context(&[ChatMessage::new(ChatRole::System, ""), user], &[]).unwrap();
         assert_eq!(estimated, wire);
+        assert!(estimated.input_tokens >= 1024);
         assert_eq!(
             estimated.input_tokens,
             ceil_ratio(32 + 256 + 32, 4, 3).unwrap() + image_base
@@ -993,19 +994,6 @@ mod tests {
             ..estimate
         };
         assert_eq!(manual.check(over).unwrap(), ContextCheck::OverLimit);
-    }
-
-    #[test]
-    fn issue76_estimator_does_not_treat_image_as_zero() {
-        let image = image::RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3]));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        let mut message = ChatMessage::new(ChatRole::User, "");
-        message
-            .images
-            .push(crate::ImageAttachment::from_bytes(bytes.into_inner()).unwrap());
-        let estimate = estimate_chat_context("", &[message], &[]).unwrap();
-        assert!(estimate.input_tokens >= 1024);
     }
 
     #[test]

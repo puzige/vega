@@ -1,0 +1,255 @@
+{
+  "date": "2026-10-15",
+  "issue": 390,
+  "base_commit": "700df8cc7b4edc94f65e0dbf20c4b7a5388af287",
+  "scope": "Selective evidence-based audit across workspace packages plus Python release/preparation tests; not an exhaustive assertion-by-assertion audit.",
+  "net_test_count_change": -7,
+  "production_or_ci_changes": false,
+  "changes": {
+    "ui": [
+      {
+        "old_file": "crates/vega_ui/src/conversation_stream/tests/model_markdown.rs",
+        "old_line": 4,
+        "test": "page_boundary_anchor_is_delegated_to_splice_preserved_scroll_top",
+        "behavior": "Actually asserts only ANCHOR_EPSILON_PX == 1.0, despite the page-boundary name.",
+        "retained": {
+          "file": "crates/vega_ui/src/conversation_stream/tests/scroll_follow.rs",
+          "test": "bottom_epsilon_matches_the_native_follow_resume_tolerance",
+          "line": 9
+        },
+        "evidence": "Identical literal assertion. Real splice geometry remains protected by variable_height::prepend_splice_preserves_page_boundary_anchor (item index 5 -> 9 and offset remains 8px). Production constant is consumed by content.rs hydration top-edge gate.",
+        "history": "2df84b6e migrated variable-height conversation virtualization."
+      },
+      {
+        "old_file": "crates/vega_ui/src/conversation_stream/thinking_slider.rs",
+        "old_line": 2786,
+        "test": "r66_a3_the_title_labels_are_english",
+        "behavior": "Off and Default exact labels plus ASCII and not Model default.",
+        "retained": {
+          "file": "crates/vega_ui/src/conversation_stream/thinking_slider.rs",
+          "test": "r67_a1_the_off_label_is_off",
+          "line": 3238
+        },
+        "evidence": "Retained test asserts OFF_LABEL == Off and PROVIDER_DEFAULT_LABEL == Default; exact literal equality implies ASCII and != Model default. Model label wiring and persisted disabled choice remain covered separately by r66_a4_the_off_choice_name_is_unchanged.",
+        "history": "c10e5786 introduced R67 tests while updating R66 label assertion to Off."
+      },
+      {
+        "old_file": "crates/vega_ui/src/conversation_stream/thinking_slider.rs",
+        "old_line": 3292,
+        "test": "r67_a2_the_tier_table_survives_the_off_label_change",
+        "behavior": "none -> None; low -> Light; xhigh -> Extra High.",
+        "retained": {
+          "file": "crates/vega_ui/src/conversation_stream/thinking_slider.rs",
+          "test": "r66_a1_tier_display_label_matches_the_reference_table",
+          "line": 2735
+        },
+        "evidence": "Retained nine-entry literal table calls identical pure production tier_display_label with all three exact inputs and expected values. Separate custom-ID capitalization and model persisted-ID tests remain.",
+        "history": "c10e5786 added R67 three-entry subset after R66 complete table already existed."
+      }
+    ],
+    "runtime_and_mcp": [
+      {
+        "classification": "merged",
+        "old_location": "crates/vega_runtime/src/context.rs:998",
+        "old_test": "issue76_estimator_does_not_treat_image_as_zero",
+        "retained_location": "crates/vega_runtime/src/context.rs:837",
+        "retained_test": "issue88_a1_image_base_formula_is_unchanged_and_not_scaled_again",
+        "behavior": "A one-pixel user image must contribute nonzero context tokens.",
+        "evidence": "Both construct identical 1x1 RGB[1,2,3] PNG with image::write_to, decode with ImageAttachment::from_bytes, add to empty User message and call estimate_chat_context with empty system and no tools. Original >=1024 assertion moved verbatim to retained estimate. Existing exact formula, contribution pin and wire estimate equality remain.",
+        "assertions_preserved": [
+          "estimated.input_tokens >= 1024",
+          "estimated == wire",
+          "estimated.input_tokens == ceil_ratio(32 + 256 + 32, 4, 3) + image_base"
+        ]
+      },
+      {
+        "classification": "merged",
+        "old_location": "crates/vega_mcp/src/tests/protocol.rs:41",
+        "old_test": "m07_anonymous_http_never_sends_authorization",
+        "retained_location": "crates/vega_mcp/src/tests/protocol.rs:10",
+        "retained_test": "m04_m07_anonymous_modern_http_json_and_request_scoped_sse",
+        "behavior": "Anonymous HTTP discovery, list and call requests never send Authorization.",
+        "evidence": "Both use Scenario::ModernMixed and HttpClient::connect(endpoint,true), list_tools then call_tool with an echo string. Same three captured requests. Production connect passes bearer=None; auth header is conditional on bearer, independent of echo string. Absence assertion moved into existing three-request header loop. Existing protocol/version/body/SSE output assertions remain.",
+        "assertions_preserved": [
+          "!request.headers.contains_key(\"authorization\") for discover/list/call",
+          "all pre-existing m04 protocol/header/body/result assertions"
+        ]
+      }
+    ],
+    "theme": [
+      {
+        "deleted_test": "light_and_dark_palettes_differ_on_key_tokens",
+        "old_location": "crates/vega_theme/src/lib.rs:776",
+        "retained": [
+          {
+            "test": "dark_tokens_match_ui_spec_table",
+            "location": "crates/vega_theme/src/lib.rs:747"
+          },
+          {
+            "test": "light_tokens_match_ui_spec_table",
+            "location": "crates/vega_theme/src/lib.rs:758"
+          },
+          {
+            "test": "brand_tokens_match_r17_logo_palette",
+            "location": "crates/vega_theme/src/lib.rs:776"
+          }
+        ],
+        "proof": "All four inequality assertions are implied by retained exact expected values: bg_base white vs 0x202020, text_primary 0x191C1F vs 0xEDEDED, brand_primary 0x3478D8 vs 0x8FC7FF, bg_active 0xEDEDED vs 0x303030. No unique assertion lost."
+      },
+      {
+        "deleted_test": "appearance_toggle_round_trips",
+        "old_location": "crates/vega_theme/src/lib.rs:1149",
+        "retained": [
+          {
+            "test": "theme_toggle_swaps_palette_in_place",
+            "location": "crates/vega_theme/src/lib.rs:1138"
+          }
+        ],
+        "proof": "Theme::toggle directly calls self.appearance.toggle(). Retained test starts Theme::light(), toggles twice, asserts Dark then Light plus corresponding bg_base/text_primary. This exercises both enum toggle directions and round-trip through production behavior; enum contains only Light/Dark."
+      }
+    ]
+  },
+  "examined_scope": {
+    "ui": [
+      {
+        "area": "thinking_slider R66/R67 label tables, Off/persisted choice, painted hover tests",
+        "depth": "Compared changed candidates against production constants, label() and tier_display_label(), retained test bodies and introducing history."
+      },
+      {
+        "area": "conversation_stream model_markdown, scroll_follow, variable_height",
+        "depth": "Compared constant-only duplicate against actual hydration constant consumer and real splice geometry test; skimmed markdown table and fixture assertions."
+      },
+      {
+        "area": "diff_view tests",
+        "depth": "Inspected pure pairing, default-layout, identity, projection and constant tests; no proven equivalent replacement selected."
+      },
+      {
+        "area": "settings tests/default model helper",
+        "depth": "Inventoried tests and inspected default-model helper call sites; no deletion for small helper alone."
+      },
+      {
+        "area": "vega application tests",
+        "depth": "Inventoried files and sampled small tests including commit retry, default geometry, config read-only; no application test deletion justified."
+      }
+    ],
+    "runtime": {
+      "detail_read": [
+        "crates/vega_runtime/src/context.rs",
+        "crates/vega_runtime/src/mock.rs",
+        "crates/vega_runtime/src/retry.rs",
+        "crates/vega_runtime/src/agent/tests/loop_tools.rs",
+        "crates/vega_tools/src/read.rs",
+        "crates/vega_tools/src/codec.rs",
+        "crates/vega_tools/src/sha256.rs",
+        "crates/vega_acp/src/tests.rs",
+        "crates/vega_acp/src/protocol.rs",
+        "crates/vega_mcp/src/tests/protocol.rs",
+        "crates/vega_mcp/src/http.rs"
+      ],
+      "inventory_only": [
+        "other test files in vega_runtime, vega_tools, vega_mcp and vega_acp"
+      ],
+      "limitation": "Focused evidence-based pass, not exhaustive assertion-by-assertion audit of four crates."
+    },
+    "data": [
+      "vega_theme: palette and appearance/theme toggle tests plus production toggle/constructors",
+      "vega_token: atomic precommit/postcommit tests, fault matrix and persistence fault injection implementation",
+      "vega_credentials: scoped aliases, authorization preservation, redaction and active alias tests",
+      "vega_markdown: replay test suite and MockReplay implementation; stream test inventory",
+      "vega_store: paths implementation and OS/XDG tests",
+      "vega_conversation: summary implementation and full six-test behavior suite",
+      "xtask: contract numeric calculations and test suite"
+    ],
+    "python": [
+      "scripts/release_tests.py",
+      "scripts/prepare_computer_use_tests.py",
+      "scripts/tests/test_delta_update.py"
+    ]
+  },
+  "preserved": {
+    "ui": [
+      {
+        "test": "split_deltas_never_splits_codepoints_and_round_trips",
+        "reason": "Fixture helper test appears low-value but no complete equivalent assertion established; fixture drives streamed markdown cases."
+      },
+      {
+        "test": "default_model_changes_are_applied",
+        "reason": "Trivial setter alone is not a deletion reason; no exact retained default-model assertion established."
+      },
+      {
+        "test": "diff_view frozen_layout_constants_are_exact / default_layout_is_unified",
+        "reason": "Small constant/default tests may protect explicit frozen contract; no exact replacement established."
+      }
+    ],
+    "runtime": [
+      {
+        "scope": "runtime/mock.rs replay/cancellation tests",
+        "classification": "retain",
+        "reason": "Test helper has event ordering, terminal error truncation, fresh replay and cancellation contracts; production chain assertions not exact substitutes for stream termination. No mock tests removed merely because they test a mock."
+      },
+      {
+        "scope": "runtime/context.rs budget tests",
+        "classification": "retain",
+        "reason": "Exact and non-multiple boundaries, automatic/manual mode, wire reasoning and image-role contributions protect distinct paths."
+      },
+      {
+        "scope": "vega_acp event count/byte limits and RequestId tests",
+        "classification": "retain",
+        "reason": "Count vs byte overflow and numeric vs string IDs are independent protocol/safety contracts."
+      },
+      {
+        "scope": "vega_mcp HTTP error tests",
+        "classification": "retain",
+        "reason": "Non-200 typed RPC, malformed/wrong-ID transport, 401 auth-required and 403 transport are distinct externally visible paths."
+      },
+      {
+        "scope": "vega_tools read/codecs/SHA256",
+        "classification": "retain",
+        "reason": "Read windows, binary rejection, not-found, truncation, encoding strictness and incremental hashing protect distinct boundaries; no exact replacement established."
+      }
+    ],
+    "data": [
+      {
+        "scope": "vega_token persistence",
+        "classification": "candidate consolidation deferred",
+        "reason": "BeforeRename/AfterRename tests overlap matrix contracts but use distinct fault variants. Retained to avoid removing unique injected-stage protection without migrating scenarios and helpers; no data-safety assertions removed."
+      },
+      {
+        "scope": "vega_theme frozen geometry/colors and constructors",
+        "classification": "retain",
+        "reason": "Exact values protect explicit design contracts; constructor appearance/value assertions are distinct from toggled-state assertions."
+      },
+      {
+        "scope": "credentials",
+        "classification": "retain",
+        "reason": "Different credential scoping, rotation/revocation, overlapping secret forms, case-sensitive percent encoding and alias lifetime risks; no proven equivalent replacement."
+      },
+      {
+        "scope": "markdown replay/stream",
+        "classification": "retain",
+        "reason": "Replay pacing/order, UTF-8 boundaries, file errors and pending completion each protect distinct behavior; similar stream finish test does not establish replay wiring replacement."
+      },
+      {
+        "scope": "store paths",
+        "classification": "retain",
+        "reason": "OS/XDG root selection impacts data location; platform-specific cases do not replace each other."
+      },
+      {
+        "scope": "conversation summary",
+        "classification": "retain",
+        "reason": "Zero vs unavailable usage, unpriced data, thread ownership and deletion audit are independent business/data contracts."
+      },
+      {
+        "scope": "xtask contract",
+        "classification": "retain",
+        "reason": "Percentile/gray-zone/stability boundaries and display units are distinct benchmark acceptance rules; simple functions alone do not justify deletion."
+      }
+    ],
+    "python": "Publication identity refresh, artifact completeness/size, path traversal, download integrity, package script isolation and codesigning order protect distinct failure/security paths. No equivalent replacements established; retained."
+  },
+  "validation": {
+    "local": "Static diff and retained-assertion review only; no compilation/tests.",
+    "cloud": "Existing PR checks required before merge.",
+    "speedup": "Not measured; no runtime speedup claim."
+  }
+}

@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use vega_mcp::{HttpClient, McpError, ProtocolVersion};
 
 #[tokio::test]
-async fn m04_modern_http_json_and_request_scoped_sse() {
+async fn m04_m07_anonymous_modern_http_json_and_request_scoped_sse() {
     let (endpoint, mut requests) = start_server(Scenario::ModernMixed).await;
     let mut client = HttpClient::connect(&endpoint, true)
         .await
@@ -23,6 +23,7 @@ async fn m04_modern_http_json_and_request_scoped_sse() {
     let list = requests.recv().await.expect("list POST");
     let call = requests.recv().await.expect("call POST");
     for request in [&discover, &list, &call] {
+        assert!(!request.headers.contains_key("authorization"));
         assert_eq!(request.verb, "POST");
         assert_eq!(request.path, "/mcp");
         assert_eq!(request.headers["mcp-protocol-version"], "2026-07-28");
@@ -35,23 +36,6 @@ async fn m04_modern_http_json_and_request_scoped_sse() {
         assert_eq!(request.headers["mcp-method"], request.body["method"]);
     }
     assert_eq!(call.headers["mcp-name"], "echo");
-}
-
-#[tokio::test]
-async fn m07_anonymous_http_never_sends_authorization() {
-    let (endpoint, mut requests) = start_server(Scenario::ModernMixed).await;
-    let mut client = HttpClient::connect(&endpoint, true)
-        .await
-        .expect("anonymous connect");
-    let catalog = client.list_tools().await.expect("anonymous list");
-    client
-        .call_tool(&catalog.tools[0], json!({"echo":"anonymous"}))
-        .await
-        .expect("anonymous call");
-    for _ in 0..3 {
-        let request = requests.recv().await.expect("owned request");
-        assert!(!request.headers.contains_key("authorization"));
-    }
 }
 
 #[tokio::test]

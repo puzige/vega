@@ -2774,30 +2774,6 @@ mod tests {
         assert_eq!(tier_display_label("élevé"), "Élevé");
     }
 
-    /// R66 A3 (spec §5): the two label constants are English, matching the
-    /// reference's composer namespace.
-    ///
-    /// **R67 R8** updates the Off label from `None` to `Off`. The test keeps its
-    /// R66 name because the claim it makes (the two title labels are ASCII
-    /// English, not the old CJK) is unchanged; only the Off string moved. The
-    /// `Off` value is pinned here as a literal, so a revert to `None` — or back
-    /// to `关闭` — fails loudly.
-    #[test]
-    fn r66_a3_the_title_labels_are_english() {
-        assert_eq!(OFF_LABEL, "Off", "R67 R8: Vega's own label for its Off");
-        assert_eq!(PROVIDER_DEFAULT_LABEL, "Default");
-        // R66 R7's note: the Settings-page key is a different namespace and
-        // must not have been used.
-        assert_ne!(PROVIDER_DEFAULT_LABEL, "Model default");
-        // No CJK left in either label (R66 §3's complaint).
-        for label in [OFF_LABEL, PROVIDER_DEFAULT_LABEL] {
-            assert!(
-                label.is_ascii(),
-                "R66 §3: `{label}` must be an ASCII English label"
-            );
-        }
-    }
-
     /// R66 A4 (spec §5, R8): the **persisted** choice name is unchanged.
     ///
     /// It is a storage contract, not a display string: `reasoning.toml` stores
@@ -3274,34 +3250,6 @@ mod tests {
             "the display label and the persisted name are different strings"
         );
         assert_ne!(OFF_LABEL, "关闭", "R12: the CJK label must not come back");
-    }
-
-    /// R67 A2 (spec §4): the **tier** table was not collaterally changed while
-    /// fixing the Off label.
-    ///
-    /// This is the guard for the single easiest mistake in R67 R11: reading the
-    /// user's "null → off" as an edit to `tier_display_label`'s `"none"` row.
-    /// That row is the display name of the effort tier `none`, a different thing
-    /// from Vega's Off position, and it must stay `None`.
-    ///
-    /// [`r66_a1_tier_display_label_matches_the_reference_table`] remains the
-    /// full-table authority (all nine ids, quoted as literals); this test pins
-    /// only the three ids R67 A2 names, so it is a guard rather than a
-    /// duplicate.
-    #[test]
-    fn r67_a2_the_tier_table_survives_the_off_label_change() {
-        assert_eq!(
-            tier_display_label("none"),
-            "None",
-            "R11: the `none` **tier** keeps its own label; only the Off \
-             position's label moved to `Off`"
-        );
-        assert_eq!(tier_display_label("low"), "Light", "R11: not `Low`");
-        assert_eq!(
-            tier_display_label("xhigh"),
-            "Extra High",
-            "R11: not `XHigh`"
-        );
     }
 
     /// R67 A3 (spec §4, R1): the block's grey is **not persistent**.

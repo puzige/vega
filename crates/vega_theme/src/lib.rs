@@ -773,17 +773,6 @@ mod tests {
     }
 
     #[test]
-    fn light_and_dark_palettes_differ_on_key_tokens() {
-        assert_ne!(u32::from(LIGHT.bg_base), u32::from(DARK.bg_base));
-        assert_ne!(u32::from(LIGHT.text_primary), u32::from(DARK.text_primary));
-        assert_ne!(
-            u32::from(LIGHT.brand_primary),
-            u32::from(DARK.brand_primary)
-        );
-        assert_ne!(u32::from(LIGHT.bg_active), u32::from(DARK.bg_active));
-    }
-
-    #[test]
     fn brand_tokens_match_r17_logo_palette() {
         assert_eq!(u32::from(LIGHT.brand_primary), 0x3478D8FF);
         assert_eq!(u32::from(DARK.brand_primary), 0x8FC7FFFF);
@@ -1143,13 +1132,6 @@ mod tests {
         assert_eq!(Typography::SIDEBAR, 13.0);
         assert_eq!(Typography::METADATA, 12.0);
         assert_eq!(Typography::SIDEBAR_LINE_HEIGHT, 32.0);
-    }
-
-    #[test]
-    fn appearance_toggle_round_trips() {
-        assert_eq!(Appearance::Light.toggle(), Appearance::Dark);
-        assert_eq!(Appearance::Dark.toggle(), Appearance::Light);
-        assert_eq!(Appearance::Light.toggle().toggle(), Appearance::Light);
     }
 
     #[test]
