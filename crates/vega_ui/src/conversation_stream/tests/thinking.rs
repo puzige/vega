@@ -662,7 +662,7 @@ async fn summary_stage_nests_tools_without_duplicate_reasoning(cx: &mut TestAppC
     visual.run_until_parked();
     stream.read_with(&visual, |stream, app| {
         let group = stream.run_activity_groups["m"].read(app);
-        assert_eq!(group.stage_title(0, app), "Commands");
+        assert_eq!(group.stage_title(0, app), "运行命令");
         assert!(!group.segment_expanded(0));
         assert!(stream.run_notice_projection(app).is_empty());
         let kinds = group

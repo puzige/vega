@@ -26,6 +26,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 | 文档 | 内容 |
 |---|---|
+| [vega-tool-block-codex-parity.md](docs/vega-tool-block-codex-parity.md) | Shell 启动崩溃修复、Codex 工具列表对齐与运行时间保留 |
 | [vega-review-current-status.md](docs/vega-review-current-status.md) | 当前本地交付、真实验收结果、待办和历史报告勘误入口 |
 | [vega-prd.md](docs/vega-prd.md) | PRD v0.3.3：7 项锁定决策、模块 A1-A12、5 Phase 路线图 |
 | [vega-acp-codex-research.md](docs/vega-acp-codex-research.md) | ACP 接入 Codex 调研：已确认的使用方式、协议与版本、架构改动及验收矩阵 |

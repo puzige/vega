@@ -326,6 +326,7 @@ pub enum ToolCardInputProjection {
     ReadOnly {
         tool: ReadOnlyToolKind,
         permission_path: Option<String>,
+        display_target: Option<String>,
     },
     /// Full bash command, already strictly decoded by the tools boundary.
     Bash {
@@ -528,8 +529,30 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                 } else {
                     None
                 };
+                let display_target = serde_json::from_str::<serde_json::Value>(&call.input_json)
+                    .ok()
+                    .and_then(|input| {
+                        let field =
+                            |name: &str| input.get(name).and_then(serde_json::Value::as_str);
+                        match tool {
+                            ReadOnlyToolKind::Read => field("file_path").and_then(|path| {
+                                std::path::Path::new(path)
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                            }),
+                            ReadOnlyToolKind::Glob => field("pattern").map(str::to_owned),
+                            ReadOnlyToolKind::Grep => field("pattern").map(|pattern| {
+                                field("path").filter(|path| !path.is_empty()).map_or_else(
+                                    || pattern.to_owned(),
+                                    |path| format!("{pattern} · {path}"),
+                                )
+                            }),
+                        }
+                    })
+                    .filter(|target| !target.trim().is_empty());
                 ToolCardInputProjection::ReadOnly {
                     tool,
+                    display_target,
                     permission_path,
                 }
             } else {

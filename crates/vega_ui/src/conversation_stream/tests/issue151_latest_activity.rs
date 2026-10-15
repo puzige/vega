@@ -126,6 +126,7 @@ fn history_tool(seq: i64, id: &str, tool: ReadOnlyToolKind) -> HistoryEntry {
         approval: Some(Approval::Once),
         input: Some(ToolCardInputProjection::ReadOnly {
             tool,
+            display_target: None,
             permission_path: None,
         }),
         result: Some(ToolCardResultProjection::ReadOnly {

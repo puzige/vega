@@ -416,6 +416,7 @@ fn mixed_entry(
                 ToolCard::hydrated(
                     Some(ToolCardInputProjection::ReadOnly {
                         tool: ReadOnlyToolKind::Read,
+                        display_target: None,
                         permission_path: None,
                     }),
                     ToolCallStatus::Success,

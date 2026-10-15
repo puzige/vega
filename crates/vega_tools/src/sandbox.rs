@@ -46,7 +46,7 @@ fn protected_profile(
         return Err(BashError::new(BashErrorCode::SandboxUnavailable));
     }
     let mut profile = format!(
-        "{base}\n(deny file-read* file-write* (subpath \"{root}\"))\n(deny process-info*)\n(deny mach-lookup (global-name \"com.apple.taskgated\"))"
+        "{base}\n(deny file-read* file-write* (subpath \"{root}\"))\n(deny process-info*)\n(allow process-info-pidinfo (target self))\n(deny mach-lookup (global-name \"com.apple.taskgated\"))"
     );
     if let Some(port) = credentials.proxy_port {
         profile.push_str(&format!(
@@ -245,7 +245,7 @@ fn spawn_shell(
         .env("TEMPDIR", temp_root.param())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .process_group(0);
     hooks.note_spawn();
     let mut command = Command::from(command);
@@ -602,5 +602,42 @@ mod tests {
         let error = utf8_param(&path).unwrap_err();
         assert_eq!(error.code(), BashErrorCode::SandboxUnavailable);
         assert!(!format!("{error:?}").contains("tmp"));
+    }
+}
+
+#[cfg(test)]
+mod credential_profile_tests {
+    use super::{PROFILE, ShellCredentialContext, protected_profile};
+
+    #[test]
+    fn credential_profile_allows_only_self_pidinfo_without_removing_protection() {
+        for base in [PROFILE, "(version 1)(allow default)"] {
+            for proxy_port in [None, Some(43123)] {
+                let context = ShellCredentialContext {
+                    protected_root: "/private/vega-test-credentials".into(),
+                    proxy_port,
+                    environment: Default::default(),
+                };
+                let profile = protected_profile(base, Some(&context)).unwrap();
+                assert!(profile.starts_with(base));
+                assert!(profile.contains("(deny process-info*)"));
+                assert!(profile.contains("(allow process-info-pidinfo (target self))"));
+                assert!(!profile.contains("(allow process-info*"));
+                assert!(profile.contains(
+                    "(deny file-read* file-write* (subpath \"/private/vega-test-credentials\"))"
+                ));
+                assert!(
+                    profile.contains("(deny mach-lookup (global-name \"com.apple.taskgated\"))")
+                );
+                if proxy_port.is_some() {
+                    assert!(profile.contains("(deny network*)"));
+                    assert!(
+                        profile
+                            .contains("(allow network-outbound (remote tcp \"127.0.0.1:43123\"))")
+                    );
+                }
+            }
+        }
+        assert_eq!(protected_profile(PROFILE, None).unwrap(), PROFILE);
     }
 }

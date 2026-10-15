@@ -260,7 +260,7 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
             stream.run_activity_groups["visual"]
                 .read(cx)
                 .stage_title(0, cx),
-            "Commands"
+            "运行命令"
         );
     });
     stream.update(&mut visual, |stream, cx| {
@@ -275,7 +275,7 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["visual"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "Commands");
+        assert_eq!(group.stage_title(0, cx), "运行命令");
         assert_eq!(
             group
                 .segment_children(0)

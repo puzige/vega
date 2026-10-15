@@ -435,6 +435,7 @@ async fn issue296_terminal_notices_history_requires_run_terminal_evidence(cx: &m
                 approval: Some(Approval::Once),
                 input: Some(ToolCardInputProjection::ReadOnly {
                     tool: ReadOnlyToolKind::Read,
+                    display_target: None,
                     permission_path: None,
                 }),
                 result: Some(ToolCardResultProjection::ReadOnly {

@@ -245,7 +245,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         assert!(card.is_expanded(), "user explicitly opened the live detail");
         assert_eq!(
             card.compact_visible_text(),
-            "正在运行命令",
+            "正在运行 printf 'tick'",
             "approval alone must not estimate a start time"
         );
     });
@@ -273,7 +273,8 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
     let _mounted_zero_second_row = bounds(window, "tool-activity-single-row", cx);
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["elapsed"].read(cx);
-        assert_eq!(card.compact_visible_text(), "正在运行命令 · 0 秒");
+        assert_eq!(card.compact_visible_text(), "正在运行 printf 'tick'");
+        assert!(card.visible_text().contains("正在运行 · 0 秒"));
         assert!(card.live_elapsed_active());
         let colors = theme(cx).colors;
         assert!(matches!(card.leading_icon(), Icon::Terminal));
@@ -282,30 +283,54 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
 
     cx.executor().advance_clock(Duration::from_secs(1));
     cx.run_until_parked();
+    stream.read_with(cx, |stream, cx| {
+        assert!(
+            stream.tool_cards["elapsed"]
+                .read(cx)
+                .visible_text()
+                .contains("正在运行 · 1 秒")
+        );
+    });
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行命令 · 1 秒"
+        "正在运行 printf 'tick'"
     );
 
     cx.executor().advance_clock(Duration::from_secs(1));
     cx.run_until_parked();
+    stream.read_with(cx, |stream, cx| {
+        assert!(
+            stream.tool_cards["elapsed"]
+                .read(cx)
+                .visible_text()
+                .contains("正在运行 · 2 秒")
+        );
+    });
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行命令 · 2 秒",
-        "the compact row refreshes at the next whole-second boundary"
+        "正在运行 printf 'tick'",
+        "the command stays stable while detail timing advances"
     );
 
     cx.executor().advance_clock(Duration::from_secs(63));
     cx.run_until_parked();
+    stream.read_with(cx, |stream, cx| {
+        assert!(
+            stream.tool_cards["elapsed"]
+                .read(cx)
+                .visible_text()
+                .contains("正在运行 · 1 分 5 秒")
+        );
+    });
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行命令 · 1 分 5 秒"
+        "正在运行 printf 'tick'"
     );
 
     stream.update(cx, |stream, cx| {
@@ -333,7 +358,15 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         );
         card.compact_visible_text()
     });
-    assert_eq!(terminal, "已运行命令 · 1.2 秒");
+    assert_eq!(terminal, "已运行 printf 'tick'");
+    stream.read_with(cx, |stream, cx| {
+        assert!(
+            stream.tool_cards["elapsed"]
+                .read(cx)
+                .visible_text()
+                .contains("已完成 · exit 0 · 1.2 秒")
+        );
+    });
     cx.executor().advance_clock(Duration::from_secs(30));
     cx.run_until_parked();
     assert_eq!(
@@ -396,14 +429,33 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
     });
 
     let expanded = stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).visible_text(cx));
-    assert!(expanded.contains("正在运行命令 · 5 秒"), "{expanded}");
-    assert!(expanded.contains("正在运行命令 · 3 秒"), "{expanded}");
+    assert!(expanded.contains("正在运行 sleep first"), "{expanded}");
+    assert!(expanded.contains("正在运行 sleep second"), "{expanded}");
     assert!(expanded.contains("正在读取文件"), "{expanded}");
     assert_eq!(
         expanded.matches(" · ").count(),
-        2,
-        "only Bash children show time"
+        0,
+        "compact children keep timing in details"
     );
+    stream.update(cx, |stream, cx| {
+        for id in ["first", "second"] {
+            stream.tool_cards[id].update(cx, |card, cx| card.set_expanded(true, cx));
+        }
+    });
+    stream.read_with(cx, |stream, cx| {
+        assert!(
+            stream.tool_cards["first"]
+                .read(cx)
+                .visible_text()
+                .contains("正在运行 · 5 秒")
+        );
+        assert!(
+            stream.tool_cards["second"]
+                .read(cx)
+                .visible_text()
+                .contains("正在运行 · 3 秒")
+        );
+    });
     stream.read_with(cx, |stream, cx| {
         let colors = theme(cx).colors;
         let group = group(stream, cx);
@@ -452,9 +504,7 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
 }
 
 #[gpui_kit::test]
-async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
-    cx: &mut TestAppContext,
-) {
+async fn issue381_long_bash_elides_title_and_preserves_disclosure(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue70-duration-layout");
     window
         .update(cx, |_, window, _| {
@@ -490,33 +540,19 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
     });
     let row = bounds(window, "tool-activity-child-0", cx);
     let title = bounds(window, "tool-activity-child-0-title", cx);
-    let running_duration = bounds(window, "tool-activity-child-0-duration", cx);
     let running_chevron = bounds(window, "tool-activity-child-0-chevron", cx);
-    assert!(title.right() <= running_duration.left());
-    assert!(running_duration.right() <= running_chevron.left());
+    assert!(title.right() <= running_chevron.left());
     assert!(running_chevron.right() <= row.right());
-    assert!(
-        title.size.height <= row.size.height,
-        "title must stay one line"
-    );
-    assert!(
-        running_duration.size.width >= body_text_width(window, "· 0 秒".into(), cx),
-        "running duration must retain its intrinsic width"
-    );
-
-    let compact_title = "正在运行命令";
-    let intrinsic_title_width = body_text_width(window, compact_title.into(), cx);
-    assert!(
-        intrinsic_title_width <= title.size.width,
-        "the mounted title lane must fit the generic shell title"
-    );
+    assert!(title.size.height <= row.size.height);
+    assert!(body_text_width(window, format!("正在运行 {command}").into(), cx) > title.size.width);
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["long-running"].read(cx);
-        assert_eq!(card.visible_text(), "正在运行命令 · 0 秒");
-        assert!(!card.visible_text().contains(&command));
-        let colors = theme(cx).colors;
+        assert_eq!(card.visible_text(), format!("正在运行 {command}"));
         assert!(matches!(card.leading_icon(), Icon::Terminal));
-        assert_eq!(card.leading_icon_color(&colors), colors.conversation_tool);
+        assert_eq!(
+            card.leading_icon_color(&theme(cx).colors),
+            theme(cx).colors.conversation_tool
+        );
     });
 
     stream.update(cx, |stream, cx| {
@@ -539,36 +575,17 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
     cx.run_until_parked();
 
     let terminal_title = bounds(window, "tool-activity-child-0-title", cx);
-    let terminal_duration = bounds(window, "tool-activity-child-0-duration", cx);
     let terminal_chevron = bounds(window, "tool-activity-child-0-chevron", cx);
-    assert!(terminal_title.right() <= terminal_duration.left());
-    assert!(terminal_duration.right() <= terminal_chevron.left());
-    assert!(
-        terminal_duration.size.width >= body_text_width(window, "· 1.2 秒".into(), cx),
-        "terminal duration must retain its intrinsic width"
-    );
-    assert_eq!(
-        terminal_duration.left() - terminal_title.right(),
-        px(Layout::CONVERSATION_INLINE_GAP)
-    );
-    assert_eq!(
-        running_duration.left() - title.right(),
-        px(Layout::CONVERSATION_INLINE_GAP)
-    );
+    assert!(terminal_title.right() <= terminal_chevron.left());
     assert_eq!(
         terminal_chevron.size.width,
         px(Layout::CONVERSATION_CHEVRON_SIZE)
     );
-    let terminal_row = bounds(window, "tool-activity-child-0", cx);
-    assert_eq!(
-        terminal_chevron.left() - terminal_duration.right(),
-        px(Layout::CONVERSATION_INLINE_GAP)
-    );
-    assert!(terminal_chevron.right() <= terminal_row.right());
+    assert!(terminal_chevron.right() <= bounds(window, "tool-activity-child-0", cx).right());
     stream.read_with(cx, |stream, cx| {
         assert_eq!(
             stream.tool_cards["long-running"].read(cx).visible_text(),
-            "已运行命令 · 1.2 秒"
+            format!("已运行 {command}")
         );
         let aggregate = group(stream, cx).read(cx).aggregate_summary(cx);
         assert!(
@@ -676,7 +693,7 @@ async fn issue70_e70_non_bash_running_and_hydrated_bash_do_not_invent_elapsed(
     });
     hydrated.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["hydrated-running"].read(cx);
-        assert_eq!(card.visible_text(), "正在运行命令");
+        assert_eq!(card.visible_text(), "正在运行 sleep hydrated");
         assert!(!card.live_elapsed_active());
     });
 }
@@ -717,7 +734,7 @@ async fn issue70_t70_1_single_shell_is_one_surface_free_compact_row(cx: &mut Tes
         });
     assert!(!expanded, "v3 single-call detail defaults collapsed");
     assert_eq!(rows, 1, "one compact row with detail available on demand");
-    assert_eq!(compact, "已运行命令 · 12 毫秒");
+    assert_eq!(compact, "已运行 printf ok");
     assert!(
         matches!(leading_icon, Icon::Terminal),
         "successful Shell keeps its category icon instead of Check"
@@ -1246,6 +1263,7 @@ fn parity_history() -> Vec<HistoryEntry> {
             "read",
             ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Read,
+                display_target: None,
                 permission_path: None,
             },
             ToolCardResultProjection::ReadOnly {
@@ -1259,6 +1277,7 @@ fn parity_history() -> Vec<HistoryEntry> {
             "glob",
             ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Glob,
+                display_target: None,
                 permission_path: None,
             },
             ToolCardResultProjection::ReadOnly {
@@ -1288,6 +1307,7 @@ fn parity_history() -> Vec<HistoryEntry> {
             "grep",
             ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Grep,
+                display_target: None,
                 permission_path: None,
             },
             ToolCardResultProjection::ReadOnly {
