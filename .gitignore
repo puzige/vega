@@ -8,3 +8,4 @@ bench/results/
 # xtask package artifacts (dist app bundle + zip never enter the repo; the
 # .icns is reproducible from the committed assets/logo SVG)
 dist/
+.vega-build/

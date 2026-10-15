@@ -316,8 +316,8 @@ def prepare(output, cache):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=pathlib.Path, default=ROOT / "target/computer-use/Contents")
-    parser.add_argument("--cache", type=pathlib.Path, default=ROOT / "target/computer-use/downloads")
+    parser.add_argument("--output", type=pathlib.Path, default=ROOT / ".vega-build/computer-use/Contents")
+    parser.add_argument("--cache", type=pathlib.Path, default=ROOT / ".vega-build/computer-use/downloads")
     args = parser.parse_args()
     output = prepare(args.output.absolute(), args.cache.absolute())
     print(f"Prepared pinned computer-use executors: {output}")
