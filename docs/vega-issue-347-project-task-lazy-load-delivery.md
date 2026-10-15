@@ -1,7 +1,7 @@
 # Issue #347 交付记录 · 项目任务列表懒加载
 
 规格：[vega-issue-347-project-task-lazy-load.md](vega-issue-347-project-task-lazy-load.md)
-分支：`feat/347-project-task-lazy-load`（基线 `origin/master` = `b63bc109`）
+分支：`feat/347-project-task-lazy-load`（合并基线 `origin/master` = `66365475`；开发起点为 `b63bc109`）
 
 ## 变更
 
@@ -40,12 +40,13 @@
 | 差异空白 | `git diff --check` | PASS（无输出） |
 | 编号残留 | `grep -rn "issue347\|#347\|347-" crates/` | 无匹配 |
 
-## 待云端验证
+## 云端验证
 
 - 本卡功能点测试未在本地运行：worktree 的 `target` 为空缓存，任何 `cargo test` 都会触发冷编译，
-  违反 Vega 本地验证限制（2026-10-13 用户裁决）。改由云端 `pr-check`
-  （Clippy + Nextest）执行，本地不标为通过。
-- 未做本地全量测试，理由同上。
+  违反 Vega 本地验证限制（2026-10-13 用户裁决）。改由云端 `pr-check` 执行，本地不标为通过。
+- PR #399：首轮 `Nextest` 仅本卡新增用例失败（`2708 tests run: 2707 passed, 1 failed`），
+  原因为短视口下第二个项目表头被滚出可视区导致点击未命中，属用例自身缺陷，既有用例无回归；
+  修正后 Clippy / Nextest / `check (fmt, clippy, test)` 全部通过。
 
 ## 偏离
 
