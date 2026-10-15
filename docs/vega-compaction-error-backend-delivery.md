@@ -1,0 +1,66 @@
+# 压缩错误与取消传播后端交付
+
+Issue #397；契约：vega-compaction-error-presentation.md「错误与取消传播修订」。
+
+## 实现前测试设计
+
+自动和手动压缩：返回真错误且 token 同时取消时仍保留 Failed/具体失败；返回 Cancelled 时保留 Cancelled 状态与既有 usage。覆盖普通自动压缩和 Skill prospective 自动压缩入口。
+
+Pipeline：processor/runtime 两支错误组合中，真实错误优先于 Cancelled；纯 Cancelled 持久化和投递 Interrupted，保留 message id、内容、计时与诊断，并经过共同撤销审计收尾。没有 message id 的准备期取消不制造 Error 或虚假归属。
+
+## 最终实现
+
+- runtime loop_.rs：普通自动入口沿用既有取消 outcome，判据改为返回的 VegaError::Cancelled；Skill 前置压缩按 typed error 分类并向上返回 Cancelled，usage/status 先照常投递，不吞掉取消。
+- conversation compaction.rs：手动返回的错误决定终态，移除 token 的后验覆盖；算法、预算、timeout 与重试不变。
+- entry.rs：合并两支结果时优先真实错误；取消持久化 Interrupted；保存/关闭持久化 actor 成功后进入正常共同尾部，保留 Skill 撤销审计，返回 interrupted=true、failed=false。持久化或关闭错误不伪装成功。
+- pipeline.rs：Cancelled 投递 Interrupted；准备期没有 message id 时不造错误事件。
+- agent/events.rs（经主 agent 追加授权）：取消 acknowledgement 保留 Cancelled 类型，其他错误沿用原安全包装；避免取消被包装成 persistence error 后错误合流再次误判。
+- App 上层 app_agent.rs 使用 result.is_ok_and(|run| !run.failed)。纯取消现在返回正常中断 ConversationRun，避免 Finished(success=false) 的二次报错；不需改 App/UI 公共接口。
+
+## 回归覆盖
+
+| 测试 | 断言 |
+|---|---|
+| issue397_automatic_compaction_uses_returned_error_despite_token_race | typed取消与token独立；真实安全失败/可恢复超时不被覆盖；usage投递一次；不调用主provider |
+| issue397_skill_prospect_compaction_preserves_typed_failure_and_cancellation | Skill前置入口状态与返回错误一致 |
+| issue397_manual_compaction_keeps_returned_failure_when_token_is_cancelled | credential reader取消token且返回失败；持久化Failed；重开保留原因；不安装checkpoint |
+| issue397_pipeline_merge_prefers_real_failure_over_cancellation | 两支顺序、单支、双取消、双真实错误优先级 |
+| issue397_pipeline_forwarding_preserves_cancellation_identity_and_timing | Interrupted归属/计时、无归属取消、真错误仍Error |
+| issue397_pipeline_cancellation_returns_interrupted_run_with_content_and_duration | 生产pipeline ack取消、partial内容与interrupted状态持久化、耗时一致、返回Ok且不failed |
+
+既有 issue356 手动取消 acquisition/stream 用量与历史测试继续保留。原普通自动分类表中的 Cancelled 从“返回错误”断言移动至专门的中断 outcome 回归；非取消分类断言未放宽。
+
+## 本地检查
+
+- verified_at_utc: 2026-10-15T15:46:12.164143+00:00
+- branch: feat/compaction-error-presentation
+- backend_content_sha256: 3c86bfb850ec0e6f44ee4af9185ec49bafade49f7e7af14089042eacce47bfee
+- `rustfmt --edition 2024 --check --config skip_children=true` 后接上述八个后端 Rust 文件：exit 0，stdout/stderr 为空。
+- `git diff --check`：exit 0，stdout/stderr 为空。
+- 未运行本地编译、cargo check、Clippy、测试或打包。未提交/push。
+
+## 待验证与边界
+
+CI 待运行：`cargo nextest run -p vega_runtime -p vega_conversation` 与仓库完整 pr-check；上述新回归目前均 NOT RUN，不能标记通过。无真实外部模型/进程自动测试。UI外观、用户真实停止和新消息替换由用户手测。
+
+非取消错误继续走既有错误返回、恢复策略与安全脱敏；可恢复压缩失败策略仍不变，token确实取消时可以随后中断，但先前具体Failed状态不会被改写成Cancelled。没有新公共类型、依赖或数据库结构。未修改 types/events.rs 或 UI executor 文件。
+
+## PR #398 首轮 CI 修正
+
+2026-10-15 15:51 UTC，首轮 Nextest 与 Clippy 编译失败，原始日志保留 `/tmp/vega-398-failed.log`。并非测试通过：E0433 为 compaction_timeouts.rs 新用例缺少 ConversationEvent 导入；E0599 为 failure_paths.rs 使用不存在的 ToolCallStarted 变体。
+
+已在 fetch 并 fast-forward 核对分支后修复：手动压缩测试显式导入 crate::types::ConversationEvent；pipeline 取消测试改为真实 ToolCallProposed 事件，并使用 fixture 已创建的 lib.rs 的绝对 file_path、null offset/limit。该事件在 runtime 提议点发出，经 runtime_event_requires_ack 返回 true，processor 完成前置文本 flush 后，sink 返回 Cancelled 并通过 ack 保留同一错误类型；无需实际读取文件或到达权限批准才能触发测试。
+
+静态逐项核对新测试引用的 ConversationEvent、RuntimeEvent、ContextCompactionPhase、ContextCompactionStatusFailure 变体定义，未发现其他不存在的名称。定向 rustfmt --check 与 git diff --check 均 exit 0。未运行本地编译或测试；修正后的编译与测试仍待新一轮 CI，不覆盖或隐藏本轮失败。
+
+## PR #398 第二轮 CI：ack 控制流修复
+
+2026-10-15 16:02 UTC（北京时间 2026-10-16），Clippy 通过；Nextest 汇总 2710 passed、7 failed、5 skipped，其中后端失败为 issue397_pipeline_cancellation_returns_interrupted_run_with_content_and_duration 的正常中断返回断言，原始失败日志保留 `/tmp/vega-398-test-failed.log`。其余 UI 失败由 UI executor 处理。
+
+静态定位：process_runtime_events 的 actor 成功分支中，event_sink(&converted)? 直接退出整个处理函数，绕过下方统一 acknowledgement 错误分支。ack 被 drop，runtime 获得派生的 event acknowledgement was dropped 错误；合流按真实错误优先的规则将其选中，造成取消错误。前轮保留 Cancelled 的 ack 分支没有机会执行。
+
+修复只把 actor 成功后的同步投递置于局部 Result 闭包，使 sink 的 ? 返回局部结果并经过统一 ack/cancel 处理。runtime emit 宏的 sink.await? 随即直接返回，不会再向已停止的 processor 发 Interrupted；entry 负责持久化和投递终态。合流错误优先级、安全包装和原核心断言保持不变。
+
+取消测试增加安全 fixture 下的结果/事件 Debug 诊断，未放宽断言；新增 issue397_acknowledged_sink_failure_preserves_cause_and_one_terminal_write，覆盖真实 sink 错误原类型与具体原因、单条 Error、无 Interrupted、partial 内容及一次终态耗时写入。
+
+fetch/fast-forward 核对最新分支后修改。定向 rustfmt --check 与 git diff --check exit 0；本地未编译或运行测试。修正后的上述两项生产路径测试仍待 CI，不能标记通过。

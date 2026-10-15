@@ -240,7 +240,12 @@ async fn issue296_long_model_keeps_composer_actions_inside_the_surface(cx: &mut 
         .expect("error");
     assert_eq!(error.size.width, shell.size.width);
     assert!(error.bottom() <= shell.top());
-    assert!(visual.debug_bounds("conversation-status-icon").is_some());
+    assert!(visual.debug_bounds("conversation-status-icon").is_none());
+    let text = visual
+        .debug_bounds("conversation-error-text")
+        .expect("plain error text");
+    assert_eq!(text.size.width, error.size.width);
+    assert!(text.top() >= error.top() && text.bottom() <= error.bottom());
 }
 
 struct MessageFixture {
@@ -462,7 +467,7 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
 }
 
 #[gpui_kit::test]
-async fn issue296_multiline_error_and_permission_keep_first_line_icon_alignment(
+async fn issue296_multiline_error_is_plain_and_permission_keeps_first_line_icon_alignment(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "issue296-status");
@@ -473,20 +478,24 @@ async fn issue296_multiline_error_and_permission_keep_first_line_icon_alignment(
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(594.), px(554.)));
     visual.run_until_parked();
-    let icon = visual
-        .debug_bounds("conversation-status-icon")
-        .expect("status icon");
+    assert!(visual.debug_bounds("conversation-status-icon").is_none());
     let text = visual
-        .debug_bounds("conversation-status-text")
-        .expect("status text");
-    assert_eq!(icon.size, size(px(16.), px(16.)));
+        .debug_bounds("conversation-error-text")
+        .expect("plain error text");
+    let error = visual
+        .debug_bounds("conversation-controller-error")
+        .expect("error region");
     assert!(text.size.height > px(Typography::BODY * Typography::BODY_LINE_HEIGHT * 2.));
-    assert!(
-        (f32::from(icon.center().y - text.top())
-            - Typography::BODY * Typography::BODY_LINE_HEIGHT / 2.)
-            .abs()
-            < 1.
-    );
+    assert_eq!(text.left(), error.left());
+    assert_eq!(text.right(), error.right());
+    assert!(text.top() >= error.top() && text.bottom() <= error.bottom());
+    assert!(!visual.update(|window, _| {
+        let scale = window.scale_factor();
+        window.painted_quads().iter().any(|quad| {
+            (quad.bounds == text.scale(scale) || quad.bounds == error.scale(scale))
+                && quad.border_color == vega_theme::LIGHT.border_subtle.into()
+        })
+    }));
 
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);

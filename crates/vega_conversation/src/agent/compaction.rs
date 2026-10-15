@@ -741,8 +741,7 @@ pub async fn compact_thread_manually_accounted_with_credential_reader(
                 persist_context_usage(store, thread_id, expected_model, usage)?;
                 events.push(context_usage_event(usage));
             }
-            let cancelled =
-                matches!(failure.error.as_ref(), VegaError::Cancelled) || cancel.is_cancelled();
+            let cancelled = matches!(failure.error.as_ref(), VegaError::Cancelled);
             let status = if cancelled {
                 crate::types::ContextCompactionStatus::Cancelled
             } else {

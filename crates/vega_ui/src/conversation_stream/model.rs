@@ -1015,7 +1015,12 @@ impl StreamEntry {
                 card.read(cx).summary().outcome
                     != vega_conversation::types::TaskSummaryOutcome::Completed,
             ),
-            StreamEntry::SkillActivation { .. } | StreamEntry::ContextCompaction { .. } => 1,
+            StreamEntry::SkillActivation { .. } => 1,
+            StreamEntry::ContextCompaction { record, .. } => usize::from(!matches!(
+                record.status,
+                vega_conversation::types::ContextCompactionStatus::Succeeded
+                    | vega_conversation::types::ContextCompactionStatus::Cancelled
+            )),
         }
     }
 }

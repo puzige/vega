@@ -335,7 +335,7 @@ async fn issue146_empty_runtime_failure_keeps_reason_visible_without_assistant_t
         ));
         assert_eq!(
             RunFailureKind::Runtime.message(),
-            "任务执行失败；请检查运行环境后重试"
+            "The run failed. Check the runtime environment, then retry."
         );
         assert_eq!(
             run_group(stream, "empty-runtime-failure")

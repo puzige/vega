@@ -210,7 +210,6 @@ async fn claude_compaction_failure_classification_preserves_terminal_safety() {
             false,
         ),
         (|| VegaError::Store(rusqlite::Error::InvalidQuery), false),
-        (|| VegaError::Cancelled, false),
     ];
     for &(error, recoverable) in cases {
         let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
@@ -226,5 +225,123 @@ async fn claude_compaction_failure_classification_preserves_terminal_safety() {
             error()
         );
         assert_eq!(provider.requests().len(), usize::from(recoverable));
+    }
+}
+
+struct RacingSummaryFailure {
+    cancel_token: bool,
+    cancelled_error: bool,
+    recoverable: bool,
+}
+
+impl ContextCompactionHook for RacingSummaryFailure {
+    fn compact<'a>(
+        &'a self,
+        _request: ContextCompactionRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
+        Box::pin(async move {
+            if self.cancel_token {
+                cancel.cancel();
+            }
+            let error = if self.cancelled_error {
+                VegaError::Cancelled
+            } else if self.recoverable {
+                VegaError::Context(ContextRuntimeError::SummaryTimedOut)
+            } else {
+                VegaError::CredentialCheckUnavailable
+            };
+            Err(ContextCompactionFailure::new(
+                error,
+                Some(crate::ContextCompactionUsage {
+                    usage: crate::RuntimeTokenUsage {
+                        input: 42,
+                        output: 7,
+                        cache_read: 0,
+                        cache_write: 0,
+                    },
+                    cost_microcents: 0,
+                    pricing: None,
+                }),
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn issue397_automatic_compaction_uses_returned_error_despite_token_race() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    for (cancel_token, cancelled_error, recoverable) in [
+        (false, true, false),
+        (true, true, false),
+        (true, false, false),
+        (true, false, true),
+    ] {
+        let provider = MockProvider::new(vec![]);
+        let mut req = failing_request(Arc::new(AtomicUsize::new(0)), false, false);
+        req.context_compaction_hook = Some(Arc::new(RacingSummaryFailure {
+            cancel_token,
+            cancelled_error,
+            recoverable,
+        }));
+        let mut observed = Vec::new();
+        let result =
+            run_agent_with_sink(&provider, &tools, req, CancellationToken::new(), |event| {
+                observed.push(event);
+                std::future::ready(Ok(()))
+            })
+            .await;
+        assert!(provider.requests().is_empty());
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| matches!(event,
+            RuntimeEvent::ContextCompactionUsageUpdated { usage }
+            if usage.usage.input == 42 && usage.usage.output == 7))
+                .count(),
+            1
+        );
+        let phases = observed
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeEvent::ContextCompactionStatusUpdated { status } => Some(status.phase),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases,
+            vec![
+                crate::ContextCompactionPhase::Started,
+                if cancelled_error {
+                    crate::ContextCompactionPhase::Cancelled
+                } else {
+                    crate::ContextCompactionPhase::Failed
+                }
+            ]
+        );
+        if cancelled_error {
+            let outcome = result.unwrap();
+            assert!(outcome.interrupted);
+            assert!(!outcome.failed);
+            assert!(
+                observed
+                    .iter()
+                    .any(|event| matches!(event, RuntimeEvent::Interrupted))
+            );
+            assert!(
+                !observed
+                    .iter()
+                    .any(|event| matches!(event, RuntimeEvent::Error(_)))
+            );
+        } else if !recoverable {
+            assert!(matches!(result, Err(VegaError::CredentialCheckUnavailable)));
+        } else {
+            let outcome = result.unwrap();
+            assert!(outcome.interrupted);
+            assert!(observed.iter().any(|event| matches!(event,
+                RuntimeEvent::ContextCompactionStatusUpdated { status }
+                if status.failure == Some(crate::ContextCompactionStatusFailure::TimedOut))));
+        }
     }
 }

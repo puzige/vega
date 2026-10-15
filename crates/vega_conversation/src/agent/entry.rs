@@ -858,7 +858,7 @@ where
             _ => None,
         })
         .unwrap_or_else(|| prepared.assistant_message_id.clone());
-    let outcome = match (processor_result, runtime_result) {
+    let (content, interrupted, failed) = match (processor_result, runtime_result) {
         (Ok(()), Ok(outcome)) => {
             let (state, failure_code) = if outcome.interrupted {
                 (
@@ -918,23 +918,20 @@ where
                 );
                 return Err(ConversationError::Runtime(error));
             }
-            outcome
+            (outcome.final_text, outcome.interrupted, outcome.failed)
         }
         (processor, runtime) => {
-            let error = processor
-                .err()
-                .or_else(|| runtime.err())
-                .unwrap_or_else(|| persistence_actor_error("agent event pipeline stopped"));
+            let error = pipeline_terminal_error(processor.err(), runtime.err());
             let diagnostic_state = if matches!(error, VegaError::Cancelled) {
                 vega_store::run_diagnostics::DiagnosticState::Cancelled
             } else {
                 vega_store::run_diagnostics::DiagnosticState::Failed
             };
             let error = Arc::new(error);
-            let failure_event = RuntimeEvent::Error(error.clone());
+            let failure_event = pipeline_terminal_event(error.clone());
             let execution_duration_ms =
                 u64::try_from(runtime_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let _ = actor
+            let persistence_result = actor
                 .event(
                     failure_event,
                     streamed_content.clone(),
@@ -960,11 +957,29 @@ where
                 error.clone(),
                 Some(execution_duration_ms),
             );
-            let _ = actor.close().await;
-            return Err(ConversationError::Runtime(error));
+            let close_result = actor.close().await;
+            if matches!(error.as_ref(), VegaError::Cancelled) {
+                if let Err(error) = persistence_result.and(close_result) {
+                    let error = Arc::new(error);
+                    forward_pipeline_error_with_duration(
+                        &mut event_sink,
+                        Some(final_assistant_message_id.clone()),
+                        error.clone(),
+                        Some(execution_duration_ms),
+                    );
+                    return Err(ConversationError::Runtime(error));
+                }
+                events.push(ConversationEvent::Interrupted {
+                    message_id: final_assistant_message_id.clone(),
+                    execution_duration_ms: Some(execution_duration_ms),
+                });
+                (streamed_content, true, false)
+            } else {
+                return Err(ConversationError::Runtime(error));
+            }
         }
     };
-    if outcome.interrupted
+    if interrupted
         && skill_authority
             .as_ref()
             .is_some_and(super::skills::SkillAuthority::observed_revocation)
@@ -998,9 +1013,9 @@ where
         user_message_id: prepared.user_message_id,
         assistant_message_id: final_assistant_message_id,
         events,
-        content: outcome.final_text,
-        interrupted: outcome.interrupted,
-        failed: outcome.failed,
+        content,
+        interrupted,
+        failed,
     })
 }
 
@@ -1044,4 +1059,106 @@ where
         mcp_servers,
     )
     .await
+}
+
+fn pipeline_terminal_error(processor: Option<VegaError>, runtime: Option<VegaError>) -> VegaError {
+    match (processor, runtime) {
+        (Some(VegaError::Cancelled), Some(error)) => error,
+        (Some(error), _) | (None, Some(error)) => error,
+        (None, None) => persistence_actor_error("agent event pipeline stopped"),
+    }
+}
+
+fn pipeline_terminal_event(error: Arc<VegaError>) -> RuntimeEvent {
+    if matches!(error.as_ref(), VegaError::Cancelled) {
+        RuntimeEvent::Interrupted
+    } else {
+        RuntimeEvent::Error(error)
+    }
+}
+
+#[cfg(test)]
+mod terminal_error_tests {
+    use super::*;
+
+    #[test]
+    fn issue397_pipeline_merge_prefers_real_failure_over_cancellation() {
+        for (processor, runtime) in [
+            (
+                Some(VegaError::Cancelled),
+                Some(VegaError::CredentialCheckUnavailable),
+            ),
+            (
+                Some(VegaError::CredentialCheckUnavailable),
+                Some(VegaError::Cancelled),
+            ),
+            (None, Some(VegaError::CredentialCheckUnavailable)),
+            (Some(VegaError::CredentialCheckUnavailable), None),
+        ] {
+            let error = pipeline_terminal_error(processor, runtime);
+            assert!(matches!(error, VegaError::CredentialCheckUnavailable));
+            assert!(matches!(
+                pipeline_terminal_event(Arc::new(error)),
+                RuntimeEvent::Error(_)
+            ));
+        }
+        for (processor, runtime) in [
+            (Some(VegaError::Cancelled), None),
+            (None, Some(VegaError::Cancelled)),
+            (Some(VegaError::Cancelled), Some(VegaError::Cancelled)),
+        ] {
+            let error = pipeline_terminal_error(processor, runtime);
+            assert!(matches!(error, VegaError::Cancelled));
+            assert!(matches!(
+                pipeline_terminal_event(Arc::new(error)),
+                RuntimeEvent::Interrupted
+            ));
+        }
+        assert!(matches!(
+            pipeline_terminal_error(
+                Some(VegaError::CredentialCheckUnavailable),
+                Some(VegaError::CredentialExposureBlocked),
+            ),
+            VegaError::CredentialCheckUnavailable
+        ));
+    }
+
+    #[test]
+    fn issue397_pipeline_forwarding_preserves_cancellation_identity_and_timing() {
+        let mut events = Vec::new();
+        forward_pipeline_error_with_duration(
+            &mut |event| {
+                events.push(event.clone());
+                Ok(())
+            },
+            Some("assistant".into()),
+            Arc::new(VegaError::Cancelled),
+            Some(4321),
+        );
+        assert!(matches!(&events[..], [ConversationEvent::Interrupted {
+            message_id, execution_duration_ms: Some(4321)
+        }] if message_id == "assistant"));
+        forward_pipeline_error_with_duration(
+            &mut |event| {
+                events.push(event.clone());
+                Ok(())
+            },
+            None,
+            Arc::new(VegaError::Cancelled),
+            None,
+        );
+        assert_eq!(events.len(), 1);
+        forward_pipeline_error_with_duration(
+            &mut |event| {
+                events.push(event.clone());
+                Ok(())
+            },
+            Some("assistant".into()),
+            Arc::new(VegaError::CredentialCheckUnavailable),
+            Some(4321),
+        );
+        assert!(matches!(events.last(), Some(ConversationEvent::Error {
+            message_id: Some(message_id), error, execution_duration_ms: Some(4321)
+        }) if message_id == "assistant" && matches!(error.as_ref(), VegaError::CredentialCheckUnavailable)));
+    }
 }

@@ -182,7 +182,7 @@ impl ConversationStream {
                             .mx_auto()
                             .mt_1()
                             .mb_2()
-                            .child(render_rows::status_notice(error, colors.danger, &colors))
+                            .child(render_rows::plain_error_notice(error, colors.danger))
                     }),
             )
             .when(self.thread.backend == TaskBackend::Native, |column| {

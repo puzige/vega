@@ -308,6 +308,19 @@ impl ConversationStream {
         // owns every operation's single visible row, without a six-row cap.
         self.context_control.records.clear();
         self.context_control.records.push(record);
+        self.refresh_run_notices(cx);
+        let changed = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                matches!(entry, StreamEntry::ContextCompaction { .. }).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in changed {
+            self.invalidate_item(Some(index));
+            self.invalidate_item(Some(index + 1));
+        }
         cx.notify();
         true
     }
@@ -366,6 +379,16 @@ impl ConversationStream {
         self.context_control
             .reserve
             .update(cx, |input, cx| input.set_text(&reserve, cx));
+    }
+
+    pub(crate) fn compaction_failure_resolved(&self, index: usize) -> bool {
+        let Some(StreamEntry::ContextCompaction { model, record, .. }) = self.entries.get(index)
+        else {
+            return false;
+        };
+        record.status == Status::Failed && self.entries.iter().any(|entry| matches!(entry,
+            StreamEntry::ContextCompaction { model: owner, record: newer, .. }
+                if owner == model && newer.generation > record.generation && newer.status == Status::Succeeded))
     }
 
     /// Restore the latest durable result at the loaded history tail. Legacy
@@ -453,23 +476,29 @@ impl ConversationStream {
 
 pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'static str {
     match status {
-        Status::Unknown => "上下文容量未配置",
-        Status::Ready => "上下文已就绪",
-        Status::Compacting => "正在压缩上下文",
-        Status::Succeeded => "上下文已压缩",
-        Status::Cancelled => "上下文压缩已取消",
+        Status::Unknown => "Context capacity is not configured",
+        Status::Ready => "Context ready",
+        Status::Compacting => "Compacting context",
+        Status::Succeeded => "Context compacted",
+        Status::Cancelled => "Context compaction cancelled",
         Status::Failed => match failure {
-            Some(Failure::SourceChanged) => "历史已变化，请重试压缩",
-            Some(Failure::NoCompactablePrefix) => "暂无可压缩的完整历史",
-            Some(Failure::TooLarge) => "历史过长，无法安全压缩；请在新对话继续",
-            Some(Failure::OverLimit) => "上下文超出预算，请缩短输入或在新对话继续",
-            Some(Failure::ReasoningLimit) => {
-                "此前运行因本地思考内容限制而中断；请重新发送消息继续。"
+            Some(Failure::SourceChanged) => "History changed. Retry compaction.",
+            Some(Failure::NoCompactablePrefix) => "No complete history is available to compact.",
+            Some(Failure::TooLarge) => {
+                "History is too large to compact safely. Continue in a new conversation."
             }
-            Some(Failure::ImagesUnsupported) => "历史图片无法安全压缩，请使用新的会话",
-            Some(Failure::InvalidSummary) => "压缩结果无效，请重试",
-            Some(Failure::TimedOut) => "上下文压缩超时，请重试",
-            _ => "上下文压缩失败，请重试",
+            Some(Failure::OverLimit) => {
+                "Context exceeds the available budget. Shorten the input or start a new conversation."
+            }
+            Some(Failure::ReasoningLimit) => {
+                "The run exceeded the local reasoning limit. Send your message again to continue."
+            }
+            Some(Failure::ImagesUnsupported) => {
+                "Historical images cannot be compacted safely. Start a new conversation."
+            }
+            Some(Failure::InvalidSummary) => "The compaction result was invalid. Retry compaction.",
+            Some(Failure::TimedOut) => "Context compaction timed out. Retry compaction.",
+            _ => "Context compaction failed. Retry compaction.",
         },
     }
 }

@@ -1664,11 +1664,20 @@ pub(crate) fn forward_pipeline_error_with_duration<F>(
 ) where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
-    let _ = event_sink(&ConversationEvent::Error {
-        message_id,
-        error,
-        execution_duration_ms,
-    });
+    if matches!(error.as_ref(), VegaError::Cancelled) {
+        if let Some(message_id) = message_id {
+            let _ = event_sink(&ConversationEvent::Interrupted {
+                message_id,
+                execution_duration_ms,
+            });
+        }
+    } else {
+        let _ = event_sink(&ConversationEvent::Error {
+            message_id,
+            error,
+            execution_duration_ms,
+        });
+    }
 }
 
 #[cfg(test)]

@@ -82,7 +82,9 @@ pub(crate) fn render_stream_entry(
     let body = render_entry_internal(entry, window, cx, Some(focus), suppress_run_notices);
     if matches!(
         entry,
-        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. }
+        StreamEntry::Tool { .. }
+            | StreamEntry::ToolGroup { .. }
+            | StreamEntry::ContextCompaction { .. }
     ) && process_top > 0.
     {
         return div()
@@ -139,15 +141,21 @@ fn render_entry_internal(
         StreamEntry::ContextCompaction {
             record, restored, ..
         } => {
+            if matches!(
+                record.status,
+                vega_conversation::types::ContextCompactionStatus::Succeeded
+                    | vega_conversation::types::ContextCompactionStatus::Cancelled
+            ) {
+                return div().h_0().into_any_element();
+            }
             if record.status == vega_conversation::types::ContextCompactionStatus::Failed {
                 return div()
                     .debug_selector(|| "context-compaction-row".into())
                     .w_full()
                     .min_w_0()
-                    .child(status_notice(
+                    .child(plain_error_notice(
                         context_compaction_label(record.status, record.failure, *restored),
                         colors.danger,
-                        &colors,
                     ))
                     .into_any_element();
             }
@@ -301,18 +309,17 @@ fn render_entry_internal(
             outcome => div()
                 .debug_selector(|| "task-outcome-status".to_string())
                 .py_1()
-                .child(status_notice(
+                .child(plain_error_notice(
                     if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
-                        "失败".to_string()
+                        RunFailureKind::Persisted.message()
                     } else {
-                        "已中断".to_string()
+                        "Stopped".into()
                     },
                     if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
                         colors.danger
                     } else {
-                        colors.warning
+                        colors.text_secondary
                     },
-                    &colors,
                 ))
                 .into_any_element(),
         },
@@ -394,11 +401,7 @@ pub(crate) fn markdown_item(
         .children(failure.map(|reason| {
             div()
                 .debug_selector(|| "assistant-run-failure".to_string())
-                .child(status_notice(
-                    reason.message().to_string(),
-                    colors.danger,
-                    colors,
-                ))
+                .child(plain_error_notice(reason.message(), colors.danger))
         }))
         .into_any_element()
 }
@@ -593,11 +596,7 @@ fn selectable_markdown_message(
         .children(failure.map(|reason| {
             div()
                 .debug_selector(|| "assistant-run-failure".to_string())
-                .child(status_notice(
-                    reason.message().to_string(),
-                    colors.danger,
-                    colors,
-                ))
+                .child(plain_error_notice(reason.message(), colors.danger))
         }))
         .into_any_element()
 }
@@ -1410,5 +1409,18 @@ fn message_with_copy(
                     .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
                 ),
         )
+        .into_any_element()
+}
+
+pub(super) fn plain_error_notice(message: String, color: Rgba) -> AnyElement {
+    div()
+        .debug_selector(|| "conversation-error-text".into())
+        .w_full()
+        .min_w_0()
+        .text_size(px(Typography::BODY))
+        .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+        .text_color(color)
+        .whitespace_normal()
+        .child(message)
         .into_any_element()
 }

@@ -170,7 +170,8 @@ async fn issue343_t15_retry_notice_stays_outside_folded_and_expanded_thinking(
     assert!(visual.debug_bounds("assistant-network-retry").is_none());
     assert!(visual.debug_bounds("assistant-retry-wifi-icon").is_none());
     assert!(visual.debug_bounds("assistant-run-failure").is_some());
-    assert!(visual.debug_bounds("conversation-status-icon").is_some());
+    assert!(visual.debug_bounds("conversation-status-icon").is_none());
+    assert!(visual.debug_bounds("conversation-error-text").is_some());
     assert!(visual.debug_bounds("run-stage-status-0").is_none());
 }
 
