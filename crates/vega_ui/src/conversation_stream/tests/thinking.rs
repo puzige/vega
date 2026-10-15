@@ -289,14 +289,25 @@ async fn i61_thinking_bounds_are_utf8_safe_and_cumulative(cx: &mut TestAppContex
     let (_, stream, _) = open_controller_stream(cx, "thinking-bounds");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
-        stream.apply_event(thinking("m", &"界".repeat(THINKING_DELTA_BYTES)), cx);
+        let mut received = "界".repeat(THINKING_DELTA_BYTES);
+        stream.apply_event(thinking("m", &received), cx);
         let card = cards(stream, cx)[0].clone();
         assert_eq!(card.read(cx).text.len(), 3 * THINKING_DELTA_BYTES);
         assert!(!card.read(cx).truncated);
-        for _ in 0..8 {
-            stream.apply_event(thinking("m", &"x".repeat(THINKING_DELTA_BYTES)), cx);
+        for chunk in 0..8 {
+            let delta = format!("{}{chunk}", "x".repeat(THINKING_DELTA_BYTES - 1));
+            received.push_str(&delta);
+            stream.apply_event(thinking("m", &delta), cx);
+            let retained = &card.read(cx).text;
+            assert!(retained.len() >= THINKING_BLOCK_BYTES - THINKING_DELTA_BYTES);
+            assert!(retained.len() <= THINKING_BLOCK_BYTES);
+            let start = received.len() - retained.len();
+            assert!(received.is_char_boundary(start));
+            assert_eq!(retained, &received[start..]);
+            assert!(retained.ends_with(&delta));
+            assert_eq!(stream.thinking_bytes, retained.len());
         }
-        assert_eq!(card.read(cx).text.len(), THINKING_BLOCK_BYTES);
+        assert!(card.read(cx).truncated);
         stream.apply_event(finish("m"), cx);
         for n in 0..8 {
             let id = format!("next-{n}");
