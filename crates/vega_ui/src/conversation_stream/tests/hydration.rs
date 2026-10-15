@@ -92,7 +92,11 @@ async fn failed_empty_assistant_hydrates_a_visible_safe_reason(cx: &mut TestAppC
         rows, 1,
         "the empty failed turn still occupies a visible row"
     );
-    assert!(!RunFailureKind::Persisted.message().contains("额度不足"));
+    assert!(
+        !RunFailureKind::Persisted
+            .message()
+            .contains("quota exhausted")
+    );
     cx.run_until_parked();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(

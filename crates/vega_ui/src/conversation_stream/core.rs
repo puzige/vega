@@ -1593,8 +1593,30 @@ impl ConversationStream {
         failure: RunFailureKind,
         cx: &mut Context<Self>,
     ) {
-        if let Some(id) = message_id {
-            self.run_failures.insert(id.to_owned(), failure);
+        if message_id
+            .and_then(|id| self.run_activity_groups.get(id))
+            .is_some_and(|group| group.read(cx).status() == RunActivityStatus::Completed)
+        {
+            return;
+        }
+        let failure = if let Some(id) = message_id {
+            let failure = self.remember_run_failure(id, failure);
+            if let Some(group) = self.run_activity_groups.get(id).cloned() {
+                group.update(cx, |group, cx| {
+                    group.complete(RunActivityStatus::Failed, None, cx)
+                });
+            }
+            failure
+        } else {
+            failure
+        };
+        if message_id.is_some_and(|id| {
+            self.active_agent_message
+                .as_ref()
+                .is_some_and(|(active, _)| active != id)
+        }) {
+            cx.notify();
+            return;
         }
         self.controller_runtime_error = message_id.map(|id| (id.to_owned(), failure));
         self.controller_error = Some(failure.message());

@@ -2813,8 +2813,11 @@ async fn a7_first_submit_provider_quota_failure_is_visible_and_durable(
     let visible = stream
         .read_with(cx, |stream, _| stream.controller_error_message())
         .expect("quota failure is visible after app refresh");
-    assert!(visible.contains("额度不足"), "wrong failure: {visible}");
-    assert!(visible.contains("设置 → Providers"));
+    assert!(
+        visible.contains("quota exhausted"),
+        "wrong failure: {visible}"
+    );
+    assert!(visible.contains("Settings → Providers"));
     assert!(!visible.contains(SENTINEL));
     assert!(!visible.contains("本地凭据缺失"));
     f.bounds("assistant-run-failure", cx);
@@ -2874,7 +2877,7 @@ async fn a7_provider_http_failure_uses_safe_fallback(cx: &mut gpui_kit::TestAppC
         .expect("provider status is visible");
     assert!(visible.contains("HTTP 503"));
     assert!(!visible.contains("PRIVATE_PROVIDER_BODY_SENTINEL"));
-    assert!(!visible.contains("额度不足"));
+    assert!(!visible.contains("quota exhausted"));
     f.bounds("assistant-run-failure", cx);
     assert!(f.absent("conversation-controller-error", cx));
 }
@@ -2929,7 +2932,7 @@ async fn a7_foreign_runtime_error_cannot_mark_current_turn(cx: &mut gpui_kit::Te
     let visible = stream
         .read_with(cx, |stream, _| stream.controller_error_message())
         .expect("owned runtime error is visible");
-    assert!(visible.contains("运行环境"));
+    assert!(visible.contains("runtime environment"));
     assert!(!visible.contains("PRIVATE_RUNTIME_SENTINEL"));
     f.bounds("assistant-run-failure", cx);
     assert!(f.absent("conversation-controller-error", cx));

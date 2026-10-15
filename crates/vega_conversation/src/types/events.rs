@@ -167,37 +167,37 @@ impl RunFailureKind {
     /// Actionable text made entirely from local vocabulary and HTTP metadata.
     pub fn message(self) -> String {
         match self {
-            Self::ProviderUnknown => "供应商请求失败，原因未明确；请重试或切换供应商。".into(),
-            Self::ProviderProtocol => "供应商返回的数据无效；请重试或切换模型。".into(),
-            Self::ProviderRejected => "供应商未完成本次响应；请检查模型设置后重试或切换模型。".into(),
-            Self::ProviderOutputLimit => "模型已达到本次输出上限；请继续任务或调整模型输出额度。".into(),
+            Self::ProviderUnknown => "The provider request failed without a specific reason. Retry or switch providers.".into(),
+            Self::ProviderProtocol => "The provider returned invalid data. Retry or switch models.".into(),
+            Self::ProviderRejected => "The provider did not complete the response. Check model settings, then retry or switch models.".into(),
+            Self::ProviderOutputLimit => "The model reached its output limit. Continue the task or adjust the output allowance.".into(),
             Self::ProviderQuota => {
-                "供应商额度不足；请充值或在设置 → Providers 切换可用供应商后重试".into()
+                "Provider quota exhausted. Add credit or switch providers in Settings → Providers, then retry.".into()
             }
             Self::ProviderAuthorization => {
-                "供应商拒绝了凭据或账号权限；请在设置 → Providers 检查 API Key 后重试".into()
+                "The provider rejected your credentials or account permissions. Check the API key in Settings → Providers, then retry.".into()
             }
-            Self::ProviderRateLimited => "供应商限流；请稍后重试或切换可用供应商".into(),
+            Self::ProviderRateLimited => "The provider rate-limited this request. Retry later or switch providers.".into(),
             Self::ProviderHttp(status) => {
-                format!("供应商请求失败（HTTP {status}）；请检查供应商状态、模型和额度后重试")
+                format!("Provider request failed (HTTP {status}). Check provider status, model, and quota, then retry.")
             }
-            Self::ProviderTransport => "无法连接供应商；请检查网络和供应商地址后重试".into(),
+            Self::ProviderTransport => "Could not connect to the provider. Check your network and provider address, then retry.".into(),
             Self::CredentialExposureBlocked => {
-                "无法安全转换本次请求；已完成的工具操作仍然保留。请检查工具配置后继续。"
+                "The request could not be transformed safely. Completed tool actions are preserved. Check tool configuration before continuing."
                     .into()
             }
-            Self::CredentialCheckUnavailable => "无法读取凭据配置；请在设置中检查凭据后继续，已完成的操作仍然保留。".into(),
-            Self::CredentialProjectionInvalid(index) => format!("第 {} 个工具的定义含有敏感值，无法安全发送；请检查工具配置后继续。", index + 1),
-            Self::CredentialOutcomeUnknown => "部分操作的结果未知，请检查工具记录后再决定下一步".into(),
-            Self::CredentialContinuationUnavailable => "恢复记录已使用、对话已变化或操作结果未知。请检查工具记录，再发送新消息继续。".into(),
+            Self::CredentialCheckUnavailable => "Credentials could not be read. Check credentials in Settings before continuing. Completed actions are preserved.".into(),
+            Self::CredentialProjectionInvalid(index) => format!("Tool {} contains sensitive values and cannot be sent safely. Check tool configuration before continuing.", index + 1),
+            Self::CredentialOutcomeUnknown => "Some action outcomes are unknown. Check the tool records before continuing.".into(),
+            Self::CredentialContinuationUnavailable => "Recovery is unavailable because it was already used, the conversation changed, or an action outcome is unknown. Check tool records, then send a new message.".into(),
             Self::ContextOverLimit => {
-                "上下文超出可用容量；原始对话已保留。请调整上下文容量、缩小工具查询范围或在新对话中继续。".into()
+                "Context exceeds available capacity. The conversation is preserved. Adjust context capacity, narrow tool queries, or start a new conversation.".into()
             }
             Self::ReasoningLimit(_) => {
-                "此前运行因本地思考内容限制而中断；请重新发送消息继续。".into()
+                "The run exceeded the local reasoning limit. Send your message again to continue.".into()
             }
-            Self::Runtime => "任务执行失败；请检查运行环境后重试".into(),
-            Self::Persisted => "这条回复执行失败；请检查供应商状态、额度或运行环境后重试".into(),
+            Self::Runtime => "The run failed. Check the runtime environment, then retry.".into(),
+            Self::Persisted => "This response failed. Check provider status, quota, or the runtime environment, then retry.".into(),
         }
     }
 }
@@ -1006,10 +1006,13 @@ mod run_failure_tests {
         ] {
             let kind = RunFailureKind::from_runtime(&VegaError::Context(error));
             assert_eq!(kind, RunFailureKind::ContextOverLimit);
-            assert!(kind.message().contains("上下文超出可用容量"));
-            assert!(kind.message().contains("原始对话已保留"));
-            assert!(!kind.message().contains("运行环境"));
-            assert!(!kind.message().contains("供应商"));
+            assert!(
+                kind.message()
+                    .contains("Context exceeds available capacity")
+            );
+            assert!(kind.message().contains("conversation is preserved"));
+            assert!(!kind.message().contains("runtime environment"));
+            assert!(!kind.message().contains("provider"));
         }
         assert_eq!(
             RunFailureKind::from_runtime(&VegaError::Context(ContextRuntimeError::SourceChanged)),
@@ -1028,7 +1031,7 @@ mod run_failure_tests {
         );
         let kind = RunFailureKind::from_runtime(&error);
         assert_eq!(kind, RunFailureKind::ProviderQuota);
-        assert!(kind.message().contains("额度不足"));
+        assert!(kind.message().contains("quota exhausted"));
         assert!(!kind.message().contains(SENTINEL));
 
         let spoofed = provider(
@@ -1055,7 +1058,7 @@ mod run_failure_tests {
         let error = provider(Some(400), &response);
         let kind = RunFailureKind::from_runtime(&error);
         assert_eq!(kind, RunFailureKind::ProviderQuota);
-        assert!(kind.message().contains("额度不足"));
+        assert!(kind.message().contains("quota exhausted"));
         assert!(!kind.message().contains(SENTINEL));
 
         let wrong_status = provider(Some(503), &response);
@@ -1096,9 +1099,9 @@ mod run_failure_tests {
         let kind = RunFailureKind::from_runtime(&VegaError::CredentialExposureBlocked);
         assert_eq!(kind, RunFailureKind::CredentialExposureBlocked);
         let message = kind.message();
-        assert!(message.contains("无法安全转换"));
-        assert!(message.contains("已完成的工具操作仍然保留"));
-        assert!(message.contains("检查工具配置"));
-        assert!(!message.contains("无法连接供应商"));
+        assert!(message.contains("could not be transformed safely"));
+        assert!(message.contains("Completed tool actions are preserved"));
+        assert!(message.contains("Check tool configuration"));
+        assert!(!message.contains("Could not connect to the provider"));
     }
 }

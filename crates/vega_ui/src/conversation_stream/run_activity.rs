@@ -1155,6 +1155,12 @@ impl RunActivityGroup {
         cx: &mut Context<Self>,
     ) {
         if self.terminal {
+            if status == RunActivityStatus::Failed && self.status == RunActivityStatus::Interrupted
+            {
+                self.status = status;
+                self.invalidate_final(cx);
+                cx.notify();
+            }
             return;
         }
         if status != RunActivityStatus::Completed {

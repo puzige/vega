@@ -319,3 +319,77 @@ fn credential_error_terminal_receipt_and_thread_update_commit_or_roll_back_toget
         assert_eq!(duration_count, i64::from(!reject_thread_update));
     }
 }
+
+#[tokio::test]
+async fn issue397_pipeline_cancellation_returns_interrupted_run_with_content_and_duration() {
+    let (store, dir, _) = setup();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("retained partial".into()),
+        ProviderEvent::ToolUse {
+            id: "cancel-at-ack".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"missing"}"#.into(),
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
+    ])]);
+    let mut observed = Vec::new();
+    let result = run_thread_task_with_sink(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "cancel at acknowledged event",
+        "system",
+        CancellationToken::new(),
+        |event| {
+            if matches!(event, ConversationEvent::ToolCallStarted { .. }) {
+                return Err(VegaError::Cancelled);
+            }
+            observed.push(event.clone());
+            Ok(())
+        },
+    )
+    .await;
+    assert!(result.as_ref().is_ok_and(|run| !run.failed));
+    let run = result.unwrap();
+    assert!(run.interrupted);
+    assert_eq!(run.content, "retained partial");
+    assert!(
+        !observed
+            .iter()
+            .any(|event| matches!(event, ConversationEvent::Error { .. }))
+    );
+    assert!(
+        matches!(run.events.last(), Some(ConversationEvent::Interrupted {
+        message_id, execution_duration_ms: Some(_),
+    }) if message_id == &run.assistant_message_id)
+    );
+    let (content, status): (String, String) = store
+        .conn()
+        .query_row(
+            "SELECT content, status FROM messages WHERE id = ?1",
+            [&run.assistant_message_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(content, "retained partial");
+    assert_eq!(status, "interrupted");
+    let duration: i64 = store
+        .conn()
+        .query_row(
+            "SELECT execution_duration_ms FROM assistant_run_durations WHERE message_id = ?1",
+            [&run.assistant_message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        observed
+            .iter()
+            .any(|event| matches!(event, ConversationEvent::Interrupted {
+        message_id, execution_duration_ms: Some(value),
+    } if message_id == &run.assistant_message_id && i64::try_from(*value).unwrap() == duration))
+    );
+}

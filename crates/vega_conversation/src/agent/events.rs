@@ -271,7 +271,12 @@ where
             }
             Err(error) => {
                 if let Some(ack) = ack {
-                    let _ = ack.send(Err(persistence_actor_error(error.to_string())));
+                    let acknowledgement_error = if matches!(error, VegaError::Cancelled) {
+                        VegaError::Cancelled
+                    } else {
+                        persistence_actor_error(error.to_string())
+                    };
+                    let _ = ack.send(Err(acknowledgement_error));
                 }
                 cancel.cancel();
                 return Err(error);

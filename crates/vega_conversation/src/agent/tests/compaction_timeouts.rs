@@ -676,3 +676,54 @@ async fn issue362_staged_summary_preserves_early_goal_and_every_progress_group()
     );
     assert_eq!(result.usages.len(), requests.len());
 }
+
+#[tokio::test]
+async fn issue397_manual_compaction_keeps_returned_failure_when_token_is_cancelled() {
+    let (store, _directory) = fixture();
+    let provider = MockProvider::new(vec![]);
+    let cancel = CancellationToken::new();
+    let reader_cancel = cancel.clone();
+    let reader: vega_runtime::CredentialReader = Arc::new(move || {
+        reader_cancel.cancel();
+        Err(())
+    });
+    let events = crate::agent::compact_thread_manually_accounted_with_credential_reader(
+        &store,
+        &provider,
+        "timeout-thread",
+        "mock-model",
+        "system",
+        cancel.clone(),
+        None,
+        None,
+        397,
+        Some(reader),
+    )
+    .await
+    .unwrap();
+    assert!(cancel.is_cancelled());
+    assert!(provider.requests().is_empty());
+    assert!(
+        matches!(events.last(), Some(ConversationEvent::ContextCompactionStatus { record })
+        if record.status == crate::types::ContextCompactionStatus::Failed
+            && record.failure == Some(crate::types::ContextCompactionFailureCode::Unavailable))
+    );
+    let reopened = Store::open_read_only(store.database_path().unwrap()).unwrap();
+    let projection =
+        read_context_projection(&reopened, "timeout-thread", "mock-model", "system").unwrap();
+    let status = projection.last_status.unwrap();
+    assert_eq!(status.status, crate::types::ContextCompactionStatus::Failed);
+    assert_eq!(
+        status.failure,
+        Some(crate::types::ContextCompactionFailureCode::Unavailable)
+    );
+    assert!(
+        vega_store::context_compaction::latest_checkpoint(
+            store.conn(),
+            "timeout-thread",
+            "mock-model"
+        )
+        .unwrap()
+        .is_none()
+    );
+}

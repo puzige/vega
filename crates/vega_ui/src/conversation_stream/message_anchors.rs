@@ -173,13 +173,16 @@ impl ConversationStream {
                 if self.process_entry_hidden(index, cx) {
                     return 0.;
                 }
+                if self.compaction_failure_is_represented(index) {
+                    return notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.);
+                }
                 self.measured_entry_heights
                     .get(&identity.key)
                     .copied()
                     .unwrap_or_else(|| match entry {
                         StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx),
                         StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
-                        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
+                        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
                         _ => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()),
                     } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
@@ -680,25 +683,25 @@ pub(super) fn estimate_entry_height(
         StreamEntry::ContextCompaction {
             record, restored, ..
         } => {
+            if matches!(
+                record.status,
+                vega_conversation::types::ContextCompactionStatus::Succeeded
+                    | vega_conversation::types::ContextCompactionStatus::Cancelled
+            ) {
+                return 0.;
+            }
             let label = context_compaction_label(record.status, record.failure, *restored);
             let failed = record.status == vega_conversation::types::ContextCompactionStatus::Failed;
-            let inset = if failed {
-                2. * Layout::STATUS_PADDING + 2.
+            let width = if failed {
+                text_width
             } else {
-                0.
+                (text_width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.)
             };
-            let gap = if failed {
-                Layout::STATUS_GAP
-            } else {
-                Layout::CONVERSATION_INLINE_GAP
-            };
-            let width = (text_width - Layout::ICON_SIZE - gap - inset).max(1.);
             let columns = (width / (Typography::BODY * 0.56)).max(1.) as usize;
             (display_width(&label).div_ceil(columns).max(1) as f32
                 * Typography::BODY
                 * Typography::BODY_LINE_HEIGHT)
                 .max(Layout::DISCLOSURE_HEADER_HEIGHT)
-                + inset
         }
         StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),

@@ -1511,6 +1511,21 @@ impl ConversationStream {
             } => {
                 let failure = RunFailureKind::from_runtime(&error);
                 if let Some(message_id) = message_id {
+                    let failure =
+                        if self
+                            .run_activity_groups
+                            .get(&message_id)
+                            .is_some_and(|group| {
+                                group.read(cx).status() != RunActivityStatus::Completed
+                            })
+                            && self.entry_identities.iter().any(|identity| {
+                                identity.message_id.as_deref() == Some(message_id.as_str())
+                            })
+                        {
+                            self.remember_run_failure(&message_id, failure)
+                        } else {
+                            failure
+                        };
                     self.finish_run_activity(
                         &message_id,
                         RunActivityStatus::Failed,

@@ -195,7 +195,9 @@ impl ConversationStream {
             }
             if matches!(
                 entry,
-                StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. }
+                StreamEntry::Tool { .. }
+                    | StreamEntry::ToolGroup { .. }
+                    | StreamEntry::ContextCompaction { .. }
             ) {
                 let top = match previous_visible.and_then(|previous| self.entries.get(previous)) {
                     Some(StreamEntry::RunActivity { .. }) => Layout::CONVERSATION_BODY_TOP,
@@ -458,6 +460,14 @@ impl ConversationStream {
     }
 
     pub(crate) fn process_entry_hidden(&self, index: usize, cx: &App) -> bool {
+        if self.compaction_failure_resolved(index) {
+            return true;
+        }
+        if matches!(self.entries.get(index), Some(StreamEntry::ContextCompaction { record, .. })
+            if matches!(record.status, vega_conversation::types::ContextCompactionStatus::Succeeded | vega_conversation::types::ContextCompactionStatus::Cancelled))
+        {
+            return true;
+        }
         let Some(StreamEntry::Assistant {
             copy,
             model,

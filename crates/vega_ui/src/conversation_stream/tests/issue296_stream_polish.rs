@@ -451,11 +451,7 @@ async fn issue296_terminal_notices_history_requires_run_terminal_evidence(cx: &m
             Some(AssistantStatus::Failed),
             Some(RunFailureKind::Persisted.message()),
         ),
-        (
-            "interrupted",
-            Some(AssistantStatus::Interrupted),
-            Some("已中断".to_string()),
-        ),
+        ("interrupted", Some(AssistantStatus::Interrupted), None),
     ] {
         let (window, stream, _) = open_controller_stream(cx, name);
         stream.update(cx, |stream, cx| {
@@ -550,7 +546,7 @@ async fn issue296_polish_p04_history_multiple_segments_late_summary_and_explicit
         stream.apply_task_summary(summary_for("old", TaskSummaryOutcome::Failed), cx);
         stream.apply_task_summary(summary_for("old", TaskSummaryOutcome::Failed), cx);
         let notices = stream.run_notice_projection(cx);
-        assert_eq!(notices.len(), 2);
+        assert_eq!(notices.len(), 1);
         let old = notices
             .iter()
             .find(|(_, notice)| notice.message_id == "old")
@@ -562,11 +558,8 @@ async fn issue296_polish_p04_history_multiple_segments_late_summary_and_explicit
             .unwrap();
         assert!(*old.0 < user);
         assert_eq!(old.1.text(), RunFailureKind::ProviderQuota.message());
-        assert!(
-            notices
-                .values()
-                .any(|notice| notice.message_id == "new" && notice.text() == "已中断")
-        );
+        assert!(!notices.values().any(|notice| notice.message_id == "new"));
+        assert_eq!(stream.run_activity_groups["new"].read(cx).status(), RunActivityStatus::Interrupted);
         assert_eq!(
             stream
                 .entries
@@ -583,7 +576,7 @@ async fn issue296_polish_p04_history_multiple_segments_late_summary_and_explicit
             "First original.Second original."
         );
         stream.apply_codex_route_error(
-            "供应商额度不足；请充值或在设置 → Providers 切换可用供应商后重试",
+            "Provider quota exhausted. Add credit or switch providers in Settings → Providers, then retry.",
             cx,
         );
     });

@@ -165,10 +165,13 @@ fn status(generation: u64, status: Status) -> ContextCompactionStatusRecord {
 
 #[test]
 fn issue88_internal_stage_limit_and_model_budget_have_distinct_copy() {
-    assert!(status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("无法安全压缩"));
-    assert!(!status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("模型容量"));
-    assert!(status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("上下文超出预算"));
-    assert!(!status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("无法安全压缩"));
+    assert!(status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("compact safely"));
+    assert!(!status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("model capacity"));
+    assert!(
+        status_label_for(Status::Failed, Some(Failure::OverLimit))
+            .contains("exceeds the available budget")
+    );
+    assert!(!status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("compact safely"));
 }
 
 #[gpui_kit::test]
@@ -177,11 +180,11 @@ async fn issue356_timeout_label_survives_restoration_and_keeps_invalid_summary_d
 ) {
     assert_eq!(
         status_label_for(Status::Failed, Some(Failure::TimedOut)),
-        "上下文压缩超时，请重试"
+        "Context compaction timed out. Retry compaction."
     );
     assert_eq!(
         status_label_for(Status::Failed, Some(Failure::InvalidSummary)),
-        "压缩结果无效，请重试"
+        "The compaction result was invalid. Retry compaction."
     );
     let window = setup(cx);
     window
@@ -199,7 +202,7 @@ async fn issue356_timeout_label_survives_restoration_and_keeps_invalid_summary_d
             assert_eq!(record.failure, Some(Failure::TimedOut));
             assert_eq!(
                 context_compaction_label(record.status, record.failure, *restored),
-                "上下文压缩超时，请重试"
+                "Context compaction timed out. Retry compaction."
             );
             assert!(!stream.context_operation_busy());
         })
@@ -208,31 +211,37 @@ async fn issue356_timeout_label_survives_restoration_and_keeps_invalid_summary_d
 
 #[test]
 fn issue117_compaction_copy_matches_reference_and_marks_restored_rows() {
-    assert_eq!(status_label_for(Status::Compacting, None), "正在压缩上下文");
-    assert_eq!(status_label_for(Status::Succeeded, None), "上下文已压缩");
+    assert_eq!(
+        status_label_for(Status::Compacting, None),
+        "Compacting context"
+    );
+    assert_eq!(
+        status_label_for(Status::Succeeded, None),
+        "Context compacted"
+    );
     assert!(
         !status_label_for(Status::Compacting, None).contains('…'),
         "the in-progress label must not keep the trailing ellipsis"
     );
     assert_eq!(
         status_label_for(Status::Cancelled, None),
-        "上下文压缩已取消"
+        "Context compaction cancelled"
     );
     assert_eq!(
         status_label_for(Status::Failed, Some(Failure::InvalidSummary)),
-        "压缩结果无效，请重试"
+        "The compaction result was invalid. Retry compaction."
     );
     assert_eq!(
         context_compaction_label(Status::Succeeded, None, true),
-        "上下文已压缩"
+        "Context compacted"
     );
     assert_eq!(
         context_compaction_label(Status::Failed, Some(Failure::SourceChanged), true),
-        "历史已变化，请重试压缩"
+        "History changed. Retry compaction."
     );
     assert_eq!(
         context_compaction_label(Status::Succeeded, None, false),
-        "上下文已压缩"
+        "Context compacted"
     );
     for restored in [false, true] {
         for (state, failure) in [
@@ -489,7 +498,7 @@ async fn issue168_compaction_row_remains_visible_after_primary_provider_failure(
             ));
             assert_eq!(
                 stream.controller_error.as_deref(),
-                Some("供应商请求失败（HTTP 503）；请检查供应商状态、模型和额度后重试")
+                Some("Provider request failed (HTTP 503). Check provider status, model, and quota, then retry.")
             );
             let group = stream
                 .run_activity_groups
@@ -506,7 +515,7 @@ async fn issue168_compaction_row_remains_visible_after_primary_provider_failure(
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("run-activity-status").is_some());
     assert!(visual.debug_bounds("run-activity-content").is_none());
-    assert!(visual.debug_bounds("context-compaction-row").is_some());
+    assert!(visual.debug_bounds("context-compaction-row").is_none());
     assert!(visual.debug_bounds("assistant-run-failure").is_some());
 }
 
@@ -808,7 +817,10 @@ async fn issue365_compaction_failure_deduplicates_only_owned_budget_error(cx: &m
             assert_eq!(notices.len(), 1);
             assert!(matches!(
                 notices[&index].kind,
-                run_notice::RunNoticeKind::Failure(RunFailureKind::ProviderTransport)
+                run_notice::RunNoticeKind::FailureWithCompaction(
+                    RunFailureKind::ProviderTransport,
+                    Some(Failure::OverLimit)
+                )
             ));
             stream.run_failures.clear();
             stream
@@ -844,6 +856,10 @@ async fn issue365_compaction_states_keep_compact_natural_height(cx: &mut TestApp
             .unwrap();
         cx.run_until_parked();
         let mut visual = VisualTestContext::from_window(window.into(), cx);
+        if matches!(state, Status::Succeeded | Status::Cancelled) {
+            assert!(visual.debug_bounds("context-compaction-row").is_none());
+            continue;
+        }
         let row = visual
             .debug_bounds("context-compaction-row")
             .expect("status row");
@@ -934,7 +950,7 @@ async fn issue365_reopened_context_error_uses_owned_shared_notice(cx: &mut TestA
                 budget.kind,
                 run_notice::RunNoticeKind::ContextFailure
             ));
-            assert!(budget.text().contains("上下文超出预算"));
+            assert!(budget.text().contains("exceeds the available budget"));
             let provider = stream
                 .run_notices
                 .values()
@@ -1003,10 +1019,14 @@ async fn issue372_live_reasoning_failure_has_one_owned_actionable_surface(cx: &m
                 assert_eq!(stream.run_notices.len(), 1);
                 let notice = stream.run_notices.values().next().unwrap();
                 assert_eq!(notice.message_id, "thinking-run");
-                assert!(notice.text().contains("此前运行因本地思考内容限制而中断"));
-                assert!(notice.text().contains("重新发送消息继续"));
-                assert!(!notice.text().contains("运行环境"));
-                assert!(!notice.text().contains("供应商"));
+                assert!(notice.text().contains("exceeded the local reasoning limit"));
+                assert!(
+                    notice
+                        .text()
+                        .contains("Send your message again to continue")
+                );
+                assert!(!notice.text().contains("runtime environment"));
+                assert!(!notice.text().contains("provider"));
                 assert!(stream.controller_error_is_run_notice());
                 stream.actions.running = false;
                 stream.restore_context_run_failures(
@@ -1101,9 +1121,9 @@ async fn issue372_reopened_steered_reasoning_error_keeps_one_card_and_independen
             assert!(
                 reasoning[0]
                     .text()
-                    .contains("此前运行因本地思考内容限制而中断")
+                    .contains("exceeded the local reasoning limit")
             );
-            assert!(!reasoning[0].text().contains("运行环境"));
+            assert!(!reasoning[0].text().contains("runtime environment"));
             assert!(
                 stream
                     .run_notices
@@ -1157,7 +1177,348 @@ async fn restored_provider_failures_keep_the_specific_notice(cx: &mut TestAppCon
             let notice = stream.run_notices.values().find(|notice| notice.message_id == message_id).unwrap();
             assert!(matches!(notice.kind, run_notice::RunNoticeKind::Failure(value) if value == kind));
             assert_eq!(notice.text(), kind.message());
-            assert!(!notice.text().contains("压缩上下文"));
+            assert!(!notice.text().contains("Context compaction"));
         }
     }).unwrap();
+}
+
+#[gpui_kit::test]
+async fn issue397_terminal_compaction_releases_layout_and_stays_hidden_on_restore(
+    cx: &mut TestAppContext,
+) {
+    for terminal in [Status::Succeeded, Status::Cancelled] {
+        let window = setup(cx);
+        window
+            .update(cx, |stream, _, cx| {
+                stream.apply_context_status(
+                    "context-thread",
+                    "mock",
+                    status(1, Status::Compacting),
+                    cx,
+                );
+                let index = stream.entries.len() - 1;
+                assert!(!stream.process_entry_hidden(index, cx));
+                stream.apply_context_status("context-thread", "mock", status(1, terminal), cx);
+                assert!(stream.process_entry_hidden(index, cx));
+                assert_eq!(
+                    super::super::message_anchors::estimate_entry_height(
+                        &stream.entries[index],
+                        cx,
+                        None
+                    ),
+                    0.
+                );
+                assert!(stream.run_notice_projection(cx).is_empty());
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("context-compaction-row").is_none());
+        let restored = setup(cx);
+        restored
+            .update(cx, |stream, _, cx| {
+                assert!(stream.restore_context_status(
+                    "context-thread",
+                    "mock",
+                    status(2, terminal),
+                    cx
+                ));
+                assert!(stream.process_entry_hidden(stream.entries.len() - 1, cx));
+            })
+            .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+async fn issue397_compaction_spacing_and_error_projection(cx: &mut TestAppContext) {
+    for dark in [false, true] {
+        let window = setup(cx);
+        if dark {
+            cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+        }
+        window
+            .update(cx, |stream, _, cx| {
+                stream.begin_composer_run(cx);
+                stream.apply_event(
+                    ConversationEvent::MessageStarted {
+                        message_id: "compact-run".into(),
+                        seq: 1,
+                    },
+                    cx,
+                );
+                stream.apply_context_status(
+                    "context-thread",
+                    "mock",
+                    status(1, Status::Compacting),
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let header = visual
+            .debug_bounds("run-activity-status")
+            .expect("run header");
+        let row = visual
+            .debug_bounds("context-compaction-row")
+            .expect("compaction row");
+        assert!(row.origin.y >= header.bottom() + px(Layout::CONVERSATION_BODY_TOP));
+        window
+            .update(&mut visual, |stream, _, cx| {
+                let mut record = status(1, Status::Failed);
+                record.failure = Some(Failure::TimedOut);
+                stream.apply_context_status("context-thread", "mock", record, cx);
+                stream.apply_event(
+                    ConversationEvent::TextDelta {
+                        message_id: "compact-run".into(),
+                        delta: "Retained answer".into(),
+                    },
+                    cx,
+                );
+                stream.apply_event(
+                    ConversationEvent::Interrupted {
+                        message_id: "compact-run".into(),
+                        execution_duration_ms: Some(500),
+                    },
+                    cx,
+                );
+                stream.refresh_run_notices(cx);
+                let notices = stream.run_notice_projection(cx);
+                assert_eq!(notices.len(), 1);
+                let (&tail, notice) = notices.iter().next().unwrap();
+                assert_eq!(tail, stream.entries.len() - 1);
+                assert_eq!(
+                    notice.text(),
+                    status_label_for(Status::Failed, Some(Failure::TimedOut))
+                );
+                stream.apply_agent_runtime_error_for(
+                    Some("compact-run"),
+                    RunFailureKind::ProviderAuthorization,
+                    cx,
+                );
+                stream.refresh_run_notices(cx);
+                let notice = stream.run_notices.values().next().unwrap();
+                assert_eq!(notice.text().lines().count(), 2);
+                assert!(notice.text().contains("timed out"));
+                assert!(notice.text().contains("rejected your credentials"));
+                assert!(
+                    stream.compaction_failure_is_represented(
+                        stream
+                            .entries
+                            .iter()
+                            .position(|entry| matches!(
+                                entry,
+                                StreamEntry::ContextCompaction { .. }
+                            ))
+                            .unwrap()
+                    )
+                );
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("context-compaction-row").is_none());
+        assert!(visual.debug_bounds("conversation-error-text").is_some());
+        assert!(visual.debug_bounds("conversation-status-icon").is_none());
+    }
+}
+
+#[gpui_kit::test]
+async fn issue397_new_success_resolves_old_compaction_but_preserves_run_failure(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "retry-run".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            let mut record = status(1, Status::Failed);
+            record.failure = Some(Failure::TimedOut);
+            stream.apply_context_status("context-thread", "mock", record, cx);
+            let index = stream.entries.len() - 1;
+            assert!(!stream.process_entry_hidden(index, cx));
+            stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Compacting),
+                cx,
+            );
+            assert!(!stream.process_entry_hidden(index, cx));
+            stream.apply_context_status("context-thread", "mock", status(2, Status::Succeeded), cx);
+            assert!(stream.process_entry_hidden(index, cx));
+            assert!(stream.run_notice_projection(cx).is_empty());
+            stream.apply_agent_runtime_error_for(
+                Some("retry-run"),
+                RunFailureKind::ProviderQuota,
+                cx,
+            );
+            let notices = stream.run_notice_projection(cx);
+            assert_eq!(notices.len(), 1);
+            assert_eq!(
+                notices.values().next().unwrap().text(),
+                RunFailureKind::ProviderQuota.message()
+            );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn issue397_interrupted_can_become_failed_without_restarting_clock(cx: &mut TestAppContext) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            for (id, terminal) in [
+                ("stopped", RunActivityStatus::Interrupted),
+                ("done", RunActivityStatus::Completed),
+            ] {
+                stream.begin_composer_run(cx);
+                stream.apply_event(
+                    ConversationEvent::MessageStarted {
+                        message_id: id.into(),
+                        seq: 1,
+                    },
+                    cx,
+                );
+                let group = stream.run_activity_groups[id].clone();
+                group.update(cx, |group, cx| {
+                    group.complete(terminal, Some(500), cx);
+                    group.complete(RunActivityStatus::Failed, Some(900), cx);
+                    assert_eq!(
+                        group.status(),
+                        if terminal == RunActivityStatus::Interrupted {
+                            RunActivityStatus::Failed
+                        } else {
+                            terminal
+                        }
+                    );
+                    assert_eq!(group.test_projection().1, Some(500));
+                    group.complete(RunActivityStatus::Interrupted, Some(1000), cx);
+                    assert_eq!(group.test_projection().1, Some(500));
+                });
+                stream.apply_event(
+                    ConversationEvent::MessageFinished {
+                        message_id: id.into(),
+                        stop_reason: vega_conversation::types::ConversationStopReason::End,
+                        execution_duration_ms: Some(500),
+                    },
+                    cx,
+                );
+            }
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn issue397_late_error_keeps_owner_and_specific_cause(cx: &mut TestAppContext) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "old".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::Interrupted {
+                    message_id: "old".into(),
+                    execution_duration_ms: Some(300),
+                },
+                cx,
+            );
+            assert!(stream.run_notice_projection(cx).is_empty());
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "current".into(),
+                    seq: 2,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::Error {
+                    message_id: Some("old".into()),
+                    error: Arc::new(vega_runtime::VegaError::Provider {
+                        status: Some(400),
+                        message: "HTTP 400): {\"code\":\"insufficient_user_quota\"}".into(),
+                        retryable: false,
+                    }),
+                    execution_duration_ms: Some(900),
+                },
+                cx,
+            );
+            stream.apply_agent_runtime_error_for(Some("old"), RunFailureKind::Runtime, cx);
+            assert!(stream.controller_error.is_none());
+            assert_eq!(
+                stream.run_activity_groups["old"]
+                    .read(cx)
+                    .test_projection()
+                    .0,
+                RunActivityStatus::Failed
+            );
+            assert_eq!(
+                stream.run_activity_groups["old"]
+                    .read(cx)
+                    .test_projection()
+                    .1,
+                Some(300)
+            );
+            assert_eq!(
+                stream.run_activity_groups["current"].read(cx).status(),
+                RunActivityStatus::Running
+            );
+            let notices = stream.run_notice_projection(cx);
+            assert_eq!(notices.len(), 1);
+            assert_eq!(
+                notices.values().next().unwrap().text(),
+                RunFailureKind::ProviderQuota.message()
+            );
+            assert_eq!(notices.values().next().unwrap().message_id, "old");
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: "current".into(),
+                    stop_reason: vega_conversation::types::ConversationStopReason::End,
+                    execution_duration_ms: Some(800),
+                },
+                cx,
+            );
+            stream.apply_agent_runtime_error_for(Some("current"), RunFailureKind::Runtime, cx);
+            stream.apply_event(
+                ConversationEvent::Error {
+                    message_id: Some("current".into()),
+                    error: Arc::new(vega_runtime::VegaError::Provider {
+                        status: Some(503),
+                        message: "PRIVATE_LATE_BODY".into(),
+                        retryable: false,
+                    }),
+                    execution_duration_ms: Some(1200),
+                },
+                cx,
+            );
+            assert_eq!(
+                stream.run_activity_groups["current"].read(cx).status(),
+                RunActivityStatus::Completed
+            );
+            assert_eq!(
+                stream.run_activity_groups["current"]
+                    .read(cx)
+                    .test_projection()
+                    .1,
+                Some(800)
+            );
+            assert!(
+                !stream
+                    .run_notice_projection(cx)
+                    .values()
+                    .any(|notice| notice.message_id == "current")
+            );
+        })
+        .unwrap();
 }
