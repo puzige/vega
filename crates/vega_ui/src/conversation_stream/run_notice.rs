@@ -301,7 +301,8 @@ impl ConversationStream {
                 StreamEntry::RunActivity { group } => source.status = Some(group.read(cx).status()),
                 StreamEntry::ContextCompaction { record, .. }
                     if record.status
-                        == vega_conversation::types::ContextCompactionStatus::Failed =>
+                        == vega_conversation::types::ContextCompactionStatus::Failed
+                        && !self.compaction_failure_resolved(index) =>
                 {
                     source.compaction_failure = Some(record.failure);
                     if record.failure

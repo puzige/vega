@@ -588,7 +588,7 @@ async fn issue296_polish_p04_history_multiple_segments_late_summary_and_explicit
             .is_some()
     );
     assert!(visual.debug_bounds("run-notice-old").is_some());
-    assert!(visual.debug_bounds("run-notice-new").is_some());
+    assert!(visual.debug_bounds("run-notice-new").is_none());
     stream.update(&mut visual, |stream, cx| {
         assert!(stream.controller_runtime_error.is_none());
         assert!(
@@ -602,7 +602,19 @@ async fn issue296_polish_p04_history_multiple_segments_late_summary_and_explicit
             hydration_page(vec![hydration_user(0, "Earlier request")], None),
             cx,
         );
-        assert_eq!(stream.run_notice_projection(cx).len(), 2);
+        let notices = stream.run_notice_projection(cx);
+        assert_eq!(notices.len(), 1);
+        let (&index, notice) = notices.iter().next().unwrap();
+        assert_eq!(notice.message_id, "old");
+        assert_eq!(notice.text(), RunFailureKind::ProviderQuota.message());
+        assert_eq!(
+            stream.entry_identities[index].message_id.as_deref(),
+            Some("old")
+        );
+        assert_eq!(
+            stream.run_activity_groups["new"].read(cx).status(),
+            RunActivityStatus::Interrupted
+        );
         stream.apply_controller_error(cx);
         assert!(
             stream

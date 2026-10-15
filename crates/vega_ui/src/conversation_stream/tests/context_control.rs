@@ -1352,6 +1352,7 @@ async fn issue397_new_success_resolves_old_compaction_but_preserves_run_failure(
             stream.apply_context_status("context-thread", "mock", status(2, Status::Succeeded), cx);
             assert!(stream.process_entry_hidden(index, cx));
             assert!(stream.run_notice_projection(cx).is_empty());
+            assert!(stream.run_notices.is_empty());
             stream.apply_agent_runtime_error_for(
                 Some("retry-run"),
                 RunFailureKind::ProviderQuota,

@@ -353,7 +353,10 @@ async fn issue397_pipeline_cancellation_returns_interrupted_run_with_content_and
         },
     )
     .await;
-    assert!(result.as_ref().is_ok_and(|run| !run.failed));
+    assert!(
+        result.as_ref().is_ok_and(|run| !run.failed),
+        "unexpected pipeline result: {result:?}; observed: {observed:?}"
+    );
     let run = result.unwrap();
     assert!(run.interrupted);
     assert_eq!(run.content, "retained partial");
@@ -392,4 +395,69 @@ async fn issue397_pipeline_cancellation_returns_interrupted_run_with_content_and
         message_id, execution_duration_ms: Some(value),
     } if message_id == &run.assistant_message_id && i64::try_from(*value).unwrap() == duration))
     );
+}
+
+#[tokio::test]
+async fn issue397_acknowledged_sink_failure_preserves_cause_and_one_terminal_write() {
+    let (store, dir, _) = setup();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("retained partial".into()),
+        ProviderEvent::ToolUse {
+            id: "fail-at-ack".into(),
+            name: "read".into(),
+            input_json: serde_json::json!({"file_path": dir.path().join("lib.rs"), "offset": null, "limit": null}).to_string(),
+        },
+        ProviderEvent::Done { stop_reason: StopReason::ToolUse },
+    ])]);
+    let mut observed = Vec::new();
+    let result = run_thread_task_with_sink(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "fail at acknowledged event",
+        "system",
+        CancellationToken::new(),
+        |event| {
+            if matches!(event, ConversationEvent::ToolCallProposed { .. }) {
+                return Err(VegaError::Tool {
+                    tool: "event-sink".into(),
+                    message: "specific consumer failure".into(),
+                });
+            }
+            observed.push(event.clone());
+            Ok(())
+        },
+    )
+    .await;
+    let error = result.unwrap_err();
+    assert!(matches!(error, ConversationError::Runtime(ref error)
+        if matches!(error.as_ref(), VegaError::Tool { tool, message }
+            if tool == "event-sink" && message == "specific consumer failure")));
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|event| matches!(event, ConversationEvent::Error { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        !observed
+            .iter()
+            .any(|event| matches!(event, ConversationEvent::Interrupted { .. }))
+    );
+    let (content, status): (String, String) = store.conn().query_row(
+        "SELECT content, status FROM messages WHERE role = 'assistant' ORDER BY seq DESC LIMIT 1",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(content, "retained partial");
+    assert_eq!(status, "failed");
+    let terminal_writes: i64 = store
+        .conn()
+        .query_row("SELECT COUNT(*) FROM assistant_run_durations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(terminal_writes, 1);
 }

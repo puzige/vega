@@ -161,7 +161,7 @@ where
                         )
                         .await
                     {
-                        Ok(()) => {
+                        Ok(()) => (|| {
                             if matches!(event, RuntimeEvent::AssistantResponseStarted { .. }) {
                                 events.retain(|event| {
                                     !matches!(
@@ -255,7 +255,7 @@ where
                                 events.push(converted);
                             }
                             Ok(())
-                        }
+                        })(),
                         Err(error) => Err(error),
                     }
                 }

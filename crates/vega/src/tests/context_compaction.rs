@@ -571,8 +571,9 @@ async fn i76_context_reopened_controller_recovers_abandoned_status_without_busy(
         .expect("fresh controller window")
     });
     pump_test_app(cx, |cx| {
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        visual.debug_bounds("context-compaction-restored").is_some()
+        root.read_with(cx, |root, _| {
+            root.context_controller.last_load_succeeded == Some(true)
+        })
     });
     let stream = root.read_with(cx, |root, _| {
         root.stream_view
@@ -582,7 +583,9 @@ async fn i76_context_reopened_controller_recovers_abandoned_status_without_busy(
             .clone()
     });
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("context-compaction-row").is_some());
+    assert!(visual.debug_bounds("context-compaction-row").is_none());
+    assert!(visual.debug_bounds("context-compaction-restored").is_none());
+    assert!(visual.debug_bounds("conversation-error-text").is_none());
     assert!(visual.debug_bounds("context-status-band").is_none());
     assert_ne!(stream, f.stream);
     assert!(!stream.read_with(cx, |stream, _| stream.context_operation_busy()));

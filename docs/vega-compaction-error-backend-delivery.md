@@ -52,3 +52,15 @@ CI 待运行：`cargo nextest run -p vega_runtime -p vega_conversation` 与仓�
 已在 fetch 并 fast-forward 核对分支后修复：手动压缩测试显式导入 crate::types::ConversationEvent；pipeline 取消测试改为真实 ToolCallProposed 事件，并使用 fixture 已创建的 lib.rs 的绝对 file_path、null offset/limit。该事件在 runtime 提议点发出，经 runtime_event_requires_ack 返回 true，processor 完成前置文本 flush 后，sink 返回 Cancelled 并通过 ack 保留同一错误类型；无需实际读取文件或到达权限批准才能触发测试。
 
 静态逐项核对新测试引用的 ConversationEvent、RuntimeEvent、ContextCompactionPhase、ContextCompactionStatusFailure 变体定义，未发现其他不存在的名称。定向 rustfmt --check 与 git diff --check 均 exit 0。未运行本地编译或测试；修正后的编译与测试仍待新一轮 CI，不覆盖或隐藏本轮失败。
+
+## PR #398 第二轮 CI：ack 控制流修复
+
+2026-10-15 16:02 UTC（北京时间 2026-10-16），Clippy 通过；Nextest 汇总 2710 passed、7 failed、5 skipped，其中后端失败为 issue397_pipeline_cancellation_returns_interrupted_run_with_content_and_duration 的正常中断返回断言，原始失败日志保留 `/tmp/vega-398-test-failed.log`。其余 UI 失败由 UI executor 处理。
+
+静态定位：process_runtime_events 的 actor 成功分支中，event_sink(&converted)? 直接退出整个处理函数，绕过下方统一 acknowledgement 错误分支。ack 被 drop，runtime 获得派生的 event acknowledgement was dropped 错误；合流按真实错误优先的规则将其选中，造成取消错误。前轮保留 Cancelled 的 ack 分支没有机会执行。
+
+修复只把 actor 成功后的同步投递置于局部 Result 闭包，使 sink 的 ? 返回局部结果并经过统一 ack/cancel 处理。runtime emit 宏的 sink.await? 随即直接返回，不会再向已停止的 processor 发 Interrupted；entry 负责持久化和投递终态。合流错误优先级、安全包装和原核心断言保持不变。
+
+取消测试增加安全 fixture 下的结果/事件 Debug 诊断，未放宽断言；新增 issue397_acknowledged_sink_failure_preserves_cause_and_one_terminal_write，覆盖真实 sink 错误原类型与具体原因、单条 Error、无 Interrupted、partial 内容及一次终态耗时写入。
+
+fetch/fast-forward 核对最新分支后修改。定向 rustfmt --check 与 git diff --check exit 0；本地未编译或运行测试。修正后的上述两项生产路径测试仍待 CI，不能标记通过。
