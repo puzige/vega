@@ -19,6 +19,12 @@ GITHUB_TOKEN 创建 tag 不会再次触发 tag workflow，所以 master 直接�
 共用 `vega-master-build` Cargo 缓存；仅 master 自动发布写入缓存，手动 tag 发布只恢复。
 PR required check 与 nextest 保持原样；发布不重复跑测试。job 超时 60 分钟，包含签名与公证。
 
+Computer-use 准备产物与下载缓存分别位于 `.vega-build/computer-use/Contents` 和
+`.vega-build/computer-use/downloads`，不进入 Cargo 缓存，也不受组装应用时清空 `dist` 影响。
+`cargo xtask package` 与 Python 准备脚本使用同一目录约定；Python 的 `--output`、`--cache`
+仍可指定自定义位置。旧 `target/computer-use` 残留目录保持原样，不自动删除或认领；
+新输出目录也必须通过原有归属检查才允许替换。准备脚本回归在 PR 的 Nextest job 中执行。
+
 ## 独立更新签名（必需）
 
 [独立签名规格](vega-issue-181-independent-update-signing.md) 规定仓库公钥

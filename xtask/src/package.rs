@@ -178,7 +178,7 @@ pub fn run(args: &[String]) -> Result<()> {
 }
 
 fn prepare_computer_use(workspace: &Path) -> Result<std::path::PathBuf> {
-    let prepared = workspace.join("target/computer-use/Contents");
+    let prepared = workspace.join(".vega-build/computer-use/Contents");
     run_tool(
         "python3",
         &[

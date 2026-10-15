@@ -24,7 +24,7 @@ Preparation can also run independently on a macOS arm64 build machine:
 python3 scripts/prepare-computer-use.py
 ```
 
-The default output is `target/computer-use/Contents`; verified download archives are cached in `target/computer-use/downloads`. A cached file with a wrong hash is rejected. The script never replaces an existing output directory unless its preparation marker and directory layout identify it as a previous generated output. For development, set `VEGA_COMPUTER_USE_ROOT` to the absolute path of this generated `Contents` directory. Runtime does not download or upgrade components or search PATH.
+The default output is `.vega-build/computer-use/Contents`; verified download archives are cached in `.vega-build/computer-use/downloads`. A cached file with a wrong hash is rejected. The script never replaces an existing output directory unless its preparation marker and directory layout identify it as a previous generated output. For development, set `VEGA_COMPUTER_USE_ROOT` to the absolute path of this generated `Contents` directory. Runtime does not download or upgrade components or search PATH.
 
 `manifest.json` has `schema_version: 1`, `platform: darwin-arm64`, `minimum_macos: 14.0`, three versioned `executors` with Contents-relative `entrypoint` paths, and `sources` containing the archive and npm lock SHA-256 digests. Source hashes describe the original downloads: re-signing Mach-O files changes their bytes. Final bundle integrity is covered by the app signature. Vega's existing app deployment floor is unchanged; runtime gates computer use to macOS 14 and later.
 

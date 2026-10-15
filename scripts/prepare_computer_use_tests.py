@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import hashlib
 import importlib.util
@@ -7,6 +8,7 @@ import pathlib
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -41,6 +43,105 @@ class ComputerUsePackagingTests(unittest.TestCase):
                     member.linkname = payload.decode()
                     archive.addfile(member)
         return path
+
+    def run_preparation(self, *arguments):
+        def fetch(asset, cache):
+            cache.mkdir(parents=True, exist_ok=True)
+            path = cache / asset["sha256"]
+            path.write_text("fixture asset")
+            return path
+
+        def extract(archive, destination, selections):
+            for name in selections:
+                path = destination / name
+                if name.endswith("/"):
+                    path.mkdir(parents=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("fixture executable or license")
+
+        def install(command, *, cwd, env, check, timeout):
+            self.assertIn("--ignore-scripts", command)
+            self.assertTrue(check)
+            self.assertEqual(env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"], "1")
+            for name, expected in prepare.NPM_PACKAGES.items():
+                directory = cwd / "node_modules" / name
+                directory.mkdir(parents=True)
+                (directory / "package.json").write_text(json.dumps({
+                    "name": name, "version": expected["version"],
+                }))
+                (directory / "LICENSE").write_text("fixture license")
+
+        with contextlib.ExitStack() as stack:
+            for target, attribute, options in [
+                (prepare, "ROOT", {"new": self.root}),
+                (prepare.platform, "system", {"return_value": "Darwin"}),
+                (prepare.platform, "machine", {"return_value": "arm64"}),
+                (prepare, "fetch_asset", {"side_effect": fetch}),
+                (prepare, "extract_selected", {"side_effect": extract}),
+                (prepare.subprocess, "run", {"side_effect": install}),
+                (prepare.sys, "argv", {"new": ["prepare-computer-use.py", *map(str, arguments)]}),
+            ]:
+                stack.enter_context(mock.patch.object(target, attribute, **options))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            prepare.main()
+
+    def test_default_preparation_ignores_restored_cargo_directories_and_repeats(self):
+        legacy = self.root / "target/computer-use/Contents"
+        (legacy / "Helpers").mkdir(parents=True)
+        (legacy / "Resources/computer-use").mkdir(parents=True)
+        sentinel = legacy / "keep"
+        sentinel.write_bytes(b"unowned content")
+        before = sorted(str(path.relative_to(legacy)) for path in legacy.rglob("*"))
+        output = self.root / ".vega-build/computer-use/Contents"
+        cache = self.root / ".vega-build/computer-use/downloads"
+        for _ in range(2):
+            self.run_preparation()
+            prepare.validate_output_directory(output)
+            self.assertEqual((output / ".vega-computer-use-prepared").read_text(),
+                             "vega-computer-use:1\n")
+            self.assertEqual((output / "Helpers/node").stat().st_mode & 0o777, 0o755)
+            manifest = json.loads((output / "Resources/computer-use/manifest.json").read_text())
+            self.assertEqual(manifest["executors"], prepare.EXPECTED_EXECUTORS)
+            self.assertEqual(len(list(cache.iterdir())), 4)
+            self.assertEqual(sorted(str(path.relative_to(legacy)) for path in legacy.rglob("*")), before)
+            self.assertEqual(sentinel.read_bytes(), b"unowned content")
+            self.assertFalse((legacy / ".vega-computer-use-prepared").exists())
+        self.assertFalse((self.root / "target/computer-use/downloads").exists())
+
+    def test_preparation_honors_custom_output_and_cache(self):
+        output = self.root / "custom/Contents"
+        cache = self.root / "custom-downloads"
+        self.run_preparation("--output", output, "--cache", cache)
+        prepare.validate_output_directory(output)
+        self.assertTrue((output / "Helpers/cua-driver").is_file())
+        self.assertEqual(len(list(cache.iterdir())), 4)
+        self.assertFalse((self.root / ".vega-build").exists())
+
+    def test_default_preparation_preserves_untrusted_output(self):
+        output = self.root / ".vega-build/computer-use/Contents"
+        output.mkdir(parents=True)
+        sentinel = output / "personal-file"
+        sentinel.write_bytes(b"keep")
+        marker = output / ".vega-computer-use-prepared"
+        for value, message in [(None, "unowned"), ("other", "marker mismatch"),
+                               ("vega-computer-use:1\n", "unexpected contents")]:
+            with self.subTest(marker=value):
+                if value is not None:
+                    marker.write_text(value)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.run_preparation()
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertFalse((output.parent / "downloads").exists())
+        marker.unlink()
+        marker.symlink_to(sentinel)
+        with self.assertRaisesRegex(ValueError, "unowned"):
+            self.run_preparation()
+        output.rename(output.with_name("original"))
+        output.symlink_to(output.with_name("original"), target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symbolic link"):
+            self.run_preparation()
+        self.assertEqual(sentinel.read_bytes(), b"keep")
 
     def test_archive_extracts_only_requested_files(self):
         path = self.archive([
