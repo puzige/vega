@@ -132,6 +132,12 @@ fn issue395_worker_publishes_retained_overlap_during_streaming_and_rejects_evict
             assert_eq!(shown.source.end, end);
         });
     }
+    visual.run_until_parked();
+    let scroll = card.read_with(&visual, |card, _| card.scroll.clone());
+    assert!(scroll.max_offset().y > px(0.));
+    scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     card.update(&mut visual, |card, cx| {
         let prepared = prepare(card, cx);
         let revision = card.source_revision;
@@ -154,6 +160,14 @@ fn issue395_worker_publishes_retained_overlap_during_streaming_and_rejects_evict
                 .text
                 .starts_with("replacement")
         );
+    });
+    visual.run_until_parked();
+    assert!(scroll.max_offset().y > px(0.));
+    assert!(f32::from(scroll.offset().y + scroll.max_offset().y).abs() <= 1.);
+    card.update(&mut visual, |card, cx| {
+        let revision = card.source_revision;
+        let epoch = card.body.epoch;
+        let identity = card.source_identity;
         let prepared = prepare(card, cx);
         card.source_copy.set_projected_selection(Some(0..11));
         card.source_copy.set_local_selection_range(0..11);

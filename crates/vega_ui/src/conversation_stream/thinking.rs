@@ -232,6 +232,7 @@ impl ThinkingBlock {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn source_text(&self) -> String {
         self.visible_text().to_owned()
     }

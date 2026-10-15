@@ -6,7 +6,7 @@ use crate::conversation_stream::thinking::{
 
 #[gpui_kit::test]
 fn issue395_folded_window_keeps_latest_utf8_source_and_title(cx: &mut TestAppContext) {
-    let (_, stream, _) = open_controller_stream(cx, "thinking-sliding-folded");
+    let (window, stream, _) = open_controller_stream(cx, "thinking-sliding-folded");
     let mut received = String::new();
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("window"), cx);
@@ -37,6 +37,48 @@ fn issue395_folded_window_keeps_latest_utf8_source_and_title(cx: &mut TestAppCon
                 .truncated
         );
     });
+    let card = stream.update(cx, |stream, cx| {
+        stream.append_reasoning(
+            "window",
+            &format!("\n```text\n{}", "body\n".repeat(THINKING_BLOCK_BYTES / 5)),
+            false,
+            cx,
+        );
+        stream.run_activity_groups["window"].update(cx, |group, cx| {
+            group.reveal_segment(0, cx);
+        });
+        stream.active_thinking.clone().expect("visible card")
+    });
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("thinking-content").is_some());
+    let revision = card.read_with(&visual, |card, _| {
+        assert!(card.truncated);
+        assert_eq!(card.title(), "latest-95 🦀");
+        assert!(card.test_body_fragment_count() > 0);
+        card.test_body_revision()
+    });
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = changes.clone();
+    let _subscription = visual.update(|_, cx| {
+        cx.subscribe(
+            &card,
+            move |_, change: &crate::conversation_stream::thinking::ThinkingChanged, _| {
+                observed
+                    .borrow_mut()
+                    .push((change.header, change.stage, change.geometry));
+            },
+        )
+    });
+    stream.update(&mut visual, |stream, cx| {
+        stream.append_reasoning("window", &"body\n".repeat(16384), false, cx);
+    });
+    card.read_with(&visual, |card, _| {
+        assert!(card.truncated);
+        assert_eq!(card.title(), "latest-95 🦀");
+        assert_eq!(card.test_body_revision(), revision);
+    });
+    assert_eq!(changes.borrow().as_slice(), &[(true, false, false)]);
 }
 
 #[gpui_kit::test]
