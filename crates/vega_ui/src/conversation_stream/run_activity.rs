@@ -38,7 +38,7 @@ fn format_stage_tool_categories(categories: &[ToolActivityCategory]) -> String {
         let candidate = if title.is_empty() {
             action.to_owned()
         } else {
-            format!("{title}、{action}")
+            format!("{title}, {action}")
         };
         let ellipsis_length = if index + 1 < categories.len() { 3 } else { 0 };
         if candidate.chars().count() + ellipsis_length > 96 {
@@ -46,7 +46,7 @@ fn format_stage_tool_categories(categories: &[ToolActivityCategory]) -> String {
                 title = action.chars().take(95).collect();
                 title.push('…');
             } else {
-                title.push_str("、…");
+                title.push_str(", …");
             }
             break;
         }
@@ -74,9 +74,9 @@ mod category_title_tests {
             ToolActivityCategory::Skill,
             ToolActivityCategory::Other,
         ]);
-        assert!(title.starts_with("读取文件、运行命令"));
+        assert!(title.starts_with("read files, run commands"));
         let long_title = format_stage_tool_categories(&[ToolActivityCategory::Read; 30]);
-        assert!(long_title.ends_with("、…"));
+        assert!(long_title.ends_with(", …"));
         assert!(long_title.chars().count() <= 96);
         assert!(title.chars().count() <= 96);
         assert!(!title.chars().any(|character| character.is_ascii_digit()));
@@ -1123,20 +1123,22 @@ impl RunActivityGroup {
                 .map(|start| start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
         });
         let status = match self.status {
-            RunActivityStatus::Running if self.waiting_for_user => "等待确认 · 已用",
+            RunActivityStatus::Running if self.waiting_for_user => "Awaiting confirmation for",
             RunActivityStatus::Running => "Working for",
             RunActivityStatus::Completed => "Worked for",
-            RunActivityStatus::Failed => "已失败 · 用时",
-            RunActivityStatus::Interrupted => "已停止 · 用时",
+            RunActivityStatus::Failed => "Failed after",
+            RunActivityStatus::Interrupted => "Stopped after",
         };
         duration
             .map(|value| format!("{status} {}", format_run_clock(value)))
             .unwrap_or_else(|| match self.status {
-                RunActivityStatus::Running if self.waiting_for_user => "等待确认".into(),
-                RunActivityStatus::Running => "运行中".into(),
-                RunActivityStatus::Completed => "已完成".into(),
-                RunActivityStatus::Failed => "已失败".into(),
-                RunActivityStatus::Interrupted => "已停止".into(),
+                RunActivityStatus::Running if self.waiting_for_user => {
+                    "Awaiting confirmation".into()
+                }
+                RunActivityStatus::Running => "Working".into(),
+                RunActivityStatus::Completed => "Completed".into(),
+                RunActivityStatus::Failed => "Failed".into(),
+                RunActivityStatus::Interrupted => "Stopped".into(),
             })
     }
 
@@ -1158,7 +1160,7 @@ impl RunActivityGroup {
             );
         }
         if self.waiting_for_user {
-            return ("等待确认".into(), Icon::Hand, false);
+            return ("Awaiting confirmation".into(), Icon::Hand, false);
         }
         let mut categories = Vec::new();
         let mut pending = false;
@@ -1189,9 +1191,9 @@ impl RunActivityGroup {
                 .take(2)
                 .map(|(_, action)| action.as_str())
                 .collect::<Vec<_>>()
-                .join("、");
+                .join(", ");
             let suffix = if categories.len() > 2 {
-                format!("等 {} 项", categories.len())
+                format!(" and more ({} total)", categories.len())
             } else {
                 String::new()
             };
@@ -1200,13 +1202,13 @@ impl RunActivityGroup {
             } else {
                 Icon::Summary
             };
-            return (format!("正在{actions}{suffix}"), icon, false);
+            return (format!("In progress: {actions}{suffix}"), icon, false);
         }
         if pending {
-            return ("等待确认".into(), Icon::Hand, false);
+            return ("Awaiting confirmation".into(), Icon::Hand, false);
         }
         if approved {
-            return ("准备调用工具".into(), Icon::Summary, false);
+            return ("Preparing tool call".into(), Icon::Summary, false);
         }
         let summary = (self.phase == RunPhase::Thinking)
             .then(|| {
@@ -1264,8 +1266,8 @@ impl RunActivityGroup {
             .tab_stop(can_expand)
             .aria_expanded(expanded)
             .aria_label(format!(
-                "{label}，{}本轮过程",
-                if expanded { "收起" } else { "展开" }
+                "{label}, {} run activity",
+                if expanded { "collapse" } else { "expand" }
             ))
             .focus_visible(move |row| row.bg(colors.bg_hover))
             .debug_selector(|| "run-activity-toggle".to_string())
@@ -1635,8 +1637,8 @@ impl RunActivityGroup {
                     .when(can_expand, |row| row.aria_expanded(expanded))
                     .aria_label(if can_expand {
                         format!(
-                            "{title}，{}阶段过程",
-                            if expanded { "收起" } else { "展开" }
+                            "{title}, {} stage activity",
+                            if expanded { "collapse" } else { "expand" }
                         )
                     } else {
                         title.clone()
@@ -1738,7 +1740,7 @@ impl RunActivityGroup {
                         .pt(px(Layout::PROCESS_ITEM_GAP))
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("思考内容已达显示上限")
+                        .child("Thinking display limit reached")
                         .into_any_element(),
                 ));
             }

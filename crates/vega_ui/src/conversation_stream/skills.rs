@@ -81,7 +81,8 @@ impl ConversationStream {
             _ => {
                 self.skill_projection = None;
                 self.controller_runtime_error = None;
-                self.controller_error = Some("Skills 来源已变化，请刷新后重试".into());
+                self.controller_error =
+                    Some("Skill sources changed. Refresh and try again.".into());
             }
         }
         cx.notify();
@@ -194,7 +195,10 @@ impl ConversationStream {
             self.request_skill_projection(cx);
         } else {
             self.controller_runtime_error = None;
-            self.controller_error = Some("Skill 授权或文件已变化，请刷新审阅后重试".into());
+            self.controller_error = Some(
+                "Skill permissions or files changed. Refresh and review before trying again."
+                    .into(),
+            );
             cx.notify();
         }
     }
@@ -209,7 +213,7 @@ impl ConversationStream {
             self.reject_composer_submission(cx);
             self.controller_runtime_error = None;
             self.controller_error =
-                Some("Skill 授权或文件已变化；请刷新审阅后重试，消息尚未发送".into());
+                Some("Skill permissions or files changed. Refresh and review before trying again. Your message has not been sent.".into());
             cx.notify();
         }
     }
@@ -234,7 +238,7 @@ impl ConversationStream {
                     .gap_2()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child(format!("正在使用 {} · {}", skill.name, skill.source_label))
+                    .child(format!("Using {} · {}", skill.name, skill.source_label))
                     .child(
                         div()
                             .id("active-skill-stop")
@@ -242,7 +246,7 @@ impl ConversationStream {
                             .focusable()
                             .track_focus(&focus[0])
                             .tab_stop(true)
-                            .aria_label("停止当前任务")
+                            .aria_label("Stop current task")
                             .focus_visible(move |style| {
                                 style.border_1().border_color(colors.brand_primary)
                             })
@@ -261,7 +265,7 @@ impl ConversationStream {
                                     }
                                 },
                             ))
-                            .child("停止"),
+                            .child("Stop"),
                     )
                     .child(
                         div()
@@ -270,7 +274,7 @@ impl ConversationStream {
                             .focusable()
                             .track_focus(&focus[1])
                             .tab_stop(true)
-                            .aria_label("停用此 Skill 的后续激活")
+                            .aria_label("Disable future activations of this Skill")
                             .focus_visible(move |style| {
                                 style.border_1().border_color(colors.brand_primary)
                             })
@@ -290,7 +294,7 @@ impl ConversationStream {
                                     this.disable_active_skill(name.clone(), cx);
                                 }),
                             )
-                            .child("停用后续激活"),
+                            .child("Disable future activations"),
                     ),
             );
         }
@@ -299,7 +303,7 @@ impl ConversationStream {
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child("停止或停用不能撤销已完成的操作"),
+                    .child("Stopping or disabling does not undo completed actions"),
             )
         })
         .into_any_element()

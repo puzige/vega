@@ -113,7 +113,7 @@ impl PermissionCard {
         lease: PermissionLease,
         cx: &mut gpui_kit::Context<Self>,
     ) -> Self {
-        let note = cx.new(|cx| TextInput::new(cx, "拒绝原因（可选）", false));
+        let note = cx.new(|cx| TextInput::new(cx, "Reason for rejection (optional)", false));
         cx.observe(&note, |_, _, cx| cx.notify()).detach();
         let danger = request.danger_rule_id.is_some();
         let acp_option_focuses = request
@@ -177,14 +177,16 @@ impl PermissionCard {
     /// Content rendered by the card, used by leak-focused tests.
     pub fn visible_text(&self) -> String {
         let mut text = format!(
-            "需要权限 {} {}",
+            "Permission required {} {}",
             self.prompt.display_tool(),
             self.prompt.display_target
         );
         if let Some(reason) = &self.prompt.danger_reason {
             text.push(' ');
             text.push_str(reason);
-            text.push_str(" 总是允许仍会在下次危险命令时再次确认");
+            text.push_str(
+                " Always allow still requires confirmation for future dangerous commands",
+            );
         }
         if let Some(options) = &self.prompt.acp_options {
             for option in options {
@@ -192,9 +194,9 @@ impl PermissionCard {
                 text.push_str(&option.name);
             }
         } else if self.prompt.external {
-            text.push_str(" 允许一次 拒绝");
+            text.push_str(" Allow once Reject");
         } else {
-            text.push_str(" 允许一次 总是允许 拒绝");
+            text.push_str(" Allow once Always allow Reject");
         }
         text
     }
@@ -451,9 +453,12 @@ impl PermissionCard {
                 colors.warning
             };
             let label = if is_danger {
-                format!("危险命令需要确认 · {}", card_ref.prompt.display_tool())
+                format!(
+                    "Dangerous command requires confirmation · {}",
+                    card_ref.prompt.display_tool()
+                )
             } else {
-                format!("需要权限 · {}", card_ref.prompt.display_tool())
+                format!("Permission required · {}", card_ref.prompt.display_tool())
             };
             return container
                 .debug_selector(|| "permission-card-heading".into())
@@ -502,7 +507,7 @@ impl PermissionCard {
                         .prompt
                         .danger_reason
                         .clone()
-                        .unwrap_or_else(|| "危险命令".to_string()),
+                        .unwrap_or_else(|| "Dangerous command".to_string()),
                 )
                 .into_any_element();
         }
@@ -510,7 +515,7 @@ impl PermissionCard {
             return container
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.warning)
-                .child("总是允许仍会在下次危险命令时再次确认")
+                .child("Always allow still requires confirmation for future dangerous commands")
                 .into_any_element();
         }
         if let Some(options) = &card_ref.prompt.acp_options {
@@ -562,7 +567,7 @@ impl PermissionCard {
         let reject_card = card.clone();
         let mut container = container.justify_end().gap_2().child(permission_button(
             format!("permission-once-{}", card.entity_id()),
-            "允许一次".to_string(),
+            "Allow once".to_string(),
             once,
             true,
             colors,
@@ -574,7 +579,7 @@ impl PermissionCard {
         if !card.read(cx).prompt.external {
             container = container.child(permission_button(
                 format!("permission-always-{}", card.entity_id()),
-                "总是允许".to_string(),
+                "Always allow".to_string(),
                 always,
                 false,
                 colors,
@@ -587,7 +592,7 @@ impl PermissionCard {
         container
             .child(permission_button(
                 format!("permission-deny-{}", card.entity_id()),
-                "拒绝".to_string(),
+                "Reject".to_string(),
                 reject,
                 false,
                 colors,
@@ -831,7 +836,7 @@ mod tests {
         cx.run_until_parked();
         let visible = card.read_with(cx, |card, _| card.visible_text());
         assert!(visible.contains("lookup"));
-        assert!(!visible.contains("总是允许"));
+        assert!(!visible.contains("Always allow"));
         assert!(!visible.contains("SECRET_ARGUMENT_VALUE"));
         cx.simulate_keystrokes(window.into(), "tab");
         assert_eq!(focused(window, &card, cx), PermissionFocus::Reject);
@@ -1030,7 +1035,10 @@ mod tests {
             )
         });
         assert!(visible.contains(&command));
-        assert!(visible.contains("总是允许仍会在下次危险命令时再次确认"));
+        assert!(
+            visible
+                .contains("Always allow still requires confirmation for future dangerous commands")
+        );
         assert!(visible.contains("bash"));
         assert!(!debug.contains("SECRET_CALL_ID"));
         assert!(!debug.contains(&command));

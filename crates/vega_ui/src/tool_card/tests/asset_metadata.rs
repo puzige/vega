@@ -22,14 +22,16 @@ fn asset_card() -> ToolCard {
 fn issue87_s14_metadata_card_is_truthful_content_free_and_reusable() {
     let card = asset_card();
     let text = card.visible_text();
-    assert!(text.contains("已查看 Skill reviewer 资源元数据 · 42 bytes · 类型未知 · 未读取内容"));
+    assert!(text.contains(
+        "Viewed Skill reviewer asset metadata · 42 bytes · unknown type · content not read"
+    ));
     for absent in [
         CORRUPT_LABEL,
         "assets/pixel.png",
         "SHA-256",
         "PRIVATE BODY",
         "上传",
-        "已读取 Skill reviewer 引用",
+        "Read Skill reviewer reference",
     ] {
         assert!(!text.contains(absent));
     }

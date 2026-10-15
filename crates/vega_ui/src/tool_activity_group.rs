@@ -159,14 +159,14 @@ impl ToolActivityGroup {
             .iter()
             .map(|category| category.action_phrase())
             .collect::<Vec<_>>()
-            .join("、");
+            .join(", ");
         match self.aggregate_state(cx) {
-            ToolActivityState::Superseded => "接管后未执行".into(),
-            ToolActivityState::Success => format!("已{actions}"),
-            ToolActivityState::Active => format!("正在处理：{actions}"),
-            ToolActivityState::Rejected => format!("存在已拒绝的调用：{actions}"),
-            ToolActivityState::Cancelled => format!("存在已取消的调用：{actions}"),
-            ToolActivityState::Failed => format!("存在失败的调用：{actions}"),
+            ToolActivityState::Superseded => "Not run after takeover".into(),
+            ToolActivityState::Success => format!("Completed: {actions}"),
+            ToolActivityState::Active => format!("In progress: {actions}"),
+            ToolActivityState::Rejected => format!("Rejected calls: {actions}"),
+            ToolActivityState::Cancelled => format!("Cancelled calls: {actions}"),
+            ToolActivityState::Failed => format!("Failed calls: {actions}"),
         }
     }
 
@@ -224,8 +224,8 @@ impl ToolActivityGroup {
                 .track_focus(&focus)
                 .aria_expanded(expanded)
                 .aria_label(format!(
-                    "{summary}，{}工具组",
-                    if expanded { "收起" } else { "展开" }
+                    "{summary}, {} tool group",
+                    if expanded { "collapse" } else { "expand" }
                 ))
                 .tab_stop(true)
                 .focus_visible(move |row| row.bg(colors.bg_hover))
@@ -409,8 +409,8 @@ mod tests {
             assert!(card.apply_running(cx));
             assert!(card.apply_finished(&result));
             assert_eq!(card.activity_state(), ToolActivityState::Superseded);
-            assert!(card.visible_text().contains("接管后未执行"));
-            assert!(!card.visible_text().contains("工具结果损坏"));
+            assert!(card.visible_text().contains("Not run after takeover"));
+            assert!(!card.visible_text().contains("Tool result corrupted"));
             for colors in [vega_theme::LIGHT, vega_theme::DARK] {
                 assert_eq!(
                     card.activity_state().terminal_color(&colors),
@@ -436,8 +436,12 @@ mod tests {
                 ToolActivityState::Superseded
             );
             assert_eq!(group.aggregate_state(cx), ToolActivityState::Superseded);
-            assert!(!group.aggregate_summary(cx).contains("失败"));
-            assert!(group.aggregate_summary(cx).contains("接管后未执行"));
+            assert!(!group.aggregate_summary(cx).contains("Failed"));
+            assert!(
+                group
+                    .aggregate_summary(cx)
+                    .contains("Not run after takeover")
+            );
         });
         for (status, output, expected) in [
             (
@@ -471,7 +475,7 @@ mod tests {
             cx.update(|cx| {
                 assert_eq!(mixed.aggregate_state(cx), expected);
                 if expected == ToolActivityState::Failed {
-                    assert!(mixed.aggregate_summary(cx).contains("失败"));
+                    assert!(mixed.aggregate_summary(cx).contains("Failed"));
                 }
             });
         }

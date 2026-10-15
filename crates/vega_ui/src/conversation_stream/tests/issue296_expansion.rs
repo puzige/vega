@@ -152,7 +152,7 @@ async fn raw_stage_manual_open_preserves_thinking_and_tool_order(cx: &mut TestAp
     assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
             Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
@@ -793,14 +793,14 @@ async fn repeated_reasoning_and_commands_share_one_compact_stage(cx: &mut TestAp
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         for id in ["first", "second"] {
             let card = stream.tool_cards[id].read(cx);
             assert_eq!(card.activity_state(), crate::tool_card::ToolActivityState::Success);
             assert!(!card.needs_attention());
         }
         assert_eq!(group.compact_tool_groups(0).len(), 1);
-        assert_eq!(group.compact_tool_groups(0)[0].read(cx).aggregate_summary(cx), "已运行命令");
+        assert_eq!(group.compact_tool_groups(0)[0].read(cx).aggregate_summary(cx), "Completed: run commands");
         assert_eq!(group.segment_row_count(0, cx), 1);
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
@@ -970,7 +970,7 @@ async fn summary_cycles_share_tools_without_duplicate_reasoning(cx: &mut TestApp
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         assert_eq!(group.segment_row_count(0, cx), 1);
         assert_eq!(group.compact_tool_groups(0).len(), 1);
         assert_eq!(
@@ -1101,7 +1101,11 @@ async fn issue343_t13_gpt_summary_nests_mixed_tools_and_failed_searches(cx: &mut
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert!(group.stage_title(0, cx).starts_with("查找文件、读取文件"));
+        assert!(
+            group
+                .stage_title(0, cx)
+                .starts_with("find files, read files")
+        );
         assert_eq!(group.segment_row_count(0, cx), 1);
         assert!(stream.run_notice_projection(cx).is_empty());
         assert_eq!(
@@ -1180,7 +1184,7 @@ async fn issue343_t14_raw_thinking_stays_collapsed_after_new_tools(cx: &mut Test
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert!(!group.segment_expanded(0));
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
     });
 }
 
@@ -1217,13 +1221,13 @@ async fn folded_stage_hides_running_pending_and_failed_tool_status(cx: &mut Test
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         assert!(stream.run_notice_projection(cx).is_empty());
         assert_eq!(
             group.compact_tool_groups(0)[0]
                 .read(cx)
                 .aggregate_summary(cx),
-            "正在处理：运行命令"
+            "In progress: run commands"
         );
     });
     stream.update(&mut visual, |stream, cx| {
@@ -1241,7 +1245,7 @@ async fn folded_stage_hides_running_pending_and_failed_tool_status(cx: &mut Test
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         assert!(stream.run_notice_projection(cx).is_empty());
         assert!(stream.tool_cards["pending"].read(cx).needs_attention());
     });
@@ -1303,7 +1307,7 @@ async fn folded_stage_hides_running_pending_and_failed_tool_status(cx: &mut Test
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "运行命令"
+            "run commands"
         );
         assert!(stream.run_notice_projection(cx).is_empty());
     });
@@ -1533,7 +1537,7 @@ async fn issue343_t18_pure_summary_aggregate_shows_latest_only_in_title(cx: &mut
             cx,
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         assert_eq!(group.segment_row_count(0, cx), 4);
         assert_eq!(
             group.test_visible_segment_thinking_texts(0, cx),
@@ -1567,7 +1571,7 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
             cx,
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "读取文件");
+        assert_eq!(group.stage_title(0, cx), "read files");
         assert_eq!(group.segment_row_count(0, cx), 1);
         stream.apply_event(
             ConversationEvent::ToolCallApproved {
@@ -1586,7 +1590,7 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "读取文件"
+            "read files"
         );
         stream.apply_event(
             ConversationEvent::ToolCallFinished {
@@ -1607,21 +1611,21 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "读取文件"
+            "read files"
         );
         completed_command(stream, "shell", cx);
         assert_eq!(
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "读取文件、运行命令"
+            "read files, run commands"
         );
         summary(stream, "Updated summary", cx);
         assert_eq!(
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "读取文件、运行命令"
+            "read files, run commands"
         );
         assert_eq!(
             stream.run_activity_groups["expansion"]
@@ -1700,7 +1704,10 @@ async fn issue343_t18_multiple_tool_categories_keep_first_icon_and_bounded_title
         }
         let group = stream.run_activity_groups["expansion"].read(cx);
         let title = group.stage_title(0, cx);
-        assert_eq!(title, "读取文件、运行命令、查找文件、搜索内容");
+        assert_eq!(
+            title,
+            "read files, run commands, find files, search content"
+        );
         assert!(title.chars().count() <= 96);
         assert!(!title.contains("sensitive-value") && !title.contains("private-term"));
         assert_eq!(
@@ -1738,7 +1745,7 @@ async fn issue343_t18_multiple_tool_categories_keep_first_icon_and_bounded_title
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(
             group.stage_title(0, cx),
-            "读取文件、运行命令、查找文件、搜索内容"
+            "read files, run commands, find files, search content"
         );
         assert_eq!(
             group.test_stage_tool_icon(0, cx),
@@ -1760,7 +1767,7 @@ async fn issue343_t20_command_title_ignores_running_and_failed_outcomes(cx: &mut
             cx,
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         stream.apply_event(
             ConversationEvent::ToolCallApproved {
                 call_id: "failed".into(),
@@ -1775,7 +1782,7 @@ async fn issue343_t20_command_title_ignores_running_and_failed_outcomes(cx: &mut
             cx,
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         stream.apply_event(
             ConversationEvent::ToolCallFinished {
                 call_id: "failed".into(),
@@ -1796,7 +1803,7 @@ async fn issue343_t20_command_title_ignores_running_and_failed_outcomes(cx: &mut
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         assert_eq!(
             group.test_stage_tool_icon(0, cx),
             Some(crate::icons::Icon::Terminal)
@@ -1844,7 +1851,7 @@ async fn issue343_t20_rejected_commands_keep_category_title(cx: &mut TestAppCont
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
         for id in ["first", "second"] {
             assert_eq!(
                 stream.tool_cards[id].read(cx).activity_state(),
@@ -1899,7 +1906,7 @@ async fn issue343_t19_second_tool_promotes_focused_single_row_and_retry_restores
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(group.stage_title(0, cx), "运行命令");
+        assert_eq!(group.stage_title(0, cx), "run commands");
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("tool-activity-single-row").is_none());

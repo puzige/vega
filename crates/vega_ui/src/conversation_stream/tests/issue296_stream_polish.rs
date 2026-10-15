@@ -853,7 +853,7 @@ async fn issue75_resume_refresh_neutral_cancellation_does_not_interrupt_run_or_h
             stream.tool_cards["resume-superseded"]
                 .read(cx)
                 .visible_text()
-                .contains("接管后未执行")
+                .contains("Not run after takeover")
         );
         assert_eq!(
             stream.tool_cards["real-failure"].read(cx).activity_state(),

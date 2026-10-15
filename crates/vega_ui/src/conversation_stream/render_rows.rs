@@ -322,21 +322,21 @@ fn render_entry_internal(
                 SkillHistoryVerification,
             };
             let source = match activation.source_scope {
-                SkillHistorySource::Project => "项目",
-                SkillHistorySource::VegaGlobal => "Vega 全局",
-                SkillHistorySource::Imported => "外部导入",
+                SkillHistorySource::Project => "Project",
+                SkillHistorySource::VegaGlobal => "Vega global",
+                SkillHistorySource::Imported => "Imported",
             };
             let origin = match activation.origin {
-                SkillHistoryOrigin::Model => "模型加载",
-                SkillHistoryOrigin::ExplicitUser => "用户预载",
+                SkillHistoryOrigin::Model => "Loaded by model",
+                SkillHistoryOrigin::ExplicitUser => "Preloaded by user",
             };
             let status = match activation.status {
-                SkillHistoryStatus::Loaded => "已加载",
-                SkillHistoryStatus::Revoked => "已撤销",
+                SkillHistoryStatus::Loaded => "Loaded",
+                SkillHistoryStatus::Revoked => "Revoked",
             };
             let verification = match activation.verification {
-                SkillHistoryVerification::Verified => "冻结快照已验证",
-                SkillHistoryVerification::Unavailable => "冻结快照不可用或未验证",
+                SkillHistoryVerification::Verified => "Snapshot verified",
+                SkillHistoryVerification::Unavailable => "Snapshot unavailable or unverified",
             };
             let digest = activation.content_sha256.get(..12).unwrap_or("invalid");
             div()
@@ -345,7 +345,7 @@ fn render_entry_internal(
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_secondary)
                 .child(format!(
-                    "历史 Skill {} · {} · {} · {} · {} · SHA-256 {}…",
+                    "Skill history {} · {} · {} · {} · {} · SHA-256 {}…",
                     activation.name, source, origin, status, verification, digest
                 ))
                 .into_any_element()

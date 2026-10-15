@@ -213,7 +213,7 @@ impl ThinkingBlock {
         } else if !self.thinking_preview.title.is_empty() {
             &self.thinking_preview.title
         } else {
-            "思考过程"
+            "Thinking"
         }
     }
 
@@ -438,7 +438,7 @@ impl Render for ThinkingBlock {
                     .tab_stop(true)
                     .focus_visible(move |row| row.bg(colors.bg_hover))
                     .debug_selector(|| "thinking-toggle".into())
-                    .aria_label(format!("{}，展开或收起思考过程", title))
+                    .aria_label(format!("{}, expand or collapse thinking", title))
                     .flex()
                     .items_center()
                     .gap(px(Layout::CONVERSATION_INLINE_GAP))
@@ -541,7 +541,7 @@ impl Render for ThinkingBlock {
                         .debug_selector(|| "thinking-truncated".into())
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("思考内容已达显示上限"),
+                        .child("Thinking display limit reached"),
                 )
             })
     }
