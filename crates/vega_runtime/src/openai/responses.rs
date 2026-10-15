@@ -1,22 +1,66 @@
 use super::*;
 use crate::{ChatRole, ProviderEvent};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-const ITEM_LIMIT: usize = 256;
-const REPLAY_LIMIT: usize = 256 * 1024;
+const TOOL_ARGUMENT_LIMIT: usize = 256 * 1024;
 const WIRE_LIMIT: usize = 4 * 1024 * 1024;
 
 #[derive(Debug)]
 enum ResponseBytesError {
-    Limit,
+    Limit { observed_bytes: usize },
     Transport,
+}
+
+#[derive(Default)]
+struct ResponseFrameBudget {
+    bytes: usize,
+    line_has_content: bool,
+    after_cr: bool,
+}
+
+impl ResponseFrameBudget {
+    fn consume(&mut self, chunk: &[u8]) -> Result<(), ResponseBytesError> {
+        for byte in chunk {
+            if self.after_cr && *byte == b'\n' {
+                self.after_cr = false;
+                if self.bytes > 0 {
+                    self.bytes = self.bytes.saturating_add(1);
+                    self.check()?;
+                }
+                continue;
+            }
+            self.bytes = self.bytes.saturating_add(1);
+            self.check()?;
+            self.after_cr = *byte == b'\r';
+            if matches!(*byte, b'\n' | b'\r') {
+                if !self.line_has_content {
+                    self.bytes = 0;
+                }
+                self.line_has_content = false;
+            } else {
+                self.line_has_content = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn check(&self) -> Result<(), ResponseBytesError> {
+        if self.bytes > WIRE_LIMIT {
+            Err(ResponseBytesError::Limit {
+                observed_bytes: self.bytes,
+            })
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl fmt::Display for ResponseBytesError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Limit => "Responses byte limit",
+            Self::Limit { .. } => "Responses byte limit",
             Self::Transport => "Responses transport failure",
         })
     }
@@ -89,14 +133,35 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
 }
 
 #[derive(Default)]
+struct TextProgress {
+    bytes: usize,
+    digest: Sha256,
+}
+
+impl TextProgress {
+    fn absorb<'a>(&mut self, text: &'a str, done: bool) -> Result<&'a str, VegaError> {
+        let suffix = if done {
+            let prefix = text.get(..self.bytes).ok_or_else(invalid)?;
+            if Sha256::digest(prefix.as_bytes()) != self.digest.clone().finalize() {
+                return Err(invalid());
+            }
+            &text[self.bytes..]
+        } else {
+            text
+        };
+        self.bytes = self.bytes.saturating_add(suffix.len());
+        self.digest.update(suffix.as_bytes());
+        Ok(suffix)
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct Assembler {
     items: BTreeMap<u64, Value>,
     complete: BTreeSet<u64>,
-    deltas: BTreeMap<(String, u64, String), String>,
-    text_bytes: usize,
+    deltas: BTreeMap<(String, u64, String), TextProgress>,
     last_summary: Option<(String, u64)>,
     pub(crate) terminal: bool,
-    bytes: usize,
 }
 impl Assembler {
     fn text_event(&mut self, event: &Value, kind: &str) -> Result<Vec<ProviderEvent>, VegaError> {
@@ -121,25 +186,10 @@ impl Assembler {
         }]
         .as_str()
         .ok_or_else(invalid)?;
-        if text.len() > if done { REPLAY_LIMIT } else { 64 * 1024 }
-            || self.deltas.len() >= ITEM_LIMIT && !self.deltas.contains_key(&key)
-        {
-            return Err(invalid());
-        }
-        let prior = self.deltas.entry(key).or_default();
-        let text = if done {
-            text.strip_prefix(prior.as_str()).ok_or_else(invalid)?
-        } else {
-            text
-        };
+        let text = self.deltas.entry(key).or_default().absorb(text, done)?;
         if text.is_empty() {
             return Ok(out);
         }
-        self.text_bytes = self.text_bytes.saturating_add(text.len());
-        if self.text_bytes > 1024 * 1024 {
-            return Err(invalid());
-        }
-        prior.push_str(text);
         if kind.starts_with("response.reasoning_summary_text.") {
             let key = (item, index);
             if self.last_summary.as_ref().is_some_and(|last| last != &key) {
@@ -178,8 +228,13 @@ impl Assembler {
         Ok(out)
     }
     pub(crate) fn absorb(&mut self, data: &str) -> Result<Vec<ProviderEvent>, VegaError> {
-        self.bytes = self.bytes.saturating_add(data.len());
-        if self.bytes > WIRE_LIMIT || self.terminal {
+        if data.len() > WIRE_LIMIT {
+            return Err(VegaError::ProviderPayloadTooLarge {
+                observed_bytes: data.len(),
+                limit_bytes: WIRE_LIMIT,
+            });
+        }
+        if self.terminal {
             return Err(invalid());
         }
         let event: Value = serde_json::from_str(data).map_err(|_| invalid())?;
@@ -199,12 +254,6 @@ impl Assembler {
             }
             "response.output_item.added" | "response.output_item.done" => {
                 let index = event["output_index"].as_u64().ok_or_else(invalid)?;
-                if self.items.len() >= ITEM_LIMIT && !self.items.contains_key(&index) {
-                    return Err(invalid());
-                }
-                if event["item"].to_string().len() > REPLAY_LIMIT {
-                    return Err(invalid());
-                }
                 self.items.insert(index, event["item"].clone());
                 if kind.ends_with(".done") {
                     self.complete.insert(index);
@@ -216,7 +265,7 @@ impl Assembler {
                 let item = self.items.get_mut(&index).ok_or_else(invalid)?;
                 let delta = event["delta"].as_str().ok_or_else(invalid)?;
                 let mut arguments = item["arguments"].as_str().unwrap_or_default().to_owned();
-                if arguments.len().saturating_add(delta.len()) > REPLAY_LIMIT {
+                if arguments.len().saturating_add(delta.len()) > TOOL_ARGUMENT_LIMIT {
                     return Err(invalid());
                 }
                 arguments.push_str(delta);
@@ -230,9 +279,6 @@ impl Assembler {
                     return Err(invalid());
                 }
                 if let Some(items) = event["response"]["output"].as_array() {
-                    if items.len() > ITEM_LIMIT {
-                        return Err(invalid());
-                    }
                     for item in self
                         .items
                         .values()
@@ -258,7 +304,6 @@ impl Assembler {
                     out.extend(self.snapshot(item)?);
                 }
                 let mut replay = Vec::new();
-                let mut replay_bytes = 0usize;
                 let mut tools = Vec::new();
                 for (index, item) in &self.items {
                     if !self.complete.contains(index) {
@@ -266,15 +311,11 @@ impl Assembler {
                     }
                     match item["type"].as_str() {
                         Some("reasoning") => {
-                            replay_bytes = replay_bytes.saturating_add(item.to_string().len());
-                            if replay_bytes > REPLAY_LIMIT {
-                                return Err(invalid());
-                            }
                             replay.push(item.clone());
                         }
                         Some("function_call") => {
                             let arguments = item["arguments"].as_str().ok_or_else(invalid)?;
-                            if arguments.len() > REPLAY_LIMIT
+                            if arguments.len() > TOOL_ARGUMENT_LIMIT
                                 || !serde_json::from_str::<Value>(arguments)
                                     .is_ok_and(|v| v.is_object())
                             {
@@ -346,20 +387,15 @@ pub(super) fn event_stream_with_recovery(
     cancel: CancellationToken,
     recoverable: bool,
 ) -> EventStream {
-    let bytes = resp.bytes_stream().scan(0usize, |total, chunk| {
-        let next = match chunk {
-            Ok(chunk) => {
-                *total = total.saturating_add(chunk.len());
-                if *total > WIRE_LIMIT {
-                    Err(ResponseBytesError::Limit)
-                } else {
-                    Ok(chunk)
-                }
-            }
-            Err(_) => Err(ResponseBytesError::Transport),
-        };
-        futures::future::ready(Some(next))
-    });
+    let bytes = resp
+        .bytes_stream()
+        .scan(ResponseFrameBudget::default(), |budget, chunk| {
+            let next = match chunk {
+                Ok(chunk) => budget.consume(&chunk).map(|()| chunk),
+                Err(_) => Err(ResponseBytesError::Transport),
+            };
+            futures::future::ready(Some(next))
+        });
     let inner = Box::pin(bytes.eventsource());
     Box::pin(futures::stream::unfold(
         (inner, Assembler::default(), VecDeque::new(), false, cancel),
@@ -392,6 +428,15 @@ pub(super) fn event_stream_with_recovery(
                             invalid()
                         }));
                     }
+                    Some(Err(EventStreamError::Transport(ResponseBytesError::Limit {
+                        observed_bytes,
+                    }))) => {
+                        ended = true;
+                        pending.push_back(Err(VegaError::ProviderPayloadTooLarge {
+                            observed_bytes,
+                            limit_bytes: WIRE_LIMIT,
+                        }));
+                    }
                     Some(Err(_)) => {
                         ended = true;
                         pending.push_back(Err(invalid()));
@@ -400,4 +445,38 @@ pub(super) fn event_stream_with_recovery(
             }
         },
     ))
+}
+
+#[cfg(test)]
+mod frame_budget_tests {
+    use super::*;
+
+    #[test]
+    fn valid_frame_boundaries_release_budget_across_split_line_endings() {
+        for ending in ["\n", "\r", "\r\n"] {
+            let mut budget = ResponseFrameBudget::default();
+            let frame = format!("data: {}{ending}{ending}", "x".repeat(WIRE_LIMIT / 2));
+            for _ in 0..4 {
+                for chunk in frame.as_bytes().chunks(1024) {
+                    budget.consume(chunk).unwrap();
+                }
+            }
+            assert_eq!(budget.bytes, 0);
+        }
+        let mut budget = ResponseFrameBudget::default();
+        for chunk in [b"data: x\r".as_slice(), b"\n\r", b"\n", b"data: y\r", b"\r"] {
+            budget.consume(chunk).unwrap();
+        }
+        assert_eq!(budget.bytes, 0);
+    }
+
+    #[test]
+    fn multiline_sse_frame_is_bounded_before_json_assembly() {
+        let mut budget = ResponseFrameBudget::default();
+        let line = format!("data: {}\n", "x".repeat(WIRE_LIMIT / 2));
+        budget.consume(line.as_bytes()).unwrap();
+        assert!(
+            matches!(budget.consume(line.as_bytes()),Err(ResponseBytesError::Limit {observed_bytes}) if observed_bytes == WIRE_LIMIT+1)
+        );
+    }
 }

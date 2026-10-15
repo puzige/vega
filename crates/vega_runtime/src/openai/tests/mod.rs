@@ -900,7 +900,7 @@ fn i71_responses_done_reconciles_empty_and_partial_deltas_without_duplicates() {
         .contains("private opaque")
     );
     let mut parser = responses::Assembler::default();
-    let text = "界".repeat(40_000);
+    let text = "界".repeat(100_000);
     let event = serde_json::json!({"type":"response.reasoning_summary_text.done","item_id":"r","summary_index":0,"text":text});
     let out = parser.absorb(&event.to_string()).unwrap();
     let combined: String = out
@@ -1005,4 +1005,106 @@ fn i71_responses_item_and_terminal_snapshots_recover_missing_deltas_once() {
         1
     );
     assert!(matches!(out.last(), Some(ProviderEvent::Done { .. })));
+}
+
+#[test]
+fn large_reasoning_deltas_done_and_replay_preserve_protocol_data() {
+    let mut parser = responses::Assembler::default();
+    let chunk = "思考🧠".repeat(30_000);
+    let mut observed = String::new();
+    for _ in 0..5 {
+        let event = serde_json::json!({"type":"response.reasoning_text.delta","item_id":"reasoning","delta":chunk});
+        for event in parser.absorb(&event.to_string()).unwrap() {
+            if let ProviderEvent::ThinkingDelta(text) = event {
+                observed.push_str(&text);
+            }
+        }
+    }
+    assert_eq!(observed, chunk.repeat(5));
+    let done = serde_json::json!({"type":"response.reasoning_text.done","item_id":"reasoning","text":observed});
+    assert!(parser.absorb(&done.to_string()).unwrap().is_empty());
+    let wrong = serde_json::json!({"type":"response.reasoning_text.done","item_id":"reasoning","text":"x".repeat(observed.len())});
+    assert!(parser.absorb(&wrong.to_string()).is_err());
+    let replay = (0..300).map(|index| serde_json::json!({"id":format!("r-{index}"),"type":"reasoning","encrypted_content":"x".repeat(2048)})).collect::<Vec<_>>();
+    for (index, item) in replay.iter().enumerate() {
+        let event = serde_json::json!({"type":"response.output_item.done","output_index":index,"item":item});
+        assert!(parser.absorb(&event.to_string()).unwrap().is_empty());
+    }
+    let completed = serde_json::json!({"type":"response.completed","response":{"status":"completed","output":replay}});
+    let events = parser.absorb(&completed.to_string()).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event,ProviderEvent::ReasoningReplay(items) if *items == replay))
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ProviderEvent::Done {
+            stop_reason: StopReason::End
+        }
+    )));
+    let mut req = request();
+    let mut message = ChatMessage::new(ChatRole::Assistant, "");
+    message.response_reasoning = replay.clone();
+    req.messages.push(message);
+    let body = responses::build_body(&req).unwrap();
+    let actual = body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "reasoning")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(actual, replay);
+}
+
+#[tokio::test]
+async fn long_responses_stream_continues_past_old_cumulative_wire_budget() {
+    let text = "reasoning ".repeat(30_000);
+    let mut frames = (0..20).map(|_| serde_json::json!({"type":"response.reasoning_text.delta","item_id":"reasoning","delta":text}).to_string()).collect::<Vec<_>>();
+    frames.push(serde_json::json!({"type":"response.completed","response":{"status":"completed","output":[{"id":"answer","type":"message","role":"assistant","content":[{"type":"output_text","text":"finished"}]}]}}).to_string());
+    let refs = frames.iter().map(String::as_str).collect::<Vec<_>>();
+    let response = sse_response(&refs, false);
+    let server = mock_transport(Arc::new(move |_| Ok(fixture_response(response.clone())))).await;
+    let provider = provider_for(&server, fast_policy(1)).with_responses_api(true);
+    let mut stream = provider
+        .chat_stream(request(), CancellationToken::new())
+        .await
+        .unwrap();
+    let mut thinking_bytes = 0;
+    let mut answer = String::new();
+    let mut done = false;
+    while let Some(event) = stream.next().await {
+        match event.unwrap() {
+            ProviderEvent::ThinkingDelta(delta) => thinking_bytes += delta.len(),
+            ProviderEvent::TextDelta(delta) => answer.push_str(&delta),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            } => done = true,
+            _ => {}
+        }
+    }
+    assert_eq!(thinking_bytes, 20 * text.len());
+    assert!(thinking_bytes > 4 * 1024 * 1024);
+    assert_eq!(answer, "finished");
+    assert!(done);
+    assert_eq!(server.attempt_count(), 1);
+}
+
+#[tokio::test]
+async fn oversized_responses_frame_keeps_safe_size_diagnostics() {
+    let event = serde_json::json!({"type":"response.reasoning_text.delta","item_id":"reasoning","delta":"x".repeat(4*1024*1024)}).to_string();
+    let response = sse_response(&[&event], false);
+    let server = mock_transport(Arc::new(move |_| Ok(fixture_response(response.clone())))).await;
+    let provider = provider_for(&server, fast_policy(1)).with_responses_api(true);
+    let mut stream = provider
+        .chat_stream(request(), CancellationToken::new())
+        .await
+        .unwrap();
+    let error = stream.next().await.unwrap().unwrap_err();
+    assert!(
+        matches!(error,VegaError::ProviderPayloadTooLarge {observed_bytes,limit_bytes} if observed_bytes > limit_bytes && limit_bytes == 4*1024*1024)
+    );
+    assert!(stream.next().await.is_none());
+    assert_eq!(server.attempt_count(), 1);
 }

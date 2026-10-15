@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
-use super::loop_::reasoning_budget_violation;
 use super::*;
 use crate::{
     ContextBudget, ContextCompactionFailure, ContextCompactionHook, ContextCompactionRequest,
@@ -928,20 +927,6 @@ async fn mismatched_disabled_wire_fails_before_provider_call() {
     assert!(provider.requests().is_empty());
 }
 
-#[test]
-fn reasoning_budget_boundaries_are_byte_exact() {
-    assert!(reasoning_budget_violation(REASONING_DELTA_MAX_BYTES, 0, 0).is_none());
-    assert!(matches!(
-        reasoning_budget_violation(REASONING_DELTA_MAX_BYTES + 1, 0, 0),
-        Some((ReasoningBudgetScope::Delta, observed)) if observed == REASONING_DELTA_MAX_BYTES + 1
-    ));
-    assert!(matches!(
-        reasoning_budget_violation(1, REASONING_TURN_MAX_BYTES, 0),
-        Some((ReasoningBudgetScope::Turn, observed)) if observed == REASONING_TURN_MAX_BYTES + 1
-    ));
-    assert!(reasoning_budget_violation(1, 0, usize::MAX).is_none());
-}
-
 mod claude_compaction;
 
 #[tokio::test]
@@ -963,7 +948,7 @@ async fn i71_summary_response_is_bounded_and_opaque_replay_can_span_many_rounds(
     )
     .await
     .unwrap();
-    assert!(result.failed);
+    assert!(!result.failed);
     assert!(result.final_text.is_empty());
     assert_eq!(
         result
