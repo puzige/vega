@@ -1711,14 +1711,17 @@ async fn project_task_show_more_appends_one_page_per_activation(cx: &mut gpui_ki
     };
     click(&f, cx, "project-p-show-more");
     assert_eq!(window(cx), 10);
+    assert_eq!(mounted(cx), 10);
     assert!(has_page(cx));
 
     assert!(grow(cx));
     assert_eq!(window(cx), 15);
+    assert_eq!(mounted(cx), 15);
     assert!(has_page(cx));
 
     assert!(grow(cx));
     assert_eq!(window(cx), p_ids.len());
+    assert_eq!(mounted(cx), p_ids.len());
     assert!(!has_page(cx));
     assert!(absent(&f, cx, "project-p-show-more"));
     assert!(absent(&f, cx, "project-p-show-less"));
