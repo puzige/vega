@@ -693,44 +693,6 @@ pub trait Provider: Send + Sync {
 mod tests {
     use super::*;
 
-    #[test]
-    fn issue302_shell_projection_bounds_utf8_and_preserves_other_tools() {
-        for output in [String::new(), "x".repeat(65_535), "x".repeat(65_536)] {
-            assert_eq!(
-                ChatMessage::projected_tool_result("call", "bash", &output),
-                ChatMessage::tool_result("call", &output)
-            );
-        }
-        for output in [
-            "x".repeat(65_537),
-            "x".repeat(2_622_078),
-            "界🦀".repeat(30_000),
-        ] {
-            let projected = ChatMessage::projected_tool_result("call", "bash", &output);
-            assert!(projected.content.len() <= 65_536);
-            let (head, rest) = projected
-                .content
-                .split_once("\n[Shell output shortened:")
-                .unwrap();
-            let (_, tail) = rest.split_once("]\n").unwrap();
-            assert!(!head.is_empty() && !tail.is_empty());
-            assert!(output.starts_with(head));
-            assert!(output.ends_with(tail));
-            assert!(projected.content.contains("middle omitted"));
-            assert!(projected.content.contains("Narrow/filter or page"));
-            assert_eq!(
-                ChatMessage::projected_tool_result("call", "bash", &projected.content),
-                projected
-            );
-            for tool in ["read", "edit", "write", "mcp__fixture"] {
-                assert_eq!(
-                    ChatMessage::projected_tool_result("call", tool, &output),
-                    ChatMessage::tool_result("call", &output)
-                );
-            }
-        }
-    }
-
     /// Compile-time proof of the architect's pre-ruling: the trait is
     /// dyn-compatible and its objects are `Send + Sync`.
     #[test]

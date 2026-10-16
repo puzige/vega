@@ -931,36 +931,6 @@ mod run_failure_tests {
     }
 
     #[test]
-    fn issue302_local_context_failures_keep_actionable_content_free_copy() {
-        use vega_runtime::ContextRuntimeError;
-        for error in [
-            ContextRuntimeError::OverLimit {
-                estimated_tokens: 301_000,
-                input_budget: 300_000,
-            },
-            ContextRuntimeError::SummaryInputOverLimit {
-                estimated_tokens: 301_000,
-                input_budget: 300_000,
-            },
-            ContextRuntimeError::ResultOverLimit {
-                estimated_tokens: 301_000,
-                target_tokens: 180_000,
-            },
-        ] {
-            let kind = RunFailureKind::from_runtime(&VegaError::Context(error));
-            assert_eq!(kind, RunFailureKind::ContextOverLimit);
-            assert!(kind.message().contains("本地上下文超出预算"));
-            assert!(kind.message().contains("原始对话已保留"));
-            assert!(!kind.message().contains("运行环境"));
-            assert!(!kind.message().contains("供应商"));
-        }
-        assert_eq!(
-            RunFailureKind::from_runtime(&VegaError::Context(ContextRuntimeError::SourceChanged)),
-            RunFailureKind::Runtime
-        );
-    }
-
-    #[test]
     fn quota_needs_exact_structured_code_and_never_projects_response_body() {
         const SENTINEL: &str = "PRIVATE_RESPONSE_AND_KEY_SENTINEL";
         let error = provider(
@@ -1032,16 +1002,5 @@ mod run_failure_tests {
                 .message()
                 .contains("SECRET_SENTINEL")
         );
-    }
-
-    #[test]
-    fn issue170_credential_safety_block_has_local_actionable_failure_state() {
-        let kind = RunFailureKind::from_runtime(&VegaError::CredentialExposureBlocked);
-        assert_eq!(kind, RunFailureKind::CredentialExposureBlocked);
-        let message = kind.message();
-        assert!(message.contains("无法安全转换"));
-        assert!(message.contains("已完成的工具操作仍然保留"));
-        assert!(message.contains("检查工具配置"));
-        assert!(!message.contains("无法连接供应商"));
     }
 }

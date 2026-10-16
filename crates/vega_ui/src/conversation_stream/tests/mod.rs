@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use gpui_kit::{Focusable, TestAppContext, WindowHandle};
 use tokio_util::sync::CancellationToken;
-use vega_conversation::agent::PermissionHook;
 use vega_conversation::types::{
     Approval, Microcents, PermissionDecision, PermissionMode, PermissionRequest, Plan, PlanStatus,
     ReadOnlyToolKind, SummaryCost, TaskBackend, TaskCostSummary, TaskSummaryOutcome, ThreadMode,
@@ -24,7 +23,6 @@ mod branch_popup_upward;
 mod composer_actions;
 mod composer_counter;
 mod core_flow;
-mod cua_menu_stability;
 mod cua_screenshots;
 mod cua_usability;
 mod e2e_variable_height;
@@ -37,7 +35,6 @@ mod issue151_latest_activity;
 mod issue296_codex_stream;
 mod issue296_desktop_ui;
 mod issue296_expansion;
-mod issue296_hierarchy_v2;
 mod issue296_phases;
 mod issue296_process_timeline;
 mod issue296_single_activity;

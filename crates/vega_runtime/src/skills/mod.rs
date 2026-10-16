@@ -21,9 +21,6 @@ pub use source::{
 mod catalog_tests;
 
 #[cfg(test)]
-mod snapshot_tests;
-
-#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

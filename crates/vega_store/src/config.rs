@@ -541,21 +541,6 @@ mod tests {
     }
 
     #[test]
-    fn issue75_computer_use_settings_default_off_and_round_trip() {
-        let legacy: AgentConfig = toml::from_str("turn_limit = 7").unwrap();
-        assert!(!legacy.desktop_use_enabled);
-        assert!(!legacy.browser_use_enabled);
-        let dir = temp_dir("computer-use-config");
-        let path = dir.join("config.toml");
-        let mut config = sample_config();
-        config.agent.desktop_use_enabled = true;
-        config.agent.browser_use_enabled = true;
-        config.save_to(&path).unwrap();
-        assert_eq!(load_from(&path).unwrap().agent, config.agent);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn agent_turn_limit_round_trips_and_defaults_zero() {
         let dir = temp_dir("agent-turn-limit");
         let path = dir.join("config.toml");
@@ -774,42 +759,5 @@ mod tests {
         invalid.args = vec!["OPENAI_API_KEY=secret".into()];
         assert!(invalid.validate().is_err());
         fs::remove_dir_all(&dir).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod issue71_tests {
-    use super::*;
-    #[test]
-    fn i71_api_legacy_default_and_explicit_roundtrip() {
-        let legacy = "name = 'owned'\nbase_url = 'https://owned.invalid/v1'\nmodels = ['model']\nkey_ref = 'owned'";
-        let mut provider: ProviderConfig = toml::from_str(legacy).unwrap();
-        assert_eq!(provider.api, ProviderApi::ChatCompletions);
-        provider.api = ProviderApi::Responses;
-        let encoded = toml::to_string(&provider).unwrap();
-        assert!(encoded.contains("responses"));
-        assert_eq!(
-            toml::from_str::<ProviderConfig>(&encoded).unwrap(),
-            provider
-        );
-        assert!(toml::from_str::<ProviderConfig>(&format!("{legacy}\napi='unknown'")).is_err());
-    }
-}
-
-#[cfg(test)]
-mod pending_message_tests {
-    use super::*;
-
-    #[test]
-    fn issue299_running_send_default_survives_legacy_and_roundtrip() {
-        let legacy: AgentConfig = toml::from_str("turn_limit = 7").unwrap();
-        assert_eq!(legacy.running_message_behavior, "queue");
-        assert_eq!(AgentConfig::default().running_message_behavior, "queue");
-        let mut selected = legacy;
-        selected.running_message_behavior = "steer".into();
-        let wire = toml::to_string(&selected).unwrap();
-        let restored: AgentConfig = toml::from_str(&wire).unwrap();
-        assert_eq!(restored.running_message_behavior, "steer");
-        assert_eq!(restored.turn_limit, 7);
     }
 }

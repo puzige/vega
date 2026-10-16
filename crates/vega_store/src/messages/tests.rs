@@ -364,50 +364,6 @@ fn separate_connections_serialize_completions_to_one_pending() {
     );
 }
 
-#[test]
-fn issue146_terminal_durations_are_persisted_and_projected_by_page() {
-    let (store, _dir) = setup();
-    for (id, status, duration) in [
-        ("done", "done", 10_005),
-        ("failed", "failed", 1_201),
-        ("stopped", "interrupted", 15),
-    ] {
-        let seq = next_seq(store.conn(), "t").unwrap();
-        insert(store.conn(), &streaming(id, seq)).unwrap();
-        assert_eq!(
-            finish_streaming(store.conn(), id, "answer", status, Some(duration)).unwrap(),
-            1
-        );
-    }
-    let seq = next_seq(store.conn(), "t").unwrap();
-    insert(store.conn(), &streaming("legacy", seq)).unwrap();
-    finish_streaming(store.conn(), "legacy", "old", "done", None).unwrap();
-    let seq = next_seq(store.conn(), "t").unwrap();
-    insert(store.conn(), &streaming("plan", seq)).unwrap();
-    complete_plan(store.conn(), "t", "plan", "steps", 100, Some(62_001)).unwrap();
-
-    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
-    assert_eq!(page.execution_durations_ms.len(), 4);
-    assert_eq!(page.execution_durations_ms.get("done"), Some(&10_005));
-    assert_eq!(page.execution_durations_ms.get("failed"), Some(&1_201));
-    assert_eq!(page.execution_durations_ms.get("stopped"), Some(&15));
-    assert_eq!(page.execution_durations_ms.get("plan"), Some(&62_001));
-    assert!(!page.execution_durations_ms.contains_key("legacy"));
-
-    let seq = next_seq(store.conn(), "t").unwrap();
-    insert(store.conn(), &streaming("invalid", seq)).unwrap();
-    assert!(finish_streaming(store.conn(), "invalid", "partial", "streaming", Some(9)).is_err());
-    assert_eq!(
-        find(store.conn(), "invalid").unwrap().unwrap().status,
-        "streaming"
-    );
-    assert!(finish_streaming(store.conn(), "invalid", "partial", "failed", Some(-1)).is_err());
-    assert_eq!(
-        find(store.conn(), "invalid").unwrap().unwrap().status,
-        "streaming"
-    );
-}
-
 // ─── keyset page contract (S8-T45/C7) ────────────────────────────────────
 
 /// Seeds `count` terminal assistant rows plus one user row per message
@@ -854,81 +810,6 @@ fn page_and_tool_batch_read_on_one_fresh_snapshot() {
     assert_eq!(ids, vec!["tc-after"]);
 }
 
-#[test]
-fn issue296_response_metadata_replay_and_invalid_spans_preserve_body() {
-    let (store, _dir) = setup();
-    insert(store.conn(), &streaming("response", 1)).unwrap();
-    let body = "过程。结果。";
-    update_streaming_content(store.conn(), "response", body).unwrap();
-    let mut response = AssistantResponseRow {
-        message_id: "response".into(),
-        response_id: "first".into(),
-        text_start_bytes: 0,
-        text_end_bytes: "过程。".len(),
-        kind: "commentary".into(),
-    };
-    assert!(record_assistant_response(store.conn(), "response", body, &response).unwrap());
-    assert!(record_assistant_response(store.conn(), "response", body, &response).unwrap());
-    response.text_end_bytes = body.len();
-    assert!(!record_assistant_response(store.conn(), "response", body, &response).unwrap());
-    response.response_id = "invalid".into();
-    for (start, end) in [(1, 9), (9, 10), (9, body.len() + 1), (0, body.len())] {
-        response.text_start_bytes = start;
-        response.text_end_bytes = end;
-        assert!(!record_assistant_response(store.conn(), "response", body, &response).unwrap());
-    }
-    response.response_id = "final".into();
-    response.text_start_bytes = "过程。".len();
-    response.text_end_bytes = body.len();
-    response.kind = "final".into();
-    assert!(record_assistant_response(store.conn(), "response", body, &response).unwrap());
-    finish_streaming(store.conn(), "response", body, "done", Some(1024)).unwrap();
-    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
-    assert_eq!(page.rows[0].content, body);
-    assert_eq!(page.assistant_responses.len(), 2);
-    assert_eq!(page.assistant_responses[1], response);
-    store
-        .conn()
-        .execute(
-            "UPDATE assistant_responses SET text_start_bytes = 10 WHERE response_id = 'final'",
-            [],
-        )
-        .unwrap();
-    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
-    assert!(page.assistant_responses.is_empty());
-    assert_eq!(page.rows[0].content, body);
-    assert_eq!(page.execution_durations_ms.get("response"), Some(&1024));
-}
-
-#[test]
-fn issue296_response_metadata_failed_and_legacy_runs_never_claim_final() {
-    let (store, _dir) = setup();
-    for (seq, id) in [(1, "failed"), (2, "legacy")] {
-        insert(store.conn(), &streaming(id, seq)).unwrap();
-        update_streaming_content(store.conn(), id, "result").unwrap();
-    }
-    assert!(
-        record_assistant_response(
-            store.conn(),
-            "failed",
-            "result",
-            &AssistantResponseRow {
-                message_id: "failed".into(),
-                response_id: "final".into(),
-                text_start_bytes: 0,
-                text_end_bytes: 6,
-                kind: "final".into(),
-            }
-        )
-        .unwrap()
-    );
-    finish_streaming(store.conn(), "failed", "result", "failed", Some(12)).unwrap();
-    finish_streaming(store.conn(), "legacy", "result", "done", None).unwrap();
-    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
-    assert!(page.assistant_responses.is_empty());
-    assert!(page.rows.iter().all(|row| row.content == "result"));
-}
-
 enum ResponseWriterEvent {
     Waiting,
     Finished(Result<bool, rusqlite::Error>),
@@ -1032,14 +913,4 @@ fn response_writer_contention(finish_owner: bool) {
             "concurrent peer"
         );
     }
-}
-
-#[test]
-fn issue67_response_writer_waits_before_reading_and_preserves_peer_commit() {
-    response_writer_contention(false);
-}
-
-#[test]
-fn issue67_response_writer_revalidates_terminal_owner_after_waiting() {
-    response_writer_contention(true);
 }

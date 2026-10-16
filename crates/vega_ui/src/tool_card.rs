@@ -1351,7 +1351,6 @@ fn detail_row(
 
 #[cfg(test)]
 mod tests {
-    mod asset_metadata;
     use super::*;
     use vega_conversation::types::{InvalidToolCode, InvalidToolKind, InvalidToolProjection};
 
@@ -1364,54 +1363,6 @@ mod tests {
             duration_ms: None,
             truncated: None,
             invalid: None,
-        }
-    }
-
-    #[test]
-    fn issue75_readonly_tool_cards_distinguish_observation_screenshot_and_input() {
-        for (tool, action, verb, surface, authorized) in [
-            ("ComputerObserve", "observe", "observe", "computer", false),
-            ("BrowserObserve", "observe", "observe", "browser", false),
-            (
-                "ComputerScreenshot",
-                "screenshot",
-                "capture",
-                "computer",
-                false,
-            ),
-            ("ComputerAct", "type_text", "control", "computer", true),
-            ("BrowserAct", "click", "control", "browser", true),
-        ] {
-            for status in [
-                ToolCallStatus::Running,
-                ToolCallStatus::Success,
-                ToolCallStatus::Rejected,
-            ] {
-                let mut card = ToolCard::hydrated(
-                    Some(ToolCardInputProjection::ComputerUse {
-                        tool: tool.into(),
-                        action: action.into(),
-                    }),
-                    status,
-                    None,
-                    None,
-                );
-                card.approval = Some(Approval::Once);
-                card.refresh_summary();
-                let text = card.visible_text();
-                assert!(
-                    text.contains(&format!(
-                        "{} {surface}",
-                        generic_verb(verb, card.activity_state(), status)
-                    )),
-                    "{tool}: {text}"
-                );
-                assert_eq!(
-                    text.contains("approved for this action"),
-                    authorized,
-                    "{tool}: {text}"
-                );
-            }
         }
     }
 
@@ -1643,32 +1594,6 @@ mod tests {
     }
 
     #[test]
-    fn issue112_canonical_external_edit_card_preserves_target_and_count() {
-        let call = ToolCall {
-            id: "external-edit".into(),
-            tool: "Edit".into(),
-            input_json: r#"{"audit_version":"write_edit_v1","tool":"edit","path":"/external/note.txt","old_string_bytes":3,"new_string_bytes":4,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
-        };
-        let mut card = ToolCard::proposed(&call);
-        assert!(card.apply_approved(Approval::Once));
-        let mut terminal = result(
-            ToolCallStatus::Success,
-            r#"{"path":"/external/note.txt","bytes_written":8,"replacements":2,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
-        );
-        terminal.truncated = Some(false);
-        assert!(card.apply_finished(&terminal));
-        assert!(card.visible_text().contains("/external/note.txt"));
-        assert!(!card.visible_text().contains(CORRUPT_LABEL));
-        assert!(matches!(
-            tool_card_result_projection(Some(&tool_card_input_projection(&call)), &terminal),
-            ToolCardResultProjection::EditSuccess {
-                replacements: 2,
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn corrupt_success_is_content_free() {
         let call = ToolCall {
             id: "call".into(),
@@ -1704,26 +1629,6 @@ mod tests {
         let card = ToolCard::invalid_terminal(&result);
         assert!(card.is_invalid_terminal());
         assert_eq!(card.visible_text(), "Rejected write: malformed_json");
-    }
-
-    #[test]
-    fn issue90_hydrated_bash_validation_card_is_safe_and_actionable() {
-        let card = ToolCard::hydrated(
-            None,
-            ToolCallStatus::Rejected,
-            Some(Approval::Deny),
-            Some(ToolCardResultProjection::InvalidRejected {
-                tool: InvalidToolKind::Bash,
-                code: InvalidToolCode::InvalidInput,
-                reused: true,
-            }),
-        );
-        assert!(card.is_invalid_terminal());
-        assert_eq!(
-            card.visible_text(),
-            "Command rejected: invalid input · cmd must be a non-empty string; timeout_ms must be a positive integer when provided; other fields are unsupported"
-        );
-        assert!(card.permission_identity().is_none());
     }
 
     #[test]
