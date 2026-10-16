@@ -50,10 +50,10 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 1. **不在 `master` 上直接实现**——每卡用 `~/Workspace/worktrees/` 下独立 worktree 和 `feat/<task-id>-<slug>` 分支。**任何仓库修改前先 fetch 并更新基线**；通常为 `git fetch` 后 `git rebase origin/master`，有脏改动或分叉先保护核实，不 reset 或覆盖。
 2. **共用入口与身份**：取卡、实现、交接和收尾使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)，细节以 [Issue 与角色工作流](docs/vega-issue-workflow.md) 为准。角色优先采用用户明确指定的工作流角色，否则采用宿主系统身份；Vega 为 `You are Vega`，不从模型名、项目名或路径猜身份，有证据不重复询问。
-3. **自动单卡**：用户指定或明确继续的卡优先；否则完整读取本角色候选队列，先排除关闭、占用、依赖未解、缺所需方案和未交接 PR，再按 Issue `createdAt` 降序、同时间编号降序取最新一张。Codex 取可审查的 Backlog、等待 Codex 的 Ready，或 Vega 已明确交回且无活跃执行者的 In progress；Vega 仅取方案完整可访问、明确交给 Vega 的 Ready。领取即 `In progress`，Issue 写阶段及当前/下一执行者；交回的 In progress 保留原列。解释、审阅或维护 skill 不启动其他卡。默认一张，仅连续授权才取下一张。
+3. **自动单卡**：用户指定或明确继续的卡优先；否则完整读取本角色候选队列，先排除关闭、占用、当前角色/阶段前提未满足、缺所需方案和未交接 PR，再按 Issue `createdAt` 降序、同时间编号降序取最新一张。Codex 取可审查的 Backlog、等待 Codex 的 Ready，或 Vega 最新交接明确交回、当前待领取且无活跃执行者的 In progress；这类阻塞卡可接回分析，不能因导致 Vega 阻塞的依赖缺口排除。Vega 仅取方案完整可访问、执行依赖已满足且明确交给 Vega 的 Ready。领取即 `In progress`，Issue 写阶段及当前/下一执行者；交回的 In progress 保留原列。解释、审阅或维护 skill 不启动其他卡。默认一张，仅连续授权才取下一张。
 4. **Codex 先接卡**：Codex 查重建卡并先审查所有需求；Bug 定位根因，先写测试用例、再写具体到文件/符号/修改动作的方案，提交并发布可访问交接链接后置 Ready 等 Vega。新功能默认由 Codex 组织实现，**代码实现委托专职 subagent**；Codex 主会话负责协调、审查、集成、PR/CI/合并及用户反馈分析。卡外发现单独记录，不扩大实现范围。
 5. **Vega 执行**：领取已交接 Ready 后立即 `In progress`，按方案实现和补测试，不建卡、不改 spec、不开放式排障。完成或遇阻都在同卡交回 Codex，保持 `In progress`，写当前执行者待领取、下一执行者 Codex 并停止写入。Codex 交到 Ready、Vega 交回或合并后等待用户，均为默认单卡停止点；同卡始终只有一个实现写入者。
-6. **合并与验收**：本地仅静态检查，测试只交 GitHub Actions；Codex 审查并确认最新 head 的 required check 通过后主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后才回写、关闭 Issue/Done、删除本卡远端分支及本地分支/worktree；未通过由 Codex 先分析，Bug 修订方案后重新交 Vega。**手测前不得关闭、Done 或清理。**
+6. **合并与验收**：本地仅静态检查，测试只交 GitHub Actions；Codex 审查并确认最新 head 的 required check 通过后主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后 Codex 回写，安全检查并完成本卡远端分支及本地分支/worktree 清理，再关闭 Issue 并读回，最后置 Done 并读回；清理或关闭受阻时保持 `In review`、标待收尾，不先 Done 再补清理。未通过由 Codex 先分析，Bug 修订方案后重新交 Vega。**手测前不得关闭、Done 或清理；Done 仅表示验收和全部收尾均已完成。**
 7. **遇阻与证据**：按 exec-guide §6 用 `[BLOCKED]` 上报，Vega 的方案缺口交回 Codex，禁止自创方案绕过。自动回归仍覆盖进程内业务/安全/存储/UI；真实模型、服务和 UI 系统集成由用户在合并后的 master 上手测，不以 Agent 自产 E2E/截图替代；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ## 问题与需求收集

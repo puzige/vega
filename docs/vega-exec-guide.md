@@ -38,12 +38,12 @@
 
 ## 2. 工作流（每个任务的标准动作）
 
-1. 用户指定或明确继续的卡优先；否则自动完整读取本角色候选队列，过滤关闭、占用、未满足依赖、缺所需方案和未交接 PR，再按 Issue `createdAt` 降序、同时间编号降序取最新一张，不按更新或 Project 默认顺序。解释、审阅和维护 skill 不启动其他卡。
-2. Codex 取可开始审查的 Backlog、等待 Codex 的 Ready，或 Vega 明确交回且无活跃执行者的 In progress；Vega 仅取明确交给 Vega、方案完整可访问的 Ready。领取前重读，立即置 In progress 并读回；交回卡列不变。Issue 记录阶段、当前/下一执行者、时间、方案版本和工作上下文，冲突时让出，不把读回当原子锁。
+1. 用户指定或明确继续的卡优先；否则自动完整读取本角色候选队列，过滤关闭、占用、当前角色/阶段前提未满足、缺所需方案和未交接 PR，再按 Issue `createdAt` 降序、同时间编号降序取最新一张，不按更新或 Project 默认顺序。解释、审阅和维护 skill 不启动其他卡。
+2. Codex 取可开始审查的 Backlog、等待 Codex 的 Ready，或 Vega 最新交接明确交回、当前待领取且无活跃执行者的 In progress；这类阻塞卡可由 Codex 接回分析，不能因导致 Vega 阻塞的依赖缺口排除。Vega 仅取明确交给 Vega、方案完整可访问且执行依赖已满足的 Ready。领取前重读，立即置 In progress 并读回；交回卡列不变。Issue 记录阶段、当前/下一执行者、时间、方案版本和工作上下文，冲突时让出，不把读回当原子锁。
 3. Codex 先审查需求/spec，先写验收用例再写实现计划。Bug 须交付根因/证据、具体文件/符号和修改动作、边界、测试矩阵、Actions 命令、手测/回滚、基线/分支/交接 commit 及回报约定；提交到 Vega 可访问位置并在 Issue 发布链接后才 Ready，不能只给会话结论或未提交本地文件。Feature 默认仍由 Codex 组织专职子 agent 实现。
 4. 修改仓库前 fetch 并更新基线，保护已有改动；每卡用 `~/Workspace/worktrees/` 下独立 worktree 和 `feat/<task-id>-<slug>` 分支，不直接改 master。同卡单一写入者，交接后前任停止写入。Vega 按已发布方案实现/补测试；完成或遇阻回报同卡，仍 In progress，当前执行者待领取、下一执行者 Codex 并停止写入，Codex 可自动接回。
 5. **本地仅快速静态 check**。Codex 审查 Vega 或子 agent 的 diff/覆盖后开 PR，不使用自动关闭 Issue 的关键字。测试交 Actions，CI 启动后每 5 分钟查询，不短轮询或 watch；收到完成/失败通知或用户要求即时查看除外。最新 head 的 required check 通过后仅 Codex 主动 squash merge，才置 In review，**停下等用户纯手动验收**。
-6. 用户明确手测通过 → Codex 回写 → 关闭 Issue/Done → 清理本卡远端分支及本地分支/worktree；未通过 → Codex 记录反馈、退回 In progress 并先分析，Bug 修订方案后再 Ready 交 Vega。手测前不关闭、Done 或清理。
+6. 用户明确手测通过 → Codex 回写 → 安全检查并完成本卡远端分支及本地分支/worktree 清理 → 关闭 Issue 并读回 → 最后置 Done 并读回；清理或关闭受阻则保留 In review、标待收尾，不能先 Done 再补清理。未通过 → Codex 记录反馈、退回 In progress 并先分析，Bug 修订方案后再 Ready 交 Vega。手测前不关闭、Done 或清理；Done 仅表示验收和全部收尾均已完成。
 7. 默认一张，到 Codex 交 Ready、Vega 交回或合并后等用户时停止，只有连续授权才取下一张；无合格卡说明阻碍并停止。提交格式为 `feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（ID 见 vega-features.md）。
 8. 实现报告写修改文件/提交、静态检查命令与退出码、待 CI 测试及对应云端原始输出、限制/耗时和规格偏离（必须为无），不把“已派发/提交”当“已通过/完成”。
 
@@ -117,7 +117,7 @@ Vega 在原 Issue 上报，保持 In progress，写当前执行者待领取、�
 
 **PR gate 拓扑（2026-09-24 用户裁决，[Issue #175](vega-issue-175-single-pr-check.md)；缓存和 workflow 命名由 [Issue #179](vega-issue-179-shared-pr-cicd-cache.md) 更新，测试运行器按 2026-09-25 [Issue #183](vega-issue-183-nextest-ci.md) 更新，并行结构按 [Issue #188](vega-issue-188-parallel-ci-checks.md) 更新）**：门禁全部在云端。`.github/workflows/pr-check.yml` 仅响应 base 为 `master` 的 PR，并以两个无相互依赖的 `macos-latest` job 并行执行：Clippy job 依次运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；Nextest job 运行 `cargo nextest run --workspace`。required check `check (fmt, clippy, test)` 是依赖两者的轻量汇总 job，以 `always()` 运行，仅两个结果均为 `success` 才通过，失败、取消和跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。失败直接阻断合并，不自动重试。该 workflow 保留 Rust 1.98.0、`contents: read`、执行 job 的 60 分钟超时和并发取消；两个执行 job 使用 `Swatinem/rust-cache@v2` 恢复 master CICD 写入的 `vega-master-build` 缓存，PR 的 `save-if` 条件为 false，因此 PR 不保存缓存；不使用归档、分片、额外 build 或手动 dispatch。`.github/workflows/cicd.yml` 的 GitHub Actions 名称为 `master`，仅在 push 到 master 时打包并上传 artifact；它和 PR check 使用相同 `shared-key: vega-master-build` 及 `save-if: ${{ github.ref == 'refs/heads/master' }}`，master 是唯一写入方。rust-cache 还会按 runner 平台、工具链及 Cargo 输入派生实际缓存键。旧的 [Issue #123](vega-issue-123-pr-check-pipeline.md) / [Issue #140](vega-issue-140-ci-test-throughput.md) 流水线描述只记录历史决策；云端 nextest 使用 `.config/nextest.toml` 默认 profile：`retries=0`、`fail-fast=false`、600 秒挂起保护，不覆盖默认并发。
 - **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败由 Codex 读取 PR 原始日志分析；Master 只允许 PR merge，不允许直接 push。本地**仅快速静态 check**，不运行 Vega、编译或测试；本卡功能点及 workspace 测试只交 GitHub Actions。本地 commit/push 不做强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。
-- **验收节奏（2026-10-16 用户更新）**：Vega/子 agent 实现回报 → Codex 审查并开 PR → 最新 head 的 required check 通过 → Codex 主动 squash merge → In review → **停下等用户纯手动验收**。CI 每 5 分钟查询，通知/用户即时请求除外，不短轮询/watch。合并时 Issue 开放、不 Done、不删除本卡远端分支和本地分支/worktree；用户明确通过才回写、关闭/Done 并清理。用户不通过由 Codex 退回 In progress 先分析，再给 Vega 具体 Bug 方案。真实模型/服务/UI 集成由用户在 master 上手测，Agent 不以自产 E2E/截图替代。
+- **验收节奏（2026-10-16 用户更新）**：Vega/子 agent 实现回报 → Codex 审查并开 PR → 最新 head 的 required check 通过 → Codex 主动 squash merge → In review → **停下等用户纯手动验收**。CI 每 5 分钟查询，通知/用户即时请求除外，不短轮询/watch。合并时 Issue 开放、不 Done、不删除本卡远端分支和本地分支/worktree；用户明确通过才回写，安全检查并完成清理，再关闭 Issue 并读回，最后 Done 并读回。清理或关闭受阻时保持 In review、标待收尾，不先 Done 再补清理。用户不通过由 Codex 退回 In progress 先分析，再给 Vega 具体 Bug 方案。真实模型/服务/UI 集成由用户在 master 上手测，Agent 不以自产 E2E/截图替代。
 - **任务级**：任务卡附验收矩阵与命令；运行程序、测试或 benchmark 的命令交 Actions，手工走查由用户完成，本地仅快速静态检查。
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
 - **报告**：贴本地静态检查与对应提交的云端命令原始输出，未运行项标待 CI；未收到用户结论标待手测，不许用“通过了”替代证据或假装完整完成。收尾失败保留上下文并说明待办。
