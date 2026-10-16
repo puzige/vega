@@ -432,7 +432,7 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
     stream.read_with(cx, |stream, cx| {
         let group = group(stream, cx);
         let aggregate = group.read(cx).aggregate_summary(cx);
-        assert_eq!(aggregate, "In progress: Run commands, read files");
+        assert_eq!(aggregate, "In progress: run commands, read files");
         assert!(
             !aggregate.contains(" for ")
                 && !aggregate.contains(" after ")
@@ -550,7 +550,7 @@ async fn issue381_long_bash_elides_title_and_preserves_disclosure(cx: &mut TestA
 
     stream.read_with(cx, |stream, cx| {
         let aggregate = group(stream, cx).read(cx).aggregate_summary(cx);
-        assert_eq!(aggregate, "In progress: Run commands, read files");
+        assert_eq!(aggregate, "In progress: run commands, read files");
         assert!(
             !aggregate.contains(" for ")
                 && !aggregate.contains(" after ")
@@ -827,7 +827,7 @@ async fn issue70_t70_2_adjacent_mixed_tools_share_one_collapsed_item(cx: &mut Te
         );
         assert_eq!(
             group.aggregate_summary(cx),
-            "Completed: Read files, run commands, search content"
+            "Completed: read files, run commands, search content"
         );
         assert_eq!(
             group.children(),
@@ -1426,7 +1426,7 @@ async fn issue70_t70_6_hydration_matches_live_and_reopen_resets_expansion(cx: &m
     assert_eq!(
         hydrated_text,
         [
-            "Completed: Read files, find files, run commands",
+            "Completed: read files, find files, run commands",
             "Searched content"
         ],
         "live and hydrated activity copy preserves boundaries, categories, and terminal state"

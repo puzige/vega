@@ -626,3 +626,267 @@ async fn issue299_controller_menu_default_persists_and_does_not_retag_pending(
         "queue"
     );
 }
+
+#[gpui_kit::test]
+async fn issue401_controller_steer_action_projects_before_the_boundary(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(MockProvider::new_rounds(vec![done("a"), done("b")]));
+    let f = fixture(cx, provider.clone());
+    let release = gate(&f, provider.clone(), cx);
+    send(&f, "first", cx);
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 1 && draft(&f, cx).is_empty()
+    });
+    send(&f, "second", cx);
+    pump_test_app(cx, |cx| {
+        f.stream.read_with(cx, |stream, _| {
+            stream.pending_queue().messages.len() == 1 && !stream.pending_queue().busy
+        })
+    });
+    let id = f.stream.read_with(cx, |stream, _| {
+        stream.pending_queue().messages[0].id.clone()
+    });
+    let rows_before = f
+        .stream
+        .read_with(cx, |stream, cx| stream.virtual_row_count(cx));
+
+    queue_action(&f, PendingQueueAction::Steer(id.clone()), cx);
+    pump_test_app(cx, |cx| {
+        !f.stream
+            .read_with(cx, |stream, _| stream.pending_queue().busy)
+    });
+
+    assert!(
+        f.stream
+            .read_with(cx, |stream, _| stream.projected_pending_ids().len() == 1),
+        "the promoted steer must project into the conversation before the boundary"
+    );
+    assert!(f.stream.read_with(cx, |stream, _| {
+        stream
+            .rail_pending_ids()
+            .iter()
+            .all(|pending| pending != &id)
+    }));
+    assert!(
+        f.stream
+            .read_with(cx, |stream, cx| stream.virtual_row_count(cx))
+            > rows_before,
+        "the echo adds visible rows without waiting for the model boundary"
+    );
+
+    release.notify_one();
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 2 && queue_idle(&f, cx)
+    });
+    assert!(
+        f.stream
+            .read_with(cx, |stream, _| stream.projected_pending_ids().is_empty()),
+        "the durable delivery must promote the echo in place"
+    );
+    let rows = vega_store::messages::recent(f.store.conn(), &f.thread.id, 50).unwrap();
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.role == "user")
+            .map(|row| row.content.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.role == "user" && row.content == "second")
+            .count(),
+        1,
+        "the echo must not duplicate the durable user row"
+    );
+    assert!(
+        vega_conversation::pending_messages::load(&f.store, &f.thread.id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+async fn issue401_controller_stop_returns_the_unconsumed_steer_to_the_rail(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(MockProvider::new_rounds(vec![
+        done("unused"),
+        done("resumed"),
+    ]));
+    let f = fixture(cx, provider.clone());
+    let _release = gate(&f, provider.clone(), cx);
+    send(&f, "first", cx);
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 1 && draft(&f, cx).is_empty()
+    });
+    send(&f, "second", cx);
+    pump_test_app(cx, |cx| {
+        f.stream.read_with(cx, |stream, _| {
+            stream.pending_queue().messages.len() == 1 && !stream.pending_queue().busy
+        })
+    });
+    let id = f.stream.read_with(cx, |stream, _| {
+        stream.pending_queue().messages[0].id.clone()
+    });
+    queue_action(&f, PendingQueueAction::Steer(id.clone()), cx);
+    pump_test_app(cx, |cx| {
+        !f.stream
+            .read_with(cx, |stream, _| stream.pending_queue().busy)
+    });
+    assert_eq!(
+        f.stream
+            .read_with(cx, |stream, _| stream.projected_pending_ids().len()),
+        1
+    );
+
+    click(&f, "composer-stop", cx);
+    pump_test_app(cx, |cx| queue_idle(&f, cx));
+    assert_eq!(provider.requests().len(), 1);
+    assert!(
+        f.stream
+            .read_with(cx, |stream, _| stream.projected_pending_ids().is_empty()),
+        "a stopped run must not keep the optimistic entry"
+    );
+    assert!(f.stream.read_with(cx, |stream, _| {
+        stream
+            .rail_pending_ids()
+            .iter()
+            .any(|pending| pending == &id)
+    }));
+    assert_eq!(
+        vega_conversation::pending_messages::load(&f.store, &f.thread.id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[gpui_kit::test]
+async fn issue401_controller_default_steer_send_projects_before_the_boundary(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(MockProvider::new_rounds(vec![done("a"), done("b")]));
+    let f = fixture(cx, provider.clone());
+    let release = gate(&f, provider.clone(), cx);
+    cx.update(|cx| {
+        cx.set_global(vega_ui::conversation_stream::RunningMessageDefault(
+            PendingMessageBehavior::Steer,
+        ))
+    });
+    send(&f, "first", cx);
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 1 && draft(&f, cx).is_empty()
+    });
+    send(&f, "steered", cx);
+    pump_test_app(cx, |cx| {
+        f.stream.read_with(cx, |stream, _| {
+            stream.pending_queue().messages.len() == 1 && !stream.pending_queue().busy
+        })
+    });
+    assert_eq!(
+        f.stream
+            .read_with(cx, |stream, _| stream.pending_queue().messages[0].behavior),
+        PendingMessageBehavior::Steer
+    );
+    assert!(
+        f.stream
+            .read_with(cx, |stream, _| stream.projected_pending_ids().len() == 1),
+        "a default-steer submission must project immediately after the durable enqueue"
+    );
+    release.notify_one();
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 2 && queue_idle(&f, cx)
+    });
+    assert!(
+        f.stream
+            .read_with(cx, |stream, _| stream.projected_pending_ids().is_empty())
+    );
+    assert_eq!(
+        vega_store::messages::recent(f.store.conn(), &f.thread.id, 50)
+            .unwrap()
+            .iter()
+            .filter(|row| row.role == "user" && row.content == "steered")
+            .count(),
+        1
+    );
+}
+
+#[gpui_kit::test]
+async fn issue401_controller_default_queue_send_stays_in_the_rail(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(MockProvider::new_rounds(vec![done("a"), done("b")]));
+    let f = fixture(cx, provider.clone());
+    let release = gate(&f, provider.clone(), cx);
+    cx.update(|cx| {
+        cx.set_global(vega_ui::conversation_stream::RunningMessageDefault(
+            PendingMessageBehavior::Queue,
+        ))
+    });
+    send(&f, "first", cx);
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 1 && draft(&f, cx).is_empty()
+    });
+    send(&f, "queued", cx);
+    pump_test_app(cx, |cx| {
+        f.stream.read_with(cx, |stream, _| {
+            stream.pending_queue().messages.len() == 1 && !stream.pending_queue().busy
+        })
+    });
+    assert!(
+        f.stream
+            .read_with(cx, |stream, _| stream.projected_pending_ids().is_empty()),
+        "queued messages keep the existing rail behaviour"
+    );
+    assert_eq!(
+        f.stream
+            .read_with(cx, |stream, _| stream.rail_pending_ids().len()),
+        1
+    );
+    release.notify_one();
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 2 && queue_idle(&f, cx)
+    });
+    assert_eq!(
+        vega_store::messages::recent(f.store.conn(), &f.thread.id, 50)
+            .unwrap()
+            .iter()
+            .filter(|row| row.role == "user")
+            .map(|row| row.content.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "queued"]
+    );
+}
+
+#[gpui_kit::test]
+async fn issue401_controller_rejects_promotion_without_an_active_run(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(MockProvider::new(done("unused")));
+    let f = fixture(cx, provider);
+    let message = queued(&f, "idle-steer", PendingMessageBehavior::Steer);
+    vega_conversation::pending_messages::enqueue(&f.store, &message).unwrap();
+    f.root.update(cx, |root, cx| {
+        root.load_pending_queue(f.stream.clone(), f.thread.id.clone(), cx)
+    });
+    pump_test_app(cx, |cx| queue_idle(&f, cx));
+    queue_action(&f, PendingQueueAction::Steer(message.id.clone()), cx);
+    pump_test_app(cx, |cx| queue_idle(&f, cx));
+    assert!(
+        f.stream
+            .read_with(cx, |stream, _| stream.projected_pending_ids().is_empty()),
+        "a failed promotion must not fabricate a projected entry"
+    );
+    assert!(f.stream.read_with(cx, |stream, _| {
+        stream
+            .rail_pending_ids()
+            .iter()
+            .any(|pending| pending == &message.id)
+    }));
+    assert!(
+        f.stream
+            .read_with(cx, |stream, _| stream.pending_queue().error.is_some()),
+        "the existing failure path stays visible"
+    );
+}
