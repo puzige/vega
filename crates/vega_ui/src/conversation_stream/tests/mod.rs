@@ -50,6 +50,7 @@ mod issue350_network_retry;
 mod issue395_thinking_performance;
 mod issue395_thinking_window;
 mod issue401_steer_projection;
+mod issue402_hover_auto_scroll;
 mod issue403_conversation_underlay;
 mod issue64_context_usage;
 mod issue70_tool_activity;
