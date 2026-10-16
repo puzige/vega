@@ -21,6 +21,8 @@ pub(crate) enum HistoryPageDirection {
 pub(crate) struct StreamEntryIdentity {
     pub(crate) key: String,
     pub(crate) message_id: Option<String>,
+    pub(crate) pending_id: Option<String>,
+    pub(crate) echo_kind: Option<String>,
     pub(crate) sequence: Option<i64>,
 }
 

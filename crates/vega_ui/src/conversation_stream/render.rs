@@ -275,7 +275,7 @@ impl ConversationStream {
             })
             .when(
                 self.thread.backend == TaskBackend::Native
-                    && !self.pending_queue.messages.is_empty(),
+                    && !self.visible_pending_messages().is_empty(),
                 |column| column.child(self.render_pending_queue(cx)),
             )
             .child(

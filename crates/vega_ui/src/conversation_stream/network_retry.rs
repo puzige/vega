@@ -85,6 +85,7 @@ impl ConversationStream {
         for index in removed.into_iter().rev() {
             self.entries.remove(index);
             self.list_remove(index);
+            self.shift_entry_indices(index, 1);
         }
         if let Some((_, group)) = &self.active_run_activity {
             group.update(cx, |group, cx| group.rollback_response(&activity, cx));

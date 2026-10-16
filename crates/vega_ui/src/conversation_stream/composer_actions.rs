@@ -458,7 +458,7 @@ impl ConversationStream {
             controls.push(self.pending_ui.send_focus.clone());
         }
         if self.pending_queue.paused
-            && !self.pending_queue.messages.is_empty()
+            && !self.visible_pending_messages().is_empty()
             && !self.actions.running
             && self.pending_controls_enabled()
         {
@@ -468,7 +468,7 @@ impl ConversationStream {
             controls.push(self.pending_ui.recover_focus.clone());
         }
         if self.pending_controls_enabled() {
-            for message in &self.pending_queue.messages {
+            for message in self.visible_pending_messages() {
                 if let Some(item) = self.pending_ui.items.get(&message.id) {
                     controls.extend(
                         item.images
