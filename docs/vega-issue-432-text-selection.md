@@ -44,3 +44,11 @@
 - 顺序：先补多击和选区绘制的回归，再实现 TextInput 私有鼠标状态/选择单元；接上 selection token 和根选择层抑制；最后补共享正文 IBeam 与链接优先级并核对既有 #357/#147 回归。
 - 交 Actions：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo nextest run --workspace`。本地不运行 Vega、不编译、不执行测试或打包。
 - 回滚：整体回退本卡提交，保留 #357 链接修复。合并后 In review 等用户纯手测；手测前不关闭 Issue、不 Done、不清理任务分支/worktree。
+
+## CI 夹具前置修订
+
+[Actions 38953752206](https://github.com/puzige/vega/actions/runs/38953752206) 的 Clippy 成功，Nextest 为 2832 passed / 1 failed / 5 skipped。唯一失败是 T06 超长输入最后一行的三击，原期望仍为 `1301..1306`，实际保留了 set_text 的折叠末尾 `1306..1306`；其余 15 个新增用例和既有回归均通过。
+
+静态调用链：set_text 先按显式换行更新逻辑视口，3 行旧视口遇到只有 2 条逻辑行的长文本仍保留 3 行；prepaint 学到 8 条可见视觉行后，paint 才写回 rows=8 并 request_animation_frame。GPUI 测试没有平台帧循环，run_until_parked 不会投递 on_next_frame，故此时 last_lines 已是 8 行而真实布局/命中仍是此前 3 行。测试按第 8 行生成的点击落在旧输入边界外。
+
+只修本卡测试前置：动态长文本更新后用已有 window.simulate_next_frame 投递已请求的下一帧，排空后 refresh/draw，并遵守返回的 ArenaClearNeeded::clear，再读取命中几何。两个长文本分支点击前必须断言已是 8 行可见视口、仍存在溢出首行，以及目标字形中心位于实际 TextElement bounds 和窗口 viewport 内。保留所有原字串、三击最后一行范围、300 字长词完整选择和复制断言；不改生产布局/事件/选择逻辑、不缩短输入、不直接调用鼠标 handler、不忽略或放宽失败。

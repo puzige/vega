@@ -132,6 +132,39 @@ fn input_point(
     })
 }
 
+fn settled_overflow_point(
+    input: &Entity<TextInput>,
+    visual: &mut VisualTestContext,
+    offset: usize,
+    fraction: f32,
+) -> Point<Pixels> {
+    visual.update(|window, cx| window.simulate_next_frame(cx));
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.run_until_parked();
+    let bounds = input.read_with(visual, |input, _| {
+        assert_eq!(input.rows, 8);
+        assert_eq!(input.last_lines.len(), 8);
+        assert!(input.first_visible_row > 0);
+        input.last_bounds.expect("settled input bounds")
+    });
+    let target = input_point(input, visual, offset, fraction);
+    let viewport =
+        visual.update(|window, _| Bounds::new(point(px(0.), px(0.)), window.viewport_size()));
+    assert!(
+        bounds.contains(&target),
+        "overflow glyph must be inside settled input: bounds={bounds:?}, point={target:?}"
+    );
+    assert!(
+        viewport.contains(&target),
+        "overflow glyph must be inside window: viewport={viewport:?}, point={target:?}"
+    );
+    target
+}
+
 fn mouse_down(visual: &mut VisualTestContext, position: Point<Pixels>, count: usize) {
     visual.simulate_event(MouseDownEvent {
         position,
@@ -391,15 +424,24 @@ fn issue432_empty_lines_end_clicks_and_overflow_are_safe(cx: &mut TestAppContext
     let long = format!("{}\nfinal", "wrapped text ".repeat(100));
     input.update(&mut visual, |input, cx| input.set_text(&long, cx));
     visual.run_until_parked();
-    assert!(input.read_with(&visual, |input, _| input.first_visible_row > 0));
-    let tail = input_point(&input, &visual, long.len() - 1, 0.8);
-    multi_click(&mut visual, tail, 3);
+    let tail = settled_overflow_point(&input, &mut visual, long.len() - 1, 0.8);
+    mouse_down(&mut visual, tail, 3);
+    assert!(
+        input.read_with(&visual, |input, _| input.mouse_selection.is_some()),
+        "triple click must reach the production input listener: point={tail:?}"
+    );
+    mouse_up(&mut visual, tail, 3);
     assert_selected(&input, &visual, long.len() - 5..long.len(), false);
     let word = "a".repeat(300);
     input.update(&mut visual, |input, cx| input.set_text(&word, cx));
     visual.run_until_parked();
-    let tail = input_point(&input, &visual, word.len() - 1, 0.85);
-    multi_click(&mut visual, tail, 2);
+    let tail = settled_overflow_point(&input, &mut visual, word.len() - 1, 0.85);
+    mouse_down(&mut visual, tail, 2);
+    assert!(
+        input.read_with(&visual, |input, _| input.mouse_selection.is_some()),
+        "double click must reach the production input listener: point={tail:?}"
+    );
+    mouse_up(&mut visual, tail, 2);
     assert_selected(&input, &visual, 0..word.len(), false);
     visual.simulate_keystrokes("cmd-c");
     assert_clipboard(&visual, &word);
