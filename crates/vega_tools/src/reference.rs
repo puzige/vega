@@ -1,4 +1,4 @@
-//! Bounded `@file` context injection (A2-12, S8-T47).
+//! Bounded `@file` context injection.
 //!
 //! The composer may reference project files with `@relative/path` tokens.
 //! This module is the sole authority for turning those tokens into injected
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn oversized_file_is_rejected_before_full_read() {
-        // P1-1: the per-file cap must fire while reading (bounded take),
+        // the per-file cap must fire while reading (bounded take),
         // not after the whole file is buffered. A few-KB file plus a small
         // cap proves the read-time bound without allocating a huge file.
         let dir = tempdir().expect("oversize fixture");

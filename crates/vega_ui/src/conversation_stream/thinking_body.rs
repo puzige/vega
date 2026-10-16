@@ -312,52 +312,6 @@ impl ThinkingBlock {
         }
         .into_any_element()
     }
-
-    #[cfg(test)]
-    pub(crate) fn test_body_preparing(&self) -> bool {
-        self.body.task.is_some()
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_fragment_count(&self) -> usize {
-        self.body.prepared.as_ref().map_or(0, |body| {
-            body.blocks.iter().map(|block| block.fragments.len()).sum()
-        })
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_rendered_count(&self) -> usize {
-        self.body.rendered.get()
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_revision(&self) -> u64 {
-        self.body.prepared_revision
-    }
-    #[cfg(test)]
-    pub(crate) fn test_horizontal_scroll(&self) -> Option<ScrollHandle> {
-        self.body
-            .horizontal_scrolls
-            .borrow()
-            .values()
-            .find(|scroll| scroll.max_offset().x > px(0.))
-            .cloned()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_prepared_text(&self) -> Option<Arc<str>> {
-        self.body.prepared.as_ref().map(|body| body.text.clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_replace_source(&mut self, source: &str, cx: &mut Context<Self>) {
-        self.text = source.into();
-        self.raw_window = window::SourceWindow::default();
-        self.source_identity = self.source_identity.wrapping_add(1);
-        self.thinking_has_content = source.chars().any(|ch| !ch.is_whitespace());
-        self.body.replace_source();
-        self.source_copy.replace_text(source);
-        self.source_revision = self.source_revision.wrapping_add(1);
-        self.prepare_body(cx);
-        cx.notify();
-    }
 }
 
 #[derive(Clone)]

@@ -308,7 +308,7 @@ pub fn recent(
         .collect()
 }
 
-/// Hard page cap (S8-T45/C7): one history page carries at most 200 messages.
+/// Hard page cap: one history page carries at most 200 messages.
 pub const PAGE_LIMIT: usize = 200;
 
 /// Cursor/keyset page bound: the highest eligible `seq`. The initial (newest)
@@ -650,7 +650,7 @@ pub fn find(conn: &Connection, id: &str) -> Result<Option<MessageRow>, rusqlite:
 }
 
 /// Returns the latest terminal assistant message of a thread, if any
-/// (S7-T40 per-task summary recovery scope; read-only projection).
+/// (per-task summary recovery scope; read-only projection).
 pub fn last_terminal_assistant(
     conn: &Connection,
     thread_id: &str,

@@ -278,7 +278,7 @@ impl ConversationStream {
     }
 
     /// Enter / Cmd+Enter in the Composer context ([`SendMessage`] binding;
-    /// ui-spec §4.4 v0.18, Issue #66).
+    /// ui-spec §4.4 v0.18).
     pub(crate) fn on_send_action(
         &mut self,
         _: &SendMessage,

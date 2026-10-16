@@ -1,6 +1,6 @@
-//! Mock provider: scripted replay of provider events (tech-spec §8, S4-T19).
+//! Mock provider: scripted replay of provider events (tech-spec §8).
 //!
-//! This is the shared test infrastructure for the S4-S8 agentic-loop tests:
+//! This is the shared test infrastructure for the agentic-loop tests:
 //! callers hand in a script ([`ScriptStep`] sequence) and
 //! [`MockProvider::chat_stream`] replays it step by step, honouring the
 //! [`CancellationToken`] like a real provider would (fail fast when already

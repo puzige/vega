@@ -1,4 +1,4 @@
-//! IO-free bounded `@file` selector model (A2-12, S8-T47).
+//! IO-free bounded `@file` selector model.
 //!
 //! Pure state only: the candidate list arrives as a typed projection
 //! ([`FileIndexSnapshot`], capped at [`FILE_INDEX_LIMIT`] entries) supplied

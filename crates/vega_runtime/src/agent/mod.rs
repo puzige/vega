@@ -1,4 +1,4 @@
-//! Headless agentic loop (tech-spec §4.2, A3-03 / S4-T20).
+//! Headless agentic loop (tech-spec §4.2).
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -264,12 +264,6 @@ impl RuntimeToolConfig {
         ))
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_mcp_candidates(mut self, candidates: Vec<McpCandidate>) -> Self {
-        self.mcp_candidates = candidates;
-        self
-    }
-
     /// Freeze the currently ready, explicitly enabled MCP servers at run
     /// start. Settings owns enablement and must not pass disabled servers.
     pub fn with_mcp_servers(mut self, servers: Vec<McpReadyServer>) -> Self {
@@ -434,7 +428,7 @@ pub struct AgentRequest {
     pub completed_tool_results: HashMap<String, CompletedToolCall>,
     /// Tool capability, permission, checkpoint, and exact-rule facts.
     pub tool_config: RuntimeToolConfig,
-    /// Immutable pricing capability frozen at run preflight (S7-T38/C3).
+    /// Immutable pricing capability frozen at run preflight.
     ///
     /// `None` keeps the S4 legacy/unpriced semantics: usage rows persist with
     /// `cost_microcents = 0` and NULL pricing columns.
@@ -527,7 +521,7 @@ pub enum RuntimeFinishReason {
 }
 
 /// Exact pricing provenance stamped by the runtime for one provider call
-/// (S7-T38/C3). Conversation persists these onto the `token_usage` row.
+/// Conversation persists these onto the `token_usage` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeUsagePricing {
     /// Exact engine version that produced the quote (e.g. `pricing_v1`).
@@ -821,7 +815,7 @@ pub enum RuntimeEvent {
         binding: RunBinding,
         snapshot: SkillRunSnapshot,
     },
-    /// Provider usage priced by the frozen run-start catalog (S7-T38).
+    /// Provider usage priced by the frozen run-start catalog.
     UsageUpdated {
         /// Token counts from the provider.
         usage: RuntimeTokenUsage,

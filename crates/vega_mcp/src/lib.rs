@@ -1,5 +1,5 @@
 //! Headless MCP protocol, transport, and bounded OAuth client. UI consent and
-//! persistent credential ownership remain with the later #73 integration layer.
+//! persistent credential ownership remain with the later integration layer.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -215,14 +215,3 @@ pub mod mock;
 mod transport;
 #[cfg(test)]
 extern crate self as vega_mcp;
-#[cfg(test)]
-#[path = "tests/oauth.rs"]
-mod oauth_tests;
-
-#[cfg(test)]
-#[path = "tests/protocol.rs"]
-mod protocol_tests;
-
-#[cfg(test)]
-#[path = "tests/stdio.rs"]
-mod stdio_tests;

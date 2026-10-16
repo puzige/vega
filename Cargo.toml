@@ -45,7 +45,7 @@ rusqlite = "=0.40.2"
 ulid = "=3.0.0"
 # 配置解析（exec-guide §5 白名单，2026-08-29 人类批准）
 toml = "=1.1.4"
-# 网络依赖（exec-guide §5 白名单，2026-08-29 S4-T19 首次激活，版本 cargo info 查最新稳定）：
+# 网络依赖（exec-guide §5 白名单，2026-08-29 首次激活，版本 cargo info 查最新稳定）：
 # reqwest 锁 0.12 线——任务卡指定 features=["rustls-tls","json"] 的 feature 名仅存在于 0.12
 # （0.13 已改名 rustls 且默认 TLS 语义变化）；"stream" 为 Response::bytes_stream 所必需
 reqwest = { version = "=0.12.24", default-features = false, features = ["rustls-tls", "json", "stream"] }
@@ -63,7 +63,7 @@ mdstream = "=0.3.0"
 pulldown-cmark = "=0.13.4"
 ignore = "=0.4.33"
 regex = "=1.13.1"
-# 代码块高亮（exec-guide §5 白名单，2026-08-29 T16 预授权；S3-T16）。
+# 代码块高亮（exec-guide §5 白名单，2026-08-29 T16 预授权）。
 # 架构师裁决（2026-08-29）：四语言 = rust / typescript / javascript / python，
 # markdown grammar 砍掉——tree-sitter-markdown 0.7.1 硬依赖 tree-sitter ^0.19，
 # 共存会引入第二个 tree-sitter C 运行时导致 SIGSEGV；未来如需走 fork/vendor 路线另议。

@@ -1,6 +1,6 @@
 //! `grep` tool: regex matches over project files with `.gitignore`
 //! filtering, binary skipping, and a 500-entry cap (tech-spec §4.4,
-//! S4-T21).
+//!
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};

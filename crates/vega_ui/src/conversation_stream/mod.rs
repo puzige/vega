@@ -1,4 +1,4 @@
-//! Virtualized conversation stream (S3-T18 → S8-T44): message-block UI over
+//! Virtualized conversation stream: message-block UI over
 //! a [`vega_markdown::MarkdownStream`] — a variable-height `list` of
 //! semantic items (one item = one user/assistant/tool/permission/plan/
 //! artifact/summary entry at natural height) with native tail-following, a
@@ -45,7 +45,7 @@
 //!   disables send. A send appends a user entry (local echo, no LLM).
 //! - **动效禁令 (tech-spec §5.4)**: streaming nodes get NO entrance
 //!   animation — none is introduced anywhere in this pipeline.
-//! - **变高虚拟化 (S8-T44/C4)**: the top-level conversation is a GPUI
+//! - **变高虚拟化 **: the top-level conversation is a GPUI
 //!   variable-height `list`; one item per semantic entry at natural height.
 //!   Text wraps (CJK/emoji/inline code included) — no content is ever
 //!   truncated to force a height. 24px remains only inside cards' compact
@@ -154,13 +154,13 @@ pub(crate) const ANCHOR_EPSILON_PX: f32 = 1.0;
 /// conversation list is variable-height and never uses this value.
 pub(crate) const ROW_HEIGHT: f32 = 24.0;
 
-/// Message hover-copy actions (Issue #78 follow-up) are temporarily disabled:
+/// Message hover-copy actions (follow-up) are temporarily disabled:
 /// the reserved action row below every message reads as an ugly, layout-coupled
 /// affordance in the installed build. The plumbing (`MessageCopy`, the `Copy`
 /// icon and the renderer) stays in place so the interaction can be re-enabled
 /// by flipping this single flag once the placement is redesigned. While false,
 /// `message_with_copy` returns the message body unchanged and no action row is
-/// reserved, so geometry matches the pre-#144 baseline exactly.
+/// reserved, so geometry matches the pre- baseline exactly.
 pub(crate) const MESSAGE_COPY_ACTIONS_ENABLED: bool = false;
 
 /// Demo injection pacing: the 16ms tick polls; the injected count follows
@@ -252,7 +252,7 @@ pub struct OpenCommitPanelRequested {
     pub project_id: String,
 }
 
-/// Bounded `@file` index request (A2-12): the composer selector opened and
+/// Bounded `@file` index request: the composer selector opened and
 /// needs a fresh bounded walk of the project root. The app layer walks on a
 /// worker thread and hands back the typed [`FileIndexSnapshot`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,7 +298,7 @@ pub struct WorkspaceToolTerminal {
     pub project_id: String,
 }
 
-/// Scroll-up hydration request (S8-T45/C7): the viewport reached the top of
+/// Scroll-up hydration request: the viewport reached the top of
 /// the list while older durable history may exist. `before` is the keyset
 /// cursor (the oldest loaded `seq`); the app layer reads the page off the UI
 /// thread and hands back the typed projection. The stream carries no SQLite.
@@ -324,10 +324,10 @@ pub struct MessageLocationRequested {
 /// Composer `@file` suggestion dropdown open/close/bookkeeping is UI-local;
 /// only the accepted completion flows out of the selector model.
 ///
-/// Bounded `@file` selector state (A2-12): pure model + bounded snapshot,
+/// Bounded `@file` selector state: pure model + bounded snapshot,
 /// driven by the app layer's typed index projection.
 ///
-/// Thinking-tier choice for the current provider/model (A2-14, R57 P3).
+/// Thinking-tier choice for the current provider/model (R57 P3).
 ///
 /// R57 P3 gives this event its single remaining emitter: the thinking-tier
 /// slider mounted in the model popup. The app validates the tier against its

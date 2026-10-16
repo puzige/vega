@@ -9,7 +9,7 @@ pub struct PersistenceActorConfig {
     pub(crate) computer_use: Option<vega_runtime::computer_use::ComputerUseRun>,
     pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
     /// Maximum agentic turns (provider round-trips) for this run; `0` means
-    /// unlimited (Issue #114, mirrors Claude Code's `--max-turns`). Carried
+    /// unlimited (mirrors Claude Code's `--max-turns`). Carried
     /// from `[agent] turn_limit` in config.toml through to the runtime.
     pub turn_limit: u32,
     pub(crate) credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
@@ -35,7 +35,6 @@ pub struct PersistenceActorConfig {
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InjectedPersistenceFailure {
-    Retrying,
     Running,
     Finished,
     PanicRunning,
@@ -80,7 +79,7 @@ impl PersistenceActorConfig {
     }
 
     /// Sets the maximum number of agentic turns for this run; `0` means
-    /// unlimited (Issue #114).
+    /// unlimited.
     pub fn with_turn_limit(mut self, limit: u32) -> Self {
         self.turn_limit = limit;
         self
@@ -106,9 +105,6 @@ impl PersistenceActorConfig {
             let matches_failure = matches!(
                 (self.fail_event, event),
                 (
-                    Some(InjectedPersistenceFailure::Retrying),
-                    RuntimeEvent::ResponseRetrying { .. }
-                ) | (
                     Some(InjectedPersistenceFailure::Running),
                     RuntimeEvent::ToolCallRunning { .. }
                 ) | (

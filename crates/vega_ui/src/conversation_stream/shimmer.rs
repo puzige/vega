@@ -21,11 +21,6 @@ impl StageText {
             cx.notify();
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn test_title(&self) -> &str {
-        &self.title
-    }
 }
 
 impl Render for StageText {
@@ -145,7 +140,6 @@ fn styled_text(
                 probe.0.borrow_mut().push(PaintSample {
                     text: shown.clone(),
                     moving,
-                    colors: runs.iter().map(|run| run.color).collect(),
                 });
             }
             let shaped = window
@@ -184,7 +178,6 @@ pub(crate) struct PaintProbe(pub std::cell::RefCell<Vec<PaintSample>>);
 pub(crate) struct PaintSample {
     pub text: String,
     pub moving: bool,
-    pub colors: Vec<gpui_kit::Hsla>,
 }
 
 #[cfg(test)]

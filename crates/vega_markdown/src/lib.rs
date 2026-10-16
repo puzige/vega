@@ -1,4 +1,4 @@
-//! Streaming Markdown → render instructions (tech-spec §5, A2-02 / S3-T15).
+//! Streaming Markdown → render instructions (tech-spec §5).
 //!
 //! [`MarkdownStream`] wraps `mdstream` 0.3.0's committed+pending block model
 //! and converts each block into a pure-data [`RenderNode`] tree via
@@ -20,18 +20,18 @@
 //! with every block's `BlockId` and parse version, so the UI layer diffs
 //! frames by `(block_id, version)` and never re-renders frozen blocks.
 //!
-//! Code-block syntax highlighting (S3-T16) is exposed as an independent
-//! query function, [`highlight`], over tree-sitter: callers (S3-T17/T18)
+//! Code-block syntax highlighting is exposed as an independent
+//! query function, [`highlight`], over tree-sitter: callers
 //! apply it to committed `RenderNode::CodeBlock` content, while the pending
 //! tail block degrades to plain monospace text (tech-spec §5.1).
 //!
-//! Mock delta replay (S3-T18) lives in [`replay`]: a pure, UI-free pacing
+//! Mock delta replay lives in [`replay`]: a pure, UI-free pacing
 //! state machine ([`MockReplay`]) plus the shared [`split_deltas`] helper, so
 //! the S3 demo injection and the S4 mock provider drive the same pipeline
 //! (the driver timer stays with the caller).
 //!
 //! The crate is UI-free (no gpui, headless like `vega_runtime`): outputs are
-//! plain render instructions for the S3-T17/T18 layers to map onto GPUI
+//! plain render instructions for the layers to map onto GPUI
 //! elements. Delta coalescing / throttling is the caller's job (tech-spec
 //! §5.1; T15 keeps the crate synchronous and dependency-light).
 //!

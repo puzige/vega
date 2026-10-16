@@ -1,4 +1,4 @@
-//! S8-T44 变高虚拟化窄测（决策 7 从简：GPUI 窄测恰 2 条）。
+//!  变高虚拟化窄测（决策 7 从简：GPUI 窄测恰 2 条）。
 //!
 //! 1. `variable_height_geometry_items_measure_at_natural_heights`：变高几何
 //!    —— 混合语义项在一帧内按各自自然高度测量，item 边界连续、总高与
@@ -98,7 +98,7 @@ fn prepend_splice_preserves_page_boundary_anchor(cx: &mut TestAppContext) {
     assert_eq!(before.offset_in_item, px(8.0));
 
     // Older history arrives: 4 items PREPEND above the loaded history
-    // (S8-T45/C7 page boundary). The splice must shift the scroll-top item
+    // (page boundary). The splice must shift the scroll-top item
     // index by the prepend count while keeping the pixel offset into the
     // item — the content the user was reading stays put (drift 0 < 1px).
     state.splice(0..0, 4);

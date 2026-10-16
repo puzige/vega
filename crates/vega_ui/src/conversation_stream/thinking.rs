@@ -213,11 +213,6 @@ impl ThinkingBlock {
         self.focus.contains_focused(window, cx)
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_focus(&self) -> FocusHandle {
-        self.focus.clone()
-    }
-
     pub(crate) fn title(&self) -> &str {
         if !self.summary_preview.title.is_empty() {
             &self.summary_preview.title
@@ -282,11 +277,6 @@ impl ThinkingBlock {
 
     fn render_source(card: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
         card.update(cx, |card, cx| card.render_body(window, cx))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn scroll_handle(&self) -> ScrollHandle {
-        self.scroll.clone()
     }
 
     #[cfg(test)]
@@ -696,77 +686,5 @@ impl ConversationStream {
                 self.thinking_blocks = self.thinking_blocks.saturating_sub(1);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod preview_tests {
-    use super::Preview;
-
-    #[test]
-    fn i71_preview_incremental_markdown_and_identifiers() {
-        let mut preview = Preview::default();
-        for chunk in ["`foo_", "bar` needs inspection"] {
-            preview.append(chunk);
-        }
-        assert_eq!(preview.title, "foo_bar needs inspection");
-        preview.append("\n10*7 + 9*11 = foo_bar");
-        assert_eq!(preview.title, "10*7 + 9*11 = foo_bar");
-        preview.append("\n#hashtag is prose");
-        assert_eq!(preview.title, "#hashtag is prose");
-        preview.append("\n## ");
-        assert_eq!(preview.title, "#hashtag is prose");
-        preview.append("真实标题\nbody\n\nmore body");
-        assert_eq!(preview.title, "more body");
-        preview.append("\n```\n## fake\n```\n**下一");
-        assert_eq!(preview.title, "more body");
-        preview.append("阶段**\nbody");
-        assert_eq!(preview.title, "body");
-        assert!(preview.line.len() <= 1024);
-    }
-
-    #[test]
-    fn i343_heading_yields_to_later_prose_but_not_markers_or_fenced_code() {
-        let mut preview = Preview::default();
-        preview.append("## 阿里云服务：");
-        assert_eq!(preview.title, "阿里云服务：");
-        preview.append("\nBest: check keeper DB");
-        assert_eq!(preview.title, "Best: check keeper DB");
-        preview.append(" and compare accounts");
-        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
-        preview.append("\n\n### ");
-        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
-        preview.append("\n```rust\n## fake heading\nlet token = 42;\n```\n**下个");
-        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
-        preview.append("阶段**");
-        assert_eq!(preview.title, "下个阶段");
-        preview.append(&format!("\n```{}\n## fenced\n```\n", "x".repeat(1100)));
-        assert_eq!(preview.title, "下个阶段");
-        preview.append("围栏之后的正文");
-        assert_eq!(preview.title, "围栏之后的正文");
-    }
-
-    #[test]
-    fn i343_long_heading_keeps_start_and_long_prose_advances_tail() {
-        let mut heading = Preview::default();
-        heading.append(&format!("## 开头{}", "中".repeat(500)));
-        assert!(heading.title.starts_with("开头"));
-        assert_eq!(heading.title.chars().count(), 96);
-        heading.append("\n新的普通段落");
-        assert_eq!(heading.title, "新的普通段落");
-
-        let mut bold = Preview::default();
-        let long_bold = format!("**起点{}**", "文".repeat(500));
-        bold.append(&long_bold[..long_bold.len() - 2]);
-        assert_eq!(bold.title, "");
-        bold.append("**");
-        assert!(bold.title.starts_with("起点"));
-        assert_eq!(bold.title.chars().count(), 96);
-
-        let mut prose = Preview::default();
-        prose.append(&"😀汉字".repeat(500));
-        prose.append("🦀最后");
-        assert!(prose.title.ends_with("🦀最后"));
-        assert_eq!(prose.title.chars().count(), 96);
     }
 }

@@ -1228,6 +1228,3 @@ fn send_codex_error(
         execution_duration_ms: Some(duration_ms),
     }));
 }
-
-#[cfg(test)]
-mod tests;

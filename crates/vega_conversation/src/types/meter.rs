@@ -6,13 +6,13 @@ use super::*;
 pub struct Microcents(pub i64);
 
 /// Fixed upper bound for the provisional visible-output character counter
-/// (S7-T39/C3). The estimate is bounded by construction: additional deltas
+/// The estimate is bounded by construction: additional deltas
 /// past the cap are not counted, so `ceil(chars/4)` can never exceed
 /// `METER_PROVISIONAL_CHAR_CAP / 4`.
 pub const METER_PROVISIONAL_CHAR_CAP: u64 = 1 << 32;
 
 /// Frozen per-run output estimator backing the `≈US$` provisional counter
-/// segment (S7-T39/C3/C4). Built once at run start from the immutable pricing
+/// segment (C4). Built once at run start from the immutable pricing
 /// selection; the estimate reuses the exact integer quote engine, so no cost
 /// formula ever leaves `vega_token`/`vega_conversation`.
 pub struct RunUsageEstimator {
@@ -83,7 +83,7 @@ impl RunUsageEstimator {
 }
 
 /// Bounded compact meter reading rendered by the Composer counter
-/// (S7-T39/C4). `cost: None` displays `—`; `available: false` fails the whole
+/// `cost: None` displays `—`; `available: false` fails the whole
 /// counter closed as `—` after a checked-overflow latch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeterSnapshot {
@@ -150,7 +150,7 @@ pub(crate) fn format_usd(microcents: i64) -> String {
     format!("{dollars}.{digits}")
 }
 
-/// Durable calibrated baseline restored after a restart (S7-T39/C4): the
+/// Durable calibrated baseline restored after a restart: the
 /// checked `vega_store::token_usage` aggregate projected into meter space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestoredUsage {
@@ -161,7 +161,7 @@ pub struct RestoredUsage {
     pub cost: Option<Microcents>,
 }
 
-/// In-memory thread meter projection (S7-T39/C3/C4): provisional
+/// In-memory thread meter projection (C4): provisional
 /// visible-output estimates per provider call, in-place calibration when the
 /// authoritative `UsageUpdated` arrives, and a fail-closed cumulative total.
 ///

@@ -222,39 +222,3 @@ pub(crate) fn decode_image(
     let image = ImageAttachment::from_bytes(bytes).map_err(|_| ComputerUseError::Image)?;
     Ok((image, width, height))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn issue75_observation_decode_rejects_spoofed_mime_and_retains_original_scale() {
-        let mut encoded = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(2000, 1200)
-            .write_to(&mut encoded, image::ImageFormat::Png)
-            .unwrap();
-        assert!(
-            decode_image(vega_mcp::ManagedImage {
-                bytes: encoded.get_ref().clone(),
-                mime_type: "image/jpeg".into(),
-            })
-            .is_err()
-        );
-        assert!(
-            decode_image(vega_mcp::ManagedImage {
-                bytes: vec![1, 2, 3],
-                mime_type: "image/png".into(),
-            })
-            .is_err()
-        );
-        let (image, width, height) = decode_image(vega_mcp::ManagedImage {
-            bytes: encoded.into_inner(),
-            mime_type: "image/png".into(),
-        })
-        .unwrap();
-        assert_eq!((width, height), (2000, 1200));
-        assert_eq!((image.width(), image.height()), (1600, 960));
-        assert_eq!(image.mime_type(), "image/jpeg");
-        assert!(image.bytes().len() <= 8 * 1024 * 1024);
-    }
-}

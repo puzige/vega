@@ -1,4 +1,4 @@
-//! Read-only per-task cost summary card (S7-T40/A10-06, C4 contract).
+//! Read-only per-task cost summary card (C4 contract).
 //!
 //! The card renders a bounded [`TaskCostSummary`] projection produced by
 //! `vega_conversation::summary`; it never reads SQLite and never computes a

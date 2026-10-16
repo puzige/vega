@@ -361,7 +361,7 @@ impl VegaWindow {
         // stale indicator behind.
         vega_ui::sidebar::set_thread_running(thread_id, false, cx);
         self.finish_context_primary_owner(generation);
-        // S7-T40/C4: the run's durable terminal message becomes a read-only
+        // the run's durable terminal message becomes a read-only
         // per-task cost summary card. The projection reads only the persisted
         // audits (a non-terminal/corrupt row fails closed → no card); the
         // duration is the live in-memory wall-clock measurement and degrades

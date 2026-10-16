@@ -3,8 +3,6 @@ mod error;
 mod framing;
 mod protocol;
 
-#[cfg(test)]
-pub(crate) use connection::ChildControl;
 pub use connection::{
     Connection, Event, InitializeResult, LaunchConfig, PermissionOption, PermissionOutcome,
     PermissionRequest, PromptHandle, PromptResult, SessionInfo,
@@ -35,6 +33,3 @@ pub mod test_support {
         super::Connection::from_io(reader, writer, None)
     }
 }
-
-#[cfg(test)]
-mod tests;

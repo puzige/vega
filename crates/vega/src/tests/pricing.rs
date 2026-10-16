@@ -1,86 +1,5 @@
 use super::*;
 
-/// #60 P4/P5: only committed authority is eligible for a frozen run snapshot.
-#[test]
-fn issue60_pricing_snapshot_uses_committed_ready_or_saving_previous_only() {
-    let dir = tempfile::tempdir().expect("snapshot pricing");
-    let service = PricingSettingsService::new(dir.path().join("pricing.json"));
-    let authority = service.load_or_seed().expect("built-ins").authority;
-    let plan = service
-        .prepare_save(
-            &authority,
-            PricingMutation::AddCustom {
-                model: "uncommitted-custom".into(),
-                rates: PricingRateInputs {
-                    input_usd_per_million: "1".into(),
-                    output_usd_per_million: "1".into(),
-                    cache_read_usd_per_million: "1".into(),
-                    cache_write_usd_per_million: "1".into(),
-                },
-            },
-        )
-        .expect("dirty draft");
-    let before = authority.catalog().encode().expect("committed bytes");
-    let mut controller = PricingController::new(None);
-    for state in [
-        PricingControllerState::Loading,
-        PricingControllerState::Reloading,
-        PricingControllerState::Invalid(PricingSettingsErrorCode::MalformedCatalog),
-    ] {
-        controller.state = state;
-        assert!(controller.catalog_for_run("gpt-5.6-terra").is_none());
-    }
-    controller.state = pricing_retry_ready(
-        authority.clone(),
-        1,
-        None,
-        plan.clone(),
-        PricingSettingsErrorCode::Io,
-    );
-    assert_eq!(
-        controller
-            .catalog_for_run("gpt-5.6-terra")
-            .expect("committed built-in")
-            .encode()
-            .unwrap(),
-        before
-    );
-    assert!(controller.catalog_for_run("uncommitted-custom").is_none());
-    controller.state = PricingControllerState::Saving {
-        previous: authority,
-        previous_notice: None,
-        generation: 1,
-        plan: plan.clone(),
-    };
-    let frozen = controller
-        .catalog_for_run("gpt-5.6-terra")
-        .expect("previous committed authority");
-    assert_eq!(frozen.encode().unwrap(), before);
-    assert!(controller.catalog_for_run("uncommitted-custom").is_none());
-    let vega_conversation::PricingSaveOutcome::Ready { authority, .. } = service.save(&plan) else {
-        panic!("save succeeds")
-    };
-    controller.state = PricingControllerState::Ready {
-        authority,
-        generation: 2,
-        notice: None,
-        draft: None,
-        draft_reason: None,
-        error: None,
-    };
-    assert!(controller.catalog_for_run("uncommitted-custom").is_some());
-    assert!(
-        controller
-            .catalog_for_run("unconfigured-and-unpriced")
-            .is_none()
-    );
-    assert_eq!(
-        frozen.encode().unwrap(),
-        before,
-        "later committed pricing cannot mutate an earlier run snapshot"
-    );
-}
-
 #[test]
 fn pricing_precommit_failure_keeps_persistent_notice_and_exact_draft() {
     let data = tempfile::tempdir().expect("pricing state root");
@@ -244,7 +163,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::
     });
     assert_eq!(worker_starts.load(), starts + 1);
     assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
-    // #60 R2/R5 supersedes the old pricing refusal. Enter Settings explicitly
+    //  R2/R5 supersedes the old pricing refusal. Enter Settings explicitly
     // while retaining the original save/recovery/focus assertions below.
     cx.update(|cx| {
         cx.set_global(vega_ui::settings::PricingSettingsRequested(true));

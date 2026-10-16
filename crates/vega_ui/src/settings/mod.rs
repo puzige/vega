@@ -1,4 +1,4 @@
-//! Settings view (A1-10 UI skeleton): provider list, add-provider form, and
+//! Settings view (UI skeleton): provider list, add-provider form, and
 //! default model / permission mode pickers.
 //!
 //! The view is opened with Cmd+, ([`OpenSettings`]) and closed with Esc or

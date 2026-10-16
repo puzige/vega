@@ -1,5 +1,5 @@
 //! `glob` tool: project-root-relative file matching with `.gitignore`
-//! filtering and a 500-entry output cap (tech-spec §4.4, S4-T21).
+//! filtering and a 500-entry output cap (tech-spec §4.4).
 
 use std::path::{Component, Path};
 

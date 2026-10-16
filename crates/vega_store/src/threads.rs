@@ -1,4 +1,4 @@
-//! Thread persistence on the `threads` table (A1-02, tech-spec §2 DDL).
+//! Thread persistence on the `threads` table (tech-spec §2 DDL).
 //!
 //! This module is the pure SQL layer: functions take scalar parameters (the
 //! DDL strings for `mode`/`status`) and return plain row values, so
@@ -138,7 +138,7 @@ pub fn list_standalone(
 /// recently updated (ui-spec §4.1: 置顶组优先；`idx_threads_project`
 /// DDL index ordering covers the `updated_at DESC` part).
 ///
-/// T13 (A1-05) adds the lifecycle filter: `Some("active")`/`Some("archived")`
+/// T13 adds the lifecycle filter: `Some("active")`/`Some("archived")`
 /// restricts the list to that status; `None` keeps every row. The sidebar
 /// main list reads active threads only and the 「已归档」 collapsed section
 /// reads archived ones.
@@ -168,7 +168,7 @@ pub fn list_by_project(
     Ok(rows)
 }
 
-/// Renames one thread and bumps `updated_at` to `now` (A1-05: 按 DDL 语义
+/// Renames one thread and bumps `updated_at` to `now` (: 按 DDL 语义
 /// 重命名即会话活动，时间戳同步推进，使列表按最近更新排序).
 ///
 /// Returns the number of rows updated; 0 means the thread does not exist.
@@ -185,7 +185,7 @@ pub fn rename(
 }
 
 /// Sets the lifecycle status (`active` ↔ `archived`); `updated_at` is left
-/// untouched so archiving does not reorder the list (A1-05).
+/// untouched so archiving does not reorder the list.
 ///
 /// Returns the number of rows updated; 0 means the thread does not exist.
 pub fn set_status(conn: &Connection, id: &str, status: &str) -> Result<usize, rusqlite::Error> {
@@ -195,7 +195,7 @@ pub fn set_status(conn: &Connection, id: &str, status: &str) -> Result<usize, ru
     )
 }
 
-/// Sets the pinned flag (0 ↔ 1); `updated_at` is left untouched (A1-05).
+/// Sets the pinned flag (0 ↔ 1); `updated_at` is left untouched.
 ///
 /// Returns the number of rows updated; 0 means the thread does not exist.
 pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<usize, rusqlite::Error> {
@@ -256,7 +256,7 @@ pub fn set_permission_mode(
     )
 }
 
-/// Updates the durable thread model (A2-14/R1: in-session selection applies
+/// Updates the durable thread model (: in-session selection applies
 /// to the current thread's next run). Returns 0 when the thread row does not
 /// exist or `model` is empty; callers fail closed on a 0-row update.
 pub fn set_model(
@@ -275,7 +275,7 @@ pub fn set_model(
 }
 
 /// Deletes one thread and — in the same transaction — all of its `messages`
-/// and `tool_calls` rows (A1-05: the DDL declares no `ON DELETE CASCADE`, so
+/// and `tool_calls` rows (: the DDL declares no `ON DELETE CASCADE`, so
 /// the deletion must sweep child tables itself to prevent orphan rows).
 ///
 /// `token_usage` rows are intentionally **kept**: they carry the cost audit
@@ -346,7 +346,7 @@ pub fn update(
     )
 }
 
-/// Issue 65: claim the first durable turn within its owning write transaction.
+/// claim the first durable turn within its owning write transaction.
 /// Neither provisional nor generated titles represent user activity.
 pub fn claim_auto_title(
     conn: &Connection,
@@ -466,7 +466,7 @@ mod auto_title_tests {
     }
 }
 
-/// Open-thread touch semantics (A1-02): bumps `threads.updated_at` and the
+/// Open-thread touch semantics: bumps `threads.updated_at` and the
 /// owning `projects.last_opened_at` to `now` in a single transaction, so a
 /// crash between the two writes cannot leave them inconsistent.
 ///

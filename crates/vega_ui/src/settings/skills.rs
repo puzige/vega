@@ -1,4 +1,4 @@
-//! Issue #74 Skills Settings. This view only talks to the conversation-owned
+//!  Skills Settings. This view only talks to the conversation-owned
 //! service; no Skill path, file or SQLite row is trusted on the UI thread.
 
 use crate::interaction::InteractionExt;
@@ -34,17 +34,6 @@ pub(super) struct SkillsOperationGate {
 
 #[cfg(test)]
 impl SkillsOperationGate {
-    pub(super) fn new(
-        entered: tokio::sync::oneshot::Sender<bool>,
-        release: tokio::sync::oneshot::Receiver<()>,
-    ) -> Self {
-        Self {
-            entered: Mutex::new(Some(entered)),
-            release: Mutex::new(Some(release)),
-            used: AtomicBool::new(false),
-        }
-    }
-
     async fn hold_first(&self, succeeded: bool) {
         if self.used.swap(true, Ordering::SeqCst) {
             return;
