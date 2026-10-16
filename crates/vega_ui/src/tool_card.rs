@@ -31,6 +31,14 @@ pub(crate) enum ToolActivityCategory {
     Other,
 }
 
+pub(crate) fn sentence_initial(phrase: &str) -> String {
+    let mut characters = phrase.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => String::new(),
+    }
+}
+
 impl ToolActivityCategory {
     pub(crate) const fn action_phrase(self) -> &'static str {
         match self {
@@ -1365,6 +1373,43 @@ mod tests {
             duration_ms: None,
             truncated: None,
             invalid: None,
+        }
+    }
+
+    #[test]
+    fn issue408_sentence_initial_capitalizes_only_the_first_character() {
+        assert_eq!(sentence_initial("run commands"), "Run commands");
+        assert_eq!(sentence_initial("read files"), "Read files");
+        assert_eq!(sentence_initial("call MCP"), "Call MCP");
+        assert_eq!(sentence_initial("use Skill"), "Use Skill");
+        assert_eq!(sentence_initial("use tools"), "Use tools");
+        assert_eq!(sentence_initial("Codex ACP"), "Codex ACP");
+        assert_eq!(sentence_initial(""), "");
+        for category in [
+            ToolActivityCategory::Shell,
+            ToolActivityCategory::Read,
+            ToolActivityCategory::Find,
+            ToolActivityCategory::Search,
+            ToolActivityCategory::Write,
+            ToolActivityCategory::Edit,
+            ToolActivityCategory::Mcp,
+            ToolActivityCategory::CodexAcp,
+            ToolActivityCategory::ComputerUse,
+            ToolActivityCategory::Skill,
+            ToolActivityCategory::Other,
+        ] {
+            let phrase = category.action_phrase();
+            let leading = sentence_initial(phrase);
+            let mut characters = phrase.chars();
+            let first = characters
+                .next()
+                .unwrap()
+                .to_uppercase()
+                .collect::<String>();
+            assert_eq!(leading, format!("{first}{}", characters.as_str()));
+            assert_eq!(leading.chars().count(), phrase.chars().count());
+            assert!(leading.chars().next().is_some_and(char::is_uppercase));
+            assert!(leading.ends_with(characters.as_str()));
         }
     }
 

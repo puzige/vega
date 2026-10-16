@@ -4,6 +4,20 @@
 
 ## 契约
 
+### #408 修订：活动短语句首大写
+
+2026-10-16 用户报告（#408）：阶段标题与工具组聚合行显示 `run commands, read files, …`、`Completed: run commands`，首字母小写；参考实现同位置为 `Read files, run commands`（句首形式）。冻结规则：
+
+- `ToolActivityCategory::action_phrase()` 保持既有小写原形（`run commands`、`read files`、…），作为列表中的非首位短语形式，不改写这些字符串。
+- 展示层拼接**首位短语**时做句首大写（只大写第一个字符，其余字符不变，不整词大写、不改变大小写以外的字符）。列表**后续短语**保持小写。规则与参考实现的 `.leading` / 非 `.leading` 两套文案一致。
+- 适用位置为工具类别短语参与拼接且位于句首的展示路径：阶段标题（`format_stage_tool_categories`）与工具组聚合摘要（`aggregate_summary`，`Completed:` / `In progress:` / `Rejected calls:` / `Cancelled calls:` / `Failed calls:` 之后的首项）。`aggregate_summary` 的 `Not run after takeover` 分支不变。
+- 单张工具卡摘要（走 `generic_verb` / `build_bash_summary` 的路径）已为句首大写，本次不改；命令标题、详情、权限卡、模型与用户内容、命令文本、工具输出一律不改写。
+- `RunActivityGroup::activity_presentation`（`#[cfg(test)]` 的展示镜像，`test_activity_label` / `test_activity_presentation` 走它）拼接同一 `In progress: {actions}` 文案，按同一规则处理首项，避免同一标签出现两套大小写。该函数其余分支（Thinking / 摘要标题 / 等待确认 / 准备调用 / 终态 `label()`）不变。
+- 长标题 96 字符省略行为（`, …`）保持不变；实际可达的省略分支在已句首大写的标题后追加 `, …`，省略结果仍以句首大写开头。
+- 本卡只修大小写。参考实现的句首形式为过去式（`Ran commands`）而 Vega 用原形（`run commands`），原形/过去式取舍不在本卡范围，不得顺带改动。
+
+验收：阶段标题与聚合摘要首项句首大写、后续项保持小写；单类别阶段标题同样句首大写；96 字符省略分支以句首大写开头且仍以 `, …` 结尾；隐私、图标、计数与其余断言不变。
+
 ### 最新截图修订：展开时切换标题
 
 同轮追加裁决：工具调用与 Thinking 过程模块的产品界面文案统一英文，不能翻译或改写模型生成的思考正文/标题、用户内容、命令和工具输出。英文覆盖工具卡、工具组、工具权限卡、会话内 Skill 激活/历史条、阶段/Thinking 控件的状态、动作、提示与可访问标签（权限语义不变，danger_reason 等原文保留）；无关全局设置/会话界面不扩范围。

@@ -152,7 +152,7 @@ async fn raw_stage_manual_open_preserves_thinking_and_tool_order(cx: &mut TestAp
     assert!(visual.debug_bounds("run-stage-tool-0-1").is_none());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
             Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
@@ -828,14 +828,14 @@ async fn repeated_reasoning_and_commands_share_one_compact_stage(cx: &mut TestAp
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         for id in ["first", "second"] {
             let card = stream.tool_cards[id].read(cx);
             assert_eq!(card.activity_state(), crate::tool_card::ToolActivityState::Success);
             assert!(!card.needs_attention());
         }
         assert_eq!(group.compact_tool_groups(0).len(), 1);
-        assert_eq!(group.compact_tool_groups(0)[0].read(cx).aggregate_summary(cx), "Completed: run commands");
+        assert_eq!(group.compact_tool_groups(0)[0].read(cx).aggregate_summary(cx), "Completed: Run commands");
         assert_eq!(group.segment_row_count(0, cx), 1);
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
@@ -1008,7 +1008,7 @@ async fn summary_cycles_share_tools_without_duplicate_reasoning(cx: &mut TestApp
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         assert_eq!(group.segment_row_count(0, cx), 1);
         assert_eq!(group.compact_tool_groups(0).len(), 1);
         assert_eq!(
@@ -1218,7 +1218,7 @@ async fn issue343_t14_raw_thinking_stays_collapsed_after_new_tools(cx: &mut Test
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert!(!group.segment_expanded(0));
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
     });
 }
 
@@ -1255,13 +1255,13 @@ async fn folded_stage_hides_running_pending_and_failed_tool_status(cx: &mut Test
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         assert!(stream.run_notice_projection(cx).is_empty());
         assert_eq!(
             group.compact_tool_groups(0)[0]
                 .read(cx)
                 .aggregate_summary(cx),
-            "In progress: run commands"
+            "In progress: Run commands"
         );
     });
     stream.update(&mut visual, |stream, cx| {
@@ -1279,7 +1279,7 @@ async fn folded_stage_hides_running_pending_and_failed_tool_status(cx: &mut Test
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         assert!(stream.run_notice_projection(cx).is_empty());
         assert!(stream.tool_cards["pending"].read(cx).needs_attention());
     });
@@ -1341,7 +1341,7 @@ async fn folded_stage_hides_running_pending_and_failed_tool_status(cx: &mut Test
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "run commands"
+            "Run commands"
         );
         assert!(stream.run_notice_projection(cx).is_empty());
     });
@@ -1571,7 +1571,7 @@ async fn issue343_t18_pure_summary_aggregate_shows_latest_only_in_title(cx: &mut
             cx,
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         assert_eq!(group.segment_row_count(0, cx), 4);
         assert_eq!(
             group.test_visible_segment_thinking_texts(0, cx),
@@ -1605,7 +1605,7 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
             cx,
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "read files");
+        assert_eq!(group.stage_title(0, cx), "Read files");
         assert_eq!(group.segment_row_count(0, cx), 1);
         stream.apply_event(
             ConversationEvent::ToolCallApproved {
@@ -1624,7 +1624,7 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "read files"
+            "Read files"
         );
         stream.apply_event(
             ConversationEvent::ToolCallFinished {
@@ -1645,14 +1645,14 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "read files"
+            "Read files"
         );
         completed_command(stream, "shell", cx);
         assert_eq!(
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "read files, run commands"
+            "Read files, run commands"
         );
         summary(stream, "Updated summary", cx);
         assert_eq!(
@@ -1742,7 +1742,7 @@ async fn issue421_summary_temporarily_replaces_tool_headline_until_next_proposal
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "read files, run commands");
+        assert_eq!(group.stage_title(0, cx), "Read files, run commands");
         assert_eq!(
             group.test_rendered_stage_title(0, cx),
             group.stage_title(0, cx)
@@ -1827,7 +1827,7 @@ async fn issue421_summary_temporarily_replaces_tool_headline_until_next_proposal
         assert!(group.segment_expanded(0));
         assert_eq!(
             group.stage_title(0, cx),
-            "read files, run commands, edit files"
+            "Read files, run commands, edit files"
         );
         assert_eq!(
             group.test_rendered_stage_title(0, cx),
@@ -1884,7 +1884,7 @@ async fn issue421_summary_temporarily_replaces_tool_headline_until_next_proposal
         assert!(!group.segment_expanded(0));
         assert_eq!(
             group.stage_title(0, cx),
-            "read files, run commands, edit files, write files"
+            "Read files, run commands, edit files, write files"
         );
         assert_eq!(
             group.test_rendered_stage_title(0, cx),
@@ -1922,7 +1922,7 @@ async fn issue421_unreadable_summary_does_not_replace_tool_headline(cx: &mut Tes
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "run commands"
+            "Run commands"
         );
     });
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -1932,7 +1932,7 @@ async fn issue421_unreadable_summary_does_not_replace_tool_headline(cx: &mut Tes
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .test_rendered_stage_title(0, cx),
-            "run commands"
+            "Run commands"
         );
     });
     assert!(visual.debug_bounds("run-stage-icon-0").is_some());
@@ -2005,7 +2005,7 @@ async fn issue421_retry_restores_checkpoint_headline_source(cx: &mut TestAppCont
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "run commands, read files"
+            "Run commands, read files"
         );
         summary(stream, "During retry", cx);
         assert_eq!(
@@ -2049,8 +2049,8 @@ async fn issue421_retry_restores_checkpoint_headline_source(cx: &mut TestAppCont
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
-        assert_eq!(group.test_rendered_stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
+        assert_eq!(group.test_rendered_stage_title(0, cx), "Run commands");
         assert_eq!(
             group.test_visible_segment_thinking_texts(0, cx),
             vec!["Before retry".to_owned()]
@@ -2085,8 +2085,8 @@ async fn issue421_retry_restores_checkpoint_headline_source(cx: &mut TestAppCont
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
-        assert_eq!(group.test_rendered_stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
+        assert_eq!(group.test_rendered_stage_title(0, cx), "Run commands");
     });
     assert!(visual.debug_bounds("run-stage-icon-0").is_some());
 }
@@ -2122,7 +2122,7 @@ async fn issue343_t18_multiple_tool_categories_keep_first_icon_and_bounded_title
         let title = group.stage_title(0, cx);
         assert_eq!(
             title,
-            "read files, run commands, find files, search content"
+            "Read files, run commands, find files, search content"
         );
         assert!(title.chars().count() <= 96);
         assert!(!title.contains("sensitive-value") && !title.contains("private-term"));
@@ -2161,7 +2161,7 @@ async fn issue343_t18_multiple_tool_categories_keep_first_icon_and_bounded_title
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(
             group.stage_title(0, cx),
-            "read files, run commands, find files, search content"
+            "Read files, run commands, find files, search content"
         );
         assert_eq!(
             group.test_stage_tool_icon(0, cx),
@@ -2183,7 +2183,7 @@ async fn issue343_t20_command_title_ignores_running_and_failed_outcomes(cx: &mut
             cx,
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         stream.apply_event(
             ConversationEvent::ToolCallApproved {
                 call_id: "failed".into(),
@@ -2198,7 +2198,7 @@ async fn issue343_t20_command_title_ignores_running_and_failed_outcomes(cx: &mut
             cx,
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         stream.apply_event(
             ConversationEvent::ToolCallFinished {
                 call_id: "failed".into(),
@@ -2219,7 +2219,7 @@ async fn issue343_t20_command_title_ignores_running_and_failed_outcomes(cx: &mut
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         assert_eq!(
             group.test_stage_tool_icon(0, cx),
             Some(crate::icons::Icon::Terminal)
@@ -2267,7 +2267,7 @@ async fn issue343_t20_rejected_commands_keep_category_title(cx: &mut TestAppCont
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
         for id in ["first", "second"] {
             assert_eq!(
                 stream.tool_cards[id].read(cx).activity_state(),
@@ -2322,7 +2322,7 @@ async fn issue343_t19_second_tool_promotes_focused_single_row_and_retry_restores
         );
         let group = stream.run_activity_groups["expansion"].read(cx);
         assert_eq!(group.segment_row_count(0, cx), 1);
-        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.stage_title(0, cx), "Run commands");
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("tool-activity-single-row").is_none());
