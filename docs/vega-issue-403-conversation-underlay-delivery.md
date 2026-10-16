@@ -130,3 +130,71 @@ Summary [176.399s] 2734 tests run: 2731 passed, 3 failed, 5 skipped
 4. 检查定位失败、电脑操作权限 / 暂停提示、隐私检查错误与提交面板仍可见可操作。空任务保留欢迎内容和 utility bar。
 
 LIMIT：本地仅格式及静态证据，未启动或截图真实 Vega。前景高度在实际布局测量后只对变化进行延后更新；首次与多行高度变化的实际绘制、边缘像素和设备输入须由 CI / 用户真实应用确认。没有存储迁移。回滚为回退本卡合并提交；Issue、Project 和分支 / worktree 的交付状态由主 agent 管理，用户手测前不关闭或清理。
+
+## 用户手测退回：活动标题穿入 Composer
+
+此前 [PR #407](https://github.com/puzige/vega/pull/407) 最终 head `8fc744262a3373bd6a3c8db681cb8e3030202a16` 的[云端检查](https://github.com/puzige/vega/actions/runs/38836312543)通过，Clippy 成功，Nextest 原始汇总为：
+
+```text
+Summary [201.464s] 2735 tests run: 2735 passed, 5 skipped
+```
+
+随后 squash 合入 master `1e90dbe75d60d2402bc658ee8d77e799896c7073`。用户手测截图仍显示真实工具活动图标、标题绘制在 Composer 内，故 [Issue #403 退回 In progress](https://github.com/puzige/vega/issues/403#issuecomment-6207184088)。此前云端通过不等于用户手测通过；不改写上述失败和修复历史，不公开用户截图内容。
+
+本轮分支 `feat/403-composer-occlusion`，基线为上述 master。第一阶段只新增真实生产回归和本节记录，生产代码保持不变，由主 agent 开 PR 留云端失败证据后再决策修复。
+
+| 用例 | 生产前置与操作 | 判据 | 第一阶段状态 |
+|---|---|---|---|
+| R1 live | ConversationEvent 生成含两个工具的运行阶段；浅深主题，滚入 fade 与 Composer | 存在实际重叠，真实标题 wrapper 的背景 Quad 早于 fade / 实色前景 / shell | 已新增 / 待云端红证据 |
+| R1 final | ConversationEvent 确认 Final 并完成会话，形成完成聚合标题；同上操作 | 相同的真实绘制顺序契约；不使用假标题或手工 deferred 元素 | 已新增 / 待云端红证据 |
+| R2 | 标题移入输入框空白边缘后点击，再滚回可读区点击 | 被遮住时不展开，回到阅读区域后可展开真实活动内容 | 已新增 / 待云端验证 |
+| R3 | 合法菜单、动态高度与锚点 | 保留已有生产回归 | 已有 suite / 待云端验证 |
+| R4 | 应用级后绘制遮罩 | 后续实现不得把整个前景抬高到应用遮罩之上 | 后续组合根回归 / 修复评审 |
+
+证据边界：精确标题 bounds + `bg_base` Quad 定位同一真实标题子树的绘制阶段。标题文字与图标属于该子树，但 Quad 顺序不冒充字形或真实像素验收。保持本地禁止编译 / 测试，仅做快速格式和差异检查；第一阶段不修生产代码，不提交、push 或操作 CI。
+
+新增测试均在 `crates/vega_ui/src/conversation_stream/tests/issue403_conversation_underlay.rs`：
+
+- `issue403_live_deferred_header_paints_beneath_foreground`：真实两个工具调用形成 `run commands` 阶段，断言真实图标和标题在同一 header 内，浅深主题分别覆盖 fade 与 shell 的有效重叠。
+- `issue403_completed_deferred_header_paints_beneath_foreground`：同一事件流经 Final 元数据和 MessageFinished 形成折叠完成汇总，执行相同绘制顺序断言。
+- `issue403_foreground_occludes_real_run_header_clicks`：运行和完成两态均点击 shell 顶部空白边缘与标题重叠处，断言不展开；滚回可读区后点击真实标题，断言可展开。点击位置避开文本输入区域，避免由输入控件吞事件伪装前景遮挡。
+
+预期旧生产代码在两项绘制测试的 `header_index < fade_index` 条件失败：真实标题 wrapper 经 priority 1 全局延后，出现在普通绘制的 fade / surface / shell 后方。测试先断言实际位置与重叠并查找精确背景 Quad；找不到真实标题、没有重叠或主题不匹配都会单独失败，不能冒充已检出层级缺陷。此为源码推断，尚未获得本轮云端失败输出。
+
+本阶段本地实际执行的轻量检查：
+
+```text
+cargo fmt --all -- --check
+首次 exit 1：仅报告本次新增测试区域的格式差异；按输出手工修正。
+最终 exit 0
+(no output)
+
+git diff --check
+exit 0
+(no output)
+```
+
+NOT RUN：本轮新增三项测试、Clippy、Nextest 与应用像素手测均未在本地执行；主 agent 后续通过云端 PR Check 留存红证据。当前仅测试和交付记录有本阶段改动，规格改动由主 agent 持有，生产代码未修改。未添加依赖、产品文案或调试 selector，保留原有全部断言。
+
+后续用户手测：让含多条命令的运行阶段及完成汇总分别滚过输入框上沿，浅深主题检查图标、文字随真实渐隐被遮盖；输入区、侧边和底部无标题碎片。遮住时点按不展开，滚回阅读区后能展开并吸顶；模型 / 权限等菜单及命令面板等应用级遮罩仍在上层。当前回归仅观测同一真实子树的背景和命中，字形像素及外部应用集成仍待用户手测。
+
+### 工作流更新后的实际交付边界
+
+回归准备完成时，最新 master 合入 PR #415（`6a2363f8`），明确手测失败的 Bug 由 Codex 分析并发布具体方案，Ready 等 Vega 领取执行。主 agent 已将本轮分支 rebase 到该基线，未出现冲突；上游仅改角色工作流文档，没有 UI 或测试基线变化。
+
+因此本轮不再启动测试草稿 PR，也不由当前子 agent 实施生产修复。前述“主 agent 后续开 PR 留红证据”计划由冻结规格最后的“执行交接 v1：Codex → Vega”取代：发布现有三项回归及精确到 `StickyDisclosure::prepaint` / `paint` 的局部绘制方案，Vega 补生产修复与 R4 组合根回归后交回 Codex。不能将源码推断写成已运行红测试；本轮三项、R4 与旧 suite 的执行结果均待后续 Actions。
+
+当前生产代码与 `origin/master` 一致，只有本卡测试及两份规格/交付文档变化。没有开本轮 PR、CI、合并、打包或更新应用；没有公开用户截图、会话原文、配置或本机数据。子 agent 已停止写入，主 agent 完成方案发布后停止该卡实现；下一执行者为 Vega，当前执行者为待领取，不声称 Vega 已开始工作。
+
+交接后继续保留本卡原分支、新修复分支与 worktree，Issue 保持开放，Project Ready 等领取。后续 Vega 回报只改变执行阶段，保持 In progress 并交回 Codex；通过最新 head 的 required check 合并后才回到 In review。实际 handoff commit 与可访问链接写入 #403 最新交接评论，领取者必须核对该版本。
+
+2026-10-16 03:23 UTC / 11:23 Asia/Shanghai，rebase 后最终快速复查：`cargo fmt --all -- --check` 退出 0、无输出；`git diff --check origin/master` 退出 0、无输出。文本静态审查退出 0，原始输出：
+
+```text
+Changed production files: 0
+Added code comments: 0
+Added ignored tests: 0
+Added GPUI regressions: 3 (not executed)
+```
+
+未运行 Vega、编译、构建、Clippy、任何测试或打包。当前没有本轮 CI 红/绿结果，新增 R4 组合根测试待 Vega 按方案补充；发布 handoff 不代表修复已实现或 Vega 已领取。

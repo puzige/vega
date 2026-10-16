@@ -2,10 +2,12 @@ use super::r64_popup_deferred::{PROJECT_BINDING, bounds, click, install_utility_
 use super::*;
 use crate::conversation_stream::attachments::ImagePreview;
 use gpui_kit::{
-    Modifiers, ScrollDelta, ScrollWheelEvent, VisualTestContext, linear_color_stop,
-    linear_gradient, point, size,
+    Bounds, ListOffset, Modifiers, ScrollDelta, ScrollWheelEvent, VisualTestContext,
+    linear_color_stop, linear_gradient, point, size,
 };
-use vega_conversation::types::PendingMessage;
+use vega_conversation::types::{
+    AssistantResponseKind, AssistantResponseMetadata, ConversationStopReason, PendingMessage,
+};
 
 fn seed(stream: &Entity<ConversationStream>, count: i64, cx: &mut TestAppContext) {
     stream.update(cx, |stream, cx| {
@@ -455,4 +457,266 @@ async fn issue403_empty_layout_and_short_overflow_navigation_remain_usable(
             .debug_bounds("message-anchor-rail")
             .is_some()
     );
+}
+
+const OCCLUSION_RUN: &str = "occlusion-run";
+
+fn run_header_fixture(
+    cx: &mut TestAppContext,
+    completed: bool,
+) -> (WindowHandle<StreamHarness>, Entity<ConversationStream>) {
+    let (window, stream, _) = open_controller_stream(cx, OCCLUSION_RUN);
+    let visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(960.), px(600.)));
+    visual.run_until_parked();
+    seed(&stream, 16, cx);
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: OCCLUSION_RUN.into(),
+                seq: 17,
+            },
+            cx,
+        );
+        for index in 0..2 {
+            let id = format!("occlusion-tool-{index}");
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: bash_call(&id, "pwd"),
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::ToolCallApproved {
+                    call_id: id.clone(),
+                    approval: Approval::Once,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::ToolCallRunning {
+                    call_id: id.clone(),
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::ToolCallFinished {
+                    call_id: id,
+                    result: ToolResult {
+                        status: ToolCallStatus::Success,
+                        output: "synthetic output".into(),
+                        reused: false,
+                        exit_code: Some(0),
+                        duration_ms: Some(10),
+                        truncated: Some(false),
+                        invalid: None,
+                    },
+                },
+                cx,
+            );
+        }
+        let body = "Following visible conversation content.\n\n".repeat(80);
+        let body_len = body.len();
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: OCCLUSION_RUN.into(),
+                delta: body,
+            },
+            cx,
+        );
+        if completed {
+            stream.apply_event(
+                ConversationEvent::AssistantResponseCompleted {
+                    message_id: OCCLUSION_RUN.into(),
+                    response: AssistantResponseMetadata {
+                        response_id: "occlusion-final".into(),
+                        text_start_bytes: 0,
+                        text_end_bytes: body_len,
+                        kind: AssistantResponseKind::Final,
+                    },
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: OCCLUSION_RUN.into(),
+                    stop_reason: ConversationStopReason::End,
+                    execution_duration_ms: Some(1000),
+                },
+                cx,
+            );
+        }
+    });
+    cx.run_until_parked();
+    stream.read_with(cx, |stream, cx| {
+        let group = stream.run_activity_groups[OCCLUSION_RUN].read(cx);
+        assert_eq!(group.process_in_details(), completed);
+        assert_eq!(
+            group.status(),
+            if completed {
+                RunActivityStatus::Completed
+            } else {
+                RunActivityStatus::Running
+            }
+        );
+        if !completed {
+            assert_eq!(group.stage_title(0, cx), "run commands");
+        }
+    });
+    (window, stream)
+}
+
+fn run_header_selector(completed: bool) -> &'static str {
+    if completed {
+        "run-activity-toggle"
+    } else {
+        "run-stage-toggle-0"
+    }
+}
+
+fn position_run_header(
+    window: WindowHandle<StreamHarness>,
+    stream: &Entity<ConversationStream>,
+    completed: bool,
+    center_y: Pixels,
+    cx: &mut TestAppContext,
+) -> Bounds<Pixels> {
+    stream.update(cx, |stream, cx| {
+        let index = stream
+            .entries
+            .iter()
+            .position(|entry| {
+                if completed {
+                    matches!(entry, StreamEntry::RunActivity { .. })
+                } else {
+                    matches!(entry, StreamEntry::RunActivitySegment { segment: 0, .. })
+                }
+            })
+            .expect("event-created activity header entry");
+        assert!(!stream.process_entry_hidden(index, cx));
+        stream.list.scroll_to(ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+    });
+    let selector = run_header_selector(completed);
+    let natural = bounds(window, selector, cx);
+    stream.update(cx, |stream, cx| {
+        stream.list.scroll_by(natural.center().y - center_y);
+        cx.notify();
+    });
+    let actual = bounds(window, selector, cx);
+    assert!(
+        (f32::from(actual.center().y - center_y)).abs() < 1.,
+        "{selector}: actual={actual:?}, desired center={center_y:?}"
+    );
+    actual
+}
+
+fn assert_run_header_layering(cx: &mut TestAppContext, completed: bool) {
+    let (window, stream) = run_header_fixture(cx, completed);
+    for palette in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
+        let colors = palette.colors;
+        cx.update(|cx| {
+            cx.set_global(palette);
+            cx.refresh_windows();
+        });
+        for region in ["conversation-bottom-fade", "composer-shell"] {
+            let target = bounds(window, region, cx);
+            let header = position_run_header(window, &stream, completed, target.center().y, cx);
+            let viewport = bounds(window, "conversation-message-list", cx);
+            let fade = bounds(window, "conversation-bottom-fade", cx);
+            let surface = bounds(window, "conversation-foreground-surface", cx);
+            let shell = bounds(window, "composer-shell", cx);
+            assert!(viewport.bottom() >= shell.bottom());
+            let overlap = header.intersect(&target);
+            assert!(
+                overlap.size.width > px(0.) && overlap.size.height >= header.size.height - px(1.),
+                "{} must really overlap {region}: header={header:?}, target={target:?}",
+                run_header_selector(completed)
+            );
+            if !completed {
+                let icon = bounds(window, "run-stage-icon-0", cx);
+                let title = bounds(window, "run-stage-title-0", cx);
+                assert!(header.contains(&icon.center()) && header.contains(&title.center()));
+            }
+            window.update(cx, |_, window, _| {
+                let quads = window.painted_quads();
+                let scale = window.scale_factor();
+                let solid_index = |bounds: Bounds<Pixels>, color: Rgba| {
+                    quads
+                        .iter()
+                        .rposition(|quad| {
+                            quad.bounds == bounds.scale(scale)
+                                && quad.background.as_solid() == Some(color.into())
+                        })
+                        .unwrap_or_else(|| panic!("missing real background quad at {bounds:?}"))
+                };
+                let header_index = solid_index(header, colors.bg_base);
+                let fade_index = quads
+                    .iter()
+                    .position(|quad| {
+                        quad.bounds == fade.scale(scale)
+                            && quad.background
+                                == linear_gradient(
+                                    180.,
+                                    linear_color_stop(colors.bg_base.opacity(0.), 0.),
+                                    linear_color_stop(colors.bg_base, 1.),
+                                )
+                    })
+                    .expect("painted theme fade");
+                let surface_index = solid_index(surface, colors.bg_base);
+                let shell_index = solid_index(shell, colors.bg_elevated);
+                assert!(header_index < fade_index && fade_index < surface_index && surface_index < shell_index, "{} overlapping {region}: real header quad #{header_index} must precede fade #{fade_index}, surface #{surface_index}, shell #{shell_index}", run_header_selector(completed));
+            }).expect("header paint order");
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn issue403_live_deferred_header_paints_beneath_foreground(cx: &mut TestAppContext) {
+    assert_run_header_layering(cx, false);
+}
+
+#[gpui_kit::test]
+async fn issue403_completed_deferred_header_paints_beneath_foreground(cx: &mut TestAppContext) {
+    assert_run_header_layering(cx, true);
+}
+
+#[gpui_kit::test]
+async fn issue403_foreground_occludes_real_run_header_clicks(cx: &mut TestAppContext) {
+    for completed in [false, true] {
+        let (window, stream) = run_header_fixture(cx, completed);
+        let shell = bounds(window, "composer-shell", cx);
+        let header = position_run_header(window, &stream, completed, shell.top() + px(4.), cx);
+        let click_position = point(shell.center().x, header.center().y);
+        assert!(shell.contains(&click_position) && header.contains(&click_position));
+        let expanded = |cx: &TestAppContext| {
+            stream.read_with(cx, |stream, cx| {
+                let group = stream.run_activity_groups[OCCLUSION_RUN].read(cx);
+                if completed {
+                    group.expanded()
+                } else {
+                    group.segment_expanded(0)
+                }
+            })
+        };
+        assert!(!expanded(cx));
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(click_position, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            !expanded(cx),
+            "{} must not expand through the Composer",
+            run_header_selector(completed)
+        );
+        let viewport = bounds(window, "conversation-message-list", cx);
+        let readable =
+            position_run_header(window, &stream, completed, viewport.top() + px(100.), cx);
+        let foreground = bounds(window, "conversation-foreground", cx);
+        assert!(readable.top() >= viewport.top() && readable.bottom() < foreground.top());
+        click(window, run_header_selector(completed), cx);
+        assert!(expanded(cx), "visible activity header must remain operable");
+    }
 }
