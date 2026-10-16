@@ -1139,11 +1139,7 @@ async fn issue343_t13_gpt_summary_nests_mixed_tools_and_failed_searches(cx: &mut
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert!(
-            group
-                .stage_title(0, cx)
-                .starts_with("find files, read files")
-        );
+        assert_eq!(group.stage_title(0, cx), "Reviewing results");
         assert_eq!(group.segment_row_count(0, cx), 1);
         assert!(stream.run_notice_projection(cx).is_empty());
         assert_eq!(
@@ -1187,7 +1183,7 @@ async fn issue343_t13_gpt_summary_nests_mixed_tools_and_failed_searches(cx: &mut
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .segment_row_count(0, cx),
-            10
+            9
         );
         for id in ["search-first", "search-second", "search-third"] {
             assert!(stream.tool_cards[id].read(cx).needs_attention());
@@ -1663,7 +1659,7 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
             stream.run_activity_groups["expansion"]
                 .read(cx)
                 .stage_title(0, cx),
-            "read files, run commands"
+            "Updated summary"
         );
         assert_eq!(
             stream.run_activity_groups["expansion"]
@@ -1674,7 +1670,7 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("run-stage-icon-0").is_some());
+    assert!(visual.debug_bounds("run-stage-icon-0").is_none());
     assert!(visual.debug_bounds("thinking-toggle").is_none());
     click(&mut visual, "run-stage-toggle-0");
     let summaries = stream.read_with(&visual, |stream, cx| {
@@ -1693,24 +1689,406 @@ async fn issue343_t18_summary_promotes_to_bounded_tool_activity(cx: &mut TestApp
             format!("run-stage-source-{}", summaries[0]).into_boxed_str(),
         ))
         .unwrap();
-    let latest_summary = visual
-        .debug_bounds(Box::leak(
-            format!("run-stage-source-{}", summaries[1]).into_boxed_str(),
-        ))
-        .unwrap();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("run-stage-source-{}", summaries[1]).into_boxed_str(),
+            ))
+            .is_none()
+    );
     let read = visual.debug_bounds("run-stage-tool-0-0").unwrap();
     let shell = visual.debug_bounds("run-stage-tool-0-1").unwrap();
     assert!(first_summary.bottom() <= read.top());
     assert!(read.bottom() <= shell.top());
-    assert!(shell.bottom() <= latest_summary.top());
     stream.read_with(&visual, |stream, cx| {
         let group = stream.run_activity_groups["expansion"].read(cx);
-        assert_eq!(group.segment_row_count(0, cx), 5);
+        assert_eq!(group.segment_row_count(0, cx), 4);
         assert_eq!(
             group.test_stage_tool_icon(0, cx),
             Some(crate::icons::Icon::BookOpen)
         );
     });
+}
+
+#[gpui_kit::test]
+async fn issue421_summary_temporarily_replaces_tool_headline_until_next_proposal(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "summary-tool-headline-cycle");
+    stream.update(cx, |stream, cx| {
+        begin(stream, cx);
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: ToolCall {
+                    id: "read".into(),
+                    tool: "read".into(),
+                    input_json: r#"{"path":"synthetic.rs"}"#.into(),
+                },
+            },
+            cx,
+        );
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-stage-toggle-0").is_none());
+    assert!(visual.debug_bounds("tool-activity-single-row").is_some());
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("command", "pwd"),
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "read files, run commands");
+        assert_eq!(
+            group.test_rendered_stage_title(0, cx),
+            group.stage_title(0, cx)
+        );
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_some());
+    click(&mut visual, "run-stage-toggle-0");
+    stream.update(&mut visual, |stream, cx| summary(stream, "Snapshot", cx));
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert!(group.segment_expanded(0));
+        assert_eq!(group.stage_title(0, cx), "Snapshot");
+        assert_eq!(group.test_rendered_stage_title(0, cx), "Snapshot");
+        assert!(group.test_visible_segment_thinking_texts(0, cx).is_empty());
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_none());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallApproved {
+                call_id: "command".into(),
+                approval: Approval::Once,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallRunning {
+                call_id: "command".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: "command".into(),
+                result: ToolResult {
+                    status: ToolCallStatus::Success,
+                    output: String::new(),
+                    reused: false,
+                    exit_code: Some(0),
+                    duration_ms: Some(1),
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("command", "pwd"),
+            },
+            cx,
+        );
+        summary(stream, " update", cx);
+        summary(stream, "\n**Unfinished", cx);
+        summary(stream, "", cx);
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Snapshot update");
+        assert!(group.test_visible_segment_thinking_texts(0, cx).is_empty());
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: ToolCall {
+                    id: "edit".into(),
+                    tool: "edit".into(),
+                    input_json: serde_json::json!({
+                        "audit_version": "write_edit_v1",
+                        "tool": "edit",
+                        "path": "synthetic.rs",
+                        "old_string_bytes": 3,
+                        "new_string_bytes": 4,
+                        "fingerprint_v1": "a".repeat(64)
+                    })
+                    .to_string(),
+                },
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert!(group.segment_expanded(0));
+        assert_eq!(
+            group.stage_title(0, cx),
+            "read files, run commands, edit files"
+        );
+        assert_eq!(
+            group.test_rendered_stage_title(0, cx),
+            group.stage_title(0, cx)
+        );
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, cx),
+            vec!["Snapshot update\n**Unfinished".to_owned()]
+        );
+        assert_eq!(
+            group.test_stage_tool_icon(0, cx),
+            Some(crate::icons::Icon::BookOpen)
+        );
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_some());
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
+    stream.update(&mut visual, |stream, cx| {
+        summary(stream, "Next snapshot", cx)
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Next snapshot");
+        assert_eq!(group.test_rendered_stage_title(0, cx), "Next snapshot");
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, cx),
+            vec!["Snapshot update\n**Unfinished".to_owned()]
+        );
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_none());
+    click(&mut visual, "run-stage-toggle-0");
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: ToolCall {
+                    id: "write".into(),
+                    tool: "write".into(),
+                    input_json: serde_json::json!({
+                        "audit_version": "write_edit_v1",
+                        "tool": "write",
+                        "path": "synthetic.txt",
+                        "content_bytes": 1,
+                        "fingerprint_v1": "a".repeat(64)
+                    })
+                    .to_string(),
+                },
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert!(!group.segment_expanded(0));
+        assert_eq!(
+            group.stage_title(0, cx),
+            "read files, run commands, edit files, write files"
+        );
+        assert_eq!(
+            group.test_rendered_stage_title(0, cx),
+            group.stage_title(0, cx)
+        );
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, cx),
+            vec![
+                "Snapshot update\n**Unfinished".to_owned(),
+                "Next snapshot".to_owned()
+            ]
+        );
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_some());
+    assert!(visual.debug_bounds("thinking-toggle").is_none());
+    click(&mut visual, "run-stage-toggle-0");
+    assert!(visual.debug_bounds("thinking-toggle").is_some());
+}
+
+#[gpui_kit::test]
+async fn issue421_unreadable_summary_does_not_replace_tool_headline(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "unreadable-summary-headline");
+    stream.update(cx, |stream, cx| {
+        begin(stream, cx);
+        for id in ["first", "second"] {
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: bash_call(id, "pwd"),
+                },
+                cx,
+            );
+        }
+        summary(stream, "   \n**Unfinished", cx);
+        assert_eq!(
+            stream.run_activity_groups["expansion"]
+                .read(cx)
+                .stage_title(0, cx),
+            "run commands"
+        );
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        assert_eq!(
+            stream.run_activity_groups["expansion"]
+                .read(cx)
+                .test_rendered_stage_title(0, cx),
+            "run commands"
+        );
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_some());
+    stream.update(&mut visual, |stream, cx| summary(stream, "**", cx));
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Unfinished");
+        assert_eq!(group.test_rendered_stage_title(0, cx), "Unfinished");
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_none());
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: "unproposed".into(),
+                result: ToolResult {
+                    status: ToolCallStatus::Failed,
+                    output: String::new(),
+                    reused: false,
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Unfinished");
+        assert_eq!(group.test_rendered_stage_title(0, cx), "Unfinished");
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_none());
+}
+
+#[gpui_kit::test]
+async fn issue421_retry_restores_checkpoint_headline_source(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "summary-headline-retry");
+    stream.update(cx, |stream, cx| {
+        begin(stream, cx);
+        for id in ["first", "second"] {
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: bash_call(id, "pwd"),
+                },
+                cx,
+            );
+        }
+        summary(stream, "Before retry", cx);
+        stream.apply_event(
+            ConversationEvent::AssistantResponseStarted {
+                message_id: "expansion".into(),
+                text_start_bytes: 0,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: ToolCall {
+                    id: "third".into(),
+                    tool: "read".into(),
+                    input_json: r#"{"path":"synthetic.rs"}"#.into(),
+                },
+            },
+            cx,
+        );
+        assert_eq!(
+            stream.run_activity_groups["expansion"]
+                .read(cx)
+                .stage_title(0, cx),
+            "run commands, read files"
+        );
+        summary(stream, "During retry", cx);
+        assert_eq!(
+            stream.run_activity_groups["expansion"]
+                .read(cx)
+                .stage_title(0, cx),
+            "During retry"
+        );
+        stream.apply_event(
+            ConversationEvent::ResponseRetrying {
+                message_id: "expansion".into(),
+                text_start_bytes: 0,
+                attempt: 1,
+                max_retries: 3,
+            },
+            cx,
+        );
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "Before retry");
+        assert!(group.test_visible_segment_thinking_texts(0, cx).is_empty());
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        assert_eq!(
+            stream.run_activity_groups["expansion"]
+                .read(cx)
+                .test_rendered_stage_title(0, cx),
+            "Before retry"
+        );
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_none());
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("after-retry", "pwd"),
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.test_rendered_stage_title(0, cx), "run commands");
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, cx),
+            vec!["Before retry".to_owned()]
+        );
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_some());
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::AssistantResponseStarted {
+                message_id: "expansion".into(),
+                text_start_bytes: 0,
+            },
+            cx,
+        );
+        summary(stream, "Temporary summary", cx);
+        assert_eq!(
+            stream.run_activity_groups["expansion"]
+                .read(cx)
+                .stage_title(0, cx),
+            "Temporary summary"
+        );
+        stream.apply_event(
+            ConversationEvent::ResponseRetrying {
+                message_id: "expansion".into(),
+                text_start_bytes: 0,
+                attempt: 1,
+                max_retries: 3,
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    stream.read_with(&visual, |stream, cx| {
+        let group = stream.run_activity_groups["expansion"].read(cx);
+        assert_eq!(group.stage_title(0, cx), "run commands");
+        assert_eq!(group.test_rendered_stage_title(0, cx), "run commands");
+    });
+    assert!(visual.debug_bounds("run-stage-icon-0").is_some());
 }
 
 #[gpui_kit::test]

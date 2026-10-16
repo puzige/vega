@@ -24,6 +24,7 @@ struct RunActivitySegment {
     sticky: StickyState,
     expanded: bool,
     children: Vec<RunActivityChild>,
+    headline_summary: Option<Entity<ThinkingBlock>>,
     tool_categories: Vec<(Entity<ToolCard>, ToolActivityCategory)>,
     compact_tool_groups: Vec<(Entity<ToolCard>, Entity<ToolActivityGroup>)>,
     focus: FocusHandle,
@@ -88,6 +89,7 @@ pub(crate) struct RunActivityCheckpoint {
     segment_count: usize,
     active_segment: Option<usize>,
     children: Vec<RunActivityChild>,
+    headline_summary: Option<Entity<ThinkingBlock>>,
     tool_categories_len: usize,
     tool_group_children: Vec<(Entity<ToolActivityGroup>, Vec<Entity<ToolCard>>)>,
     scroll_count: usize,
@@ -196,10 +198,14 @@ impl RunActivityGroup {
             .and_then(|segment| self.segments.get(segment))
             .map(|segment| segment.tool_categories.len())
             .unwrap_or(0);
+        let headline_summary = active_segment
+            .and_then(|segment| self.segments.get(segment))
+            .and_then(|segment| segment.headline_summary.clone());
         RunActivityCheckpoint {
             segment_count: self.segments.len(),
             active_segment,
             children,
+            headline_summary,
             tool_categories_len,
             tool_group_children,
             scroll_count,
@@ -225,6 +231,7 @@ impl RunActivityGroup {
                 group.update(cx, |group, cx| group.replace_children(cards.clone(), cx));
             }
             segment_state.children = checkpoint.children.clone();
+            segment_state.headline_summary = checkpoint.headline_summary.clone();
             segment_state
                 .tool_categories
                 .truncate(checkpoint.tool_categories_len);
@@ -430,10 +437,8 @@ impl RunActivityGroup {
     }
 
     fn visible_segment_children(&self, segment: usize, cx: &App) -> Vec<RunActivityChild> {
-        let has_tools = !self.stage_tool_calls(segment, cx).is_empty();
-        let outer_summary = (!has_tools)
-            .then(|| self.stage_summary_card(segment, cx))
-            .flatten();
+        let has_tools = self.stage_has_tools(segment);
+        let outer_summary = self.stage_outer_summary_card(segment, cx);
         self.segment_children(segment)
             .into_iter()
             .filter(|child| {
@@ -601,6 +606,17 @@ impl RunActivityGroup {
             .collect()
     }
 
+    fn stage_has_tools(&self, segment: usize) -> bool {
+        self.segments.get(segment).is_some_and(|state| {
+            state.children.iter().any(|child| {
+                matches!(
+                    child,
+                    RunActivityChild::Tool(_) | RunActivityChild::ToolGroup(_)
+                )
+            })
+        })
+    }
+
     fn stage_process_entry_count(&self, segment: usize, cx: &App) -> usize {
         let tools = self.stage_tool_calls(segment, cx).len();
         let thoughts = self
@@ -652,6 +668,15 @@ impl RunActivityGroup {
         self.stage_tool_title(segment, cx).map(|(_, icon)| icon)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_rendered_stage_title(&self, segment: usize, cx: &App) -> String {
+        self.segments[segment]
+            .title_view
+            .read(cx)
+            .test_title()
+            .to_owned()
+    }
+
     fn stage_tool_title(&self, segment: usize, cx: &App) -> Option<(String, crate::icons::Icon)> {
         let categories = self.stage_tool_categories(segment, cx);
         let icon = categories.first()?.icon();
@@ -673,6 +698,7 @@ impl RunActivityGroup {
             sticky: StickyState::default(),
             expanded: false,
             children: Vec::new(),
+            headline_summary: None,
             tool_categories: Vec::new(),
             compact_tool_groups: Vec::new(),
             focus: cx.focus_handle(),
@@ -732,10 +758,34 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn mark_summary_preview(
+        &mut self,
+        segment: usize,
+        card: &Entity<ThinkingBlock>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.stage_has_tools(segment) {
+            return;
+        }
+        let Some(state) = self.segments.get_mut(segment) else {
+            return;
+        };
+        if state
+            .children
+            .iter()
+            .any(|child| matches!(child, RunActivityChild::Thinking(owned) if owned == card))
+            && card.read(cx).summary_title().is_some()
+        {
+            state.headline_summary = Some(card.clone());
+            cx.notify();
+        }
+    }
+
     pub(crate) fn append_tool(
         &mut self,
         segment: usize,
         card: Entity<ToolCard>,
+        proposed: bool,
         cx: &mut Context<Self>,
     ) {
         let preserve_open = self.stage_process_entry_count(segment, cx) == 1
@@ -746,6 +796,9 @@ impl RunActivityGroup {
         let Some(segment_state) = self.segments.get_mut(segment) else {
             return;
         };
+        if proposed {
+            segment_state.headline_summary = None;
+        }
         segment_state
             .tool_categories
             .push((card.clone(), card.read(cx).stage_activity_category()));
@@ -787,6 +840,7 @@ impl RunActivityGroup {
         let Some(segment_state) = self.segments.get_mut(segment) else {
             return;
         };
+        segment_state.headline_summary = None;
         match segment_state.children.last() {
             Some(RunActivityChild::Tool(first)) => {
                 cx.observe(&card, |_, _, cx| cx.notify()).detach();
@@ -1524,6 +1578,29 @@ impl RunActivityGroup {
             .and_then(|card| card.read(cx).summary_title().map(str::to_owned))
     }
 
+    fn stage_outer_summary_card(&self, segment: usize, cx: &App) -> Option<Entity<ThinkingBlock>> {
+        if !self.stage_has_tools(segment) {
+            self.stage_summary_card(segment, cx)
+        } else {
+            self.segments
+                .get(segment)?
+                .headline_summary
+                .as_ref()
+                .filter(|card| card.read(cx).summary_title().is_some())
+                .cloned()
+        }
+    }
+
+    fn stage_aggregate_tool_title(
+        &self,
+        segment: usize,
+        cx: &App,
+    ) -> Option<(String, crate::icons::Icon)> {
+        (self.stage_outer_summary_card(segment, cx).is_none())
+            .then(|| self.stage_tool_title(segment, cx))
+            .flatten()
+    }
+
     fn stage_thinking_active(&self, segment: usize) -> bool {
         !self.terminal
             && !self.waiting_for_user
@@ -1538,10 +1615,16 @@ impl RunActivityGroup {
     }
 
     pub(crate) fn stage_title(&self, segment: usize, cx: &App) -> String {
-        if self.stage_is_aggregate(segment, cx)
-            && let Some((title, _)) = self.stage_tool_title(segment, cx)
-        {
-            return title;
+        if self.stage_is_aggregate(segment, cx) {
+            if let Some(title) = self
+                .stage_outer_summary_card(segment, cx)
+                .and_then(|card| card.read(cx).summary_title().map(str::to_owned))
+            {
+                return title;
+            }
+            if let Some((title, _)) = self.stage_aggregate_tool_title(segment, cx) {
+                return title;
+            }
         }
         self.stage_summary_title(segment, cx).unwrap_or_else(|| {
             if self.stage_thinking_active(segment) {
@@ -1640,14 +1723,9 @@ impl RunActivityGroup {
             .map(|card| card.entity_id())
             .collect::<Vec<_>>();
         let activity = aggregate
-            .then(|| state.stage_tool_title(segment_index, cx))
+            .then(|| state.stage_aggregate_tool_title(segment_index, cx))
             .flatten();
-        let title = (aggregate || single_thinking).then(|| {
-            activity
-                .as_ref()
-                .map(|(title, _)| title.clone())
-                .unwrap_or_else(|| state.stage_title(segment_index, cx))
-        });
+        let title = (aggregate || single_thinking).then(|| state.stage_title(segment_index, cx));
         let tool_leads = matches!(
             visible_children.first(),
             Some(RunActivityChild::Tool(_) | RunActivityChild::ToolGroup(_))
@@ -1658,9 +1736,9 @@ impl RunActivityGroup {
         let shimmering = !aggregate && state.stage_thinking_active(segment_index);
         let activity_icon = activity.map(|(_, icon)| icon);
         let epoch = state.animation_epoch;
-        if tool_ids.is_empty()
+        if (aggregate || single_thinking)
             && state
-                .stage_summary_card(segment_index, cx)
+                .stage_outer_summary_card(segment_index, cx)
                 .is_some_and(|card| card.read(cx).header_focused(window))
         {
             header_focus.focus(window, cx);

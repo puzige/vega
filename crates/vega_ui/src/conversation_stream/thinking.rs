@@ -629,7 +629,7 @@ impl ConversationStream {
                 group.update(cx, |group, cx| group.set_thinking(card.clone(), cx));
             }
             let before = card.read(cx).retained_bytes();
-            let retained = card.update(cx, |card, cx| {
+            let (retained, summary_preview_changed) = card.update(cx, |card, cx| {
                 let title = card.title().to_owned();
                 let summary_title = card.summary_title().map(str::to_owned);
                 let source_present = card.has_source_text();
@@ -645,6 +645,9 @@ impl ConversationStream {
                     && card.ancestor_visible
                     && card.body.painted.get();
                 let header_changed = title != card.title() || window_changed;
+                let summary_preview_changed = summary
+                    && summary_title.as_deref() != card.summary_title()
+                    && card.summary_title().is_some();
                 let stage_changed = summary_title.as_deref() != card.summary_title()
                     || source_present != card.has_source_text()
                     || truncated != card.truncated;
@@ -667,8 +670,16 @@ impl ConversationStream {
                     cx.notify();
                 }
                 card.prepare_body(cx);
-                appended
+                (appended, summary_preview_changed)
             });
+            if summary_preview_changed
+                && let Some((_, group)) = &self.active_run_activity
+                && let Some(segment) = self.active_run_activity_segment
+            {
+                group.update(cx, |group, cx| {
+                    group.mark_summary_preview(segment, &card, cx)
+                });
+            }
             self.thinking_bytes = self.thinking_bytes.saturating_sub(before) + retained;
             while self.thinking_bytes > THINKING_VIEW_BYTES
                 || self.thinking_blocks > THINKING_VIEW_BLOCKS
