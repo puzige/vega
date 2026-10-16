@@ -460,7 +460,7 @@ impl ThreadsBlock {
             .as_ref()
             .map(|thread| thread.id.clone());
         let empty = standalone.is_empty();
-        // Issue #57: Recents is a lazy list, not a Show More list. Record the
+        // Recents is a lazy list, not a Show More list. Record the
         // total so the outer scroller can grow the render window one page at a
         // time; the rows are always the first `recents_visible` of the stable
         // sort, so growing only appends and never reorders what is already
@@ -597,7 +597,7 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// Issue #57: the `Show More / Show Less` row is **Projects-only**. Recents
+    /// the `Show More / Show Less` row is **Projects-only**. Recents
     /// is now a lazy list (viewport fill + scroll-to-bottom growth), so it has
     /// no progressive control and no `organization-recents-show-*` selector.
     fn render_progressive_control(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {

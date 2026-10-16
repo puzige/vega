@@ -1,4 +1,4 @@
-//! S8-T44 headless 主干 E2E（决策 7 从简：恰一条）：
+//!  headless 主干 E2E（决策 7 从简：恰一条）：
 //! 10k 混合语义项构建 → 顺序与内容保真 → 贴底跟随 → 上翻 detach →
 //! 前插页锚定 → 回底 resume → 冻结区 remat=0 与稳定 ID。
 //! 沿用既有 harness 模式（真实 GPUI 窗口 + `StreamHarness` 根视图）。
@@ -301,7 +301,7 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
     );
     assert_eq!(still_detached.2, 0, "frozen remat stays 0 while detached");
 
-    // ── 6) 前插页锚定（S8-T45/C7）：splice 前插后视口内容原地不动 ──
+    // ── 6) 前插页锚定（）：splice 前插后视口内容原地不动 ──
     stream.update(visual, |stream, cx| {
         stream.apply_history_page(
             hydration_page(

@@ -1,4 +1,4 @@
-//! Conversation-layer orchestration for the headless runtime (S4-T20).
+//! Conversation-layer orchestration for the headless runtime.
 
 use std::collections::VecDeque;
 use std::fmt;

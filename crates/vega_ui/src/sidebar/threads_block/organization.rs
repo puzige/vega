@@ -128,7 +128,7 @@ pub(crate) enum OrganizationSection {
     Projects,
     Recents,
 }
-/// Issue #57: one page of Recents rows. The section starts at this many rows
+/// one page of Recents rows. The section starts at this many rows
 /// (R29's compact limit) and appends one page each time the outer Sidebar
 /// scroller reaches the bottom, or immediately while the content still fits
 /// the viewport.

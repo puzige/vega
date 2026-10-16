@@ -1,7 +1,7 @@
-//! tree-sitter based syntax highlighting for committed code blocks (S3-T16).
+//! tree-sitter based syntax highlighting for committed code blocks.
 //!
 //! [`highlight`] turns one whole code block into a flat [`HighlightSpan`]
-//! list with semantic [`HighlightKind`] tokens; the UI layers (S3-T17/T18)
+//! list with semantic [`HighlightKind`] tokens; the UI layers
 //! map kinds onto theme styles (tech-spec §5.1: committed 块高亮，pending
 //! 未闭合 fence 降级纯文本等宽——pending 是否调用本模块是调用方的策略).
 //!
@@ -75,7 +75,7 @@ pub enum HighlightKind {
     Attribute,
 }
 
-/// Central capture-name → kind mapping (S3-T16 要求集中一处).
+/// Central capture-name → kind mapping (要求集中一处).
 ///
 /// Dotted capture variants (`function.method`, `punctuation.bracket`, …)
 /// each get an entry; names absent from the table (e.g. `spell`,
@@ -283,7 +283,7 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-/// Highlights one code block with tree-sitter (S3-T16).
+/// Highlights one code block with tree-sitter.
 ///
 /// - Unknown / unsupported `language` → `None` (caller degrades to plain
 ///   monospace text).

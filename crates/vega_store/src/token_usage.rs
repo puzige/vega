@@ -1,5 +1,5 @@
 //! Provider usage audit over the existing `token_usage` table: one row per
-//! provider call (S4-T19) plus the S7-T38 (C5) price-audit columns and the
+//! provider call plus the (C5) price-audit columns and the
 //! checked thread/message aggregates.
 
 pub mod dashboard;

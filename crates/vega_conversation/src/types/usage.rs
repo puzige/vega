@@ -1,6 +1,6 @@
 use super::*;
 
-/// Exact pricing provenance attached to a priced usage event (S7-T38/C3).
+/// Exact pricing provenance attached to a priced usage event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsagePricing {
     /// Engine version that priced the row (e.g. `pricing_v1`).
@@ -26,7 +26,7 @@ pub struct TokenUsage {
     pub cache_write: u64,
 }
 
-/// Durable terminal outcome of one summarized assistant task (S7-T40).
+/// Durable terminal outcome of one summarized assistant task.
 ///
 /// Derived from the persisted `messages.status` DDL vocabulary, never from a
 /// UI claim, so the card can never present a running task as finished.
@@ -40,7 +40,7 @@ pub enum TaskSummaryOutcome {
     Failed,
 }
 
-/// Checked cost total of a per-task summary (S7-T40/C4).
+/// Checked cost total of a per-task summary.
 ///
 /// Mirrors `vega_store::token_usage::AggregateCost`: `Priced` only when every
 /// aggregated row carries the exact priced version, otherwise the total is
@@ -53,7 +53,7 @@ pub enum SummaryCost {
     Unavailable,
 }
 
-/// Bounded, typed per-task cost summary (S7-T40/A10-06, C4 contract).
+/// Bounded, typed per-task cost summary (C4 contract).
 ///
 /// All fields are projected by `vega_conversation` from the durable
 /// `token_usage`/`tool_calls` audits plus the live wall-clock duration; the

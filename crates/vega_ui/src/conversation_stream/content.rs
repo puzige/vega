@@ -78,7 +78,7 @@ impl ConversationStream {
     }
 
     /// Appends the read-only per-task cost summary card of one finished
-    /// assistant message (S7-T40/C4). The typed projection arrives from the
+    /// assistant message. The typed projection arrives from the
     /// app layer via `vega_conversation::summary`; the stream never queries
     /// SQLite and never computes a cost formula. Applications are keyed by
     /// the assistant message id and first-wins: duplicates and later stale
@@ -100,7 +100,7 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Applies one typed history page (S8-T45/C7). The first page fills the
+    /// Applies one typed history page. The first page fills the
     /// empty route-open stream; later pages PREPEND above the loaded history
     /// when the user scrolls up. Pages are converted through the typed
     /// projections only — no SQLite ever runs in this crate — and duplicate
@@ -823,7 +823,7 @@ impl ConversationStream {
         self.model_picker_level
     }
 
-    /// Number of configured model options the selector offers (#60 R1). R57 P3
+    /// Number of configured model options the selector offers (R1). R57 P3
     /// acceptance waits on it because the popup (and therefore the slider it
     /// hosts) only opens once the app published the catalog projection.
     #[doc(hidden)]
@@ -845,7 +845,7 @@ impl ConversationStream {
     }
 
     /// Number of hydrated durable entries the stream currently carries
-    /// (S8-T45/C7 observability for the app-layer fence tests; the row
+    /// observability for the app-layer fence tests; the row
     /// layout itself stays crate-private).
     pub fn hydrated_entry_count(&self) -> usize {
         self.entries
@@ -1166,7 +1166,7 @@ impl ConversationStream {
     /// Applies an already-durable shared lifecycle event. The UI never reads
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
-        // S7-T39: the bounded meter projection consumes the same accepted
+        // the bounded meter projection consumes the same accepted
         // events (fence below) before ownership moves into the render path.
         self.feed_meter(&event, cx);
         self.clear_recovered_retry(&event);

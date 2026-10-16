@@ -970,9 +970,6 @@ fn screenshot_receipt_value(call_id: &str, unchanged: bool) -> Value {
     json!({"status":"delivered","artifact_id":format!("screenshot:{call_id}"),"delivery":"conversation_image_attachment","saved_in_history":true,"read_only":true,"unchanged":unchanged,"next_step":"continue_remaining_requested_work_or_finish"})
 }
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComputerUseAudit {

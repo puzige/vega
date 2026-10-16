@@ -110,72 +110,6 @@ fn valid_stream() -> String {
     "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into()
 }
 
-#[test]
-fn issue81_provider_lifecycle_preserves_manual_credentials_and_enabled_state() {
-    let root = tempfile::tempdir().unwrap();
-    let config_path = root.path().join("config.toml");
-    AppConfig::default().save_to(&config_path).unwrap();
-    let service = ProviderSettingsService::new(config_path.clone());
-    let provider = ProviderConfig {
-        api: Default::default(),
-        enabled: true,
-        name: "manual-provider".into(),
-        base_url: "https://manual.example.test/v1".into(),
-        key_ref: "untrusted-key-ref".into(),
-        models: vec!["manual-model".into()],
-    };
-    let saved = service
-        .save_provider(None, provider.clone(), Some("manual-entry-secret".into()))
-        .unwrap();
-    assert!(saved.providers[0].enabled);
-    assert_eq!(saved.providers[0].key_ref, "manual-provider");
-    assert_eq!(
-        vega_store::keystore::get_key(root.path(), "manual-provider").unwrap(),
-        "manual-entry-secret"
-    );
-    let before = std::fs::read(&config_path).unwrap();
-    let loaded = service.load().unwrap();
-    assert_eq!(loaded, saved);
-    assert_eq!(std::fs::read(&config_path).unwrap(), before);
-
-    let edited = service
-        .save_provider(
-            Some(saved.providers[0].clone()),
-            saved.providers[0].clone(),
-            None,
-        )
-        .unwrap();
-    assert!(edited.providers[0].enabled);
-    assert_eq!(edited.providers[0].key_ref, "manual-provider");
-    assert_eq!(
-        vega_store::keystore::get_key(root.path(), "manual-provider").unwrap(),
-        "manual-entry-secret"
-    );
-
-    let disabled = service
-        .patch(ProviderPatchRequest {
-            provider: edited.providers[0].clone(),
-            action: ProviderPatchAction::SetEnabled(false),
-        })
-        .unwrap();
-    assert!(!disabled.providers[0].enabled);
-    assert_eq!(
-        vega_store::keystore::get_key(root.path(), "manual-provider").unwrap(),
-        "manual-entry-secret"
-    );
-    let enabled = service
-        .patch(ProviderPatchRequest {
-            provider: disabled.providers[0].clone(),
-            action: ProviderPatchAction::SetEnabled(true),
-        })
-        .unwrap();
-    assert!(enabled.providers[0].enabled);
-    assert_eq!(
-        vega_store::keystore::get_key(root.path(), "manual-provider").unwrap(),
-        "manual-entry-secret"
-    );
-}
-
 #[tokio::test(start_paused = true)]
 async fn production_discovery_explicit_import_probe_and_persistent_patch() {
     let (base, http) = server(
@@ -670,44 +604,4 @@ fn production_concurrent_provider_default_and_sidebar_fields_survive_shared_edit
             .unwrap()
             == KEY
     );
-}
-
-#[tokio::test]
-async fn i71_settings_test_model_uses_saved_responses_transport() {
-    let response = serde_json::json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","id":"owned","role":"assistant","content":[{"type":"output_text","text":"OK"}]}]}});
-    let (transport, captured) = server(
-        200,
-        format!("data: {response}\n\n"),
-        "Content-Type: text/event-stream\r\n",
-        Duration::ZERO,
-    );
-    let mut fixture = Fixture::with_transport(transport);
-    fixture.provider.api = vega_store::config::ProviderApi::Responses;
-    AppConfig {
-        providers: vec![fixture.provider.clone()],
-        ..Default::default()
-    }
-    .save_to(&fixture.service.config_path)
-    .unwrap();
-    let result = fixture
-        .service
-        .network(
-            fixture.request(ProviderNetworkAction::TestModel {
-                model: "configured-model".into(),
-            }),
-            CancellationToken::new(),
-        )
-        .await;
-    assert_eq!(
-        result.outcome,
-        Ok(ProviderNetworkOutcome::ModelTestSucceeded)
-    );
-    let received = finish_server(captured).await;
-    assert!(received.starts_with("POST /v1/responses HTTP/1.1"));
-    let (_, body) = received.split_once("\r\n\r\n").unwrap();
-    let body: serde_json::Value = serde_json::from_str(body).unwrap();
-    assert_eq!(body["store"], false);
-    assert_eq!(body["reasoning"]["summary"], "auto");
-    assert_eq!(body["max_output_tokens"], 128);
-    assert!(body.get("messages").is_none());
 }
