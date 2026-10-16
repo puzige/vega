@@ -23,7 +23,6 @@ struct RunActivitySegment {
     title_view: Entity<shimmer::StageText>,
     sticky: StickyState,
     expanded: bool,
-    manually_expanded: bool,
     children: Vec<RunActivityChild>,
     tool_categories: Vec<(Entity<ToolCard>, ToolActivityCategory)>,
     compact_tool_groups: Vec<(Entity<ToolCard>, Entity<ToolActivityGroup>)>,
@@ -139,8 +138,8 @@ pub(crate) struct RunActivityGroup {
     scroll: ScrollHandle,
     detail_anchor: Option<(usize, f32)>,
     focus: FocusHandle,
+    header_focus: FocusHandle,
     collapse_pending: bool,
-    manually_expanded: bool,
     status: RunActivityStatus,
     execution_duration_ms: Option<u64>,
     expanded: bool,
@@ -351,13 +350,40 @@ impl RunActivityGroup {
         self.final_confirmed && self.body_in_details && self.process_copies.contains(&id)
     }
 
-    pub(crate) fn settle_final(&mut self, reading: bool, cx: &mut Context<Self>) {
-        if !self.collapse_pending || reading || self.manually_expanded {
+    pub(crate) fn settle_final(
+        &mut self,
+        focus_process_selection: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.collapse_pending {
             return;
+        }
+        let mut focused = focus_process_selection || self.focus.contains_focused(window, cx);
+        let mut copies = Vec::new();
+        for segment in &self.segments {
+            let artifact_focused = segment.children.iter().any(|child| {
+                matches!(child, RunActivityChild::Artifact(card) if card.read(cx).contains_focus(window, cx))
+            });
+            focused |= !artifact_focused && segment.focus.contains_focused(window, cx)
+                || segment.header_focus.is_focused(window);
+            for child in &segment.children {
+                if let RunActivityChild::Thinking(card) = child {
+                    focused |= card.read(cx).contains_focus(window, cx);
+                    copies.push(card.read(cx).source_copy.clone());
+                }
+            }
+        }
+        for copy in copies {
+            copy.clear_hidden_selection(window, cx);
         }
         self.collapse_pending = false;
         self.expanded = false;
         self.body_in_details = true;
+        self.detail_anchor = None;
+        if focused {
+            self.header_focus.focus(window, cx);
+        }
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -376,7 +402,6 @@ impl RunActivityGroup {
 
     pub(crate) fn reveal(&mut self, cx: &mut Context<Self>) {
         self.expanded = true;
-        self.manually_expanded = true;
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -402,42 +427,6 @@ impl RunActivityGroup {
         ));
         self.sync_thinking_visibility(cx);
         cx.notify();
-    }
-
-    pub(crate) fn reading(&self, window: &Window, cx: &App) -> bool {
-        self.manually_expanded
-            || self.focus.contains_focused(window, cx)
-            || self.segments.iter().enumerate().any(|(index, segment)| {
-                let stage = self.stage_is_aggregate(index, cx)
-                    || (self.stage_tool_calls(index, cx).is_empty()
-                        && self.stage_thinking(index).is_some());
-                let details_visible =
-                    !stage || (segment.expanded && self.segment_can_expand(index, cx));
-                (segment.manually_expanded && details_visible)
-                    || (segment.focus.contains_focused(window, cx)
-                        && (!segment.header_focus.is_focused(window) || details_visible))
-                    || self
-                        .visible_segment_children(index, cx)
-                        .iter()
-                        .any(|child| match child {
-                            RunActivityChild::Thinking(card) => {
-                                details_visible && card.read(cx).expanded
-                            }
-                            RunActivityChild::Tool(card) => {
-                                details_visible && card.read(cx).is_expanded()
-                            }
-                            RunActivityChild::ToolGroup(group) => {
-                                details_visible
-                                    && (group.read(cx).expanded()
-                                        || group
-                                            .read(cx)
-                                            .children()
-                                            .iter()
-                                            .any(|card| card.read(cx).is_expanded()))
-                            }
-                            RunActivityChild::Artifact(_) => false,
-                        })
-            })
     }
 
     fn visible_segment_children(&self, segment: usize, cx: &App) -> Vec<RunActivityChild> {
@@ -515,8 +504,8 @@ impl RunActivityGroup {
             scroll: ScrollHandle::new(),
             detail_anchor: None,
             focus: cx.focus_handle(),
+            header_focus: cx.focus_handle(),
             collapse_pending: false,
-            manually_expanded: false,
             status,
             execution_duration_ms,
             expanded,
@@ -683,7 +672,6 @@ impl RunActivityGroup {
             title_view: cx.new(|_| shimmer::StageText::new()),
             sticky: StickyState::default(),
             expanded: false,
-            manually_expanded: false,
             children: Vec::new(),
             tool_categories: Vec::new(),
             compact_tool_groups: Vec::new(),
@@ -738,7 +726,6 @@ impl RunActivityGroup {
             segment.children.push(RunActivityChild::Thinking(card));
             if preserve_open {
                 segment.expanded = true;
-                segment.manually_expanded = true;
             }
         }
         self.sync_thinking_visibility(cx);
@@ -785,7 +772,6 @@ impl RunActivityGroup {
         }
         if preserve_open {
             segment_state.expanded = true;
-            segment_state.manually_expanded = true;
         }
         self.refresh_compact_tool_groups(segment, cx);
         self.sync_thinking_visibility(cx);
@@ -1185,7 +1171,6 @@ impl RunActivityGroup {
             self.collapsed_sticky = Some(StickyCollapse::Run);
         }
         self.expanded = !self.expanded;
-        self.manually_expanded = self.expanded;
         if self.final_confirmed {
             self.body_in_details = true;
         }
@@ -1338,8 +1323,7 @@ impl RunActivityGroup {
         let keyboard_toggle = group.clone();
         let disclosure_group: gpui_kit::SharedString =
             format!("run-disclosure-{}", group.entity_id()).into();
-        let header_focus =
-            crate::disclosure::focus(disclosure_group.clone(), window, cx).tab_stop(can_expand);
+        let header_focus = group_ref.header_focus.clone().tab_stop(can_expand);
         let header = div()
             .id(("run-activity-toggle", group.entity_id()))
             .group(disclosure_group.clone())
@@ -1609,7 +1593,6 @@ impl RunActivityGroup {
             self.collapsed_sticky = Some(StickyCollapse::Segment(segment));
         }
         state.expanded = !state.expanded;
-        state.manually_expanded = state.expanded;
         let expanded = state.expanded;
         if let Some(card) = single_card {
             card.update(cx, |card, cx| card.set_stage_expanded(expanded, cx));

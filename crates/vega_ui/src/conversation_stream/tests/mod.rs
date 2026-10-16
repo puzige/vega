@@ -475,6 +475,28 @@ fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext
     visual.run_until_parked();
 }
 
+fn assert_run_disclosure_keyboard_focus(
+    group: &Entity<RunActivityGroup>,
+    visual: &mut gpui_kit::VisualTestContext,
+    context: &str,
+) {
+    let expanded = group.read_with(visual, |group, _| group.expanded());
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        group.read_with(visual, |group, _| group.expanded()),
+        !expanded,
+        "{context}: first Enter must reach the visible run disclosure"
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        group.read_with(visual, |group, _| group.expanded()),
+        expanded,
+        "{context}: second Enter must restore the run disclosure"
+    );
+}
+
 fn confirm_test_final(
     stream: &mut ConversationStream,
     message_id: &str,

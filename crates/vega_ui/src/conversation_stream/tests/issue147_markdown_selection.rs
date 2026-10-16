@@ -709,7 +709,7 @@ fn issue296_single_activity_folded_commentary_reopens_with_original_selection_an
 }
 
 #[gpui_kit::test]
-fn issue296_timeline_t06_real_selection_clear_and_composer_focus_release_final(
+fn issue416_real_process_selection_clears_on_final_and_preserves_composer_focus(
     cx: &mut TestAppContext,
 ) {
     use vega_conversation::types::{AssistantResponseKind, AssistantResponseMetadata};
@@ -786,21 +786,52 @@ fn issue296_timeline_t06_real_selection_clear_and_composer_focus_release_final(
     });
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
-        assert!(!stream.process_entry_hidden(1, cx))
+        assert!(stream.process_entry_hidden(1, cx));
+        let group = stream.run_activity_groups["selection-run"].read(cx);
+        assert!(group.process_in_details());
+        assert!(!group.expanded());
+        let (index, copy) = stream
+            .entries
+            .iter()
+            .enumerate()
+            .find_map(|(index, entry)| match entry {
+                StreamEntry::Assistant { copy, .. } if copy.original_text() == "Final." => {
+                    Some((index, copy))
+                }
+                _ => None,
+            })
+            .expect("visible Final");
+        assert!(!stream.process_entry_hidden(index, cx));
+        assert_eq!(copy.original_text(), "Final.");
     });
     assert_eq!(
         visual.update(gpui_kit::base::TextSelection::selected_text),
-        "Alpha你好 😀"
+        ""
     );
-    visual.update(gpui_kit::base::TextSelection::clear);
+    assert!(!visual.update(gpui_kit::base::TextSelection::has_selection));
+    let group = stream.read_with(&visual, |stream, _| {
+        stream.run_activity_groups["selection-run"].clone()
+    });
+    assert_run_disclosure_keyboard_focus(&group, &mut visual, "native-commentary-selection");
     visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
     visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(
+            stream
+                .read(cx)
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+    });
     stream.read_with(&visual, |stream, cx| {
         assert!(stream.process_entry_hidden(1, cx));
         let StreamEntry::Assistant { copy, .. } = &stream.entries[1] else {
             panic!("process")
         };
         assert_eq!(copy.original_text(), process);
+        assert!(!copy.has_selected_text());
     });
 }
 

@@ -349,6 +349,41 @@ async fn issue296_expansion_p07_markdown_selection_and_original_copy(cx: &mut Te
     click(&mut visual, "run-stage-toggle-0");
     assert!(visual.debug_bounds("thinking-content").is_some());
     assert!(card.read_with(&visual, |card, _| card.expanded));
+    let layout = selection::SELECTION_RUN_LAYOUTS.with_borrow(|runs| {
+        runs.iter()
+            .rev()
+            .find(|(value, _, _)| value == text)
+            .unwrap()
+            .1
+            .clone()
+    });
+    let start =
+        layout.position_for_index(0).unwrap() + gpui_kit::point(px(0.5), layout.line_height() / 2.);
+    let end = layout
+        .position_for_index(text.find(" suffix").unwrap())
+        .unwrap()
+        + gpui_kit::point(px(2.), layout.line_height() / 2.);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(copy.has_selected_text());
+    stream.update(&mut visual, |stream, cx| {
+        confirm_test_final(stream, "expansion", cx)
+    });
+    visual.run_until_parked();
+    assert!(!copy.has_selected_text());
+    assert!(!visual.update(gpui_kit::base::TextSelection::has_selection));
+    assert_eq!(copy.original_text(), original);
+    assert!(visual.debug_bounds("thinking-content").is_none());
+    let group = stream.read_with(&visual, |stream, _| {
+        stream.run_activity_groups["expansion"].clone()
+    });
+    assert_run_disclosure_keyboard_focus(&group, &mut visual, "expanded-thinking-selection");
+    click(&mut visual, "run-activity-toggle");
+    assert!(visual.debug_bounds("thinking-content").is_some());
+    assert!(!visual.update(gpui_kit::base::TextSelection::has_selection));
+    assert_eq!(copy.original_text(), original);
 }
 
 #[gpui_kit::test]
@@ -840,9 +875,12 @@ async fn repeated_reasoning_and_commands_share_one_compact_stage(cx: &mut TestAp
             Layout::CONVERSATION_STAGE_TOP + Layout::CONVERSATION_TOOL_HEIGHT
         );
     });
-    visual.update(|window, cx| {
-        let group = stream.read(cx).run_activity_groups["expansion"].read(cx);
-        assert!(!group.reading(window, cx));
+    stream.read_with(&visual, |stream, cx| {
+        assert!(
+            !stream.run_activity_groups["expansion"]
+                .read(cx)
+                .segment_expanded(0)
+        );
     });
     click(&mut visual, "run-stage-toggle-0");
     assert!(visual.debug_bounds("tool-activity-group-toggle").is_none());
