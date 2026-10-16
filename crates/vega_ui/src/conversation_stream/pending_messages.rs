@@ -81,6 +81,9 @@ struct PendingButton {
     action: PendingControlAction,
 }
 
+const ECHO_TEXT_KIND: &str = "user-text";
+const ECHO_IMAGES_KIND: &str = "user-images";
+
 fn echo_entry_identity(thread_id: &str, pending_id: &str, kind: &str) -> StreamEntryIdentity {
     StreamEntryIdentity {
         key: format!(
@@ -94,16 +97,9 @@ fn echo_entry_identity(thread_id: &str, pending_id: &str, kind: &str) -> StreamE
         ),
         message_id: None,
         pending_id: Some(pending_id.to_string()),
+        echo_kind: Some(kind.to_string()),
         sequence: None,
     }
-}
-
-fn echo_kind(identity: &StreamEntryIdentity) -> String {
-    identity
-        .key
-        .rsplit_once(":kind:")
-        .map(|(_, kind)| kind.to_string())
-        .unwrap_or_default()
 }
 
 impl EventEmitter<PendingQueueRequested> for ConversationStream {}
@@ -234,7 +230,7 @@ impl ConversationStream {
             lines: user_message_lines(block_id, &content),
         });
         self.list_append(index);
-        let identity = echo_entry_identity(&self.thread.id, &message.id, "user-text");
+        let identity = echo_entry_identity(&self.thread.id, &message.id, ECHO_TEXT_KIND);
         self.set_entry_identity(index, identity);
         indices.push(index);
         if !message.images.is_empty() {
@@ -242,7 +238,7 @@ impl ConversationStream {
             let index = self.entries.len();
             self.entries.push(StreamEntry::UserImages { images });
             self.list_append(index);
-            let identity = echo_entry_identity(&self.thread.id, &message.id, "user-images");
+            let identity = echo_entry_identity(&self.thread.id, &message.id, ECHO_IMAGES_KIND);
             self.set_entry_identity(index, identity);
             indices.push(index);
         }
@@ -292,10 +288,13 @@ impl ConversationStream {
         let echo = self.pending_echoes.remove(position);
         let sequence = i64::try_from(seq).ok();
         for index in echo.indices {
-            let Some(identity) = self.entry_identities.get(index) else {
+            let Some(kind) = self
+                .entry_identities
+                .get(index)
+                .and_then(|identity| identity.echo_kind.clone())
+            else {
                 continue;
             };
-            let kind = echo_kind(identity);
             let identity = self.durable_entry_identity(message_id, &kind, sequence);
             self.set_entry_identity(index, identity);
         }

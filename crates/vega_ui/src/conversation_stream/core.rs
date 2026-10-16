@@ -675,6 +675,7 @@ impl ConversationStream {
             key: format!("route:{}:{}:local:{}", route_id.len(), route_id, local_id),
             message_id: None,
             pending_id: None,
+            echo_kind: None,
             sequence: None,
         }
     }
@@ -698,6 +699,7 @@ impl ConversationStream {
             ),
             message_id: Some(message_id.to_string()),
             pending_id: None,
+            echo_kind: None,
             sequence,
         }
     }
@@ -719,6 +721,7 @@ impl ConversationStream {
             ),
             message_id: message_id.map(str::to_string),
             pending_id: None,
+            echo_kind: None,
             sequence,
         }
     }

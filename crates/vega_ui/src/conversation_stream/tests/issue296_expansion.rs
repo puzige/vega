@@ -436,6 +436,7 @@ async fn issue296_expansion_p06_visible_predecessor_and_estimate(cx: &mut TestAp
                 key: "empty-derived".into(),
                 message_id: Some("expansion".into()),
                 pending_id: None,
+                echo_kind: None,
                 sequence: None,
             },
         );
