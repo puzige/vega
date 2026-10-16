@@ -71,12 +71,6 @@ fn table_preserves_cells_and_alignment_without_text_padding() {
     );
 }
 
-const ISSUE59_TABLE: &str = "| # | 问题 | 选项 | 建议 |\n\
-    |:---|:---|:---:|---:|\n\
-    | A | 中文长内容需要在单元格内部换行，不能破坏表头和表体的列边界。 | **保留** `FullAccess` | 显式确认 |\n\
-    | B | 转义竖线 a\\|b | `very_long_identifier_without_spaces_abcdefghijklmnopqrstuvwxyz` | 不丢失内容 |\n\n\
-    ```text\n| fenced | stays code |\n```\n\n- 保留列表\n\n普通正文\n";
-
 struct TableView(StreamModel);
 impl Render for TableView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

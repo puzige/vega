@@ -1269,12 +1269,3 @@ impl OwnedOAuthMetadataFixture {
             })
     }
 }
-
-#[derive(Clone, Copy)]
-enum McpExpectedOperation {
-    Discovery,
-    Preparation,
-    RejectedStepUp,
-    RejectedStaleAuthorization,
-    RejectedDcrRegistration,
-}
