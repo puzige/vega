@@ -137,6 +137,10 @@ impl PreparedWrite {
         &self.audit
     }
 
+    pub fn model_input_json(&self) -> String {
+        serde_json::json!({"path": self.path, "content": self.content}).to_string()
+    }
+
     pub fn normalized_path(&self) -> &str {
         &self.path
     }
@@ -160,15 +164,22 @@ pub struct PreparedEdit {
     absolute: PathBuf,
     checkpoint_scope: String,
     path: String,
-    old_string: String,
-    new_string: String,
+    edits: Vec<EditReplacement>,
     replace_all: bool,
+    legacy: bool,
     audit: WriteEditAudit,
 }
 
 impl PreparedEdit {
     pub fn audit(&self) -> &WriteEditAudit {
         &self.audit
+    }
+
+    pub fn model_input_json(&self) -> Option<String> {
+        if self.replace_all || self.edits.iter().any(|edit| edit.old.is_empty()) {
+            return None;
+        }
+        Some(serde_json::json!({"path": self.path, "edits": self.edits.iter().map(|edit| serde_json::json!({"oldText":edit.old,"newText":edit.new})).collect::<Vec<_>>()}).to_string())
     }
 
     pub fn normalized_path(&self) -> &str {
@@ -193,11 +204,16 @@ struct AuditedWriteInput {
     audit: WriteEditAudit,
 }
 
+struct EditReplacement {
+    old: String,
+    new: String,
+}
+
 struct AuditedEditInput {
     path: String,
-    old_string: String,
-    new_string: String,
+    edits: Vec<EditReplacement>,
     replace_all: bool,
+    legacy: bool,
     audit: WriteEditAudit,
 }
 
@@ -432,9 +448,9 @@ impl Tools {
             })?,
             checkpoint_scope: context.scope_key().to_string(),
             path: input.path,
-            old_string: input.old_string,
-            new_string: input.new_string,
+            edits: input.edits,
             replace_all: input.replace_all,
+            legacy: input.legacy,
             audit: input.audit,
         })
     }
@@ -461,49 +477,120 @@ impl Tools {
             raw_input,
             MutationTool::Edit,
         )?;
-        let old_string = required_string(
-            &values,
-            "old_string",
-            MutationErrorCode::MissingOldString,
-            MutationErrorCode::WrongOldStringType,
-            raw_input,
-            MutationTool::Edit,
-        )?;
-        let new_string = required_string(
-            &values,
-            "new_string",
-            MutationErrorCode::MissingNewString,
-            MutationErrorCode::WrongNewStringType,
-            raw_input,
-            MutationTool::Edit,
-        )?;
-        reject_extra_fields(
-            &values,
-            &[
-                if values.contains_key("file_path") {
-                    "file_path"
-                } else {
-                    "path"
-                },
+        let legacy = !values.contains_key("edits");
+        let mut edits = Vec::new();
+        let replace_all;
+        if legacy {
+            let old = required_string(
+                &values,
                 "old_string",
+                MutationErrorCode::MissingOldString,
+                MutationErrorCode::WrongOldStringType,
+                raw_input,
+                MutationTool::Edit,
+            )?;
+            let new = required_string(
+                &values,
                 "new_string",
-                "replace_all",
-            ],
-            raw_input,
-            MutationTool::Edit,
-        )?;
-        let replace_all = match values.get("replace_all") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(value)) => *value,
-            _ => {
-                return Err(invalid_error(
-                    MutationTool::Edit,
+                MutationErrorCode::MissingNewString,
+                MutationErrorCode::WrongNewStringType,
+                raw_input,
+                MutationTool::Edit,
+            )?;
+            reject_extra_fields(
+                &values,
+                &[
+                    if values.contains_key("file_path") {
+                        "file_path"
+                    } else {
+                        "path"
+                    },
+                    "old_string",
+                    "new_string",
+                    "replace_all",
+                ],
+                raw_input,
+                MutationTool::Edit,
+            )?;
+            replace_all = match values.get("replace_all") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(value)) => *value,
+                _ => {
+                    return Err(invalid_error(
+                        MutationTool::Edit,
+                        raw_input,
+                        MutationErrorCode::WrongReplaceAllType,
+                    ));
+                }
+            };
+            edits.push(EditReplacement { old, new });
+        } else {
+            reject_extra_fields(
+                &values,
+                &[
+                    if values.contains_key("file_path") {
+                        "file_path"
+                    } else {
+                        "path"
+                    },
+                    "edits",
+                ],
+                raw_input,
+                MutationTool::Edit,
+            )?;
+            let list = values
+                .get("edits")
+                .and_then(Value::as_array)
+                .filter(|list| !list.is_empty())
+                .ok_or_else(|| {
+                    invalid_error(
+                        MutationTool::Edit,
+                        raw_input,
+                        MutationErrorCode::InvalidEdits,
+                    )
+                })?;
+            for entry in list {
+                let entry = entry.as_object().ok_or_else(|| {
+                    invalid_error(
+                        MutationTool::Edit,
+                        raw_input,
+                        MutationErrorCode::InvalidEditItem,
+                    )
+                })?;
+                reject_extra_fields(
+                    entry,
+                    &["oldText", "newText"],
                     raw_input,
-                    MutationErrorCode::WrongReplaceAllType,
-                ));
+                    MutationTool::Edit,
+                )?;
+                let old = required_string(
+                    entry,
+                    "oldText",
+                    MutationErrorCode::MissingOldString,
+                    MutationErrorCode::WrongOldStringType,
+                    raw_input,
+                    MutationTool::Edit,
+                )?;
+                let new = required_string(
+                    entry,
+                    "newText",
+                    MutationErrorCode::MissingNewString,
+                    MutationErrorCode::WrongNewStringType,
+                    raw_input,
+                    MutationTool::Edit,
+                )?;
+                if old.is_empty() {
+                    return Err(invalid_error(
+                        MutationTool::Edit,
+                        raw_input,
+                        MutationErrorCode::EditEmptyOldString,
+                    ));
+                }
+                edits.push(EditReplacement { old, new });
             }
-        };
-        if old_string == new_string {
+            replace_all = false;
+        }
+        if edits.iter().any(|edit| edit.old == edit.new) {
             return Err(invalid_error(
                 MutationTool::Edit,
                 raw_input,
@@ -519,22 +606,33 @@ impl Tools {
                 &self.root,
                 git_dir.as_deref(),
                 &path,
-                !old_string.is_empty(),
+                !legacy || edits.iter().any(|edit| !edit.old.is_empty()),
             )
         }
         .map_err(|code| invalid_error(MutationTool::Edit, raw_input, code))?;
-        let audit = WriteEditAudit::edit_with_replace_all(
-            &target.display,
-            &old_string,
-            &new_string,
-            replace_all,
-        )
+        let audit = if legacy {
+            let edit = &edits[0];
+            WriteEditAudit::edit_with_replace_all(
+                &target.display,
+                &edit.old,
+                &edit.new,
+                replace_all,
+            )
+        } else {
+            WriteEditAudit::edit_batch(
+                &target.display,
+                &edits
+                    .iter()
+                    .map(|edit| (edit.old.as_str(), edit.new.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+        }
         .map_err(PrepareMutationError::Internal)?;
         Ok(AuditedEditInput {
             path: target.display,
-            old_string,
-            new_string,
+            edits,
             replace_all,
+            legacy,
             audit,
         })
     }
@@ -667,7 +765,7 @@ impl Tools {
             &self.root,
             git_dir.as_deref(),
             &prepared.path,
-            !prepared.old_string.is_empty(),
+            !prepared.legacy || prepared.edits.iter().any(|edit| !edit.old.is_empty()),
         )
         .map_err(mutation_error)?;
         if target.absolute != prepared.absolute {
@@ -686,12 +784,12 @@ impl Tools {
             self.reads.validate(&target.absolute, bytes)?;
         }
         let text = TextFile::decode(original.as_deref().unwrap_or_default())?;
-        let (updated, replacements) = apply_edit(
-            &text.content,
-            &prepared.old_string,
-            &prepared.new_string,
-            prepared.replace_all,
-        )?;
+        let (updated, replacements) = if prepared.legacy {
+            let edit = &prepared.edits[0];
+            apply_edit(&text.content, &edit.old, &edit.new, prepared.replace_all)?
+        } else {
+            apply_edit_batch(&text.content, &prepared.edits)?
+        };
         let replacement = text.encode(&updated, true);
         let permissions = target
             .metadata
@@ -755,7 +853,7 @@ fn parse_object(
     raw_input: &str,
     tool: MutationTool,
 ) -> Result<Map<String, Value>, PrepareMutationError> {
-    match serde_json::from_str::<Value>(raw_input) {
+    match crate::json::parse_unique_value(raw_input) {
         Ok(Value::Object(values)) => Ok(values),
         Ok(_) => Err(invalid_error(
             tool,
@@ -890,30 +988,40 @@ fn quote_key(c: char) -> char {
     }
 }
 
-fn apply_edit(content: &str, old: &str, new: &str, all: bool) -> Result<(String, u64), ToolError> {
-    if old == new {
-        return Err(mutation_error(MutationErrorCode::EditNoChange).into());
-    }
-    if old.is_empty() {
-        if !content
-            .trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
-            .is_empty()
-        {
-            return Err(mutation_error(MutationErrorCode::EditEmptyOldString).into());
-        }
-        return Ok((new.to_owned(), 1));
-    }
+struct EditSpan {
+    start: usize,
+    end: usize,
+    replacement: String,
+}
+
+fn matching_edit_spans(
+    content: &str,
+    old: &str,
+    new: &str,
+    all: bool,
+    canonical_unique: bool,
+) -> Result<Vec<EditSpan>, ToolError> {
     let actual = if content.contains(old) {
         old.to_owned()
     } else {
         let hay: Vec<_> = content.char_indices().collect();
         let needle: Vec<_> = old.chars().map(quote_key).collect();
-        let start = hay.windows(needle.len()).position(|w| {
-            w.iter()
-                .map(|(_, c)| quote_key(*c))
-                .eq(needle.iter().copied())
-        });
-        let Some(start) = start else {
+        let starts = hay
+            .windows(needle.len())
+            .enumerate()
+            .filter_map(|(index, window)| {
+                window
+                    .iter()
+                    .map(|(_, c)| quote_key(*c))
+                    .eq(needle.iter().copied())
+                    .then_some(index)
+            })
+            .take(if canonical_unique { 2 } else { 1 })
+            .collect::<Vec<_>>();
+        if starts.len() > 1 {
+            return Err(mutation_error(MutationErrorCode::EditMultipleMatches).into());
+        }
+        let Some(start) = starts.first().copied() else {
             return Err(MutationError::with_context(
                 MutationErrorCode::EditNoMatch,
                 bounded_context(content.as_bytes(), &[]),
@@ -925,7 +1033,14 @@ fn apply_edit(content: &str, old: &str, new: &str, all: bool) -> Result<(String,
             .map_or(content.len(), |(i, _)| *i);
         content[hay[start].0..end].to_owned()
     };
-    let count = content.matches(&actual).count();
+    let count = if canonical_unique {
+        content
+            .char_indices()
+            .filter(|(start, _)| content[*start..].starts_with(&actual))
+            .count()
+    } else {
+        content.matches(&actual).count()
+    };
     if count > 1 && !all {
         return Err(MutationError::with_context(
             MutationErrorCode::EditMultipleMatches,
@@ -974,20 +1089,60 @@ fn apply_edit(content: &str, old: &str, new: &str, all: bool) -> Result<(String,
         } else {
             actual
         };
-    let replacements = if all {
-        content.matches(&needle).count() as u64
-    } else {
-        1
-    };
-    let updated = if all {
-        content.replace(&needle, &replacement)
-    } else {
-        content.replacen(&needle, &replacement, 1)
-    };
+    if needle == replacement {
+        return Err(mutation_error(MutationErrorCode::EditNoChange).into());
+    }
+    Ok(content
+        .match_indices(&needle)
+        .take(if all { usize::MAX } else { 1 })
+        .map(|(start, value)| EditSpan {
+            start,
+            end: start + value.len(),
+            replacement: replacement.clone(),
+        })
+        .collect())
+}
+
+fn apply_edit_spans(content: &str, mut spans: Vec<EditSpan>) -> Result<(String, u64), ToolError> {
+    spans.sort_by_key(|span| span.start);
+    if spans.windows(2).any(|pair| pair[0].end > pair[1].start) {
+        return Err(mutation_error(MutationErrorCode::EditOverlap).into());
+    }
+    let count = spans.len() as u64;
+    let mut updated = content.to_owned();
+    for span in spans.into_iter().rev() {
+        updated.replace_range(span.start..span.end, &span.replacement);
+    }
     if updated == content {
         return Err(mutation_error(MutationErrorCode::EditNoChange).into());
     }
-    Ok((updated, replacements))
+    Ok((updated, count))
+}
+
+fn apply_edit_batch(content: &str, edits: &[EditReplacement]) -> Result<(String, u64), ToolError> {
+    let mut spans = Vec::new();
+    for edit in edits {
+        spans.extend(matching_edit_spans(
+            content, &edit.old, &edit.new, false, true,
+        )?);
+    }
+    apply_edit_spans(content, spans)
+}
+
+fn apply_edit(content: &str, old: &str, new: &str, all: bool) -> Result<(String, u64), ToolError> {
+    if old == new {
+        return Err(mutation_error(MutationErrorCode::EditNoChange).into());
+    }
+    if old.is_empty() {
+        if !content
+            .trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+            .is_empty()
+        {
+            return Err(mutation_error(MutationErrorCode::EditEmptyOldString).into());
+        }
+        return Ok((new.to_owned(), 1));
+    }
+    apply_edit_spans(content, matching_edit_spans(content, old, new, all, false)?)
 }
 
 fn bounded_context(bytes: &[u8], matches: &[usize]) -> String {

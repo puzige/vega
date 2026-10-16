@@ -803,7 +803,7 @@ impl ToolCard {
                     tool: InvalidToolKind::Bash,
                     ..
                 }),
-            ) => "Command rejected: invalid input · cmd must be a non-empty string; timeout_ms must be a positive integer when provided; other fields are unsupported"
+            ) => "Command rejected: use a non-empty command and a positive timeout in seconds, or null for the default"
                 .to_string(),
             (_, Some(ToolCardResultProjection::InvalidRejected { tool, code, .. })) => {
                 format!("Rejected {}: {}", invalid_action(*tool), code.as_str())
@@ -828,6 +828,7 @@ impl ToolCard {
                     path,
                     old_string_bytes,
                     new_string_bytes,
+                    ..
                 }),
                 None,
             ) => format!(
@@ -1721,7 +1722,7 @@ mod tests {
         assert!(card.is_invalid_terminal());
         assert_eq!(
             card.visible_text(),
-            "Command rejected: invalid input · cmd must be a non-empty string; timeout_ms must be a positive integer when provided; other fields are unsupported"
+            "Command rejected: use a non-empty command and a positive timeout in seconds, or null for the default"
         );
         assert!(card.permission_identity().is_none());
     }

@@ -51,12 +51,14 @@ pub(crate) fn verified_terminal(
         vega_tools::WriteEditAudit::Edit {
             path,
             fingerprint_v1,
+            edit_count,
             ..
         } => {
             let success = vega_tools::EditSuccessOutput::from_json(&result.output)
                 .map_err(|_| workspace_error(GitWorkspaceErrorCode::ArtifactConflict))?;
             if success.path != path
                 || success.replacements == 0
+                || edit_count.is_some_and(|count| success.replacements != count)
                 || success.checkpoint_ref != expected_checkpoint
             {
                 return Err(workspace_error(GitWorkspaceErrorCode::ArtifactConflict));

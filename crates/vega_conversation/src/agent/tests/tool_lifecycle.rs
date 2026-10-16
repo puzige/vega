@@ -604,7 +604,7 @@ async fn issue90_invalid_bash_round_trips_through_real_store_and_history() {
             ProviderEvent::ToolUse {
                 id: "bad-bash".into(),
                 name: "bash".into(),
-                input_json: r#"{"command":"printf SECRET_BASH > issue90-marker"}"#.into(),
+                input_json: r#"{"command":["printf SECRET_BASH > issue90-marker"]}"#.into(),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -642,7 +642,7 @@ async fn issue90_invalid_bash_round_trips_through_real_store_and_history() {
         ConversationEvent::ToolCallFinished { call_id, result }
             if call_id == "bad-bash"
                 && result.status == ToolCallStatus::Rejected
-                && result.output == vega_runtime::BASH_INVALID_INPUT_OUTPUT
+                && result.output == vega_tools::BashInputError::WrongCommandType.feedback()
                 && result.invalid.is_some()
     )));
     let row: (String, String, String, String, Option<i32>, Option<i64>) = store
@@ -656,7 +656,10 @@ async fn issue90_invalid_bash_round_trips_through_real_store_and_history() {
     assert!(vega_runtime::InvalidBashAudit::from_json(&row.0).is_some());
     assert!(!row.0.contains("SECRET_BASH"));
     assert_eq!(row.1, "rejected");
-    assert_eq!(row.3, vega_runtime::BASH_INVALID_INPUT_OUTPUT);
+    assert_eq!(
+        row.3,
+        vega_tools::BashInputError::WrongCommandType.feedback()
+    );
     assert!(row.4.is_none() && row.5.is_none());
     let approval = ApprovalAudit::from_json(&row.2).unwrap();
     assert_eq!(approval.decision, Approval::Deny);
@@ -665,9 +668,17 @@ async fn issue90_invalid_bash_round_trips_through_real_store_and_history() {
     let feedback = second
         .messages
         .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("bad-bash"))
+        .find(|message| {
+            message.content.contains("Historical tool result")
+                && message.content.contains("call_id=bad-bash")
+        })
         .unwrap();
-    assert_eq!(feedback.content, vega_runtime::BASH_INVALID_INPUT_OUTPUT);
+    assert!(
+        feedback
+            .content
+            .ends_with(&vega_tools::BashInputError::WrongCommandType.feedback())
+    );
+    assert!(feedback.tool_call_id.is_none());
     assert!(
         !second
             .messages

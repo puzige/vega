@@ -22,6 +22,8 @@ mod branch;
 mod commit;
 mod commit_reconcile;
 mod context;
+#[cfg(test)]
+pub(crate) use context::run_manual_context_worker;
 mod diff;
 mod file_index;
 mod image_preview;

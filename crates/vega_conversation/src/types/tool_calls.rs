@@ -160,6 +160,9 @@ pub enum InvalidToolCode {
     FileTooLarge,
     EditNoChange,
     WrongReplaceAllType,
+    InvalidEdits,
+    InvalidEditItem,
+    EditOverlap,
     UnsupportedEncoding,
     EditNoMatch,
     EditMultipleMatches,
@@ -200,6 +203,9 @@ impl InvalidToolCode {
             Self::FileTooLarge => "file_too_large",
             Self::EditNoChange => "edit_no_change",
             Self::WrongReplaceAllType => "wrong_replace_all_type",
+            Self::InvalidEdits => "invalid_edits",
+            Self::InvalidEditItem => "invalid_edit_item",
+            Self::EditOverlap => "edit_overlap",
             Self::UnsupportedEncoding => "unsupported_encoding",
             Self::EditNoMatch => "edit_no_match",
             Self::EditMultipleMatches => "edit_multiple_matches",
@@ -342,6 +348,7 @@ pub enum ToolCardInputProjection {
         path: String,
         old_string_bytes: u64,
         new_string_bytes: u64,
+        edit_count: Option<u64>,
     },
     /// Strictly parsed value-free identity for an external MCP call.
     Mcp {
@@ -521,7 +528,8 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                         .ok()
                         .and_then(|input| {
                             input
-                                .get("file_path")
+                                .get("path")
+                                .or_else(|| input.get("file_path"))
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_owned)
                         })
@@ -535,11 +543,13 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                         let field =
                             |name: &str| input.get(name).and_then(serde_json::Value::as_str);
                         match tool {
-                            ReadOnlyToolKind::Read => field("file_path").and_then(|path| {
-                                std::path::Path::new(path)
-                                    .file_name()
-                                    .map(|name| name.to_string_lossy().into_owned())
-                            }),
+                            ReadOnlyToolKind::Read => field("path")
+                                .or_else(|| field("file_path"))
+                                .and_then(|path| {
+                                    std::path::Path::new(path)
+                                        .file_name()
+                                        .map(|name| name.to_string_lossy().into_owned())
+                                }),
                             ReadOnlyToolKind::Glob | ReadOnlyToolKind::Grep => None,
                         }
                     })
@@ -574,12 +584,14 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                     path,
                     old_string_bytes,
                     new_string_bytes,
+                    edit_count,
                     ..
                 }) if matches!(call.tool.as_str(), "Edit" | "edit") => {
                     ToolCardInputProjection::Edit {
                         path,
                         old_string_bytes,
                         new_string_bytes,
+                        edit_count,
                     }
                 }
                 _ => ToolCardInputProjection::Corrupt,
@@ -682,8 +694,10 @@ pub fn tool_card_result_projection(
             && result.duration_ms.is_none()
             && result.truncated.is_none()
             && (result.output == expected
+                || (invalid.tool() == InvalidToolKind::Bash
+                    && vega_runtime::is_invalid_bash_feedback(&result.output))
                 || vega_tools::MutationErrorCode::parse_code(invalid.code().as_str()).is_some_and(
-                    |code| result.output == code.validation_result(invalid.tool().as_str()),
+                    |code| code.matches_validation_result(invalid.tool().as_str(), &result.output),
                 ))
         {
             return ToolCardResultProjection::InvalidRejected {
@@ -847,7 +861,9 @@ pub fn tool_card_result_projection(
                 mutation_terminal(InvalidToolKind::Write, path, Some(*content_bytes), result)
             }
         }
-        ToolCardInputProjection::Edit { path, .. } => {
+        ToolCardInputProjection::Edit {
+            path, edit_count, ..
+        } => {
             if result.status == ToolCallStatus::Success {
                 if result.exit_code.is_some()
                     || result.duration_ms.is_some()
@@ -858,7 +874,10 @@ pub fn tool_card_result_projection(
                 let Ok(success) = vega_tools::EditSuccessOutput::from_json(&result.output) else {
                     return ToolCardResultProjection::Corrupt;
                 };
-                if success.path != *path || success.replacements == 0 {
+                if success.path != *path
+                    || success.replacements == 0
+                    || edit_count.is_some_and(|count| success.replacements != count)
+                {
                     return ToolCardResultProjection::Corrupt;
                 }
                 ToolCardResultProjection::EditSuccess {

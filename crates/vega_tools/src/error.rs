@@ -38,6 +38,9 @@ pub enum MutationErrorCode {
     FileTooLarge,
     EditNoChange,
     WrongReplaceAllType,
+    InvalidEdits,
+    InvalidEditItem,
+    EditOverlap,
     UnsupportedEncoding,
 
     EditNoMatch,
@@ -82,6 +85,9 @@ impl MutationErrorCode {
             Self::FileTooLarge => "file_too_large",
             Self::EditNoChange => "edit_no_change",
             Self::WrongReplaceAllType => "wrong_replace_all_type",
+            Self::InvalidEdits => "invalid_edits",
+            Self::InvalidEditItem => "invalid_edit_item",
+            Self::EditOverlap => "edit_overlap",
             Self::UnsupportedEncoding => "unsupported_encoding",
             Self::EditEmptyOldString => "edit_empty_old_string",
             Self::EditNoMatch => "edit_no_match",
@@ -95,7 +101,7 @@ impl MutationErrorCode {
     }
 
     /// Safe corrective guidance without paths or file contents.
-    pub const fn guidance(self) -> &'static str {
+    const fn legacy_guidance(self) -> &'static str {
         match self {
             Self::FileTooLarge => " File exceeds the 1 GiB text tool size limit.",
             Self::FileNotRead => " Read the file first before writing or editing it.",
@@ -120,12 +126,45 @@ impl MutationErrorCode {
     }
 
     /// Canonical invalid-input result for model feedback and history validation.
-    pub fn validation_result(self, tool: &str) -> String {
+    fn legacy_validation_result(self, tool: &str) -> String {
         format!(
             "Tool error: invalid {tool} input ({}).{} Expected Write: {{\"file_path\":\"/absolute/file\",\"content\":\"...\"}}; Edit: {{\"file_path\":\"/absolute/file\",\"old_string\":\"exact original\",\"new_string\":\"replacement\",\"replace_all\":false}}. Supply all required fields; do not include line-number prefixes.",
             self.as_str(),
-            self.guidance()
+            self.legacy_guidance()
         )
+    }
+
+    pub fn validation_result(self, tool: &str) -> String {
+        let example = if tool.eq_ignore_ascii_case("write") {
+            "write({\"path\":\"notes.txt\",\"content\":\"hello\\n\"})"
+        } else {
+            "edit({\"path\":\"src/lib.rs\",\"edits\":[{\"oldText\":\"old\",\"newText\":\"new\"}]})"
+        };
+        let guidance = self.guidance();
+        format!(
+            "Tool error: invalid {tool} input ({}).{guidance} Expected {example}. Supply only the declared fields; omit displayed line numbers.",
+            self.as_str()
+        )
+    }
+
+    pub const fn guidance(self) -> &'static str {
+        match self {
+            Self::InvalidEdits => " edits must be a non-empty array.",
+            Self::InvalidEditItem => " Each edit must contain string oldText and newText fields.",
+            Self::EditOverlap => " Edits overlap. Merge overlapping changes into one edit.",
+            Self::EditMultipleMatches => {
+                " Add surrounding context so oldText uniquely matches the original file."
+            }
+            Self::EditEmptyOldString => " oldText must be non-empty; use write for a new file.",
+            Self::EditNoChange => {
+                " oldText and newText must differ; check whether the change is already complete."
+            }
+            _ => self.legacy_guidance(),
+        }
+    }
+
+    pub fn matches_validation_result(self, tool: &str, output: &str) -> bool {
+        output == self.validation_result(tool) || output == self.legacy_validation_result(tool)
     }
 
     /// Parse a known content-free failure code.
@@ -160,6 +199,9 @@ impl MutationErrorCode {
             "file_too_large" => Self::FileTooLarge,
             "edit_no_change" => Self::EditNoChange,
             "wrong_replace_all_type" => Self::WrongReplaceAllType,
+            "invalid_edits" => Self::InvalidEdits,
+            "invalid_edit_item" => Self::InvalidEditItem,
+            "edit_overlap" => Self::EditOverlap,
             "unsupported_encoding" => Self::UnsupportedEncoding,
             "edit_empty_old_string" => Self::EditEmptyOldString,
             "edit_no_match" => Self::EditNoMatch,
@@ -203,6 +245,9 @@ impl MutationErrorCode {
                 | Self::FileNotRead
                 | Self::EditNoChange
                 | Self::WrongReplaceAllType
+                | Self::InvalidEdits
+                | Self::InvalidEditItem
+                | Self::EditOverlap
                 | Self::UnsupportedEncoding
                 | Self::TargetChanged
                 | Self::EditNoMatch

@@ -63,6 +63,7 @@ mod artifact_preview;
 mod artifact_terminal;
 mod automatic_titles;
 mod computer_use;
+mod project_context;
 mod title_fixture;
 use title_fixture::with_auxiliary_title_fixture;
 mod branch;

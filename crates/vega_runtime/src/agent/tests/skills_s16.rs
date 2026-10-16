@@ -344,18 +344,40 @@ async fn run_script_skill_case(case: ScriptCase) -> ScriptObservation {
             1
         );
         if !outcome.interrupted {
-            assert_eq!(
-                requests
-                    .last()
-                    .unwrap()
-                    .messages
-                    .iter()
-                    .filter(|message| message.role == ChatRole::Tool
-                        && message.tool_call_id.as_deref() == Some(call_id)
-                        && message.content == output)
-                    .count(),
-                1
-            );
+            if call_id == "s16-bash" && case.run_mode != RuntimeRunMode::Execute {
+                assert_eq!(
+                    requests
+                        .last()
+                        .unwrap()
+                        .messages
+                        .iter()
+                        .filter(|message| message.tool_call_id.is_none()
+                            && message.content.contains("Historical tool result")
+                            && message.content.contains(&format!("call_id={call_id}"))
+                            && message.content.ends_with(output))
+                        .count(),
+                    1
+                );
+            } else {
+                let messages = &requests.last().unwrap().messages;
+                assert_eq!(
+                    messages
+                        .iter()
+                        .filter(|message| message.role == ChatRole::Tool
+                            && message.tool_call_id.as_deref() == Some(call_id)
+                            && message.content == output)
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    messages
+                        .iter()
+                        .flat_map(|message| &message.tool_calls)
+                        .filter(|call| call.id == call_id)
+                        .count(),
+                    1
+                );
+            }
         }
     }
     assert_eq!(

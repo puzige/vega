@@ -1,5 +1,7 @@
 # Issue #85 — 严格工具参数生成
 
+2026-10-16 用户变更：[通用工具接口规格 #300](vega-builtin-tool-parameter-recovery.md) 替代本页旧工具名、字段和示例；继续保持 strict nullable 表达、额外字段拒绝和执行前校验。代理是否执行 strict 不由本页声明保证。
+
 关联 [#85](https://github.com/puzige/vega/issues/85) 与已交付的
 [#90](https://github.com/puzige/vega/issues/90)。#90 只把无效 `bash` 输入改成安全、可纠正的拒绝，
 没有降低模型生成无效参数的频率。本规格处理 provider 请求侧的 schema 约束；既有执行前校验、权限门禁和

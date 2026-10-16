@@ -12,6 +12,66 @@ use crate::sandbox::{ExecutionHooks, ScanFailure, TestPathHook};
 
 use super::{TEMP_PATH_PLACEHOLDER, redact_temp_path};
 
+#[test]
+fn issue300_legacy_rejection_checks_use_the_original_contract() {
+    for input in [
+        r#"{"command":"pwd"}"#,
+        r#"{"cmd":"pwd","timeout":1}"#,
+        r#"{"cmd":"pwd","timeout_ms":0}"#,
+    ] {
+        assert!(super::legacy_bash_input_is_invalid(input));
+    }
+    for input in [
+        r#"{"cmd":"pwd"}"#,
+        r#"{"cmd":" "}"#,
+        r#"{"cmd":"pwd","timeout_ms":null}"#,
+        r#"{"cmd":"pwd","timeout_ms":1}"#,
+    ] {
+        assert!(!super::legacy_bash_input_is_invalid(input));
+    }
+    assert!(super::bash_permission_signature(r#"{"command":"pwd"}"#).is_ok());
+}
+
+#[test]
+fn issue300_canonical_seconds_and_legacy_milliseconds_are_unambiguous() {
+    let (_root, tools) = tools();
+    for raw in [
+        r#"{"command":"pwd"}"#,
+        r#"{"command":"pwd","timeout":null}"#,
+    ] {
+        let prepared = tools.prepare_bash_json(raw).unwrap();
+        assert_eq!(prepared.command(), "pwd");
+        assert_eq!(prepared.timeout_ms(), 120_000);
+    }
+    assert_eq!(
+        tools
+            .prepare_bash_json(r#"{"command":"pwd","timeout":3}"#)
+            .unwrap()
+            .timeout_ms(),
+        3_000
+    );
+    assert_eq!(
+        tools
+            .prepare_bash_json(r#"{"cmd":"pwd","timeout_ms":321}"#)
+            .unwrap()
+            .timeout_ms(),
+        321
+    );
+    for raw in [
+        r#"{"command":"pwd","cmd":"pwd"}"#,
+        r#"{"command":"pwd","timeout_ms":3000}"#,
+        r#"{"cmd":"pwd","timeout":3}"#,
+        r#"{"command":"pwd","timeout":3,"timeout_ms":3000}"#,
+        r#"{"command":"pwd","timeout":"3"}"#,
+        r#"{"command":"pwd","timeout":1.5}"#,
+        r#"{"command":"pwd","timeout":18446744073709551615}"#,
+        r#"{"command":"pwd","timeout":0}"#,
+        r#"{"command":""}"#,
+    ] {
+        assert!(tools.prepare_bash_json(raw).is_err());
+    }
+}
+
 fn tools() -> (TempDir, Tools) {
     let project = tempdir().unwrap();
     let tools = Tools::new(project.path()).unwrap();
@@ -55,7 +115,7 @@ fn bash_input_is_strict_and_defaults_timeout() {
 
     for raw in [
         "{}",
-        r#"{"command":"pwd"}"#,
+        r#"{"command":"pwd","cmd":"pwd"}"#,
         r#"{"cmd":"pwd","command":"false"}"#,
         r#"{"cmd":""}"#,
         r#"{"cmd":1}"#,
@@ -66,6 +126,9 @@ fn bash_input_is_strict_and_defaults_timeout() {
         r#"{"cmd":"pwd","timeout_ms":1.5}"#,
         r#"{"cmd":"pwd","timeout_ms":18446744073709551616}"#,
         r#"{"cmd":"a","cmd":"b"}"#,
+        r#"{"command":"a","command":"b"}"#,
+        r#"{"command":"pwd","timeout":null,"timeout":1}"#,
+        r#"{"cmd":"pwd","timeout_ms":null,"timeout_ms":1}"#,
     ] {
         assert_eq!(
             tools.prepare_bash_json(raw).unwrap_err().code(),

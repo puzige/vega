@@ -225,7 +225,9 @@ async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
         messages.iter().any(|message| {
             message["role"] == "assistant"
                 && message["tool_calls"][0]["function"]["name"] == "read"
-                && message["tool_calls"][0]["function"]["arguments"] == r#"{"path":"README.md"}"#
+                && message["tool_calls"][0]["function"]["arguments"].as_str()
+                    .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok())
+                    == Some(serde_json::json!({"path": tools.root().join("README.md"), "offset": null, "limit": null}))
         }) && messages.iter().any(|message| {
             message["role"] == "tool"
                 && message["tool_call_id"] == "call-read"

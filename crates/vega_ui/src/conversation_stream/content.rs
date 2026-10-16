@@ -1420,7 +1420,7 @@ impl ConversationStream {
                 let call_id = call.id.clone();
                 let card = cx.new(|_| ToolCard::proposed(&call));
                 self.observe_tool_card(&card, cx);
-                self.append_live_tool(card.clone(), cx);
+                self.append_live_tool(card.clone(), true, cx);
                 self.tool_cards.insert(call_id, card);
                 self.install_pending_permission(cx);
                 cx.notify();
@@ -1810,7 +1810,7 @@ impl ConversationStream {
         }
     }
 
-    fn append_live_tool(&mut self, card: Entity<ToolCard>, cx: &mut Context<Self>) {
+    fn append_live_tool(&mut self, card: Entity<ToolCard>, proposed: bool, cx: &mut Context<Self>) {
         let active_message_id = self
             .active_agent_message
             .as_ref()
@@ -1818,7 +1818,9 @@ impl ConversationStream {
         if let Some(message_id) = active_message_id
             && let Some((group, segment)) = self.ensure_live_run_activity_segment(&message_id, cx)
         {
-            group.update(cx, |group, cx| group.append_tool(segment, card, cx));
+            group.update(cx, |group, cx| {
+                group.append_tool(segment, card, proposed, cx)
+            });
             return;
         }
         enum Tail {
@@ -1921,7 +1923,7 @@ impl ConversationStream {
         }
         let card = cx.new(|_| card);
         self.observe_tool_card(&card, cx);
-        self.append_live_tool(card.clone(), cx);
+        self.append_live_tool(card.clone(), false, cx);
         self.tool_cards.insert(call_id, card);
         cx.notify();
     }

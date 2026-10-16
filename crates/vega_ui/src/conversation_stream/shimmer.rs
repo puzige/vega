@@ -21,6 +21,11 @@ impl StageText {
             cx.notify();
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_title(&self) -> &str {
+        &self.title
+    }
 }
 
 impl Render for StageText {

@@ -31,6 +31,62 @@ fn terminal(run: &ConversationRun, id: &str) -> crate::types::ToolResult {
 }
 
 #[tokio::test]
+async fn issue300_batch_edit_persists_redacted_identity_and_replays_across_name_aliases() {
+    let (store, project, _data, _) = setup_external("full_access");
+    fs::write(project.path().join("batch.txt"), "alpha beta").unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    tools.read("batch.txt", None, None).unwrap();
+    let input = serde_json::json!({"path":"batch.txt","edits":[{"oldText":"alpha","newText":"new"},{"oldText":"beta","newText":"other"}]});
+    for (tool, reused) in [("edit", false), ("Edit", true)] {
+        let provider = file_provider("batch-edit", tool, input.clone());
+        let run = run_thread_task(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            "apply edits",
+            "system",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let result = terminal(&run, "batch-edit");
+        assert_eq!(result.status, ToolCallStatus::Success);
+        assert_eq!(result.reused, reused);
+        assert_eq!(
+            vega_tools::EditSuccessOutput::from_json(&result.output)
+                .unwrap()
+                .replacements,
+            2
+        );
+        assert_eq!(
+            fs::read_to_string(project.path().join("batch.txt")).unwrap(),
+            "new other"
+        );
+    }
+    let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    assert_eq!(source.tool_calls.len(), 1);
+    assert!(!source.tool_calls[0].input_json.contains("alpha"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&source.tool_calls[0].input_json).unwrap()["edit_count"],
+        2
+    );
+    let restored = crate::agent::history_from_context_source(&source, "none", None).unwrap();
+    let projected = vega_runtime::project_model_messages(&restored).unwrap();
+    assert!(
+        projected
+            .iter()
+            .all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none())
+    );
+    assert!(
+        projected
+            .iter()
+            .any(|message| message.content.contains("call_id=batch-edit")
+                && message.content.contains("replacements"))
+    );
+}
+
+#[tokio::test]
 async fn issue112_external_canonical_edit_survives_new_tools_and_history() {
     for mode in ["full_access", "confirm", "auto"] {
         let (store, project, _data, _) = setup_external(mode);

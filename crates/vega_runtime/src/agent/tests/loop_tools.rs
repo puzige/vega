@@ -444,7 +444,10 @@ async fn bad_json_and_external_read_denial_return_errors_then_model_continues() 
         .collect();
     assert_eq!(failures.len(), 2);
     assert_eq!(failures[0].status, RuntimeToolStatus::Failed);
-    assert!(failures[0].output.contains("valid file_path"));
+    assert_eq!(
+        failures[0].output,
+        r#"Tool error: read requires path identifying a regular text file. Expected {"path":"src/lib.rs","offset":null,"limit":null}"#
+    );
     assert_eq!(failures[1].status, RuntimeToolStatus::Rejected);
     assert!(failures[1].output.contains("permission denied"));
 }
@@ -1125,14 +1128,16 @@ async fn issue302_reused_validation_result_redacts_before_shell_projection() {
     assert_eq!(outcome.executed_tool_call_count, 0);
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests[1]
-            .messages
-            .iter()
-            .find(|message| message.role == ChatRole::Tool)
-            .unwrap(),
-        &expected
-    );
+    let feedback = requests[1]
+        .messages
+        .iter()
+        .find(|message| {
+            message.content.contains("Historical tool result")
+                && message.content.contains("prior-invalid-bash")
+        })
+        .unwrap();
+    assert!(feedback.content.ends_with(&expected.content));
+    assert!(feedback.tool_call_id.is_none());
     assert!(!expected.content.contains(&secret[..16]));
     assert!(outcome.events.iter().any(|event| matches!(event, RuntimeEvent::ToolCallValidationRejected { result, .. } if result.output == redacted && result.reused && result.status == RuntimeToolStatus::Rejected)));
 }

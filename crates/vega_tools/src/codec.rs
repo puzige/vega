@@ -181,6 +181,7 @@ pub enum WriteEditAudit {
         path: String,
         old_string_bytes: u64,
         new_string_bytes: u64,
+        edit_count: Option<u64>,
         fingerprint_v1: String,
     },
 }
@@ -238,6 +239,7 @@ impl WriteEditAudit {
             path: path.to_string(),
             old_string_bytes: checked_len(old.as_bytes())?,
             new_string_bytes: checked_len(new.as_bytes())?,
+            edit_count: None,
             fingerprint_v1: fingerprint(&[
                 if replace_all {
                     b"edit:replace_all"
@@ -248,6 +250,38 @@ impl WriteEditAudit {
                 old.as_bytes(),
                 new.as_bytes(),
             ])?,
+        })
+    }
+
+    pub(crate) fn edit_batch(path: &str, edits: &[(&str, &str)]) -> Result<Self, MutationError> {
+        if let [(old, new)] = edits {
+            return Self::edit_with_replace_all(path, old, new, false);
+        }
+        validate_wire_path(path).map_err(MutationError::new)?;
+        let count = u64::try_from(edits.len()).map_err(|_| codec_error())?;
+        if count < 2 {
+            return Err(codec_error());
+        }
+        let mut old_bytes = 0u64;
+        let mut new_bytes = 0u64;
+        let count_bytes = count.to_be_bytes();
+        let mut fields: Vec<&[u8]> = vec![b"edit:batch:v1", path.as_bytes(), &count_bytes];
+        for (old, new) in edits {
+            old_bytes = old_bytes
+                .checked_add(checked_len(old.as_bytes())?)
+                .ok_or_else(codec_error)?;
+            new_bytes = new_bytes
+                .checked_add(checked_len(new.as_bytes())?)
+                .ok_or_else(codec_error)?;
+            fields.push(old.as_bytes());
+            fields.push(new.as_bytes());
+        }
+        Ok(Self::Edit {
+            path: path.to_string(),
+            old_string_bytes: old_bytes,
+            new_string_bytes: new_bytes,
+            edit_count: Some(count),
+            fingerprint_v1: fingerprint(&fields)?,
         })
     }
 
@@ -286,6 +320,7 @@ impl WriteEditAudit {
                 path,
                 old_string_bytes,
                 new_string_bytes,
+                edit_count,
                 fingerprint_v1,
             } => encode_json(&EditAuditWire {
                 audit_version: AUDIT_VERSION,
@@ -293,6 +328,7 @@ impl WriteEditAudit {
                 path,
                 old_string_bytes: *old_string_bytes,
                 new_string_bytes: *new_string_bytes,
+                edit_count: *edit_count,
                 fingerprint_v1,
             }),
         }
@@ -326,10 +362,14 @@ impl WriteEditAudit {
                 }
                 validate_wire_path(&wire.path).map_err(MutationError::new)?;
                 validate_hash(&wire.fingerprint_v1)?;
+                if wire.edit_count.is_some_and(|count| count < 2) {
+                    return Err(codec_error());
+                }
                 Ok(Self::Edit {
                     path: wire.path,
                     old_string_bytes: wire.old_string_bytes,
                     new_string_bytes: wire.new_string_bytes,
+                    edit_count: wire.edit_count,
                     fingerprint_v1: wire.fingerprint_v1,
                 })
             }
@@ -625,6 +665,8 @@ struct EditAuditWire<'a> {
     path: &'a str,
     old_string_bytes: u64,
     new_string_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit_count: Option<u64>,
     fingerprint_v1: &'a str,
 }
 
@@ -636,6 +678,8 @@ struct EditAuditOwned {
     path: String,
     old_string_bytes: u64,
     new_string_bytes: u64,
+    #[serde(default, deserialize_with = "optional_u64")]
+    edit_count: Option<u64>,
     fingerprint_v1: String,
 }
 
