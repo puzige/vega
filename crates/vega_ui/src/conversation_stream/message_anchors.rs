@@ -223,7 +223,7 @@ impl ConversationStream {
         };
         let measured_viewport_height = f32::from(self.list.viewport_bounds().size.height);
         let viewport_height = if measured_viewport_height > 0.0 {
-            measured_viewport_height
+            (measured_viewport_height - f32::from(self.foreground_height)).max(0.)
         } else {
             fallback_viewport_height.max(0.0)
         };

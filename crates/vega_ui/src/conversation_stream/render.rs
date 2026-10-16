@@ -86,6 +86,90 @@ impl ConversationStream {
         self.resume_tail(cx);
     }
 
+    fn render_conversation_foreground(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let stream = cx.entity().downgrade();
+        let fade = gpui_kit::linear_gradient(
+            180.,
+            gpui_kit::linear_color_stop(colors.bg_base.opacity(0.), 0.),
+            gpui_kit::linear_color_stop(colors.bg_base, 1.),
+        );
+        div()
+            .debug_selector(|| "conversation-foreground".into())
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let changed = stream
+                            .update(cx, |stream, cx| {
+                                if stream.foreground_height == bounds.size.height {
+                                    return false;
+                                }
+                                stream.foreground_height = bounds.size.height;
+                                cx.notify();
+                                true
+                            })
+                            .unwrap_or(false);
+                        if changed {
+                            window.request_animation_frame();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "conversation-bottom-fade".into())
+                    .absolute()
+                    .top(px(
+                        Layout::READING_NAVIGATION_HEIGHT - Layout::CONVERSATION_BOTTOM_FADE_HEIGHT
+                    ))
+                    .left_0()
+                    .w_full()
+                    .h(px(Layout::CONVERSATION_BOTTOM_FADE_HEIGHT))
+                    .bg(fade),
+            )
+            .child(self.render_resume_tail(cx))
+            .child(
+                div()
+                    .debug_selector(|| "conversation-foreground-surface".into())
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .bg(colors.bg_base)
+                    .occlude()
+                    .child(
+                        div().px(px(Layout::CONVERSATION_PADDING)).child(
+                            div()
+                                .w_full()
+                                .max_w(px(Layout::CONVERSATION_MAX_WIDTH))
+                                .mx_auto()
+                                .children(self.message_location_status_element(cx))
+                                .children(self.render_computer_use_notice(cx)),
+                        ),
+                    )
+                    .when(self.privacy.opened, |column| {
+                        column.child(self.render_privacy_control(cx))
+                    })
+                    .child(self.render_composer(window, cx))
+                    .when(!self.thread.is_standalone(), |column| {
+                        column.child(self.commit_panel.clone())
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         div()
@@ -1682,7 +1766,8 @@ impl Render for ConversationStream {
                                         ),
                                     )
                                     .h_full()
-                                    .w_full(),
+                                    .w_full()
+                                    .pb(self.foreground_height),
                                 )
                                 .child(
                                     gpui_kit::canvas(
@@ -1698,8 +1783,6 @@ impl Render for ConversationStream {
                                 ),
                         ),
                 )
-                .children(self.message_location_status_element(cx))
-                .children(self.render_computer_use_notice(cx))
                 .into_any_element()
         };
 
@@ -1764,13 +1847,15 @@ impl Render for ConversationStream {
                     }),
             )
             .when(!self.entries.is_empty(), |root| {
-                root.child(self.render_resume_tail(cx))
+                root.child(self.render_conversation_foreground(window, cx))
             })
-            .when(self.privacy.opened, |view| {
-                view.child(self.render_privacy_control(cx))
+            .when(self.entries.is_empty(), |root| {
+                root.when(self.privacy.opened, |view| {
+                    view.child(self.render_privacy_control(cx))
+                })
+                .child(self.render_composer(window, cx))
+                .when(project_bound, |root| root.child(self.commit_panel.clone()))
             })
-            .child(self.render_composer(window, cx))
-            .when(project_bound, |root| root.child(self.commit_panel.clone()))
             .children(self.render_pending_menu(cx))
             .into_any_element();
         counters.record_render(render_t0);
