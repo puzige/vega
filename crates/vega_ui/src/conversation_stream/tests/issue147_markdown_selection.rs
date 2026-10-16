@@ -15,7 +15,7 @@ impl Render for SelectionHarness {
     }
 }
 
-fn open_selection_harness(
+pub(super) fn open_selection_harness(
     cx: &mut TestAppContext,
     entry: StreamEntry,
 ) -> (Entity<ConversationStream>, VisualTestContext) {
@@ -62,7 +62,7 @@ fn open_stream_harness(
     (stream, visual)
 }
 
-fn assistant_entry(document: &str) -> StreamEntry {
+pub(super) fn assistant_entry(document: &str) -> StreamEntry {
     let mut stream = MarkdownStream::new();
     stream.append(document);
     stream.finish();
@@ -76,7 +76,7 @@ fn assistant_entry(document: &str) -> StreamEntry {
     }
 }
 
-fn layout_for(text: &str) -> gpui_kit::TextLayout {
+pub(super) fn layout_for(text: &str) -> gpui_kit::TextLayout {
     selection::SELECTION_RUN_LAYOUTS.with_borrow(|runs| {
         runs.iter()
             .rev()
@@ -86,13 +86,13 @@ fn layout_for(text: &str) -> gpui_kit::TextLayout {
     })
 }
 
-fn drag(visual: &mut VisualTestContext, start: Point<Pixels>, end: Point<Pixels>) {
+pub(super) fn drag(visual: &mut VisualTestContext, start: Point<Pixels>, end: Point<Pixels>) {
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
 }
 
-fn text_point(layout: &gpui_kit::TextLayout, index: usize, edge: bool) -> Point<Pixels> {
+pub(super) fn text_point(layout: &gpui_kit::TextLayout, index: usize, edge: bool) -> Point<Pixels> {
     let mut point = layout
         .position_for_index(index)
         .expect("text index geometry");
@@ -841,10 +841,13 @@ struct InlineReadView {
 }
 
 impl Render for InlineReadView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .child(markdown_item(&self.model, None, &self.colors))
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(markdown_item(
+            &self.model,
+            None,
+            &self.colors,
+            &format!("inline-read-{}", cx.entity_id()),
+        ))
     }
 }
 

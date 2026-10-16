@@ -2,25 +2,231 @@ use std::{cell::RefCell, collections::BTreeMap, ops::Range, rc::Rc};
 
 use gpui_kit::{
     AnyElement, App, AvailableSpace, BorderStyle, Bounds, Corners, Edges, Element, ElementId,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels,
-    SharedString, StyledText, TextAlign, TextLayout, TextRun, TextStyle, TextStyleRefinement,
-    WhiteSpace, Window, WrappedLine, WrappedLineLayout, point, px, size, transparent_black,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    PaintQuad, Pixels, SharedString, StyledText, TextAlign, TextLayout, TextRun, TextStyle,
+    TextStyleRefinement, WhiteSpace, Window, WrappedLine, WrappedLineLayout, point, px, size,
+    transparent_black,
 };
 use vega_theme::Layout;
+
+use super::links::{LinkRange, fragment_link_ranges, link_element_id, register_link_interactions};
 
 pub(super) fn styled_text(content: String, runs: Vec<TextRun>) -> AnyElement {
     let text = StyledText::new(content.clone()).with_runs(runs.clone());
     if runs.iter().any(|run| run.background_color.is_some()) {
         flow(content.into(), runs, |_, content, runs| {
             InlineCodeText {
+                id: None,
                 text: StyledText::new(content.clone()).with_runs(runs.clone()),
                 content,
                 runs,
+                links: Vec::new(),
             }
             .into_any_element()
         })
     } else {
         text.into_any_element()
+    }
+}
+
+pub(super) fn interactive_text(
+    content: String,
+    runs: Vec<TextRun>,
+    links: Vec<LinkRange>,
+    id_prefix: String,
+) -> AnyElement {
+    if links.is_empty() {
+        return styled_text(content, runs);
+    }
+    let text = StyledText::new(content.clone()).with_runs(runs.clone());
+    if runs.iter().any(|run| run.background_color.is_some()) {
+        flow(content.into(), runs, move |range, content, runs| {
+            let fragment_links = fragment_link_ranges(&links, &range);
+            InlineCodeText {
+                id: (!fragment_links.is_empty()).then(|| link_element_id(&id_prefix, range.start)),
+                text: StyledText::new(content.clone()).with_runs(runs.clone()),
+                content,
+                runs,
+                links: fragment_links,
+            }
+            .into_any_element()
+        })
+    } else {
+        InteractiveMarkdownText {
+            id: Some(link_element_id(&id_prefix, 0)),
+            text,
+            links,
+        }
+        .into_any_element()
+    }
+}
+
+struct InteractiveTextPrepaint {
+    hitbox: Hitbox,
+}
+
+struct InlineCodePrepaint {
+    lines: Option<Vec<WrappedLine>>,
+    hitbox: Option<Hitbox>,
+}
+
+struct InteractiveMarkdownText {
+    id: Option<ElementId>,
+    text: StyledText,
+    links: Vec<LinkRange>,
+}
+
+impl IntoElement for InteractiveMarkdownText {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for InteractiveMarkdownText {
+    type RequestLayoutState = ();
+    type PrepaintState = InteractiveTextPrepaint;
+
+    fn id(&self) -> Option<ElementId> {
+        self.id.clone()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        self.text.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.text
+            .prepaint(id, inspector, bounds, &mut (), window, cx);
+        InteractiveTextPrepaint {
+            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        }
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.text
+            .paint(id, inspector, bounds, &mut (), &mut (), window, cx);
+        register_link_interactions(
+            id,
+            prepaint.hitbox.clone(),
+            self.text.layout().clone(),
+            self.links.clone(),
+            window,
+            cx,
+        );
+    }
+}
+
+struct InlineCodeText {
+    id: Option<ElementId>,
+    text: StyledText,
+    content: SharedString,
+    runs: Vec<TextRun>,
+    links: Vec<LinkRange>,
+}
+
+impl IntoElement for InlineCodeText {
+    type Element = Self;
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for InlineCodeText {
+    type RequestLayoutState = ();
+    type PrepaintState = InlineCodePrepaint;
+
+    fn id(&self) -> Option<ElementId> {
+        self.id.clone()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        self.text.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.text
+            .prepaint(id, inspector, bounds, &mut (), window, cx);
+        InlineCodePrepaint {
+            lines: shape(self.content.clone(), &self.runs, self.text.layout(), window),
+            hitbox: (!self.links.is_empty())
+                .then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal)),
+        }
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(lines) = prepaint.lines.as_ref() {
+            paint_backgrounds(self.text.layout(), &self.runs, window);
+            paint_text(lines, self.text.layout(), window, cx);
+        } else {
+            self.text
+                .paint(id, inspector, bounds, &mut (), &mut (), window, cx);
+        }
+        if let Some(hitbox) = prepaint.hitbox.clone() {
+            register_link_interactions(
+                id,
+                hitbox,
+                self.text.layout().clone(),
+                self.links.clone(),
+                window,
+                cx,
+            );
+        }
     }
 }
 
@@ -171,74 +377,6 @@ pub(super) fn paint_text(
             tracing::error!(%error, "failed to paint inline styled text");
         }
         origin.y += line.size(line_height).height;
-    }
-}
-
-struct InlineCodeText {
-    text: StyledText,
-    content: SharedString,
-    runs: Vec<TextRun>,
-}
-
-impl IntoElement for InlineCodeText {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
-impl Element for InlineCodeText {
-    type RequestLayoutState = ();
-    type PrepaintState = Option<Vec<WrappedLine>>;
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        self.text.request_layout(id, inspector, window, cx)
-    }
-
-    fn prepaint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        self.text
-            .prepaint(id, inspector, bounds, &mut (), window, cx);
-        shape(self.content.clone(), &self.runs, self.text.layout(), window)
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        lines: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        if let Some(lines) = lines {
-            paint_backgrounds(self.text.layout(), &self.runs, window);
-            paint_text(lines, self.text.layout(), window, cx);
-        } else {
-            self.text
-                .paint(id, inspector, bounds, &mut (), &mut (), window, cx);
-        }
     }
 }
 

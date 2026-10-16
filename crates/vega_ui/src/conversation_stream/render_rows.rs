@@ -1,3 +1,4 @@
+use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
@@ -22,6 +23,7 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
         line.spans = coalesce(vec![StreamSpan {
             text: (*part).to_string(),
             style: SpanStyle::Plain,
+            link: None,
         }]);
         lines.push(line);
     }
@@ -227,7 +229,12 @@ fn render_entry_internal(
                 )
             } else {
                 message_with_copy(
-                    markdown_item(model, failure.filter(|_| !suppress_run_notices), &colors),
+                    markdown_item(
+                        model,
+                        failure.filter(|_| !suppress_run_notices),
+                        &colors,
+                        &format!("assistant-message-{}", copy.id),
+                    ),
                     copy,
                     false,
                     colors,
@@ -387,7 +394,14 @@ pub(crate) fn markdown_item(
     model: &StreamModel,
     failure: Option<RunFailureKind>,
     colors: &ThemeColors,
+    id_prefix: &str,
 ) -> AnyElement {
+    let message_id = model
+        .committed_lines
+        .first()
+        .or_else(|| model.pending_lines.first())
+        .map_or(0, |line| line.block_id);
+    let id_prefix = id_prefix.to_owned();
     div()
         .debug_selector(|| "assistant-message".into())
         .w_full()
@@ -395,8 +409,12 @@ pub(crate) fn markdown_item(
         .pt(px(Layout::CONVERSATION_BODY_TOP))
         .flex()
         .flex_col()
-        .children(markdown_blocks(model, colors, |line| {
-            render_line(line, colors)
+        .children(markdown_blocks(model, colors, |line, index| {
+            render_line(
+                line,
+                colors,
+                &format!("{id_prefix}-markdown-{message_id}-line-{index}"),
+            )
         }))
         .children(failure.map(|reason| {
             div()
@@ -614,7 +632,7 @@ pub(crate) fn selectable_markdown_content(
     let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
     let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
     let mut previous: Option<(u64, LineKind)> = None;
-    let blocks = markdown_blocks(model, colors, |line| {
+    let blocks = markdown_blocks(model, colors, |line, index| {
         if !matches!(line.kind, LineKind::Rule)
             && let Some((previous_block, previous_kind)) = previous
         {
@@ -625,7 +643,7 @@ pub(crate) fn selectable_markdown_content(
                         && matches!(line.kind, LineKind::ListItem)));
             document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
         }
-        let element = render_line_selectable(line, colors, &mut document);
+        let element = render_line_selectable(line, colors, &mut document, index, copy.id);
         if !matches!(line.kind, LineKind::Rule) {
             previous = Some((line.block_id, line.kind));
         }
@@ -641,7 +659,7 @@ pub(crate) fn selectable_markdown_content(
 fn markdown_blocks(
     model: &StreamModel,
     colors: &ThemeColors,
-    mut render: impl FnMut(&StreamLine) -> AnyElement,
+    mut render: impl FnMut(&StreamLine, usize) -> AnyElement,
 ) -> Vec<AnyElement> {
     let lines: Vec<_> = model
         .committed_lines
@@ -663,14 +681,14 @@ fn markdown_blocks(
         let in_list = list_blocks.contains(&block_id);
         let previous_in_list = previous.is_some_and(|line| list_blocks.contains(&line.block_id));
         let gap = markdown_block_gap(previous, line, in_list, previous_in_list);
-        let mut content = vec![render(line)];
+        let mut content = vec![render(line, index)];
         index += 1;
         if line.kind == LineKind::Code {
             while index < lines.len()
                 && lines[index].block_id == block_id
                 && lines[index].kind == LineKind::Code
             {
-                content.push(render(lines[index]));
+                content.push(render(lines[index], index));
                 index += 1;
             }
         }
@@ -783,9 +801,12 @@ fn render_line_selectable(
     line: &StreamLine,
     colors: &ThemeColors,
     document: &mut SelectionDocumentBuilder,
+    line_index: usize,
+    message_id: u64,
 ) -> AnyElement {
+    let id_prefix = format!("assistant-{message_id}-line-{line_index}");
     if let Some(table) = &line.table {
-        return render_table_selectable(line.block_id, table, colors, document);
+        return render_table_selectable(line.block_id, &id_prefix, table, colors, document);
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
@@ -807,7 +828,8 @@ fn render_line_selectable(
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, user_body_style(colors), colors),
-                "assistant-user-line",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-user"),
             );
             item.child(div().px_2().py(px(1.0)).child(selected))
                 .into_any_element()
@@ -816,7 +838,8 @@ fn render_line_selectable(
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, code_run_style(colors.text_primary), colors),
-                "assistant-code",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-code"),
             );
             let code = div()
                 .text_size(px(Typography::CODE))
@@ -835,7 +858,8 @@ fn render_line_selectable(
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
-                "assistant-quote",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-quote"),
             );
             item.child(
                 div()
@@ -861,7 +885,8 @@ fn render_line_selectable(
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, heading_run_style(level, colors), colors),
-                "assistant-heading",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-heading"),
             );
             item.text_size(px(size))
                 .font_weight(weight)
@@ -879,7 +904,7 @@ fn render_line_selectable(
             let marker_text = document.append_styled(
                 &marker,
                 StyledText::new(marker.clone()),
-                "assistant-list-marker",
+                &format!("{id_prefix}-list-marker"),
             );
             row = row.child(
                 div()
@@ -893,7 +918,7 @@ fn render_line_selectable(
                 let checkbox_text = document.append_styled(
                     checkbox,
                     StyledText::new(checkbox),
-                    "assistant-list-checkbox",
+                    &format!("{id_prefix}-list-checkbox"),
                 );
                 row = row.child(
                     div()
@@ -911,7 +936,8 @@ fn render_line_selectable(
             let content = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
-                "assistant-list-content",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-list-content"),
             );
             row = row.child(div().flex_1().min_w_0().child(content));
             item.child(row).into_any_element()
@@ -920,7 +946,8 @@ fn render_line_selectable(
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
-                "assistant-paragraph",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-paragraph"),
             );
             item.child(selected).into_any_element()
         }
@@ -929,6 +956,7 @@ fn render_line_selectable(
 
 fn render_table_selectable(
     block_id: u64,
+    id_prefix: &str,
     table: &StreamTable,
     colors: &ThemeColors,
     document: &mut SelectionDocumentBuilder,
@@ -973,7 +1001,8 @@ fn render_table_selectable(
             let selected = document.append_styled_runs(
                 &cell_text,
                 block_text_runs(spans, style, colors),
-                &format!("table-{block_id}-{ordinal}-{row_index}-{column}"),
+                link_ranges(spans),
+                &format!("{id_prefix}-table-{block_id}-{ordinal}-{row_index}-{column}"),
             );
             row = row.child(
                 div()
@@ -994,7 +1023,7 @@ fn render_table_selectable(
     }
     div()
         .id(gpui_kit::SharedString::from(format!(
-            "markdown-table-{block_id}-{ordinal}"
+            "{id_prefix}-markdown-table-{block_id}-{ordinal}"
         )))
         .debug_selector(move || format!("markdown-table-{block_id}-{ordinal}"))
         .w_full()
@@ -1053,11 +1082,16 @@ pub(crate) fn block_text(
     StyledText::new(text).with_runs(block_text_runs(spans, default_style, colors))
 }
 
-fn markdown_text(spans: &[StreamSpan], style: TextStyle, colors: &ThemeColors) -> AnyElement {
-    super::inline_code::styled_text(
-        spans.iter().map(|span| span.text.as_str()).collect(),
-        block_text_runs(spans, style, colors),
-    )
+fn markdown_text(
+    spans: &[StreamSpan],
+    style: TextStyle,
+    colors: &ThemeColors,
+    id_prefix: String,
+) -> AnyElement {
+    let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+    let runs = block_text_runs(spans, style, colors);
+    let links = link_ranges(spans);
+    super::inline_code::interactive_text(text, runs, links, id_prefix)
 }
 
 pub(super) fn block_text_runs(
@@ -1069,6 +1103,9 @@ pub(super) fn block_text_runs(
     for span in spans {
         let mut style = default_style.clone();
         apply_span_style(&mut style, span.style, colors);
+        if span.link.is_some() {
+            apply_span_style(&mut style, SpanStyle::Link, colors);
+        }
         runs.push(style.to_run(span.text.len()));
     }
     runs
@@ -1087,8 +1124,12 @@ pub(crate) fn apply_span_style(style: &mut TextStyle, span: SpanStyle, colors: &
             style.background_color = Some(colors.conversation_code.into());
         }
         SpanStyle::Link => {
-            style.underline = Some(UnderlineStyle::default());
-            style.color = colors.text_secondary.into();
+            style.underline = Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(colors.accent.into()),
+                wavy: false,
+            });
+            style.color = colors.accent.into();
         }
         // 高亮 token：等宽字体/字号与代码行基style一致，只覆写映射表给出的
         // 颜色/字重/斜体。
@@ -1128,10 +1169,11 @@ pub(super) fn heading_run_style(level: u8, colors: &ThemeColors) -> TextStyle {
 /// Renders one [`StreamLine`] into a natural-height block. 24px no longer
 /// applies here: text blocks wrap; vertical rhythm comes from per-kind
 /// padding. Fixed heights remain only inside cards' compact subrows.
-pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement {
+pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &str) -> AnyElement {
     if let Some(table) = &line.table {
-        return render_table(line.block_id, table, colors);
+        return render_table(line.block_id, table, colors, id_prefix);
     }
+    let text_id = format!("{id_prefix}-text");
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
         .when(line.kind != LineKind::Code, |item| item.w_full())
@@ -1153,6 +1195,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                 &line.spans,
                 user_body_style(colors),
                 colors,
+                text_id.clone(),
             )))
             .into_any_element(),
         LineKind::Code => {
@@ -1165,6 +1208,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                     &line.spans,
                     code_run_style(colors.text_primary),
                     colors,
+                    format!("{id_prefix}-code"),
                 ));
             let code = if text.is_empty() {
                 // 空代码行保一行等高占位（非定高行模型）。
@@ -1190,6 +1234,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                         &line.spans,
                         message_run_style(colors.text_primary),
                         colors,
+                        format!("{id_prefix}-quote"),
                     )),
             )
             .into_any_element(),
@@ -1205,6 +1250,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                     &line.spans,
                     heading_run_style(level, colors),
                     colors,
+                    format!("{id_prefix}-heading"),
                 ))
                 .into_any_element()
         }
@@ -1238,6 +1284,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                 &line.spans,
                 message_run_style(colors.text_primary),
                 colors,
+                format!("{id_prefix}-list"),
             )));
             item.child(row).into_any_element()
         }
@@ -1246,12 +1293,19 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                 &line.spans,
                 message_run_style(colors.text_primary),
                 colors,
+                text_id,
             ))
             .into_any_element(),
     }
 }
 
-fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> AnyElement {
+fn render_table(
+    block_id: u64,
+    table: &StreamTable,
+    colors: &ThemeColors,
+    id_prefix: &str,
+) -> AnyElement {
+    let id_prefix = id_prefix.to_owned();
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
     let weights = table.column_weights();
@@ -1294,14 +1348,19 @@ fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> Any
                     .px(px(Layout::MARKDOWN_TABLE_PADDING_X))
                     .py(px(Layout::MARKDOWN_TABLE_PADDING_Y))
                     .text_align(alignment)
-                    .child(markdown_text(spans, style, colors)),
+                    .child(markdown_text(
+                        spans,
+                        style,
+                        colors,
+                        format!("{id_prefix}-table-{block_id}-{ordinal}-{row_index}-{column}"),
+                    )),
             );
         }
         body = body.child(row);
     }
     div()
         .id(gpui_kit::SharedString::from(format!(
-            "markdown-table-{block_id}-{ordinal}"
+            "{id_prefix}-markdown-table-{block_id}-{ordinal}"
         )))
         .debug_selector(move || format!("markdown-table-{block_id}-{ordinal}"))
         .w_full()

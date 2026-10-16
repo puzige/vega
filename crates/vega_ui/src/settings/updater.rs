@@ -255,7 +255,10 @@ impl SettingsView {
                             ))
                             .mt_2()
                             .child(crate::conversation_stream::markdown_item(
-                                notes, None, &colors,
+                                notes,
+                                None,
+                                &colors,
+                                &format!("updater-notes-{}", cx.entity_id()),
                             )),
                     )
                 })

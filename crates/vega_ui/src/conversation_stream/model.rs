@@ -104,7 +104,6 @@ pub(crate) enum SpanStyle {
     Strikethrough,
     /// Inline code: monospace on `code_bg`.
     Code,
-    /// Link label: underlined, secondary color.
     Link,
     /// Code token from the T16 highlighter (monospace row; the token →
     /// theme mapping is [`code_token_style`]).
@@ -163,6 +162,7 @@ pub(crate) fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> Tok
 pub(crate) struct StreamSpan {
     pub text: String,
     pub style: SpanStyle,
+    pub link: Option<String>,
 }
 
 /// What a row represents (drives per-frame styling: font/bg/prefix).
@@ -286,28 +286,38 @@ pub(crate) fn flatten_inlines(spans: &[Inline], out: &mut Vec<StreamSpan>) {
             Inline::Text(text) => out.push(StreamSpan {
                 text: text.clone(),
                 style: SpanStyle::Plain,
+                link: None,
             }),
             Inline::Code(code) => out.push(StreamSpan {
                 text: code.clone(),
                 style: SpanStyle::Code,
+                link: None,
             }),
             Inline::Emphasis(inner) => restyle(out, inner, SpanStyle::Emphasis),
             Inline::Strong(inner) => restyle(out, inner, SpanStyle::Strong),
             Inline::Strikethrough(inner) => restyle(out, inner, SpanStyle::Strikethrough),
-            Inline::Link { spans: inner, .. } => restyle(out, inner, SpanStyle::Link),
+            Inline::Link {
+                url, spans: inner, ..
+            } => restyle_link(out, inner, url),
         }
     }
 }
 
-/// Appends `inner` spans, restyling the plain ones that came from `inner`
-/// (nested styles compose: only plain runs adopt the outer style).
 pub(crate) fn restyle(out: &mut Vec<StreamSpan>, inner: &[Inline], style: SpanStyle) {
     let start = out.len();
     flatten_inlines(inner, out);
     for span in &mut out[start..] {
-        if span.style == SpanStyle::Plain {
+        if span.style == SpanStyle::Plain || span.style == SpanStyle::Link {
             span.style = style;
         }
+    }
+}
+
+fn restyle_link(out: &mut Vec<StreamSpan>, inner: &[Inline], url: &str) {
+    let start = out.len();
+    restyle(out, inner, SpanStyle::Link);
+    for span in &mut out[start..] {
+        span.link = Some(url.to_owned());
     }
 }
 
@@ -320,7 +330,9 @@ pub(crate) fn coalesce(spans: Vec<StreamSpan>) -> Vec<StreamSpan> {
             continue;
         }
         match merged.last_mut() {
-            Some(last) if last.style == span.style => last.text.push_str(&span.text),
+            Some(last) if last.style == span.style && last.link == span.link => {
+                last.text.push_str(&span.text)
+            }
             _ => merged.push(span),
         }
     }
@@ -431,6 +443,7 @@ pub(crate) fn code_line_spans(
         return vec![StreamSpan {
             text: code[start..end].to_string(),
             style: SpanStyle::Plain,
+            link: None,
         }];
     };
     let mut spans = Vec::new();
@@ -445,11 +458,13 @@ pub(crate) fn code_line_spans(
             spans.push(StreamSpan {
                 text: code[cursor..span_start].to_string(),
                 style: SpanStyle::Plain,
+                link: None,
             });
         }
         spans.push(StreamSpan {
             text: code[span_start..span_end].to_string(),
             style: SpanStyle::Token(span.kind),
+            link: None,
         });
         cursor = span_end;
     }
@@ -457,6 +472,7 @@ pub(crate) fn code_line_spans(
         spans.push(StreamSpan {
             text: code[cursor..end].to_string(),
             style: SpanStyle::Plain,
+            link: None,
         });
     }
     spans
