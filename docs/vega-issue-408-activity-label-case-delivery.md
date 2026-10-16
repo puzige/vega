@@ -83,23 +83,25 @@
 
 ## 云端检查
 
-[PR #422](https://github.com/puzige/vega/pull/422) 的 `pr-check` [run 38865605273](https://github.com/puzige/vega/actions/runs/38865605273) 全部通过：
+### rebase 后最终 head（当前有效）
+
+`24e46ef3` 的 `pr-check` [run 38888865028](https://github.com/puzige/vega/actions/runs/38888865028) 全部通过：
 
 | Job | 结果 | 耗时 |
 |---|---|---|
-| Clippy（`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`） | pass | 5m18s |
-| Nextest（`cargo nextest run --workspace`） | pass | 9m54s |
-| required check `check (fmt, clippy, test)` | pass | 4s |
+| Clippy（`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`） | pass | 2m27s |
+| Nextest（`cargo nextest run --workspace`） | pass | 9m55s |
+| required check `check (fmt, clippy, test)` | pass | 3s |
 
 Nextest 原始汇总行：
 
 ```text
-Summary [ 183.969s] 2741 tests run: 2741 passed, 5 skipped
+Summary [ 170.495s] 2778 tests run: 2778 passed, 5 skipped
 ```
 
-首轮通过记录：实现提交 `ba76ee4c`，基线 `e2568518`，`2741 tests run: 2741 passed, 5 skipped`。
+### 首轮（已被 rebase 取代，保留历史）
 
-rebase 到 `692e09e5` 后的 head 需重新过 `check (fmt, clippy, test)`；未取得新 head 的云端结果前不沿用首轮通过记录。
+首轮 head `ba76ee4c`（基线 `e2568518`）的 `pr-check` [run 38865605273](https://github.com/puzige/vega/actions/runs/38865605273) 通过：Clippy pass 5m18s，Nextest pass 9m54s（`2741 tests run: 2741 passed, 5 skipped`），required check pass 4s。该 head 在 #421/#424 合入后已不可直接合并，通过记录不适用于当前 head。
 
 ## 待用户手测
 
