@@ -655,6 +655,15 @@ fn assert_run_header_layering(cx: &mut TestAppContext, completed: bool) {
                 "{} must really overlap {region}: header={header:?}, target={target:?}",
                 run_header_selector(completed)
             );
+            if region == "composer-shell" {
+                let surface_overlap = header.intersect(&surface);
+                assert!(
+                    surface_overlap.size.width > px(0.)
+                        && surface_overlap.size.height >= header.size.height - px(1.),
+                    "{} inside Composer must also overlap the opaque surface: header={header:?}, surface={surface:?}",
+                    run_header_selector(completed)
+                );
+            }
             if !completed {
                 let icon = bounds(window, "run-stage-icon-0", cx);
                 let title = bounds(window, "run-stage-title-0", cx);
@@ -687,7 +696,23 @@ fn assert_run_header_layering(cx: &mut TestAppContext, completed: bool) {
                     .expect("painted theme fade");
                 let surface_index = solid_index(surface, colors.bg_base);
                 let shell_index = solid_index(shell, colors.bg_elevated);
-                assert!(header_index < fade_index && fade_index < surface_index && surface_index < shell_index, "{} overlapping {region}: real header quad #{header_index} must precede fade #{fade_index}, surface #{surface_index}, shell #{shell_index}", run_header_selector(completed));
+                let header_order = quads[header_index].order;
+                let fade_order = quads[fade_index].order;
+                let surface_order = quads[surface_index].order;
+                let shell_order = quads[shell_index].order;
+                if region == "conversation-bottom-fade" {
+                    assert!(
+                        header_order < fade_order,
+                        "{} overlapping {region}: real header quad #{header_index} order {header_order} must precede fade #{fade_index} order {fade_order}",
+                        run_header_selector(completed)
+                    );
+                } else {
+                    assert!(
+                        header_order < surface_order && surface_order < shell_order,
+                        "{} overlapping {region}: real header quad #{header_index} order {header_order} must precede surface #{surface_index} order {surface_order}, then shell #{shell_index} order {shell_order}",
+                        run_header_selector(completed)
+                    );
+                }
             }).expect("header paint order");
         }
     }

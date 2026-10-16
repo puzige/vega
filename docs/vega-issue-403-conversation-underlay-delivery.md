@@ -255,3 +255,56 @@ run-stage-toggle-0 overlapping conversation-bottom-fade: real header quad #22 mu
 这不是 fixture 或编译失败；三项均命中真实生产行为的预期失败点。旧 suite 的 2735 项通过只描述改前 head，不替代本轮修复后的门禁。当前局部绘制补丁和新增 R4 正待推送后由新一轮 CI 验证。
 
 原始日志临时保存，不入仓库；Nextest SHA-256 为 `1516b542fb3f7548c010858c4dfdbec20fd87e6d6956345950a55d1eca116a30`，Clippy SHA-256 为 `a5bdb3b5c8067115ba6f8fdce1415168902cd8d9ea6390aa4264e0cff640c1c9`。本地仍未运行编译、测试或应用。
+
+### 修复后 CI 与 R1 场景排序判据修正
+
+[修复运行 38847291538](https://github.com/puzige/vega/actions/runs/38847291538) 对应 head `8d4f4d1830c4198a53944ae8e69f05dc3f9095be`。Clippy（含 fmt）成功；Nextest 退出 100，原始 footer：
+
+```text
+Summary [ 122.709s] 2739 tests run: 2737 passed, 2 failed, 5 skipped
+error: test run failed
+Process completed with exit code 100.
+```
+
+仅两项标题绘制测试失败，原始诊断为：
+
+```text
+run-activity-toggle overlapping conversation-bottom-fade: real header quad #6 must precede fade #18, surface #17, shell #19
+run-stage-toggle-0 overlapping conversation-bottom-fade: real header quad #7 must precede fade #20, surface #19, shell #21
+```
+
+真实标题已在相交前景之前；失败来自此前新增测试的额外 `fade_index < surface_index` 总排序条件。旧 sticky S01–S06、原五项 #403 回归、真实标题遮挡点击与 R4 均在此 head 通过。此轮失败、原始输出与修复前红证据均保留，2737 项通过不替代下一 head 的完整 CI。
+
+静态复核锁定 `gpui-pre 0.3.4`：`Scene::insert_primitive` 使用裁剪后的 bounds，通过 `BoundsTree::insert` 为与已有图元相交的区域取 `max_intersecting + 1`；`Scene::finish` 将 quads 按 `order` 排序。互不相交的 fade / surface 可安全重排，shell 场景的标题与 fade 也不相交，场景数组不是全局 paint 调用顺序。前述新增的总排序假设错误，不能据此修改生产绘制代码。
+
+按主 agent 先行澄清的 R1 规格，只修正 `assert_run_header_layering`：保留两态、浅深主题、fade / shell 两区域、四种真实背景定位、实际重叠、图标与标题同属 header，以及其他所有断言。fade 场景严格比较 `header.order < fade.order`；shell 场景额外断言标题与实色 surface 有效重叠，严格比较 `header.order < surface.order < shell.order`。不接受任一前景遮挡即通过，不比较互不相交背景的全局位置。修复前红证据的标题在 fade 后方及遮挡点击仍违反相同真实缺陷判据。
+
+本切片仅改上述测试判据及本记录；生产代码、旧测试、命中测试和 R4 不变。原始日志 Nextest SHA-256 为 `bbc71d1934753fdcd24969dc148f3deb769dd8cfac7c36d758311ccf454e31d3`，Clippy SHA-256 为 `1b6fec99fdbad6506c2d69a2cf1ec81671dee9ebeb06b6dfedc49dc1df2656b6`；仅将已下载日志作为诊断数据读取，未查询或轮询 CI。
+
+本切片轻量检查原始结果：
+
+```text
+cargo fmt --all -- --check
+exit 0
+(no output)
+wall time: 3.424s
+
+git diff --check
+exit 0
+(no output)
+```
+
+NOT RUN：修正后的两项绘制测试与完整门禁待下一 head 的 Actions。本地未运行 Vega、编译、构建、Clippy、测试、打包或安装；未提交或 push。规格由主 agent 修改，本切片只落实已澄清的相交区域严格排序，偏离为无；用户像素手测与前述 LIMIT 保留。
+
+### 判据修正后全绿与基线同步
+
+[run 38848565692](https://github.com/puzige/vega/actions/runs/38848565692) 验证 `3cb9519c1a816e3415c86a2b15db92d98dfa5055`，fmt、Clippy、Nextest 与 required check 均成功。九项 #403（含本轮四项）、九项旧 sticky S01–S06 均 PASS，原始输出：
+
+```text
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 27s
+Summary [ 188.591s] 2739 tests run: 2739 passed, 5 skipped
+```
+
+原始日志 Nextest SHA-256 为 `79bc078b2a014c927859bc37561892b4f3ee669e8b84c3b4b544abdf63037f1b`，Clippy 为 `7f8d65b1614a6134f8a900a0b592e24353c1b7a23ebe0bd6bbfc0fbad2dd344b`。
+
+随后尝试 squash 被分支保护拒绝：`the head branch is not up to date with the base branch`。期间 master 已合入 PR #417 的 `f5b4614e`，涉及 Final 首次收起及焦点/选区恢复。主 agent 已读相关调用链、设计守则更新和 diff，将本卡三个提交无冲突 rebase 至该基线；StickyDisclosure 局部绘制方案和本卡测试保持，未恢复旧 reading guards 或改写上游断言。仅向本卡 feature 分支使用限定旧 head 的 force-with-lease，同步后重新走完整 CI，不绕过 strict 保护、不把旧 head 结果当作新基线通过。实际安装与用户手测仍未执行。

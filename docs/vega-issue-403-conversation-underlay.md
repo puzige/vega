@@ -93,3 +93,13 @@ PR #407 合并后，用户截图显示会话中的工具活动图标与标题绘
 ### 用户明确指定本轮由 Codex 直接修复
 
 2026-10-16，发布交接后用户明确要求“你直接开始修复”。本轮按此授权由当前 Codex 主会话继续组织修复，取代 v1 中等待 Vega 领取的角色安排；R1–R4、具体局部绘制方案及安全/验证边界保持。Codex 更新 In progress 并记录当前执行者，专用实现子 agent 独占 `sticky_disclosure.rs`、本卡测试与 delivery，主会话负责本规格、审查、PR/Actions、合并与交付，不再等待其他执行者。生产实现仍先于本轮应用手测，用户明确通过前不关闭卡片或清理分支/worktree。
+
+### R1 场景排序判据澄清
+
+修复 head `8d4f4d18` 的 CI 确认两项标题绘制测试中，真实标题已经早于前景，点击、R4 与全部旧吸顶测试通过，但原新增测试误将 `painted_quads()` 当作全局调用顺序，额外要求互不重叠的渐隐和实色背景在场景数组中也严格先后。锁定 GPUI 的 `Scene::insert_primitive` 使用 `BoundsTree` 对相交区域递增 `order`，`Scene::finish` 再按 order 排序；互不相交的区域可安全重排。日志中完成标题 #6、surface #17、fade #18、shell #19，以及运行标题 #7、surface #19、fade #20、shell #21，均体现该差异。这里是测试额外条件错误，不是批准放宽标题遮挡行为。
+
+R1 保留真实事件、运行/完成、浅深主题、实际重叠、四种背景定位及全部点击/旧断言，绘制判据改为相关区域的严格偏序：标题实际位于 fade 内时，标题 Quad 的 `order` 必须小于 fade；实际位于 shell 内时，必须验证其也与实色 surface 重叠，并满足标题 `order < surface order < shell order`。不对互不相交的 header/fade 或 fade/surface 强加全局数组顺序。原改前 CI 的标题反盖（live #22 > fade #15、final #23 > fade #15）及遮挡点击仍必然失败，不改变红证据针对的判据。生产局部绘制补丁保持不变；只由专用子 agent 修正上述新测试并保留本轮失败原始输出，再由新 head 完整 CI 验证。
+
+### 合并前基线同步
+
+判据修正后的 `3cb9519c` 在 run `38848565692` 全绿，实际 Nextest 为 2739 passed / 5 skipped。合并时 master 刚进入 `f5b4614e`（PR #417，#416 的 Final 首次收起规则），严格分支保护要求同步后重验。已将本卡三个提交无冲突 rebase 至该基线；本卡的局部绘制和 R1–R4 契约不变，继续遵守上游首次可信 Final 收起及其后手动展开的行为，不恢复旧 reading guards，不修改该卡的实现或断言。旧绿记录只证明旧 head，新基线须取得自己的 required check 结果。
