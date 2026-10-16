@@ -25,19 +25,71 @@ fn seed(stream: &Entity<ConversationStream>, count: i64, cx: &mut TestAppContext
 fn assert_tail_clear(
     window: WindowHandle<StreamHarness>,
     stream: &Entity<ConversationStream>,
+    stage: &str,
     cx: &mut TestAppContext,
 ) {
     let foreground = bounds(window, "conversation-foreground", cx);
     stream.read_with(cx, |stream, _| {
-        assert!(stream.following_tail());
+        assert!(
+            stream.following_tail(),
+            "{stage}: tail follow must remain active"
+        );
         assert_eq!(stream.list.item_count(), stream.entries.len());
         let last = stream
             .list
             .bounds_for_item(stream.entries.len() - 1)
             .expect("last business entry is laid out");
-        assert!(last.bottom() <= foreground.top() + px(0.5));
-        assert!(last.top() >= stream.list.viewport_bounds().top());
+        let viewport = stream.list.viewport_bounds();
+        assert!(
+            last.bottom() <= foreground.top() + px(0.5),
+            "{stage}: last={last:?}, foreground={foreground:?}, viewport={viewport:?}, \
+             padding={:?}, scroll_top={:?}",
+            stream.foreground_height,
+            stream.list.logical_scroll_top()
+        );
+        assert!(
+            last.top() >= viewport.top(),
+            "{stage}: last={last:?}, viewport={viewport:?}"
+        );
     });
+}
+
+fn assert_anchor_clear(
+    window: WindowHandle<StreamHarness>,
+    stream: &Entity<ConversationStream>,
+    cx: &mut TestAppContext,
+) {
+    let viewport = bounds(window, "conversation-message-list", cx);
+    let foreground = bounds(window, "conversation-foreground", cx);
+    let rail = bounds(window, "message-anchor-rail", cx);
+    let readable_center = (viewport.top() + foreground.top()) / 2.;
+    assert!((f32::from(rail.center().y - readable_center)).abs() < 1.);
+    assert!(rail.top() >= viewport.top() && rail.bottom() <= foreground.top());
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_mouse_move(rail.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let preview = visual
+        .debug_bounds("message-anchor-preview")
+        .expect("hovered marker preview");
+    let marker_offset = stream.read_with(&visual, |stream, _| {
+        let hovered = stream
+            .message_anchor_hovered
+            .as_deref()
+            .expect("hovered marker");
+        let index = stream
+            .message_anchor_projections()
+            .iter()
+            .position(|anchor| anchor.message_id == hovered)
+            .expect("hovered marker identity");
+        px((index - stream.message_anchor_window_start) as f32 * Layout::CONVERSATION_MARKER_PITCH)
+    });
+    let expected_top = (rail.top() + marker_offset)
+        .min(foreground.top() - preview.size.height)
+        .max(viewport.top());
+    assert!((f32::from(preview.top() - expected_top)).abs() < 1.);
+    assert!(preview.top() >= viewport.top() && preview.bottom() <= foreground.top());
+    visual.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+    visual.run_until_parked();
 }
 
 #[gpui_kit::test]
@@ -55,7 +107,7 @@ async fn issue403_transcript_extends_beneath_themed_foreground(cx: &mut TestAppC
                 cx.set_global(palette);
                 cx.refresh_windows();
             });
-            assert_tail_clear(window, &stream, cx);
+            assert_tail_clear(window, &stream, "themed backend", cx);
             stream.update(cx, |stream, cx| {
                 stream.list.scroll_by(px(-300.));
                 cx.notify();
@@ -112,14 +164,16 @@ async fn issue403_transcript_extends_beneath_themed_foreground(cx: &mut TestAppC
 async fn issue403_tail_clearance_tracks_composer_and_required_states(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue403-clearance");
     seed(&stream, 60, cx);
-    assert_tail_clear(window, &stream, cx);
+    assert_tail_clear(window, &stream, "initial", cx);
+    assert_anchor_clear(window, &stream, cx);
     let initial = bounds(window, "conversation-foreground", cx);
     stream.update(cx, |stream, cx| {
         stream.input.update(cx, |input, cx| {
             input.set_text("one\ntwo\nthree\nfour\nfive\nsix", cx)
         });
     });
-    assert_tail_clear(window, &stream, cx);
+    assert_tail_clear(window, &stream, "multiline", cx);
+    assert_anchor_clear(window, &stream, cx);
     let multiline = bounds(window, "conversation-foreground", cx);
     assert!(multiline.size.height > initial.size.height);
 
@@ -148,7 +202,8 @@ async fn issue403_tail_clearance_tracks_composer_and_required_states(cx: &mut Te
             cx,
         );
     });
-    assert_tail_clear(window, &stream, cx);
+    assert_tail_clear(window, &stream, "attachments queue errors privacy", cx);
+    assert_anchor_clear(window, &stream, cx);
     let expanded = bounds(window, "conversation-foreground", cx);
     assert!(expanded.size.height > multiline.size.height);
     let error = bounds(window, "conversation-controller-error", cx);
@@ -166,12 +221,14 @@ async fn issue403_tail_clearance_tracks_composer_and_required_states(cx: &mut Te
         stream.privacy.opened = false;
         stream.apply_pending_queue(PendingQueueProjection::default(), cx);
     });
-    assert_tail_clear(window, &stream, cx);
+    assert_tail_clear(window, &stream, "collapsed", cx);
+    assert_anchor_clear(window, &stream, cx);
     assert_eq!(bounds(window, "conversation-foreground", cx), initial);
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(594.), px(554.)));
     visual.run_until_parked();
-    assert_tail_clear(window, &stream, cx);
+    assert_tail_clear(window, &stream, "narrow window", cx);
+    assert_anchor_clear(window, &stream, cx);
 }
 
 #[gpui_kit::test]
@@ -213,7 +270,7 @@ async fn issue403_footer_resize_preserves_history_anchor_and_resume(cx: &mut Tes
     assert!(!after.following_tail);
     assert_eq!(bounds(window, "conversation-message-list", cx), viewport);
     click(window, "scroll-to-bottom", cx);
-    assert_tail_clear(window, &stream, cx);
+    assert_tail_clear(window, &stream, "resumed history", cx);
 }
 
 #[gpui_kit::test]
@@ -317,13 +374,41 @@ async fn issue403_fade_passes_scroll_and_foreground_blocks_hidden_tools(cx: &mut
                 }));
             })
             .expect("menu window");
+        window
+            .update(cx, |_, window, cx| {
+                let focus = stream.read_with(cx, |stream, cx| {
+                    if trigger == "composer-model" {
+                        stream.model_focus.clone()
+                    } else {
+                        stream.input.read(cx).focus_handle(cx)
+                    }
+                });
+                if trigger == "composer-model" {
+                    window.focus(&focus, cx);
+                }
+                assert!(focus.contains_focused(window, cx), "{menu}: keyboard focus");
+            })
+            .expect("menu keyboard context");
         cx.simulate_keystrokes(window.into(), "escape");
         cx.run_until_parked();
         assert!(
             VisualTestContext::from_window(window.into(), cx)
                 .debug_bounds(menu)
-                .is_none()
+                .is_none(),
+            "{menu}: Escape must unmount the open picker"
         );
+        window
+            .update(cx, |_, window, cx| {
+                let focus = stream.read_with(cx, |stream, cx| {
+                    if trigger == "composer-model" {
+                        stream.model_focus.clone()
+                    } else {
+                        stream.input.read(cx).focus_handle(cx)
+                    }
+                });
+                assert!(focus.contains_focused(window, cx), "{menu}: returned focus");
+            })
+            .expect("closed menu focus");
     }
     click(window, "composer-add", cx);
     let action = bounds(window, "composer-action-file", cx);

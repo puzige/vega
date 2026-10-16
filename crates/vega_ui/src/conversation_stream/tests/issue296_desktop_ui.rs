@@ -47,7 +47,12 @@ async fn issue296_reading_column_and_navigation_do_not_compete(cx: &mut TestAppC
             assert_eq!(rail.size.width, px(24.));
             assert_eq!(rail.size.height, px(90.));
             assert_eq!(rail.center().x, px(16.));
-            assert!((f32::from(rail.center().y - list.center().y)).abs() < 1.);
+            let foreground = visual
+                .debug_bounds("conversation-foreground")
+                .expect("foreground");
+            let readable_center = (list.top() + foreground.top()) / 2.;
+            assert!((f32::from(rail.center().y - readable_center)).abs() < 1.);
+            assert!(rail.top() >= list.top() && rail.bottom() <= foreground.top());
             assert!(rail.right() <= list.left());
             let (quads, scale) =
                 visual.update(|window, _| (window.painted_quads(), window.scale_factor()));

@@ -108,19 +108,20 @@ impl ConversationStream {
             .flex_col()
             .child(
                 canvas(
-                    move |bounds, window, cx| {
+                    move |bounds, _, cx| {
+                        let height = bounds.size.height;
                         let changed = stream
-                            .update(cx, |stream, cx| {
-                                if stream.foreground_height == bounds.size.height {
-                                    return false;
-                                }
-                                stream.foreground_height = bounds.size.height;
-                                cx.notify();
-                                true
-                            })
+                            .update(cx, |stream, _| stream.foreground_height != height)
                             .unwrap_or(false);
                         if changed {
-                            window.request_animation_frame();
+                            cx.defer(move |cx| {
+                                let _ = stream.update(cx, |stream, cx| {
+                                    if stream.foreground_height != height {
+                                        stream.foreground_height = height;
+                                        cx.notify();
+                                    }
+                                });
+                            });
                         }
                     },
                     |_, _, _, _| {},
@@ -287,6 +288,9 @@ impl ConversationStream {
                     .mx_auto()
                     // Cmd+Enter 的按键上下文（绑定见 vega_ui::init）。
                     .key_context("Composer")
+                    .when(self.permission_picker_open, |shell| {
+                        shell.on_key_down(cx.listener(Self::on_permission_picker_key_down))
+                    })
                     .on_action(cx.listener(Self::next_composer_control))
                     .on_action(cx.listener(Self::previous_composer_control))
                     .on_action(cx.listener(Self::previous_composer_action))
@@ -755,6 +759,21 @@ impl ConversationStream {
         self.close_composer_popovers(cx);
         self.permission_picker_open = open;
         self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    fn on_permission_picker_key_down(
+        &mut self,
+        event: &gpui_kit::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key != "escape" || self.input.read(cx).is_composing() {
+            return;
+        }
+        self.permission_picker_open = false;
+        self.focus_composer(window, cx);
+        cx.stop_propagation();
         cx.notify();
     }
 

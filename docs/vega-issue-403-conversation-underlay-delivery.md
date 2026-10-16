@@ -20,7 +20,7 @@
 
 - `conversation_stream/render.rs`：非空消息区域保持全高，底部栈独立固定于前景。48px 透明至当前 `bg_base` 的渐变没有事件处理器或命中遮蔽；导航按钮在该区域之上。实色前景使用 `occlude()`，覆盖 Composer 两侧与下方，阻止被遮消息响应点击。既有模型、权限、文件选择和待发送浮层的 deferred priority 未改动。
 - 定位状态和电脑操作提示移入可测量的实色前景，位于阅读导航下方、隐私和 Composer 之前；提交面板保留在 Composer 之后。所有既有文案和动作保留。
-- `conversation_stream/core.rs`：保存底部栈实际高度，供原生 `list().pb(...)` 使用。测量只在高度变化时通知下一帧，不重建 ListState、不插入业务消息、不扫描全量消息、不主动恢复 Tail；既有原生跟随与历史锚点继续生效。
+- `conversation_stream/core.rs`：保存底部栈实际高度，供原生 `list().pb(...)` 使用。测量只在高度变化时，借助 `cx.defer` 在绘制结束后的普通更新循环回写并通知，不重建 ListState、不插入业务消息、不扫描全量消息、不主动恢复 Tail；既有原生跟随与历史锚点继续生效。
 - `conversation_stream/message_anchors.rs`：导航的可读视口高度扣除前景，避免内容仅在前景下溢出时漏掉导航。
 - `vega_theme/src/lib.rs`：共享 `Layout::CONVERSATION_BOTTOM_FADE_HEIGHT`，48 逻辑像素。
 - 仅按冻结规格替换 `issue98_scroll_button.rs` 与 `issue296_desktop_ui.rs` 四处被需求直接替代的“按钮 / 导航必须在列表之外”位置条件；同轴、尺寸、内距、绘制顺序、点击、Enter、焦点和阅读位置断言保留。空会话继续原布局。
@@ -34,7 +34,7 @@
 | 测试 | 可证伪的生产风险 |
 |---|---|
 | `issue403_transcript_extends_beneath_themed_foreground` | Native / Codex × 浅 / 深主题的真实列表与 Composer 重叠，消息行确实位于遮蔽区，渐变及实色前景的真实 Quad 和绘制顺序 |
-| `issue403_tail_clearance_tracks_composer_and_required_states` | 多行、图片、附件错误、队列、控制器错误、隐私状态增减及窗口缩放后，末条完整可见且原生列表项数不变 |
+| `issue403_tail_clearance_tracks_composer_and_required_states` | 多行、图片、附件错误、队列、控制器错误、隐私状态增减及窗口缩放后，末条完整可见且原生列表项数不变；每阶段轨道在可读区居中，真实 hover 后预览与对应刻度对齐且未被遮住 |
 | `issue403_footer_resize_preserves_history_anchor_and_resume` | Composer 增高与流式追加不改变历史身份和像素读位，点击回底恢复原生跟随 |
 | `issue403_fade_passes_scroll_and_foreground_blocks_hidden_tools` | 渐变区域内的真实滚轮生效；把真实可点击工具标题移到 Composer 顶部内侧 4px 空白处后点击，不误触底层；模型 / 权限浮层绘制在渐变之后，菜单 Esc 关闭，添加上下文的原有内联菜单保持可达 |
 | `issue403_empty_layout_and_short_overflow_navigation_remain_usable` | 空态与 utility bar 无前景渐变；短内容介于实际可读高与完整视口高之间时仍显示锚点导航 |
@@ -66,7 +66,7 @@ Issue 403 GPUI regressions: 5 (not executed locally)
 
 ## 云端与剩余验收
 
-本卡五项 GPUI 回归与现有 suite 尚未取得运行通过证据；首轮云端因下述测试编译错误停止，修复后待第二轮 CI。可用过滤命令为 `cargo nextest run -p vega_ui issue403_`，实际现有 PR gate 运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo nextest run --workspace`。不能把静态检查或未执行的测试标作行为通过。
+本卡及现有 suite 尚未取得完整运行通过证据；首轮云端因下述测试编译错误停止，第二轮 Clippy 发现多余 `mut`，Nextest 有 3 项失败。修复及锚点布局修正待后续 CI。可用过滤命令为 `cargo nextest run -p vega_ui issue403_`，实际现有 PR gate 运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo nextest run --workspace`。不能把静态检查或未执行的测试标作行为通过。
 
 ### 首轮云端编译失败与修复
 
@@ -80,7 +80,47 @@ error[E0433]: cannot find `ImagePreview` in `attachments`
 
 原因：测试作用域已有同名 `tests::attachments`，未限定的 `attachments::ImagePreview` 解析到测试模块。仅在新增测试显式导入 `crate::conversation_stream::attachments::ImagePreview` 并调用该类型；生产实现、可见性和所有断言不变。
 
-2026-10-16 01:19 UTC / 09:19 Asia/Shanghai，本地快速复查：`cargo fmt --all -- --check` 退出 0、stdout / stderr 为空；`git diff --check` 退出 0、stdout / stderr 为空。未在本地编译、Clippy 或执行测试，未由 executor 提交或 push。第二轮云端运行及原始结果待主 agent 触发、记录。
+2026-10-16 01:19 UTC / 09:19 Asia/Shanghai，本地快速复查：`cargo fmt --all -- --check` 退出 0、stdout / stderr 为空；`git diff --check` 退出 0、stdout / stderr 为空。未在本地编译、Clippy 或执行测试，未由 executor 提交或 push。第二轮结果见下节。
+
+### 第二轮 Clippy 失败与锚点布局修复
+
+[第二轮检查](https://github.com/puzige/vega/actions/runs/38834555020)的 Clippy 因新增测试中多余的 `mut` 失败，退出 101。原始诊断：
+
+```text
+error: variable does not need to be mutable
+  --> crates/vega_ui/src/conversation_stream/tests/issue403_conversation_underlay.rs:171:9
+171 |     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    = note: `-D unused-mut` implied by `-D warnings`
+```
+
+按诊断去掉该 `mut`，没有 `allow` 或门禁修改。第二轮 Nextest 随后完成，退出 100；原始汇总：
+
+```text
+Summary [176.399s] 2734 tests run: 2731 passed, 3 failed, 5 skipped
+```
+
+保留的 3 项失败及后续修复：
+
+| 失败测试 | 原始断言 / 结果 | 证据与修复 |
+|---|---|---|
+| `issue403_fade_passes_scroll_and_foreground_blocks_hidden_tools` | Esc 后 `debug_bounds(menu).is_none()` 未成立 | 权限 picker 打开时已聚焦输入，却没有 Esc 路径；只在该 picker 打开时向 Composer 挂局部键盘处理，保留 IME guard，Esc 关闭并回焦输入。模型 picker 按现有生产测试契约聚焦真实模型触发器；新测试在 Esc 前后都核对焦点，并保留关闭断言及菜单名诊断 |
+| `issue403_tail_clearance_tracks_composer_and_required_states` | `last.bottom() <= foreground.top() + px(0.5)` 失败 | 原测高在 Prepaint 内回写 / notify，依赖下一动画帧才刷新列表 padding；改为高度确有变化时用 `cx.defer` 在绘制完成后更新和 notify。断言强度、跟随条件和测试动作不变，新增阶段、末项、前景、视口、padding 与滚动位置诊断 |
+| `issue72_message_anchor_navigation::mouse_and_keyboard_anchor_navigation_emit_real_message_ids` | rail wheel 的读位由 `(56, 26px)` 变成 `(57, 14.5px)` | 锚点点击新增 Searching 状态，增高前景；同一待校正的 padding 原本延到下一次 wheel 事件才应用。上述 defer 修复使校正进入普通更新循环。旧测试和滚轮不移动阅读位的断言完全保留 |
+
+锁定的 `gpui-pre 0.3.4` 源码证据：`WindowInvalidator::invalidate_view` 在绘制阶段只登记 dirty view，只有 `DrawPhase::None` 才将窗口置 dirty；`request_animation_frame` 排入 `on_next_frame`，测试平台的 `schedule_frame` 仅标记待交付，普通 `run_until_parked` 不会自动交付该平台帧。`cx.defer` 在当前 effect cycle 结束后执行，届时可正常使窗口失效。修复不强制恢复 Tail、不在测试里调用 resume_tail、不增加计时循环或假帧。
+
+旧 issue72 变化还有定量对应：fixture 第 56 项为一行 assistant，16px 正文顶距加 23px 行高共 39px；位置变化为 `39 + 14.5 - 26 = 27.5px`。Searching 条目为 12px metadata × GPUI 默认 `phi()` 行高加上下 8px 内距，约 27.416px，与半像素布局约 27.5px 相符。轨道位于 x=4–28，预览从 x=32 开始；wheel 的轨道坐标没有落入预览。这些是源码和旧日志支持的根因判断，后续云端运行仍须证实修复。
+
+主 agent 同时发现本卡引入的锚点基准不一致：几何已扣除前景，但轨道仍按全高父容器居中，而预览使用扣除后的像素位置。现按冻结规格统一为当前可读区：轨道保留相对 `top: 50%`，额外减去前景高度的一半；预览用 `top: 0` / `bottom: 前景高度` 的当前布局容器，以 50% 留白加实际刻度偏移定位。到下边界时只收缩留白，保留预览本体。两者均不依赖上一帧视口高度的像素 top；原有宽度、刻度尺寸、菜单绘制顺序和交互保持。
+
+只更新已由规格替代的旧“轨道在全高列表居中”条件，并在既有动态高度测试中增加初始、多行、必要状态增高、收回及窄窗口五个阶段的生产 hover / 几何断言；没有新增 fixture 或删除原断言。
+
+2026-10-16 01:29 UTC / 09:29 Asia/Shanghai，本轮首个 `cargo fmt --all -- --check` 退出 1，仅报告新增测试 helper 两处格式差异；`cargo fmt --all` 退出 0、无输出；最终 `cargo fmt --all -- --check` 和 `git diff --check` 均退出 0、stdout / stderr 为空。本地仍未编译、Clippy、测试、提交或 push。上述修改待下一轮完整云端检查。
+
+本轮收到 Nextest 完整结果后继续修改，再次 `cargo fmt --all` 退出 0、无输出；最终 `cargo fmt --all -- --check` 和 `git diff --check` 均退出 0、stdout / stderr 为空。没有执行本地编译、Clippy 或测试；第二轮的 2731 个通过不替代这些新增修复的下一轮 CI。
 
 待用户手测：
 
@@ -89,4 +129,4 @@ error[E0433]: cannot find `ImagePreview` in `attachments`
 3. 在过渡区滚动，点击输入框边缘；不误触被遮住的工具或消息。操作模型、权限、添加上下文、文件选择和待发送菜单，验证 Esc、外部点击、Tab 和回焦。
 4. 检查定位失败、电脑操作权限 / 暂停提示、隐私检查错误与提交面板仍可见可操作。空任务保留欢迎内容和 utility bar。
 
-LIMIT：本地仅格式及静态证据，未启动或截图真实 Vega。前景高度在实际布局测量后只对变化安排后续帧；首次与多行高度变化的实际绘制、边缘像素和设备输入须由 CI / 用户真实应用确认。没有存储迁移。回滚为回退本卡合并提交；Issue、Project 和分支 / worktree 的交付状态由主 agent 管理，用户手测前不关闭或清理。
+LIMIT：本地仅格式及静态证据，未启动或截图真实 Vega。前景高度在实际布局测量后只对变化进行延后更新；首次与多行高度变化的实际绘制、边缘像素和设备输入须由 CI / 用户真实应用确认。没有存储迁移。回滚为回退本卡合并提交；Issue、Project 和分支 / worktree 的交付状态由主 agent 管理，用户手测前不关闭或清理。

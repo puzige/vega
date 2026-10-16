@@ -301,7 +301,6 @@ impl ConversationStream {
         let start = self.message_anchor_window_start;
         let rail_left = Layout::MESSAGE_ANCHOR_LEFT_INSET;
         let rail_height = count as f32 * Layout::CONVERSATION_MARKER_PITCH;
-        let rail_top = ((geometry.viewport_height - rail_height) / 2.).max(0.);
         let colors = theme(cx).colors;
         let selected = selected_index.and_then(|index| geometry.anchors.get(index));
         let preview = selected.map(|anchor| {
@@ -325,10 +324,22 @@ impl ConversationStream {
             div()
                 .absolute()
                 .left(px(rail_left + Layout::CONVERSATION_NAVIGATION_GUTTER + 4.))
-                .top(px((rail_top + offset).min(
-                    (geometry.viewport_height - Layout::MESSAGE_ANCHOR_PREVIEW_HEIGHT).max(0.),
-                )))
-                .child(gpui_kit::deferred(content).with_priority(2))
+                .top_0()
+                .bottom(self.foreground_height)
+                .w(px(preview_width))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .h(gpui_kit::relative(0.5))
+                        .min_h_0()
+                        .mt(px(offset - rail_height / 2.)),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .child(gpui_kit::deferred(content).with_priority(2)),
+                )
                 .into_any_element()
         });
         let default_id = current_id.clone();
@@ -342,7 +353,7 @@ impl ConversationStream {
             .absolute()
             .left(px(rail_left))
             .top(gpui_kit::relative(0.5))
-            .mt(px(-rail_height / 2.))
+            .mt(px(-(rail_height + f32::from(self.foreground_height)) / 2.))
             .w(px(Layout::CONVERSATION_NAVIGATION_GUTTER))
             .h(px(rail_height))
             .flex()
