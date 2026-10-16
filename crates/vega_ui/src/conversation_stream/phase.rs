@@ -487,7 +487,11 @@ impl ConversationStream {
             .is_some_and(|group| group.read(cx).hides_copy(copy.id))
     }
 
-    pub(crate) fn settle_final_presentation(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn settle_final_presentation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let groups = self
             .run_activity_groups
             .values()
@@ -495,13 +499,26 @@ impl ConversationStream {
             .cloned()
             .collect::<Vec<_>>();
         for group in groups {
-            let reading = !self.list.is_following_tail() || self.selection_focus.is_focused(window)
-                || group.read(cx).reading(window, cx)
-                || self.entries.iter().any(|entry| matches!(entry, StreamEntry::Assistant { copy, .. } if group.read(cx).owns_process_copy(copy.id) && copy.has_selected_text()));
-            if reading {
-                continue;
+            let copies = self
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    StreamEntry::Assistant { copy, .. }
+                        if group.read(cx).owns_process_copy(copy.id) =>
+                    {
+                        Some(copy.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let focus_process_selection = self.selection_focus.is_focused(window)
+                && copies.iter().any(|copy| copy.selection_has_cursor(cx));
+            for copy in copies {
+                copy.clear_hidden_selection(window, cx);
             }
-            group.update(cx, |group, cx| group.settle_final(reading, cx));
+            group.update(cx, |group, cx| {
+                group.settle_final(focus_process_selection, window, cx)
+            });
             for index in 0..self.entries.len() {
                 if self.process_entry_hidden(index, cx) {
                     self.invalidate_item(Some(index));

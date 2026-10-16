@@ -1661,7 +1661,6 @@ impl Render for ConversationStream {
             });
         }
 
-        let final_presentation = cx.entity().downgrade();
         let mut message_anchor_preview = None;
         let mut message_anchor_rail_overlay = None;
         let mut message_anchor_preview_in_lane = false;
@@ -1787,18 +1786,6 @@ impl Render for ConversationStream {
                                     .h_full()
                                     .w_full()
                                     .pb(self.foreground_height),
-                                )
-                                .child(
-                                    gpui_kit::canvas(
-                                        |_, _, _| (),
-                                        move |_, _, window, cx| {
-                                            let _ = final_presentation.update(cx, |stream, cx| {
-                                                stream.settle_final_presentation(window, cx)
-                                            });
-                                        },
-                                    )
-                                    .absolute()
-                                    .inset_0(),
                                 ),
                         ),
                 )

@@ -301,9 +301,9 @@ async fn summary_replaces_raw_source_across_multiple_stages(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
-async fn issue296_visual_v06_visible_tool_reading_defers_final(cx: &mut TestAppContext) {
-    let (window, stream, _) = open_controller_stream(cx, "visual-hidden-reading");
-    stream.update(cx, |stream, cx| {
+async fn issue416_visible_tool_details_collapse_on_first_final(cx: &mut TestAppContext) {
+    let (stream, mut visual) = issue147_markdown_selection::open_empty_selection_harness(cx);
+    stream.update(&mut visual, |stream, cx| {
         begin(stream, cx);
         summary(stream, "检查配置", cx);
         stream.apply_event(
@@ -313,36 +313,68 @@ async fn issue296_visual_v06_visible_tool_reading_defers_final(cx: &mut TestAppC
             cx,
         );
     });
-    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
     assert!(visual.debug_bounds("run-stage-tool-0-0").is_none());
     click_stage(&mut visual);
     let tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
     visual.simulate_click(tool.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("run-stage-tool-0-0-detail").is_some());
+    let detail = visual.debug_bounds("run-stage-tool-0-0-detail").unwrap();
+    let start = detail.origin
+        + gpui_kit::point(
+            px(Layout::TOOL_DETAIL_PADDING + 1.),
+            px(Layout::TOOL_DETAIL_PADDING + 8.),
+        );
+    let end = start + gpui_kit::point(px(60.), px(0.));
+    visual.simulate_mouse_down(start, MouseButton::Left, gpui_kit::Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), gpui_kit::Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        !visual
+            .update(gpui_kit::base::TextSelection::selected_text)
+            .is_empty()
+    );
     visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
     stream.update(&mut visual, |stream, cx| {
         confirm_test_final(stream, "visual", cx)
     });
     visual.run_until_parked();
+    assert!(!visual.update(gpui_kit::base::TextSelection::has_selection));
+    visual.update(|window, cx| {
+        assert!(
+            stream
+                .read(cx)
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+    });
     stream.read_with(&visual, |stream, cx| {
         assert!(stream.tool_cards["one"].read(cx).is_expanded());
         assert!(
-            stream.run_activity_groups["visual"]
+            !stream.run_activity_groups["visual"]
                 .read(cx)
                 .collapse_pending()
         );
         assert!(
-            !stream.run_activity_groups["visual"]
+            stream.run_activity_groups["visual"]
                 .read(cx)
                 .process_in_details()
         );
     });
-    assert!(visual.debug_bounds("run-stage-tool-0-0-detail").is_some());
-    let tool = visual.debug_bounds("run-stage-tool-0-0").unwrap();
-    visual.simulate_click(tool.center(), gpui_kit::Modifiers::default());
+    assert!(visual.debug_bounds("run-stage-tool-0-0-detail").is_none());
+    assert!(visual.debug_bounds("run-stage-toggle-0").is_none());
+    let run = visual.debug_bounds("run-activity-toggle").unwrap();
+    visual.simulate_click(run.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    click_stage(&mut visual);
+    assert!(
+        visual
+            .debug_bounds("tool-activity-single-row-detail")
+            .is_some()
+    );
+    assert!(!visual.update(gpui_kit::base::TextSelection::has_selection));
     visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
@@ -355,7 +387,7 @@ async fn issue296_visual_v06_visible_tool_reading_defers_final(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-async fn issue296_visual_v06_stage_anchor_reveals_inline_and_focus_defers_final(
+async fn issue416_stage_anchor_reveals_inline_and_final_moves_hidden_focus(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "visual-stage-anchor");
@@ -399,13 +431,19 @@ async fn issue296_visual_v06_stage_anchor_reveals_inline_and_focus_defers_final(
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         assert!(
-            stream.run_activity_groups["visual"]
+            !stream.run_activity_groups["visual"]
                 .read(cx)
                 .collapse_pending()
         )
     });
-    click_stage(&mut visual);
-    visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
+    assert!(visual.debug_bounds("run-stage-toggle-0").is_none());
+    visual.update(|window, cx| {
+        let id = stream.read(cx).run_activity_groups["visual"].entity_id();
+        assert!(
+            crate::disclosure::focus(format!("run-disclosure-{id}").into(), window, cx)
+                .is_focused(window)
+        );
+    });
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         assert!(
@@ -694,7 +732,7 @@ async fn issue296_visual_v06_new_thinking_stays_closed_until_independent_reading
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         assert!(
-            stream.run_activity_groups["visual"]
+            !stream.run_activity_groups["visual"]
                 .read(cx)
                 .collapse_pending()
         )

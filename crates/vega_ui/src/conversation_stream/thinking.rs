@@ -191,7 +191,7 @@ pub(crate) struct ThinkingBlock {
     thinking_preview: Preview,
     summary_preview: Preview,
     body: body::ThinkingBody,
-    source_copy: MessageCopy,
+    pub(super) source_copy: MessageCopy,
     source_revision: u64,
     ancestor_visible: bool,
     pub(crate) expanded: bool,
@@ -207,6 +207,10 @@ impl ThinkingBlock {
 
     pub(crate) fn header_focused(&self, window: &Window) -> bool {
         self.focus.is_focused(window)
+    }
+
+    pub(super) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx)
     }
 
     #[cfg(test)]

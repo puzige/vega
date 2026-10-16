@@ -148,12 +148,8 @@ async fn issue296_timeline_t02_final_folds_process_and_reopens_in_source_order(
         finish(stream, cx);
     });
     cx.run_until_parked();
-    stream.update(cx, |stream, cx| {
-        stream.resume_tail(cx);
-        cx.notify();
-    });
-    cx.run_until_parked();
     stream.read_with(cx, |stream, cx| {
+        assert!(!stream.following_tail());
         assert_eq!(
             (0..stream.entries.len())
                 .filter(|index| stream.process_entry_hidden(*index, cx))
@@ -242,9 +238,7 @@ async fn issue296_timeline_t03_consecutive_unicode_responses_preserve_copy_and_f
 }
 
 #[gpui_kit::test]
-async fn issue296_timeline_t06_temporary_reading_releases_pending_collapse(
-    cx: &mut TestAppContext,
-) {
+async fn issue416_timeline_final_collapses_reading_without_followup_input(cx: &mut TestAppContext) {
     for mode in [
         "selection",
         "focus",
@@ -330,10 +324,21 @@ async fn issue296_timeline_t06_temporary_reading_releases_pending_collapse(
         stream.update(cx, finish);
         cx.run_until_parked();
         stream.read_with(cx, |stream, cx| {
-            assert!(
-                (0..stream.entries.len()).all(|index| !stream.process_entry_hidden(index, cx)),
+            assert_eq!(
+                (0..stream.entries.len())
+                    .filter(|index| stream.process_entry_hidden(*index, cx))
+                    .count(),
+                2,
                 "{mode}"
-            )
+            );
+            let group = stream.run_activity_groups["timeline"].read(cx);
+            assert!(group.process_in_details());
+            assert!(!group.expanded());
+            assert!(!group.collapse_pending());
+            assert_eq!(source_text(stream), "ABOK");
+            if mode == "backscroll" {
+                assert!(!stream.following_tail());
+            }
         });
         window
             .update(cx, |view, window, cx| {
@@ -342,17 +347,9 @@ async fn issue296_timeline_t06_temporary_reading_releases_pending_collapse(
             })
             .unwrap();
         stream.update(cx, |stream, cx| {
-            if mode == "selection" {
-                for entry in &stream.entries {
-                    if let StreamEntry::Assistant { copy, .. } = entry {
-                        copy.invalidate_selection();
-                    }
-                }
-                cx.notify();
-            }
-            if mode == "backscroll" {
-                stream.resume_tail(cx);
-            }
+            group.update(cx, |group, cx| group.reveal(cx));
+            finish(stream, cx);
+            cx.notify();
         });
         cx.run_until_parked();
         stream.read_with(cx, |stream, cx| {
@@ -360,13 +357,10 @@ async fn issue296_timeline_t06_temporary_reading_releases_pending_collapse(
                 (0..stream.entries.len())
                     .filter(|index| stream.process_entry_hidden(*index, cx))
                     .count(),
-                if matches!(mode, "manual" | "tool-expanded") {
-                    0
-                } else {
-                    2
-                },
+                2,
                 "{mode}"
-            )
+            );
+            assert!(group.read(cx).expanded(), "{mode}");
         });
     }
 }
@@ -601,7 +595,7 @@ async fn issue296_timeline_t07_tool_anchor_is_inline_until_folded(cx: &mut TestA
 }
 
 #[gpui_kit::test]
-async fn issue296_timeline_t06_scroll_wheel_resumes_pending_final_without_other_input(
+async fn issue416_timeline_scrolled_back_final_collapses_before_scroll_resume(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "timeline-wheel");
@@ -636,11 +630,19 @@ async fn issue296_timeline_t06_scroll_wheel_resumes_pending_final_without_other_
     });
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
+        assert!(!stream.following_tail());
+        assert!(
+            !stream.run_activity_groups["timeline"]
+                .read(cx)
+                .collapse_pending()
+        );
         assert!(
             stream.run_activity_groups["timeline"]
                 .read(cx)
-                .collapse_pending()
-        )
+                .process_in_details()
+        );
+        assert!(!stream.run_activity_groups["timeline"].read(cx).expanded());
+        assert_eq!(source_text(stream), "ABOK");
     });
     visual.simulate_event(wheel(-10000.));
     visual.run_until_parked();

@@ -377,6 +377,14 @@ async fn issue296_spacing_b04_artifact_only_segment_keeps_its_original_height(
         stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
         assert!(stream.apply_artifact_card("c", artifact.clone(), cx));
         prose(stream, "OK", cx);
+    });
+    cx.run_until_parked();
+    window
+        .update(cx, |_, window, cx| {
+            artifact.read(cx).focus_handle(cx).focus(window, cx);
+        })
+        .unwrap();
+    stream.update(cx, |stream, cx| {
         response(stream, "final", 0, 2, AssistantResponseKind::Final, cx);
         stream.apply_event(
             ConversationEvent::MessageFinished {
@@ -389,6 +397,9 @@ async fn issue296_spacing_b04_artifact_only_segment_keeps_its_original_height(
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.update(|window, cx| {
+        assert!(artifact.read(cx).focus_handle(cx).is_focused(window));
+    });
     let expected = stream.read_with(&visual, |stream, cx| {
         let group = &stream.run_activity_groups["spacing"];
         assert!(group.read(cx).process_in_details());

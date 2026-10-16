@@ -584,9 +584,9 @@ async fn summary_takeover_releases_hidden_stage_reading_focus(cx: &mut TestAppCo
     let stage = visual.debug_bounds("run-stage-toggle-0").unwrap();
     visual.simulate_click(stage.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-    visual.update(|window, cx| {
+    visual.update(|_, cx| {
         let group = stream.read(cx).run_activity_groups["m"].clone();
-        assert!(group.read(cx).reading(window, cx));
+        assert!(group.read(cx).segment_expanded(0));
     });
     stream.update(&mut visual, |stream, cx| {
         stream.apply_event(summary("m", "Checking result"), cx)
@@ -596,7 +596,13 @@ async fn summary_takeover_releases_hidden_stage_reading_focus(cx: &mut TestAppCo
     assert!(visual.debug_bounds("run-stage-chevron-0").is_none());
     visual.update(|window, cx| {
         let group = stream.read(cx).run_activity_groups["m"].clone();
-        assert!(!group.read(cx).reading(window, cx));
+        assert!(group.read(cx).segment_header_focus(0).is_focused(window));
+        assert!(
+            group
+                .read(cx)
+                .test_visible_segment_thinking_texts(0, cx)
+                .is_empty()
+        );
     });
     stream.update(&mut visual, |stream, cx| {
         stream.resume_tail(cx);
