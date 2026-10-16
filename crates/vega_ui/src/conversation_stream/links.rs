@@ -1,7 +1,7 @@
 use std::{ops::Range, time::Duration};
 
 use gpui_kit::{
-    App, Bounds, CursorStyle, ElementId, Entity, GlobalElementId, Hitbox, MouseButton,
+    App, AppContext, Bounds, CursorStyle, ElementId, Entity, GlobalElementId, Hitbox, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Subscription, TextAlign,
     TextLayout, Window, point, px, size,
 };
@@ -128,7 +128,7 @@ pub(crate) fn register_link_interactions(
     let identity = (layout.text(), links.clone());
     let state = window.with_element_state::<Entity<LinkInteraction>, _>(id, |current, window| {
         let state = current.unwrap_or_else(|| {
-            cx.new(|cx| LinkInteraction {
+            cx.new::<LinkInteraction>(|cx| LinkInteraction {
                 identity: identity.clone(),
                 press: None,
                 pending: None,

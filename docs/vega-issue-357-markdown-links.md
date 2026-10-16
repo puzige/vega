@@ -90,3 +90,13 @@ C5 的「选择与复制语义不变」具体指沿用窗口 `TextSelectionLayer
 T03/T05 证据边界：锁定 GPUI 的公开测试 API 可读取文本布局与 painted quads，但不公开 underline scene primitive 或当前光标读取入口。自动测试应验证生产 run 的链接样式、实际布局和交互命中，不能以 helper 单测冒充像素绘制或光标验收；真实下划线外观与手形反馈由 M01 用户手测核实，不新增公开测试 API 或真实外部应用 E2E。
 
 Actions 验证命令：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo nextest run --workspace`。本地只运行格式及 diff 静态检查，所有自动测试状态在云端执行前为 NOT RUN。M01 始终由用户在合并后的版本手动验收。
+
+## CI 夹具收尾修订（v3）
+
+Actions [38948213608](https://github.com/puzige/vega/actions/runs/38948213608) 的 Clippy 通过，Nextest 为 2815 passed / 2 failed / 5 skipped。两个右键回归均在业务断言后由 LeakDetector 报既有 `gpui_component::menu::PopupMenu` 句柄残留。锁定的 gpui-component 0.6.1 ContextMenu 形成 SharedState → Subscription → SubscriberSet → dismiss callback → SharedState 的强引用环，SharedState 同时持有菜单 Entity。Dismiss 仅置 open=false，正常隐藏/绘制不解除持有；这属于原有菜单组件问题，本卡不修改第三方组件或生产菜单行为。
+
+本卡测试可通过已有 `App::observe_new<PopupMenu>` 仅记录弱句柄。两个右键分支必须先完成原有 URL 断言，再断言生产菜单已画出、真实 Escape 后不再画出且 URL 仍未打开。之后销毁该测试窗口；仅对仍存活的已观察菜单发送一次既有 DismissEvent，使窗口订阅发现宿主已销毁并正常解除。排空效果后必须断言所有已观察弱句柄均不能升级，继续接受完整 LeakDetector 检查。此处是明确的第三方组件测试夹具收尾，不得宣称已修复生产菜单的引用环。
+
+不切换右键用例的生产 renderer，不阻止事件传播，不跳过菜单、忽略泄漏、豁免快照、mem::forget 或弱化原有断言；不新增公开 API、依赖或生产条件分支。上游菜单引用环和测试收尾证据单独保留在 PR，后续菜单修复不扩大本卡实现范围。
+
+观测 API 更正：[38950621078](https://github.com/puzige/vega/actions/runs/38950621078) 仍为 2815 passed / 2 failed，失败发生在新增的菜单出现断言，尚未进入夹具释放断言。组件使用 Base `.test_support()` 的原生元素观测注册表，GPUI `VisualTestContext::debug_bounds` 只读取独立的 debug_selector 表，两者不是同一入口；不能用后者的 None 认定菜单未绘制。将这两个新增菜单观测断言改为既有 `gpui_kit::base::test_support::find`：打开时必须存在可见的 Menu 角色快照、实际焦点和非零几何，Escape/刷新后必须不再存在该菜单快照；仍保留原 URL、弱句柄释放和 LeakDetector 断言。本更正仅选择正确的观测 API，不降低菜单出现/关闭判据。

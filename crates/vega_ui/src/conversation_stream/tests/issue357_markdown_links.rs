@@ -1,11 +1,14 @@
 use super::*;
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::{
-    Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, VisualTestContext, size,
+    DismissEvent, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
+    Subscription, VisualTestContext, WeakEntity, size,
 };
-use std::time::Duration;
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use super::issue147_markdown_selection::{
-    assistant_entry, drag, layout_for, open_selection_harness, text_point,
+    assistant_entry, drag, layout_for,
+    open_selection_harness as open_unactivated_selection_harness, text_point,
 };
 
 struct LinkCapture;
@@ -28,6 +31,69 @@ impl Drop for LinkCapture {
     fn drop(&mut self) {
         links::LINK_LAYOUTS.with_borrow_mut(|layouts| *layouts = None);
     }
+}
+
+struct MenuCapture {
+    menus: Rc<RefCell<Vec<WeakEntity<PopupMenu>>>>,
+    _subscription: Subscription,
+}
+
+impl MenuCapture {
+    fn start(cx: &mut TestAppContext) -> Self {
+        let menus = Rc::new(RefCell::new(Vec::new()));
+        let observed = menus.clone();
+        let subscription = cx.update(|cx| {
+            cx.observe_new::<PopupMenu>(move |_, _, cx| {
+                observed.borrow_mut().push(cx.entity().downgrade());
+            })
+        });
+        Self {
+            menus,
+            _subscription: subscription,
+        }
+    }
+
+    fn close_fixture(&self, visual: &mut VisualTestContext, cx: &mut TestAppContext) {
+        visual.update(|window, _| window.remove_window());
+        visual.run_until_parked();
+        let menus = self.menus.borrow().clone();
+        assert!(!menus.is_empty());
+        cx.update(|cx| {
+            for menu in &menus {
+                if let Some(menu) = menu.upgrade() {
+                    menu.update(cx, |_, cx| cx.emit(DismissEvent));
+                }
+            }
+        });
+        cx.run_until_parked();
+        for menu in &menus {
+            assert!(menu.upgrade().is_none());
+        }
+    }
+}
+
+fn init_link_ui(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        if !cx.has_global::<gpui_kit::component::Theme>() {
+            gpui_kit::init(cx);
+        }
+    });
+}
+
+fn activate_harness(visual: &mut VisualTestContext) {
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| window.is_window_active()));
+}
+
+fn open_selection_harness(
+    cx: &mut TestAppContext,
+    entry: StreamEntry,
+) -> (Entity<ConversationStream>, VisualTestContext) {
+    init_link_ui(cx);
+    let (stream, mut visual) = open_unactivated_selection_harness(cx, entry);
+    activate_harness(&mut visual);
+    (stream, visual)
 }
 
 fn painted_link(target: &str) -> links::PaintedLinkText {
@@ -75,6 +141,28 @@ fn finish_click(visual: &mut VisualTestContext) {
     visual.run_until_parked();
 }
 
+fn dismiss_context_menu(visual: &mut VisualTestContext) {
+    redraw(visual);
+    let id = gpui_kit::ElementId::Name("popup-menu".into());
+    let menu = visual
+        .update(|window, _| gpui_kit::base::test_support::find(window, &[], &id))
+        .expect("painted production context menu");
+    assert_eq!(menu.role(), Some(gpui_kit::Role::Menu));
+    assert!(menu.visible());
+    assert_eq!(menu.focused(), Some(true));
+    assert!(menu.bounds().size.width > px(0.));
+    assert!(menu.bounds().size.height > px(0.));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    redraw(visual);
+    assert!(
+        visual
+            .update(|window, _| gpui_kit::base::test_support::find(window, &[], &id))
+            .is_none()
+    );
+    assert_eq!(visual.opened_url(), None);
+}
+
 fn model(source: &str) -> StreamModel {
     let StreamEntry::Assistant { model, .. } = assistant_entry(source) else {
         panic!("assistant entry")
@@ -110,6 +198,7 @@ fn open_read_harness(
     cx: &mut TestAppContext,
     source: &str,
 ) -> (Entity<ReadHarness>, VisualTestContext) {
+    init_link_ui(cx);
     init_permission_test(cx);
     let model = model(source);
     let window = cx.update(|cx| {
@@ -127,8 +216,12 @@ fn open_read_harness(
     let root = window.root(cx).expect("read harness root");
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(600.), px(1500.)));
-    visual.update(|window, cx| root.read(cx).focus.focus(window, cx));
+    visual.update(|window, cx| {
+        let focus = root.read(cx).focus.clone();
+        focus.focus(window, cx);
+    });
     visual.run_until_parked();
+    activate_harness(&mut visual);
     (root, visual)
 }
 
@@ -429,6 +522,7 @@ fn issue357_first_click_is_cancelled_before_double_and_triple_click_selection(
 #[gpui_kit::test]
 fn issue357_shift_right_different_link_and_drag_out_return_do_not_open(cx: &mut TestAppContext) {
     let capture = LinkCapture::start();
+    let menus = MenuCapture::start(cx);
     for action in ["shift", "right", "other-link", "return"] {
         capture.clear();
         let (_, mut visual) = open_selection_harness(
@@ -462,12 +556,17 @@ fn issue357_shift_right_different_link_and_drag_out_return_do_not_open(cx: &mut 
         }
         finish_click(&mut visual);
         assert_eq!(visual.opened_url(), None, "{action}");
+        if action == "right" {
+            dismiss_context_menu(&mut visual);
+            menus.close_fixture(&mut visual, cx);
+        }
     }
 }
 
 #[gpui_kit::test]
 fn issue357_any_later_press_cancels_the_pending_single_click(cx: &mut TestAppContext) {
     let capture = LinkCapture::start();
+    let menus = MenuCapture::start(cx);
     for button in [MouseButton::Left, MouseButton::Right] {
         capture.clear();
         let (_, mut visual) =
@@ -479,6 +578,10 @@ fn issue357_any_later_press_cancels_the_pending_single_click(cx: &mut TestAppCon
         visual.simulate_mouse_up(position, button, Modifiers::default());
         finish_click(&mut visual);
         assert_eq!(visual.opened_url(), None);
+        if button == MouseButton::Right {
+            dismiss_context_menu(&mut visual);
+            menus.close_fixture(&mut visual, cx);
+        }
     }
 }
 
@@ -575,12 +678,12 @@ fn issue357_aligned_table_link_hits_follow_cell_and_glyph_geometry(cx: &mut Test
         };
         let mut targets = Vec::new();
         let before = visual.opened_url();
-        for (column, target, center) in [
-            (1, center_target.as_str(), true),
-            (2, right_target.as_str(), false),
+        for (selector, target, center) in [
+            ("markdown-table-1-0-1-1", center_target.as_str(), true),
+            ("markdown-table-1-0-1-2", right_target.as_str(), false),
         ] {
             let cell = visual
-                .debug_bounds(&format!("markdown-table-1-0-1-{column}"))
+                .debug_bounds(selector)
                 .expect("production table cell");
             let painted = painted_link(target);
             let line = painted
@@ -653,7 +756,8 @@ fn issue357_pending_click_is_cancelled_on_blur_unmount_and_identity_reuse(cx: &m
         match action {
             "window-blur" => {
                 visual.deactivate_window();
-                visual.update(|window, _| window.activate_window());
+                assert!(!visual.update(|window, _| window.is_window_active()));
+                activate_harness(&mut visual);
             }
             "focus-out" => {
                 let focus = visual.update(|_, cx| cx.focus_handle());
@@ -681,6 +785,7 @@ fn issue357_pending_click_is_cancelled_on_blur_unmount_and_identity_reuse(cx: &m
 #[gpui_kit::test]
 async fn issue357_virtualized_thinking_fragments_keep_link_targets(cx: &mut TestAppContext) {
     let _capture = LinkCapture::start();
+    init_link_ui(cx);
     let (window, stream, _) = open_controller_stream(cx, "issue357-thinking");
     let source = "Before [前`code🙂`后](https://thinking.example) after";
     let card = stream.update(cx, |stream, cx| {
@@ -705,6 +810,7 @@ async fn issue357_virtualized_thinking_fragments_keep_link_targets(cx: &mut Test
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    activate_harness(&mut visual);
     assert!(card.read_with(&visual, |card, _| card.test_body_fragment_count()) > 0);
     let painted = painted_link("https://thinking.example");
     assert!(
