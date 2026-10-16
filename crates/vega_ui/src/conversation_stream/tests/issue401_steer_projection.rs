@@ -252,7 +252,7 @@ async fn issue401_echo_appends_after_the_live_assistant_segment(cx: &mut TestApp
         Some(GENERATION),
         cx,
     );
-    stream.read_with(cx, |stream, _| {
+    let entries_after_echo = stream.read_with(cx, |stream, _| {
         let user = user_entries(stream);
         assert_eq!(user.len(), 2);
         let assistant = stream
@@ -269,12 +269,12 @@ async fn issue401_echo_appends_after_the_live_assistant_segment(cx: &mut TestApp
             stream.entries.len() - 1,
             "the steer echo is the last entry"
         );
-        let entries_after_echo = stream.entries.len();
         let active = stream
             .active_agent_message
             .as_ref()
             .expect("active assistant message");
         assert_eq!(active.1, assistant);
+        stream.entries.len()
     });
     stream.update(cx, |stream, cx| {
         stream.apply_event(delivery("steer", "durable-user", 3), cx)
