@@ -19,7 +19,7 @@
 | ID | 风险与前置状态 | 操作 | 可观察结果 | 证据层级 | 状态 |
 |---|---|---|---|---|---|
 | C1 | 阶段只含一个工具类别 | 观察阶段标题 | 标题为 `Run commands`、`Read files` 等句首大写形式，词数与非首位形式一致 | 生产 `format_stage_tool_categories` 单元断言 | 已实现 / 待 CI |
-| C2 | 阶段含多个工具类别 | 观察阶段标题 | 首项句首大写，后续项保持小写：`Read files, run commands` | 既有 GPUI 阶段标题回归（`issue296_expansion`、`issue296_codex_stream`、`thinking`、`issue403_conversation_underlay`） | 已实现 / 待 CI |
+| C2 | 阶段含多个工具类别 | 观察阶段标题 | 首项句首大写，后续项保持小写：`Read files, run commands` | 既有 GPUI 阶段标题回归（`issue296_expansion`、`issue296_codex_stream`、`issue403_conversation_underlay`） | 已实现 / 待 CI |
 | C3 | 工具组聚合的每种终态 | 观察聚合行 | `Completed: Run commands`、`In progress: Run commands, read files`、`Rejected calls:` / `Cancelled calls:` / `Failed calls:` 后首项同样句首大写，后续项小写 | 既有聚合回归（`issue70_tool_activity`、`issue296_expansion`） | 已实现 / 待 CI |
 | C4 | 单卡活动标签（`#[cfg(test)]` 镜像） | 触发并行运行态 | 标签 `In progress: Run commands, read files`、`In progress: Read files`、`In progress: Call MCP · lookup, call MCP · query and more (3 total)`，首位大写、后续小写 | 既有 `issue296_single_activity` 回归 | 已实现 / 待 CI |
 | C5 | 首位短语超长触发 96 字符省略 | 观察阶段标题 | 仍以句首大写开头、仍以 `, …` 结尾、长度不超过 96 | `run_activity.rs` 的 `category_title_tests` | 已实现 / 待 CI |
@@ -47,25 +47,38 @@
 
 既有断言按新契约更新期望值（只改首项大小写，其余条件保留）：
 
-- `conversation_stream/tests/issue296_expansion.rs`：21 处阶段标题期望与 2 处聚合期望（`Completed: Run commands`、`In progress: Run commands`）。
+以 `git diff origin/master -- <file>` 新增行计数：
+
+- `conversation_stream/tests/issue296_expansion.rs`：29 处阶段标题期望与 2 处聚合期望（`Completed: Run commands`、`In progress: Run commands`），其中 8 处位于 #421 新增的阶段标题用例内。
 - `conversation_stream/tests/issue296_codex_stream.rs`：2 处阶段标题期望。
 - `conversation_stream/tests/issue296_single_activity.rs`：3 处 `In progress:` 标签期望与 1 处 MCP 标签期望。
 - `conversation_stream/tests/issue70_tool_activity.rs`：4 处聚合期望。
-- `conversation_stream/tests/thinking.rs`：1 处阶段标题期望。
 - `conversation_stream/tests/issue403_conversation_underlay.rs`：1 处运行中阶段标题期望。
+- `conversation_stream/tests/thinking.rs`：本卡无需改动；该文件在 #421 后已改为摘要标题期望，冲突按 master 语义解决。
 
 隐私断言（`sensitive-value`、`private-term`、`01ARZ`、`query: string`、摘要哈希）、图标断言、类别去重与计数后缀断言均未改动。用户禁止本地编译 / 测试，因此没有本地红 / 绿运行记录；上述测试由云端 `pr-check` 的 Nextest job 执行。
 
+## 基线漂移与集成
+
+首轮 PR 期间 `origin/master` 前进两个提交：#421 `8c69ef64`（新摘要暂时取代工具阶段标题）与 #424 `692e09e5`（统一工具契约）。本卡分支已 rebase 到 `692e09e5`，冲突与结果：
+
+- `tests/thinking.rs` 与 `tests/issue296_expansion.rs` 各 1 处旧断言在 #421 后已改为摘要标题（`Writing the fix`、`Reviewing results`、`Updated summary`），按 master 语义保留摘要期望；本卡在该位置不再需要大小写修改。
+- `issue296_expansion.rs` 中 #421 新增的阶段标题期望（`run commands`、`read files, run commands` 等 8 处）按本卡规则改为句首大写。
+- `tool_card.rs` 与 `tests/permissions_cards.rs` 的 #424 改动自动合并，未与本卡 helper 或断言冲突。
+- 冲突解决后重新扫描：`crates/vega_ui/src` 内已无小写句首的类别短语断言，`sentence_initial` 三处调用点与 helper 单元断言完整保留。
+
 ## 本地快速检查证据
 
-检查时间：2026-10-16 07:00 UTC / 15:00 Asia/Shanghai。分支 `fix/408-activity-label-sentence-case`，基线已 rebase 到 `origin/master` `e2568518`（`fix(A2-04): keep activity headers beneath the composer (#418)`）。变更代码文件按排序后的相对路径、NUL、文件内容、NUL 逐个拼接的 SHA-256：`0f0315f8bfb1387db029ee19ec084fb5facbee5f23ab8eb0569bfcfa5a9cbbef`。
+检查时间：2026-10-16 10:39 UTC / 18:39 Asia/Shanghai。分支 `fix/408-activity-label-sentence-case`，基线已 rebase 到 `origin/master` `692e09e5`（`feat(A3-07): unify tool contracts and preserve execution context (#424)`）。本卡变更的 8 个 `crates/**` 代码文件按排序后的相对路径、NUL、文件内容、NUL 逐个拼接的 SHA-256：`7909b8f1787c2dfb05a5f7711773620fe9a10a6a75348fac132a027a1cd041de`。
 
 | 命令 / 检查 | 退出码 | 原始输出 / 事实 |
 |---|---|---|
 | `cargo fmt --all -- --check` | 0 | stdout / stderr 为空 |
 | `git diff --check` | 0 | stdout / stderr 为空 |
 | 本卡新增行的注释静态扫描 | 0 | `Added code comments: 0` |
-| `grep -rn "run commands\|read files\|find files\|search content\|write files\|edit files\|call MCP\|use computer or browser\|use Skill\|use tools" crates/vega_ui/src` | 0 | 仅剩 `tool_card.rs` 的 `action_phrase()` 原形与 helper 单元断言，其余命中均为句首大写形式的测试期望；无遗漏的小写句首断言 |
+| `rg -n '"[a-z][^"]*(run commands\|read files\|find files\|search content\|write files\|edit files\|call MCP\|use tools\|use Skill\|use computer or browser)' crates -g '*.rs'` | 1 | 无匹配：不存在以小写开头的类别短语字面量断言 |
+| `rg -n '^<<<<<<<\|^=======$\|^>>>>>>>' crates docs` | 1 | 无匹配：冲突标记已全部清除 |
+| `rg -n 'sentence_initial' crates/vega_ui/src` | 0 | helper 定义 1 处、调用 3 处（`format_stage_tool_categories` 2 处、`activity_presentation` 1 处）、聚合摘要 1 处、单元断言 1 处 |
 | 本地编译 / Clippy / test / nextest / 打包 | 不适用 | **未运行**，遵守 Vega 本地验证限制 |
 
 ## 云端检查
@@ -84,7 +97,9 @@ Nextest 原始汇总行：
 Summary [ 183.969s] 2741 tests run: 2741 passed, 5 skipped
 ```
 
-实现提交：`ba76ee4c fix(A3-07): capitalize leading activity phrases (#408)`，基线 `e2568518`。
+首轮通过记录：实现提交 `ba76ee4c`，基线 `e2568518`，`2741 tests run: 2741 passed, 5 skipped`。
+
+rebase 到 `692e09e5` 后的 head 需重新过 `check (fmt, clippy, test)`；未取得新 head 的云端结果前不沿用首轮通过记录。
 
 ## 待用户手测
 
