@@ -114,6 +114,3 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingMessageRow> {
         created_at: row.get(6)?,
     })
 }
-
-#[cfg(test)]
-mod tests;

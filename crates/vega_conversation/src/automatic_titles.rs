@@ -1,4 +1,4 @@
-//! Issue #65 R1–R6: optional, isolated first-turn naming, never a chat message.
+//!  R1–R6: optional, isolated first-turn naming, never a chat message.
 use std::{
     path::PathBuf,
     sync::{Arc, mpsc},

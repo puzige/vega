@@ -15,61 +15,29 @@ use vega_conversation::types::{
 use vega_markdown::split_deltas;
 use vega_markdown::{ListItem, TableCell};
 
-// ---------- 锚定委托（S8-T44：P4 语义由变高列表原生 Tail follow 承担） ----------
+// ---------- 锚定委托（：P4 语义由变高列表原生 Tail follow 承担） ----------
 
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
-mod attachments;
 mod branch_popup_upward;
-mod composer_actions;
 mod composer_counter;
 mod core_flow;
-mod cua_menu_stability;
-mod cua_screenshots;
-mod cua_usability;
 mod e2e_variable_height;
-mod hover_copy;
 mod hydration;
-mod issue146_run_activity;
-mod issue147_markdown_selection;
 mod issue148_long_session_scroll;
-mod issue151_latest_activity;
 mod issue296_codex_stream;
-mod issue296_desktop_ui;
 mod issue296_expansion;
-mod issue296_hierarchy_v2;
-mod issue296_phases;
-mod issue296_process_timeline;
-mod issue296_single_activity;
-mod issue296_sticky_disclosure;
-mod issue296_stream_block_spacing;
-mod issue296_stream_polish;
-mod issue299_pending_messages;
-mod issue342_model_name_width;
 mod issue350_network_retry;
-mod issue395_thinking_performance;
-mod issue395_thinking_window;
-mod issue403_conversation_underlay;
-mod issue64_context_usage;
-mod issue70_tool_activity;
 mod issue72_message_anchor_navigation;
-mod issue78_message_bubbles;
-mod issue79_composer_error;
-mod issue98_scroll_button;
 mod menu_lists;
 mod model_markdown;
 mod model_picker_levels;
-mod permission_picker;
 mod permissions_cards;
-mod preparing_indicator;
 mod r64_popup_deferred;
-mod r68_popup_dismiss;
 mod scroll_follow;
-mod skills;
 mod thinking;
 mod timeline;
 mod utility_bar;
-mod utility_menu_coordination;
 mod variable_height;
 
 struct StreamHarness {
@@ -178,17 +146,6 @@ fn focus_composer(
         .expect("composer stream window");
 }
 
-/// Opens the composer `+` menu through the production click path. Shared by
-/// the composer-actions and core-flow suites (R57 P1/P2b).
-fn click_composer_add(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext) {
-    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let bounds = visual
-        .debug_bounds("composer-add")
-        .expect("composer add button");
-    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
-}
-
 fn bash_call(id: &str, command: &str) -> ToolCall {
     ToolCall {
         id: id.into(),
@@ -230,7 +187,7 @@ fn has_active_permission(
         .unwrap_or(false)
 }
 
-// ---------- S8-T45/C7 顶部水合（分页 + 锚定 + 去重） ----------
+// ---------- 顶部水合（分页 + 锚定 + 去重） ----------
 
 fn hydration_state(older_cursor: Option<i64>, loading: bool, paused: bool) -> HistoryHydration {
     HistoryHydration {
@@ -338,7 +295,7 @@ fn stream_long_doc(blocks: usize) -> (MarkdownStream, usize) {
     (stream, total)
 }
 
-// ---------- S8-T44 变高虚拟化（E2E 与窄测共用 fixture） ----------
+// ---------- 变高虚拟化（E2E 与窄测共用 fixture） ----------
 
 /// One mixed markdown turn (CJK/emoji/inline styles/list).
 fn mixed_markdown_turn(index: usize) -> String {
@@ -463,7 +420,7 @@ fn mixed_entry(
     }
 }
 
-// ---------- Composer token counter（S7-T39/A10-05） ----------
+// ---------- Composer token counter（/） ----------
 
 fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext) {
     cx.run_until_parked();
@@ -473,28 +430,6 @@ fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext
         .expect("single process header");
     visual.simulate_click(header.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-}
-
-fn assert_run_disclosure_keyboard_focus(
-    group: &Entity<RunActivityGroup>,
-    visual: &mut gpui_kit::VisualTestContext,
-    context: &str,
-) {
-    let expanded = group.read_with(visual, |group, _| group.expanded());
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    assert_eq!(
-        group.read_with(visual, |group, _| group.expanded()),
-        !expanded,
-        "{context}: first Enter must reach the visible run disclosure"
-    );
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    assert_eq!(
-        group.read_with(visual, |group, _| group.expanded()),
-        expanded,
-        "{context}: second Enter must restore the run disclosure"
-    );
 }
 
 fn confirm_test_final(

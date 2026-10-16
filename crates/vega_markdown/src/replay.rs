@@ -1,4 +1,4 @@
-//! Mock delta replayer (S3-T18): turns static markdown content into a paced
+//! Mock delta replayer: turns static markdown content into a paced
 //! delta stream feeding [`MarkdownStream`](crate::MarkdownStream) — the shared
 //! infra behind the S3 acceptance demo and the S4 mock provider.
 //!

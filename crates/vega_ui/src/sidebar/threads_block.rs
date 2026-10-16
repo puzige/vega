@@ -23,7 +23,7 @@ impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 /// `bg_active`; unread rows render medium weight + a dot (the field stays 0
 /// until S3 produces unread state).
 ///
-/// T13 (A1-05) session management: the main list reads `status = active`
+/// T13 session management: the main list reads `status = active`
 /// only; archived threads hide here and surface in the 「已归档 (N)」
 /// collapsed section at the bottom of the block (展开可查看，行上有「恢复」).
 /// Hovering a row reveals its compact action trigger (裁决①：置顶 /
@@ -60,14 +60,14 @@ pub struct ThreadsBlock {
     /// In-memory progressive-list state. Projects keeps the R29
     /// `Show More / Show Less` toggle; Recents no longer has a control — it
     /// grows its render window as the outer Sidebar scroller reaches the
-    /// bottom (Issue #57).
+    /// bottom.
     pub(crate) projects_expanded: bool,
     pub(crate) projects_progressive_focus: FocusHandle,
-    /// Issue #57: how many Recents rows the current render window contains.
+    /// how many Recents rows the current render window contains.
     /// Starts at [`organization::RECENTS_PAGE`] and only grows (never shrinks)
     /// for the lifetime of this block.
     pub(crate) recents_visible: usize,
-    /// Issue #57: the number of eligible Recents rows observed by the last
+    /// the number of eligible Recents rows observed by the last
     /// render. Written during render; read by [`Self::has_lazy_list_growth`] so
     /// the outer scroller never asks for more than exists.
     pub(crate) recents_total: usize,

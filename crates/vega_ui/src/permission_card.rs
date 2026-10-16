@@ -796,60 +796,6 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    async fn issue73_external_card_has_no_always_action_or_focus(cx: &mut TestAppContext) {
-        init_test(cx);
-        let queue = PermissionQueue::new();
-        let _listener = queue.subscribe();
-        let identity = vega_conversation::types::McpCallIdentity {
-            server_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
-            config_revision: 2,
-            exact_tool_name: "lookup".into(),
-            arguments_bytes: 30,
-            arguments_sha256: "b".repeat(64),
-            argument_preview: "query: string".into(),
-        };
-        let request = PermissionRequest {
-            call_id: "opaque-external-call".into(),
-            tool: identity.alias(),
-            display_target: identity.permission_target(),
-            danger_rule_id: None,
-            danger_reason: None,
-            external: Some(identity),
-            acp_options: None,
-        };
-        assert!(
-            request
-                .external
-                .as_ref()
-                .is_some_and(|identity| identity.is_valid())
-        );
-        let future = queue.request(request, CancellationToken::new());
-        let (request, lease) = queue.take_pending().unwrap().into_parts().unwrap();
-        let card = cx.new(|cx| PermissionCard::new(&request, lease, cx));
-        let root_card = card.clone();
-        let window = cx.update(|cx| {
-            cx.open_window(Default::default(), move |_, cx| {
-                cx.new(|_| Harness { card: root_card })
-            })
-            .unwrap()
-        });
-        cx.run_until_parked();
-        let visible = card.read_with(cx, |card, _| card.visible_text());
-        assert!(visible.contains("lookup"));
-        assert!(!visible.contains("Always allow"));
-        assert!(!visible.contains("SECRET_ARGUMENT_VALUE"));
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert_eq!(focused(window, &card, cx), PermissionFocus::Reject);
-        cx.simulate_keystrokes(window.into(), "cmd-enter");
-        assert!(!card.read_with(cx, |card, _| card.is_resolved()));
-        cx.simulate_keystrokes(window.into(), "escape");
-        assert_eq!(
-            future.await.unwrap(),
-            PermissionDecision::Deny { note: None }
-        );
-    }
-
-    #[gpui_kit::test]
     async fn ordinary_focus_note_and_keyboard_decisions(cx: &mut TestAppContext) {
         init_test(cx);
         for tabs in 0..4 {

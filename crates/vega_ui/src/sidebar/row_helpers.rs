@@ -191,7 +191,7 @@ pub(crate) fn archive_section_visible(archived_count: usize) -> bool {
     archived_count > 0
 }
 
-/// Whether the row tail shows the relative timestamp at rest (#150 R10).
+/// Whether the row tail shows the relative timestamp at rest (R10).
 ///
 /// The tail is one slot. A running row owns it with its indicator, so the
 /// timestamp is suppressed there: showing both would either push the action

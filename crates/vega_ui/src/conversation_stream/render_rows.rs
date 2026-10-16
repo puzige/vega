@@ -29,7 +29,7 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     lines
 }
 
-/// #117: the compaction row's icon and color. Every state shares one glyph
+/// the compaction row's icon and color. Every state shares one glyph
 /// (Lucide `text-select`), so the row never changes shape as the operation
 /// advances; only failure is recolored and the label carries the transition.
 pub(crate) fn context_compaction_visual(
@@ -54,7 +54,7 @@ pub(crate) fn context_compaction_label(
 }
 
 /// Renders one visible semantic entry as a single variable-height list item
-/// (S8-T44/C4: 一项=一个 user/assistant/tool/permission/plan/artifact/
+/// 一项=一个 user/assistant/tool/permission/plan/artifact/
 /// summary item 的自然高度). Per-frame: clone-only element assembly from
 /// cached materialization — no markdown re-materialization here (P3).
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -1005,7 +1005,7 @@ fn render_table_selectable(
         .into_any_element()
 }
 
-// ─── text runs (block-level styled text, S8-T44) ─────────────────────────────
+// ─── text runs (block-level styled text) ─────────────────────────────
 
 /// Base run style for a message-body text block: 14px at 1.6 line height
 /// (ui-spec §3), window default family, caller's color.
@@ -1353,7 +1353,7 @@ pub(crate) fn sample_document(blocks: usize) -> String {
 /// The group includes the message, the gap and the action row, keeping the
 /// pointer path continuous. Opacity preserves the exact rest/hover geometry.
 ///
-/// Temporarily disabled by [`MESSAGE_COPY_ACTIONS_ENABLED`] (Issue #78
+/// Temporarily disabled by [`MESSAGE_COPY_ACTIONS_ENABLED`] (
 /// follow-up): the reserved action row read as an ugly, layout-coupled
 /// affordance, so while the flag is false the body is returned unchanged and
 /// no row is reserved. The plumbing below is retained so the interaction can

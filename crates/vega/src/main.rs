@@ -1,5 +1,5 @@
 //! Vega application entry point: boots the GPUI app and opens the main window.
-//! The hidden `--vega-bench-render <out.json>` flag instead runs the S3-T17
+//! The hidden `--vega-bench-render <out.json>` flag instead runs the
 //! render_frame self-measurement probe (see
 //! [`vega_ui::conversation_stream::bench`]).
 
@@ -45,7 +45,7 @@ fn main() {
     if updater::run_helper_if_requested() {
         return;
     }
-    // S3-T17 隐藏自测量模式：`vega --vega-bench-render <out.json>` 跑完写
+    //  隐藏自测量模式：`vega --vega-bench-render <out.json>` 跑完写
     // JSON 后退出（xtask bench render_frame 的数据来源），不进入正常应用。
     if let Some(output) = render_frame_bench::output_path_from_args() {
         let app = application().with_assets(gpui_kit::assets::Assets);
@@ -109,7 +109,7 @@ fn main() {
         // sidebar blocks degrade to inline error bars (ui-spec §4.6).
         vega_ui::sidebar::init(cx);
 
-        // #73: one app-scoped revocation domain is shared by Settings and
+        // one app-scoped revocation domain is shared by Settings and
         // every worker. A second service constructed against the same SQLite
         // file would not be able to revoke already-frozen run handles.
         let mcp_settings = cx

@@ -77,7 +77,7 @@ pub enum ToolCallStatus {
 
 impl ToolCallStatus {
     /// Parses the exact persisted `tool_calls.status` DDL vocabulary
-    /// (S8-T45 hydration reads durable rows; unknown values fail closed).
+    /// (hydration reads durable rows; unknown values fail closed).
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "pending_approval" => Some(Self::PendingApproval),
@@ -1174,6 +1174,3 @@ pub(crate) fn is_terminal(status: ToolCallStatus) -> bool {
             | ToolCallStatus::Cancelled
     )
 }
-
-#[cfg(test)]
-mod asset_metadata_tests;

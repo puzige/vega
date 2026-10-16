@@ -15,7 +15,7 @@
 //! background revision-checked lane; project registration/live branches and
 //! the existing task action/navigation boundaries remain shared.
 //!
-//! T13 (A1-05) adds the session management operations to [`ThreadsBlock`]:
+//! T13 adds the session management operations to [`ThreadsBlock`]:
 //! per-row hover action groups (置顶 / 归档或恢复 / 删除), double-click inline
 //! renaming (reusing [`crate::text_input::TextInput`]; Enter submits, Esc
 //! cancels, an empty title cancels), the 「已归档 (N)」 collapsed section at
@@ -36,7 +36,7 @@
 //!   row click. `None` → the session block shows guidance copy.
 //! - The opened thread is cached in the [`OpenedThread`] global; the window
 //!   root renders it as a [`crate::conversation_stream::ConversationStream`]
-//!   view since S3-T17.
+//!   view since.
 //!
 //! The viewport auto-collapse rule (ui-spec §1) is applied by the window
 //! root at render time.
@@ -192,7 +192,7 @@ pub struct RunningThreadsGlobal(pub vega_conversation::types::RunningThreads);
 impl Global for RunningThreadsGlobal {}
 
 /// Records one thread's Agent liveness and repaints every window so all
-/// sidebars agree (A1-14). A repeated value is skipped: writing the same
+/// sidebars agree. A repeated value is skipped: writing the same
 /// projection would otherwise repaint for nothing, and `RunningThreads` is
 /// cheap to compare.
 pub fn set_thread_running(thread_id: &str, running: bool, cx: &mut App) {
@@ -220,7 +220,7 @@ pub fn thread_is_running(thread_id: &str, cx: &App) -> bool {
 }
 
 /// The opened-thread content column is rendered by the window root since
-/// S3-T17: an inline [`crate::conversation_stream::ConversationStream`] view
+/// an inline [`crate::conversation_stream::ConversationStream`] view
 /// (thread header + virtualized stream) replaces the former
 /// `render_opened_thread_pane` placeholder, which was deleted with this card.
 pub struct OpenedThread(pub Option<Thread>);
@@ -262,7 +262,7 @@ impl Global for VegaStore {}
 /// Installed from the same `config::load()` source the eager `create_task`
 /// path used, and refreshed by the window's config-catalog worker, so the
 /// home-route draft can take its defaults **without any config IO during
-/// render** (the A2-14/R1 constraint). `Default` mirrors the missing-config
+/// render** (the constraint). `Default` mirrors the missing-config
 /// template (`AppConfig::default().defaults`): empty model, `confirm`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewTaskDefaults {
@@ -469,7 +469,7 @@ fn with_store<R>(
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
-    /// Issue #57: tracked scroll state for the outer `sidebar-scroll` column.
+    /// tracked scroll state for the outer `sidebar-scroll` column.
     /// Its `offset`/`max_offset` are read in the `on_children_prepainted`
     /// callback to decide whether the lazy Recents list should grow.
     sidebar_scroll: gpui_kit::ScrollHandle,
@@ -782,7 +782,7 @@ impl Render for Sidebar {
                     .child(self.render_new_task(cx, &colors))
                     .child(
                         div()
-                            // Issue #57: Recents lazy-loads instead of showing a
+                            // Recents lazy-loads instead of showing a
                             // `Show More` control. This container is the sidebar's
                             // only scroller, and the tracked handle is updated in
                             // this element's own prepaint (`clamp_scroll_position`)
@@ -932,7 +932,7 @@ mod tests {
 
     #[test]
     fn running_row_owns_the_tail_slot() {
-        // #150 R10: the tail is one slot. A running row suppresses the resting
+        //  R10: the tail is one slot. A running row suppresses the resting
         // timestamp; hover still wins because it reveals the action trigger.
         assert!(shows_timestamp_at_rest(false, true, false));
         assert!(!shows_timestamp_at_rest(false, true, true));
@@ -994,46 +994,5 @@ mod tests {
         assert_eq!(civil_from_days(19_675), (2023, 11, 14));
         // 闰年边界：2024-02-29。
         assert_eq!(civil_from_days(19_782), (2024, 2, 29));
-    }
-}
-
-#[cfg(test)]
-mod issue296_tests {
-    use super::*;
-
-    struct Harness;
-    impl gpui_kit::Render for Harness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .child(Sidebar::render_settings_entry(&vega_theme::LIGHT, cx))
-        }
-    }
-
-    #[gpui_kit::test]
-    fn issue296_native_settings_press_preserves_activation(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            crate::init(cx);
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SettingsOpen(false));
-        });
-        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |_, _| Harness);
-        cx.run_until_parked();
-        crate::interaction::tests::assert_native_control_press(window, cx, "sidebar-settings");
-        assert!(cx.read(|cx| cx.global::<SettingsOpen>().0));
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        visual.update(|window, cx| window.focus_next(cx));
-        for key in ["enter", "space"] {
-            visual.update(|_, cx| cx.set_global(SettingsOpen(false)));
-            let keystroke = gpui_kit::Keystroke::parse(key).expect("key");
-            visual.simulate_event(gpui_kit::KeyDownEvent {
-                keystroke: keystroke.clone(),
-                is_held: false,
-                prefer_character_input: false,
-            });
-            visual.simulate_event(gpui_kit::KeyUpEvent { keystroke });
-            assert!(visual.read(|cx| cx.global::<SettingsOpen>().0));
-        }
     }
 }

@@ -373,24 +373,6 @@ impl ComputerUseRun {
         result
     }
 
-    #[cfg(test)]
-    pub(crate) async fn execute(
-        &self,
-        name: &str,
-        call_id: &str,
-        arguments: Value,
-        cancel: &CancellationToken,
-    ) -> Result<String, ComputerUseError> {
-        self.execute_at(
-            name,
-            call_id,
-            arguments,
-            self.control.status().epoch,
-            cancel,
-        )
-        .await
-    }
-
     pub(crate) async fn execute_at(
         &self,
         name: &str,
@@ -676,26 +658,6 @@ impl ComputerUseRun {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) async fn gate_desktop_permission_check(
-        &self,
-        after: usize,
-    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        if let Some(fixture) = &mut self.backend.lock().await.fixture {
-            fixture.permission_gate = Some((after, entered.clone(), release.clone()));
-        }
-        (entered, release)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn set_desktop_targets_fixture(&self, windows: Vec<DesktopTarget>) {
-        if let Some(fixture) = &mut self.backend.lock().await.fixture {
-            fixture.windows = windows;
-        }
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn fixture_calls(&self) -> Vec<(String, Value)> {
         self.backend.lock().await.fixture_calls()
@@ -969,9 +931,6 @@ fn screenshot_target_text(target_id: Option<String>) -> String {
 fn screenshot_receipt_value(call_id: &str, unchanged: bool) -> Value {
     json!({"status":"delivered","artifact_id":format!("screenshot:{call_id}"),"delivery":"conversation_image_attachment","saved_in_history":true,"read_only":true,"unchanged":unchanged,"next_step":"continue_remaining_requested_work_or_finish"})
 }
-
-#[cfg(test)]
-mod tests;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

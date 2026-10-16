@@ -1,5 +1,5 @@
 //! Built-in project tools: `read`, `glob`, `grep`, `write`, and `edit`
-//! (tech-spec §4.4, A3-05~07 / S4-T21 / S5-T23).
+//! (tech-spec §4.4, ~07).
 //!
 //! [`Tools`] is the single entry point: bind one instance to the canonical
 //! project root. Read/Edit/Write accept canonical absolute paths or paths relative

@@ -11,7 +11,7 @@ impl Render for FileReferenceWindowHarness {
     }
 }
 
-// ---------- S8-T45/C7 顶部水合：worker + 路由 fence ----------
+// ---------- 顶部水合：worker + 路由 fence ----------
 
 /// Seeds `count` user/assistant exchanges (2 rows per step) plus a
 /// project/thread fixture, returning the store, its thread, and the root
@@ -707,7 +707,7 @@ async fn file_index_cancel_cancels_the_owned_worker_without_joining(
 
 #[test]
 fn at_reference_injection_persists_across_reopen() {
-    // S8-T47 E2E (A2-12 主干, headless): fresh thread → user submits an
+    //  E2E (主干, headless): fresh thread → user submits an
     // `@file` token → the worker injects the bounded reference block →
     // the persisted user row keeps the injection after a store reopen
     // (重启保持). MockProvider at the provider boundary only; no keys,

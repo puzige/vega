@@ -1,4 +1,4 @@
-//! Issue 63 R5: ordered blobs with bounded batch reads inside caller snapshot.
+//!  R5: ordered blobs with bounded batch reads inside caller snapshot.
 use rusqlite::{Connection, params};
 
 /// Store transport, deliberately redacted in Debug.

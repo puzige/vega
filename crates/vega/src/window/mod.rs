@@ -92,7 +92,7 @@ impl ModelSelectionRefresh {
 /// Root view of the main window: the A1 layout shell — a persisted resizable
 /// sidebar next to a content column (max 768px, centered) that hosts
 /// either the settings view (Cmd+, / Esc), the opened session
-/// ([`ConversationStream`], S3-T17), or the ui-spec §4.6 empty state.
+/// ([`ConversationStream`]), or the ui-spec §4.6 empty state.
 pub(crate) struct VegaWindow {
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
@@ -120,7 +120,7 @@ pub(crate) struct VegaWindow {
     /// workers must never instantiate independent registries for this DB.
     pub(crate) mcp_settings: Option<vega_conversation::McpServerSettingsService>,
     pub(crate) pricing_controller: PricingController,
-    /// Cached conversation stream for the open thread (id, view). S3-T17:
+    /// Cached conversation stream for the open thread (id, view).:
     /// built lazily on first render of an opened thread; rebuilt when another
     /// thread is opened. The stream itself is memory-only (no persistence).
     pub(crate) stream_view: Option<(String, Entity<ConversationStream>)>,

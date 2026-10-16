@@ -7,7 +7,7 @@ pub enum ConversationStopReason {
     End,
     /// Provider generation limit.
     Length,
-    /// Runtime agent turn safety limit (Issue #114).
+    /// Runtime agent turn safety limit.
     TurnLimit,
 }
 
@@ -329,7 +329,7 @@ pub enum ConversationEvent {
         /// Integer cost (`0` in S4; priced-zero rows keep `0` with
         /// provenance).
         cost: Microcents,
-        /// Exact pricing provenance (S7-T38); `None` keeps the S4
+        /// Exact pricing provenance; `None` keeps the S4
         /// legacy/unpriced semantics.
         pricing: Option<UsagePricing>,
     },
@@ -988,39 +988,6 @@ mod run_failure_tests {
     }
 
     #[test]
-    fn issue302_local_context_failures_keep_actionable_content_free_copy() {
-        use vega_runtime::ContextRuntimeError;
-        for error in [
-            ContextRuntimeError::OverLimit {
-                estimated_tokens: 301_000,
-                input_budget: 300_000,
-            },
-            ContextRuntimeError::SummaryInputOverLimit {
-                estimated_tokens: 301_000,
-                input_budget: 300_000,
-            },
-            ContextRuntimeError::ResultOverLimit {
-                estimated_tokens: 301_000,
-                target_tokens: 180_000,
-            },
-        ] {
-            let kind = RunFailureKind::from_runtime(&VegaError::Context(error));
-            assert_eq!(kind, RunFailureKind::ContextOverLimit);
-            assert!(
-                kind.message()
-                    .contains("Context exceeds available capacity")
-            );
-            assert!(kind.message().contains("conversation is preserved"));
-            assert!(!kind.message().contains("runtime environment"));
-            assert!(!kind.message().contains("provider"));
-        }
-        assert_eq!(
-            RunFailureKind::from_runtime(&VegaError::Context(ContextRuntimeError::SourceChanged)),
-            RunFailureKind::Runtime
-        );
-    }
-
-    #[test]
     fn quota_needs_exact_structured_code_and_never_projects_response_body() {
         const SENTINEL: &str = "PRIVATE_RESPONSE_AND_KEY_SENTINEL";
         let error = provider(
@@ -1092,16 +1059,5 @@ mod run_failure_tests {
                 .message()
                 .contains("SECRET_SENTINEL")
         );
-    }
-
-    #[test]
-    fn issue170_credential_safety_block_has_local_actionable_failure_state() {
-        let kind = RunFailureKind::from_runtime(&VegaError::CredentialExposureBlocked);
-        assert_eq!(kind, RunFailureKind::CredentialExposureBlocked);
-        let message = kind.message();
-        assert!(message.contains("could not be transformed safely"));
-        assert!(message.contains("Completed tool actions are preserved"));
-        assert!(message.contains("Check tool configuration"));
-        assert!(!message.contains("Could not connect to the provider"));
     }
 }

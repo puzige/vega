@@ -1,4 +1,4 @@
--- Issue #76: durable, content-free compaction lifecycle and accounting state.
+-- durable,content-free compaction lifecycle and accounting state.
 -- Summary Usage may be absent, so this table deliberately records an
 -- explicit unknown state instead of inserting a fabricated zero-cost usage
 -- row.  Raw transcript/summary text never enters this projection.

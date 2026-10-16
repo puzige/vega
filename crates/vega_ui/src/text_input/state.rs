@@ -27,7 +27,7 @@ impl TextInput {
         }
     }
 
-    /// Creates an empty fixed-`rows` multi-line input (S3-T18 Composer):
+    /// Creates an empty fixed-`rows` multi-line input (Composer):
     /// Enter inserts a newline, paste preserves line breaks.
     pub fn new_multiline(
         cx: &mut Context<Self>,
@@ -138,7 +138,7 @@ impl TextInput {
         )
     }
 
-    /// Byte range + body of a trailing `@token` at the caret (A2-12): the
+    /// Byte range + body of a trailing `@token` at the caret: the
     /// token starts after an `@` that sits at text start or right after
     /// whitespace, extends to the caret, and contains no whitespace.
     /// `None` when the caret is not completing an `@` token.
@@ -159,7 +159,7 @@ impl TextInput {
     /// Completes the trailing `@token` with `path`: the token body is
     /// replaced with `path ` (the existing `@` stays in place; the trailing
     /// space terminates the token so the selector closes deterministically).
-    /// No-op without a trailing token (A2-12 completion seam).
+    /// No-op without a trailing token (completion seam).
     pub fn complete_at_query(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some((range, _)) = self.trailing_at_query() else {
             return;
