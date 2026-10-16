@@ -16,14 +16,15 @@
 |---|---|
 | `crates/vega_ui/src/conversation_stream/phase.rs` | 无阅读阻挡的 Final settle；按本轮过程 copy 清理选择 |
 | `crates/vega_ui/src/conversation_stream/run_activity.rs` | 一次收起及隐藏焦点迁移；删除孤立的阅读保护状态/函数 |
+| `crates/vega_ui/src/artifact_card.rs` | 按细化规格仅增加 crate 内实际七个产物按钮的焦点查询，隔离外显产物焦点 |
 | `crates/vega_ui/src/conversation_stream/model.rs` | 识别选区光标归属；清除隐藏 copy 的选择 |
 | `crates/vega_ui/src/conversation_stream/thinking.rs` | 在本模块范围访问思考选择与焦点归属 |
 | `crates/vega_ui/src/conversation_stream/render.rs` | 删除为等待阅读保护解除而保留的 paint 补收起路径 |
 | `crates/vega_ui/src/conversation_stream/tests/issue296_phases.rs` | 阅读模式、可见焦点隔离、真实消息选择及活动轮重复 Final |
-| `crates/vega_ui/src/conversation_stream/tests/issue296_process_timeline.rs` | 即时收起、真实滚轮回看、原始顺序与再次展开 |
+| `crates/vega_ui/src/conversation_stream/tests/issue296_process_timeline.rs` | 即时收起、真实滚轮回看、原始顺序、真实工具子焦点迁移与再次展开 |
 | `crates/vega_ui/src/conversation_stream/tests/issue296_codex_stream.rs` | 工具展开/原生选区与阶段焦点不阻挡 Final |
 | `crates/vega_ui/src/conversation_stream/tests/issue296_expansion.rs` | 思考原始复制、真实选择清理和再次展开 |
-| `crates/vega_ui/src/conversation_stream/tests/issue296_stream_block_spacing.rs` | 在既有产物外显/几何断言上增加产物焦点保留 |
+| `crates/vega_ui/src/conversation_stream/tests/issue296_stream_block_spacing.rs` | 在既有产物外显/几何断言上增加首个及另一实际按钮的焦点保留 |
 | `crates/vega_ui/src/conversation_stream/tests/thinking.rs` | 移除已删除 reading helper 的测试调用，保留阶段显示与焦点断言 |
 | `crates/vega_ui/src/conversation_stream/tests/issue147_markdown_selection.rs` | 首轮 CI 后修订漏掉的旧阅读保护断言，保留真实选择、原文、Final 外显与 Composer 焦点覆盖 |
 | `crates/vega_ui/src/conversation_stream/tests/mod.rs` | 用真实 Enter 展开/收起行为验证可见过程入口收到键盘焦点，避免测试 update 调用渲染阶段 API |
@@ -44,7 +45,7 @@
 
 ## 回归矩阵
 
-以下均为测试覆盖已实现或保留的状态。首轮云端结果与修订记录见下一节；**修订版行为测试待第二轮云端 PR Check**，不把格式化和代码审查作为行为通过证据。
+以下均为测试覆盖已实现或保留的状态。前三轮云端结果与修订记录见下文；**本次真实前置 fixture 修订版待第四轮云端 PR Check**，不把格式化和代码审查作为行为通过证据。
 
 | ID | 自动回归入口 | 覆盖与状态 |
 |---|---|---|
@@ -66,6 +67,30 @@
 | `issue296_timeline_t02_final_folds_process_and_reopens_in_source_order` | 极小 fixture 整体可放进视口，原生列表此时允许回到 tail-follow，不能用该场景证明非底部滚动保留 | 此用例保留默认收起、原文字节与顺序、再次展开断言；不强制尾随仍由已有长历史回看/真实滚轮用例验证，其有意义的非尾随断言保持 |
 
 本轮只修改上述测试及共用测试辅助函数，生产代码不变。2026-10-16 03:24 UTC / 11:24 Asia/Shanghai 完成静态复查：`cargo fmt --all`、`cargo fmt --all -- --check`、`git diff --check` 退出码均为 0；无新增代码注释，测试代码未再直接调用上述渲染阶段查找 API。未在本地运行 Vega 代码、测试、编译或 Clippy。**第二轮云端结果待 CI，不能视为已通过。**
+
+## 第二轮云端失败与生产焦点修订
+
+[第二轮 Actions](https://github.com/puzige/vega/actions/runs/38845467566)：Nextest 失败，原始摘要 `Summary [ 137.087s] 2736 tests run: 2731 passed, 5 failed, 5 skipped`。原始日志 `ci-second-nextest.log` 的 SHA-256 为 `fc9222cd0445d0dcbe0646e37e7c02fbd3b6c1cc240e71a80053871d645bc589`。前一轮的旧阅读保护和小视口断言已不再失败；五项失败全部落在共用 Enter 焦点断言第一次切换时的 `left: false / right: true`，真实入口未收到键盘，不能通过移除断言解决。
+
+受影响的五项为 `issue416_real_process_selection_clears_on_final_and_preserves_composer_focus`、`issue416_stage_anchor_reveals_inline_and_final_moves_hidden_focus`、`issue296_expansion_p07_markdown_selection_and_original_copy`、`issue416_final_clears_only_hidden_native_message_selection`、`issue416_final_collapses_once_despite_reading_and_preserves_visible_focus`。
+
+根因：`Window::use_keyed_state` 经 `with_global_id` 使用当前 `element_id_stack` 生成身份。流顶层 settle 与真实列表行渲染时的元素层级不同，即使字符串相同也会创建不同句柄；原先移交到的是未绑定可见入口的句柄。工具及工具组的字符串查找同样不能可靠识别真实子焦点。
+
+按主 agent 先补入的焦点细化规格修订生产实现：`RunActivityGroup` 构造稳定 `header_focus`，由 render 和 settle 共用；删除 settle 的工具/工具组字符串枚举，改用实际阶段父容器的 `contains_focused` 及既有阶段/思考句柄。父容器同时包含外显产物，因此仅在 `ArtifactCard` 增加 crate 内查询，检查既有七个按钮句柄，精确排除这些焦点；不添加产物状态或改动其渲染。
+
+全部 Enter、选区、原文字节与跨轮断言保留。现有真实工具子入口持焦用例增加 Final 后的 Enter 展开/恢复关闭验证，覆盖阶段父链；产物焦点用例分别保留首个按钮和键盘导航到的另一个真实按钮，原有外显与高度断言均保留。
+
+2026-10-16 03:42 UTC / 11:42 Asia/Shanghai，本次本地 `cargo fmt --all`、`cargo fmt --all -- --check`、`git diff --check` 均 exit 0、无输出。静态审计 exit 0，输出 `PASS: render/settle share stable header focus; no keyed-state lookup in settle; actual artifact handles excluded; Enter helper unchanged; no added comments`。未运行 Vega 代码、测试、编译或 Clippy。**第三轮云端结果待 CI，不能视为已通过。**
+
+## 第三轮云端失败与真实前置修订
+
+[第三轮 Actions](https://github.com/puzige/vega/actions/runs/38846900829)：Nextest 原始摘要 `Summary [ 169.512s] 2736 tests run: 2735 passed, 1 failed, 5 skipped`。原始日志 `ci-third-nextest.log` 的 SHA-256 为 `88331cd954656a1c968278527eb7f51d656859adb93bcf3394fa9a178c344687`。唯一失败为 `issue416_final_collapses_once_despite_reading_and_preserves_visible_focus`，仍在 Enter 辅助断言第一次切换时报告 `left: false / right: true`；原日志没有 mode，保留该诊断限制。
+
+真实消息拖选、真实阶段/工具焦点、展开思考源和两个产物按钮的其他回归已通过。只读检查发现该循环有不真实的前置：`focus` 给未显示的 run details 句柄持焦；`thinking-focus` 使用仅有 Summary 的未展开源句柄；三个选择模式只写 `selected_text` 缓存，没有原生 snapshot。GPUI 包含查询在句柄相同时直接返回 true，不能据此添加重复的 `is_focused` 防御分支。现有证据不能锁定具体 mode，也不能据该失败认定新的生产缺口。
+
+按先补入的第四轮规格仅修改测试与证据，生产代码保持不变：循环局部复用已有带 `TextSelectionLayer` 的 Harness，八个 mode 全保留；阶段焦点改用真实可见 `segment_header_focus(0)`；思考模式注入 raw `ThinkingDelta` 并实际展开源。三个选区模式复用现有布局观测和真实 mouse down/move/up，断言原生选中文本、活动选区及 Final 前实际焦点，未再直接写缓存或局部选择范围。原有收起、原字节、选区清理、Composer/Final 焦点隔离与 Enter 展开/恢复关闭断言保持，并为循环及共用 Enter 断言增加 mode/场景标签。
+
+2026-10-16 04:02 UTC / 12:02 Asia/Shanghai，`cargo fmt --all`、`cargo fmt --all -- --check`、`git diff --check` 均 exit 0、无输出。静态审计 exit 0，输出 `PASS: production unchanged; all eight modes retained; native selection input and visible-focus preconditions present; contextual Enter assertions retained; no added comments`。未在本地运行 Vega 代码、测试、编译或 Clippy。**第四轮云端结果待 CI，不能视为已通过；若真实前置仍失败，须按明确 mode 继续分析生产调用顺序。**
 
 ## 待云端与用户验证
 

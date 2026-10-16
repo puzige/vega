@@ -812,7 +812,7 @@ fn issue416_real_process_selection_clears_on_final_and_preserves_composer_focus(
     let group = stream.read_with(&visual, |stream, _| {
         stream.run_activity_groups["selection-run"].clone()
     });
-    assert_run_disclosure_keyboard_focus(&group, &mut visual);
+    assert_run_disclosure_keyboard_focus(&group, &mut visual, "native-commentary-selection");
     visual.update(|window, cx| stream.update(cx, |stream, cx| stream.focus_composer(window, cx)));
     visual.run_until_parked();
     visual.update(|window, cx| {

@@ -138,6 +138,7 @@ pub(crate) struct RunActivityGroup {
     scroll: ScrollHandle,
     detail_anchor: Option<(usize, f32)>,
     focus: FocusHandle,
+    header_focus: FocusHandle,
     collapse_pending: bool,
     status: RunActivityStatus,
     execution_duration_ms: Option<u64>,
@@ -359,42 +360,20 @@ impl RunActivityGroup {
             return;
         }
         let mut focused = focus_process_selection || self.focus.contains_focused(window, cx);
-        let mut disclosures = Vec::new();
         let mut copies = Vec::new();
         for segment in &self.segments {
-            focused |= segment.focus.is_focused(window) || segment.header_focus.is_focused(window);
+            let artifact_focused = segment.children.iter().any(|child| {
+                matches!(child, RunActivityChild::Artifact(card) if card.read(cx).contains_focus(window, cx))
+            });
+            focused |= !artifact_focused && segment.focus.contains_focused(window, cx)
+                || segment.header_focus.is_focused(window);
             for child in &segment.children {
-                match child {
-                    RunActivityChild::Thinking(card) => {
-                        focused |= card.read(cx).contains_focus(window, cx);
-                        copies.push(card.read(cx).source_copy.clone());
-                    }
-                    RunActivityChild::Tool(card) => {
-                        disclosures.push(format!("tool-disclosure-{}", card.entity_id()));
-                    }
-                    RunActivityChild::ToolGroup(group) => {
-                        disclosures.push(format!("tool-group-disclosure-{}", group.entity_id()));
-                        disclosures.extend(
-                            group
-                                .read(cx)
-                                .children()
-                                .iter()
-                                .map(|card| format!("tool-disclosure-{}", card.entity_id())),
-                        );
-                    }
-                    RunActivityChild::Artifact(_) => {}
+                if let RunActivityChild::Thinking(card) = child {
+                    focused |= card.read(cx).contains_focus(window, cx);
+                    copies.push(card.read(cx).source_copy.clone());
                 }
             }
-            disclosures.extend(
-                segment
-                    .compact_tool_groups
-                    .iter()
-                    .map(|(_, group)| format!("tool-group-disclosure-{}", group.entity_id())),
-            );
         }
-        focused |= disclosures
-            .into_iter()
-            .any(|id| crate::disclosure::focus(id.into(), window, cx).contains_focused(window, cx));
         for copy in copies {
             copy.clear_hidden_selection(window, cx);
         }
@@ -403,12 +382,7 @@ impl RunActivityGroup {
         self.body_in_details = true;
         self.detail_anchor = None;
         if focused {
-            crate::disclosure::focus(
-                format!("run-disclosure-{}", cx.entity_id()).into(),
-                window,
-                cx,
-            )
-            .focus(window, cx);
+            self.header_focus.focus(window, cx);
         }
         self.sync_thinking_visibility(cx);
         cx.notify();
@@ -530,6 +504,7 @@ impl RunActivityGroup {
             scroll: ScrollHandle::new(),
             detail_anchor: None,
             focus: cx.focus_handle(),
+            header_focus: cx.focus_handle(),
             collapse_pending: false,
             status,
             execution_duration_ms,
@@ -1348,8 +1323,7 @@ impl RunActivityGroup {
         let keyboard_toggle = group.clone();
         let disclosure_group: gpui_kit::SharedString =
             format!("run-disclosure-{}", group.entity_id()).into();
-        let header_focus =
-            crate::disclosure::focus(disclosure_group.clone(), window, cx).tab_stop(can_expand);
+        let header_focus = group_ref.header_focus.clone().tab_stop(can_expand);
         let header = div()
             .id(("run-activity-toggle", group.entity_id()))
             .group(disclosure_group.clone())

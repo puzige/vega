@@ -2,6 +2,21 @@ use super::*;
 use vega_conversation::types::{AssistantResponseKind, AssistantResponseMetadata};
 
 fn begin(stream: &mut ConversationStream, cx: &mut Context<ConversationStream>) {
+    begin_with_stage(
+        stream,
+        ConversationEvent::SummaryDelta {
+            message_id: "run".into(),
+            delta: "Reviewing changes".into(),
+        },
+        cx,
+    );
+}
+
+fn begin_with_stage(
+    stream: &mut ConversationStream,
+    stage: ConversationEvent,
+    cx: &mut Context<ConversationStream>,
+) {
     stream.apply_event(
         ConversationEvent::MessageStarted {
             message_id: "run".into(),
@@ -35,13 +50,7 @@ fn begin(stream: &mut ConversationStream, cx: &mut Context<ConversationStream>) 
         },
         cx,
     );
-    stream.apply_event(
-        ConversationEvent::SummaryDelta {
-            message_id: "run".into(),
-            delta: "Reviewing changes".into(),
-        },
-        cx,
-    );
+    stream.apply_event(stage, cx);
     stream.apply_event(
         ConversationEvent::TextDelta {
             message_id: "run".into(),
@@ -69,6 +78,50 @@ fn terminal() -> ConversationEvent {
         stop_reason: vega_conversation::types::ConversationStopReason::End,
         execution_duration_ms: Some(23_100),
     }
+}
+
+fn select_phase_text(
+    stream: &Entity<ConversationStream>,
+    visual: &mut gpui_kit::VisualTestContext,
+    text: &str,
+    end: usize,
+    mode: &str,
+) {
+    selection::SELECTION_TARGET_LAYOUT
+        .with_borrow_mut(|target| *target = Some((text.into(), None)));
+    stream.update(visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+    let layout = selection::SELECTION_TARGET_LAYOUT.with_borrow_mut(|target| {
+        target
+            .take()
+            .and_then(|(_, layout)| layout)
+            .unwrap_or_else(|| panic!("mode={mode}: visible selection text"))
+    });
+    let start =
+        layout.position_for_index(0).unwrap() + gpui_kit::point(px(0.5), layout.line_height() / 2.);
+    let end_position = layout.position_for_index(end).unwrap()
+        + gpui_kit::point(px(0.5), layout.line_height() / 2.);
+    visual.simulate_mouse_down(start, MouseButton::Left, gpui_kit::Modifiers::default());
+    visual.simulate_mouse_move(
+        end_position,
+        Some(MouseButton::Left),
+        gpui_kit::Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        end_position,
+        MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(gpui_kit::base::TextSelection::selected_text),
+        &text[..end],
+        "mode={mode}: native selection"
+    );
+    assert!(
+        visual.update(gpui_kit::base::TextSelection::has_selection),
+        "mode={mode}: active selection"
+    );
 }
 
 #[gpui_kit::test]
@@ -155,8 +208,8 @@ async fn issue416_final_collapses_once_despite_reading_and_preserves_visible_foc
         "composer",
         "final-selection",
     ] {
-        let (window, stream, _) = open_controller_stream(cx, &format!("issue296-phase-{mode}"));
-        stream.update(cx, |stream, cx| {
+        let (stream, mut visual) = issue147_markdown_selection::open_empty_selection_harness(cx);
+        stream.update(&mut visual, |stream, cx| {
             if mode == "backscroll" {
                 stream.apply_history_page(
                     hydration_page(
@@ -168,88 +221,149 @@ async fn issue416_final_collapses_once_despite_reading_and_preserves_visible_foc
                     cx,
                 );
             }
-            begin(stream, cx);
+            if matches!(mode, "focus" | "thinking-selection" | "thinking-focus") {
+                begin_with_stage(
+                    stream,
+                    ConversationEvent::ThinkingDelta {
+                        message_id: "run".into(),
+                        delta: "Reviewing changes".into(),
+                    },
+                    cx,
+                );
+            } else {
+                begin(stream, cx);
+            }
         });
-        cx.run_until_parked();
-        let focus = stream.update(cx, |stream, cx| {
+        visual.run_until_parked();
+        let focus = stream.update(&mut visual, |stream, cx| {
             let group = stream.run_activity_groups["run"].clone();
             match mode {
                 "manual" => group.update(cx, |group, cx| group.reveal(cx)),
                 "backscroll" => stream.list.scroll_by(px(-600.)),
-                "selection" => {
-                    let StreamEntry::Assistant { copy, .. } = &stream.entries[1] else {
-                        panic!("assistant")
-                    };
-                    copy.set_selected_text(copy.selection_generation(), "检查".into());
-                }
-                "thinking-selection" => {
-                    let card = group
-                        .read(cx)
-                        .children()
-                        .into_iter()
-                        .find_map(|child| match child {
-                            RunActivityChild::Thinking(card) => Some(card),
-                            _ => None,
-                        })
-                        .unwrap();
-                    let copy = card.read(cx).test_source_copy();
-                    copy.set_selected_text(copy.selection_generation(), "Reviewing".into());
-                }
-                "final-selection" => {
-                    let StreamEntry::Assistant { copy, .. } = stream.entries.last().unwrap() else {
-                        panic!("final")
-                    };
-                    copy.set_selected_text(copy.selection_generation(), "答案".into());
+                "thinking-selection" | "thinking-focus" => {
+                    assert!(
+                        group.update(cx, |group, cx| group.reveal_segment(0, cx)),
+                        "mode={mode}: reveal thinking source"
+                    );
                 }
                 _ => {}
             }
-            group.read(cx).test_focus()
+            group.read(cx).segment_header_focus(0)
         });
-        if matches!(mode, "selection" | "final-selection") {
-            window
-                .update(cx, |view, window, cx| {
-                    view.stream
-                        .read(cx)
-                        .selection_focus
-                        .clone()
-                        .focus(window, cx)
-                })
-                .unwrap();
-        }
+        visual.run_until_parked();
         if mode == "focus" {
-            window
-                .update(cx, |_, window, cx| focus.unwrap().focus(window, cx))
-                .unwrap();
+            assert!(
+                visual.debug_bounds("run-stage-toggle-0").is_some(),
+                "mode={mode}: visible stage entry"
+            );
+            visual.update(|window, cx| focus.focus(window, cx));
         }
         if mode == "thinking-focus" {
-            window
-                .update(cx, |_, window, cx| {
-                    let card = stream.read(cx).run_activity_groups["run"]
-                        .read(cx)
-                        .children()
-                        .into_iter()
-                        .find_map(|child| match child {
-                            RunActivityChild::Thinking(card) => Some(card),
-                            _ => None,
-                        })
-                        .unwrap();
-                    card.read(cx).test_focus().focus(window, cx);
-                })
-                .unwrap();
+            visual.update(|window, cx| {
+                let card = stream.read(cx).run_activity_groups["run"]
+                    .read(cx)
+                    .children()
+                    .into_iter()
+                    .find_map(|child| match child {
+                        RunActivityChild::Thinking(card) => Some(card),
+                        _ => None,
+                    })
+                    .unwrap();
+                card.read(cx).test_focus().focus(window, cx);
+            });
+        }
+        match mode {
+            "selection" => select_phase_text(&stream, &mut visual, "检查。", "检查".len(), mode),
+            "thinking-selection" => select_phase_text(
+                &stream,
+                &mut visual,
+                "Reviewing changes",
+                "Reviewing".len(),
+                mode,
+            ),
+            "final-selection" => {
+                select_phase_text(&stream, &mut visual, "答案。", "答案".len(), mode)
+            }
+            _ => {}
         }
         if mode == "composer" {
-            focus_composer(window, &stream, cx);
+            visual.update(|window, cx| {
+                stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
+            });
         }
-        stream.update(cx, |stream, cx| {
+        visual.run_until_parked();
+        if matches!(mode, "thinking-selection" | "thinking-focus") {
+            assert!(
+                visual.debug_bounds("thinking-content").is_some(),
+                "mode={mode}: visible thinking source"
+            );
+        }
+        if matches!(mode, "selection" | "thinking-selection" | "final-selection") {
+            assert!(
+                visual.update(gpui_kit::base::TextSelection::has_selection),
+                "mode={mode}: native selection before Final"
+            );
+        }
+        visual.update(|window, cx| {
+            let state = stream.read(cx);
+            if mode == "focus" {
+                assert!(
+                    focus.is_focused(window),
+                    "mode={mode}: stage entry focused before Final"
+                );
+            } else if matches!(mode, "selection" | "final-selection") {
+                assert!(
+                    state.selection_focus.is_focused(window),
+                    "mode={mode}: message focused before Final"
+                );
+            } else if matches!(mode, "thinking-selection" | "thinking-focus") {
+                let card = state.run_activity_groups["run"]
+                    .read(cx)
+                    .children()
+                    .into_iter()
+                    .find_map(|child| match child {
+                        RunActivityChild::Thinking(card) => Some(card),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!(
+                    card.read(cx).test_focus().is_focused(window),
+                    "mode={mode}: thinking source focused before Final"
+                );
+            } else if mode == "composer" {
+                assert!(
+                    state.input.read(cx).focus_handle(cx).is_focused(window),
+                    "mode={mode}: Composer focused before Final"
+                );
+            } else if mode == "backscroll" {
+                assert!(
+                    !state.following_tail(),
+                    "mode={mode}: detached before Final"
+                );
+            }
+        });
+        stream.update(&mut visual, |stream, cx| {
             stream.apply_event(final_event(), cx);
             stream.apply_event(terminal(), cx);
         });
-        cx.run_until_parked();
-        stream.read_with(cx, |stream, cx| {
+        visual.run_until_parked();
+        stream.read_with(&visual, |stream, cx| {
             let group = stream.run_activity_groups["run"].read(cx);
             assert!(group.process_in_details(), "mode={mode}");
             assert!(!group.expanded(), "mode={mode}");
             assert!(!group.collapse_pending(), "mode={mode}");
+            assert_eq!(
+                stream
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        StreamEntry::Assistant { copy, .. } => Some(copy.original_text()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+                "检查。答案。",
+                "mode={mode}: original message bytes"
+            );
             assert_eq!(
                 (0..stream.entries.len())
                     .filter(|index| stream.process_entry_hidden(*index, cx))
@@ -258,7 +372,7 @@ async fn issue416_final_collapses_once_despite_reading_and_preserves_visible_foc
                 "mode={mode}"
             );
             if mode == "backscroll" {
-                assert!(!stream.following_tail());
+                assert!(!stream.following_tail(), "mode={mode}");
             }
             for (index, entry) in stream.entries.iter().enumerate() {
                 if let StreamEntry::Assistant { copy, .. } = entry {
@@ -271,24 +385,35 @@ async fn issue416_final_collapses_once_despite_reading_and_preserves_visible_foc
             }
             for child in group.children() {
                 if let RunActivityChild::Thinking(card) = child {
-                    assert!(!card.read(cx).test_source_copy().has_selected_text());
+                    assert!(
+                        !card.read(cx).test_source_copy().has_selected_text(),
+                        "mode={mode}"
+                    );
                 }
             }
         });
-        window
-            .update(cx, |_, window, cx| {
-                let state = stream.read(cx);
-                if mode == "composer" {
-                    assert!(state.input.read(cx).focus_handle(cx).is_focused(window));
-                } else if mode == "final-selection" {
-                    assert!(state.selection_focus.is_focused(window));
-                }
-            })
-            .unwrap();
-        if matches!(mode, "selection" | "focus" | "thinking-focus") {
-            let group = stream.read_with(cx, |stream, _| stream.run_activity_groups["run"].clone());
-            let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-            assert_run_disclosure_keyboard_focus(&group, &mut visual);
+        visual.update(|window, cx| {
+            let state = stream.read(cx);
+            if mode == "composer" {
+                assert!(
+                    state.input.read(cx).focus_handle(cx).is_focused(window),
+                    "mode={mode}: Composer focus after Final"
+                );
+            } else if mode == "final-selection" {
+                assert!(
+                    state.selection_focus.is_focused(window),
+                    "mode={mode}: Final focus after confirmation"
+                );
+            }
+        });
+        if matches!(
+            mode,
+            "selection" | "focus" | "thinking-selection" | "thinking-focus"
+        ) {
+            let group = stream.read_with(&visual, |stream, _| {
+                stream.run_activity_groups["run"].clone()
+            });
+            assert_run_disclosure_keyboard_focus(&group, &mut visual, mode);
         }
     }
 }
@@ -369,7 +494,11 @@ async fn issue416_final_clears_only_hidden_native_message_selection(cx: &mut Tes
             let group = stream.read_with(&visual, |stream, _| {
                 stream.run_activity_groups["run"].clone()
             });
-            assert_run_disclosure_keyboard_focus(&group, &mut visual);
+            assert_run_disclosure_keyboard_focus(
+                &group,
+                &mut visual,
+                &format!("native-message-{mode}"),
+            );
         }
         stream.update(&mut visual, |stream, cx| {
             assert_eq!(

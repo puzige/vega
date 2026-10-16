@@ -339,6 +339,10 @@ async fn issue416_timeline_final_collapses_reading_without_followup_input(cx: &m
                 assert!(!stream.following_tail());
             }
         });
+        if mode == "inline-focus" {
+            let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            assert_run_disclosure_keyboard_focus(&group, &mut visual, "inline-tool-focus");
+        }
         window
             .update(cx, |view, window, cx| {
                 view.stream

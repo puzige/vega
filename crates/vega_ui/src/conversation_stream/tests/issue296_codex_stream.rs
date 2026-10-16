@@ -440,7 +440,7 @@ async fn issue416_stage_anchor_reveals_inline_and_final_moves_hidden_focus(
     let group = stream.read_with(&visual, |stream, _| {
         stream.run_activity_groups["visual"].clone()
     });
-    assert_run_disclosure_keyboard_focus(&group, &mut visual);
+    assert_run_disclosure_keyboard_focus(&group, &mut visual, "stage-anchor-focus");
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         assert!(
