@@ -1619,7 +1619,7 @@ async fn issue90_production_controller_routes_invalid_bash_without_permission_an
             vega_runtime::ProviderEvent::ToolUse {
                 id: "issue90-bash".into(),
                 name: "bash".into(),
-                input_json: r#"{"command":"printf SECRET_BASH > issue90-marker"}"#.into(),
+                input_json: r#"{"command":["printf SECRET_BASH > issue90-marker"]}"#.into(),
             },
             vega_runtime::ProviderEvent::Done {
                 stop_reason: vega_runtime::StopReason::ToolUse,
@@ -1721,12 +1721,14 @@ async fn issue90_production_controller_routes_invalid_bash_without_permission_an
     let feedback = provider.requests()[1]
         .messages
         .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("issue90-bash"))
+        .find(|message| {
+            message.content.contains("Historical tool result")
+                && message.content.contains("call_id=issue90-bash")
+        })
         .map(|message| message.content.clone());
-    assert_eq!(
-        feedback.as_deref(),
-        Some(vega_runtime::BASH_INVALID_INPUT_OUTPUT)
-    );
+    assert!(feedback.as_deref().is_some_and(|content| {
+        content.ends_with(&vega_tools::BashInputError::WrongCommandType.feedback())
+    }));
 
     let reopened = Store::open(&database_path).expect("issue90 reopened store");
     let history = vega_conversation::history::restart_history_page(&reopened, &thread.id, 20)

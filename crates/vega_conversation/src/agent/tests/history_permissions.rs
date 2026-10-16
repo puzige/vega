@@ -696,7 +696,7 @@ async fn issue76_history_projection_splits_text_and_pairs_each_tool_group() {
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("tool read input: {\"path\":\"lib.rs\"} status: success"));
+    assert!(rendered.contains("tool read call_id: call-1 status: success"));
     assert!(rendered.contains("result1"));
     assert!(rendered.contains("result2"));
     assert!(rendered.contains("textA"));
@@ -797,18 +797,17 @@ async fn issue76_manual_tool_history_uses_rich_summary_and_labelled_primary_afte
     )));
     let summary_request = &summary_provider.requests()[0];
     assert!(summary_request.tools.is_empty());
+    assert!(summary_request.messages.iter().any(|message| {
+        message.content.contains("Historical tool activity")
+            && message.content.contains("tool=read")
+    }));
     assert!(
         summary_request
             .messages
             .iter()
-            .flat_map(|m| &m.tool_calls)
-            .any(|call| call.name == "read")
-    );
-    assert!(
-        summary_request
-            .messages
-            .iter()
-            .any(|m| m.role == vega_runtime::ChatRole::Tool && m.content == "old read result")
+            .any(|m| m.tool_call_id.is_none()
+                && m.content.contains("Historical tool result")
+                && m.content.ends_with("old read result"))
     );
     assert!(
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
@@ -967,7 +966,7 @@ async fn issue76_manual_primary_tail_keeps_terminal_tool_data_without_old_protoc
         .collect::<Vec<_>>()
         .join("\n");
     assert!(result_text.contains("tail result"));
-    assert!(result_text.contains("tool read input: {\"path\":\"tail.rs\"} status: success"));
+    assert!(result_text.contains("tool read call_id: tail-read status: success"));
 
     let projection = read_context_projection(&store, "thread-1", "mock-model", "system").unwrap();
     let estimated_tokens = projection.estimated_tokens;
@@ -1001,7 +1000,7 @@ async fn issue76_manual_primary_tail_keeps_terminal_tool_data_without_old_protoc
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(primary_text.contains("tool read input: {\"path\":\"tail.rs\"} status: success"));
+    assert!(primary_text.contains("tool read call_id: tail-read status: success"));
     assert!(primary_text.contains("tail result"));
     assert!(
         primary
@@ -1998,6 +1997,213 @@ async fn issue76_auto_source_fence_rejects_unrelated_history_before_summary_requ
 }
 
 #[tokio::test]
+async fn issue300_live_write_compaction_ignores_only_sidecars_and_rejects_history_tampering() {
+    let (store, dir, project_id) = setup();
+    let checkpoints = tempdir().unwrap();
+    seed_manual_compaction_history(&store);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let execution = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "live-write".into(),
+                name: "write".into(),
+                input_json: r#"{"path":"new.txt","content":"PRIVATE_LIVE_BODY"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let outcome = vega_runtime::run_agent(
+        &execution,
+        &tools,
+        vega_runtime::AgentRequest {
+            model: "mock-model".into(),
+            system_prompt: "system".into(),
+            history: vec![],
+            max_tokens: None,
+            completed_tool_results: Default::default(),
+            tool_config: vega_runtime::RuntimeToolConfig::new(
+                vega_runtime::RuntimeRunMode::Execute,
+                vega_runtime::RuntimePermissionMode::FullAccess,
+                project_id.clone(),
+                "thread-1".into(),
+                checkpoints.path().to_path_buf(),
+                vec![],
+            ),
+            pricing_catalog: None,
+            reasoning: None,
+            context_budget: None,
+            context_source_version: None,
+            context_source_fingerprint: None,
+            context_operation_id: None,
+            context_compaction_hook: None,
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let live = outcome
+        .messages
+        .iter()
+        .filter(|message| !message.tool_calls.is_empty() || message.tool_call_id.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(live.len(), 2);
+    assert!(
+        !live[0].tool_calls[0]
+            .input_json
+            .contains("PRIVATE_LIVE_BODY")
+    );
+    assert!(
+        vega_runtime::project_model_messages(&live).unwrap()[0].tool_calls[0]
+            .input_json
+            .contains("PRIVATE_LIVE_BODY")
+    );
+    let approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::FullAccess,
+        danger: None,
+    }
+    .to_json()
+    .unwrap();
+    store.conn().execute("INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('live-owner','thread-1',4,'assistant','text','','streaming',4)", []).unwrap();
+    store.conn().execute("INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,output_text,status,approval,created_at,finished_at,text_offset_bytes) VALUES ('live-write','thread-1','live-owner',1,'write',?1,?2,'success',?3,4,4,0)", (&live[0].tool_calls[0].input_json, &live[1].content, &approval)).unwrap();
+    let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    let mut history = super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+        &source,
+        None,
+        "live-owner",
+    )
+    .unwrap();
+    history.extend(live);
+    let budget = vega_runtime::ContextBudget::new(20_000, 1_000, true).unwrap();
+    let estimate = vega_runtime::estimate_wire_context(&history, &[]).unwrap();
+    for tamper in ["id", "name", "audit", "result", "user", "none"] {
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("safe summary".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]);
+        let hook = ConversationCompactionHook::new(
+            &provider,
+            dir.path().join("vega.db"),
+            "thread-1",
+            "mock-model",
+            None,
+            None,
+        );
+        let mut messages = history.clone();
+        let call_index = messages
+            .iter()
+            .position(|message| !message.tool_calls.is_empty())
+            .unwrap();
+        match tamper {
+            "id" => messages[call_index].tool_calls[0].id = "other-id".into(),
+            "name" => messages[call_index].tool_calls[0].name = "edit".into(),
+            "audit" => {
+                let mut audit: serde_json::Value =
+                    serde_json::from_str(&messages[call_index].tool_calls[0].input_json).unwrap();
+                audit["path"] = serde_json::json!("other.txt");
+                messages[call_index].tool_calls[0].input_json = audit.to_string();
+            }
+            "result" => messages[call_index + 1].content.push_str("tampered"),
+            "user" => messages[0].content.push_str("tampered"),
+            _ => {}
+        }
+        let result = vega_runtime::ContextCompactionHook::compact(
+            &hook,
+            vega_runtime::ContextCompactionRequest {
+                system_prompt: "system".into(),
+                messages,
+                tools: vec![],
+                budget,
+                estimate,
+                target_tokens: budget.target_tokens().unwrap(),
+                source_version: source.source_version,
+                source_fingerprint: Some(source.fingerprint.clone()),
+                require_source_fence: false,
+                source_owner_id: Some("live-owner".into()),
+            },
+            CancellationToken::new(),
+        )
+        .await;
+        if tamper == "none" {
+            let result = result.unwrap();
+            assert_eq!(provider.requests().len(), 1);
+            assert!(
+                vega_runtime::project_model_messages(&result.messages)
+                    .unwrap()
+                    .iter()
+                    .flat_map(|message| &message.tool_calls)
+                    .any(|call| call.id == "live-write"
+                        && call.input_json.contains("PRIVATE_LIVE_BODY"))
+            );
+        } else {
+            assert!(
+                matches!(result, Err(failure) if matches!(failure.error.as_ref(), VegaError::Context(vega_runtime::ContextRuntimeError::SourceChanged))),
+                "{tamper}"
+            );
+            assert!(provider.requests().is_empty());
+        }
+    }
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET status='done' WHERE id='live-owner'",
+            [],
+        )
+        .unwrap();
+    store.conn().execute("INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('next-user','thread-1',5,'user','text','continue','done',5)", []).unwrap();
+    let summary = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("stored write summary".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    compact_thread_manually(
+        &store,
+        &summary,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        budget,
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let requests = summary.requests();
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none())
+    );
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("Historical tool result")
+                && message.content.contains("call_id=live-write"))
+    );
+    assert!(
+        !requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("PRIVATE_LIVE_BODY")
+                || message.content.contains("write_edit_v1"))
+    );
+}
+
+#[tokio::test]
 async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecution() {
     let (store, dir, _project_id) = setup();
     // Keep the initial request below the trigger with the expanded file-tool schemas.
@@ -2334,14 +2540,18 @@ async fn issue88_long_completed_tool_history_compacts_and_continues_same_run() {
             summaries
                 .iter()
                 .flat_map(|request| &request.messages)
-                .flat_map(|message| &message.tool_calls)
-                .any(|call| call.id == call_id)
+                .any(
+                    |message| message.content.contains("Historical tool activity")
+                        && message.content.contains(&format!("call_id={call_id}"))
+                )
         );
         assert!(
             summaries
                 .iter()
                 .flat_map(|request| &request.messages)
-                .any(|message| message.tool_call_id.as_deref() == Some(call_id.as_str()))
+                .any(|message| message.tool_call_id.is_none()
+                    && message.content.contains("Historical tool result")
+                    && message.content.contains(&format!("call_id={call_id}")))
         );
     }
     assert!(!requests.last().unwrap().tools.is_empty());
@@ -2518,25 +2728,23 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
     assert!(requests[0].tools.is_empty());
     let estimate = vega_runtime::estimate_wire_context(&requests[0].messages, &[]).unwrap();
     assert!(estimate.input_tokens <= budget.input_budget());
-    assert_eq!(
+    assert!(
         requests[0]
             .messages
             .iter()
-            .flat_map(|m| &m.tool_calls)
-            .find(|call| call.id == "long-result")
-            .unwrap()
-            .input_json,
-        input
+            .all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none())
     );
-    assert_eq!(
-        requests[0]
+    assert!(
+        !requests[0]
             .messages
             .iter()
-            .find(|m| m.tool_call_id.as_deref() == Some("long-result"))
-            .unwrap()
-            .content,
-        output
+            .any(|message| message.content.contains(&input))
     );
+    assert!(requests[0].messages.iter().any(|message| {
+        message.content.contains("Historical tool result")
+            && message.content.contains("call_id=long-result")
+            && message.content.ends_with(&output)
+    }));
     let after = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     assert_eq!(before, after, "raw messages and tool audit are unchanged");
 
@@ -2721,9 +2929,14 @@ async fn claude_large_completed_summary_is_not_sliced_or_reduced() {
         requests[0]
             .messages
             .iter()
-            .find(|m| m.tool_call_id.as_deref() == Some("long-result"))
+            .find(|m| m.tool_call_id.is_none()
+                && m.content.starts_with("[Historical tool result")
+                && m.content.contains("call_id=long-result"))
             .unwrap()
-            .content,
+            .content
+            .split_once('\n')
+            .unwrap()
+            .1,
         output
     );
     assert_eq!(
@@ -2775,9 +2988,14 @@ async fn claude_summary_does_not_accumulate_partial_checkpoints() {
         requests[0]
             .messages
             .iter()
-            .find(|m| m.tool_call_id.as_deref() == Some("long-result"))
+            .find(|m| m.tool_call_id.is_none()
+                && m.content.starts_with("[Historical tool result")
+                && m.content.contains("call_id=long-result"))
             .unwrap()
-            .content,
+            .content
+            .split_once('\n')
+            .unwrap()
+            .1,
         output
     );
     assert!(result.messages[0].content.contains("fact-stage-1"));
@@ -3041,15 +3259,13 @@ async fn issue88_empty_completed_tool_result_keeps_an_explicit_paired_marker() {
         request
             .messages
             .iter()
-            .flat_map(|m| &m.tool_calls)
-            .any(|call| call.id == "long-result")
+            .any(|message| message.tool_calls.is_empty()
+                && message.content.contains("Historical tool activity")
+                && message.content.contains("call_id=long-result"))
     );
-    assert!(
-        request
-            .messages
-            .iter()
-            .any(|m| m.tool_call_id.as_deref() == Some("long-result") && m.content.is_empty())
-    );
+    assert!(request.messages.iter().any(|m| m.tool_call_id.is_none()
+        && m.content.starts_with("[Historical tool result")
+        && m.content.ends_with("call_id=long-result.]\n")));
 }
 
 #[tokio::test]
@@ -4167,19 +4383,16 @@ async fn claude_direct_summary_preserves_roles_and_uses_20k_cap() {
     let calls = provider.requests();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].max_tokens, Some(20_000));
-    assert!(
-        calls[0]
-            .messages
-            .iter()
-            .any(|m| m.role == vega_runtime::ChatRole::Tool && m.content == output)
-    );
+    assert!(calls[0].messages.iter().any(|m| m.tool_call_id.is_none()
+        && m.content.contains("Historical tool result")
+        && m.content.ends_with(&output)));
     assert_eq!(
         calls[0]
             .messages
             .iter()
             .flat_map(|m| m.tool_calls.iter())
             .count(),
-        1
+        0
     );
     assert!(calls[0].tools.is_empty());
 }
@@ -4233,12 +4446,9 @@ async fn claude_prompt_too_long_retries_without_discarding_complete_rounds() {
             .iter()
             .any(|message| message.content == "message-1")
     );
-    assert!(
-        calls[1]
-            .messages
-            .iter()
-            .any(|m| m.role == vega_runtime::ChatRole::Tool && m.content == "full tool result")
-    );
+    assert!(calls[1].messages.iter().any(|m| m.tool_call_id.is_none()
+        && m.content.contains("Historical tool result")
+        && m.content.ends_with("full tool result")));
     assert_eq!(
         vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
         before
@@ -4485,14 +4695,18 @@ async fn issue302_reopened_shell_projection_matches_compaction_and_preserves_sto
     assert_eq!(&result.messages[1..], retained.as_slice());
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(
-        requests[0]
-            .messages
-            .iter()
-            .find(|message| message.tool_call_id.as_deref() == Some("long-result"))
-            .unwrap(),
-        &vega_runtime::ChatMessage::projected_tool_result("long-result", "bash", &output)
-    );
+    let historical_result = requests[0]
+        .messages
+        .iter()
+        .find(|message| {
+            message.content.contains("Historical tool result")
+                && message.content.contains("call_id=long-result")
+        })
+        .unwrap();
+    assert!(historical_result.tool_call_id.is_none());
+    assert!(historical_result.content.ends_with(
+        &vega_runtime::ChatMessage::projected_tool_result("long-result", "bash", &output).content
+    ));
     assert_eq!(
         vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap(),
         source

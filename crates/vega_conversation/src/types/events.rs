@@ -883,7 +883,8 @@ pub(crate) fn validate_runtime_validation_rejection(
         return (vega_runtime::InvalidBashAudit::from_json(&call.input_json).is_some()
             && call.id == result.call_id
             && result.status == vega_runtime::RuntimeToolStatus::Rejected
-            && result.output == vega_runtime::BASH_INVALID_INPUT_OUTPUT
+            && vega_runtime::InvalidBashAudit::from_json(&call.input_json)
+                .is_some_and(|audit| audit.matches_feedback(&result.output))
             && result.exit_code.is_none()
             && result.duration_ms.is_none()
             && result.truncated.is_none()
@@ -908,10 +909,9 @@ pub(crate) fn validate_runtime_validation_rejection(
         && call.id == result.call_id
         && result.status == vega_runtime::RuntimeToolStatus::Rejected
         && (result.output == expected
-            || result.output
-                == audit
-                    .validation_error_code()
-                    .validation_result(audit.tool().as_str()))
+            || audit
+                .validation_error_code()
+                .matches_validation_result(audit.tool().as_str(), &result.output))
         && result.exit_code.is_none()
         && result.duration_ms.is_none()
         && result.remember_rule.is_none()
@@ -962,6 +962,9 @@ pub(crate) fn invalid_tool_code(code: vega_tools::MutationErrorCode) -> Option<I
         Code::FileTooLarge => InvalidToolCode::FileTooLarge,
         Code::EditNoChange => InvalidToolCode::EditNoChange,
         Code::WrongReplaceAllType => InvalidToolCode::WrongReplaceAllType,
+        Code::InvalidEdits => InvalidToolCode::InvalidEdits,
+        Code::InvalidEditItem => InvalidToolCode::InvalidEditItem,
+        Code::EditOverlap => InvalidToolCode::EditOverlap,
         Code::UnsupportedEncoding => InvalidToolCode::UnsupportedEncoding,
         Code::EditNoMatch => InvalidToolCode::EditNoMatch,
         Code::EditMultipleMatches => InvalidToolCode::EditMultipleMatches,

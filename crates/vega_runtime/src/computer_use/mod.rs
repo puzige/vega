@@ -907,6 +907,7 @@ pub fn redact_ephemeral_messages(messages: &mut [crate::ChatMessage]) {
         .map(|call| call.id.clone())
         .collect::<std::collections::HashSet<_>>();
     for message in messages {
+        message.discard_computer_use_arguments();
         for call in &mut message.tool_calls {
             if ComputerUseRun::tool_capability(&call.name).is_some()
                 && !ComputerUseAudit::valid(&call.input_json)

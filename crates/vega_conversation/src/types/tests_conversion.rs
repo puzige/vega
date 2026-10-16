@@ -8,6 +8,72 @@ use super::{
 };
 
 #[test]
+fn issue300_batch_success_count_is_bound_in_cards_and_history() {
+    use super::{
+        ToolCall, ToolCallStatus, ToolCardResultProjection, ToolResult, tool_card_input_projection,
+        tool_card_result_projection,
+    };
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.txt"), "alpha beta").unwrap();
+    let audit = vega_tools::Tools::new(root.path()).unwrap().audit_edit_json(r#"{"path":"a.txt","edits":[{"oldText":"alpha","newText":"new"},{"oldText":"beta","newText":"other"}]}"#).unwrap();
+    let call = ToolCall {
+        id: "batch".into(),
+        tool: "edit".into(),
+        input_json: audit.to_json().unwrap(),
+    };
+    let projection = tool_card_input_projection(&call);
+    let checkpoint_ref = vega_tools::CheckpointIds::new("project", "thread", "batch")
+        .unwrap()
+        .checkpoint_ref();
+    for replacements in [1, 2, 20] {
+        let result = ToolResult {
+            status: ToolCallStatus::Success,
+            output: vega_tools::EditSuccessOutput {
+                path: "a.txt".into(),
+                bytes_written: 9,
+                replacements,
+                checkpoint_ref: checkpoint_ref.clone(),
+            }
+            .to_json()
+            .unwrap(),
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: Some(false),
+            invalid: None,
+        };
+        assert_eq!(
+            matches!(
+                tool_card_result_projection(Some(&projection), &result),
+                ToolCardResultProjection::EditSuccess { .. }
+            ),
+            replacements == 2
+        );
+        assert_eq!(
+            crate::agent::mutation_success_matches(
+                &audit,
+                "project",
+                "thread",
+                "batch",
+                &result.output
+            ),
+            replacements == 2
+        );
+    }
+    for invalid_count in [
+        serde_json::json!(0),
+        serde_json::json!(1),
+        serde_json::Value::Null,
+        serde_json::json!(2.5),
+        serde_json::json!("2"),
+    ] {
+        let mut invalid: serde_json::Value = serde_json::from_str(&call.input_json).unwrap();
+        invalid["edit_count"] = invalid_count;
+        assert!(vega_tools::WriteEditAudit::from_json(&invalid.to_string()).is_err());
+    }
+}
+
+#[test]
 fn loaded_skill_audit_projects_only_safe_identity() {
     let audit = vega_runtime::skills::ActivationAudit {
         name: "reviewer".into(),
@@ -54,7 +120,7 @@ fn issue90_bash_validation_event_requires_exact_safe_audit_and_terminal_facts() 
         id: "bad-bash".into(),
         name: "bash".into(),
         input_json: vega_runtime::InvalidBashAudit::from_raw(
-            r#"{"command":"SECRET_BASH_COMMAND"}"#,
+            r#"{"command":["SECRET_BASH_COMMAND"]}"#,
         )
         .unwrap()
         .to_json()
@@ -62,7 +128,7 @@ fn issue90_bash_validation_event_requires_exact_safe_audit_and_terminal_facts() 
     };
     let result = RuntimeToolResult {
         call_id: call.id.clone(),
-        output: vega_runtime::BASH_INVALID_INPUT_OUTPUT.into(),
+        output: vega_tools::BashInputError::WrongCommandType.feedback(),
         status: RuntimeToolStatus::Rejected,
         reused: false,
         exit_code: None,
@@ -111,7 +177,7 @@ fn issue90_bash_validation_event_requires_exact_safe_audit_and_terminal_facts() 
             "assistant",
             &event(
                 RuntimeToolCall {
-                    input_json: r#"{"command":"SECRET_BASH_COMMAND"}"#.into(),
+                    input_json: r#"{"command":["SECRET_BASH_COMMAND"]}"#.into(),
                     ..call
                 },
                 result

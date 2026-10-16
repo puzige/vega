@@ -74,6 +74,18 @@ pub struct InvalidBashAudit {
     audit_version: String,
     raw_input_bytes: u64,
     raw_input_sha256: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_bash_input_error"
+    )]
+    validation_error_code: Option<vega_tools::BashInputError>,
+}
+
+fn optional_bash_input_error<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<vega_tools::BashInputError>, D::Error> {
+    vega_tools::BashInputError::deserialize(deserializer).map(Some)
 }
 
 impl InvalidBashAudit {
@@ -88,6 +100,7 @@ impl InvalidBashAudit {
             audit_version: "bash_invalid_v1".to_string(),
             raw_input_bytes,
             raw_input_sha256: format!("{:x}", digest.finalize()),
+            validation_error_code: vega_tools::bash_input_error(raw),
         })
     }
 
@@ -103,10 +116,39 @@ impl InvalidBashAudit {
         .then_some(audit)
     }
 
+    pub fn feedback(&self) -> String {
+        self.validation_error_code.map_or_else(
+            || BASH_INVALID_INPUT_OUTPUT.to_owned(),
+            vega_tools::BashInputError::feedback,
+        )
+    }
+
+    pub fn matches_feedback(&self, output: &str) -> bool {
+        output == self.feedback()
+    }
+
+    pub fn semantically_equal(&self, other: &Self) -> bool {
+        self.audit_version == other.audit_version
+            && self.raw_input_bytes == other.raw_input_bytes
+            && self.raw_input_sha256 == other.raw_input_sha256
+            && match (self.validation_error_code, other.validation_error_code) {
+                (Some(left), Some(right)) => left == right,
+                _ => true,
+            }
+    }
+
     /// Serializes the content-free audit without the raw provider input.
     pub fn to_json(&self) -> Option<String> {
         serde_json::to_string(self).ok()
     }
+}
+
+pub fn is_invalid_bash_feedback(output: &str) -> bool {
+    output == BASH_INVALID_INPUT_OUTPUT
+        || output == LEGACY_BASH_INVALID_INPUT_OUTPUT
+        || vega_tools::BashInputError::ALL
+            .iter()
+            .any(|code| output == code.feedback())
 }
 
 /// One project-scoped exact permission rule preloaded by conversation.
@@ -1037,5 +1079,5 @@ pub use loop_::{
     run_agent, run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
     run_agent_with_sink,
 };
-pub use tools_exec::tool_definitions;
 pub(crate) use tools_exec::*;
+pub use tools_exec::{tool_definitions, tool_names_equivalent};

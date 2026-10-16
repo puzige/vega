@@ -321,7 +321,9 @@ pub(crate) fn history_from_context_source(
                     "incomplete persisted tool group".into(),
                 ));
             }
-            history.push(vega_runtime::ChatMessage::assistant_with_tools(text, calls));
+            let mut assistant = vega_runtime::ChatMessage::assistant_with_tools(text, calls);
+            assistant.mark_stored_tool_calls();
+            history.push(assistant);
             for call in group {
                 let output = call.output_text.clone().ok_or_else(|| {
                     ConversationError::CorruptRow("terminal tool result has no output".into())
@@ -486,8 +488,8 @@ pub(crate) fn primary_history_from_context_source_with_checkpoint(
                         .unwrap_or("unknown");
                     content.push_str("tool ");
                     content.push_str(&call.name);
-                    content.push_str(" input: ");
-                    content.push_str(&call.input_json);
+                    content.push_str(" call_id: ");
+                    content.push_str(&call.id);
                     content.push_str(" status: ");
                     content.push_str(status);
                     content.push('\n');
@@ -1257,10 +1259,9 @@ pub(crate) fn validate_recovered_projection(
                     || approval.decision != Approval::Deny
                     || approval.source != ApprovalSource::Validation
                     || (output != expected
-                        && output
-                            != invalid
-                                .validation_error_code()
-                                .validation_result(invalid.tool().as_str()))
+                        && !invalid
+                            .validation_error_code()
+                            .matches_validation_result(invalid.tool().as_str(), output))
                 {
                     return Err(corrupt());
                 }
@@ -1276,10 +1277,11 @@ pub(crate) fn validate_recovered_projection(
                 && approval.danger.is_none()
                 && exit_code.is_none()
                 && duration_ms.is_none()
-                && ((output == vega_runtime::BASH_INVALID_INPUT_OUTPUT
-                    && vega_runtime::InvalidBashAudit::from_json(input_json).is_some())
+                && (vega_runtime::InvalidBashAudit::from_json(input_json)
+                    .is_some_and(|audit| audit.matches_feedback(output))
                     || (output == vega_runtime::LEGACY_BASH_INVALID_INPUT_OUTPUT
-                        && vega_tools::bash_permission_signature(input_json).is_err())) =>
+                        && vega_runtime::InvalidBashAudit::from_json(input_json).is_none()
+                        && vega_tools::legacy_bash_input_is_invalid(input_json))) =>
         {
             Ok(input_json.to_string())
         }
@@ -1410,13 +1412,15 @@ pub(crate) fn mutation_success_matches(
                     && success.bytes_written == expected_written_bytes.unwrap_or(*content_bytes)
                     && success.checkpoint_ref == expected_ref
             }),
-        vega_tools::WriteEditAudit::Edit { path, .. } => {
-            vega_tools::EditSuccessOutput::from_json(output)
-                .ok()
-                .is_some_and(|success| {
-                    success.path == *path && success.checkpoint_ref == expected_ref
-                })
-        }
+        vega_tools::WriteEditAudit::Edit {
+            path, edit_count, ..
+        } => vega_tools::EditSuccessOutput::from_json(output)
+            .ok()
+            .is_some_and(|success| {
+                success.path == *path
+                    && success.checkpoint_ref == expected_ref
+                    && edit_count.is_none_or(|count| success.replacements == count)
+            }),
     }
 }
 

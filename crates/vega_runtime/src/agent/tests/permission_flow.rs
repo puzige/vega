@@ -23,7 +23,7 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Read", "glob", "grep"]
+            vec!["read", "glob", "grep"]
         );
         assert_strict_schemas(&tools);
     }
@@ -33,25 +33,31 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Read", "glob", "grep", "Write", "Edit", "bash"]
+        vec!["read", "glob", "grep", "write", "edit", "bash"]
     );
     assert_strict_schemas(&tools);
     let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
-    assert!(bash.description.contains(r#"{"cmd":"rg ..."}"#));
-    assert!(bash.description.contains("command is unsupported"));
-    assert_eq!(
-        bash.input_schema["required"],
-        serde_json::json!(["cmd", "timeout_ms"])
+    assert!(
+        bash.description
+            .contains(r#"{"command":"pwd","timeout":null}"#)
+    );
+    assert!(
+        bash.description
+            .contains("timeout is a positive integer in seconds")
     );
     assert_eq!(
-        bash.input_schema["properties"]["timeout_ms"]["type"],
+        bash.input_schema["required"],
+        serde_json::json!(["command", "timeout"])
+    );
+    assert_eq!(
+        bash.input_schema["properties"]["timeout"]["type"],
         serde_json::json!(["integer", "null"])
     );
 
-    let read = tools.iter().find(|tool| tool.name == "Read").unwrap();
+    let read = tools.iter().find(|tool| tool.name == "read").unwrap();
     assert_eq!(
         read.input_schema["required"],
-        serde_json::json!(["file_path", "offset", "limit"])
+        serde_json::json!(["path", "offset", "limit"])
     );
     assert_eq!(
         read.input_schema["properties"]["offset"]["type"],
@@ -192,7 +198,7 @@ async fn issue85_bash_null_timeout_reaches_approval_and_execution_boundary() {
 
 #[test]
 fn issue90_invalid_bash_audit_is_content_free_and_strict() {
-    let raw = r#"{"command":"SECRET_BASH_COMMAND"}"#;
+    let raw = r#"{"command":["SECRET_BASH_COMMAND"]}"#;
     let audit = InvalidBashAudit::from_raw(raw).unwrap();
     let json = audit.to_json().unwrap();
     assert!(!json.contains("SECRET_BASH_COMMAND"));
@@ -431,7 +437,7 @@ async fn issue90_invalid_bash_is_atomic_and_guides_the_model_without_exposing_in
             ProviderEvent::ToolUse {
                 id: "bad-bash".into(),
                 name: "bash".into(),
-                input_json: r#"{"command":"printf SECRET_BASH > issue90-marker"}"#.into(),
+                input_json: r#"{"command":["printf SECRET_BASH > issue90-marker"]}"#.into(),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -468,18 +474,22 @@ async fn issue90_invalid_bash_is_atomic_and_guides_the_model_without_exposing_in
         .find(|definition| definition.name == "bash")
         .unwrap()
         .clone();
-    assert!(bash_definition.description.contains(r#"{"cmd":"rg ..."}"#));
     assert!(
         bash_definition
             .description
-            .contains("command is unsupported")
+            .contains(r#"{"command":"pwd","timeout":null}"#)
+    );
+    assert!(
+        bash_definition
+            .description
+            .contains("timeout is a positive integer in seconds")
     );
     assert_eq!(
         bash_definition.input_schema["required"],
-        serde_json::json!(["cmd", "timeout_ms"])
+        serde_json::json!(["command", "timeout"])
     );
     assert_eq!(
-        bash_definition.input_schema["properties"]["timeout_ms"]["type"],
+        bash_definition.input_schema["properties"]["timeout"]["type"],
         serde_json::json!(["integer", "null"])
     );
     assert_eq!(bash_definition.input_schema["additionalProperties"], false);
@@ -510,9 +520,17 @@ async fn issue90_invalid_bash_is_atomic_and_guides_the_model_without_exposing_in
     let feedback = second_request
         .messages
         .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("bad-bash"))
+        .find(|message| {
+            message.content.contains("Historical tool result")
+                && message.content.contains("call_id=bad-bash")
+        })
         .unwrap();
-    assert_eq!(feedback.content, BASH_INVALID_INPUT_OUTPUT);
+    assert!(
+        feedback
+            .content
+            .ends_with(&vega_tools::BashInputError::WrongCommandType.feedback())
+    );
+    assert!(feedback.tool_call_id.is_none());
     let wire = serde_json::to_string(&crate::openai::build_request_body(second_request)).unwrap();
     assert!(wire.contains("cmd"));
     assert!(!wire.contains("SECRET_BASH"));

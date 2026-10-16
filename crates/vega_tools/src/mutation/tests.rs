@@ -10,6 +10,158 @@ use crate::{
     MutationTool, ToolError, Tools, WriteSuccessOutput,
 };
 
+#[test]
+fn issue300_batch_edits_use_one_preimage_and_one_atomic_write() {
+    let fixture = Fixture::new();
+    let path = fixture.project.path().join("batch.txt");
+    fs::write(&path, b"\xef\xbb\xbfalpha\r\nbeta\r\n").unwrap();
+    let tools = fixture.tools("batch");
+    tools.read("batch.txt", None, None).unwrap();
+    let raw = serde_json::json!({"path":"batch.txt","edits":[
+        {"oldText":"alpha","newText":"beta"},
+        {"oldText":"beta","newText":"gamma"}
+    ]})
+    .to_string();
+    let prepared = tools.prepare_edit_json(&raw).unwrap();
+    let audit =
+        serde_json::from_str::<serde_json::Value>(&prepared.audit().to_json().unwrap()).unwrap();
+    assert_eq!(audit["edit_count"], 2);
+    assert!(!audit.to_string().contains("alpha"));
+    let result = tools.execute_edit(prepared).unwrap();
+    let result = EditSuccessOutput::from_json(&result.text).unwrap();
+    assert_eq!(result.replacements, 2);
+    assert_eq!(fs::read(&path).unwrap(), b"\xef\xbb\xbfbeta\r\ngamma\r\n");
+    assert_eq!(
+        fs::read(fixture.call_root("batch").join("files/batch.txt")).unwrap(),
+        b"\xef\xbb\xbfalpha\r\nbeta\r\n"
+    );
+}
+
+#[test]
+fn issue300_invalid_batch_has_no_partial_effect_or_checkpoint() {
+    for (call, edits) in [
+        (
+            "missing",
+            serde_json::json!([{"oldText":"alpha","newText":"changed"},{"oldText":"missing","newText":"other"}]),
+        ),
+        (
+            "overlap",
+            serde_json::json!([{"oldText":"alpha beta","newText":"changed"},{"oldText":"beta","newText":"other"}]),
+        ),
+        (
+            "unchanged",
+            serde_json::json!([{"oldText":"alpha","newText":"changed"},{"oldText":"beta","newText":"beta"}]),
+        ),
+        ("empty", serde_json::json!([])),
+    ] {
+        let fixture = Fixture::new();
+        let path = fixture.project.path().join("batch.txt");
+        fs::write(&path, "alpha beta").unwrap();
+        let tools = fixture.tools(call);
+        tools.read("batch.txt", None, None).unwrap();
+        let raw = serde_json::json!({"path":"batch.txt","edits":edits}).to_string();
+        if let Ok(prepared) = tools.prepare_edit_json(&raw) {
+            assert!(tools.execute_edit(prepared).is_err(), "{call}");
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), "alpha beta", "{call}");
+        assert!(!fixture.call_root(call).exists(), "{call}");
+    }
+}
+
+#[test]
+fn issue300_batch_audit_binds_boundaries_order_and_legacy_single_identity() {
+    let fixture = Fixture::new();
+    fs::write(fixture.project.path().join("batch.txt"), "alpha beta").unwrap();
+    let tools = fixture.tools("audit");
+    let single = r#"{"path":"batch.txt","edits":[{"oldText":"alpha","newText":"new"}]}"#;
+    let legacy = r#"{"file_path":"batch.txt","old_string":"alpha","new_string":"new"}"#;
+    assert_eq!(
+        tools.audit_edit_json(single).unwrap(),
+        tools.audit_edit_json(legacy).unwrap()
+    );
+    let first = r#"{"path":"batch.txt","edits":[{"oldText":"alpha","newText":"new"},{"oldText":"beta","newText":"other"}]}"#;
+    let reversed = r#"{"path":"batch.txt","edits":[{"oldText":"beta","newText":"other"},{"oldText":"alpha","newText":"new"}]}"#;
+    assert_ne!(
+        tools.audit_edit_json(first).unwrap(),
+        tools.audit_edit_json(reversed).unwrap()
+    );
+    for raw in [
+        r#"{"path":"batch.txt","file_path":"batch.txt","edits":[{"oldText":"alpha","newText":"new"}]}"#,
+        r#"{"path":"batch.txt","edits":[{"oldText":"alpha","newText":"new"}],"old_string":"alpha","new_string":"new"}"#,
+        r#"{"path":"batch.txt","edits":[{"oldText":"","newText":"new"}]}"#,
+        r#"{"path":"batch.txt","edits":"[]"}"#,
+    ] {
+        assert!(tools.audit_edit_json(raw).is_err());
+    }
+}
+
+#[test]
+fn issue300_batch_rejects_actual_noop_overlap_ambiguity_and_stale_preimage() {
+    for (name, original, edits, expected) in [
+        (
+            "quotes",
+            "“beta” alpha",
+            serde_json::json!([
+                {"oldText":"alpha","newText":"changed"},
+                {"oldText":"\"beta\"","newText":"“beta”"}
+            ]),
+            MutationErrorCode::EditNoChange,
+        ),
+        (
+            "newline",
+            "alpha\nbeta",
+            serde_json::json!([
+                {"oldText":"alpha","newText":""},
+                {"oldText":"\nbeta","newText":"other"}
+            ]),
+            MutationErrorCode::EditOverlap,
+        ),
+        (
+            "ambiguous",
+            "“beta” ‘keep’ “beta” alpha",
+            serde_json::json!([
+                {"oldText":"alpha","newText":"changed"},
+                {"oldText":"\"beta\"","newText":"new"}
+            ]),
+            MutationErrorCode::EditMultipleMatches,
+        ),
+        (
+            "overlapping-matches",
+            "aaa alpha",
+            serde_json::json!([
+                {"oldText":"alpha","newText":"changed"},
+                {"oldText":"aa","newText":"new"}
+            ]),
+            MutationErrorCode::EditMultipleMatches,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let path = fixture.project.path().join("batch.txt");
+        fs::write(&path, original).unwrap();
+        let tools = fixture.tools(name);
+        tools.read("batch.txt", None, None).unwrap();
+        let prepared = tools
+            .prepare_edit_json(&serde_json::json!({"path":"batch.txt","edits":edits}).to_string())
+            .unwrap();
+        assert_eq!(
+            mutation_code(tools.execute_edit(prepared).unwrap_err()),
+            expected
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(!fixture.call_root(name).exists());
+    }
+    let fixture = Fixture::new();
+    let path = fixture.project.path().join("batch.txt");
+    fs::write(&path, "alpha beta").unwrap();
+    let tools = fixture.tools("stale");
+    tools.read("batch.txt", None, None).unwrap();
+    let prepared = tools.prepare_edit_json(r#"{"path":"batch.txt","edits":[{"oldText":"alpha","newText":"new"},{"oldText":"beta","newText":"other"}]}"#).unwrap();
+    fs::write(&path, "external alpha beta").unwrap();
+    assert!(tools.execute_edit(prepared).is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "external alpha beta");
+    assert!(!fixture.call_root("stale").exists());
+}
+
 struct Fixture {
     project: TempDir,
     checkpoints: TempDir,

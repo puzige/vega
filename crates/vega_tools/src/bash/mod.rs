@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
@@ -54,23 +54,49 @@ impl fmt::Debug for PreparedBash {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BashInput {
-    cmd: String,
-    #[serde(default)]
-    timeout_ms: OptionalTimeout,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BashInputError {
+    MalformedJson,
+    InputNotObject,
+    MissingCommand,
+    WrongCommandType,
+    EmptyCommand,
+    UnexpectedField,
+    ConflictingFields,
+    InvalidTimeout,
 }
 
-#[derive(Default)]
-struct OptionalTimeout(Option<u64>);
+impl BashInputError {
+    pub const ALL: [Self; 8] = [
+        Self::MalformedJson,
+        Self::InputNotObject,
+        Self::MissingCommand,
+        Self::WrongCommandType,
+        Self::EmptyCommand,
+        Self::UnexpectedField,
+        Self::ConflictingFields,
+        Self::InvalidTimeout,
+    ];
 
-impl<'de> Deserialize<'de> for OptionalTimeout {
-    fn deserialize<Deserializer>(deserializer: Deserializer) -> Result<Self, Deserializer::Error>
-    where
-        Deserializer: serde::Deserializer<'de>,
-    {
-        Option::<u64>::deserialize(deserializer).map(Self)
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MalformedJson => "malformed_json",
+            Self::InputNotObject => "input_not_object",
+            Self::MissingCommand => "missing_command",
+            Self::WrongCommandType => "wrong_command_type",
+            Self::EmptyCommand => "empty_command",
+            Self::UnexpectedField => "unexpected_field",
+            Self::ConflictingFields => "conflicting_fields",
+            Self::InvalidTimeout => "invalid_timeout",
+        }
+    }
+
+    pub fn feedback(self) -> String {
+        format!(
+            "Tool error: invalid bash input ({}). Expected bash({{\"command\":\"pwd\",\"timeout\":null}}). command must be non-empty; timeout is a positive integer in seconds or null. Do not mix legacy cmd/timeout_ms with command/timeout.",
+            self.as_str()
+        )
     }
 }
 
@@ -96,7 +122,8 @@ impl Tools {
     /// Strictly parse provider JSON without executing it. T26 must complete
     /// permission handling before passing the prepared value to execution.
     pub fn prepare_bash_json(&self, raw_input: &str) -> Result<PreparedBash, BashError> {
-        let (command, timeout_ms) = parse_bash_input(raw_input)?;
+        let (command, timeout_ms) =
+            parse_bash_input(raw_input).map_err(|_| BashError::new(BashErrorCode::InvalidInput))?;
         Ok(PreparedBash {
             instance_id: self.instance_id,
             project_root: self.root.clone(),
@@ -346,17 +373,78 @@ impl Tools {
 /// Strictly extracts the exact permission signature without creating an
 /// execution capability. Conversation uses this to validate persisted rules.
 pub fn bash_permission_signature(raw_input: &str) -> Result<String, BashError> {
-    parse_bash_input(raw_input).map(|(command, _)| command)
+    parse_bash_input(raw_input)
+        .map(|(command, _)| command)
+        .map_err(|_| BashError::new(BashErrorCode::InvalidInput))
 }
 
-fn parse_bash_input(raw_input: &str) -> Result<(String, u64), BashError> {
-    let input: BashInput =
-        serde_json::from_str(raw_input).map_err(|_| BashError::new(BashErrorCode::InvalidInput))?;
-    let timeout_ms = input.timeout_ms.0.unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
-    if input.cmd.is_empty() || timeout_ms == 0 {
-        return Err(BashError::new(BashErrorCode::InvalidInput));
+pub fn legacy_bash_input_is_invalid(raw_input: &str) -> bool {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyInput {
+        cmd: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     }
-    Ok((input.cmd, timeout_ms))
+    serde_json::from_str::<LegacyInput>(raw_input).map_or(true, |input| {
+        input.cmd.is_empty() || input.timeout_ms == Some(0)
+    })
+}
+
+pub fn bash_input_error(raw_input: &str) -> Option<BashInputError> {
+    parse_bash_input(raw_input).err()
+}
+
+pub fn bash_inputs_semantically_equal(left: &str, right: &str) -> bool {
+    match (parse_bash_input(left), parse_bash_input(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn parse_bash_input(raw_input: &str) -> Result<(String, u64), BashInputError> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw_input).map_err(|_| BashInputError::MalformedJson)?;
+    let input = value.as_object().ok_or(BashInputError::InputNotObject)?;
+    if (input.contains_key("command")
+        && (input.contains_key("cmd") || input.contains_key("timeout_ms")))
+        || (input.contains_key("cmd") && input.contains_key("timeout"))
+        || (input.contains_key("timeout") && input.contains_key("timeout_ms"))
+    {
+        return Err(BashInputError::ConflictingFields);
+    }
+    if input
+        .keys()
+        .any(|key| !matches!(key.as_str(), "command" | "cmd" | "timeout" | "timeout_ms"))
+    {
+        return Err(BashInputError::UnexpectedField);
+    }
+    let command = input
+        .get("command")
+        .or_else(|| input.get("cmd"))
+        .ok_or(BashInputError::MissingCommand)?
+        .as_str()
+        .ok_or(BashInputError::WrongCommandType)?;
+    if command.trim().is_empty() {
+        return Err(BashInputError::EmptyCommand);
+    }
+    let timeout_ms = match input.get("timeout").or_else(|| input.get("timeout_ms")) {
+        None | Some(serde_json::Value::Null) => DEFAULT_BASH_TIMEOUT_MS,
+        Some(value) => {
+            let value = value
+                .as_u64()
+                .filter(|value| *value > 0)
+                .ok_or(BashInputError::InvalidTimeout)?;
+            if input.contains_key("timeout") {
+                value
+                    .checked_mul(1000)
+                    .ok_or(BashInputError::InvalidTimeout)?
+            } else {
+                value
+            }
+        }
+    };
+    Ok((command.to_owned(), timeout_ms))
 }
 
 struct BashAttempt {

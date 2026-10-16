@@ -33,7 +33,7 @@ async fn issue90_bash_validation_terminal_is_actionable_and_never_prompts(cx: &m
         })
         .expect("stream window");
     assert!(text.contains(
-        "Command rejected: invalid input · cmd must be a non-empty string; timeout_ms must be a positive integer when provided; other fields are unsupported"
+        "Command rejected: use a non-empty command and a positive timeout in seconds, or null for the default"
     ));
     assert!(!text.contains("Tool result corrupted"));
     assert!(!queue.has_pending());

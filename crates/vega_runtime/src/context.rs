@@ -559,7 +559,9 @@ pub fn estimate_chat_context(
         .ok_or(ContextEstimateError::Overflow)?;
     let mut image_count = 0usize;
     let mut image_tokens = 0u64;
-    for message in messages {
+    let projected =
+        crate::project_model_messages(messages).map_err(|_| ContextEstimateError::InputTooLarge)?;
+    for message in &projected {
         input_tokens = checked_add(input_tokens, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?;
         input_tokens = checked_add(input_tokens, estimate_text(&message.content)?)?;
         if let Some(reasoning) = &message.reasoning_content {
@@ -623,7 +625,9 @@ pub fn estimate_wire_context(
         .ok_or(ContextEstimateError::Overflow)?;
     let mut image_count = 0usize;
     let mut image_tokens = 0u64;
-    for (index, message) in messages.iter().enumerate() {
+    let projected =
+        crate::project_model_messages(messages).map_err(|_| ContextEstimateError::InputTooLarge)?;
+    for (index, message) in projected.iter().enumerate() {
         // The standalone estimator charges one framing unit for the implicit
         // system slot.  When the loop hands us the already assembled wire
         // vector, that slot is the first explicit System value, so do not

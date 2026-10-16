@@ -631,7 +631,7 @@ pub(crate) fn persist_runtime_event(
             validate_runtime_proposal(call)?;
             if let Some(existing) = tool_calls::find_identity(store.conn(), &call.id)? {
                 if existing.thread_id != thread_id
-                    || existing.tool != call.name
+                    || !vega_runtime::tool_names_equivalent(&existing.tool, &call.name)
                     || !tool_inputs_semantically_equal(
                         &call.name,
                         &existing.input_json,
@@ -709,7 +709,7 @@ pub(crate) fn persist_runtime_event(
                 }
             })?;
             let is_same_identity = existing.thread_id == thread_id
-                && existing.tool == call.name
+                && vega_runtime::tool_names_equivalent(&existing.tool, &call.name)
                 && tool_inputs_semantically_equal(
                     &call.name,
                     &existing.input_json,
@@ -1132,7 +1132,10 @@ pub(crate) fn tool_inputs_semantically_equal(tool: &str, left: &str, right: &str
             vega_runtime::InvalidBashAudit::from_json(right),
         )
     {
-        return left == right;
+        return left.semantically_equal(&right);
+    }
+    if tool == "bash" {
+        return vega_tools::bash_inputs_semantically_equal(left, right);
     }
     if !matches!(tool, "Write" | "Edit" | "write" | "edit") {
         return left == right;
@@ -1180,10 +1183,9 @@ pub(crate) fn validate_runtime_validation_event(
         || result.call_id != call.id
         || result.status != RuntimeToolStatus::Rejected
         || (result.output != expected
-            && result.output
-                != invalid
-                    .validation_error_code()
-                    .validation_result(invalid.tool().as_str()))
+            && !invalid
+                .validation_error_code()
+                .matches_validation_result(invalid.tool().as_str(), &result.output))
         || result.exit_code.is_some()
         || result.duration_ms.is_some()
         || result.truncated.is_some()

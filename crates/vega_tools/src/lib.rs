@@ -51,7 +51,10 @@ mod sandbox;
 mod sha256;
 mod tools;
 
-pub use bash::{DEFAULT_BASH_TIMEOUT_MS, PreparedBash, bash_permission_signature};
+pub use bash::{
+    BashInputError, DEFAULT_BASH_TIMEOUT_MS, PreparedBash, bash_input_error,
+    bash_inputs_semantically_equal, bash_permission_signature, legacy_bash_input_is_invalid,
+};
 pub use codec::{
     CheckpointIds, CheckpointRef, CreatedNewFileMetadata, EditSuccessOutput, InvalidWriteEditAudit,
     MutationTool, WriteEditAudit, WriteSuccessOutput,
