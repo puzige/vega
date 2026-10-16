@@ -1,5 +1,6 @@
 use super::r64_popup_deferred::{PROJECT_BINDING, bounds, click, install_utility_globals};
 use super::*;
+use crate::conversation_stream::attachments::ImagePreview;
 use gpui_kit::{
     Modifiers, ScrollDelta, ScrollWheelEvent, VisualTestContext, linear_color_stop,
     linear_gradient, point, size,
@@ -126,7 +127,7 @@ async fn issue403_tail_clearance_tracks_composer_and_required_states(cx: &mut Te
         let image =
             ImageAttachment::from_bytes(include_bytes!("fixtures/screenshot-tiny.png").to_vec())
                 .expect("owned image fixture");
-        let preview = attachments::ImagePreview::new(image, "image.png".into(), cx);
+        let preview = ImagePreview::new(image, "image.png".into(), cx);
         stream.attachments.push((1, preview));
         stream.attachment_error = Some("Unable to add another image.");
         stream.controller_error = Some("The request needs attention.".into());

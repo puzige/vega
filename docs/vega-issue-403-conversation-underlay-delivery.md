@@ -66,7 +66,21 @@ Issue 403 GPUI regressions: 5 (not executed locally)
 
 ## 云端与剩余验收
 
-NOT RUN / 待 CI：本卡五项 GPUI 回归与现有 suite。可用过滤命令为 `cargo nextest run -p vega_ui issue403_`，实际现有 PR gate 运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo nextest run --workspace`。编译、运行与失败日志由主 agent 开 PR 后记录，不能把静态检查标作行为通过。
+本卡五项 GPUI 回归与现有 suite 尚未取得运行通过证据；首轮云端因下述测试编译错误停止，修复后待第二轮 CI。可用过滤命令为 `cargo nextest run -p vega_ui issue403_`，实际现有 PR gate 运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo nextest run --workspace`。不能把静态检查或未执行的测试标作行为通过。
+
+### 首轮云端编译失败与修复
+
+[PR #407](https://github.com/puzige/vega/pull/407) 的[首轮检查](https://github.com/puzige/vega/actions/runs/38833955465)中，Clippy 与 Nextest 均在新增测试的同一处编译失败，测试尚未执行。日志保留以下原始诊断：
+
+```text
+error[E0433]: cannot find `ImagePreview` in `attachments`
+  --> crates/vega_ui/src/conversation_stream/tests/issue403_conversation_underlay.rs:129:36
+129 |         let preview = attachments::ImagePreview::new(image, "image.png".into(), cx);
+```
+
+原因：测试作用域已有同名 `tests::attachments`，未限定的 `attachments::ImagePreview` 解析到测试模块。仅在新增测试显式导入 `crate::conversation_stream::attachments::ImagePreview` 并调用该类型；生产实现、可见性和所有断言不变。
+
+2026-10-16 01:19 UTC / 09:19 Asia/Shanghai，本地快速复查：`cargo fmt --all -- --check` 退出 0、stdout / stderr 为空；`git diff --check` 退出 0、stdout / stderr 为空。未在本地编译、Clippy 或执行测试，未由 executor 提交或 push。第二轮云端运行及原始结果待主 agent 触发、记录。
 
 待用户手测：
 
