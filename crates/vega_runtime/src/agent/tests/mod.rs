@@ -16,69 +16,6 @@ use crate::{
     ReasoningDisabledWire, ReasoningProtocol, ScriptStep,
 };
 
-struct RecordingCompactionHook {
-    calls: Arc<AtomicUsize>,
-    messages: Vec<ChatMessage>,
-    source_version: u64,
-}
-
-struct TailPreservingCompactionHook {
-    calls: Arc<AtomicUsize>,
-    observed: Arc<Mutex<Vec<ChatMessage>>>,
-}
-
-impl ContextCompactionHook for TailPreservingCompactionHook {
-    fn compact<'a>(
-        &'a self,
-        request: ContextCompactionRequest,
-        _cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut observed) = self.observed.lock() {
-            *observed = request.messages.clone();
-        }
-        let last_user = request
-            .messages
-            .iter()
-            .rposition(|message| message.role == ChatRole::User)
-            .unwrap_or(request.messages.len());
-        let mut messages = vec![ChatMessage::new(ChatRole::User, "summary")];
-        messages.extend(request.messages[last_user..].iter().cloned());
-        async move {
-            Ok(ContextCompactionResult {
-                messages,
-                source_version: request.source_version + 1,
-                source_fingerprint: request.source_fingerprint,
-                usages: Vec::new(),
-                usage_complete: false,
-            })
-        }
-        .boxed()
-    }
-}
-
-impl ContextCompactionHook for RecordingCompactionHook {
-    fn compact<'a>(
-        &'a self,
-        _request: ContextCompactionRequest,
-        _cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        let messages = self.messages.clone();
-        let source_version = self.source_version;
-        async move {
-            Ok(ContextCompactionResult {
-                messages,
-                source_version,
-                source_fingerprint: None,
-                usages: Vec::new(),
-                usage_complete: false,
-            })
-        }
-        .boxed()
-    }
-}
-
 mod loop_tools;
 mod mcp_registry;
 mod permission_flow;

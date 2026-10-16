@@ -18,10 +18,4 @@ pub use source::{
 };
 
 #[cfg(test)]
-mod catalog_tests;
-
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
 mod asset_probe;

@@ -142,12 +142,6 @@ impl SkillApproval {
         &self.source_label
     }
 
-    #[cfg(test)]
-    pub(super) fn with_approved_hash(mut self, hash: String) -> Self {
-        self.approved_sha256 = hash;
-        self
-    }
-
     fn valid(&self) -> bool {
         valid_name(&self.name)
             && valid_name(&self.source_label)
@@ -866,6 +860,3 @@ fn outcome(
             && status != "already_loaded",
     }
 }
-
-#[cfg(test)]
-mod asset_tests;

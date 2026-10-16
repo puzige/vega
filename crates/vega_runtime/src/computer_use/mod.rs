@@ -373,24 +373,6 @@ impl ComputerUseRun {
         result
     }
 
-    #[cfg(test)]
-    pub(crate) async fn execute(
-        &self,
-        name: &str,
-        call_id: &str,
-        arguments: Value,
-        cancel: &CancellationToken,
-    ) -> Result<String, ComputerUseError> {
-        self.execute_at(
-            name,
-            call_id,
-            arguments,
-            self.control.status().epoch,
-            cancel,
-        )
-        .await
-    }
-
     pub(crate) async fn execute_at(
         &self,
         name: &str,

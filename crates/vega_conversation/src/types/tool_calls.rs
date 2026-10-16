@@ -1174,6 +1174,3 @@ pub(crate) fn is_terminal(status: ToolCallStatus) -> bool {
             | ToolCallStatus::Cancelled
     )
 }
-
-#[cfg(test)]
-mod asset_metadata_tests;

@@ -867,11 +867,6 @@ impl RunCapabilitySnapshot {
     pub(crate) fn mcp_tool(&self, alias: &str) -> Option<&FrozenMcpTool> {
         self.mcp_by_alias.get(alias)
     }
-
-    #[cfg(test)]
-    pub(crate) fn mcp_count(&self) -> usize {
-        self.mcp_by_alias.len()
-    }
 }
 
 fn alias_for(server_id: &str, tool_name: &str) -> String {

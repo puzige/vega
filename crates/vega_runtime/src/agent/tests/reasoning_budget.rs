@@ -1,40 +1,5 @@
 use super::*;
 
-struct RetainLastRound {
-    calls: Arc<AtomicUsize>,
-    seen: Arc<Mutex<Vec<ContextCompactionRequest>>>,
-}
-
-impl ContextCompactionHook for RetainLastRound {
-    fn compact<'a>(
-        &'a self,
-        request: ContextCompactionRequest,
-        _cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.seen.lock().unwrap().push(request.clone());
-        let start = request
-            .messages
-            .iter()
-            .rposition(|message| !message.tool_calls.is_empty())
-            .unwrap();
-        let mut messages = vec![ChatMessage::new(
-            ChatRole::User,
-            "Task goal: finish the implementation. Progress: prior read rounds completed. Latest correction: preserve tool pairing.",
-        )];
-        messages.extend_from_slice(&request.messages[start..]);
-        Box::pin(async move {
-            Ok(ContextCompactionResult {
-                messages,
-                source_version: request.source_version + 1,
-                source_fingerprint: request.source_fingerprint,
-                usages: Vec::new(),
-                usage_complete: false,
-            })
-        })
-    }
-}
-
 #[tokio::test]
 async fn large_thinking_and_summary_complete_with_bounded_retention() {
     for summary in [false, true] {
@@ -165,56 +130,6 @@ async fn large_reasoning_and_replay_reach_tool_continuation_unchanged() {
         Some(reasoning.as_str())
     );
     assert_eq!(message.response_reasoning, replay);
-}
-
-#[derive(Clone, Copy)]
-enum Boundary {
-    Timeout,
-    SourceChanged,
-    InvalidSystem,
-    OverTarget,
-    Cancelled,
-}
-
-struct BoundaryHook(Boundary);
-
-impl ContextCompactionHook for BoundaryHook {
-    fn compact<'a>(
-        &'a self,
-        request: ContextCompactionRequest,
-        cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
-        let behavior = self.0;
-        Box::pin(async move {
-            let messages = match behavior {
-                Boundary::Timeout => {
-                    return Err(ContextCompactionFailure::new(
-                        VegaError::Context(ContextRuntimeError::SummaryTimedOut),
-                        None,
-                    ));
-                }
-                Boundary::SourceChanged => {
-                    return Err(ContextCompactionFailure::new(
-                        VegaError::Context(ContextRuntimeError::SourceChanged),
-                        None,
-                    ));
-                }
-                Boundary::InvalidSystem => vec![ChatMessage::new(ChatRole::System, "invalid")],
-                Boundary::OverTarget => request.messages,
-                Boundary::Cancelled => {
-                    cancel.cancel();
-                    vec![ChatMessage::new(ChatRole::User, "summary")]
-                }
-            };
-            Ok(ContextCompactionResult {
-                messages,
-                source_version: request.source_version + 1,
-                source_fingerprint: request.source_fingerprint,
-                usages: Vec::new(),
-                usage_complete: false,
-            })
-        })
-    }
 }
 
 #[tokio::test]

@@ -1,20 +1,5 @@
 use super::*;
 
-struct DelayedIssue146Permission;
-
-impl PermissionHook for DelayedIssue146Permission {
-    fn request(
-        &self,
-        _request: PermissionRequest,
-        _cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
-        Box::pin(async {
-            tokio::time::sleep(Duration::from_millis(60)).await;
-            Ok(PermissionDecision::Once)
-        })
-    }
-}
-
 #[tokio::test]
 async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     let (store, dir, _project_id) = setup();

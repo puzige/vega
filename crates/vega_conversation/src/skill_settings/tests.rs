@@ -38,14 +38,6 @@ fn generation(store: &Store) -> u64 {
         .consent_generation
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct ImportAuthority {
-    settings: skills::SkillSettings,
-    project: skills::ProjectSkillSettings,
-    sources: Vec<SkillSourceRecord>,
-    approvals: Vec<skills::SkillApprovalRecord>,
-}
-
 #[test]
 fn project_review_is_hash_bound_and_stale_approval_cannot_reenable() {
     let (owned, store, service, project_id) = fixture();
