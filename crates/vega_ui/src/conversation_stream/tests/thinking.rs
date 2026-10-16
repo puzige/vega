@@ -675,9 +675,13 @@ async fn summary_stage_nests_tools_without_duplicate_reasoning(cx: &mut TestAppC
     visual.run_until_parked();
     stream.read_with(&visual, |stream, app| {
         let group = stream.run_activity_groups["m"].read(app);
-        assert_eq!(group.stage_title(0, app), "run commands");
+        assert_eq!(group.stage_title(0, app), "Writing the fix");
         assert!(!group.segment_expanded(0));
         assert!(stream.run_notice_projection(app).is_empty());
+        assert_eq!(
+            group.test_visible_segment_thinking_texts(0, app),
+            vec!["Reviewing issue".to_owned()]
+        );
         let kinds = group
             .segment_children(0)
             .into_iter()
