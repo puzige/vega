@@ -475,7 +475,7 @@ impl Layout {
     pub const SHELL_SLOT_GUTTER: f32 = 32.0;
     /// Maximum readable width for conversation, settings, and diff content.
     ///
-    /// Issue #100: this is the **same** width the Composer uses
+    ///this is the **same** width the Composer uses
     /// ([`Layout::COMPOSER_MAX_WIDTH`]). The reference implementation drives
     /// both the thread content column and the Composer container from a single
     /// token (`--thread-content-max-width: 48rem` = 768px), so the two surfaces
@@ -486,7 +486,7 @@ impl Layout {
     pub const CONTENT_MAX_WIDTH: f32 = 768.0;
     /// Maximum user-message bubble width as a fraction of the message column.
     pub const USER_MESSAGE_MAX_WIDTH_RATIO: f32 = 0.8;
-    /// User-message bubble corner radius (Issue #78).
+    /// User-message bubble corner radius.
     pub const USER_MESSAGE_RADIUS: f32 = 16.0;
     /// Minimum horizontal page padding around a readable content column.
     pub const CONTENT_PADDING: f32 = 16.0;
@@ -502,7 +502,7 @@ impl Layout {
     pub const PENDING_MESSAGE_RADIUS: f32 = 16.0;
     pub const PENDING_MESSAGE_THUMBNAIL: f32 = 24.0;
     pub const PENDING_MESSAGE_VISIBLE_ROWS: usize = 3;
-    /// Issue 63: bounded attachment preview, shared by draft and user turn.
+    ///bounded attachment preview, shared by draft and user turn.
     pub const ATTACHMENT_THUMBNAIL: f32 = 72.0;
     /// R59 R5: maximum height of a composer model-picker floating layer.
     ///
@@ -570,7 +570,7 @@ impl Layout {
     pub const SIDEBAR_RESIZE_HIT_AREA: f32 = 5.0;
     /// Sidebar horizontal and vertical padding.
     pub const SIDEBAR_PADDING: f32 = 12.0;
-    /// Space below the aligned toolbar, preserving New Task at y=64 (issue #129).
+    /// Space below the aligned toolbar, preserving New Task at y=64.
     pub const SIDEBAR_TOOLBAR_CONTENT_GAP: f32 = 18.0;
     /// Shared leading origin for Sidebar navigation row titles.
     pub const SIDEBAR_NAV_CONTENT_INSET: f32 = 32.0;
@@ -624,7 +624,7 @@ impl Layout {
     pub const SIDEBAR_SECTION_GAP: f32 = 12.0;
     /// Composer width cap.
     ///
-    /// Issue #100: equal to [`Layout::CONTENT_MAX_WIDTH`] by contract — the
+    ///equal to [`Layout::CONTENT_MAX_WIDTH`] by contract — the
     /// Composer and the body column share one edge, because the reference
     /// implementation drives both from a single `--thread-content-max-width`
     /// (48rem = 768px). The frozen test in this file fails if the two diverge.

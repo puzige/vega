@@ -52,7 +52,7 @@ pub struct BranchSnapshot {
     pub branches: Vec<BranchItem>,
 }
 
-/// Bounded `@file` candidate projection (A2-12, S8-T47): project-relative
+/// Bounded `@file` candidate projection: project-relative
 /// file paths for the composer reference selector. Produced by the app
 /// layer from a gitignore-aware bounded walk (deterministic lexicographic
 /// order, hard entry cap), handed to the IO-free selector as a typed

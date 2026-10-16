@@ -308,7 +308,7 @@ pub fn recent(
         .collect()
 }
 
-/// Hard page cap (S8-T45/C7): one history page carries at most 200 messages.
+/// Hard page cap (C7): one history page carries at most 200 messages.
 pub const PAGE_LIMIT: usize = 200;
 
 /// Cursor/keyset page bound: the highest eligible `seq`. The initial (newest)

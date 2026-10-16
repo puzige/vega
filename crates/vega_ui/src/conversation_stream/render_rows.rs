@@ -29,7 +29,7 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     lines
 }
 
-/// #117: the compaction row's icon and color. Every state shares one glyph
+///the compaction row's icon and color. Every state shares one glyph
 /// (Lucide `text-select`), so the row never changes shape as the operation
 /// advances; only failure is recolored and the label carries the transition.
 pub(crate) fn context_compaction_visual(
@@ -1350,7 +1350,7 @@ pub(crate) fn sample_document(blocks: usize) -> String {
 /// The group includes the message, the gap and the action row, keeping the
 /// pointer path continuous. Opacity preserves the exact rest/hover geometry.
 ///
-/// Temporarily disabled by [`MESSAGE_COPY_ACTIONS_ENABLED`] (Issue #78
+/// Temporarily disabled by [`MESSAGE_COPY_ACTIONS_ENABLED`] (
 /// follow-up): the reserved action row read as an ugly, layout-coupled
 /// affordance, so while the flag is false the body is returned unchanged and
 /// no row is reserved. The plumbing below is retained so the interaction can

@@ -1,4 +1,4 @@
-//! Issue 63 R1–R4: explicit, bounded attachment intents owned by this stream.
+//! R1–R4: explicit, bounded attachment intents owned by this stream.
 use super::*;
 use gpui_kit::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, PathPromptOptions};
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-//! Issue #73 Settings surface. Every operation goes through the app-injected
+//! Settings surface. Every operation goes through the app-injected
 //! conversation service; this view never reads MCP tables or credential files.
 
 use crate::interaction::InteractionExt;

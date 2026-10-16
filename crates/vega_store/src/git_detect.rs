@@ -1,4 +1,4 @@
-//! Zero-dependency git repository detection (A1-03).
+//! Zero-dependency git repository detection.
 //!
 //! [`detect_git`] inspects `<path>/.git` and resolves the currently checked
 //! out branch from its `HEAD` file without shelling out to git or linking any

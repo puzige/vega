@@ -1,4 +1,4 @@
-//! Typed conversation-history hydration (S8-T45/C7): turns `messages.seq`
+//! Typed conversation-history hydration (C7): turns `messages.seq`
 //! keyset pages into UI-ready entries. This crate is the redaction boundary
 //! the card mandates before anything reaches `vega_ui` — tool inputs reduce
 //! through the owner projections ([`tool_card_input_projection`] /
@@ -383,7 +383,7 @@ fn assemble(
     }
     // S7 summary reference (C7): the thread's latest terminal assistant task
     // re-projects its cost summary from the durable audits exactly like the
-    // restart recovery of S7-T40. Attach it only while its message is on this
+    // restart recovery. Attach it only while its message is on this
     // page so the hydrated transcript keeps the card in sequence position.
     if attach_summary
         && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?

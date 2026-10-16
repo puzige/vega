@@ -1,4 +1,4 @@
-//! Headless agentic loop (tech-spec §4.2, A3-03 / S4-T20).
+//! Headless agentic loop (tech-spec §4.2).
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -435,7 +435,7 @@ pub struct AgentRequest {
     pub completed_tool_results: HashMap<String, CompletedToolCall>,
     /// Tool capability, permission, checkpoint, and exact-rule facts.
     pub tool_config: RuntimeToolConfig,
-    /// Immutable pricing capability frozen at run preflight (S7-T38/C3).
+    /// Immutable pricing capability frozen at run preflight (C3).
     ///
     /// `None` keeps the S4 legacy/unpriced semantics: usage rows persist with
     /// `cost_microcents = 0` and NULL pricing columns.
@@ -812,7 +812,7 @@ pub enum RuntimeEvent {
         binding: RunBinding,
         snapshot: SkillRunSnapshot,
     },
-    /// Provider usage priced by the frozen run-start catalog (S7-T38).
+    /// Provider usage priced by the frozen run-start catalog.
     UsageUpdated {
         /// Token counts from the provider.
         usage: RuntimeTokenUsage,

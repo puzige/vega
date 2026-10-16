@@ -1,4 +1,4 @@
-//! Retry policy for provider requests (tech-spec §4.1, S4-T19).
+//! Retry policy for provider requests (tech-spec §4.1).
 //!
 //! Network errors and 5xx back off exponentially (1s / 2s / 4s, at most 3
 //! retries); a 429 honors the server-provided `Retry-After` when present and

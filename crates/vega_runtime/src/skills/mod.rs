@@ -1,4 +1,4 @@
-//! Headless Agent Skills source and format boundary (Issue #74).
+//! Headless Agent Skills source and format boundary.
 
 mod catalog;
 mod frontmatter;

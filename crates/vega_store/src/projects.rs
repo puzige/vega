@@ -1,4 +1,4 @@
-//! Project registration CRUD (A1-03) against the `projects` table.
+//! Project registration CRUD against the `projects` table.
 //!
 //! Functions take a [`Connection`] (the single connection owned by
 //! [`Store`](crate::Store)) rather than `&Store`, so the module stays free of

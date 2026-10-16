@@ -1,4 +1,4 @@
-//! Thread orchestration (A1-02): the entry point the UI uses to create,
+//! Thread orchestration: the entry point the UI uses to create,
 //! list, update, and open threads.
 //!
 //! This layer owns everything that must not leak into the SQL layer
@@ -46,7 +46,7 @@ fn store_error<E: std::fmt::Display>(error: E) -> ConversationError {
 }
 
 /// Restores the calibrated Composer counter baseline for one thread from the
-/// durable, checked `token_usage` aggregate (S7-T39/C4). Corrupt rows,
+/// durable, checked `token_usage` aggregate (C4). Corrupt rows,
 /// checked-overflow aggregates, and legacy/unpriced mixes fail closed: the
 /// former surfaces as [`ConversationError`], the latter restores
 /// `cost: None` so the counter shows `—` instead of a partial total.
@@ -280,7 +280,7 @@ pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, Conve
 }
 
 /// Lists a project's threads, most recently updated first, pinned group
-/// first. T13 (A1-05) adds the lifecycle filter: `Some(status)` restricts
+/// first. T13 adds the lifecycle filter: `Some(status)` restricts
 /// the list (the sidebar main list reads `Active`, the 「已归档」 section
 /// reads `Archived`); `None` keeps both.
 pub fn list_threads(
@@ -312,7 +312,7 @@ fn get_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationErro
     thread_from_row(&row)
 }
 
-/// Renames a thread (A1-05) and bumps `updated_at` (rename is thread
+/// Renames a thread and bumps `updated_at` (rename is thread
 /// activity per the DDL semantics), returning the refreshed thread.
 pub fn rename_thread(
     store: &Store,
@@ -326,7 +326,7 @@ pub fn rename_thread(
     get_thread(store, thread_id)
 }
 
-/// Switches a thread's lifecycle status (`active` ↔ `archived`, A1-05).
+/// Switches a thread's lifecycle status (`active` ↔ `archived`).
 /// `updated_at` is not bumped, so archiving does not reorder the list.
 pub fn set_thread_status(
     store: &Store,
@@ -341,7 +341,7 @@ pub fn set_thread_status(
     Ok(())
 }
 
-/// Sets a thread's pinned flag (置顶切换, A1-05). `updated_at` is not bumped.
+/// Sets a thread's pinned flag (置顶切换). `updated_at` is not bumped.
 pub fn set_thread_pinned(
     store: &Store,
     thread_id: &str,
@@ -396,7 +396,7 @@ pub fn set_thread_permission_mode(
     get_thread(store, thread_id)
 }
 
-/// Persists the thread's durable model (A2-14/R1: an in-session selection
+/// Persists the thread's durable model (R1: an in-session selection
 /// applies to the current thread's next run) and returns the authoritative
 /// thread row. Unknown threads and empty models fail closed with
 /// [`ConversationError::NotFound`].
@@ -416,7 +416,7 @@ pub fn set_thread_model(
     get_thread(store, thread_id)
 }
 
-/// Deletes a thread (A1-05). The store layer removes the thread together
+/// Deletes a thread. The store layer removes the thread together
 /// with its `messages`/`tool_calls` rows in one transaction (no orphan rows;
 /// `token_usage` is kept for cost auditing).
 pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationError> {
@@ -454,7 +454,7 @@ pub fn update_thread(
     Ok(())
 }
 
-/// Read only title metadata without recording a visit or changing recency (#65 R5).
+/// Read only title metadata without recording a visit or changing recency (R5).
 pub fn read_thread_title(
     store: &Store,
     thread_id: &str,

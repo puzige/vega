@@ -184,7 +184,7 @@ impl Default for UiPrefs {
     }
 }
 
-/// Agent loop guardrails (Issue #114).
+/// Agent loop guardrails.
 ///
 /// The turn limit mirrors Claude Code's `--max-turns` / `maxTurns`: it caps
 /// the number of agentic turns (provider round-trips) in one run, not the

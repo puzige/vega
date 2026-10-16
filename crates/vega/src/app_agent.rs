@@ -175,7 +175,7 @@ pub(crate) struct ActiveAgentRun {
     pub(crate) computer_use_owner: String,
     pub(crate) pending_user_content: Option<String>,
     pub(crate) pending_approved_instruction: Option<String>,
-    /// Live wall-clock measurement of this run (S7-T40). It exists only in
+    /// Live wall-clock measurement of this run. It exists only in
     /// run memory: the summary card shows it while the run is alive and `—`
     /// after a restart, because `messages` has no finished timestamp (C4).
     pub(crate) started: Instant,
@@ -343,7 +343,7 @@ impl PricingController {
         }
     }
 
-    /// #60 R3: accounting is optional. Freeze only committed authority;
+    /// R3: accounting is optional. Freeze only committed authority;
     /// an unsaved/retry draft must never affect a running call's estimate.
     pub(crate) fn catalog_for_run(&self, model: &str) -> Option<PricingCatalog> {
         let authority = match &self.state {
@@ -513,7 +513,7 @@ impl AppAgentController {
     }
 
     /// Records the run's terminal assistant message id from the durable
-    /// terminal event (S7-T40 summary projection key). Duplicate or later
+    /// terminal event (summary projection key). Duplicate or later
     /// events overwrite in place; the id is only consumed at run finish.
     pub(crate) fn observe_terminal_message(
         &mut self,
@@ -841,7 +841,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
-        // Issue #114: agentic turn guardrail from `[agent] turn_limit`
+        //agentic turn guardrail from `[agent] turn_limit`
         // (0 = unlimited). Absent config (legacy callers/tests) stays unlimited.
         let turn_limit = config.as_ref().map_or(0, |config| config.agent.turn_limit);
         if let Some(config) = &config
@@ -1075,7 +1075,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         let result = match run {
             PendingAgentRun::UserMessage(submission) => {
                 let content = submission.content;
-                // #65 R2: freeze only composer text, before expanding referenced files.
+                // R2: freeze only composer text, before expanding referenced files.
                 let title_source = content.clone();
                 // A2-12: resolve `@path` tokens against the project root and
                 // inject the referenced file contents ahead of the user text

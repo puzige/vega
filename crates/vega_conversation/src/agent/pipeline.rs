@@ -563,7 +563,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             "frozen context model changed".into(),
         ));
     }
-    // #76 correction: the app worker has already checked that this frozen
+    // correction: the app worker has already checked that this frozen
     // provider/model is the unique enabled selection. Direct callers with no
     // frozen provider stay unbudgeted; a model ID alone cannot select a
     // provider policy. Legacy per-thread rows have no provider identity, so

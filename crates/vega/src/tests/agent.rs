@@ -1668,7 +1668,7 @@ fn local_credential_preparation_failure_has_no_durable_messages() {
 
 #[test]
 fn production_agent_worker_applies_configured_turn_limit() {
-    // Issue #114: `[agent] turn_limit` from config.toml must reach the runtime
+    //`[agent] turn_limit` from config.toml must reach the runtime
     // loop through the real worker entry point and soft-stop before issuing
     // the (limit + 1)th provider request.
     let repo = diff_controller_repo();
@@ -1790,7 +1790,7 @@ turn_limit = 2
 #[test]
 fn production_agent_worker_defaults_to_unlimited_turns() {
     // Without `[agent] turn_limit`, the worker must keep running tool rounds
-    // with no per-tool-call cap (Issue #114 regression for the old limit 100).
+    // with no per-tool-call cap (regression for the old limit 100).
     let repo = diff_controller_repo();
     fs::write(repo.path().join("a.txt"), "ok\n").expect("unlimited fixture file");
     let config_root = tempfile::tempdir().expect("unlimited config root");

@@ -72,7 +72,7 @@ pub enum Icon {
     Hand,
     /// R62 R8: the "approve for me" permission row.
     Shield,
-    /// #117: context compaction. Lucide's `text-select` silhouette is the
+    ///context compaction. Lucide's `text-select` silhouette is the
     /// reference product's own compaction marker; one glyph covers every
     /// compaction state, so the row never swaps shape as the status changes.
     TextSelect,
@@ -135,7 +135,7 @@ const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 /// round-cap/round-join convention used by the other inline functional icons.
 const GIT_BRANCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="7" x2="6" y2="17"/><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M18 7v3a9 9 0 0 1-9 9H8"/></svg>"#;
 
-/// #117: Lucide's public `text-select` icon (ISC), carried inline because
+///Lucide's public `text-select` icon (ISC), carried inline because
 /// `gpui-kit-assets 0.6.0` does not ship it. Two bracket halves with three
 /// shortening rules read as "condensed text" at 16px, which is the reference
 /// product's own marker for a compacted context.

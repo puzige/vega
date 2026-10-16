@@ -1,4 +1,4 @@
-//! Issue #73 MCP configuration metadata. Secret values are never stored here.
+//! MCP configuration metadata. Secret values are never stored here.
 //!
 //! Every mutation uses a configuration revision. Replacing a server disables
 //! it, so a stale enabled row cannot acquire an edited endpoint or command.

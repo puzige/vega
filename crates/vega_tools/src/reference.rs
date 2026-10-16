@@ -1,4 +1,4 @@
-//! Bounded `@file` context injection (A2-12, S8-T47).
+//! Bounded `@file` context injection.
 //!
 //! The composer may reference project files with `@relative/path` tokens.
 //! This module is the sole authority for turning those tokens into injected

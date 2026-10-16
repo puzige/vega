@@ -243,7 +243,7 @@ impl ConversationStream {
                         div()
                             .relative()
                             .w_full()
-                            // 选择器打开时的按键作用域（A2-12）：Failed
+                            // 选择器打开时的按键作用域（）：Failed
                             // 使用独立 Retry 上下文，避免隐藏后仍吞掉
                             // Composer 的按键；其余可见状态由 FileSelect
                             // 先处理 Up/Down/Enter/Tab/Esc。
@@ -691,7 +691,7 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// The `@file` suggestion dropdown (A2-12): rendered above the input row
+    /// The `@file` suggestion dropdown: rendered above the input row
     /// while an `@token` is being completed. Bounded candidate list, mouse
     /// and keyboard parity; zero filesystem access from this view.
     fn render_file_dropdown(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1170,7 +1170,7 @@ impl ConversationStream {
             )
     }
 
-    /// The model selector (A2-14): trigger shows the current selection;
+    /// The model selector: trigger shows the current selection;
     /// options are the priced catalog projection installed by the app layer
     /// (zero file IO). Keyboard: Enter/Space open, Up/Down move, Enter
     /// accept (first-wins), Esc close.
@@ -1526,7 +1526,7 @@ impl Render for ConversationStream {
         self.refresh_run_notices(cx);
         let stage_top_insets = self.stage_top_insets(cx);
 
-        // 2) 顶部水合请求（S8-T45/C7）：视口到达顶部且仍存在更早历史时，
+        // 2) 顶部水合请求（/C7）：视口到达顶部且仍存在更早历史时，
         //    向 app 层请求上一页（typed 投影返回后 splice 前插，页边界保
         //    anchor）。本 crate 零 SQLite；一页在飞，失败暂停直到离开顶部。
         let at_top = self.scroll_at_top();

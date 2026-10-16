@@ -1,4 +1,4 @@
-//! #76: IO-free, exact-owner compaction lifecycle projection.
+//!IO-free, exact-owner compaction lifecycle projection.
 use super::*;
 use vega_conversation::types::{
     ContextAccountingRecord, ContextCompactionFailureCode as Failure,

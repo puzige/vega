@@ -1,4 +1,4 @@
-//! #65 approved fixture adaptation: body and auxiliary requests have separate scripts.
+//! approved fixture adaptation: body and auxiliary requests have separate scripts.
 use super::*;
 
 pub(super) struct PrimaryWithAuxiliaryFixture {

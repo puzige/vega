@@ -1,7 +1,7 @@
 //! Pure-data render instruction tree ([`RenderNode`]) and the
 //! pulldown-cmark event → node conversion.
 //!
-//! Nodes carry no layout, color, or font information: the UI layers (S3-T17)
+//! Nodes carry no layout, color, or font information: the UI layers
 //! map them onto GPUI elements. The conversion is infallible and total —
 //! unmodeled constructs degrade to text spans instead of dropping content.
 

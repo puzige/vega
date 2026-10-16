@@ -127,7 +127,7 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Follows the caret into/out of an `@token` (A2-12). The first `@` in a
+    /// Follows the caret into/out of an `@token`. The first `@` in a
     /// session triggers exactly one bounded index request; later opens
     /// re-filter a complete accepted snapshot locally. No token closes and
     /// fences the selector without allowing a late result to reopen it.

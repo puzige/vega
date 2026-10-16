@@ -521,7 +521,7 @@ impl Render for VegaWindow {
                                         let usage = vega_conversation::threads::thread_usage_seed(
                                             store, &thread.id,
                                         )?;
-                                        // S7-T40 restart recovery: token/cost/cache/
+                                        // restart recovery: token/cost/cache/
                                         // tool count re-project from the durable
                                         // audits; duration stays `—` (no finished
                                         // timestamp in `messages`, C4). The hydrated

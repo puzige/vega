@@ -58,7 +58,7 @@ pub mod recovery;
 pub mod run_diagnostics;
 pub mod sidebar_organization;
 pub mod skills;
-// T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
+// T11（）：threads 表 SQL 层（projects 域函数归 T10）。
 pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;

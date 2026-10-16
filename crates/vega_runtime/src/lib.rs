@@ -1,5 +1,5 @@
 //! Headless agent core: provider abstraction, OpenAI-compatible streaming,
-//! and mock replay (tech-spec §4.1 §7 §8, A3-01/A3-02 / S4-T19).
+//! and mock replay (tech-spec §4.1 §7 §8).
 //!
 //! The crate is UI-free (no gpui, headless red line): it only knows how to
 //! talk to LLM providers and how to replay scripted event streams. The
@@ -10,13 +10,13 @@
 //!   trait — trait methods hand-box their future into a `BoxFuture` (the
 //!   exact shape `async-trait` would expand to), keeping the crate free of
 //!   proc-macro dependencies while staying `dyn`-compatible (architect's
-//!   pre-ruling, S4-T19).
+//! pre-ruling).
 //! - [`openai`]: OpenAI-compatible SSE implementation — `stream: true` +
 //!   `stream_options.include_usage`, `delta.tool_calls` aggregation by
 //!   index, retry with exponential backoff / `Retry-After`, and
 //!   cancellation. The API key only ever enters the Authorization header.
 //! - [`mock`]: scripted replay provider ([`MockProvider`]) — the shared
-//!   test infrastructure for the S4-S8 agentic-loop tests (tech-spec §8).
+//! test infrastructure for the agentic-loop tests (tech-spec §8).
 //! - [`agent`]: system-plus-history context assembly, serialized tool loop,
 //!   cancellation, call-id deduplication, limits, and runtime-local events.
 //! - [`retry`]: the [`RetryPolicy`] schedule (1s / 2s / 4s, 3 retries).

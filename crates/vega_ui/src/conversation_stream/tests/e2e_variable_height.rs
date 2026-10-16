@@ -1,4 +1,4 @@
-//! S8-T44 headless 主干 E2E（决策 7 从简：恰一条）：
+//! headless 主干 E2E（决策 7 从简：恰一条）：
 //! 10k 混合语义项构建 → 顺序与内容保真 → 贴底跟随 → 上翻 detach →
 //! 前插页锚定 → 回底 resume → 冻结区 remat=0 与稳定 ID。
 //! 沿用既有 harness 模式（真实 GPUI 窗口 + `StreamHarness` 根视图）。

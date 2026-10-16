@@ -580,7 +580,7 @@ async fn transcript_hides_completed_statistics_but_keeps_failure_status(cx: &mut
 
 #[gpui_kit::test]
 async fn batch_finished_flush_materializes_the_final_committed_tail(cx: &mut TestAppContext) {
-    // S8-T44 review P1-1: a batched ingress tail [TextDelta…, MessageFinished]
+    // review: a batched ingress tail [TextDelta…, MessageFinished]
     // must materialize the frozen committed tail in finish_agent_message
     // itself — render's sync only covers the *active* turn, which is already
     // taken by the time the next frame runs.

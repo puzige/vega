@@ -1,4 +1,4 @@
-//! Per-task cost summary projection (S7-T40/A10-06, C4 contract).
+//! Per-task cost summary projection (C4 contract).
 //!
 //! The projection aggregates only the finished assistant task's own
 //! provider-call rows (`token_usage` by `message_id`) and its tool-call audit
@@ -79,7 +79,7 @@ pub fn task_cost_summary(
 }
 
 /// Projects the summary of the thread's latest terminal assistant task, or
-/// `None` when the thread has none (S7-T40 restart recovery scope).
+/// `None` when the thread has none (restart recovery scope).
 ///
 /// Durable `token`/`cost`/`cache`/`tool-count` fields recover from the audit
 /// rows; the caller must pass `duration_ms = None` on restart because the

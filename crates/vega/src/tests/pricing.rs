@@ -163,7 +163,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::
     });
     assert_eq!(worker_starts.load(), starts + 1);
     assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
-    // #60 R2/R5 supersedes the old pricing refusal. Enter Settings explicitly
+    // R2/R5 supersedes the old pricing refusal. Enter Settings explicitly
     // while retaining the original save/recovery/focus assertions below.
     cx.update(|cx| {
         cx.set_global(vega_ui::settings::PricingSettingsRequested(true));

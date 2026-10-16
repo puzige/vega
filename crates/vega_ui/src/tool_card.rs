@@ -601,12 +601,12 @@ impl ToolCard {
         self.running_started_at.is_some() && self.elapsed_refresh_task.is_some()
     }
 
-    /// #151: whether this card's bounded detail is currently disclosed.
+    ///whether this card's bounded detail is currently disclosed.
     pub(crate) fn is_expanded(&self) -> bool {
         self.expanded
     }
 
-    /// The resting compact row copy, without any disclosed detail rows. #151
+    /// The resting compact row copy, without any disclosed detail rows.
     /// opens the newest unit's detail by default, so elapsed-copy assertions
     /// read this instead of [`Self::visible_text`].
     #[cfg(test)]

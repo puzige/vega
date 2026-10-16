@@ -72,7 +72,7 @@ pub(crate) const MONOFONT: &str = "Menlo";
 // `ListState::is_following_tail()` for the header indicator and re-engages
 // explicitly (Tail mode) when a permission prompt must be visible.
 
-/// Pure scroll-up hydration request gate (S8-T45/C7): a page may be requested
+/// Pure scroll-up hydration request gate (C7): a page may be requested
 /// only when the viewport is at the top edge, older history exists, no page
 /// is in flight, and no failure pause is armed.
 pub(crate) fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Option<i64> {
@@ -84,7 +84,7 @@ pub(crate) fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Op
 
 // ─── render instructions: RenderNode → StreamLine mapping (§5.3) ─────────────
 
-/// Whether a block's code fences may be highlighted (S3-T18 高亮整合策略):
+/// Whether a block's code fences may be highlighted (高亮整合策略):
 /// committed blocks go through the T16 tree-sitter query; the pending tail
 /// (unclosed fence) degrades to plain monospace (tech-spec §5.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +116,7 @@ pub(crate) struct TokenStyle {
     pub(crate) italic: bool,
 }
 
-/// S3-T18 高亮整合的**唯一映射表**：HighlightKind → 既有 ui-spec §2 色值
+/// 高亮整合的**唯一映射表**：HighlightKind → 既有 ui-spec §2 色值
 /// token（无新色值）：Keyword/Type → text_primary 加粗，String → success，
 /// Comment → text_tertiary 斜体，Number → warning，其余 → text_primary。
 pub(crate) fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> TokenStyle {
@@ -957,7 +957,7 @@ pub(crate) enum StreamEntry {
     Plan {
         card: Entity<PlanCard>,
     },
-    /// One read-only per-task cost summary card (S7-T40), projected by
+    /// One read-only per-task cost summary card, projected by
     /// `vega_conversation::summary` and applied by the app layer.
     Summary {
         card: Entity<SummaryCard>,

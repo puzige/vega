@@ -1,4 +1,4 @@
-//! R62 §7 and I58-R7: the bottom row's permission chip opens a four-row picker.
+//! R62 §7: the bottom row's permission chip opens a four-row picker.
 //!
 //! Contract source: `docs/vega-r62-slider-card-three-rows.md` §7 (R7/R8/R9)
 //! and §9 (A9/A10/A11). Every case mounts the real [`ConversationStream`] in a

@@ -1,11 +1,11 @@
-//! Provider abstraction (tech-spec §4.1, A3-01 / S4-T19).
+//! Provider abstraction (tech-spec §4.1).
 //!
-//! The [`Provider`] trait is the seam between the agentic loop (S4-T20) and
+//! The [`Provider`] trait is the seam between the agentic loop and
 //! concrete LLM backends: the OpenAI-compatible implementation ([`crate::
 //! openai::OpenAiProvider`]) and the scripted [`crate::mock::MockProvider`]
 //! are interchangeable behind `dyn Provider`.
 //!
-//! Architect's pre-ruling (S4-T19): the trait method returns a manually
+//! Architect's pre-ruling: the trait method returns a manually
 //! boxed `BoxFuture` — exactly the shape the `async_trait` macro would
 //! expand to — so the crate gains dyn-compatibility with zero proc-macro
 //! dependencies.

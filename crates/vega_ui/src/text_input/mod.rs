@@ -14,7 +14,7 @@
 //!   character and never paints the real value; cut/copy are refused on
 //!   masked fields so credentials cannot leave the app through the clipboard.
 //!
-//! S3-T18 Composer extension: `new_multiline` builds a bounded multi-line
+//! Composer extension: `new_multiline` builds a bounded multi-line
 //! input (Enter inserts `\n` via the [`InsertNewline`] action — 架构师裁定
 //! Enter=换行、Cmd+Enter=发送; paste preserves line breaks). Multi-line
 //! display paints one shaped visual line per `\n` segment (plus soft wraps)
@@ -79,7 +79,7 @@ pub struct TextInput {
     content_revision: u64,
     placeholder: SharedString,
     masked: bool,
-    /// Multi-line mode (S3-T18 Composer): Enter inserts `\n`, paste keeps
+    /// Multi-line mode (Composer): Enter inserts `\n`, paste keeps
     /// line breaks, and the element paints `rows` stacked lines.
     multiline: bool,
     /// Visible row count, dynamically clamped to the configured row range.

@@ -1,4 +1,4 @@
-//! S7-T39 (A10-02/A10-05) headless production journey: the bounded
+//! headless production journey: the bounded
 //! provisional estimate, in-place usage calibration, run/thread fencing, and
 //! restart recovery of the Composer counter, all driven by the real
 //! provider → runtime → conversation event chain against an owned temp data

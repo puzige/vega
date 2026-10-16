@@ -54,7 +54,7 @@ impl ConversationStream {
     }
 
     /// The exact reviewed candidates the (now Settings-owned) picker would
-    /// present, for the app integration harness. Issue #96 removed the
+    /// present, for the app integration harness. removed the
     /// Composer entry, so this read-only projection is the harness seam that
     /// still exercises the real `choose_skill_candidate` intent path.
     #[doc(hidden)]

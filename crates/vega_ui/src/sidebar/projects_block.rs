@@ -274,7 +274,7 @@ impl ProjectsBlock {
         }
     }
 
-    /// Unregisters the project and detaches its tasks in the store's A8-02
+    /// Unregisters the project and detaches its tasks in the store's
     /// transaction. The route change observes the same draft-navigation and
     /// task-mutation fences as other Sidebar writes; no files are touched.
     pub(super) fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {

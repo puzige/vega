@@ -1,4 +1,4 @@
-//! Explicit attachment import facade (Issue 63 R1/R3); call on a worker thread.
+//! Explicit attachment import facade (R1/R3); call on a worker thread.
 use crate::types::ImageAttachment;
 use std::os::unix::fs::OpenOptionsExt;
 use std::{fs::OpenOptions, io::Read, path::PathBuf};

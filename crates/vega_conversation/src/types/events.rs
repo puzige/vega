@@ -7,7 +7,7 @@ pub enum ConversationStopReason {
     End,
     /// Provider generation limit.
     Length,
-    /// Runtime agent turn safety limit (Issue #114).
+    /// Runtime agent turn safety limit.
     TurnLimit,
 }
 
@@ -272,7 +272,7 @@ pub enum ConversationEvent {
         /// Integer cost (`0` in S4; priced-zero rows keep `0` with
         /// provenance).
         cost: Microcents,
-        /// Exact pricing provenance (S7-T38); `None` keeps the S4
+        /// Exact pricing provenance; `None` keeps the S4
         /// legacy/unpriced semantics.
         pricing: Option<UsagePricing>,
     },

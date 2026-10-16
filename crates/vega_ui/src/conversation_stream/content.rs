@@ -78,7 +78,7 @@ impl ConversationStream {
     }
 
     /// Appends the read-only per-task cost summary card of one finished
-    /// assistant message (S7-T40/C4). The typed projection arrives from the
+    /// assistant message (C4). The typed projection arrives from the
     /// app layer via `vega_conversation::summary`; the stream never queries
     /// SQLite and never computes a cost formula. Applications are keyed by
     /// the assistant message id and first-wins: duplicates and later stale
@@ -100,7 +100,7 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Applies one typed history page (S8-T45/C7). The first page fills the
+    /// Applies one typed history page (C7). The first page fills the
     /// empty route-open stream; later pages PREPEND above the loaded history
     /// when the user scrolls up. Pages are converted through the typed
     /// projections only — no SQLite ever runs in this crate — and duplicate
@@ -822,7 +822,7 @@ impl ConversationStream {
         self.model_picker_level
     }
 
-    /// Number of configured model options the selector offers (#60 R1). R57 P3
+    /// Number of configured model options the selector offers (R1). R57 P3
     /// acceptance waits on it because the popup (and therefore the slider it
     /// hosts) only opens once the app published the catalog projection.
     #[doc(hidden)]

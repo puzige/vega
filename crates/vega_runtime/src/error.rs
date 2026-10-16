@@ -1,4 +1,4 @@
-//! Unified error model (tech-spec §7, A3-01 / S4-T19).
+//! Unified error model (tech-spec §7).
 
 use std::fmt;
 

@@ -118,7 +118,7 @@ where
     .await
 }
 
-/// Runs an approved Plan task with a frozen pricing capability (S7-T39/C3
+/// Runs an approved Plan task with a frozen pricing capability (C3
 /// app wiring): identical to
 /// [`run_approved_plan_task_with_permission_sink`] except the immutable
 /// run-start selection rides into every agentic round, so each provider call
@@ -300,7 +300,7 @@ where
     .await
 }
 
-/// Runs a thread task with a frozen pricing capability (S7-T38/C3): the run
+/// Runs a thread task with a frozen pricing capability (C3): the run
 /// preflight resolves the durable `Thread.model` against the injected catalog
 /// before any provider request; the selection is immutable for the whole run
 /// (Settings changes mid-run never swap it).
@@ -490,7 +490,7 @@ where
     .await
 }
 
-/// Issue 63: freezes validated images with the user turn before durable acknowledgment.
+///freezes validated images with the user turn before durable acknowledgment.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_thread_task_with_images_and_reasoning<F>(
     store: &Store,

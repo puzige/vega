@@ -94,7 +94,7 @@ impl VegaWindow {
         self.start_message_location_worker(stream, worker_request, cx);
     }
 
-    /// #65 R6: independent of primary Finished/generation/route polling.
+    /// R6: independent of primary Finished/generation/route polling.
     pub(crate) fn watch_automatic_titles(
         &mut self,
         database: std::path::PathBuf,
@@ -230,7 +230,7 @@ impl VegaWindow {
                 .is_some_and(|(cached_id, cached)| cached_id == thread_id && cached == stream)
     }
 
-    /// Scroll-up hydration (S8-T45/C7): one page read per request on a
+    /// Scroll-up hydration (C7): one page read per request on a
     /// worker thread; the store global itself stays on the main thread. The
     /// route fence is checked before spawning so a request from a stale
     /// view never reaches the store, and again on completion so a page that
@@ -768,7 +768,7 @@ impl VegaWindow {
             return;
         };
 
-        // #60 R2/R3: missing prices are not a send gate. Runtime and meter
+        // R2/R3: missing prices are not a send gate. Runtime and meter
         // share this one immutable optional snapshot; provider/permission
         // validation still runs independently through its existing path.
         let pricing_catalog = self.pricing_controller.catalog_for_run(&thread.model);
@@ -1660,14 +1660,14 @@ impl VegaWindow {
             });
             return;
         }
-        // R69 R8-R11: first submit materializes the lazy draft under its own
+        // R69: first submit materializes the lazy draft under its own
         // id only after readiness passes. Route identity is untouched
         // (`OpenedThread.0.id` and the `stream_view` key are unchanged), so
         // the cached stream — with its composer text and focus — is never
         // rebuilt. A materialization failure keeps the draft installed and
         // surfaces the existing controller error for retry.
         if let Some(draft) = self.draft_for_route(&thread_id) {
-            // #60 R2: provider readiness was checked above; optional prices
+            // R2: provider readiness was checked above; optional prices
             // must not prevent the first submit from materializing this ID.
             if self.materialize_draft(&draft, cx).is_err() {
                 stream.update(cx, |stream, cx| {

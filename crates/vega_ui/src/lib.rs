@@ -1,6 +1,6 @@
 //! GPUI views: sidebar with the projects/sessions blocks (T09 shell +
-//! T12 content), settings skeleton (A1-10), shared input components, and the
-//! S3-T17 virtualized conversation stream.
+//! T12 content), settings skeleton, shared input components, and the
+//! virtualized conversation stream.
 //!
 //! The T10/T11 temporary full-page projects/threads views were retired in
 //! T12; their data functions live on in `vega_store` / `vega_conversation`
@@ -313,7 +313,7 @@ pub fn init(cx: &mut App) {
         // R57 P2b 移除了底部行的模式/权限下拉，`ThreadSettings` 作用域与其
         // `ActivateThreadSetting` 绑定不再有承载控件（`+` 菜单行直接用鼠标/
         // Enter 键处理）。整组绑定删除，不留无宿主的作用域。
-        // A2-12 `@file` 选择器（S8-T47）：作用域 FileSelect，仅当下拉打开
+        // `@file` 选择器（）：作用域 FileSelect，仅当下拉打开
         // 时由 Composer 输入行携带该上下文，Enter/Tab=接受（first-wins）、
         // Up/Down=移动高亮、Esc=取消；关闭时这些键回落到既有绑定。
         KeyBinding::new("enter", file_selector::AcceptFile, Some("FileSelect")),
@@ -341,7 +341,7 @@ pub fn init(cx: &mut App) {
             Some("FileSelectRetry"),
         ),
         KeyBinding::new("escape", file_selector::CancelFile, Some("FileSelectRetry")),
-        // A2-14 模型选择器（S8-T47）：Enter/Space 开合与接受、Up/Down 移动、
+        // 模型选择器（）：Enter/Space 开合与接受、Up/Down 移动、
         // Esc 关闭。R57 P2b 移除了底部行的模式/权限下拉与思考 chip，其
         // CompactComposerSettings / ThinkingLevel 绑定随之删除；思考档位改由
         // P3 的滑块组件承担。

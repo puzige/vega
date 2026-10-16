@@ -1,4 +1,4 @@
-//! OpenAI-compatible streaming chat provider (tech-spec §4.1, A3-02 / S4-T19).
+//! OpenAI-compatible streaming chat provider (tech-spec §4.1).
 //!
 //! POSTs `{base_url}/chat/completions` with `stream: true` and
 //! `stream_options: { "include_usage": true }`, parses the SSE stream with

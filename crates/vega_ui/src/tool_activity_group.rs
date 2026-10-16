@@ -80,7 +80,7 @@ impl ToolActivityGroup {
         cx.notify();
     }
 
-    /// #151: the newest live activity unit is expanded; older units step down.
+    ///the newest live activity unit is expanded; older units step down.
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         if self.expanded != expanded {
             self.expanded = expanded;

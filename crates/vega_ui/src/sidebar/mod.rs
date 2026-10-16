@@ -15,7 +15,7 @@
 //! background revision-checked lane; project registration/live branches and
 //! the existing task action/navigation boundaries remain shared.
 //!
-//! T13 (A1-05) adds the session management operations to [`ThreadsBlock`]:
+//! T13 adds the session management operations to [`ThreadsBlock`]:
 //! per-row hover action groups (置顶 / 归档或恢复 / 删除), double-click inline
 //! renaming (reusing [`crate::text_input::TextInput`]; Enter submits, Esc
 //! cancels, an empty title cancels), the 「已归档 (N)」 collapsed section at
@@ -36,7 +36,7 @@
 //!   row click. `None` → the session block shows guidance copy.
 //! - The opened thread is cached in the [`OpenedThread`] global; the window
 //!   root renders it as a [`crate::conversation_stream::ConversationStream`]
-//!   view since S3-T17.
+//! view since.
 //!
 //! The viewport auto-collapse rule (ui-spec §1) is applied by the window
 //! root at render time.
@@ -192,7 +192,7 @@ pub struct RunningThreadsGlobal(pub vega_conversation::types::RunningThreads);
 impl Global for RunningThreadsGlobal {}
 
 /// Records one thread's Agent liveness and repaints every window so all
-/// sidebars agree (A1-14). A repeated value is skipped: writing the same
+/// sidebars agree. A repeated value is skipped: writing the same
 /// projection would otherwise repaint for nothing, and `RunningThreads` is
 /// cheap to compare.
 pub fn set_thread_running(thread_id: &str, running: bool, cx: &mut App) {
@@ -262,7 +262,7 @@ impl Global for VegaStore {}
 /// Installed from the same `config::load()` source the eager `create_task`
 /// path used, and refreshed by the window's config-catalog worker, so the
 /// home-route draft can take its defaults **without any config IO during
-/// render** (the A2-14/R1 constraint). `Default` mirrors the missing-config
+/// render** (the /R1 constraint). `Default` mirrors the missing-config
 /// template (`AppConfig::default().defaults`): empty model, `confirm`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewTaskDefaults {
@@ -469,7 +469,7 @@ fn with_store<R>(
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
-    /// Issue #57: tracked scroll state for the outer `sidebar-scroll` column.
+    ///tracked scroll state for the outer `sidebar-scroll` column.
     /// Its `offset`/`max_offset` are read in the `on_children_prepainted`
     /// callback to decide whether the lazy Recents list should grow.
     sidebar_scroll: gpui_kit::ScrollHandle,
@@ -782,7 +782,7 @@ impl Render for Sidebar {
                     .child(self.render_new_task(cx, &colors))
                     .child(
                         div()
-                            // Issue #57: Recents lazy-loads instead of showing a
+                            //Recents lazy-loads instead of showing a
                             // `Show More` control. This container is the sidebar's
                             // only scroller, and the tracked handle is updated in
                             // this element's own prepaint (`clamp_scroll_position`)
@@ -932,7 +932,7 @@ mod tests {
 
     #[test]
     fn running_row_owns_the_tail_slot() {
-        // #150 R10: the tail is one slot. A running row suppresses the resting
+        // R10: the tail is one slot. A running row suppresses the resting
         // timestamp; hover still wins because it reveals the action trigger.
         assert!(shows_timestamp_at_rest(false, true, false));
         assert!(!shows_timestamp_at_rest(false, true, true));

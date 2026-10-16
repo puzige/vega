@@ -52,7 +52,7 @@ pub struct ConversationStream {
     pub(crate) entries: Vec<StreamEntry>,
     pub(crate) assistant_role_rows: Vec<bool>,
     pub(crate) counters: Arc<StreamCounters>,
-    /// Variable-height list state (S8-T44/C4): one item per semantic entry,
+    /// Variable-height list state (C4): one item per semantic entry,
     /// natural heights. The same state owns the scroll position and the P4
     /// tail-follow semantics (`FollowMode::Tail`).
     pub(crate) list: gpui_kit::ListState,
@@ -99,7 +99,7 @@ pub struct ConversationStream {
     /// Sole applied per-task cost summary keyed by assistant message id
     /// (S7-T40); duplicate/later stale applications are ignored.
     pub(crate) summary_cards: HashMap<String, Entity<SummaryCard>>,
-    /// Scroll-up hydration state (S8-T45/C7): keyset cursor of the oldest
+    /// Scroll-up hydration state (C7): keyset cursor of the oldest
     /// loaded page, in-flight flag, and the failure pause. The stream itself
     /// never queries SQLite — pages arrive as typed projections.
     pub(crate) hydration: HistoryHydration,
@@ -123,7 +123,7 @@ pub struct ConversationStream {
     /// Most recently finished assistant entry, retained until the typed Plan
     /// projection can replace it in place.
     pub(crate) last_finished_agent_message: Option<(String, usize)>,
-    /// Bounded token/cost meter projection (S7-T39/C3/C4). Pure shared
+    /// Bounded token/cost meter projection (C3/C4). Pure shared
     /// `vega_conversation::types` state: no IO, no persistence; the Composer
     /// renders its snapshot and every update is checked arithmetic only.
     pub(crate) meter: ConversationMeter,
@@ -153,7 +153,7 @@ pub struct ConversationStream {
     /// Nonfatal run-start MCP omission. Kept separate so a provider failure
     /// cannot overwrite it or be overwritten by it.
     pub(crate) mcp_warning: Option<String>,
-    /// Bounded `@file` selector model (A2-12). Pure UI state over the typed
+    /// Bounded `@file` selector model. Pure UI state over the typed
     /// [`FileIndexSnapshot`]; the app layer owns the filesystem walk.
     pub(crate) file_selector: FileSelectorModel,
     /// The latest bounded candidate projection for this thread's project.
@@ -173,7 +173,7 @@ pub struct ConversationStream {
     pub(crate) file_index_failure: Option<FileIndexFailureCode>,
     /// Keyboard stop for the visible failed-index Retry action.
     pub(crate) file_retry_focus: FocusHandle,
-    /// Provider/model/thinking composer defaults (A2-14). Display state for
+    /// Provider/model/thinking composer defaults. Display state for
     /// the selector; authority is the app-level config seam.
     pub(crate) composer_defaults: ComposerDefaults,
     /// R57 P3: the thinking-tier slider (P2a), shown as a picker layer when tiers exist.
@@ -228,7 +228,7 @@ pub struct ConversationStream {
     pub(crate) context_usage_tooltip_hovered: bool,
     pub(crate) context_usage_open: bool,
     pub(crate) context_usage_dismissed: bool,
-    /// Keyboard focus stop for the model selector trigger (A2-14).
+    /// Keyboard focus stop for the model selector trigger.
     pub(crate) model_focus: FocusHandle,
     /// In-flight in-session model selection (R1): `Some((request_id, model))`
     /// while persistence is in flight. Blocks submit/thinking until the
@@ -1278,7 +1278,7 @@ impl ConversationStream {
         self.composer_defaults.reasoning_unavailable
     }
 
-    /// Installs configured model options for the composer selector (#60 R1).
+    /// Installs configured model options for the composer selector (R1).
     /// The app supplies the catalog; the stream never reads config files.
     pub fn apply_model_options(&mut self, options: Vec<String>, cx: &mut Context<Self>) {
         self.model_options = options;
@@ -1395,7 +1395,7 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Enter/Space on the focused model selector trigger (A2-14).
+    /// Enter/Space on the focused model selector trigger.
     ///
     /// R59 R1 / I68: the trigger opens the slider when tiers exist, otherwise
     /// it opens the model list directly. Only the list keeps the pre-existing
@@ -1614,7 +1614,7 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Installs the frozen per-run provisional estimator (S7-T39/C3 run
+    /// Installs the frozen per-run provisional estimator (C3 run
     /// ownership). Called by the app exactly once per agent run, immediately
     /// after `agent_controller.begin`.
     pub fn install_meter_estimator(
@@ -1627,7 +1627,7 @@ impl ConversationStream {
     }
 
     /// Restores the calibrated counter baseline from the durable checked
-    /// aggregate (S7-T39/C4 restart recovery). Called once when a stream
+    /// aggregate (C4 restart recovery). Called once when a stream
     /// entity is constructed for a thread with priced usage history.
     pub fn restore_meter(&mut self, usage: RestoredUsage, cx: &mut Context<Self>) {
         self.meter.restore(usage);
@@ -1640,7 +1640,7 @@ impl ConversationStream {
     }
 
     /// Feeds one conversation event through the meter projection, fenced by
-    /// the same acceptance rules the stream applies (S7-T39 thread/run fence:
+    /// the same acceptance rules the stream applies (thread/run fence:
     /// late or stale-message events never calibrate or estimate).
     pub(crate) fn feed_meter(&mut self, event: &ConversationEvent, cx: &mut Context<Self>) {
         let accepted = match event {

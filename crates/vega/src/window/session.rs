@@ -232,7 +232,7 @@ impl VegaWindow {
     /// text keyed by that id survives a project switch (R4).
     ///
     /// Defaults come from the already-loaded [`NewTaskDefaults`] global, so
-    /// this performs no config IO during render (R3 / A2-14). The
+    /// this performs no config IO during render (R3). The
     /// `OpenedThread` projection is written only when it actually changes, so
     /// a steady draft route does not notify observers on every frame.
     pub(crate) fn resolve_route_thread(&mut self, cx: &mut Context<Self>) -> Thread {
@@ -292,7 +292,7 @@ impl VegaWindow {
             .is_some_and(|draft| draft.id == thread_id)
     }
 
-    /// R69 R8-R11: persists the draft under **its own id** exactly once.
+    /// R69: persists the draft under **its own id** exactly once.
     ///
     /// The route identity is untouched (`OpenedThread.0.id` and the
     /// `stream_view` cache key are the same before and after), so the cached
@@ -323,13 +323,13 @@ impl VegaWindow {
         Ok(())
     }
 
-    /// R1 (A2-14/S8-T47): the in-session model selection. The view emits the
+    /// R1: the in-session model selection. The view emits the
     /// intent only; this handler installs the existing trusted-action
     /// single-flight gate first, then persists the durable `threads.model`
     /// through the conversation service on a worker thread and acknowledges
     /// with the re-read authoritative thread. The app-level
     /// config.defaults.model (Settings 的"新任务默认模型") is NOT touched.
-    /// #60 R1: not-uniquely-configured models are rejected before any
+    /// R1: not-uniquely-configured models are rejected before any
     /// write; an active run or another trusted action refuses the change.
     /// Every outcome (ack/fail/worker-lost) releases exactly the owner token
     /// echoed by the request.
@@ -377,7 +377,7 @@ impl VegaWindow {
             });
             return;
         }
-        // #60 R1: optional price metadata does not decide model availability.
+        // R1: optional price metadata does not decide model availability.
         // Unique configured provider gate: the model must resolve to exactly
         // one configured provider (same rule the real submit path applies).
         // This is a file read, so it happens in the bounded worker below,
@@ -629,7 +629,7 @@ impl VegaWindow {
         }
     }
 
-    /// #60 R1: configured, uniquely resolvable models remain available even
+    /// R1: configured, uniquely resolvable models remain available even
     /// without accounting metadata. Config IO stays in the worker below.
     /// The existing method name is retained for compatibility with callers.
     pub(crate) fn model_options_for_pricing(&self) -> Vec<String> {

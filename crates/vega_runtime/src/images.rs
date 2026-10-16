@@ -1,4 +1,4 @@
-//! Issue 63 R3/R6: immutable validated images, with content-free errors/debug.
+//! R3/R6: immutable validated images, with content-free errors/debug.
 use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::{fmt, io::Cursor, sync::Arc};
 

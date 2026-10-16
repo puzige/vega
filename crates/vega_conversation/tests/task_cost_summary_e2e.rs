@@ -1,4 +1,4 @@
-//! S7-T40 (A10-06) headless production journey: per-task cost summaries
+//! headless production journey: per-task cost summaries
 //! projected from the durable `token_usage`/`tool_calls` audits of real
 //! mock-provider runs, including typed unavailable semantics, terminal
 //! interrupted/error outcomes, restart recovery, and deletion-safe usage

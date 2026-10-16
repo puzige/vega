@@ -681,7 +681,7 @@ async fn cancellation_before_start_makes_no_provider_request() {
 async fn default_unlimited_turn_limit_runs_all_tool_calls_in_one_turn() {
     // With the default `turn_limit` (0 = unlimited) a single turn that
     // proposes more than 100 tool calls executes every one of them: there is
-    // no per-tool-call hard stop anymore (Issue #114).
+    // no per-tool-call hard stop anymore.
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), "ok\n").unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
@@ -866,7 +866,7 @@ async fn cancel_during_a_read_waits_for_it_then_skips_the_next_call() {
 #[tokio::test]
 async fn repeated_call_id_counts_every_observation_and_executes_once() {
     // A repeated provider call id is observed on every proposal but executed
-    // only once; there is no per-tool-call count gate anymore (Issue #114).
+    // only once; there is no per-tool-call count gate anymore.
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), "ok\n").unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();

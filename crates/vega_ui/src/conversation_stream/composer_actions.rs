@@ -41,7 +41,7 @@ pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// Shared descriptions; I58-R7 distinguishes automatic approval from bypassing
+/// Shared descriptions; distinguishes automatic approval from bypassing
 /// the OS sandbox without changing the existing approval controller.
 pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
     match mode {
@@ -52,7 +52,7 @@ pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// Per-row glyph; FullAccess shares the existing warning triangle (I58-R7).
+/// Per-row glyph; FullAccess shares the existing warning triangle.
 pub(crate) fn permission_icon(mode: PermissionMode) -> crate::icons::Icon {
     match mode {
         PermissionMode::ReadOnly => crate::icons::Icon::Hand,
@@ -61,7 +61,7 @@ pub(crate) fn permission_icon(mode: PermissionMode) -> crate::icons::Icon {
     }
 }
 
-/// Keep Auto's existing warning ink and explicitly mark FullAccess (I58-R7).
+/// Keep Auto's existing warning ink and explicitly mark FullAccess.
 pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
     matches!(mode, PermissionMode::Auto | PermissionMode::FullAccess)
 }
@@ -847,7 +847,7 @@ impl ConversationStream {
             .flex()
             .items_center()
             .justify_center()
-            // #150 R14: the running-state action is a primary brand surface.
+            // R14: the running-state action is a primary brand surface.
             // It keeps the blue while `stopping` because the run has not
             // actually ended yet (state must stay real, design guidelines
             // §2.3); only the cursor and aria label change.

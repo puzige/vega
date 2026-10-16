@@ -13,7 +13,7 @@ pub(crate) enum TrustedActionKind {
     /// A7-01: provider/model and owner-only credential readiness before a
     /// composer submission may materialize or start a run.
     AgentPreflight,
-    /// #74: exact reviewed Skill pin after draft materialization, before any
+    ///exact reviewed Skill pin after draft materialization, before any
     /// provider request. Stop releases this owner and discards late results.
     SkillSelection,
     /// Conversation context settings and manual summary operations own the

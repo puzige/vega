@@ -120,7 +120,7 @@ pub(crate) struct VegaWindow {
     /// workers must never instantiate independent registries for this DB.
     pub(crate) mcp_settings: Option<vega_conversation::McpServerSettingsService>,
     pub(crate) pricing_controller: PricingController,
-    /// Cached conversation stream for the open thread (id, view). S3-T17:
+    /// Cached conversation stream for the open thread (id, view).:
     /// built lazily on first render of an opened thread; rebuilt when another
     /// thread is opened. The stream itself is memory-only (no persistence).
     pub(crate) stream_view: Option<(String, Entity<ConversationStream>)>,

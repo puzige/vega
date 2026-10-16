@@ -1,4 +1,4 @@
-//! S8-T44 变高虚拟化窄测（决策 7 从简：GPUI 窄测恰 2 条）。
+//! 变高虚拟化窄测（决策 7 从简：GPUI 窄测恰 2 条）。
 //!
 //! 1. `variable_height_geometry_items_measure_at_natural_heights`：变高几何
 //!    —— 混合语义项在一帧内按各自自然高度测量，item 边界连续、总高与

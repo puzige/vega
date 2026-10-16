@@ -1,4 +1,4 @@
-//! Self-measurement mode for `xtask bench render_frame` (S3-T17 → S8-T44):
+//! Self-measurement mode for `xtask bench render_frame`:
 //! the hidden `--vega-bench-render <out.json>` flag boots a real GPUI window
 //! running the conversation-stream machinery against a ~10k-item variable-
 //! height semantic document (markdown / wrapped CJK / emoji / code / all
@@ -308,7 +308,7 @@ fn finished_assistant(doc: &str, counters: &StreamCounters) -> StreamEntry {
 /// Builds the 10k mixed semantic fixture: markdown turns (CJK/emoji/inline
 /// styles), code turns, table turns, wrapped-CJK turns, user echoes, tool
 /// cards, plan cards, and summary cards. Every assistant model syncs eagerly
-/// so the first frame renders full natural heights (S8-T45 hydration 同语义).
+/// so the first frame renders full natural heights (hydration 同语义).
 fn build_mixed_entries(
     count: usize,
     cx: &mut Context<BenchStreamView>,

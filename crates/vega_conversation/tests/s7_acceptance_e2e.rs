@@ -576,11 +576,11 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     assert_eq!(restored_tools, 1, "real tool card restores");
 
     // R13 adds four organization metadata tables via authorized migration 0004;
-    // #76 adds context projection/status tables and the model-policy table
-    // through migrations 0009–0011. #73 adds MCP metadata and a credential
-    // cleanup outbox in migration 0012; #74 Skills adds migration 0013;
-    // #146 execution duration adds migration 0014. Migration 0015 adds run
-    // diagnostics; #284 Codex task identity adds migration 0016 and two tables.
+    // adds context projection/status tables and the model-policy table
+    // through migrations 0009–0011. adds MCP metadata and a credential
+    // cleanup outbox in migration 0012; Skills adds migration 0013;
+    // execution duration adds migration 0014. Migration 0015 adds run
+    // diagnostics; Codex task identity adds migration 0016 and two tables.
     // No credential values enter either MCP table.
     let user_version: i64 = reopened
         .conn()
