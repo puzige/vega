@@ -1,5 +1,7 @@
 # Issue #112 — Claude Code file editing behavior parity
 
+2026-10-16 user decision: [Issue #300 universal tools](vega-builtin-tool-parameter-recovery.md) supersedes the advertised tool names/fields and introduces atomic batch edit. Existing permissions, read tracking, credentials, checkpoints, encoding and race protection remain. Legacy inputs and audit records continue through the explicit compatibility boundary; this page retains historical evidence.
+
 ## Authority and scope
 2026-09-22 user decision: align native file editing with the supplied Claude Code 2.1.88 behavior, including absolute paths and editing files outside the active project directory. This explicitly supersedes prior relative-only/project-only read/write/edit restrictions for these tools. Existing permission modes, denial rules, checkpoints and race protection remain authoritative. Behavioral reimplementation in Rust; do not vendor the reference distribution or copy its implementation into the public repository.
 
