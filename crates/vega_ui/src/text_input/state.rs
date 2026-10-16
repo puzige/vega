@@ -1,3 +1,4 @@
+use super::mouse_selection::{MouseSelection, SelectionGranularity};
 use super::*;
 
 impl TextInput {
@@ -22,7 +23,7 @@ impl TextInput {
             last_lines: Vec::new(),
             last_line_height: px(0.),
             last_bounds: None,
-            is_selecting: false,
+            mouse_selection: None,
             bare_chrome: false,
         }
     }
@@ -320,12 +321,40 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        gpui_kit::base::GlobalState::init(cx);
+        gpui_kit::base::GlobalState::suppress_text_selection(cx);
         window.focus(&self.focus_handle, cx);
-        self.is_selecting = true;
         if event.modifiers.shift {
+            let anchor = if self.selection_reversed {
+                self.selected_range.end
+            } else {
+                self.selected_range.start
+            };
             self.select_to(self.index_for_mouse_position(event.position), cx);
+            self.mouse_selection = Some(MouseSelection {
+                anchor: anchor..anchor,
+                granularity: SelectionGranularity::Character,
+                content_revision: self.content_revision,
+            });
         } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx);
+            let granularity = match event.click_count {
+                0 | 1 => SelectionGranularity::Character,
+                2 => SelectionGranularity::Word,
+                _ => SelectionGranularity::Line,
+            };
+            let offset = self.mouse_index_for_position(
+                event.position,
+                !matches!(granularity, SelectionGranularity::Character),
+            );
+            let range = granularity.range(&self.content, offset);
+            self.selected_range = range.clone();
+            self.selection_reversed = false;
+            self.mouse_selection = Some(MouseSelection {
+                anchor: range,
+                granularity,
+                content_revision: self.content_revision,
+            });
+            cx.notify();
         }
     }
 
@@ -335,7 +364,7 @@ impl TextInput {
         _window: &mut Window,
         _: &mut Context<Self>,
     ) {
-        self.is_selecting = false;
+        self.mouse_selection = None;
     }
 
     pub(crate) fn on_mouse_move(
@@ -344,9 +373,24 @@ impl TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.is_selecting {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.mouse_selection = None;
+            return;
         }
+        let Some(selection) = self.mouse_selection.as_ref() else {
+            return;
+        };
+        if selection.content_revision != self.content_revision {
+            self.mouse_selection = None;
+            return;
+        }
+        let offset = self.mouse_index_for_position(
+            event.position,
+            !matches!(selection.granularity, SelectionGranularity::Character),
+        );
+        let unit = selection.granularity.range(&self.content, offset);
+        (self.selected_range, self.selection_reversed) = selection.extend(unit);
+        cx.notify();
     }
 
     pub(crate) fn show_character_palette(
@@ -453,6 +497,10 @@ impl TextInput {
     }
 
     pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+        self.mouse_index_for_position(position, false)
+    }
+
+    fn mouse_index_for_position(&self, position: Point<Pixels>, glyph: bool) -> usize {
         if self.content.is_empty() {
             return 0;
         }
@@ -481,7 +529,19 @@ impl TextInput {
             return 0;
         };
         // The layout is over the painted text, so map back through the mask.
-        let display_offset = layout.line.closest_index_for_x(position.x - bounds.left());
+        let x = position.x - bounds.left();
+        let display_offset = if glyph {
+            layout.line.index_for_x(x).unwrap_or_else(|| {
+                layout
+                    .line
+                    .text
+                    .char_indices()
+                    .next_back()
+                    .map_or(0, |(index, _)| index)
+            })
+        } else {
+            layout.line.closest_index_for_x(x)
+        };
         let local = self.content_offset_for_display_offset(display_offset);
         let offset = layout.start + local;
         if self.masked {

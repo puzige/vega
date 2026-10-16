@@ -5,9 +5,10 @@ use gpui_kit::base::{
     TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId,
 };
 use gpui_kit::{
-    App, BorderStyle, Bounds, Corners, Edges, Element, ElementId, FocusHandle, GlobalElementId,
-    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels,
-    Point, SharedString, StyledText, TextLayout, TextRun, Window, WrappedLine, transparent_black,
+    App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId, FocusHandle,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    PaintQuad, Pixels, Point, SharedString, StyledText, TextLayout, TextRun, Window, WrappedLine,
+    transparent_black,
 };
 
 use super::links::{LinkRange, fragment_link_ranges, register_link_interactions};
@@ -17,6 +18,37 @@ use super::model::MessageCopy;
 thread_local! {
     pub(super) static SELECTION_TARGET_LAYOUT: RefCell<Option<(String, Option<TextLayout>)>> = const { RefCell::new(None) };
     pub(super) static SELECTION_RUN_LAYOUTS: RefCell<Vec<(String, TextLayout, Bounds<Pixels>)>> = const { RefCell::new(Vec::new()) };
+    pub(super) static CURSOR_REQUESTS: RefCell<Option<Vec<SelectionCursorRequest>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(super) struct SelectionCursorRequest {
+    pub text: String,
+    pub hitbox: gpui_kit::HitboxId,
+    pub bounds: Bounds<Pixels>,
+    pub hovered: bool,
+    pub style: CursorStyle,
+}
+
+#[cfg(test)]
+pub(super) fn record_cursor_request(
+    text: &str,
+    hitbox: &Hitbox,
+    style: CursorStyle,
+    window: &Window,
+) {
+    CURSOR_REQUESTS.with_borrow_mut(|requests| {
+        if let Some(requests) = requests {
+            requests.push(SelectionCursorRequest {
+                text: text.to_owned(),
+                hitbox: hitbox.id,
+                bounds: hitbox.bounds,
+                hovered: hitbox.is_hovered(window),
+                style,
+            });
+        }
+    });
 }
 
 #[derive(Clone)]
@@ -244,7 +276,7 @@ struct SelectableStyledText {
 
 struct SelectablePrepaintState {
     lines: Option<Vec<WrappedLine>>,
-    hitbox: Option<Hitbox>,
+    hitbox: Hitbox,
 }
 
 impl IntoElement for SelectableStyledText {
@@ -316,8 +348,7 @@ impl Element for SelectableStyledText {
         let lines = self.paint_runs.as_ref().and_then(|runs| {
             super::inline_code::shape(self.content.clone(), runs, self.text.layout(), window)
         });
-        let hitbox =
-            (!self.links.is_empty()).then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal));
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         SelectablePrepaintState { lines, hitbox }
     }
 
@@ -350,16 +381,17 @@ impl Element for SelectableStyledText {
             self.text
                 .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);
         }
-        if let Some(hitbox) = prepaint.hitbox.clone() {
-            register_link_interactions(
-                id,
-                hitbox,
-                self.text.layout().clone(),
-                self.links.clone(),
-                window,
-                cx,
-            );
-        }
+        window.set_cursor_style(CursorStyle::IBeam, &prepaint.hitbox);
+        #[cfg(test)]
+        record_cursor_request(&self.content, &prepaint.hitbox, CursorStyle::IBeam, window);
+        register_link_interactions(
+            id,
+            prepaint.hitbox.clone(),
+            self.text.layout().clone(),
+            self.links.clone(),
+            window,
+            cx,
+        );
     }
 }
 

@@ -62,6 +62,8 @@ impl Element for TextElement {
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
         let selected_range = input.selected_range.clone();
+        let display_selection = input.display_offset_for_content_offset(selected_range.start)
+            ..input.display_offset_for_content_offset(selected_range.end);
         let cursor = input.cursor_offset();
         let style = window.text_style();
 
@@ -248,8 +250,8 @@ impl Element for TextElement {
         // cover whole lines between the ends).
         let mut selections: Vec<PaintQuad> = Vec::new();
         for (row, layout) in lines.iter().enumerate() {
-            let start = selected_range.start.max(layout.start);
-            let end = selected_range.end.min(layout.start + layout.len);
+            let start = display_selection.start.max(layout.start);
+            let end = display_selection.end.min(layout.start + layout.len);
             if start >= end {
                 continue;
             }
@@ -260,7 +262,7 @@ impl Element for TextElement {
                     point(bounds.left() + x0, bounds.top() + line_height * row as f32),
                     size(x1 - x0, line_height),
                 ),
-                theme(cx).colors.bg_active,
+                gpui_kit::base::Theme::global(cx).tokens.colors.selection,
             ));
         }
 
