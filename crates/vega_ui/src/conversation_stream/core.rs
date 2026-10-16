@@ -97,7 +97,7 @@ pub struct ConversationStream {
     /// Plan ids are opaque map keys; card content is a typed projection.
     pub(crate) plan_cards: HashMap<String, Entity<PlanCard>>,
     /// Sole applied per-task cost summary keyed by assistant message id
-    /// (S7-T40); duplicate/later stale applications are ignored.
+    /// duplicate/later stale applications are ignored.
     pub(crate) summary_cards: HashMap<String, Entity<SummaryCard>>,
     /// Scroll-up hydration state (C7): keyset cursor of the oldest
     /// loaded page, in-flight flag, and the failure pause. The stream itself
@@ -567,7 +567,7 @@ impl ConversationStream {
         }
     }
 
-    // ── variable-height list maintenance (S8-T44/C4) ────────────────────────
+    // ── variable-height list maintenance ────────────────────────
     //
     // One list item per semantic entry. Structural entry mutations notify the
     // list through `splice`; content mutations through `remeasure_items`
@@ -736,7 +736,7 @@ impl ConversationStream {
     }
 
     /// Registers `count` items prepended above the loaded history
-    /// (S8-T45/C7). `splice` shifts `logical_scroll_top` by the insert
+    /// `splice` shifts `logical_scroll_top` by the insert
     /// count while keeping the pixel offset into the scroll-top item, so
     /// the page-boundary anchor is exact (drift <1px by construction).
     pub(crate) fn list_prepend(&mut self, count: usize) {
@@ -1556,7 +1556,7 @@ impl ConversationStream {
     pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
         self.controller_runtime_error = None;
         self.controller_error = Some("执行未完成，可安全重试".into());
-        // S7-T39: run-scoped estimate state never survives a failure path.
+        // run-scoped estimate state never survives a failure path.
         self.meter.end_run();
         cx.notify();
     }

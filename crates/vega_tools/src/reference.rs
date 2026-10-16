@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn oversized_file_is_rejected_before_full_read() {
-        // P1-1: the per-file cap must fire while reading (bounded take),
+        // the per-file cap must fire while reading (bounded take),
         // not after the whole file is buffered. A few-KB file plus a small
         // cap proves the read-time bound without allocating a huge file.
         let dir = tempdir().expect("oversize fixture");

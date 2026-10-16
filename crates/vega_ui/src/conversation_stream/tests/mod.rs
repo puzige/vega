@@ -14,7 +14,7 @@ use vega_conversation::types::{
 use vega_markdown::split_deltas;
 use vega_markdown::{ListItem, TableCell};
 
-// ---------- 锚定委托（S8-T44：P4 语义由变高列表原生 Tail follow 承担） ----------
+// ---------- 锚定委托（：P4 语义由变高列表原生 Tail follow 承担） ----------
 
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
@@ -206,7 +206,7 @@ fn has_active_permission(
         .unwrap_or(false)
 }
 
-// ---------- S8-T45/C7 顶部水合（分页 + 锚定 + 去重） ----------
+// ---------- 顶部水合（分页 + 锚定 + 去重） ----------
 
 fn hydration_state(older_cursor: Option<i64>, loading: bool, paused: bool) -> HistoryHydration {
     HistoryHydration {
@@ -314,7 +314,7 @@ fn stream_long_doc(blocks: usize) -> (MarkdownStream, usize) {
     (stream, total)
 }
 
-// ---------- S8-T44 变高虚拟化（E2E 与窄测共用 fixture） ----------
+// ---------- 变高虚拟化（E2E 与窄测共用 fixture） ----------
 
 /// One mixed markdown turn (CJK/emoji/inline styles/list).
 fn mixed_markdown_turn(index: usize) -> String {
@@ -439,7 +439,7 @@ fn mixed_entry(
     }
 }
 
-// ---------- Composer token counter（S7-T39/A10-05） ----------
+// ---------- Composer token counter（/） ----------
 
 fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext) {
     cx.run_until_parked();

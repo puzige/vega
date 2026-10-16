@@ -160,7 +160,7 @@ pub fn find_by_path(conn: &Connection, path: &str) -> Result<Option<Project>, Pr
 
 /// Unregisters a project and returns whether a row was deleted.
 ///
-/// A8-02: existing tasks become standalone (`project_id IS NULL`) before the
+/// existing tasks become standalone (`project_id IS NULL`) before the
 /// project row is removed. Both writes share one transaction, so a failed
 /// delete cannot leave tasks detached from a still-registered project. The
 /// sidebar project-order row follows its existing `ON DELETE CASCADE` foreign

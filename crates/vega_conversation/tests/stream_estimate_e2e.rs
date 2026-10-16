@@ -173,7 +173,7 @@ fn assert_reading(
     assert!(snapshot.available, "{context}: available");
 }
 
-// ─── estimate kernel boundaries (A10-02) ──────────────────────────────────
+// ─── estimate kernel boundaries ──────────────────────────────────
 
 #[test]
 fn ascii_cjk_and_emoji_estimate_by_unicode_scalars() {

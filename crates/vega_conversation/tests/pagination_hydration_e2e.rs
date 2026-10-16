@@ -1,4 +1,4 @@
-//! S8-T45 (A11-03/C7) hydration E2E: the production history projection
+//! hydration E2E: the production history projection
 //! (`vega_conversation::history`) over a real temp store, including one real
 //! MockProvider run with tool use and pricing so the durable transcript the
 //! UI hydrates after a restart contains tools, costs, a summary reference,

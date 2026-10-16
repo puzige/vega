@@ -844,7 +844,7 @@ impl ConversationStream {
     }
 
     /// Number of hydrated durable entries the stream currently carries
-    /// (S8-T45/C7 observability for the app-layer fence tests; the row
+    /// observability for the app-layer fence tests; the row
     /// layout itself stays crate-private).
     pub fn hydrated_entry_count(&self) -> usize {
         self.entries
@@ -1133,7 +1133,7 @@ impl ConversationStream {
     /// Applies an already-durable shared lifecycle event. The UI never reads
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
-        // S7-T39: the bounded meter projection consumes the same accepted
+        // the bounded meter projection consumes the same accepted
         // events (fence below) before ownership moves into the render path.
         self.feed_meter(&event, cx);
         self.clear_recovered_retry(&event);

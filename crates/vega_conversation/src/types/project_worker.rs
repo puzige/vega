@@ -19,7 +19,7 @@ impl ProjectWorkerActivity {
     /// Register before spawning the worker. The caller must move this token
     /// into the worker closure; failed spawns drop it without a live worker.
     pub fn register(&mut self, project_id: &str) -> Arc<()> {
-        // A8-02: prune every stale project lazily at the next registration,
+        // prune every stale project lazily at the next registration,
         // keeping memory proportional to live workers even across many runs.
         self.workers.retain(|_, workers| {
             workers.retain(|worker| worker.strong_count() > 0);

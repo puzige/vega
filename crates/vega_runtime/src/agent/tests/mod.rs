@@ -250,7 +250,7 @@ async fn run_bash_permission_case(
     (outcome, calls.load(Ordering::SeqCst))
 }
 
-// ─── S7-T38 pricing pipeline ────────────────────────────────────────
+// ─── pricing pipeline ────────────────────────────────────────
 
 fn priced_catalog() -> PricingCatalog {
     PricingCatalog::from_specs(vec![vega_token::ModelPricingSpec {

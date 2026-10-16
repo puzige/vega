@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn page_boundary_anchor_is_delegated_to_splice_preserved_scroll_top() {
-    // S8-T44/C4: the prepend anchor no longer uses pixel math on uniform
+    // the prepend anchor no longer uses pixel math on uniform
     // rows. `ListState::splice` shifts `logical_scroll_top` by the prepended
     // count while keeping the pixel offset into the scroll-top item, so the
     // page-boundary anchor is exact (<1px by construction). The old

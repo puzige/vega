@@ -1,4 +1,4 @@
-//! S7-T41 (A10-01~06) deterministic mock acceptance journey.
+//! deterministic mock acceptance journey.
 //!
 //! One cross-functional headless E2E over the real production chain —
 //! `run_thread_task_with_pricing` → provider/runtime events → conversation
@@ -326,7 +326,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         "round-2 request carries the real read result"
     );
 
-    // ─── provisional counter → two in-place calibrations (C3/A10-02) ───
+    // ─── provisional counter → two in-place calibrations (C3) ───
     let captured = events.lock().unwrap().clone();
     let mut meter = ConversationMeter::default();
     meter.install_run_estimator(RunUsageEstimator::new(MODEL, catalog.clone()));
@@ -394,7 +394,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     );
     assert_eq!(final_snapshot.display(), "425 tok · US$0.000355");
 
-    // ─── exact durable rows (A10-01) ───
+    // ─── exact durable rows ───
     let rows = usage_rows(&store)?;
     assert_eq!(rows.len(), 2, "exactly two durable usage rows");
     for (index, (row, (input, output, read, write, cost))) in rows
@@ -440,7 +440,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     );
     assert!(assistant.content.contains("✅abcd"), "round-2 visible text");
 
-    // ─── checked aggregates agree with the meter (A10-04) ───
+    // ─── checked aggregates agree with the meter ───
     let by_message =
         token_usage::aggregate_by_message(store.conn(), THREAD_ID, &run.assistant_message_id)?;
     assert_eq!(by_message.row_count, 2);
@@ -484,7 +484,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     )?;
     assert_eq!((tool.as_str(), status.as_str()), ("read", "success"));
 
-    // ─── task summary card fields (A10-06) ───
+    // ─── task summary card fields ───
     // The wall-clock duration is owned by the live caller through this seam;
     // the headless scope passes a bounded constant instead of sleep/wall/tool
     // durations.

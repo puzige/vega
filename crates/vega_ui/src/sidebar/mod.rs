@@ -220,7 +220,7 @@ pub fn thread_is_running(thread_id: &str, cx: &App) -> bool {
 }
 
 /// The opened-thread content column is rendered by the window root since
-/// S3-T17: an inline [`crate::conversation_stream::ConversationStream`] view
+/// an inline [`crate::conversation_stream::ConversationStream`] view
 /// (thread header + virtualized stream) replaces the former
 /// `render_opened_thread_pane` placeholder, which was deleted with this card.
 pub struct OpenedThread(pub Option<Thread>);

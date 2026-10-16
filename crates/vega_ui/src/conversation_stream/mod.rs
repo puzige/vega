@@ -45,7 +45,7 @@
 //!   disables send. A send appends a user entry (local echo, no LLM).
 //! - **动效禁令 (tech-spec §5.4)**: streaming nodes get NO entrance
 //!   animation — none is introduced anywhere in this pipeline.
-//! - **变高虚拟化 (S8-T44/C4)**: the top-level conversation is a GPUI
+//! - **变高虚拟化 **: the top-level conversation is a GPUI
 //!   variable-height `list`; one item per semantic entry at natural height.
 //!   Text wraps (CJK/emoji/inline code included) — no content is ever
 //!   truncated to force a height. 24px remains only inside cards' compact

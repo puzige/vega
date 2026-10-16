@@ -54,7 +54,7 @@ pub(crate) fn context_compaction_label(
 }
 
 /// Renders one visible semantic entry as a single variable-height list item
-/// (S8-T44/C4: 一项=一个 user/assistant/tool/permission/plan/artifact/
+/// 一项=一个 user/assistant/tool/permission/plan/artifact/
 /// summary item 的自然高度). Per-frame: clone-only element assembly from
 /// cached materialization — no markdown re-materialization here (P3).
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -1002,7 +1002,7 @@ fn render_table_selectable(
         .into_any_element()
 }
 
-// ─── text runs (block-level styled text, S8-T44) ─────────────────────────────
+// ─── text runs (block-level styled text) ─────────────────────────────
 
 /// Base run style for a message-body text block: 14px at 1.6 line height
 /// (ui-spec §3), window default family, caller's color.

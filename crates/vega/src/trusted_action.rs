@@ -6,11 +6,11 @@ pub(crate) enum TrustedActionKind {
     BranchSwitch,
     ArtifactOpen,
     Commit,
-    /// A2-14/R1: pending model-selection persistence. Shares the single-flight
+    /// pending model-selection persistence. Shares the single-flight
     /// coordinator so submit/plan/commit/branch stay blocked until the
     /// authoritative `threads.model` write settles.
     ModelSelection,
-    /// A7-01: provider/model and owner-only credential readiness before a
+    /// provider/model and owner-only credential readiness before a
     /// composer submission may materialize or start a run.
     AgentPreflight,
     ///exact reviewed Skill pin after draft materialization, before any

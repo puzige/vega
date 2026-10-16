@@ -23,7 +23,7 @@ pub use artifact::{ArtifactCaptureCandidate, ArtifactService};
 pub use git_workspace::{
     BranchSwitchPermit, BranchWorkspaceService, GitWorkspaceService, TrustedGitService,
 };
-// S7-T39: downstream crates (app/UI) receive the frozen pricing capability
+// downstream crates (app/UI) receive the frozen pricing capability
 // through `vega_conversation` only — no direct pricing-engine dependency.
 pub use pricing::{
     PricingAuthority, PricingLoadOutcome, PricingSaveOutcome, PricingSavePlan,

@@ -651,7 +651,7 @@ async fn batch_finished_flush_materializes_the_final_committed_tail(cx: &mut Tes
     assert_eq!(last_text, "fn tail() {}", "the closing fence line survives");
 }
 
-// ---------- Issue #66 · Composer Enter 键位契约（ui-spec §4.4 v0.18） ----------
+// ---------- · Composer Enter 键位契约（ui-spec §4.4 v0.18） ----------
 
 /// Captures every `ComposerSubmitted` emitted by the production submit path.
 fn capture_submitted(

@@ -189,7 +189,7 @@ impl Render for VegaWindow {
             let draft_route = self.is_draft_route(&thread.id);
             {
                 {
-                    // S3-T17：会话流视图（每线程一个实体，切换会话时重建；
+                    // 会话流视图（每线程一个实体，切换会话时重建；
                     // MarkdownStream 内存态构造，不落库）。
                     let cached = self
                         .agent_controller
@@ -227,7 +227,7 @@ impl Render for VegaWindow {
                                 }
                                 self.load_running_message_default(cx);
                             }
-                            // A8-01: the same draft id intentionally keeps
+                            // the same draft id intentionally keeps
                             // the same stream (and Composer input/focus), but
                             // project selection may have changed around it.
                             // Only the window-owned unpersisted draft may
@@ -276,7 +276,7 @@ impl Render for VegaWindow {
                                 stream.set_draft_route(draft_route, cx);
                                 stream.set_project_label(label, cx);
                             });
-                            // A2-14/R1: this frame only projects the durable
+                            // this frame only projects the durable
                             // thread and the already loaded in-memory model
                             // catalog. Config IO is scheduled below on a
                             // worker, so render never reads config.toml.
@@ -494,7 +494,7 @@ impl Render for VegaWindow {
                             } else {
                                 Some(match &cx.global::<VegaStore>().0 {
                                     Ok(store) => (|| {
-                                        // S8-T45/C7: the controller is rebuilt first,
+                                        // the controller is rebuilt first,
                                         // one repair pass normalizes rows the killed
                                         // process left incomplete, and only then is
                                         // the newest durable page projected.
@@ -514,7 +514,7 @@ impl Render for VegaWindow {
                                             vega_conversation::plans::recoverable_approved_instruction(
                                                 store, &thread.id,
                                             )?;
-                                        // S7-T39/C4: the calibrated counter baseline
+                                        // the calibrated counter baseline
                                         // comes from the conversation checked aggregate
                                         // query exactly once per route open; the meter
                                         // itself never touches SQLite afterwards.

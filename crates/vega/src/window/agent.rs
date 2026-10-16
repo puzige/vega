@@ -813,7 +813,7 @@ impl VegaWindow {
         stream.update(cx, ConversationStream::begin_composer_run);
         self.ensure_agent_artifact_route(&thread, &stream, cx);
         self.begin_artifact_agent_generation(generation, &stream);
-        // S7-T39/C3: the provisional estimator freezes the run-start
+        // the provisional estimator freezes the run-start
         // selection; it never re-reads pricing files or the live authority.
         let meter_estimator = pricing_catalog.clone().and_then(|catalog| {
             vega_conversation::types::RunUsageEstimator::new(&thread.model, catalog)
@@ -838,7 +838,7 @@ impl VegaWindow {
             .entry(thread_id.to_string())
             .or_default()
             .clone();
-        // A8-02: register synchronously before spawn. The worker closure owns
+        // register synchronously before spawn. The worker closure owns
         // the token through its last tool/provider call, even if this window
         // cancels or closes before the worker can acknowledge termination.
         let worker_activity = vega_ui::sidebar::register_project_worker(&thread.project_id, cx);
@@ -1114,7 +1114,7 @@ impl VegaWindow {
                 return;
             }
         };
-        // A7-01: hold the existing draft/input in memory while a bounded
+        // hold the existing draft/input in memory while a bounded
         // worker reads the owned config and credential store. Materialization
         // and agent start happen only after this typed readiness result; no
         // config or keystore IO is performed on the UI submit path.

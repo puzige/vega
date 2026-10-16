@@ -180,7 +180,7 @@ pub(crate) struct ActiveAgentRun {
     /// after a restart, because `messages` has no finished timestamp (C4).
     pub(crate) started: Instant,
     /// Assistant message id of the run's durable terminal event, if any
-    /// (S7-T40 summary projection key; `None` when the run failed before a
+    /// summary projection key; `None` when the run failed before a
     /// message ever started).
     pub(crate) terminal_message_id: Option<String>,
     /// Safe, run-owned terminal diagnosis. The raw provider body remains in
@@ -772,7 +772,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     permission_queue: vega_conversation::agent::PermissionQueue,
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<AgentUpdate>,
-    // S7-T39/C3: frozen run-start pricing selection handed off with run
+    // frozen run-start pricing selection handed off with run
     // ownership; the worker never re-reads pricing files or the live
     // authority mid-run.
     pricing_catalog: Option<vega_conversation::PricingCatalog>,
@@ -1077,7 +1077,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 let content = submission.content;
                 // R2: freeze only composer text, before expanding referenced files.
                 let title_source = content.clone();
-                // A2-12: resolve `@path` tokens against the project root and
+                // resolve `@path` tokens against the project root and
                 // inject the referenced file contents ahead of the user text
                 // (bounded: 8 files, 16 KiB each, 48 KiB total). A failure is
                 // fail-closed: no provider is constructed and no request is

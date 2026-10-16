@@ -364,7 +364,7 @@ fn separate_connections_serialize_completions_to_one_pending() {
     );
 }
 
-// ─── keyset page contract (S8-T45/C7) ────────────────────────────────────
+// ─── keyset page contract ────────────────────────────────────
 
 /// Seeds `count` terminal assistant rows plus one user row per message
 /// (2 rows per step, seqs 1..=2*count) and returns the store.

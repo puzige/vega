@@ -528,7 +528,7 @@ pub enum RuntimeFinishReason {
 }
 
 /// Exact pricing provenance stamped by the runtime for one provider call
-/// (S7-T38/C3). Conversation persists these onto the `token_usage` row.
+/// Conversation persists these onto the `token_usage` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeUsagePricing {
     /// Exact engine version that produced the quote (e.g. `pricing_v1`).

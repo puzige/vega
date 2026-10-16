@@ -650,7 +650,7 @@ pub fn find(conn: &Connection, id: &str) -> Result<Option<MessageRow>, rusqlite:
 }
 
 /// Returns the latest terminal assistant message of a thread, if any
-/// (S7-T40 per-task summary recovery scope; read-only projection).
+/// (per-task summary recovery scope; read-only projection).
 pub fn last_terminal_assistant(
     conn: &Connection,
     thread_id: &str,

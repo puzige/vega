@@ -11,7 +11,7 @@ impl Render for FileReferenceWindowHarness {
     }
 }
 
-// ---------- S8-T45/C7 顶部水合：worker + 路由 fence ----------
+// ---------- 顶部水合：worker + 路由 fence ----------
 
 /// Seeds `count` user/assistant exchanges (2 rows per step) plus a
 /// project/thread fixture, returning the store, its thread, and the root

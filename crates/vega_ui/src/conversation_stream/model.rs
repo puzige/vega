@@ -61,7 +61,7 @@ impl BoundedSamples {
 /// Menlo 承担，spike 探针同款).
 pub(crate) const MONOFONT: &str = "Menlo";
 
-// ─── top-level anchoring (P4, S8-T44) ────────────────────────────────────────
+// ─── top-level anchoring (P4) ────────────────────────────────────────
 //
 // The anchor semantics (贴底跟随 / 上翻 detach / 回底 resume) are carried by
 // the pinned GPUI variable-height list itself: `ListState::set_follow_mode
