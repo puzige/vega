@@ -1,13 +1,12 @@
 # ✦ Vega — 执行层开发总纲（Executor's Constitution）
 
-## Vega 本地验证限制（2026-10-13 用户裁决）
+## Vega 本地验证限制（2026-10-16 用户更新）
 
 **仅适用于 Vega 项目，包括它的所有 worktree、主 agent 和子 agent；不限制 Loom 自身或其他项目。**
 
-- **禁止本地编译、构建和打包；本地只允许低 CPU、能快速完成的 check。** 多任务并发编译会打满 CPU、造成机器卡顿。
-- 完整编译、全量检查，以及会触发耗时编译的定向测试，交给云端 PR Check / CI；打包使用云端发布流程。
-- `cargo check`、Clippy、定向 test / nextest 不因命令名或范围小就自动豁免：若会冷编译、大量重编译或持续高负载，不在本地运行。可做快速的差异、格式和静态检查；一旦发现检查变成耗时构建，停止本任务启动的检查并移交 CI。
-- 本规则优先于旧文档、技能、任务规格中要求本地编译或先跑定向测试的条款。保留测试覆盖与断言，改由 PR Check 执行；报告清楚区分本地已执行和待 CI 验证，不把未运行项标为通过。
+- **Codex、Vega 及子 agent 本地不运行 Vega 代码，不编译、构建、打包或执行测试。** 定向 `cargo check`、Clippy、test / nextest 也不运行，不因缓存或范围小豁免。
+- 本地只做低 CPU、快速结束的差异、格式和静态检查；skill frontmatter 静态校验可执行。自动测试只交 GitHub Actions，打包使用云端发布流程。
+- 本规则优先于旧文档、技能、任务规格中的本地运行/编译/定向测试要求。测试用例和回归断言仍须编写；报告区分本地静态检查和待 CI 验证，不把未运行项标为通过。
 
 **2026-09-25 用户更新（Issue #149）**：按 [移除真实 E2E 规格](vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
 
@@ -15,7 +14,7 @@
 
 > **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools; glob/grep/bash boundaries are unchanged. Existing permission, Git/checkpoint protection and race checks remain.
 
-**版本** v0.9 · 2026-09-23 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
+**版本** v1.1 · 2026-10-16 · 适用对象：Codex、Vega 及承接本仓任务的子 agent
 **关联**：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)（实现规格）· [vega-tech-risks.md](vega-tech-risks.md)（难点方案）· [vega-features.md](vega-features.md)（功能点 ID）· [vega-ui-spec.md](vega-ui-spec.md)（UI 准线）
 
 > 本文件是执行模型的**最高行为准则**。每个任务 prompt 都必须附本文件路径。任何与本文件冲突的"看起来更合理"的做法都是错的。
@@ -24,27 +23,29 @@
 
 ## 1. 角色与协作模型
 
-```
-架构师（主会话）          执行模型（你）            验收
-─────────────           ──────────────         ─────────────
-定 spec / 拆任务卡   →    按任务卡实现      →    架构师过验收清单
-裁决 spec 外问题     ←    遇阻上报（禁止自创方案）  CI 绿灯是底线
-```
+| 角色 | 职责与边界 |
+|---|---|
+| Codex | 查重建卡、先审查所有需求；Bug 定根因并交付可执行方案，Feature 默认由 Codex 组织实现。主会话负责协调/审查/集成，代码实现委派专职子 agent；负责 PR、CI、合并及用户反馈分析 |
+| Vega | 只领取 Codex 已交接、方案完整可访问的 Ready 执行卡；按方案实现和补测试，完成或遇阻交回 Codex。默认不建卡、不改 spec、不扩大范围或开放式排障 |
+| 用户 | 产品取舍；合并后的纯手动验收。明确通过前 Issue 开放、状态 In review、任务分支/worktree 保留 |
+
+共用 [vega-kanban-delivery](../.agents/skills/vega-kanban-delivery/SKILL.md)，角色及队列细则见 [Issue 工作流](vega-issue-workflow.md)。以用户明确指定的工作流角色或宿主系统身份识别，Vega 为 `You are Vega`；不从模型、Provider、项目名或路径猜测。只有身份无法确认才询问，有证据时直接路由。架构师职责由 Codex 主会话承担，产品裁决仍由用户决定。
 
 **执行模型三铁律：**
 1. **spec 之外零发挥**。任务卡没写的设计决策，不许自己拍——上报，等裁决。
 2. **红线清单里的行为，一次都不许出现**（见 §3）。
-3. **本卡功能点测试通过 + 云端 `pr-check` 绿才算实现完成**，"差不多能跑"不算；真实验收由用户在 master 上手动完成（见 §2、§7）。
+3. **实现回报、CI 通过、合并及用户验收分别记录**。测试仅在 Actions 执行，未跑写待 CI；Vega 回报后仍需 Codex 审查/集成，完整完成还须用户手测与收尾（见 §2、§7）。
 
 ## 2. 工作流（每个任务的标准动作）
 
-1. 读任务卡 → 读它引用的 spec 章节 → 读它列出的参考文件
-2. 复述任务：用 3 句话说明要做什么、验收命令是什么（防止读错题）
-3. 实现 → **本地仅做快速 check** → 提交并开 PR，由云端执行本卡功能点测试
-4. 等云端 `pr-check` 通过 → 主动合并 master → 卡片改 `In review` → **停下等用户手测**
-5. 用户手测通过 → 回写上下文 → 关闭 Issue/Done → 清理本卡分支/worktree；不通过 → 退回 `In progress` 修复后重开 PR
-6. 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 vega-features.md）
-7. 输出实现报告：改了哪些文件、本卡测试命令与原始输出、偏离 spec 的地方（必须为无）
+1. 用户指定或明确继续的卡优先；否则自动完整读取本角色候选队列，过滤关闭、占用、未满足依赖、缺所需方案和未交接 PR，再按 Issue `createdAt` 降序、同时间编号降序取最新一张，不按更新或 Project 默认顺序。解释、审阅和维护 skill 不启动其他卡。
+2. Codex 取可开始审查的 Backlog、等待 Codex 的 Ready，或 Vega 明确交回且无活跃执行者的 In progress；Vega 仅取明确交给 Vega、方案完整可访问的 Ready。领取前重读，立即置 In progress 并读回；交回卡列不变。Issue 记录阶段、当前/下一执行者、时间、方案版本和工作上下文，冲突时让出，不把读回当原子锁。
+3. Codex 先审查需求/spec，先写验收用例再写实现计划。Bug 须交付根因/证据、具体文件/符号和修改动作、边界、测试矩阵、Actions 命令、手测/回滚、基线/分支/交接 commit 及回报约定；提交到 Vega 可访问位置并在 Issue 发布链接后才 Ready，不能只给会话结论或未提交本地文件。Feature 默认仍由 Codex 组织专职子 agent 实现。
+4. 修改仓库前 fetch 并更新基线，保护已有改动；每卡用 `~/Workspace/worktrees/` 下独立 worktree 和 `feat/<task-id>-<slug>` 分支，不直接改 master。同卡单一写入者，交接后前任停止写入。Vega 按已发布方案实现/补测试；完成或遇阻回报同卡，仍 In progress，当前执行者待领取、下一执行者 Codex 并停止写入，Codex 可自动接回。
+5. **本地仅快速静态 check**。Codex 审查 Vega 或子 agent 的 diff/覆盖后开 PR，不使用自动关闭 Issue 的关键字。测试交 Actions，CI 启动后每 5 分钟查询，不短轮询或 watch；收到完成/失败通知或用户要求即时查看除外。最新 head 的 required check 通过后仅 Codex 主动 squash merge，才置 In review，**停下等用户纯手动验收**。
+6. 用户明确手测通过 → Codex 回写 → 关闭 Issue/Done → 清理本卡远端分支及本地分支/worktree；未通过 → Codex 记录反馈、退回 In progress 并先分析，Bug 修订方案后再 Ready 交 Vega。手测前不关闭、Done 或清理。
+7. 默认一张，到 Codex 交 Ready、Vega 交回或合并后等用户时停止，只有连续授权才取下一张；无合格卡说明阻碍并停止。提交格式为 `feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（ID 见 vega-features.md）。
+8. 实现报告写修改文件/提交、静态检查命令与退出码、待 CI 测试及对应云端原始输出、限制/耗时和规格偏离（必须为无），不把“已派发/提交”当“已通过/完成”。
 
 ## 3. 红线清单（违反 = 任务失败重来）
 
@@ -110,14 +111,16 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 上报格式：`[BLOCKED] 任务ID | 问题一句话 | 已排除的假设 | 建议（如有）`
 
+Vega 在原 Issue 上报，保持 In progress，写当前执行者待领取、下一执行者 Codex 并停止写入；由 Codex 分析和修订方案，再按完整交接流程交回，不让 Vega 自行更改 spec 或绕过限制。
+
 ## 7. 验收协议（每个任务卡通用）
 
 **PR gate 拓扑（2026-09-24 用户裁决，[Issue #175](vega-issue-175-single-pr-check.md)；缓存和 workflow 命名由 [Issue #179](vega-issue-179-shared-pr-cicd-cache.md) 更新，测试运行器按 2026-09-25 [Issue #183](vega-issue-183-nextest-ci.md) 更新，并行结构按 [Issue #188](vega-issue-188-parallel-ci-checks.md) 更新）**：门禁全部在云端。`.github/workflows/pr-check.yml` 仅响应 base 为 `master` 的 PR，并以两个无相互依赖的 `macos-latest` job 并行执行：Clippy job 依次运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；Nextest job 运行 `cargo nextest run --workspace`。required check `check (fmt, clippy, test)` 是依赖两者的轻量汇总 job，以 `always()` 运行，仅两个结果均为 `success` 才通过，失败、取消和跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。失败直接阻断合并，不自动重试。该 workflow 保留 Rust 1.98.0、`contents: read`、执行 job 的 60 分钟超时和并发取消；两个执行 job 使用 `Swatinem/rust-cache@v2` 恢复 master CICD 写入的 `vega-master-build` 缓存，PR 的 `save-if` 条件为 false，因此 PR 不保存缓存；不使用归档、分片、额外 build 或手动 dispatch。`.github/workflows/cicd.yml` 的 GitHub Actions 名称为 `master`，仅在 push 到 master 时打包并上传 artifact；它和 PR check 使用相同 `shared-key: vega-master-build` 及 `save-if: ${{ github.ref == 'refs/heads/master' }}`，master 是唯一写入方。rust-cache 还会按 runner 平台、工具链及 Cargo 输入派生实际缓存键。旧的 [Issue #123](vega-issue-123-pr-check-pipeline.md) / [Issue #140](vega-issue-140-ci-test-throughput.md) 流水线描述只记录历史决策；云端 nextest 使用 `.config/nextest.toml` 默认 profile：`retries=0`、`fail-fast=false`、600 秒挂起保护，不覆盖默认并发。
-- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地**仅做快速 check**，本卡新增/修改的功能点测试及 workspace 全量测试交给云端；不重复跑相同门禁制造独立验收的表象。本地 commit/push 不做强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。
-- **验收节奏（2026-09-23 用户裁决）**：实现完成 → 本地仅做快速 check → 开 PR（功能点测试交给云端） → 云端 `pr-check` 绿 → Agent 主动合并 master → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写、关 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress`。**真实验收（真实模型/服务/UI 路径）由用户在 master 上手动完成**，Agent 不再以自产全量 E2E/截图作为合并前门禁。
-- **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
+- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败由 Codex 读取 PR 原始日志分析；Master 只允许 PR merge，不允许直接 push。本地**仅快速静态 check**，不运行 Vega、编译或测试；本卡功能点及 workspace 测试只交 GitHub Actions。本地 commit/push 不做强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。
+- **验收节奏（2026-10-16 用户更新）**：Vega/子 agent 实现回报 → Codex 审查并开 PR → 最新 head 的 required check 通过 → Codex 主动 squash merge → In review → **停下等用户纯手动验收**。CI 每 5 分钟查询，通知/用户即时请求除外，不短轮询/watch。合并时 Issue 开放、不 Done、不删除本卡远端分支和本地分支/worktree；用户明确通过才回写、关闭/Done 并清理。用户不通过由 Codex 退回 In progress 先分析，再给 Vega 具体 Bug 方案。真实模型/服务/UI 集成由用户在 master 上手测，Agent 不以自产 E2E/截图替代。
+- **任务级**：任务卡附验收矩阵与命令；运行程序、测试或 benchmark 的命令交 Actions，手工走查由用户完成，本地仅快速静态检查。
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
-- **报告**：贴验收命令原始输出，不许概述"通过了"
+- **报告**：贴本地静态检查与对应提交的云端命令原始输出，未运行项标待 CI；未收到用户结论标待手测，不许用“通过了”替代证据或假装完整完成。收尾失败保留上下文并说明待办。
 - **进程内自动回归（2026-09-25 用户裁决，取代 E2E-first）**：自动测试覆盖业务、安全策略、解析、存储及 GPUI 测试上下文行为。移除真实外部进程/网络/应用 E2E，不新增同类自动门禁；系统集成由用户手测。禁止为了测试扩大 production public API；保留范围内的断言不得放宽以变绿。
 - **证据留存**：每 Sprint 报告必须记录命令、UTC/本地时间、branch、测试时 tree/content hash、结果与 accepted residual；raw 日志可暂存 `/tmp`，仓库文档不得写入真实 key、raw workspace path/OID或伪造尚不存在的 commit/PR。
 
@@ -153,4 +156,4 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ---
 
-*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）；v0.5 (2026-08-29) mdstream 白名单条件激活（`待 spike 确认` → T14 spike 确认引入，锁定 =0.3.0）；v0.6 (2026-08-31) 人类冻结 E2E-first 验收与仓库证据留存规则，限制 test-only 笛卡尔扩张；v0.7 (2026-09-22) 门禁全部上云（Issue #123）：删除本地 hooks/verify.py/cargo-lock 调度器，PR 走云端 fmt/clippy/test，push master 打包，发布仍由 tag 触发；v0.8 (2026-09-23) 交付节奏改为「本地只跑本卡功能点测试 → 开 PR → 云端 check 绿 → Agent 主动合并 master → 卡改 In review → 用户手测」：用户手测通过才回写/关 Issue/Done/清理，未通过退回 In progress；真实验收由用户在 master 手动完成；v0.9 (2026-09-23) 用户裁决代码中禁止任何注释（`///`/`//!`/行内 `//`/`/* */`）：注释说明必要即命名或结构没写好，改命名/拆函数/提类型；仅 `unsafe` 块的 `// SAFETY:` 一行例外；v1.0 (2026-09-24) Issue #179：PR gate 恢复 master 的 `vega-master-build` Cargo cache 但不保存；`.github/workflows/cicd.yml` 的 workflow 名为 `master`。
+*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）；v0.5 (2026-08-29) mdstream 白名单条件激活（`待 spike 确认` → T14 spike 确认引入，锁定 =0.3.0）；v0.6 (2026-08-31) 人类冻结 E2E-first 验收与仓库证据留存规则，限制 test-only 笛卡尔扩张；v0.7 (2026-09-22) 门禁全部上云（Issue #123）：删除本地 hooks/verify.py/cargo-lock 调度器，PR 走云端 fmt/clippy/test，push master 打包，发布仍由 tag 触发；v0.8 (2026-09-23) 交付节奏改为「本地只跑本卡功能点测试 → 开 PR → 云端 check 绿 → Agent 主动合并 master → 卡改 In review → 用户手测」：用户手测通过才回写/关 Issue/Done/清理，未通过退回 In progress；真实验收由用户在 master 手动完成；v0.9 (2026-09-23) 用户裁决代码中禁止任何注释（`///`/`//!`/行内 `//`/`/* */`）：注释说明必要即命名或结构没写好，改命名/拆函数/提类型；仅 `unsafe` 块的 `// SAFETY:` 一行例外；v1.0 (2026-09-24) Issue #179：PR gate 恢复 master 的 `vega-master-build` Cargo cache 但不保存；`.github/workflows/cicd.yml` 的 workflow 名为 `master`。v1.1 (2026-10-16) Codex 先审查并交接具体 Bug 方案、Vega 按方案执行后交回；按角色自动取最新合格单卡，本地仅静态检查，测试只交 Actions，用户手测通过后才清理远端分支及本地 worktree。

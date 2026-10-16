@@ -1,13 +1,12 @@
 # AGENTS.md — Vega 仓库协作准则
 
-## Vega 本地验证限制（2026-10-13 用户裁决）
+## Vega 本地验证限制（2026-10-16 用户更新）
 
 **仅适用于 Vega 项目，包括它的所有 worktree、主 agent 和子 agent；不限制 Loom 自身或其他项目。**
 
-- **禁止本地编译、构建和打包；本地只允许低 CPU、能快速完成的 check。** 多任务并发编译会打满 CPU、造成机器卡顿。
-- 完整编译、全量检查，以及会触发耗时编译的定向测试，交给云端 PR Check / CI；打包使用云端发布流程。
-- `cargo check`、Clippy、定向 test / nextest 不因命令名或范围小就自动豁免：若会冷编译、大量重编译或持续高负载，不在本地运行。可做快速的差异、格式和静态检查；一旦发现检查变成耗时构建，停止本任务启动的检查并移交 CI。
-- 本规则优先于旧文档、技能、任务规格中要求本地编译或先跑定向测试的条款。保留测试覆盖与断言，改由 PR Check 执行；报告清楚区分本地已执行和待 CI 验证，不把未运行项标为通过。
+- **Codex、Vega 及子 agent 本地不运行 Vega 代码，不编译、构建、打包或执行测试。** 包括定向 `cargo check`、Clippy、test / nextest，不因缓存、范围小或预计耗时短而豁免。
+- 本地只做低 CPU、能快速完成的差异、格式和静态检查；skill frontmatter 静态校验可执行。自动测试只由 GitHub Actions 运行，打包使用云端发布流程。
+- 本规则优先于旧文档、技能、任务规格中要求本地运行、编译或定向测试的条款。测试用例与回归断言仍须编写；报告区分本地静态检查和待 CI 验证，不把未运行项标为通过。
 
 Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
@@ -49,17 +48,17 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 工作流
 
-1. **不在 `master` 上直接做功能开发**——用 feature 分支（`feat/<task-id>-<slug>`，如 `feat/t01-scaffold`）。
-2. **动手前先 `git fetch && git rebase origin/master`**。
-3. **任务来源**：默认从 [GitHub Project](https://github.com/users/puzige/projects/2/views/1?system_template=kanban) 的 Ready 卡取任务，用户指定任务优先；关联 `docs/vega-s*-tasks.md` 等规格。一张卡 = 一个 PR。卡外工作先问。取卡、实现与交付必须使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
-4. **交付节奏（2026-09-23 用户裁决）**：接卡立即置 `In progress` → 需求分析/测试用例/实现计划 → 实现（**本地仅做快速 check；本卡功能点测试交给云端 PR Check**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写上下文、关闭 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress` 修复。**未收到用户手测结论前不得关闭或清理。**
-5. **主 agent 角色**：协调、集成、开 PR 与合并；**代码实现委托给专用 subagent**，主上下文不被实现细节污染。
-6. **遇阻**：按 exec-guide §6 用 `[BLOCKED]` 格式上报，禁止自创方案绕过。
-7. **真实验收由用户手测**：真实模型/服务/UI 路径的验收由用户在合并后的 master 上手动完成；Agent 不再以自产全量 E2E/截图作为合并前门禁。本卡自动测试覆盖进程内业务行为，真实外部集成由用户手测；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
+1. **不在 `master` 上直接实现**——每卡用 `~/Workspace/worktrees/` 下独立 worktree 和 `feat/<task-id>-<slug>` 分支。**任何仓库修改前先 fetch 并更新基线**；通常为 `git fetch` 后 `git rebase origin/master`，有脏改动或分叉先保护核实，不 reset 或覆盖。
+2. **共用入口与身份**：取卡、实现、交接和收尾使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)，细节以 [Issue 与角色工作流](docs/vega-issue-workflow.md) 为准。角色优先采用用户明确指定的工作流角色，否则采用宿主系统身份；Vega 为 `You are Vega`，不从模型名、项目名或路径猜身份，有证据不重复询问。
+3. **自动单卡**：用户指定或明确继续的卡优先；否则完整读取本角色候选队列，先排除关闭、占用、依赖未解、缺所需方案和未交接 PR，再按 Issue `createdAt` 降序、同时间编号降序取最新一张。Codex 取可审查的 Backlog、等待 Codex 的 Ready，或 Vega 已明确交回且无活跃执行者的 In progress；Vega 仅取方案完整可访问、明确交给 Vega 的 Ready。领取即 `In progress`，Issue 写阶段及当前/下一执行者；交回的 In progress 保留原列。解释、审阅或维护 skill 不启动其他卡。默认一张，仅连续授权才取下一张。
+4. **Codex 先接卡**：Codex 查重建卡并先审查所有需求；Bug 定位根因，先写测试用例、再写具体到文件/符号/修改动作的方案，提交并发布可访问交接链接后置 Ready 等 Vega。新功能默认由 Codex 组织实现，**代码实现委托专职 subagent**；Codex 主会话负责协调、审查、集成、PR/CI/合并及用户反馈分析。卡外发现单独记录，不扩大实现范围。
+5. **Vega 执行**：领取已交接 Ready 后立即 `In progress`，按方案实现和补测试，不建卡、不改 spec、不开放式排障。完成或遇阻都在同卡交回 Codex，保持 `In progress`，写当前执行者待领取、下一执行者 Codex 并停止写入。Codex 交到 Ready、Vega 交回或合并后等待用户，均为默认单卡停止点；同卡始终只有一个实现写入者。
+6. **合并与验收**：本地仅静态检查，测试只交 GitHub Actions；Codex 审查并确认最新 head 的 required check 通过后主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后才回写、关闭 Issue/Done、删除本卡远端分支及本地分支/worktree；未通过由 Codex 先分析，Bug 修订方案后重新交 Vega。**手测前不得关闭、Done 或清理。**
+7. **遇阻与证据**：按 exec-guide §6 用 `[BLOCKED]` 上报，Vega 的方案缺口交回 Codex，禁止自创方案绕过。自动回归仍覆盖进程内业务/安全/存储/UI；真实模型、服务和 UI 系统集成由用户在合并后的 master 上手测，不以 Agent 自产 E2E/截图替代；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ## 问题与需求收集
 
-- 按 [Issue 与看板工作流](docs/vega-issue-workflow.md) 收集明确要跟踪的 Vega 问题和需求。**登记不等于承诺立即修复**：暂时无法处理时，先查重并记录 Issue，给用户链接和真实状态，不把它假装成进行中。
+- 由 Codex 按 [Issue 与看板工作流](docs/vega-issue-workflow.md) 查重并收集明确要跟踪的问题和需求，Vega 默认不建卡。**登记不等于承诺立即修复**：暂未开始时给用户链接和真实 Backlog 状态，不把它假装成进行中。
 - GitHub Issue 是执行事项与证据的单一入口，GitHub Project 只管理流转状态；Notion PRD 管产品目标，本仓 `docs/` 管实现规格。Issue 本身不替代上述 spec，也不授权卡外代码实现。
 - 无法访问 Project 时，不得声称已入看板；如已获授权且可创建 Issue，先保留 Issue 并明确说明待关联。仓库公开，截图、日志和复现信息必须脱敏。
 
@@ -68,8 +67,8 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 [vega-features.md](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
 - PR 必须附：本卡功能点测试命令与云端原始输出（运行前标记待 CI 验证） + 与 spec 的偏离说明（必须为无）；**不附本地全量测试**（全量门禁由云端 `pr-check` 承担）
-- 合并方式：squash merge，合并后删除功能分支（2026-08-29 决策）
-- **合并由 Agent 主动完成**：云端 `check` 绿后由 Agent 合并 master，合并完成后才把卡片改为 `In review` 等待用户手测（2026-09-23 用户裁决）
+- 合并方式：由 Codex squash merge。**用户手测通过后才删除本卡远端功能分支及本地分支/worktree**；合并时保留，取代旧的合并后立即删分支规则。
+- **合并由 Codex 主动完成**：确认待合并最新 head 的 required check 绿后合入 master，完成后才把卡片改为 `In review` 等待用户手测；PR 不使用自动关闭 Issue 的关键字。
 
 ## 验证门禁与云端 CI（2026-09-25 用户裁决，Issue #175、#179、#183、#188）
 
@@ -82,7 +81,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 历史 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md) 与 [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。调度器的移除不代表允许本地编译；本地验证遵守顶部的快速 check 限制。
 - `.config/nextest.toml` 用于云端 PR gate：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
-- **本地仅做快速 check，功能点测试与全量门禁交给云端 `pr-check`**（2026-10-13 用户裁决，取代 2026-09-23 的本地定向测试要求）。任务级 production-root 回归与测试矩阵仍须覆盖；保留既有安全断言、失败输出及任务验收矩阵，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
+- **本地仅做快速静态 check，功能点测试与全量门禁只交云端 `pr-check`**（2026-10-16 用户更新，取代本地定向测试要求）。任务级 production-root 回归与测试矩阵仍须编写；保留既有安全断言、失败输出及任务验收矩阵，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
 
 ## PR 检查轮询节奏（2026-10-15 用户裁决）
 
@@ -333,7 +332,7 @@ R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-hei
 
 ## 行为技能
 
-- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：看板取卡到关闭的工程交付流程；测试用例先行、本地仅快速 check、功能点测试交给 PR Check、Agent 合并 master、用户手测后收尾的统一完成标准。
+- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：Codex/Vega 共用的角色识别与最新单卡交付；Codex 先审查并交接 Bug、Vega 按方案执行、Actions 验证、Codex 合并、用户手测后收尾。维护 skill 本身不触发其他真实队列。
 
 - [karpathy-guidelines](.agents/skills/karpathy-guidelines/SKILL.md)：写/审/重构代码时的
   行为准则（最小改动、表面化假设、可验证成功判据）。**冲突时以本文件与 exec-guide 为准**，

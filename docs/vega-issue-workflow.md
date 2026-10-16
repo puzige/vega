@@ -27,7 +27,7 @@ Project 属于 puzige 个人账号，仓库的 Projects 页未必显示它。通
 进入交付流程后，没有指定 Issue 就自动选择一张任务，无需再询问任务编号。解释、审阅或维护本 skill 不会自动启动其他卡片的交付。
 
 1. 用户指定的卡片或当前会话明确继续的任务优先；否则查询 Project 中全部候选卡及 Issue 的开放状态、创建时间、最新交接、依赖和关联 PR。
-2. **Codex 队列**：未被占用、可开始审查的 Backlog 卡，以及明确等待 Codex 的 Ready 卡。旧 Ready 卡没有完整方案/交接时，只能由 Codex 先审查，不能直接交给 Vega。
+2. **Codex 队列**：未被占用、可开始审查的 Backlog 卡，明确等待 Codex 的 Ready 卡，以及 Vega 已回报/遇阻、最新交接明确交回 Codex 且没有活跃执行者的 In progress 卡。交回卡由 Codex 领取后更新阶段，列仍为 In progress；不能因此抢占其他进行中任务。旧 Ready 卡没有完整方案/交接时，只能由 Codex 先审查，不能直接交给 Vega。
 3. **Vega 队列**：仅 Ready、已由 Codex 审查、方案完整可访问且最新交接明确写了“下一执行者：Vega”的卡。默认接 Bug；其他执行任务须有明确委派。新功能不因进入 Ready 就自动转给 Vega。
 4. 先排除已关闭、他人占用、依赖未满足、存在未交接 PR、仍需产品裁决或不属于本角色的卡；再按 **Issue createdAt 降序**取最新一张，同时间按 Issue 编号降序。不能用评论更新时间、Project 返回顺序或旧优先级排序替代“最新”，也不能只读默认第一页遗漏候选。
 5. 领取前重读该卡和最新交接，确认仍可领取；在 Issue 记录角色、阶段、领取时间和工作上下文，立即改为 In progress，再读确认。发现并发领取则让出，不覆盖他人状态。Project 不提供本流程的原子认领锁，读回确认不能被描述为原子锁。
@@ -51,7 +51,7 @@ Codex 接卡后先审查需求与既有 spec，写清场景、范围、非目标
 
 在同一 Issue 维护可识别的工作流记录，写清 **阶段、当前执行者、下一执行者、方案链接/版本、分支/提交和领取/交付时间**；历史保留，以最新有效交接为准。等待 Vega 时当前执行者写待领取，不能声称 Vega 已开工；不把模型名填成虚假 GitHub assignee。
 
-Codex 发布交接后改为 Ready 并读回确认；Vega 领取时核对版本、基线、范围和依赖，记录领取并改为 In progress。Vega 交付后在同卡回报改动、提交、静态检查、待 CI 项、限制和耗时事实，交回 Codex 审查；卡仍为 In progress，阶段为等待 Codex 审查。交接问题由 Codex 修订后重新交接，不由 Vega 自行决定。
+Codex 发布交接后改为 Ready 并读回确认；Vega 领取时核对版本、基线、范围和依赖，记录领取并改为 In progress。Vega 交付后在同卡回报改动、提交、静态检查、待 CI 项、限制和耗时事实，交回 Codex 审查；卡仍为 In progress，阶段为等待 Codex 审查，当前执行者为待领取、下一执行者为 Codex，并停止写入。Codex 可按本角色队列规则自动接回。交接问题由 Codex 修订后重新交接，不由 Vega 自行决定。
 
 这些记录用于观察 Vega 的速度、返工、阻塞和能力边界；只记录可核实的时间与结果，不增加性能测量服务，也不把未测能力写成已验证。
 
@@ -71,7 +71,7 @@ Bug：Backlog → In progress（Codex 排查/方案）→ Ready（等 Vega）→
 
 Feature：Backlog → In progress（Codex 审查并组织实现）→ In review（已合并、等用户）→ Done；等待实现时可用 Ready，但下一执行者仍为 Codex。
 
-用户手测不通过时由 Codex 退回 In progress 并先分析；Bug 需要新方案时重走 Ready/Vega 领取流程。Vega 遇阻时记录阻碍和下一执行者 Codex，不假装完成或占用无效 Ready 卡。只有同一卡和单一写入者，交接后前任停止修改实现范围。
+用户手测不通过时由 Codex 退回 In progress 并先分析；Bug 需要新方案时重走 Ready/Vega 领取流程。Vega 遇阻时保持 In progress，记录阻碍、当前执行者待领取和下一执行者 Codex 并停止写入，不假装完成或占用无效 Ready 卡。只有同一卡和单一写入者，交接后前任停止修改实现范围。
 
 ## 本地、CI 与手动验收
 
