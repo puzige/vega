@@ -47,6 +47,7 @@ mod issue296_stream_polish;
 mod issue299_pending_messages;
 mod issue342_model_name_width;
 mod issue350_network_retry;
+mod issue357_markdown_links;
 mod issue395_thinking_performance;
 mod issue395_thinking_window;
 mod issue401_steer_projection;

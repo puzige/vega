@@ -290,6 +290,7 @@ fn issue296_message_rhythm_matches_for_selected_and_plain_renderers(cx: &mut Tes
             line.spans.push(StreamSpan {
                 text: "One answer".into(),
                 style: SpanStyle::Plain,
+                link: None,
             });
             let mut model = StreamModel::default();
             model.committed_lines.push(line);

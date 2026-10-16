@@ -10,6 +10,7 @@ use gpui_kit::{
     Point, SharedString, StyledText, TextLayout, TextRun, Window, WrappedLine, transparent_black,
 };
 
+use super::links::{LinkRange, fragment_link_ranges, register_link_interactions};
 use super::model::MessageCopy;
 
 #[cfg(test)]
@@ -73,6 +74,7 @@ impl SelectionDocumentBuilder {
         &self,
         text: &str,
         runs: Vec<TextRun>,
+        links: Vec<LinkRange>,
         content_range: Range<usize>,
         logical_range: Range<usize>,
     ) -> gpui_kit::AnyElement {
@@ -81,13 +83,20 @@ impl SelectionDocumentBuilder {
             .any(|run| run.background_color.is_some())
             .then(|| runs.clone());
         SelectableStyledText {
-            id: ElementId::Name(format!("thinking-selection-{}", content_range.start).into()),
+            id: ElementId::Name(
+                format!(
+                    "thinking-{}-selection-{}",
+                    self.copy.id, content_range.start
+                )
+                .into(),
+            ),
             text: StyledText::new(text.to_owned()).with_runs(runs),
             content: text.to_owned().into(),
             order: (content_range.start as u64, 0),
             content_range,
             logical_range,
             runs: self.runs.clone(),
+            links,
             selected: Rc::new(RefCell::new(None)),
             selection_color: self.selection_color,
             paint_runs,
@@ -105,13 +114,14 @@ impl SelectionDocumentBuilder {
         styled: StyledText,
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
-        self.append(text, styled, None, id_prefix)
+        self.append(text, styled, None, Vec::new(), id_prefix)
     }
 
     pub(crate) fn append_styled_runs(
         &mut self,
         text: &str,
         runs: Vec<TextRun>,
+        links: Vec<LinkRange>,
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
         let styled = StyledText::new(text.to_owned()).with_runs(runs.clone());
@@ -119,7 +129,7 @@ impl SelectionDocumentBuilder {
             .iter()
             .any(|run| run.background_color.is_some())
             .then_some(runs);
-        self.append(text, styled, paint_runs, id_prefix)
+        self.append(text, styled, paint_runs, links, id_prefix)
     }
 
     fn append(
@@ -127,6 +137,7 @@ impl SelectionDocumentBuilder {
         text: &str,
         styled: StyledText,
         paint_runs: Option<Vec<TextRun>>,
+        links: Vec<LinkRange>,
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
         let start = self.content.len();
@@ -139,8 +150,8 @@ impl SelectionDocumentBuilder {
         self.next_run_order += 1;
         let runs = self.runs.clone();
         let selection_color = self.selection_color;
-        let id_prefix = id_prefix.to_owned();
-        let fragment_id = id_prefix.clone();
+        let fragment_links = links.clone();
+        let fragment_id = format!("{id_prefix}-selection-run-{order}");
         let fragment =
             move |range: Range<usize>, content: SharedString, paint_runs: Vec<TextRun>| {
                 let styled = StyledText::new(content.clone()).with_runs(paint_runs.clone());
@@ -149,15 +160,14 @@ impl SelectionDocumentBuilder {
                     .any(|run| run.background_color.is_some())
                     .then_some(paint_runs);
                 SelectableStyledText {
-                    id: ElementId::Name(
-                        format!("{fragment_id}-selection-run-{order}-{}", range.start).into(),
-                    ),
+                    id: ElementId::Name(format!("{fragment_id}-fragment-{}", range.start).into()),
                     text: styled,
                     content,
                     content_range: start + range.start..start + range.end,
                     logical_range: start..end,
                     order: (order, range.start),
                     runs: runs.clone(),
+                    links: fragment_link_ranges(&fragment_links, &range),
                     selected: Rc::new(RefCell::new(None)),
                     selection_color,
                     paint_runs,
@@ -175,6 +185,7 @@ impl SelectionDocumentBuilder {
                 logical_range: start..end,
                 order: (order, 0),
                 runs: self.runs.clone(),
+                links: fragment_link_ranges(&links, &(0..text.len())),
                 selected: Rc::new(RefCell::new(None)),
                 selection_color,
                 paint_runs: None,
@@ -225,9 +236,15 @@ struct SelectableStyledText {
     logical_range: Range<usize>,
     order: (u64, usize),
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
+    links: Vec<LinkRange>,
     selected: Rc<RefCell<Option<Range<usize>>>>,
     selection_color: Hsla,
     paint_runs: Option<Vec<TextRun>>,
+}
+
+struct SelectablePrepaintState {
+    lines: Option<Vec<WrappedLine>>,
+    hitbox: Option<Hitbox>,
 }
 
 impl IntoElement for SelectableStyledText {
@@ -240,7 +257,7 @@ impl IntoElement for SelectableStyledText {
 
 impl Element for SelectableStyledText {
     type RequestLayoutState = ();
-    type PrepaintState = Option<Vec<WrappedLine>>;
+    type PrepaintState = SelectablePrepaintState;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -296,9 +313,12 @@ impl Element for SelectableStyledText {
                 *layout = Some(self.text.layout().clone());
             }
         });
-        self.paint_runs.as_ref().and_then(|runs| {
+        let lines = self.paint_runs.as_ref().and_then(|runs| {
             super::inline_code::shape(self.content.clone(), runs, self.text.layout(), window)
-        })
+        });
+        let hitbox =
+            (!self.links.is_empty()).then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal));
+        SelectablePrepaintState { lines, hitbox }
     }
 
     fn paint(
@@ -311,7 +331,7 @@ impl Element for SelectableStyledText {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if prepaint.is_some()
+        if prepaint.lines.is_some()
             && let Some(runs) = &self.paint_runs
         {
             super::inline_code::paint_backgrounds(self.text.layout(), runs, window);
@@ -324,11 +344,21 @@ impl Element for SelectableStyledText {
                 window,
             );
         }
-        if let Some(lines) = prepaint {
+        if let Some(lines) = prepaint.lines.as_ref() {
             super::inline_code::paint_text(lines, self.text.layout(), window, cx);
         } else {
             self.text
                 .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);
+        }
+        if let Some(hitbox) = prepaint.hitbox.clone() {
+            register_link_interactions(
+                id,
+                hitbox,
+                self.text.layout().clone(),
+                self.links.clone(),
+                window,
+                cx,
+            );
         }
     }
 }
@@ -552,53 +582,51 @@ impl Element for SelectableMessage {
         let handle = self.handle.clone();
         let focus = self.focus.clone();
         window.on_mouse_event(move |event: &gpui_kit::MouseDownEvent, phase, window, cx| {
-            if phase.bubble()
-                && event.button == gpui_kit::MouseButton::Left
-                && hitbox.is_hovered(window)
+            if !phase.bubble()
+                || event.button != gpui_kit::MouseButton::Left
+                || !hitbox.is_hovered_at(event.position, window)
             {
-                TextSelection::activate_scope(scope, window, cx);
-                if event.click_count >= 2 {
-                    let selected = runs.borrow().iter().find_map(|run| {
-                        if !run.bounds.contains(&event.position)
-                            || run.content_range == run.logical_range
-                        {
-                            return None;
-                        }
-                        let offset = run.layout.index_for_position(event.position).ok()?
-                            + run.content_range.start;
-                        let text = content.get(run.logical_range.clone())?;
-                        let range = multi_click_range(
-                            text,
-                            offset - run.logical_range.start,
-                            event.click_count,
-                        )?;
-                        Some(
-                            run.logical_range.start + range.start
-                                ..run.logical_range.start + range.end,
-                        )
-                    });
-                    if let Some(range) = selected {
-                        let copy = copy.clone();
-                        let handle = handle.clone();
-                        let focus = focus.clone();
-                        let content = content.clone();
-                        window.defer(cx, move |window, cx| {
-                            if (projected && copy.content_generation() == generation)
-                                || (!projected
-                                    && copy.visible_text().as_deref() == Some(content.as_ref()))
-                            {
-                                copy.set_local_selection_range(range.clone());
-                                copy.set_selected_text(
-                                    copy.selection_generation(),
-                                    content[range].to_owned(),
-                                );
-                                handle.set_local_selection(true, cx);
-                                focus.focus(window, cx);
-                                window.refresh();
-                            }
-                        });
-                        cx.stop_propagation();
+                return;
+            }
+            TextSelection::activate_scope(scope, window, cx);
+            if event.click_count >= 2 {
+                let selected = runs.borrow().iter().find_map(|run| {
+                    if !run.bounds.contains(&event.position)
+                        || run.content_range == run.logical_range
+                    {
+                        return None;
                     }
+                    let offset = run.layout.index_for_position(event.position).ok()?
+                        + run.content_range.start;
+                    let text = content.get(run.logical_range.clone())?;
+                    let range = multi_click_range(
+                        text,
+                        offset - run.logical_range.start,
+                        event.click_count,
+                    )?;
+                    Some(run.logical_range.start + range.start..run.logical_range.start + range.end)
+                });
+                if let Some(range) = selected {
+                    let copy = copy.clone();
+                    let handle = handle.clone();
+                    let focus = focus.clone();
+                    let content = content.clone();
+                    window.defer(cx, move |window, cx| {
+                        if (projected && copy.content_generation() == generation)
+                            || (!projected
+                                && copy.visible_text().as_deref() == Some(content.as_ref()))
+                        {
+                            copy.set_local_selection_range(range.clone());
+                            copy.set_selected_text(
+                                copy.selection_generation(),
+                                content[range].to_owned(),
+                            );
+                            handle.set_local_selection(true, cx);
+                            focus.focus(window, cx);
+                            window.refresh();
+                        }
+                    });
+                    cx.stop_propagation();
                 }
             }
         });

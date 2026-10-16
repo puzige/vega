@@ -1,4 +1,8 @@
-use super::super::{inline_code, selection::SelectionDocumentBuilder};
+use super::super::{
+    inline_code,
+    links::{LinkRange, fragment_link_ranges, link_ranges},
+    selection::SelectionDocumentBuilder,
+};
 use super::*;
 use gpui_kit::{
     AvailableSpace, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId,
@@ -366,6 +370,7 @@ struct PreparedFragment {
     logical_range: Range<usize>,
     bounds: Bounds<Pixels>,
     runs: Vec<TextRun>,
+    links: Vec<LinkRange>,
     font_size: Pixels,
     line_height: Pixels,
     line_width: Pixels,
@@ -508,6 +513,7 @@ impl PreparedBody {
                             &[StreamSpan {
                                 text: format!("{} ", line.marker),
                                 style: SpanStyle::Plain,
+                                link: None,
                             }],
                             LineKind::Paragraph,
                             point(x, px(0.)),
@@ -526,6 +532,7 @@ impl PreparedBody {
                                 &[StreamSpan {
                                     text: if checked { "[x]" } else { "[ ]" }.into(),
                                     style: SpanStyle::Plain,
+                                    link: None,
                                 }],
                                 LineKind::Paragraph,
                                 point(x, px(0.)),
@@ -841,6 +848,7 @@ fn layout_text(
         / style.scale);
     let runs = render_rows::block_text_runs(spans, text_style, &style.colors);
     let run_index = inline_code::RunIndex::new(runs.clone());
+    let links = link_ranges(spans);
     if runs.iter().any(|run| run.background_color.is_some()) {
         let flow = inline_code::shape_flow(
             &text.clone().into(),
@@ -855,6 +863,7 @@ fn layout_text(
                 block,
                 &text,
                 &run_index,
+                &links,
                 start,
                 logical_range.clone(),
                 fragment.range,
@@ -885,6 +894,7 @@ fn layout_text(
                 block,
                 &text,
                 &run_index,
+                &links,
                 start,
                 logical_range.clone(),
                 offset + from..offset + to,
@@ -908,6 +918,7 @@ fn add_fragment(
     block: &mut PreparedBlock,
     text: &str,
     runs: &inline_code::RunIndex,
+    links: &[LinkRange],
     start: usize,
     logical: Range<usize>,
     range: Range<usize>,
@@ -960,6 +971,7 @@ fn add_fragment(
                 size((right - x).max(px(0.)), line_height),
             ),
             runs: runs.slice(from..end),
+            links: fragment_link_ranges(links, &(from..end)),
             font_size,
             line_height,
             line_width,
@@ -1166,6 +1178,10 @@ impl Element for FragmentsElement {
             let mut element = self.document.append_positioned(
                 text,
                 runs,
+                fragment_link_ranges(
+                    &fragment.links,
+                    &(start - fragment.range.start..fragment.range.len()),
+                ),
                 range,
                 fragment
                     .logical_range

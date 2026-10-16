@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn linked_spans_keep_distinct_targets_when_coalescing() {
+    let spans = coalesce(vec![
+        StreamSpan {
+            text: "same".into(),
+            style: SpanStyle::Link,
+            link: Some("https://one.example".into()),
+        },
+        StreamSpan {
+            text: " label".into(),
+            style: SpanStyle::Link,
+            link: Some("https://one.example".into()),
+        },
+        StreamSpan {
+            text: "other".into(),
+            style: SpanStyle::Link,
+            link: Some("https://two.example".into()),
+        },
+    ]);
+    assert_eq!(spans.len(), 2);
+    assert_eq!(spans[0].text, "same label");
+    assert_eq!(spans[0].link.as_deref(), Some("https://one.example"));
+    assert_eq!(spans[1].text, "other");
+    assert_eq!(spans[1].link.as_deref(), Some("https://two.example"));
+}
+
+#[test]
 fn page_boundary_anchor_is_delegated_to_splice_preserved_scroll_top() {
     // S8-T44/C4: the prepend anchor no longer uses pixel math on uniform
     // rows. `ListState::splice` shifts `logical_scroll_top` by the prepended
@@ -142,6 +168,7 @@ impl Render for TableView {
             &self.0,
             None,
             &vega_theme::Theme::light().colors,
+            "table-view-markdown",
         ))
     }
 }
@@ -168,6 +195,12 @@ fn issue119_streamed_and_replayed_inline_content_reaches_markdown_renderer(
     assert_eq!(lines[0].kind, LineKind::ListItem);
     assert_eq!(lines[0].marker, "•");
     assert_eq!(spans_text(lines[0]), "选 A，继续 旧 链接 替代");
+    assert!(
+        lines[0]
+            .spans
+            .iter()
+            .any(|span| span.text == "链接" && span.link.as_deref() == Some("https://example.com"))
+    );
     for (text, style) in [
         ("A", SpanStyle::Strong),
         ("继续", SpanStyle::Emphasis),
@@ -200,7 +233,8 @@ fn issue119_streamed_and_replayed_inline_content_reaches_markdown_renderer(
         table.rows[1][1],
         vec![StreamSpan {
             text: "改为**\"收敛\"**的".into(),
-            style: SpanStyle::Plain
+            style: SpanStyle::Plain,
+            link: None,
         }]
     );
     assert_eq!(table_line.block_id, 2);
