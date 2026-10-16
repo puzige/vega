@@ -9,6 +9,7 @@ pub(super) enum Control {
     NewGroup,
     AddProject,
     Collapse(SidebarCollapseTarget),
+    More(String),
     Project(String),
     NewStandalone,
     NewProjectTask(String),
@@ -60,6 +61,11 @@ impl ThreadsBlock {
                 }
             }
             Control::Collapse(target) => self.toggle_organization_collapse(target, cx),
+            Control::More(id) => {
+                if let Some(organization) = self.organization.as_mut() {
+                    organization.grow_project_task_page(&id);
+                }
+            }
             Control::Project(id) => {
                 if crate::navigation::allow_task_navigation(None, cx)
                     && let Some(org) = &self.organization
@@ -650,6 +656,62 @@ impl ThreadsBlock {
         cx.notify();
     }
 
+    fn render_project_progressive_control(
+        &self,
+        project_id: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let label = "展开更多";
+        let id = format!("project-{project_id}-show-more");
+        let label_id = format!("project-{project_id}-progressive-label");
+        let mouse_project_id = project_id.to_owned();
+        let keyboard_project_id = project_id.to_owned();
+        div()
+            .id(ElementId::Name(id.clone().into()))
+            .debug_selector(move || id.clone())
+            .focusable()
+            .tab_stop(true)
+            .role(gpui_kit::Role::Button)
+            .aria_label(label)
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .pl(px(Layout::SIDEBAR_ROW_INSET))
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_size(px(Typography::SIDEBAR))
+            .text_color(colors.text_tertiary)
+            .hover(move |style| style.bg(colors.bg_hover).text_color(colors.text_secondary))
+            .focus_visible(move |style| {
+                style
+                    .bg(colors.bg_active)
+                    .text_color(colors.text_primary)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    if cx.has_active_drag() {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    this.control_action(Control::More(mouse_project_id.clone()), window, cx);
+                }),
+            )
+            .on_key_down(
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        this.control_action(Control::More(keyboard_project_id.clone()), window, cx);
+                    }
+                }),
+            )
+            .child(div().debug_selector(move || label_id.clone()).child(label))
+            .into_any_element()
+    }
+
     fn render_pi_project(
         &mut self,
         project: &SidebarProject,
@@ -854,7 +916,8 @@ impl ThreadsBlock {
                 );
             }
             tasks = super::projections::sorted_threads(&tasks, snapshot.preferences.sort);
-            let visible_count = if let Some(organization) = self.organization.as_mut() {
+            let (visible_count, has_hidden) = if let Some(organization) = self.organization.as_mut()
+            {
                 organization
                     .project_threads_total
                     .insert(project.id.clone(), tasks.len());
@@ -862,9 +925,15 @@ impl ThreadsBlock {
                     .project_threads_visible
                     .entry(project.id.clone())
                     .or_insert(super::PROJECT_TASKS_PAGE);
-                visible_window.min(tasks.len())
+                (
+                    visible_window.min(tasks.len()),
+                    organization.has_project_task_page(&project.id),
+                )
             } else {
-                super::PROJECT_TASKS_PAGE.min(tasks.len())
+                (
+                    super::PROJECT_TASKS_PAGE.min(tasks.len()),
+                    tasks.len() > super::PROJECT_TASKS_PAGE,
+                )
             };
             let has_pinned = self
                 .eligible_threads(show_archived)
@@ -888,6 +957,10 @@ impl ThreadsBlock {
                         cx,
                     )
                 }));
+                if has_hidden {
+                    section =
+                        section.child(self.render_project_progressive_control(&project.id, cx));
+                }
             }
         }
         section.into_any_element()

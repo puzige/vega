@@ -525,6 +525,9 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
         Box::leak(format!("project-thread-row-{}", f.first.id).into_boxed_str());
     let standalone_project_selector: &'static str =
         Box::leak(format!("standalone-thread-row-{}", f.first.id).into_boxed_str());
+    if !absent(&f, cx, "project-p-show-more") {
+        click(&f, cx, "project-p-show-more");
+    }
     assert!(
         visual.debug_bounds(project_selector).is_some(),
         "the project's existing durable rows stay listed"
@@ -1509,9 +1512,9 @@ async fn project_tasks_grow_lazily_and_independently(cx: &mut gpui_kit::TestAppC
     };
     assert_eq!(window("p", cx), 5);
     assert_eq!(window("q", cx), 5);
-    assert!(absent(&f, cx, "project-p-show-more"));
+    assert!(!absent(&f, cx, "project-p-show-more"));
+    assert!(!absent(&f, cx, "project-q-show-more"));
     assert!(absent(&f, cx, "project-p-show-less"));
-    assert!(absent(&f, cx, "project-q-show-more"));
     assert!(absent(&f, cx, "project-q-show-less"));
     assert!(absent(&f, cx, format!("project-thread-row-{}", f.first.id)));
     assert!(absent(&f, cx, format!("project-thread-row-{}", f.other.id)));
@@ -1632,7 +1635,103 @@ async fn project_tasks_grow_lazily_and_independently(cx: &mut gpui_kit::TestAppC
 }
 
 #[gpui_kit::test]
-async fn project_tasks_fill_a_tall_viewport_without_controls(cx: &mut gpui_kit::TestAppContext) {
+async fn project_task_show_more_appends_one_page_per_activation(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture_with_size(cx, 1200., 500.);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    for _ in 0..12 {
+        conversation::create_thread(&store, "p", "model", "confirm").unwrap();
+    }
+    for _ in 0..12 {
+        conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let p_ids: Vec<String> = snapshot(&f)
+        .threads
+        .into_iter()
+        .filter(|thread| {
+            thread.project_id == "p" && thread.status == ThreadStatus::Active && !thread.pinned
+        })
+        .map(|thread| thread.id)
+        .collect();
+    assert_eq!(p_ids.len(), 17);
+    let mounted = |cx: &mut gpui_kit::TestAppContext| {
+        p_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("project-thread-row-{id}")))
+            .count()
+    };
+    let window = |cx: &gpui_kit::TestAppContext| {
+        sessions(&f, cx).read_with(cx, |block, _| {
+            block
+                .organization
+                .as_ref()
+                .unwrap()
+                .project_threads_visible
+                .get("p")
+                .copied()
+                .unwrap()
+        })
+    };
+    assert_eq!(window(cx), 5);
+    assert_eq!(mounted(cx), 5);
+    assert!(!absent(&f, cx, "project-p-show-more"));
+    assert!(absent(&f, cx, "project-p-show-less"));
+    let control = bounds(&f, cx, "project-p-show-more");
+    let label = bounds(&f, cx, "project-p-progressive-label");
+    assert_eq!(
+        f32::from(label.left() - control.left()),
+        Layout::SIDEBAR_ROW_INSET
+    );
+
+    let has_page = |cx: &gpui_kit::TestAppContext| {
+        sessions(&f, cx).read_with(cx, |block, _| {
+            block
+                .organization
+                .as_ref()
+                .unwrap()
+                .has_project_task_page("p")
+        })
+    };
+    let grow = |cx: &mut gpui_kit::TestAppContext| {
+        let grown = sessions(&f, cx).update(cx, |block, cx| {
+            let grown = block
+                .organization
+                .as_mut()
+                .unwrap()
+                .grow_project_task_page("p");
+            if grown {
+                cx.notify();
+            }
+            grown
+        });
+        cx.run_until_parked();
+        grown
+    };
+    click(&f, cx, "project-p-show-more");
+    assert_eq!(window(cx), 10);
+    assert_eq!(mounted(cx), 10);
+    assert!(has_page(cx));
+
+    assert!(grow(cx));
+    assert_eq!(window(cx), 15);
+    assert_eq!(mounted(cx), 15);
+    assert!(has_page(cx));
+
+    assert!(grow(cx));
+    assert_eq!(window(cx), p_ids.len());
+    assert_eq!(mounted(cx), p_ids.len());
+    assert!(!has_page(cx));
+    assert!(absent(&f, cx, "project-p-show-more"));
+    assert!(absent(&f, cx, "project-p-show-less"));
+
+    assert!(!grow(cx));
+    assert_eq!(window(cx), p_ids.len());
+}
+
+#[gpui_kit::test]
+async fn project_tasks_fill_a_tall_viewport_until_complete(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture_with_size(cx, 1200., 2600.);
     let store = Store::open(f.dir.path().join("organization.db")).unwrap();
     for _ in 0..12 {

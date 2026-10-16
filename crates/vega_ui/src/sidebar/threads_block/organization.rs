@@ -75,6 +75,33 @@ impl Organization {
         changed
     }
 
+    fn has_project_task_page(&self, project_id: &str) -> bool {
+        self.project_threads_total
+            .get(project_id)
+            .is_some_and(|total| {
+                self.project_threads_visible
+                    .get(project_id)
+                    .copied()
+                    .unwrap_or(PROJECT_TASKS_PAGE)
+                    < *total
+            })
+    }
+
+    fn grow_project_task_page(&mut self, project_id: &str) -> bool {
+        let Some(total) = self.project_threads_total.get(project_id).copied() else {
+            return false;
+        };
+        let visible = self
+            .project_threads_visible
+            .entry(project_id.to_owned())
+            .or_insert(PROJECT_TASKS_PAGE);
+        if *visible >= total {
+            return false;
+        }
+        *visible = visible.saturating_add(PROJECT_TASKS_PAGE).min(total);
+        true
+    }
+
     fn sync_project_task_totals(&mut self, totals: HashMap<String, usize>) {
         self.project_threads_visible
             .retain(|id, _| totals.contains_key(id));
