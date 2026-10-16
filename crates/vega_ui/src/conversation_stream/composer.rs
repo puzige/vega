@@ -69,6 +69,7 @@ impl ConversationStream {
         self.entries
             .insert(index + 1, StreamEntry::Artifact { card: card.clone() });
         self.list_insert(index + 1);
+        self.grow_entry_indices(index + 1, 1);
         self.artifact_cards.insert(call_id.to_owned(), card);
         cx.notify();
         true

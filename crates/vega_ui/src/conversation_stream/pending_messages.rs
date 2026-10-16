@@ -81,6 +81,27 @@ struct PendingButton {
     action: PendingControlAction,
 }
 
+const ECHO_TEXT_KIND: &str = "user-text";
+const ECHO_IMAGES_KIND: &str = "user-images";
+
+fn echo_entry_identity(thread_id: &str, pending_id: &str, kind: &str) -> StreamEntryIdentity {
+    StreamEntryIdentity {
+        key: format!(
+            "route:{}:{}:pending:{}:{}:kind:{}:{}",
+            thread_id.len(),
+            thread_id,
+            pending_id.len(),
+            pending_id,
+            kind.len(),
+            kind
+        ),
+        message_id: None,
+        pending_id: Some(pending_id.to_string()),
+        echo_kind: Some(kind.to_string()),
+        sequence: None,
+    }
+}
+
 impl EventEmitter<PendingQueueRequested> for ConversationStream {}
 
 impl ConversationStream {
@@ -89,8 +110,13 @@ impl ConversationStream {
         projection: PendingQueueProjection,
         cx: &mut Context<Self>,
     ) {
+        let committed = projection.committed_message_ids();
+        self.reconcile_pending_echoes(&projection, &committed, cx);
         let mut previous = std::mem::take(&mut self.pending_ui.items);
         for message in &projection.messages {
+            if committed.contains(&message.id) {
+                continue;
+            }
             let item = previous
                 .remove(&message.id)
                 .unwrap_or_else(|| PendingItemUi {
@@ -114,6 +140,169 @@ impl ConversationStream {
         }
         self.pending_queue = projection;
         cx.notify();
+    }
+
+    pub fn apply_pending_promotion(
+        &mut self,
+        pending_id: &str,
+        generation: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(message) = self
+            .pending_queue
+            .messages
+            .iter_mut()
+            .find(|message| message.id == pending_id)
+        else {
+            return;
+        };
+        message.behavior = PendingMessageBehavior::Steer;
+        message.generation = generation.to_string();
+        let projection = self.pending_queue.clone();
+        self.apply_pending_queue(projection, cx);
+    }
+
+    pub(crate) fn visible_pending_messages(&self) -> Vec<&PendingMessage> {
+        self.pending_queue
+            .messages
+            .iter()
+            .filter(|message| self.pending_ui.items.contains_key(&message.id))
+            .collect()
+    }
+
+    pub fn projected_pending_ids(&self) -> Vec<String> {
+        self.pending_echoes
+            .iter()
+            .map(|echo| echo.pending_id.clone())
+            .collect()
+    }
+
+    pub fn rail_pending_ids(&self) -> Vec<String> {
+        self.visible_pending_messages()
+            .iter()
+            .map(|message| message.id.clone())
+            .collect()
+    }
+
+    fn reconcile_pending_echoes(
+        &mut self,
+        projection: &PendingQueueProjection,
+        committed: &[String],
+        cx: &mut Context<Self>,
+    ) {
+        let stale = self
+            .pending_echoes
+            .iter()
+            .map(|echo| echo.pending_id.clone())
+            .filter(|pending_id| !committed.contains(pending_id))
+            .collect::<Vec<_>>();
+        for pending_id in stale {
+            self.remove_pending_echo(&pending_id, cx);
+        }
+        for pending_id in committed {
+            if self
+                .pending_echoes
+                .iter()
+                .any(|echo| &echo.pending_id == pending_id)
+            {
+                continue;
+            }
+            let Some(message) = projection
+                .messages
+                .iter()
+                .find(|message| &message.id == pending_id)
+            else {
+                continue;
+            };
+            self.append_pending_echo(message, cx);
+        }
+    }
+
+    fn append_pending_echo(&mut self, message: &PendingMessage, cx: &mut Context<Self>) {
+        self.ensure_entry_identities();
+        let mut indices = Vec::new();
+        let block_id = self.user_block_seq;
+        self.user_block_seq += 1;
+        let content = vega_conversation::privacy::safe_live_text(&message.content);
+        let index = self.entries.len();
+        self.entries.push(StreamEntry::User {
+            copy: MessageCopy::new(&content),
+            lines: user_message_lines(block_id, &content),
+        });
+        self.list_append(index);
+        let identity = echo_entry_identity(&self.thread.id, &message.id, ECHO_TEXT_KIND);
+        self.set_entry_identity(index, identity);
+        indices.push(index);
+        if !message.images.is_empty() {
+            let images = self.history_image_previews(message.images.clone(), cx);
+            let index = self.entries.len();
+            self.entries.push(StreamEntry::UserImages { images });
+            self.list_append(index);
+            let identity = echo_entry_identity(&self.thread.id, &message.id, ECHO_IMAGES_KIND);
+            self.set_entry_identity(index, identity);
+            indices.push(index);
+        }
+        self.pending_echoes.push(PendingEcho {
+            pending_id: message.id.clone(),
+            indices,
+        });
+        cx.notify();
+    }
+
+    fn remove_pending_echo(&mut self, pending_id: &str, cx: &mut Context<Self>) {
+        let Some(position) = self
+            .pending_echoes
+            .iter()
+            .position(|echo| echo.pending_id == pending_id)
+        else {
+            return;
+        };
+        let mut indices = self.pending_echoes.remove(position).indices;
+        indices.sort_unstable();
+        for index in indices.into_iter().rev() {
+            if index >= self.entries.len() {
+                continue;
+            }
+            self.entries.remove(index);
+            self.list_remove(index);
+            self.shift_entry_indices(index, 1);
+        }
+        cx.notify();
+    }
+
+    fn promote_pending_echo(
+        &mut self,
+        pending_id: &str,
+        message_id: &str,
+        content: &str,
+        seq: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(position) = self
+            .pending_echoes
+            .iter()
+            .position(|echo| echo.pending_id == pending_id)
+        else {
+            return false;
+        };
+        let echo = self.pending_echoes.remove(position);
+        let sequence = i64::try_from(seq).ok();
+        for index in echo.indices {
+            let Some(kind) = self
+                .entry_identities
+                .get(index)
+                .and_then(|identity| identity.echo_kind.clone())
+            else {
+                continue;
+            };
+            let identity = self.durable_entry_identity(message_id, &kind, sequence);
+            self.set_entry_identity(index, identity);
+        }
+        if self.composer_history.last().map(String::as_str) != Some(content) {
+            self.composer_history.push(content.to_string());
+        }
+        cx.notify();
+        true
     }
 
     pub fn pending_queue(&self) -> &PendingQueueProjection {
@@ -217,7 +406,7 @@ impl ConversationStream {
                 }
             }
             PendingQueueAction::Resume
-                if self.actions.running || self.pending_queue.messages.is_empty() =>
+                if self.actions.running || self.visible_pending_messages().is_empty() =>
             {
                 return;
             }
@@ -378,7 +567,7 @@ impl ConversationStream {
             .on_action(cx.listener(Self::next_composer_control))
             .on_action(cx.listener(Self::previous_composer_control))
             .gap_1();
-        if self.pending_queue.paused && !self.pending_queue.messages.is_empty() {
+        if self.pending_queue.paused && !self.visible_pending_messages().is_empty() {
             let resume = self
                 .pending_button(
                     PendingButton {
@@ -468,8 +657,7 @@ impl ConversationStream {
     pub(crate) fn render_pending_queue(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let visible = self
-            .pending_queue
-            .messages
+            .visible_pending_messages()
             .len()
             .min(Layout::PENDING_MESSAGE_VISIBLE_ROWS) as f32;
         let viewport_height = visible * Layout::PENDING_MESSAGE_ROW_HEIGHT;
@@ -867,6 +1055,9 @@ impl ConversationStream {
             .any(|identity| identity.message_id.as_deref() == Some(message_id))
         {
             cx.notify();
+            return;
+        }
+        if self.promote_pending_echo(pending_id, message_id, content, seq, cx) {
             return;
         }
         let sequence = i64::try_from(seq).ok();

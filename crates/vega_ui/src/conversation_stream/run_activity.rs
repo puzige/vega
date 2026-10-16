@@ -1,6 +1,6 @@
 use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
-use crate::tool_card::{ToolActivityCategory, sentence_initial};
+use crate::tool_card::ToolActivityCategory;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,14 +37,14 @@ fn format_stage_tool_categories(categories: &[ToolActivityCategory]) -> String {
     for (index, category) in categories.iter().enumerate() {
         let action = category.action_phrase();
         let candidate = if title.is_empty() {
-            sentence_initial(action)
+            action.to_owned()
         } else {
             format!("{title}, {action}")
         };
         let ellipsis_length = if index + 1 < categories.len() { 3 } else { 0 };
         if candidate.chars().count() + ellipsis_length > 96 {
             if title.is_empty() {
-                title = sentence_initial(action).chars().take(95).collect();
+                title = action.chars().take(95).collect();
                 title.push('…');
             } else {
                 title.push_str(", …");
@@ -75,10 +75,9 @@ mod category_title_tests {
             ToolActivityCategory::Skill,
             ToolActivityCategory::Other,
         ]);
-        assert!(title.starts_with("Read files, run commands"));
+        assert!(title.starts_with("read files, run commands"));
         let long_title = format_stage_tool_categories(&[ToolActivityCategory::Read; 30]);
         assert!(long_title.ends_with(", …"));
-        assert!(long_title.starts_with("Read files"));
         assert!(long_title.chars().count() <= 96);
         assert!(title.chars().count() <= 96);
         assert!(!title.chars().any(|character| character.is_ascii_digit()));
@@ -1310,14 +1309,7 @@ impl RunActivityGroup {
             let actions = categories
                 .iter()
                 .take(2)
-                .enumerate()
-                .map(|(index, (_, action))| {
-                    if index == 0 {
-                        sentence_initial(action)
-                    } else {
-                        action.clone()
-                    }
-                })
+                .map(|(_, action)| action.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
             let suffix = if categories.len() > 2 {
