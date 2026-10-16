@@ -1606,7 +1606,7 @@ where
         };
         let chat_request = ChatRequest {
             model: request.model.clone(),
-            messages: messages.clone(),
+            messages: crate::project_model_messages(&messages)?,
             tools: tool_definitions,
             max_tokens: request_output_cap(request.max_tokens, context_budget),
             reasoning: request.reasoning.clone(),
@@ -2271,7 +2271,7 @@ where
         }
         let wire_calls = prepared_calls
             .iter()
-            .map(PreparedRuntimeCall::model_call)
+            .map(PreparedRuntimeCall::audit_call)
             .collect();
         let mut assistant_message = ChatMessage::assistant_with_tools_and_reasoning(
             assistant_text,
@@ -2279,6 +2279,17 @@ where
             wire_calls,
         );
         assistant_message.response_reasoning = response_reasoning;
+        let model_calls = prepared_calls
+            .iter()
+            .map(|prepared| {
+                prepared.model_call().filter(|call| {
+                    tool_config
+                        .redact_tool_output(&call.input_json)
+                        .is_ok_and(|redacted| redacted == call.input_json)
+                })
+            })
+            .collect();
+        assistant_message.bind_live_tool_calls(model_calls)?;
         messages.push(assistant_message);
 
         if batch_policy == BatchPolicy::RejectOtherTools {
@@ -2322,8 +2333,10 @@ where
                 continue;
             }
             let validation_output = match &prepared {
-                PreparedRuntimeCall::InvalidWriteEdit { result, .. } => Some(result.as_str()),
-                PreparedRuntimeCall::InvalidBash { .. } => Some(BASH_INVALID_INPUT_OUTPUT),
+                PreparedRuntimeCall::InvalidWriteEdit { result, .. } => Some(result.clone()),
+                PreparedRuntimeCall::InvalidBash { call } => {
+                    InvalidBashAudit::from_json(&call.input_json).map(|audit| audit.feedback())
+                }
                 _ => None,
             };
             if let Some(validation_output) = validation_output {
@@ -2334,7 +2347,7 @@ where
                     Some(validation_audit()),
                 );
                 if let Some(prior) = completed.get(&call.id).cloned() {
-                    if prior.tool != call.name
+                    if !tool_names_equivalent(&prior.tool, &call.name)
                         || !runtime_inputs_semantically_equal(
                             &call.name,
                             &prior.input_json,
@@ -2396,7 +2409,7 @@ where
                     // under its separate trusted run binding first.
                     return Err(skill_runtime_error());
                 }
-                if prior.tool != call.name
+                if !tool_names_equivalent(&prior.tool, &call.name)
                     || !runtime_inputs_semantically_equal(
                         &call.name,
                         &prior.input_json,
@@ -2572,12 +2585,13 @@ where
                             false,
                         )
                     } else if tool_config.computer_use.as_ref().is_some_and(|run| {
-                        let model_call = prepared.model_call();
-                        run.defer_model_read(
-                            &model_call.name,
-                            &model_call.input_json,
-                            &mut messages,
-                        )
+                        prepared.model_call().is_some_and(|model_call| {
+                            run.defer_model_read(
+                                &model_call.name,
+                                &model_call.input_json,
+                                &mut messages,
+                            )
+                        })
                     }) {
                         (
                             terminal_result(

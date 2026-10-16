@@ -792,11 +792,15 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         && call.exit_code.is_none()
         && call.duration_ms.is_none()
         && match call.output_text.as_deref() {
-            Some(vega_runtime::BASH_INVALID_INPUT_OUTPUT) => {
-                vega_runtime::InvalidBashAudit::from_json(&call.input_json).is_some()
+            Some(output)
+                if vega_runtime::InvalidBashAudit::from_json(&call.input_json)
+                    .is_some_and(|audit| audit.matches_feedback(output)) =>
+            {
+                true
             }
             Some(vega_runtime::LEGACY_BASH_INVALID_INPUT_OUTPUT) => {
-                vega_tools::bash_permission_signature(&call.input_json).is_err()
+                vega_runtime::InvalidBashAudit::from_json(&call.input_json).is_none()
+                    && vega_tools::legacy_bash_input_is_invalid(&call.input_json)
             }
             _ => false,
         };
@@ -819,11 +823,10 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         && (approval_audit
             .as_ref()
             .is_some_and(|audit| audit.source == ApprovalSource::Validation)
-            || matches!(
-                call.output_text.as_deref(),
-                Some(vega_runtime::BASH_INVALID_INPUT_OUTPUT)
-                    | Some(vega_runtime::LEGACY_BASH_INVALID_INPUT_OUTPUT)
-            ));
+            || call
+                .output_text
+                .as_deref()
+                .is_some_and(vega_runtime::is_invalid_bash_feedback));
     let proposal = crate::types::ToolCall {
         id: call.id.clone(),
         tool: call.tool.clone(),

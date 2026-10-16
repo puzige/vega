@@ -115,17 +115,42 @@ impl PreparedRuntimeCall {
         }
     }
 
-    pub(crate) fn model_call(&self) -> ChatToolCall {
+    pub(crate) fn audit_call(&self) -> ChatToolCall {
         let call = self.call();
-        let input_json = match self {
-            Self::ComputerUse { arguments, .. } => arguments.to_string(),
-            _ => call.input_json.clone(),
-        };
         ChatToolCall {
             id: call.id.clone(),
             name: call.name.clone(),
-            input_json,
+            input_json: call.input_json.clone(),
         }
+    }
+
+    pub(crate) fn model_call(&self) -> Option<ChatToolCall> {
+        let call = self.call();
+        let input_json = match self {
+            Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
+            Self::Write { prepared, .. } => prepared.model_input_json(),
+            Self::Edit { prepared, .. } => prepared.model_input_json()?,
+            Self::Bash { prepared, .. } if prepared.timeout_ms() % 1000 == 0 => serde_json::json!({"command":prepared.command(),"timeout":prepared.timeout_ms()/1000}).to_string(),
+            Self::PinnedRead { execution, .. } => canonical_read_input(&execution.input_json)?,
+            Self::ExternalRead { call, .. } => canonical_read_input(&call.input_json)?,
+            Self::Readonly(call) => {
+                let input = parse_input(&call.name, &call.input_json).ok()?;
+                match call.name.as_str() {
+                    "glob" => { required_str(&input, "pattern").ok()?; }
+                    "grep" => { required_str(&input, "pattern").ok()?; optional_str(&input, "path").ok()?; }
+                    _ => return None,
+                }
+                input.to_string()
+            }
+            Self::Skill { action: SkillToolAction::Load { name }, .. } => serde_json::json!({"name":name}).to_string(),
+            Self::Skill { action: SkillToolAction::Read { name, path }, .. } => serde_json::json!({"name":name,"path":path}).to_string(),
+            _ => return None,
+        };
+        Some(ChatToolCall {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            input_json,
+        })
     }
 
     fn permission_target(&self) -> Option<RuntimePermissionTarget> {
@@ -194,7 +219,7 @@ pub(crate) fn prepare_completed_mutation(
     call: RuntimeToolCall,
     prior: &CompletedToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
-    if prior.tool == call.name
+    if tool_names_equivalent(&prior.tool, &call.name)
         && let Ok(audit) = vega_tools::WriteEditAudit::from_json(&prior.input_json)
     {
         match tools.audit_replay_json(audit.tool(), &call.input_json, &audit) {
@@ -816,7 +841,10 @@ pub(crate) async fn authorize_call(
         ))),
         PreparedRuntimeCall::InvalidBash { call } => Ok(Authorization::Terminal(terminal_result(
             call,
-            BASH_INVALID_INPUT_OUTPUT.to_string(),
+            InvalidBashAudit::from_json(&call.input_json).map_or_else(
+                || BASH_INVALID_INPUT_OUTPUT.to_owned(),
+                |audit| audit.feedback(),
+            ),
             RuntimeToolStatus::Rejected,
             Some(validation_audit()),
         ))),
@@ -1159,6 +1187,18 @@ pub(crate) fn conflict_result(call: &RuntimeToolCall) -> RuntimeToolResult {
     )
 }
 
+pub fn tool_names_equivalent(left: &str, right: &str) -> bool {
+    fn canonical(name: &str) -> &str {
+        match name {
+            "Read" => "read",
+            "Write" => "write",
+            "Edit" => "edit",
+            other => other,
+        }
+    }
+    canonical(left) == canonical(right)
+}
+
 pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &str) -> bool {
     if tool == "bash"
         && let (Some(left), Some(right)) = (
@@ -1166,7 +1206,10 @@ pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &
             InvalidBashAudit::from_json(right),
         )
     {
-        return left == right;
+        return left.semantically_equal(&right);
+    }
+    if tool == "bash" {
+        return vega_tools::bash_inputs_semantically_equal(left, right);
     }
     if !matches!(tool, "Write" | "Edit" | "write" | "edit") {
         return left == right;
@@ -1378,7 +1421,7 @@ pub(crate) async fn execute_prepared_waiting(
         PreparedRuntimeCall::InvalidRead(call) => (
             failed_tool_result(
                 &call,
-                "Read requires a valid file_path string identifying a regular text file".into(),
+                "read requires path identifying a regular text file. Expected {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}".into(),
             ),
             false,
         ),
@@ -1494,7 +1537,7 @@ pub(crate) async fn execute_prepared_waiting(
         PreparedRuntimeCall::InvalidBash { call } => (
             terminal_result(
                 &call,
-                BASH_INVALID_INPUT_OUTPUT.to_string(),
+                InvalidBashAudit::from_json(&call.input_json).map_or_else(|| BASH_INVALID_INPUT_OUTPUT.to_owned(), |audit| audit.feedback()),
                 RuntimeToolStatus::Rejected,
                 Some(validation_audit()),
             ),
@@ -1776,6 +1819,12 @@ pub(crate) fn parse_input(tool: &str, input_json: &str) -> Result<Value, String>
     }
 }
 
+fn canonical_read_input(raw: &str) -> Option<String> {
+    let input = parse_input("read", raw).ok()?;
+    validate_read_input(&input).ok()?;
+    Some(serde_json::json!({"path":file_input_path(&input).ok()?, "offset":optional_usize(&input,"offset").ok()?, "limit":optional_usize(&input,"limit").ok()?}).to_string())
+}
+
 fn validate_read_input(input: &Value) -> Result<(), String> {
     let Some(object) = input.as_object() else {
         return Err("Read input must be an object".into());
@@ -1784,7 +1833,7 @@ fn validate_read_input(input: &Value) -> Result<(), String> {
         .keys()
         .any(|key| !matches!(key.as_str(), "file_path" | "path" | "offset" | "limit"))
     {
-        return Err("Read accepts only file_path, offset and limit".into());
+        return Err("read accepts only path, offset and limit".into());
     }
     file_input_path(input)?;
     if optional_usize(input, "offset")? == Some(0) {
@@ -1796,7 +1845,7 @@ fn validate_read_input(input: &Value) -> Result<(), String> {
 
 fn file_input_path(input: &Value) -> Result<&str, String> {
     if input.get("file_path").is_some() && input.get("path").is_some() {
-        return Err("Use file_path only; do not supply both file_path and legacy path".to_string());
+        return Err("Use path only; do not supply both path and legacy file_path".to_string());
     }
     required_str(
         input,
@@ -1857,92 +1906,46 @@ pub(crate) fn truncate_output_lines(text: &str) -> String {
 pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     let mut definitions = vec![
         ToolDefinition {
-            name: "Read".to_string(),
-            description: "Read a text file using an absolute file_path, including files outside the current project (subject to permission). Output has line numbers; omit those prefixes when editing. Read a file before Edit or overwriting with Write. Offset is one-based; null offset/limit uses the default range.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "file_path": { "type": "string", "description": "Absolute path to the file to read." },
-                    "offset": { "type": ["integer", "null"], "minimum": 1 },
-                    "limit": { "type": ["integer", "null"], "minimum": 0 }
-                },
-                "required": ["file_path", "offset", "limit"],
-                "additionalProperties": false
-            }),
+            name: "read".into(),
+            description: "Read a text file. path is relative to the project root or absolute; external files require permission. Output has line numbers: omit those prefixes when editing. Read an existing file before write/edit and read again if it changes. offset is one-based; null offset/limit uses the default range. Example: {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}. bash cd does not change this tool's project root.".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{
+                "path":{"type":"string","description":"File path, relative to project root or absolute."},
+                "offset":{"type":["integer","null"],"minimum":1},
+                "limit":{"type":["integer","null"],"minimum":0}
+            },"required":["path","offset","limit"],"additionalProperties":false}),
             strict: true,
         },
         ToolDefinition {
-            name: "glob".to_string(),
-            description: "List project files matching a gitignore-style glob.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": { "pattern": { "type": "string" } },
-                "required": ["pattern"],
-                "additionalProperties": false
-            }),
+            name: "glob".into(),
+            description: "Find files with a pattern relative to the project root. Absolute patterns and parent traversal are unsupported. Example: {\"pattern\":\"src/**/*.rs\"}.".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"],"additionalProperties":false}),
             strict: true,
         },
         ToolDefinition {
-            name: "grep".to_string(),
-            description: "Search project files with a regular expression.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "pattern": { "type": "string" },
-                    "path": { "type": ["string", "null"] }
-                },
-                "required": ["pattern", "path"],
-                "additionalProperties": false
-            }),
+            name: "grep".into(),
+            description: "Search a regular expression within the project. path may be project-relative or an absolute path inside the project; null searches the project root. External targets are unsupported. Example: {\"pattern\":\"TODO\",\"path\":null}.".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":["string","null"]}},"required":["pattern","path"],"additionalProperties":false}),
             strict: true,
         },
     ];
     if run_mode == RuntimeRunMode::Execute {
         definitions.extend([
             ToolDefinition {
-                name: "Write".to_string(),
-                description: "Write content to an absolute file_path after permission approval. For an existing file, Read it first; changed files must be read again. Parent directories are created for new files. Prefer Edit for targeted changes.".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file_path": { "type": "string", "description": "Absolute path to the file to write." },
-                        "content": { "type": "string" }
-                    },
-                    "required": ["file_path", "content"],
-                    "additionalProperties": false
-                }),
+                name: "write".into(),
+                description: "Write complete file content after permission approval. path is project-relative or absolute. Read an existing file first; read it again if changed. Parent directories are created for new files. Prefer edit for targeted changes. Example: {\"path\":\"notes.txt\",\"content\":\"hello\\n\"}.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
                 strict: true,
             },
             ToolDefinition {
-                name: "Edit".to_string(),
-                description: "Replace old_string with new_string in an absolute file_path after permission approval. Read the file first. Preserve exact indentation and omit Read line-number prefixes. old_string must uniquely identify the source; include more surrounding context if ambiguous, or set replace_all=true to replace every occurrence. new_string must differ from old_string. replace_all omitted or null defaults to false."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file_path": { "type": "string", "description": "Absolute path to the file to edit." },
-                        "old_string": { "type": "string" },
-                        "new_string": { "type": "string" },
-                        "replace_all": { "type": ["boolean", "null"], "description": "Replace every occurrence; null means false." }
-                    },
-                    "required": ["file_path", "old_string", "new_string", "replace_all"],
-                    "additionalProperties": false
-                }),
+                name: "edit".into(),
+                description: "Apply edits atomically to one file after permission approval. path is project-relative or absolute. Read first. edits must be non-empty; each non-empty oldText must uniquely match the same original file, with no overlapping ranges. Preserve exact indentation and omit displayed line numbers. newText must differ; empty newText deletes. Add context for ambiguity; read again after a mismatch. Example: {\"path\":\"src/lib.rs\",\"edits\":[{\"oldText\":\"old\",\"newText\":\"new\"}]}.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"edits":{"type":"array","minItems":1,"items":{"type":"object","properties":{"oldText":{"type":"string","minLength":1},"newText":{"type":"string"}},"required":["oldText","newText"],"additionalProperties":false}}},"required":["path","edits"],"additionalProperties":false}),
                 strict: true,
             },
             ToolDefinition {
-                name: "bash".to_string(),
-                description: "Run at project root after approval (sandboxed unless Full access). Use {\"cmd\":\"rg ...\"}; command is unsupported."
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "cmd": { "type": "string" },
-                        "timeout_ms": { "type": ["integer", "null"], "minimum": 1 }
-                    },
-                    "required": ["cmd", "timeout_ms"],
-                    "additionalProperties": false
-                }),
+                name: "bash".into(),
+                description: "Run a non-empty command at the project root after approval, sandboxed unless Full access. timeout is a positive integer in seconds; null uses 120 seconds. A cd affects only this command. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64}},"required":["command","timeout"],"additionalProperties":false}),
                 strict: true,
             },
         ]);

@@ -1,5 +1,7 @@
 # Issue #90 — bash 参数校验反馈与工具卡
 
+2026-10-16 用户变更：本页 `command` 禁用、模型可见参数名和旧反馈由 [#300 通用工具接口规格](vega-builtin-tool-parameter-recovery.md) 替代；新接口为 command/timeout（秒），cmd/timeout_ms 保留为有限迁移形状。下文保留历史设计与验收证据，权限、审计及篡改拒绝要求继续适用。
+
 关联 [#90](https://github.com/puzige/vega/issues/90) 与 [#85](https://github.com/puzige/vega/issues/85)。本规格仅处理 `bash` 参数误用与校验失败的展示。#90 评论已明确否决 `command` 别名；`bash` 仍只接受必填 `cmd` 与逻辑可选的 `timeout_ms`，不得执行含 `command` 的输入。2026-09-21 的 [Issue #85 严格参数规格](vega-issue85-tool-schema-adherence.md) 仅覆写 provider schema 表达与 `timeout_ms: null` 的默认语义，不放宽本规格的别名、额外字段、权限前拒绝或安全卡契约。
 
 ## 行为契约

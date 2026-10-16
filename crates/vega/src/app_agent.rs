@@ -60,8 +60,8 @@ impl AgentWorkerStartProbe {
     }
 }
 
-pub(crate) const SYSTEM_PROMPT: &str =
-    "You are Vega, a careful coding agent working inside the selected project.";
+#[cfg(test)]
+pub(crate) use crate::agent_context::SYSTEM_PROMPT;
 
 pub(crate) enum PendingAgentRun {
     UserMessage(UserSubmission),
@@ -795,6 +795,14 @@ pub(crate) fn run_agent_worker_with_mcp(
     let mut credential_failure = false;
     let mut computer_use: Option<ComputerUseRun> = None;
     let success = (|| -> Result<bool, ()> {
+        let project_failure = |error| {
+            let _ = sender.send(AgentUpdate::Event(ConversationEvent::Error {
+                message_id: None,
+                error: Arc::new(vega_runtime::VegaError::ProjectInstructions(error)),
+                execution_duration_ms: None,
+            }));
+        };
+        crate::agent_context::project_root_text(&project_path).map_err(project_failure)?;
         // Config and local credential storage are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
         let tools = vega_tools::Tools::new(&project_path)
@@ -814,30 +822,8 @@ pub(crate) fn run_agent_worker_with_mcp(
         let config = config_path
             .as_deref()
             .and_then(|path| vega_store::config::read_from(path).ok());
-        let tools = if let Some(root) = config_path.as_deref().and_then(std::path::Path::parent) {
-            let root = root.to_path_buf();
-            let reader_root = root.clone();
-            let binding_path = config_path.clone().ok_or(())?;
-            let bindings = config
-                .as_ref()
-                .map(|config| config.credential_bindings.clone())
-                .unwrap_or_default();
-            let authorized = bindings.clone();
-            let reader: vega_credentials::SecretReader = Arc::new(move |key_ref| {
-                let current = vega_store::config::read_from(&binding_path)
-                    .map_err(|_| vega_credentials::CredentialError::Unavailable)?;
-                if current.credential_bindings != authorized {
-                    return Err(vega_credentials::CredentialError::Unavailable);
-                }
-                vega_store::keystore::get_key(&reader_root, key_ref)
-                    .map_err(|_| vega_credentials::CredentialError::Unavailable)
-            });
-            tools.with_credential_policy(
-                vega_tools::ToolCredentialPolicy::new(root, bindings, reader).map_err(|_| ())?,
-            )
-        } else {
-            tools
-        };
+        let tools = crate::agent_context::protect_project_tools(tools, config_path.as_deref(), config.as_ref())?;
+        let system_prompt = crate::agent_context::compose_agent_system_prompt(&tools).map_err(project_failure)?;
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
@@ -1163,7 +1149,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         &tools,
                         &thread.id,
                         &content,
-                        SYSTEM_PROMPT,
+                        &system_prompt,
                         cancel,
                         &permission_queue,
                         event_sink,
@@ -1237,7 +1223,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         &tools,
                         &thread.id,
                         &instruction_message_id,
-                        SYSTEM_PROMPT,
+                        &system_prompt,
                         cancel,
                         &permission_queue,
                         event_sink,
@@ -1306,7 +1292,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         &tools,
                         &thread.id,
                         &receipt_id,
-                        SYSTEM_PROMPT,
+                        &system_prompt,
                         cancel,
                         &permission_queue,
                         event_sink,

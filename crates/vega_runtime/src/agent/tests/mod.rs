@@ -87,6 +87,7 @@ mod reasoning_budget;
 mod response_phases;
 mod skills;
 mod skills_s16;
+mod universal_tools;
 mod usage_limits;
 
 #[tokio::test]

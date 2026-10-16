@@ -184,6 +184,8 @@ impl OpenAiProvider {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
+        let mut req = req;
+        req.messages = crate::project_model_messages(&req.messages)?;
         crate::images::validate_messages(&req.messages)?;
         if let Some(reasoning) = &req.reasoning {
             reasoning.validate()?;

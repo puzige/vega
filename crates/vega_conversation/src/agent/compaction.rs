@@ -1409,8 +1409,17 @@ impl ConversationCompactionHook<'_> {
                             .as_deref()
                             .is_some_and(|id| owned_call_ids.contains(id)))
             };
-            let expected_owned = canonical_owned.iter().filter(is_owned).collect::<Vec<_>>();
-            let actual_owned = request.messages.iter().filter(is_owned).collect::<Vec<_>>();
+            let expected_owned = canonical_owned
+                .iter()
+                .filter(is_owned)
+                .map(ChatMessage::without_live_tool_arguments)
+                .collect::<Vec<_>>();
+            let actual_owned = request
+                .messages
+                .iter()
+                .filter(is_owned)
+                .map(ChatMessage::without_live_tool_arguments)
+                .collect::<Vec<_>>();
             if expected_owned != actual_owned {
                 return Err(failure(
                     context_error(ContextRuntimeError::SourceChanged),
@@ -2199,6 +2208,9 @@ async fn collect_summary_with_timeout_diagnostics(
     idle_timeout: Duration,
     operation_deadline: tokio::time::Instant,
 ) -> Result<SummaryCollection, SummaryCollectionFailure> {
+    let mut request = request;
+    request.messages = vega_runtime::project_model_messages(&request.messages)
+        .map_err(|error| summary_collection_failure(error, SummaryDiagnosticMetrics::default()))?;
     let child = cancel.child_token();
     let _cancel_abandoned = child.clone().drop_guard();
     let started = unix_seconds();

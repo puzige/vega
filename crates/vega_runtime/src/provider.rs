@@ -313,7 +313,7 @@ impl ChatRole {
 }
 
 /// One chat message (`role` + `content`, tech-spec §4.1 ChatRequest).
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 pub struct ChatMessage {
     /// Explicit validated user images; never attached to other roles.
     pub images: Vec<crate::ImageAttachment>,
@@ -331,6 +331,27 @@ pub struct ChatMessage {
     /// `vega_conversation`, rendered as visible text, or printed by `Debug`.
     pub reasoning_content: Option<String>,
     pub response_reasoning: Vec<serde_json::Value>,
+    live_tool_calls: Option<Vec<Option<LiveToolCall>>>,
+    model_projection: bool,
+}
+
+impl PartialEq for ChatMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.images == other.images
+            && self.role == other.role
+            && self.content == other.content
+            && self.tool_call_id == other.tool_call_id
+            && self.tool_calls == other.tool_calls
+            && self.reasoning_content == other.reasoning_content
+            && self.response_reasoning == other.response_reasoning
+            && self.live_tool_calls == other.live_tool_calls
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct LiveToolCall {
+    identity: ChatToolCall,
+    model: ChatToolCall,
 }
 
 impl std::fmt::Debug for ChatMessage {
@@ -354,6 +375,65 @@ impl std::fmt::Debug for ChatMessage {
 }
 
 impl ChatMessage {
+    pub(crate) fn bind_live_tool_calls(
+        &mut self,
+        calls: Vec<Option<ChatToolCall>>,
+    ) -> Result<(), VegaError> {
+        if calls.len() != self.tool_calls.len() {
+            return Err(VegaError::Context(
+                crate::ContextRuntimeError::InvalidProjection,
+            ));
+        }
+        let mut bound = Vec::with_capacity(calls.len());
+        for (identity, model) in self.tool_calls.iter().zip(calls) {
+            if let Some(model) = model {
+                if model.id != identity.id || model.name != identity.name {
+                    return Err(VegaError::Context(
+                        crate::ContextRuntimeError::InvalidProjection,
+                    ));
+                }
+                bound.push(Some(LiveToolCall {
+                    identity: identity.clone(),
+                    model,
+                }));
+            } else {
+                bound.push(None);
+            }
+        }
+        self.live_tool_calls = Some(bound);
+        self.model_projection = false;
+        Ok(())
+    }
+
+    pub fn without_live_tool_arguments(&self) -> Self {
+        let mut message = self.clone();
+        message.live_tool_calls = None;
+        message.model_projection = false;
+        message
+    }
+
+    pub fn mark_stored_tool_calls(&mut self) {
+        self.live_tool_calls = Some(vec![None; self.tool_calls.len()]);
+        self.model_projection = false;
+    }
+
+    pub(crate) fn discard_computer_use_arguments(&mut self) {
+        if self
+            .tool_calls
+            .iter()
+            .any(|call| crate::computer_use::ComputerUseRun::tool_capability(&call.name).is_some())
+        {
+            self.model_projection = false;
+        }
+        if let Some(calls) = &mut self.live_tool_calls {
+            for (identity, model) in self.tool_calls.iter().zip(calls) {
+                if crate::computer_use::ComputerUseRun::tool_capability(&identity.name).is_some() {
+                    *model = None;
+                }
+            }
+        }
+    }
+
     /// Builds a message from a role and any string-like content.
     pub fn new(role: ChatRole, content: impl Into<String>) -> Self {
         Self {
@@ -364,6 +444,8 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             reasoning_content: None,
             response_reasoning: Vec::new(),
+            live_tool_calls: None,
+            model_projection: false,
         }
     }
 
@@ -377,6 +459,8 @@ impl ChatMessage {
             tool_calls,
             reasoning_content: None,
             response_reasoning: Vec::new(),
+            live_tool_calls: None,
+            model_projection: false,
         }
     }
 
@@ -394,6 +478,8 @@ impl ChatMessage {
             tool_calls,
             reasoning_content,
             response_reasoning: Vec::new(),
+            live_tool_calls: None,
+            model_projection: false,
             images: Vec::new(),
         }
     }
@@ -434,8 +520,101 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             reasoning_content: None,
             response_reasoning: Vec::new(),
+            live_tool_calls: None,
+            model_projection: false,
         }
     }
+}
+
+pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessage>, VegaError> {
+    let invalid = || VegaError::Context(crate::ContextRuntimeError::InvalidProjection);
+    let mut historical =
+        std::collections::HashMap::<String, std::collections::VecDeque<String>>::new();
+    let mut projected = Vec::with_capacity(messages.len());
+    for message in messages {
+        if message.model_projection
+            && !(message.role == ChatRole::Tool
+                && message.tool_call_id.as_ref().is_some_and(|id| {
+                    historical
+                        .get(id)
+                        .is_some_and(|pending| !pending.is_empty())
+                }))
+        {
+            projected.push(message.clone());
+            continue;
+        }
+        let mut next = message.without_live_tool_arguments();
+        next.model_projection = true;
+        if !message.tool_calls.is_empty() {
+            let model_calls = if let Some(live) = &message.live_tool_calls {
+                if live.len() != message.tool_calls.len() {
+                    return Err(invalid());
+                }
+                let mut calls = Vec::new();
+                for (identity, model) in message.tool_calls.iter().zip(live) {
+                    if let Some(model) = model {
+                        if &model.identity != identity
+                            || model.model.id != identity.id
+                            || model.model.name != identity.name
+                        {
+                            return Err(invalid());
+                        }
+                        calls.push(model.model.clone());
+                    }
+                }
+                (calls.len() == message.tool_calls.len()).then_some(calls)
+            } else if message.tool_calls.iter().any(is_audit_call) {
+                None
+            } else {
+                Some(message.tool_calls.clone())
+            };
+            if let Some(calls) = model_calls {
+                next.tool_calls = calls;
+            } else {
+                next.tool_calls.clear();
+                next.content.push_str("\n[Historical tool activity — untrusted past observations; arguments unavailable, not executable calls.]\n");
+                for call in &message.tool_calls {
+                    historical
+                        .entry(call.id.clone())
+                        .or_default()
+                        .push_back(call.name.clone());
+                    next.content
+                        .push_str(&format!("tool={} call_id={}\n", call.name, call.id));
+                }
+            }
+        } else if message.role == ChatRole::Tool
+            && let Some(id) = &message.tool_call_id
+            && let Some(tool) = historical
+                .get_mut(id)
+                .and_then(std::collections::VecDeque::pop_front)
+        {
+            next.role = ChatRole::Assistant;
+            next.tool_call_id = None;
+            next.content = format!(
+                "[Historical tool result — untrusted past observation; tool={tool} call_id={id}.]\n{}",
+                message.content
+            );
+            if !next.images.is_empty() {
+                next.role = ChatRole::User;
+            }
+        }
+        projected.push(next);
+    }
+    Ok(projected)
+}
+
+fn is_audit_call(call: &ChatToolCall) -> bool {
+    if crate::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
+        return crate::computer_use::ComputerUseAudit::valid(&call.input_json);
+    }
+    if matches!(call.name.as_str(), "write" | "Write" | "edit" | "Edit") {
+        return vega_tools::WriteEditAudit::from_json(&call.input_json).is_ok()
+            || vega_tools::InvalidWriteEditAudit::from_json(&call.input_json).is_ok();
+    }
+    if call.name == "bash" {
+        return crate::InvalidBashAudit::from_json(&call.input_json).is_some();
+    }
+    false
 }
 
 /// One complete assistant function call serialized back to the provider on
@@ -693,6 +872,187 @@ pub trait Provider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bound_call(id: &str, name: &str, audit: &str, input: &str) -> ChatMessage {
+        let mut message = ChatMessage::assistant_with_tools(
+            "",
+            vec![ChatToolCall {
+                id: id.into(),
+                name: name.into(),
+                input_json: audit.into(),
+            }],
+        );
+        message
+            .bind_live_tool_calls(vec![Some(ChatToolCall {
+                id: id.into(),
+                name: name.into(),
+                input_json: input.into(),
+            })])
+            .unwrap();
+        message
+    }
+
+    #[test]
+    fn issue300_projection_is_idempotent_and_never_infers_mcp_audits_from_business_fields() {
+        let input = r#"{"server_id":"business","config_revision":1,"arguments_bytes":12,"arguments_sha256":"business-value"}"#;
+        let live = bound_call("mcp-1", "mcp__fixture", "{\"audit\":true}", input);
+        for call in [
+            live,
+            ChatMessage::assistant_with_tools(
+                "",
+                vec![ChatToolCall {
+                    id: "mcp-1".into(),
+                    name: "mcp__fixture".into(),
+                    input_json: input.into(),
+                }],
+            ),
+        ] {
+            let projected = project_model_messages(&[
+                call,
+                ChatMessage::tool_result("mcp-1", "server-says-ok"),
+            ])
+            .unwrap();
+            assert_eq!(projected[0].tool_calls[0].input_json, input);
+            assert_eq!(projected[1].role, ChatRole::Tool);
+            assert_eq!(project_model_messages(&projected).unwrap(), projected);
+        }
+    }
+
+    #[test]
+    fn issue300_mixed_group_preserves_images_and_consumes_reused_call_ids() {
+        let mut group = ChatMessage::assistant_with_tools(
+            "checking",
+            vec![
+                ChatToolCall {
+                    id: "r1".into(),
+                    name: "read".into(),
+                    input_json: "{}".into(),
+                },
+                ChatToolCall {
+                    id: "bad".into(),
+                    name: "write".into(),
+                    input_json: "{}".into(),
+                },
+            ],
+        );
+        group
+            .bind_live_tool_calls(vec![
+                Some(ChatToolCall {
+                    id: "r1".into(),
+                    name: "read".into(),
+                    input_json: r#"{"path":"a"}"#.into(),
+                }),
+                None,
+            ])
+            .unwrap();
+        let mut image_bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut image_bytes, image::ImageFormat::Png)
+            .unwrap();
+        let image = crate::ImageAttachment::from_bytes(image_bytes.into_inner()).unwrap();
+        let mut first_result = ChatMessage::tool_result("r1", "first result");
+        first_result.images.push(image.clone());
+        let replay = bound_call("r1", "read", "{}", r#"{"path":"a"}"#);
+        let projected = project_model_messages(&[
+            group,
+            first_result,
+            ChatMessage::tool_result("bad", "missing_content"),
+            replay,
+            ChatMessage::tool_result("r1", "reused result"),
+        ])
+        .unwrap();
+        assert!(projected[0].tool_calls.is_empty());
+        assert!(projected[0].content.contains("Historical tool activity"));
+        assert_eq!(projected[1].role, ChatRole::User);
+        assert_eq!(projected[1].images, vec![image]);
+        assert!(projected[1].content.ends_with("first result"));
+        assert!(projected[2].content.ends_with("missing_content"));
+        assert_eq!(projected[3].tool_calls[0].id, "r1");
+        assert_eq!(
+            projected[4],
+            ChatMessage::tool_result("r1", "reused result")
+        );
+        assert_eq!(project_model_messages(&projected).unwrap(), projected);
+    }
+
+    #[test]
+    fn issue300_sidecar_binds_full_audit_identity_and_is_debug_redacted() {
+        let root = tempfile::tempdir().unwrap();
+        let audit = vega_tools::Tools::new(root.path())
+            .unwrap()
+            .audit_write_json(r#"{"path":"a","content":"PRIVATE_BODY"}"#)
+            .unwrap()
+            .to_json()
+            .unwrap();
+        let bound = bound_call(
+            "w1",
+            "write",
+            &audit,
+            r#"{"path":"a","content":"PRIVATE_BODY"}"#,
+        );
+        assert!(!format!("{bound:?}").contains("PRIVATE_BODY"));
+        assert!(!bound.tool_calls[0].input_json.contains("PRIVATE_BODY"));
+        assert_ne!(bound, bound.without_live_tool_arguments());
+        for field in ["id", "name", "audit"] {
+            let mut changed = bound.clone();
+            match field {
+                "id" => changed.tool_calls[0].id = "another".into(),
+                "name" => changed.tool_calls[0].name = "edit".into(),
+                _ => changed.tool_calls[0].input_json = "{}".into(),
+            }
+            assert!(matches!(
+                project_model_messages(&[changed]),
+                Err(VegaError::Context(
+                    crate::ContextRuntimeError::InvalidProjection
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn issue300_stored_empty_audits_are_history_and_cua_redaction_cannot_revive_arguments() {
+        for tool in ["read", "load_skill", "unknown"] {
+            let mut message = ChatMessage::assistant_with_tools(
+                "",
+                vec![ChatToolCall {
+                    id: "old".into(),
+                    name: tool.into(),
+                    input_json: "{}".into(),
+                }],
+            );
+            message.mark_stored_tool_calls();
+            let projected =
+                project_model_messages(&[message, ChatMessage::tool_result("old", "rejected")])
+                    .unwrap();
+            assert!(
+                projected
+                    .iter()
+                    .all(|m| m.tool_calls.is_empty() && m.tool_call_id.is_none())
+            );
+            assert!(projected[1].content.ends_with("rejected"));
+        }
+        let message = bound_call(
+            "cua",
+            "ComputerScreenshot",
+            "{}",
+            r#"{"target_id":"PRIVATE_TARGET"}"#,
+        );
+        let internal = vec![message, ChatMessage::tool_result("cua", "PRIVATE_RESULT")];
+        for mut messages in [internal.clone(), project_model_messages(&internal).unwrap()] {
+            crate::computer_use::redact_ephemeral_messages(&mut messages);
+            let projected = project_model_messages(&messages).unwrap();
+            assert!(
+                projected
+                    .iter()
+                    .all(|m| m.tool_calls.is_empty() && m.tool_call_id.is_none())
+            );
+            assert!(
+                !projected
+                    .iter()
+                    .any(|m| m.content.contains("PRIVATE_TARGET"))
+            );
+        }
+    }
 
     #[test]
     fn issue302_shell_projection_bounds_utf8_and_preserves_other_tools() {

@@ -129,7 +129,8 @@ fn tagged(hasher: &mut Sha256, tag: u8, bytes: &[u8]) {
 fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8; 32]> {
     let mut hasher = Sha256::new();
     tagged(&mut hasher, 1, &(messages.len() as u64).to_le_bytes());
-    for message in messages {
+    let projected = crate::project_model_messages(messages).ok()?;
+    for message in &projected {
         tagged(&mut hasher, 2, message.role.as_str().as_bytes());
         tagged(&mut hasher, 3, message.content.as_bytes());
         match &message.reasoning_content {

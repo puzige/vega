@@ -27,7 +27,16 @@ impl Tools {
         let regex = Regex::new(pattern)
             .map_err(|error| ToolError::InvalidInput(format!("invalid regex: {error}")))?;
         let input_path = path.unwrap_or("");
-        let start = resolve_in_root(&self.root, input_path)?;
+        let relative = if Path::new(input_path).is_absolute() {
+            Path::new(input_path)
+                .strip_prefix(&self.root)
+                .map_err(|_| ToolError::PathEscape(input_path.to_owned()))?
+                .to_str()
+                .ok_or(ToolError::PathEscape(input_path.to_owned()))?
+        } else {
+            input_path
+        };
+        let start = resolve_in_root(&self.root, relative)?;
         let mut matches = Vec::new();
 
         for walked in walker(&start) {
@@ -111,6 +120,34 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolError, Tools};
+
+    #[test]
+    fn issue300_absolute_project_paths_keep_the_existing_search_fence() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/a.txt"), "needle\n").unwrap();
+        fs::write(outside.path().join("secret.txt"), "needle\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
+        let tools = Tools::new(dir.path()).unwrap();
+        for relative in ["src", "src/a.txt"] {
+            let absolute = tools.root().join(relative);
+            assert_eq!(
+                tools
+                    .grep("needle", Some(absolute.to_str().unwrap()))
+                    .unwrap()
+                    .text,
+                tools.grep("needle", Some(relative)).unwrap().text
+            );
+        }
+        for path in [
+            outside.path().canonicalize().unwrap(),
+            tools.root().join("escape"),
+            tools.root().join(".git"),
+        ] {
+            assert!(tools.grep("needle", Some(path.to_str().unwrap())).is_err());
+        }
+    }
 
     #[test]
     fn finds_numbered_matches_and_honors_gitignore() {
