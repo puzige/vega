@@ -282,15 +282,14 @@ async fn issue416_final_collapses_once_despite_reading_and_preserves_visible_foc
                     assert!(state.input.read(cx).focus_handle(cx).is_focused(window));
                 } else if mode == "final-selection" {
                     assert!(state.selection_focus.is_focused(window));
-                } else if matches!(mode, "selection" | "focus" | "thinking-focus") {
-                    let id = state.run_activity_groups["run"].entity_id();
-                    assert!(
-                        crate::disclosure::focus(format!("run-disclosure-{id}").into(), window, cx)
-                            .is_focused(window)
-                    );
                 }
             })
             .unwrap();
+        if matches!(mode, "selection" | "focus" | "thinking-focus") {
+            let group = stream.read_with(cx, |stream, _| stream.run_activity_groups["run"].clone());
+            let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            assert_run_disclosure_keyboard_focus(&group, &mut visual);
+        }
     }
 }
 
@@ -362,19 +361,16 @@ async fn issue416_final_clears_only_hidden_native_message_selection(cx: &mut Tes
             let group = state.run_activity_groups["run"].clone();
             assert!(group.read(cx).process_in_details());
             assert!(!group.read(cx).expanded());
-            if mode == "process" {
-                assert!(
-                    crate::disclosure::focus(
-                        format!("run-disclosure-{}", group.entity_id()).into(),
-                        window,
-                        cx
-                    )
-                    .is_focused(window)
-                );
-            } else {
+            if mode != "process" {
                 assert!(state.selection_focus.is_focused(window));
             }
         });
+        if mode == "process" {
+            let group = stream.read_with(&visual, |stream, _| {
+                stream.run_activity_groups["run"].clone()
+            });
+            assert_run_disclosure_keyboard_focus(&group, &mut visual);
+        }
         stream.update(&mut visual, |stream, cx| {
             assert_eq!(
                 stream

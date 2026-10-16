@@ -437,13 +437,10 @@ async fn issue416_stage_anchor_reveals_inline_and_final_moves_hidden_focus(
         )
     });
     assert!(visual.debug_bounds("run-stage-toggle-0").is_none());
-    visual.update(|window, cx| {
-        let id = stream.read(cx).run_activity_groups["visual"].entity_id();
-        assert!(
-            crate::disclosure::focus(format!("run-disclosure-{id}").into(), window, cx)
-                .is_focused(window)
-        );
+    let group = stream.read_with(&visual, |stream, _| {
+        stream.run_activity_groups["visual"].clone()
     });
+    assert_run_disclosure_keyboard_focus(&group, &mut visual);
     visual.run_until_parked();
     stream.read_with(&visual, |stream, cx| {
         assert!(

@@ -376,13 +376,10 @@ async fn issue296_expansion_p07_markdown_selection_and_original_copy(cx: &mut Te
     assert!(!visual.update(gpui_kit::base::TextSelection::has_selection));
     assert_eq!(copy.original_text(), original);
     assert!(visual.debug_bounds("thinking-content").is_none());
-    visual.update(|window, cx| {
-        let id = stream.read(cx).run_activity_groups["expansion"].entity_id();
-        assert!(
-            crate::disclosure::focus(format!("run-disclosure-{id}").into(), window, cx)
-                .is_focused(window)
-        );
+    let group = stream.read_with(&visual, |stream, _| {
+        stream.run_activity_groups["expansion"].clone()
     });
+    assert_run_disclosure_keyboard_focus(&group, &mut visual);
     click(&mut visual, "run-activity-toggle");
     assert!(visual.debug_bounds("thinking-content").is_some());
     assert!(!visual.update(gpui_kit::base::TextSelection::has_selection));

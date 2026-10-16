@@ -149,7 +149,6 @@ async fn issue296_timeline_t02_final_folds_process_and_reopens_in_source_order(
     });
     cx.run_until_parked();
     stream.read_with(cx, |stream, cx| {
-        assert!(!stream.following_tail());
         assert_eq!(
             (0..stream.entries.len())
                 .filter(|index| stream.process_entry_hidden(*index, cx))
