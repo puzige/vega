@@ -5,7 +5,7 @@ use gpui_kit::{
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
 use crate::icons::Icon;
-use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard};
+use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard, sentence_initial};
 
 pub(crate) struct ToolActivityGroup {
     children: Vec<Entity<ToolCard>>,
@@ -157,7 +157,15 @@ impl ToolActivityGroup {
         let categories = self.categories(cx);
         let actions = categories
             .iter()
-            .map(|category| category.action_phrase())
+            .enumerate()
+            .map(|(index, category)| {
+                let phrase = category.action_phrase();
+                if index == 0 {
+                    sentence_initial(phrase)
+                } else {
+                    phrase.to_owned()
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         match self.aggregate_state(cx) {
