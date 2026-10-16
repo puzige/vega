@@ -235,7 +235,7 @@ fn issue402_a2_drag_to_viewport_edge_still_auto_scrolls(cx: &mut TestAppContext)
     assert!(
         after.item_ix != before.item_ix || after.offset_in_item != before.offset_in_item,
         "dragging a selection to the viewport edge must still auto-scroll, otherwise \
-         A1 cannot observe the auto-scroll path at all (before {before:?} -> after {after:?})"
+         A1 cannot observe the auto-scroll path at all"
     );
 }
 
