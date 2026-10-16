@@ -837,7 +837,7 @@ async fn repeated_reasoning_and_commands_share_one_compact_stage(cx: &mut TestAp
             assert!(!card.needs_attention());
         }
         assert_eq!(group.compact_tool_groups(0).len(), 1);
-        assert_eq!(group.compact_tool_groups(0)[0].read(cx).aggregate_summary(cx), "Completed: run commands");
+        assert_eq!(group.compact_tool_groups(0)[0].read(cx).aggregate_summary(cx), "Completed: Run commands");
         assert_eq!(group.segment_row_count(0, cx), 1);
         assert_eq!(
             group.estimated_segment_height(0, 736., cx),
