@@ -70,7 +70,21 @@
 
 ## 云端检查
 
-待提交后由 `pr-check`（Clippy job 与 Nextest job）执行，原始输出在 PR 评论中补充。
+[PR #422](https://github.com/puzige/vega/pull/422) 的 `pr-check` [run 38865605273](https://github.com/puzige/vega/actions/runs/38865605273) 全部通过：
+
+| Job | 结果 | 耗时 |
+|---|---|---|
+| Clippy（`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`） | pass | 5m18s |
+| Nextest（`cargo nextest run --workspace`） | pass | 9m54s |
+| required check `check (fmt, clippy, test)` | pass | 4s |
+
+Nextest 原始汇总行：
+
+```text
+Summary [ 183.969s] 2741 tests run: 2741 passed, 5 skipped
+```
+
+实现提交：`ba76ee4c fix(A3-07): capitalize leading activity phrases (#408)`，基线 `e2568518`。
 
 ## 待用户手测
 
