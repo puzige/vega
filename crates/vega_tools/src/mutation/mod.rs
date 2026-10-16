@@ -853,7 +853,7 @@ fn parse_object(
     raw_input: &str,
     tool: MutationTool,
 ) -> Result<Map<String, Value>, PrepareMutationError> {
-    match serde_json::from_str::<Value>(raw_input) {
+    match crate::json::parse_unique_value(raw_input) {
         Ok(Value::Object(values)) => Ok(values),
         Ok(_) => Err(invalid_error(
             tool,

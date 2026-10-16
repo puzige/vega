@@ -393,6 +393,11 @@ impl VegaWindow {
                 .background_executor()
                 .spawn(async move {
                     let store = Store::open(database).map_err(|_| ())?;
+                    let system_prompt = crate::agent_context::compose_thread_system_prompt(
+                        &store,
+                        &worker_owner.thread_id,
+                        config_path.as_deref(),
+                    )?;
                     let provider = config_path
                         .as_deref()
                         .and_then(|path| vega_store::config::read_from(path).ok())
@@ -403,7 +408,7 @@ impl VegaWindow {
                         &worker_owner.thread_id,
                         &worker_owner.model,
                         provider.as_deref(),
-                        SYSTEM_PROMPT,
+                        &system_prompt,
                     )
                     .map_err(|_| ())
                 })
@@ -664,7 +669,7 @@ impl VegaWindow {
 /// Blocking worker boundary: config, credentials, store and provider are never
 /// resolved in GPUI render/update. No payload or credential crosses back to UI.
 #[allow(clippy::too_many_arguments)]
-fn run_manual_context_worker(
+pub(crate) fn run_manual_context_worker(
     database: PathBuf,
     config_path: Option<PathBuf>,
     thread_id: String,
@@ -677,6 +682,9 @@ fn run_manual_context_worker(
 ) -> Result<Vec<ConversationEvent>, ()> {
     let config_path = config_path.ok_or(())?;
     let config = vega_store::config::read_from(&config_path).map_err(|_| ())?;
+    let store = Store::open(&database).map_err(|_| ())?;
+    let system_prompt =
+        crate::agent_context::compose_thread_system_prompt(&store, &thread_id, Some(&config_path))?;
     let configured = unique_provider_for_model(&config, &model).ok_or(())?;
     let credential_root = config_path.parent().ok_or(())?.to_path_buf();
     let credential_key_ref = configured.key_ref.clone();
@@ -745,7 +753,6 @@ fn run_manual_context_worker(
         provider_credential_reader.clone(),
     )
     .with_credential_exceptions(exceptions);
-    let store = Store::open(database).map_err(|_| ())?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -757,7 +764,7 @@ fn run_manual_context_worker(
                 &provider,
                 &thread_id,
                 &model,
-                SYSTEM_PROMPT,
+                &system_prompt,
                 cancel,
                 Some(reasoning),
                 pricing,

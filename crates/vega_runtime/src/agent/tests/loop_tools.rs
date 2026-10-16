@@ -444,7 +444,10 @@ async fn bad_json_and_external_read_denial_return_errors_then_model_continues() 
         .collect();
     assert_eq!(failures.len(), 2);
     assert_eq!(failures[0].status, RuntimeToolStatus::Failed);
-    assert!(failures[0].output.contains("valid file_path"));
+    assert_eq!(
+        failures[0].output,
+        r#"Tool error: read requires path identifying a regular text file. Expected {"path":"src/lib.rs","offset":null,"limit":null}"#
+    );
     assert_eq!(failures[1].status, RuntimeToolStatus::Rejected);
     assert!(failures[1].output.contains("permission denied"));
 }

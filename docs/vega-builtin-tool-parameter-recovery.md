@@ -52,6 +52,8 @@ Vega 已发送工具 schema 和 strict 标记。当前代理移除 strict 的行
 
 不自动执行猜测的 command，不修补截断 JSON，不把任意字符串/布尔/null强转为数字，不把缺失 content/oldText 从文件或摘要里补出来。规范化只做一次，执行只走一次原有授权/检查点路径。空 edit 数组、未知字段、错误类型、溢出和不合法 JSON 均在执行前拒绝。
 
+严格输入的验收包括 bash 新旧字段的重复键，以及 write/edit 顶层和 edits 项内的重复键；不能经普通 JSON map 解析后悄悄保留最后一个值。此类拒绝仍使用固定错误，不回显键值，不进入审批、检查点或执行。
+
 bash 增加有界原因枚举：malformed_json、input_not_object、missing_command、wrong_command_type、empty_command、unexpected_field、conflicting_fields、invalid_timeout。Edit 增加批量数组/项/重叠相关分类。反馈只用固定字段名、原因和对应工具的合法示例；匹配失败提示 read 最新原文，重复匹配提示增加上下文，无变化提示检查是否已经完成。旧持久化反馈和旧审计的严格恢复仍有效。
 
 沿用 run/attempt/tool 的现有诊断事件记录固定原因及执行/拒绝状态，不增加原文日志和第二套遥测服务。准确区分提议、校验拒绝、实际执行失败、执行结果未知。跨回合的无进展预算与强制收尾属于 #411，不在本卡提前实现。
@@ -131,5 +133,13 @@ Actions 执行既有 `cargo fmt --all -- --check`、`cargo clippy --workspace --
 7. 主要改动位置：`app_agent.rs` 的默认策略和 worker 三入口；必要的共享 prompt 模块与 `vega_tools` 有界根指令读取；`window/context.rs` 的预览/手动压缩估算调用；对应生产入口和 headless 回归。原 runtime 每轮 System 重建及 compaction CAS/身份保护继续复用，若改动只为接口接线，不顺带改 reasoning 语义。
 8. 压缩关系保持清楚：本卡修复审计/模型参数双投影的比较差异并覆盖其正常与篡改场景；独立 reasoning/source 一致性问题继续关联 #409/#413，不能吞掉 SourceChanged、降级成成功或取消 CAS。诊断中长运行与 summary_source_changed 的共现不等于本补丁覆盖全部根因。
 9. CUA 参数执行语义保持现有授权与后端校验。本卡“无效参数转历史”指 prepare 阶段已判无效并用审计替换/丢弃的输入；CUA 后端后续返回 invalid_arguments 的情形不另造第二套校验器。其临时参数仍受凭据过滤、完整身份绑定和失效清除保护，CUA 专项恢复仍属 #404。
+10. 根目录在建立工具实例后消失或变得不可访问时，不得误判为两个指令文件都不存在。规范根路径无法无损表示为 UTF-8 时，在 provider 前返回固定、可恢复的路径错误，不让 JSON 序列化 panic，也不以 lossy 字符串冒充真实 cwd。
 
 参考来源为 [OpenAI Codex Prompting Guide](https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide) 的自主推进与避免无进展重复原则，以及本机 pi 0.84.1 的 prompt 组合方式（工具规则、项目指令、skills、cwd）。只提取与 Vega 契约匹配的行为，不整份照搬某模型提示词。真实效果对照只有在相同模型、任务快照、工具和预算下实际运行后才能报告收益；本轮不运行付费模型评测或 Vega 本地测试。
+
+## 执行证据（2026-10-16）
+
+- 第一阶段提交 `15af87df` 的 [Actions 38874792128](https://github.com/puzige/vega/actions/runs/38874792128)：Clippy 通过；Nextest 原始汇总为 `2762 tests run: 2748 passed, 14 failed, 5 skipped`。19 个新增 Issue #300 用例通过，但该 head 的 required check 失败，未合并。
+- 失败暴露 bash 重复字段被普通 JSON map 接受的回归；修复恢复严格拒绝，并覆盖批量编辑内的重复字段和零执行。其余修订按新契约核对名称、真实调用与历史文本、summary 因果顺序和实际上下文预算；权限、凭据、内部审计指纹及单次执行断言保留。
+- 补充实现覆盖普通发送、批准计划、凭据恢复、工具续轮、新 run 重载、steering、自动/手动压缩、上下文预览，以及加载失败和凭据检查；新增生产入口请求捕获回归。该完整提交尚待新一轮 Actions，不能沿用第一阶段通过项作为最终验收。
+- 本地仅执行格式、差异与静态审查。最终 PR/Issue 将记录待合并最新 head 的检查结果；真实模型效果和应用系统集成仍待用户手测。

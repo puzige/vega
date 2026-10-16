@@ -537,6 +537,72 @@ async fn issue90_invalid_bash_is_atomic_and_guides_the_model_without_exposing_in
 }
 
 #[tokio::test]
+async fn issue300_duplicate_bash_fields_never_request_permission_or_execute() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(|_, _, _| panic!("duplicate arguments executed")));
+    let mut events = [
+        r#"{"cmd":"SECRET_FIRST","cmd":"SECRET_SECOND"}"#,
+        r#"{"command":"SECRET_FIRST","command":"SECRET_SECOND"}"#,
+        r#"{"command":"SECRET_FIRST","timeout":null,"timeout":1}"#,
+        r#"{"cmd":"SECRET_FIRST","timeout_ms":null,"timeout_ms":1}"#,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, raw)| ProviderEvent::ToolUse {
+        id: format!("duplicate-{index}"),
+        name: "bash".into(),
+        input_json: raw.into(),
+    })
+    .collect::<Vec<_>>();
+    events.push(ProviderEvent::Done {
+        stop_reason: StopReason::ToolUse,
+    });
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(events)],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(Vec::new());
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        project.path().join("checkpoints"),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook = FixedHook {
+        calls: calls.clone(),
+        decision: Some(RuntimeUserDecision::Once),
+    };
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &hook,
+        |_| async { Ok(()) },
+    )
+    .await
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(outcome.executed_tool_call_count, 0);
+    assert_eq!(
+        outcome
+            .events
+            .iter()
+            .filter(|event| matches!(event, RuntimeEvent::ToolCallValidationRejected { .. }))
+            .count(),
+        4
+    );
+    let wire =
+        serde_json::to_string(&crate::openai::build_request_body(&provider.requests()[1])).unwrap();
+    assert!(!wire.contains("SECRET_FIRST"));
+    assert!(!wire.contains("SECRET_SECOND"));
+}
+
+#[tokio::test]
 async fn ask_valid_body_with_invalid_call_id_is_validation_not_run_mode() {
     for mode in [RuntimeRunMode::Ask, RuntimeRunMode::Plan] {
         let project = tempdir().unwrap();
@@ -651,11 +717,27 @@ async fn execute_write_waits_for_once_and_provider_observes_only_safe_projection
     ));
     let requests = provider.requests();
     let wire = serde_json::to_string(&crate::openai::build_request_body(&requests[1])).unwrap();
-    assert!(!wire.contains("SECRET_BODY"));
+    assert!(wire.contains("SECRET_BODY"));
+    assert!(!format!("{:?} {:?}", outcome.events, requests).contains("SECRET_BODY"));
+    assert!(
+        outcome
+            .messages
+            .iter()
+            .flat_map(|message| &message.tool_calls)
+            .all(|call| !call.input_json.contains("SECRET_BODY"))
+    );
+    let audit = outcome
+        .messages
+        .iter()
+        .flat_map(|message| &message.tool_calls)
+        .find(|call| call.name == "write")
+        .unwrap();
+    assert!(vega_tools::WriteEditAudit::from_json(&audit.input_json).is_ok());
+    assert!(audit.input_json.contains("fingerprint_v1"));
+    assert!(!wire.contains("fingerprint_v1"));
     assert!(!wire.contains(&checkpoint_display));
     assert!(!wire.contains("project-1"));
     assert!(!wire.contains("thread-1"));
-    assert!(wire.contains("fingerprint_v1"));
     assert!(wire.contains("checkpoint_ref"));
 }
 

@@ -758,7 +758,7 @@ fn issue85_mcp_schema_stays_owned_and_skill_tools_are_strict() {
 #[tokio::test]
 async fn issue86_m08_reserved_names_keep_unique_frozen_aliases_and_exact_dispatch() {
     let id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
-    let exact_names = ["Read", "load_skill", "read_skill_resource"];
+    let exact_names = ["Read", "read", "load_skill", "read_skill_resource"];
     let calls = Arc::new(Mutex::new(Vec::new()));
     let candidates = exact_names
         .iter()
@@ -808,7 +808,7 @@ async fn issue86_m08_reserved_names_keep_unique_frozen_aliases_and_exact_dispatc
                 .iter()
                 .filter(|name| name.as_str() == reserved_name)
                 .count(),
-            1
+            usize::from(reserved_name != "Read")
         );
         assert!(snapshot.mcp_tool(reserved_name).is_none());
         let alias_marker =

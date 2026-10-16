@@ -35,6 +35,8 @@ pub enum RunFailureKind {
     #[allow(missing_docs)]
     CredentialExposureBlocked,
     CredentialCheckUnavailable,
+    ProjectInstructionsUnavailable,
+    ProjectPathInvalid,
     CredentialContinuationUnavailable,
     CredentialProjectionInvalid(usize),
     CredentialOutcomeUnknown,
@@ -72,6 +74,8 @@ impl RunFailureKind {
             }
             Some("credential_exposure") => Self::CredentialExposureBlocked,
             Some("credential_check") => Self::CredentialCheckUnavailable,
+            Some("project_instructions") => Self::ProjectInstructionsUnavailable,
+            Some("project_path") => Self::ProjectPathInvalid,
             Some("credential_continuation") => Self::CredentialContinuationUnavailable,
             Some("credential_projection") => metrics
                 .failure_tool_index
@@ -145,6 +149,12 @@ impl RunFailureKind {
             } => Self::ProviderRejected,
             vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
             vega_runtime::VegaError::CredentialCheckUnavailable => Self::CredentialCheckUnavailable,
+            vega_runtime::VegaError::ProjectInstructions(error)
+                if error.failure() == vega_tools::ProjectInstructionsFailure::InvalidRootPath =>
+            {
+                Self::ProjectPathInvalid
+            }
+            vega_runtime::VegaError::ProjectInstructions(_) => Self::ProjectInstructionsUnavailable,
             vega_runtime::VegaError::CredentialContinuationUnavailable => {
                 Self::CredentialContinuationUnavailable
             }
@@ -187,6 +197,8 @@ impl RunFailureKind {
                     .into()
             }
             Self::CredentialCheckUnavailable => "Credentials could not be read. Check credentials in Settings before continuing. Completed actions are preserved.".into(),
+            Self::ProjectInstructionsUnavailable => "Project instructions could not be loaded. Check the root AGENTS.md or CLAUDE.md: use a readable UTF-8 file up to 64 KiB without links, then retry.".into(),
+            Self::ProjectPathInvalid => "The project path is not valid UTF-8. Rename the project folder or choose another project, then retry.".into(),
             Self::CredentialProjectionInvalid(index) => format!("Tool {} contains sensitive values and cannot be sent safely. Check tool configuration before continuing.", index + 1),
             Self::CredentialOutcomeUnknown => "Some action outcomes are unknown. Check the tool records before continuing.".into(),
             Self::CredentialContinuationUnavailable => "Recovery is unavailable because it was already used, the conversation changed, or an action outcome is unknown. Check tool records, then send a new message.".into(),

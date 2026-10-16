@@ -43,8 +43,10 @@ mod error;
 mod fence;
 mod glob;
 mod grep;
+mod json;
 mod mutation;
 mod output;
+mod project_instructions;
 mod read;
 pub mod reference;
 mod sandbox;
@@ -69,6 +71,10 @@ pub use output::{
     BASH_LINE_MIDDLE_MARKER, BASH_MAX_BYTES_PER_SIDE, BASH_MAX_LINE_BYTES, BASH_MAX_LINES_PER_SIDE,
     BASH_OUTPUT_MIDDLE_MARKER, BASH_READ_CHUNK_BYTES, BashOutput, LINE_TRUNCATION_MARKER,
     MAX_LINE_CHARS, MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolOutput,
+};
+pub use project_instructions::{
+    PROJECT_INSTRUCTIONS_MAX_BYTES, ProjectInstructions, ProjectInstructionsError,
+    ProjectInstructionsFailure,
 };
 pub use tools::{ReadState, Tools};
 

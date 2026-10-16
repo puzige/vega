@@ -403,8 +403,8 @@ pub fn bash_inputs_semantically_equal(left: &str, right: &str) -> bool {
 }
 
 fn parse_bash_input(raw_input: &str) -> Result<(String, u64), BashInputError> {
-    let value: serde_json::Value =
-        serde_json::from_str(raw_input).map_err(|_| BashInputError::MalformedJson)?;
+    let value =
+        crate::json::parse_unique_value(raw_input).map_err(|_| BashInputError::MalformedJson)?;
     let input = value.as_object().ok_or(BashInputError::InputNotObject)?;
     if (input.contains_key("command")
         && (input.contains_key("cmd") || input.contains_key("timeout_ms")))

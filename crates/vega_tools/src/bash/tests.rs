@@ -126,6 +126,9 @@ fn bash_input_is_strict_and_defaults_timeout() {
         r#"{"cmd":"pwd","timeout_ms":1.5}"#,
         r#"{"cmd":"pwd","timeout_ms":18446744073709551616}"#,
         r#"{"cmd":"a","cmd":"b"}"#,
+        r#"{"command":"a","command":"b"}"#,
+        r#"{"command":"pwd","timeout":null,"timeout":1}"#,
+        r#"{"cmd":"pwd","timeout_ms":null,"timeout_ms":1}"#,
     ] {
         assert_eq!(
             tools.prepare_bash_json(raw).unwrap_err().code(),

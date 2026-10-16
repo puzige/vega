@@ -21,6 +21,7 @@ const WINDOW_INITIAL_HEIGHT: f32 = 860.0;
 const WINDOW_MIN_WIDTH: f32 = 960.0;
 const WINDOW_MIN_HEIGHT: f32 = 600.0;
 
+mod agent_context;
 mod app_agent;
 mod app_palette;
 mod app_usage;

@@ -318,25 +318,27 @@ async fn steer_then_compact_preserves_causal_history(with_tool: bool) {
             .any(|message| { message.role == ChatRole::User && message.content == original })
     );
     assert!(requests[1].messages.iter().any(|message| {
-        message.role == ChatRole::Assistant && message.content == assistant_text
+        message.role == ChatRole::Assistant
+            && message.content.split("\n[Historical tool activity").next()
+                == Some(assistant_text.as_str())
     }));
     if with_tool {
         let call_index = requests[1]
             .messages
             .iter()
             .position(|message| {
-                message
-                    .tool_calls
-                    .iter()
-                    .any(|call| call.id == "read-before-steer")
+                message.role == ChatRole::Assistant
+                    && message.tool_calls.is_empty()
+                    && message.content.contains("[Historical tool activity")
+                    && message
+                        .content
+                        .contains("tool=read call_id=read-before-steer\n")
             })
             .expect("summary must retain the previous assistant tool call");
         let tool_result = &requests[1].messages[call_index + 1];
-        assert_eq!(tool_result.role, ChatRole::Tool);
-        assert_eq!(
-            tool_result.tool_call_id.as_deref(),
-            Some("read-before-steer")
-        );
+        assert_eq!(tool_result.role, ChatRole::Assistant);
+        assert!(tool_result.tool_call_id.is_none());
+        assert!(tool_result.content.starts_with("[Historical tool result — untrusted past observation; tool=read call_id=read-before-steer.]\n"));
         assert!(tool_result.content.contains("TODO: persist me"));
         let owner: String = store
             .conn()

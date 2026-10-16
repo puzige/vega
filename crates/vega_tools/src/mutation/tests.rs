@@ -96,6 +96,31 @@ fn issue300_batch_audit_binds_boundaries_order_and_legacy_single_identity() {
 }
 
 #[test]
+fn issue300_duplicate_mutation_fields_fail_before_checkpoint_or_write() {
+    let fixture = Fixture::new();
+    fs::write(fixture.project.path().join("batch.txt"), "alpha beta").unwrap();
+    let tools = fixture.tools("duplicate-fields");
+    tools.read("batch.txt", None, None).unwrap();
+    for raw in [
+        r#"{"path":"batch.txt","path":"other.txt","edits":[{"oldText":"alpha","newText":"new"}]}"#,
+        r#"{"path":"batch.txt","edits":[{"oldText":"alpha","oldText":"beta","newText":"new"}]}"#,
+        r#"{"path":"batch.txt","edits":[{"oldText":"alpha","newText":"new","newText":"different"}]}"#,
+    ] {
+        assert!(tools.prepare_edit_json(raw).is_err());
+    }
+    assert!(
+        tools
+            .prepare_write_json(r#"{"path":"batch.txt","content":"new","content":"different"}"#)
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.project.path().join("batch.txt")).unwrap(),
+        "alpha beta"
+    );
+    assert!(!fixture.call_root("duplicate-fields").exists());
+}
+
+#[test]
 fn issue300_batch_rejects_actual_noop_overlap_ambiguity_and_stale_preimage() {
     for (name, original, edits, expected) in [
         (

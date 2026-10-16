@@ -54,6 +54,8 @@ pub enum VegaError {
     CredentialExposureBlocked,
     #[error("credential safety check unavailable")]
     CredentialCheckUnavailable,
+    #[error(transparent)]
+    ProjectInstructions(#[from] vega_tools::ProjectInstructionsError),
     #[error("credential continuation is unavailable")]
     CredentialContinuationUnavailable,
     #[error("credential projection requires tool configuration repair ({tool_index})")]
@@ -141,6 +143,10 @@ impl fmt::Debug for VegaError {
             Self::Cancelled => formatter.write_str("Cancelled"),
             Self::CredentialExposureBlocked => formatter.write_str("CredentialExposureBlocked"),
             Self::CredentialCheckUnavailable => formatter.write_str("CredentialCheckUnavailable"),
+            Self::ProjectInstructions(error) => formatter
+                .debug_tuple("ProjectInstructions")
+                .field(error)
+                .finish(),
             Self::CredentialContinuationUnavailable => {
                 formatter.write_str("CredentialContinuationUnavailable")
             }
@@ -296,6 +302,12 @@ impl VegaError {
             }
             Self::CredentialExposureBlocked => ("runtime", "credential_exposure", None),
             Self::CredentialCheckUnavailable => ("runtime", "credential_check", None),
+            Self::ProjectInstructions(error)
+                if error.failure() == vega_tools::ProjectInstructionsFailure::InvalidRootPath =>
+            {
+                ("runtime", "project_path", None)
+            }
+            Self::ProjectInstructions(_) => ("runtime", "project_instructions", None),
             Self::CredentialContinuationUnavailable => ("runtime", "credential_continuation", None),
             Self::CredentialProjectionInvalid { tool_index } => {
                 metrics.failure_tool_index = u64::try_from(*tool_index).ok();
