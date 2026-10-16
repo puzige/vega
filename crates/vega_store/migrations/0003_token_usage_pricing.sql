@@ -1,4 +1,4 @@
--- S7-T38 (C5 · A10-04): price-aware usage audit columns for token_usage.
+-- (C5): price-aware usage audit columns for token_usage.
 --
 -- Columns are appended only (no drop, no rebuild, no new table). Legacy rows
 -- written before this migration keep their S4/S5 `cost_microcents=0` placeholder
