@@ -87,7 +87,6 @@ mod provider_overflow;
 mod reasoning_budget;
 mod response_phases;
 mod skills;
-mod skills_s16;
 mod usage_limits;
 
 struct FixedHook {

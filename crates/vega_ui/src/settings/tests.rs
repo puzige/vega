@@ -7,8 +7,6 @@ use gpui_kit::{
 };
 
 use super::*;
-mod issue296;
-mod issue299;
 use crate::settings::state::{
     PRICING_INPUT_BYTES_LIMIT, PROVIDER_MODELS_FRAME_INSET, PROVIDER_MODELS_MAX_ROWS,
     PROVIDER_MODELS_MIN_ROWS,
