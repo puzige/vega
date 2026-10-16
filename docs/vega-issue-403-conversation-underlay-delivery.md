@@ -198,3 +198,60 @@ Added GPUI regressions: 3 (not executed)
 ```
 
 未运行 Vega、编译、构建、Clippy、任何测试或打包。当前没有本轮 CI 红/绿结果，新增 R4 组合根测试待 Vega 按方案补充；发布 handoff 不代表修复已实现或 Vega 已领取。
+
+### 用户授权 Codex 继续第二阶段修复
+
+用户随后明确要求“你直接开始修复”，主 agent 已在[同卡评论](https://github.com/puzige/vega/issues/403#issuecomment-6207499799)记录本轮覆盖角色安排，并将 Project 恢复 In progress。此前 Ready / 等待 Vega 的历史保留；本轮按规格末尾授权由 Codex 主会话组织、专用子 agent 独占实现，主会话审查及集成。
+
+本轮实现基线 `b4864e2a` 已包含第一阶段三项真实回归与已发布的具体方案，已由主 agent fetch / rebase 至 `origin/master` 的 `6a2363f8`。允许范围仅 `sticky_disclosure.rs`、本卡测试及本记录，规格由主 agent 持有。R1–R3 的已有断言全部保留；R4 按实现前冻结的以下用例落实到测试：
+
+| 用例 | 前置与操作 | 判据 | 状态 |
+|---|---|---|---|
+| R4 组合根 | 真正的 ConversationStream 使用现有事件形成 live / final 标题，将标题滚入 Composer，随后挂载普通绘制的不透明兄弟遮罩 | 真实标题与 Composer 有效重叠；标题背景 / fade / surface / shell 均在遮罩之前；点击重叠处由遮罩收到，底层标题不展开 | 已新增 / 待 CI |
+
+修复动作按冻结方案：保留原 header 与自然布局、当前帧 placement / StickyState / 连续区域和 viewport 的交集；sections prepaint 后以相对元素偏移普通 prepaint 原 header，paint 继续先 sections 后原 header。ClippedHeader 两阶段 mask 保留，不将整个前景升为全窗口 deferred。无接口、存储、依赖或产品文案变化。
+
+本阶段修改文件与实际动作：
+
+- `crates/vega_ui/src/conversation_stream/sticky_disclosure.rs`：将 `header.take()` / 全窗口 priority 1 `defer_draw` 改为 `header.as_mut()` 和 `with_element_offset(point(px(0.), offset), ...)` 内局部 prepaint；paint 在 sections 后绘制同一个 header。未改变 placement、StickyState、自然尺寸或 ClippedHeader 的 prepaint / paint mask。
+- `crates/vega_ui/src/conversation_stream/tests/issue403_conversation_underlay.rs`：新增 `issue403_later_application_overlay_covers_conversation`。浅深主题、live / final 两态均使用原事件序列，断言实际重叠与遮罩挂载前后标题位置不变；检查真实标题背景、fade、surface、shell 的 Quad 均早于普通后绘制遮罩；实际点击由遮罩计数，底层标题保持折叠。仅抽出共用事件和支持两种测试 root 的 bounds helper，原三项回归的有效断言保留，不需改 tests/mod.rs。
+- 本 delivery 追加授权、实现、检查与未执行证据。主 agent 的规格修改保留，未由实现 agent 修改。
+
+锁定 `gpui-pre 0.3.4` 的静态核对：`with_element_offset` 在当前元素偏移上累加；Drawable 在 prepaint 保存含偏移的 bounds，paint 使用保存的 bounds，因此 paint 无需再次累加偏移。原 mask 继续在 ClippedHeader 两阶段生效；标题位于所属展开内容之后、会话普通前景之前，保留原 deferred 菜单路径，不影响后绘制的普通应用级遮罩。
+
+本阶段从 2026-10-16 03:37:34 UTC / 11:37:34 Asia/Shanghai 的实施记录开始；本地仅执行快速检查。首次格式检查 3.453 秒退出 1，输出仅为本次 R4 测试新增区域的格式差异，已按输出手工修正。源码修改后的最终原始结果：
+
+```text
+cargo fmt --all -- --check
+exit 0
+(no output)
+wall time: 3.228s
+
+git diff --check
+exit 0
+(no output)
+```
+
+NOT RUN：本地未运行 Vega、编译、构建、Clippy、test / nextest、打包或安装。本阶段未提交、push、开 PR、读取或轮询 CI；云端改前红证据和修复后结果由主 agent 在对应 head 上核实。R1–R4、旧 sticky S01–S06、合法菜单、动态高度、消息锚点、滚轮和阅读保护均待 Actions 验证，不能沿用 #407 的通过结果。本阶段偏离冻结技术方案：无。
+
+LIMIT：R4 是真实 ConversationStream 与普通兄弟遮罩的进程内组合根回归，不代表已操作真实命令面板 / 删除确认 / 环境面板。Quad 顺序不替代标题字形与图标的像素手测；窗口缩放、吸顶末端和菜单交互仍由既有 suite 及后续用户手测确认。用户明确通过前不关闭 Issue、不清理分支 / worktree；本轮回滚方式仍是回退后续修复的 squash 合并提交。
+
+### 修复前云端失败证据
+
+[PR #418](https://github.com/puzige/vega/pull/418) 的[改前运行 38846335746](https://github.com/puzige/vega/actions/runs/38846335746)验证远端仅回归提交 `b4864e2ab0c406eb6b531c9efefde87e00421e46`。生产代码仍为旧实现，Clippy（含 fmt）成功；Nextest 退出 100，只有本轮新增的三项回归失败，原始汇总：
+
+```text
+Summary [ 194.181s] 2738 tests run: 2735 passed, 3 failed, 5 skipped
+```
+
+运行阶段与完成汇总均完成实际几何和背景定位后，失败于冻结的绘制顺序；点击回归实际展开了被 Composer 遮住的标题：
+
+```text
+run-activity-toggle overlapping conversation-bottom-fade: real header quad #23 must precede fade #15, surface #17, shell #19
+run-stage-toggle-0 must not expand through the Composer
+run-stage-toggle-0 overlapping conversation-bottom-fade: real header quad #22 must precede fade #15, surface #20, shell #21
+```
+
+这不是 fixture 或编译失败；三项均命中真实生产行为的预期失败点。旧 suite 的 2735 项通过只描述改前 head，不替代本轮修复后的门禁。当前局部绘制补丁和新增 R4 正待推送后由新一轮 CI 验证。
+
+原始日志临时保存，不入仓库；Nextest SHA-256 为 `1516b542fb3f7548c010858c4dfdbec20fd87e6d6956345950a55d1eca116a30`，Clippy SHA-256 为 `a5bdb3b5c8067115ba6f8fdce1415168902cd8d9ea6390aa4264e0cff640c1c9`。本地仍未运行编译、测试或应用。

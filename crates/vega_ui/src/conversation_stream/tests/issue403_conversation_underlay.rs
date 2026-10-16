@@ -469,7 +469,16 @@ fn run_header_fixture(
     let visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(960.), px(600.)));
     visual.run_until_parked();
-    seed(&stream, 16, cx);
+    populate_run_header(&stream, completed, cx);
+    (window, stream)
+}
+
+fn populate_run_header(
+    stream: &Entity<ConversationStream>,
+    completed: bool,
+    cx: &mut TestAppContext,
+) {
+    seed(stream, 16, cx);
     stream.update(cx, |stream, cx| {
         stream.apply_event(
             ConversationEvent::MessageStarted {
@@ -563,7 +572,6 @@ fn run_header_fixture(
             assert_eq!(group.stage_title(0, cx), "run commands");
         }
     });
-    (window, stream)
 }
 
 fn run_header_selector(completed: bool) -> &'static str {
@@ -574,8 +582,19 @@ fn run_header_selector(completed: bool) -> &'static str {
     }
 }
 
-fn position_run_header(
-    window: WindowHandle<StreamHarness>,
+fn run_header_bounds<V: 'static>(
+    window: WindowHandle<V>,
+    selector: &'static str,
+    cx: &mut TestAppContext,
+) -> Bounds<Pixels> {
+    cx.run_until_parked();
+    VisualTestContext::from_window(window.into(), cx)
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"))
+}
+
+fn position_run_header<V: 'static>(
+    window: WindowHandle<V>,
     stream: &Entity<ConversationStream>,
     completed: bool,
     center_y: Pixels,
@@ -601,12 +620,12 @@ fn position_run_header(
         cx.notify();
     });
     let selector = run_header_selector(completed);
-    let natural = bounds(window, selector, cx);
+    let natural = run_header_bounds(window, selector, cx);
     stream.update(cx, |stream, cx| {
         stream.list.scroll_by(natural.center().y - center_y);
         cx.notify();
     });
-    let actual = bounds(window, selector, cx);
+    let actual = run_header_bounds(window, selector, cx);
     assert!(
         (f32::from(actual.center().y - center_y)).abs() < 1.,
         "{selector}: actual={actual:?}, desired center={center_y:?}"
@@ -718,5 +737,166 @@ async fn issue403_foreground_occludes_real_run_header_clicks(cx: &mut TestAppCon
         assert!(readable.top() >= viewport.top() && readable.bottom() < foreground.top());
         click(window, run_header_selector(completed), cx);
         assert!(expanded(cx), "visible activity header must remain operable");
+    }
+}
+
+struct ConversationOverlayHarness {
+    stream: Entity<ConversationStream>,
+    overlay_visible: bool,
+    overlay_clicks: usize,
+}
+
+impl Render for ConversationOverlayHarness {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme(cx).colors;
+        div()
+            .key_context("VegaWindow")
+            .relative()
+            .size_full()
+            .child(self.stream.clone())
+            .when(self.overlay_visible, |root| {
+                root.child(
+                    div()
+                        .id("issue403-application-overlay")
+                        .debug_selector(|| "issue403-application-overlay".into())
+                        .absolute()
+                        .inset_0()
+                        .bg(colors.bg_sidebar)
+                        .occlude()
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                this.overlay_clicks += 1;
+                                cx.stop_propagation();
+                            }),
+                        ),
+                )
+            })
+    }
+}
+
+#[gpui_kit::test]
+async fn issue403_later_application_overlay_covers_conversation(cx: &mut TestAppContext) {
+    for completed in [false, true] {
+        init_permission_test(cx);
+        let mut thread = permission_thread();
+        thread.id = OCCLUSION_RUN.into();
+        let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+        let root_stream = stream.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, cx| {
+                cx.new(|_| ConversationOverlayHarness {
+                    stream: root_stream,
+                    overlay_visible: false,
+                    overlay_clicks: 0,
+                })
+            })
+            .expect("conversation and application overlay window")
+        });
+        let visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_resize(size(px(960.), px(600.)));
+        visual.run_until_parked();
+        populate_run_header(&stream, completed, cx);
+        for palette in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
+            let colors = palette.colors;
+            cx.update(|cx| {
+                cx.set_global(palette);
+                cx.refresh_windows();
+            });
+            let shell = run_header_bounds(window, "composer-shell", cx);
+            let header = position_run_header(window, &stream, completed, shell.center().y, cx);
+            let viewport = run_header_bounds(window, "conversation-message-list", cx);
+            let overlap = header.intersect(&shell);
+            assert!(viewport.bottom() >= shell.bottom());
+            assert!(
+                overlap.size.width > px(0.) && overlap.size.height >= header.size.height - px(1.),
+                "real activity header must overlap Composer before application overlay: header={header:?}, shell={shell:?}"
+            );
+            window
+                .update(cx, |root, _, cx| {
+                    root.overlay_visible = true;
+                    cx.notify();
+                })
+                .expect("show later application overlay");
+            let overlay = run_header_bounds(window, "issue403-application-overlay", cx);
+            assert_eq!(
+                run_header_bounds(window, run_header_selector(completed), cx),
+                header
+            );
+            let fade = run_header_bounds(window, "conversation-bottom-fade", cx);
+            let surface = run_header_bounds(window, "conversation-foreground-surface", cx);
+            let shell = run_header_bounds(window, "composer-shell", cx);
+            assert!(overlay.contains(&header.center()) && overlay.contains(&shell.center()));
+            window.update(cx, |_, window, _| {
+                let quads = window.painted_quads();
+                let scale = window.scale_factor();
+                let solid_index = |bounds: Bounds<Pixels>, color: Rgba| {
+                    quads
+                        .iter()
+                        .rposition(|quad| {
+                            quad.bounds == bounds.scale(scale)
+                                && quad.background.as_solid() == Some(color.into())
+                        })
+                        .unwrap_or_else(|| panic!("missing real background quad at {bounds:?}"))
+                };
+                let header_index = solid_index(header, colors.bg_base);
+                let fade_index = quads
+                    .iter()
+                    .position(|quad| {
+                        quad.bounds == fade.scale(scale)
+                            && quad.background
+                                == linear_gradient(
+                                    180.,
+                                    linear_color_stop(colors.bg_base.opacity(0.), 0.),
+                                    linear_color_stop(colors.bg_base, 1.),
+                                )
+                    })
+                    .expect("painted theme fade below application overlay");
+                let surface_index = solid_index(surface, colors.bg_base);
+                let shell_index = solid_index(shell, colors.bg_elevated);
+                let overlay_index = solid_index(overlay, colors.bg_sidebar);
+                for (name, index) in [
+                    ("title wrapper", header_index),
+                    ("fade", fade_index),
+                    ("surface", surface_index),
+                    ("shell", shell_index),
+                ] {
+                    assert!(index < overlay_index, "{}: {name} quad #{index} must precede ordinary later application overlay #{overlay_index}", run_header_selector(completed));
+                }
+            }).expect("application overlay scene order");
+            let previous_clicks = window
+                .read_with(cx, |root, _| root.overlay_clicks)
+                .expect("overlay click count");
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            visual.simulate_click(header.center(), Modifiers::default());
+            visual.run_until_parked();
+            window
+                .read_with(cx, |root, _| {
+                    assert_eq!(
+                        root.overlay_clicks,
+                        previous_clicks + 1,
+                        "later application overlay must receive the click above Composer and header"
+                    )
+                })
+                .expect("overlay receives click");
+            stream.read_with(cx, |stream, cx| {
+                let group = stream.run_activity_groups[OCCLUSION_RUN].read(cx);
+                assert!(
+                    !(if completed {
+                        group.expanded()
+                    } else {
+                        group.segment_expanded(0)
+                    }),
+                    "{} must not expand through the application overlay",
+                    run_header_selector(completed)
+                );
+            });
+            window
+                .update(cx, |root, _, cx| {
+                    root.overlay_visible = false;
+                    cx.notify();
+                })
+                .expect("hide application overlay");
+        }
     }
 }
