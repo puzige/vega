@@ -279,23 +279,6 @@ mod tests {
         .unwrap();
     }
 
-    fn delivered(conn: &Connection, id: &str, generation: &str) {
-        pending_messages::insert(
-            conn,
-            &pending_messages::PendingMessageRow {
-                id: id.into(),
-                thread_id: "thread".into(),
-                ordinal: 0,
-                behavior: "steer".into(),
-                generation: generation.into(),
-                payload: String::new(),
-                created_at: 1,
-            },
-        )
-        .unwrap();
-        pending_messages::mark_delivered(conn, "thread", id).unwrap();
-    }
-
     #[test]
     fn classified_failure_details_only_restore_the_failed_owner() {
         let store = store();

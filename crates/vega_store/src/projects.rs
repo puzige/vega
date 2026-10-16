@@ -251,7 +251,7 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{ProjectSort, ProjectsError, create, list, remove, touch_last_opened};
-    use crate::{Store, messages, sidebar_organization, threads, token_usage, tool_calls};
+    use crate::Store;
     use rusqlite::{Connection, params};
     use tempfile::tempdir;
 
