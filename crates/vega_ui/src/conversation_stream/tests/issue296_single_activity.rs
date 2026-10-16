@@ -156,11 +156,11 @@ async fn issue296_single_activity_tracks_real_parallel_states_and_discards_old_s
         for id in ["shell", "read"] {
             stream.apply_event(ConversationEvent::ToolCallRunning { call_id: id.into() }, cx);
         }
-        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::Summary, false) if label == "In progress: run commands, read files"));
+        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::Summary, false) if label == "In progress: Run commands, read files"));
         stream.apply_event(ConversationEvent::ToolCallProposed { call: bash_call("pending", "pwd") }, cx);
-        assert_eq!(group.read(cx).test_activity_label(cx), "In progress: run commands, read files");
+        assert_eq!(group.read(cx).test_activity_label(cx), "In progress: Run commands, read files");
         stream.apply_event(finish_tool("shell"), cx);
-        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::BookOpen, false) if label == "In progress: read files"));
+        assert!(matches!(group.read(cx).test_activity_presentation(cx), (label, Icon::BookOpen, false) if label == "In progress: Read files"));
         stream.apply_event(finish_tool("read"), cx);
         assert_eq!(group.read(cx).test_activity_label(cx), "Awaiting confirmation");
         for id in ["pending", "queued"] { stream.apply_event(finish_tool(id), cx); }
@@ -656,7 +656,7 @@ async fn issue296_single_activity_mcp_names_are_safe_bounded_and_deduplicated(
             stream.apply_event(ConversationEvent::ToolCallRunning { call_id: id.into() }, cx);
         }
         let label = stream.run_activity_groups["single"].read(cx).test_activity_label(cx);
-        assert_eq!(label, "In progress: call MCP · lookup, call MCP · query and more (3 total)");
+        assert_eq!(label, "In progress: Call MCP · lookup, call MCP · query and more (3 total)");
         assert!(!label.contains("01ARZ") && !label.contains("query: string") && !label.contains(&"b".repeat(64)));
     });
 }

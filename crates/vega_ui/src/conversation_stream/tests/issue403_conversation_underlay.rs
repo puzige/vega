@@ -569,7 +569,7 @@ fn populate_run_header(
             }
         );
         if !completed {
-            assert_eq!(group.stage_title(0, cx), "run commands");
+            assert_eq!(group.stage_title(0, cx), "Run commands");
         }
     });
 }
