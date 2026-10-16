@@ -98,7 +98,7 @@ pub struct TextInput {
     /// Line height used at the last paint (for y → line mapping).
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
-    is_selecting: bool,
+    mouse_selection: Option<mouse_selection::MouseSelection>,
     /// R62 R10: suppress the single-line box chrome so the input can live
     /// inside a menu row that already draws the surface (the utility bar's
     /// two dropdown search fields). The element, editing keys, IME handling
@@ -108,6 +108,7 @@ pub struct TextInput {
 
 mod element;
 mod input_handler;
+mod mouse_selection;
 mod state;
 
 /// Explicit Composer-only clipboard intent; never log clipboard payloads.

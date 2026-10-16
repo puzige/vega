@@ -121,6 +121,13 @@ pub(crate) fn register_link_interactions(
         .filter(|_| hitbox.is_hovered(window));
     if hovered.is_some() {
         window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
+        #[cfg(test)]
+        super::selection::record_cursor_request(
+            &layout.text(),
+            &hitbox,
+            CursorStyle::PointingHand,
+            window,
+        );
     }
     let Some(id) = id.filter(|_| links.iter().any(|(_, target)| allowed_link(target))) else {
         return;

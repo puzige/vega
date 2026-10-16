@@ -40,6 +40,7 @@
 - 根因与验收先冻结；专职子 agent 独占实现，Codex 主会话仅负责文档、审查、集成和 PR/CI。
 - 本卡独立 worktree `vega-432-text-selection`、分支 `feat/432-text-selection` 暂基于 #357 的 `f8afe904`，以准确接续链接手形优先级。#357 合并后，主 agent 将本卡自有提交重放到最新 origin/master，不把 #357 的三个旧提交重复带入 PR。
 - 允许实现文件：`crates/vega_ui/src/text_input/{mod.rs,state.rs,element.rs,tests.rs}`；可新增其私有辅助模块；`crates/vega_ui/src/conversation_stream/selection.rs`；相关 `conversation_stream/tests/` 测试及测试模块注册。若确有必要仅调整同目录 `links.rs` 的光标申请顺序/共享 hitbox，先报告，不改变 #357 链接状态机。
+- 已审查允许在 `links.rs` 现有 PointingHand 请求处增加最小 `cfg(test)` 私有观测，与正文 IBeam 请求比较同一 hitbox 的申请顺序；生产逻辑、命中和顺序保持不变，不把请求观测冒充真实系统光标读取。
 - 顺序：先补多击和选区绘制的回归，再实现 TextInput 私有鼠标状态/选择单元；接上 selection token 和根选择层抑制；最后补共享正文 IBeam 与链接优先级并核对既有 #357/#147 回归。
 - 交 Actions：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo nextest run --workspace`。本地不运行 Vega、不编译、不执行测试或打包。
 - 回滚：整体回退本卡提交，保留 #357 链接修复。合并后 In review 等用户纯手测；手测前不关闭 Issue、不 Done、不清理任务分支/worktree。
