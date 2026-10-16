@@ -26,21 +26,6 @@ fn three_tier_reasoning_config() -> vega_store::reasoning::ReasoningConfig {
     }
 }
 
-/// R58: the same three-tier profile, but declaring the disabled operation.
-///
-/// `openai_chat_completions` + `reasoning_effort_none` is the one pairing the
-/// store and runtime validators accept for `supports_disabled` on an OpenAI
-/// protocol profile, so this is a real capability declaration rather than a
-/// hand-written one.
-fn three_tier_disabled_reasoning_config() -> vega_store::reasoning::ReasoningConfig {
-    let mut config = three_tier_reasoning_config();
-    if let Some(profile) = config.profiles.first_mut() {
-        profile.supports_disabled = true;
-        profile.disabled_wire = Some("reasoning_effort_none".into());
-    }
-    config
-}
-
 /// The R57 P3 fixture: a real `VegaWindow`, a real stream, the owned config and
 /// reasoning files, and the same subscriptions production installs.
 struct ThinkingSliderFixture {

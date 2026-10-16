@@ -31,29 +31,6 @@ fn click(cx: &mut TestAppContext, window: WindowHandle<Harness>, selector: &'sta
     cx.run_until_parked();
 }
 
-fn assert_provider_tooltip_fits_detail(
-    visual: &mut VisualTestContext,
-    selector: &'static str,
-    body_selector: &'static str,
-    viewport: Bounds<gpui_kit::Pixels>,
-) -> Bounds<gpui_kit::Pixels> {
-    let tooltip = visual
-        .debug_bounds(selector)
-        .unwrap_or_else(|| panic!("missing {selector}"));
-    let body = visual
-        .debug_bounds(body_selector)
-        .unwrap_or_else(|| panic!("missing {body_selector}"));
-    assert!(
-        tooltip.left() >= viewport.left() && tooltip.right() <= viewport.right(),
-        "provider tooltip must remain in the detail viewport: tooltip={tooltip:?} viewport={viewport:?}"
-    );
-    assert!(
-        body.left() >= viewport.left() && body.right() <= viewport.right(),
-        "provider tooltip copy must remain in the detail viewport: body={body:?} viewport={viewport:?}"
-    );
-    body
-}
-
 #[gpui_kit::test]
 async fn model_context_editor_projects_assumed_unknown_and_saved_states(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -584,65 +561,6 @@ async fn pointer_stop_clears_pending_connection_projection(cx: &mut TestAppConte
             && view.provider_management.statuses.is_empty()
             && view.provider_management.cancel.is_none())
     );
-}
-
-fn mounted_provider_credential_states_fixture(
-    cx: &mut TestAppContext,
-) -> (
-    tempfile::TempDir,
-    Entity<SettingsView>,
-    WindowHandle<Harness>,
-) {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("config.toml");
-    AppConfig {
-        providers: vec![
-            ProviderConfig {
-                api: Default::default(),
-                name: "Stored".into(),
-                enabled: true,
-                base_url: "https://stored.invalid/v1".into(),
-                models: vec!["stored-model".into()],
-                key_ref: "stored".into(),
-            },
-            ProviderConfig {
-                api: Default::default(),
-                name: "Missing".into(),
-                enabled: true,
-                base_url: "https://missing.invalid/v1".into(),
-                models: vec!["missing-model".into()],
-                key_ref: "missing".into(),
-            },
-        ],
-        ..Default::default()
-    }
-    .save_to(&path)
-    .unwrap();
-    keystore::set_key(root.path(), "stored", "issue82-test-secret").unwrap();
-    cx.update(|cx| {
-        cx.set_global(vega_theme::Theme::light());
-        cx.set_global(SettingsOpen(true));
-        crate::init(cx);
-    });
-    let view = cx.new(|cx| SettingsView::from_path(Some(path), cx));
-    let window = cx
-        .update(|cx| {
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                        None,
-                        size(px(960.), px(750.)),
-                        cx,
-                    ))),
-                    ..Default::default()
-                },
-                |_, cx| cx.new(|_| Harness(view.clone())),
-            )
-        })
-        .unwrap();
-    cx.run_until_parked();
-    click(cx, window, "settings-nav-providers");
-    (root, view, window)
 }
 
 #[gpui_kit::test]

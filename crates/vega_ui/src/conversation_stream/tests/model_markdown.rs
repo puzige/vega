@@ -77,19 +77,6 @@ const ISSUE59_TABLE: &str = "| # | 问题 | 选项 | 建议 |\n\
     | B | 转义竖线 a\\|b | `very_long_identifier_without_spaces_abcdefghijklmnopqrstuvwxyz` | 不丢失内容 |\n\n\
     ```text\n| fenced | stays code |\n```\n\n- 保留列表\n\n普通正文\n";
 
-fn issue59_model(chunks: Vec<String>) -> StreamModel {
-    let mut stream = MarkdownStream::new();
-    let mut model = StreamModel::default();
-    let counters = StreamCounters::default();
-    for chunk in chunks {
-        stream.append(&chunk);
-        model.sync(&stream.snapshot(), &counters);
-    }
-    stream.finish();
-    model.sync(&stream.snapshot(), &counters);
-    model
-}
-
 struct TableView(StreamModel);
 impl Render for TableView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

@@ -47,21 +47,6 @@ fn text(stream: &ConversationStream) -> String {
         .collect()
 }
 
-fn assert_retry_outside_stage(visual: &mut VisualTestContext) {
-    let stage = visual.debug_bounds("run-timeline-segment-0").unwrap();
-    let title = visual.debug_bounds("run-stage-title-0").unwrap();
-    let retry = visual.debug_bounds("assistant-network-retry").unwrap();
-    let wifi = visual.debug_bounds("assistant-retry-wifi-icon").unwrap();
-    assert!(stage.bottom() <= retry.top());
-    assert!(retry.left() <= title.left());
-    assert!(retry.size.height > px(Typography::BODY));
-    assert_eq!(
-        wifi.size,
-        gpui_kit::size(px(Layout::ICON_SIZE), px(Layout::ICON_SIZE))
-    );
-    assert!(wifi.left() >= retry.left() && wifi.right() <= retry.right());
-}
-
 #[gpui_kit::test]
 async fn response_retry_restores_shared_stage_without_losing_prior_commands(
     cx: &mut TestAppContext,

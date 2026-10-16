@@ -1,27 +1,5 @@
 use super::*;
 
-fn assembled_chat_response(finish_reason: &str, tool: bool) -> Vec<ProviderEvent> {
-    let mut assembler = crate::openai::SseAssembler::default();
-    let mut delta = serde_json::json!({"content":"useful partial"});
-    if tool {
-        delta["tool_calls"] = serde_json::json!([{
-            "index":0,"id":"read","type":"function",
-            "function":{"name":"read","arguments":"{\"path\":\"test.txt\"}"}
-        }]);
-    }
-    let mut events = assembler
-        .absorb(
-            &serde_json::json!({
-                "choices":[{"delta":delta,"finish_reason":finish_reason}],
-                "usage":{"prompt_tokens":500,"completion_tokens":10}
-            })
-            .to_string(),
-        )
-        .unwrap();
-    events.extend(assembler.finalize().unwrap());
-    events
-}
-
 #[tokio::test]
 async fn continuous_compaction_empty_responses_have_distinct_parallel_tool_rounds() {
     let dir = tempdir().unwrap();

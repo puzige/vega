@@ -38,21 +38,6 @@ fn generation(store: &Store) -> u64 {
         .consent_generation
 }
 
-fn add_limit_candidates(root: &Path, count: usize) {
-    for index in 0..count {
-        let name = format!("limit-skill-{index:03}");
-        let directory = root.join(&name);
-        fs::create_dir_all(&directory).unwrap();
-        fs::write(
-            directory.join("SKILL.md"),
-            format!(
-                "---\nname: {name}\ndescription: Review owned changes.\n---\nPRIVATE LIMIT BODY\n"
-            ),
-        )
-        .unwrap();
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct ImportAuthority {
     settings: skills::SkillSettings,

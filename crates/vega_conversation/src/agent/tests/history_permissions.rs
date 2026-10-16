@@ -4,47 +4,6 @@ use vega_store::permissions;
 
 type UsageRow = (Option<String>, i64, Option<String>, Option<String>);
 
-fn save_issue76_model_policy(store: &Store, input_limit: u64, output_reserve: u64) {
-    vega_store::context_compaction::save_model_policy(
-        store.conn(),
-        &vega_store::context_compaction::ModelContextPolicy {
-            provider: "mock-provider".into(),
-            model: "mock-model".into(),
-            input_limit: Some(input_limit),
-            output_reserve: Some(output_reserve),
-            automatic_compaction: true,
-            updated_at: 1,
-        },
-    )
-    .unwrap();
-}
-
-async fn run_issue76_model_owned(
-    store: &Store,
-    provider: &dyn Provider,
-    tools: &vega_tools::Tools,
-    user_content: &str,
-    system_prompt: &str,
-    pricing: Option<vega_token::PricingCatalog>,
-) -> Result<ConversationRun, ConversationError> {
-    run_thread_task_with_permission_config_and_reasoning(
-        store,
-        provider,
-        tools,
-        "thread-1",
-        user_content,
-        system_prompt,
-        CancellationToken::new(),
-        &RejectPermissionHook,
-        |_| Ok(()),
-        PersistenceActorConfig::default(),
-        None,
-        pricing,
-        Some(FrozenReasoning::unknown("mock-provider", "mock-model")),
-    )
-    .await
-}
-
 struct GatedSummaryProvider {
     started: std::sync::Arc<tokio::sync::Notify>,
     release: std::sync::Arc<tokio::sync::Notify>,
@@ -503,21 +462,6 @@ async fn codex_parity_large_prior_checkpoint_is_reduced_and_raw_history_preserve
                 && a.content == b.content
                 && a.status == b.status)
     );
-}
-
-fn issue76_priced_catalog() -> vega_token::PricingCatalog {
-    vega_token::PricingCatalog::from_specs(vec![vega_token::ModelPricingSpec {
-        model: "mock-model".into(),
-        rates: vega_token::RateSpec {
-            input_usd_per_million: "1".into(),
-            output_usd_per_million: "2".into(),
-            cache_read_usd_per_million: "0.1".into(),
-            cache_write_usd_per_million: "0".into(),
-        },
-        max_standard_input_tokens: None,
-        schedule: None,
-    }])
-    .unwrap()
 }
 
 fn seed_manual_compaction_history(store: &Store) {
