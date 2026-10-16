@@ -49,6 +49,7 @@ mod issue342_model_name_width;
 mod issue350_network_retry;
 mod issue395_thinking_performance;
 mod issue395_thinking_window;
+mod issue402_hover_auto_scroll;
 mod issue64_context_usage;
 mod issue70_tool_activity;
 mod issue72_message_anchor_navigation;
