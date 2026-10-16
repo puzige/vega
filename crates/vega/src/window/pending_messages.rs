@@ -17,9 +17,16 @@ impl VegaWindow {
         mut projection: PendingQueueProjection,
         cx: &mut Context<Self>,
     ) {
+        let delivered = &self.agent_controller.queue_delivered;
         projection
             .messages
-            .retain(|message| !self.agent_controller.queue_delivered.contains(&message.id));
+            .retain(|message| !delivered.contains(&message.id));
+        projection.committed_generation = self
+            .agent_controller
+            .active
+            .get(thread_id)
+            .filter(|active| !active.cancel.is_cancelled())
+            .map(|active| active.queue_generation.clone());
         if projection.messages.is_empty() && !projection.busy {
             self.agent_controller.queue_streams.remove(thread_id);
         } else {
@@ -284,6 +291,11 @@ impl VegaWindow {
         let request = request.clone();
         let thread_id = request.thread_id.clone();
         let resume = matches!(request.action, PendingQueueAction::Resume);
+        let steer_id = match &request.action {
+            PendingQueueAction::Steer(id) => Some(id.clone()),
+            _ => None,
+        };
+        let promoted_generation = generation.clone();
         if resume && self.agent_controller.active.contains_key(&thread_id) {
             self.reject_pending_queue_action(&stream, &thread_id, "当前任务仍在运行", cx);
             return;
@@ -377,6 +389,13 @@ impl VegaWindow {
                 }
                 match result {
                     Ok(messages) => {
+                        if let (Some(pending_id), Some(generation)) =
+                            (steer_id.as_deref(), promoted_generation.as_deref())
+                        {
+                            stream.update(cx, |stream, cx| {
+                                stream.apply_pending_promotion(pending_id, generation, cx)
+                            });
+                        }
                         projection.messages = messages;
                         projection.error = None;
                         if resume {

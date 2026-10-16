@@ -121,14 +121,7 @@ impl ConversationStream {
         self.entry_identities = hydrated_identities;
         self.list_prepend(prepended_entries);
         if prepended_entries > 0 {
-            if let Some((_, index)) = &mut self.active_agent_message
-                && *index != usize::MAX
-            {
-                *index += prepended_entries;
-            }
-            if let Some((_, index)) = &mut self.last_finished_agent_message {
-                *index += prepended_entries;
-            }
+            self.grow_entry_indices(0, prepended_entries);
             self.restore_scroll_anchor(&anchor);
         }
         self.hydration.older_cursor = page.older_cursor;
@@ -535,17 +528,7 @@ impl ConversationStream {
         self.list_insert(index);
         let identity = self.durable_entry_identity(message_id, "run-activity", sequence);
         self.set_entry_identity(index, identity);
-        if let Some((_, active_index)) = &mut self.active_agent_message
-            && *active_index != usize::MAX
-            && index <= *active_index
-        {
-            *active_index += 1;
-        }
-        if let Some((_, finished_index)) = &mut self.last_finished_agent_message
-            && index <= *finished_index
-        {
-            *finished_index += 1;
-        }
+        self.grow_entry_indices(index, 1);
     }
 
     pub(crate) fn ensure_live_run_activity_segment(
@@ -1031,6 +1014,7 @@ impl ConversationStream {
         {
             self.entries.remove(index);
             self.list_remove(index);
+            self.shift_entry_indices(index, 1);
             self.merge_tool_entries_around(index, cx);
         }
         cx.notify();
@@ -1641,6 +1625,7 @@ impl ConversationStream {
         } else {
             self.entries.remove(index);
             self.list_remove(index);
+            self.shift_entry_indices(index, 1);
         }
         if let Some((_, active_index)) = &mut self.active_agent_message {
             *active_index = usize::MAX;
@@ -1909,6 +1894,7 @@ impl ConversationStream {
         }
         self.entries.remove(right_index);
         self.list_remove(right_index);
+        self.shift_entry_indices(right_index, 1);
         self.invalidate_item(Some(left_index));
     }
 

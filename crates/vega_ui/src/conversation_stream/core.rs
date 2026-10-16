@@ -137,6 +137,7 @@ pub struct ConversationStream {
     pub(crate) pending_behavior_override: Option<PendingMessageBehavior>,
     pub(crate) pending_submission_revision: Option<u64>,
     pub(crate) pending_ui: pending_messages::PendingQueueUi,
+    pub(crate) pending_echoes: Vec<PendingEcho>,
     pub(crate) skill_projection: Option<SkillComposerProjection>,
     pub(crate) skill_projection_generation: u64,
     pub(crate) skill_mutation_pending: bool,
@@ -280,6 +281,11 @@ pub(crate) struct InjectionState {
     pub(crate) entry_index: usize,
     /// The public mock replayer (vega_markdown::replay，T18 公共化).
     pub(crate) replay: MockReplay,
+}
+
+pub(crate) struct PendingEcho {
+    pub(crate) pending_id: String,
+    pub(crate) indices: Vec<usize>,
 }
 
 impl ConversationStream {
@@ -511,6 +517,7 @@ impl ConversationStream {
             pending_behavior_override: None,
             pending_submission_revision: None,
             pending_ui: pending_messages::PendingQueueUi::new(cx),
+            pending_echoes: Vec::new(),
             skill_projection: None,
             skill_projection_generation: 0,
             skill_mutation_pending: false,
@@ -611,6 +618,39 @@ impl ConversationStream {
             .collect();
     }
 
+    fn shift_tracked_entry_indices(&mut self, adjust: impl Fn(&mut usize)) {
+        if let Some((_, index)) = &mut self.active_agent_message {
+            adjust(index);
+        }
+        if let Some((_, index)) = &mut self.last_finished_agent_message {
+            adjust(index);
+        }
+        if let Some(injection) = &mut self.injecting {
+            adjust(&mut injection.entry_index);
+        }
+        for echo in &mut self.pending_echoes {
+            for index in &mut echo.indices {
+                adjust(index);
+            }
+        }
+    }
+
+    pub(crate) fn shift_entry_indices(&mut self, removed: usize, count: usize) {
+        self.shift_tracked_entry_indices(|index| {
+            if *index != usize::MAX && *index > removed {
+                *index = index.saturating_sub(count);
+            }
+        });
+    }
+
+    pub(crate) fn grow_entry_indices(&mut self, inserted: usize, count: usize) {
+        self.shift_tracked_entry_indices(|index| {
+            if *index != usize::MAX && *index >= inserted {
+                *index = index.saturating_add(count);
+            }
+        });
+    }
+
     pub(crate) fn ensure_entry_identities(&mut self) {
         while self.entry_identities.len() < self.entries.len() {
             let identity = self.new_local_identity();
@@ -634,6 +674,7 @@ impl ConversationStream {
         StreamEntryIdentity {
             key: format!("route:{}:{}:local:{}", route_id.len(), route_id, local_id),
             message_id: None,
+            pending_id: None,
             sequence: None,
         }
     }
@@ -656,6 +697,7 @@ impl ConversationStream {
                 kind
             ),
             message_id: Some(message_id.to_string()),
+            pending_id: None,
             sequence,
         }
     }
@@ -676,6 +718,7 @@ impl ConversationStream {
                 call_id
             ),
             message_id: message_id.map(str::to_string),
+            pending_id: None,
             sequence,
         }
     }
