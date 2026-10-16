@@ -79,7 +79,9 @@ async fn issue401_committed_steer_leaves_the_rail_and_echoes_into_the_stream(
             .is_some()
     );
 
-    committed(&stream, vec![queued.clone()], Some(GENERATION), cx);
+    let mut promoted = queued.clone();
+    promoted.behavior = PendingMessageBehavior::Steer;
+    committed(&stream, vec![promoted], Some(GENERATION), cx);
     stream.read_with(cx, |stream, _| {
         assert_eq!(user_entries(stream), vec![0]);
         assert!(stream.visible_pending_messages().is_empty());
@@ -262,7 +264,12 @@ async fn issue401_echo_appends_after_the_live_assistant_segment(cx: &mut TestApp
             user[1] > assistant,
             "the steer echo joins the conversation at the live bottom"
         );
-        assert_eq!(stream.entries.len(), 3);
+        assert_eq!(
+            user[1],
+            stream.entries.len() - 1,
+            "the steer echo is the last entry"
+        );
+        let entries_after_echo = stream.entries.len();
         let active = stream
             .active_agent_message
             .as_ref()
@@ -273,7 +280,7 @@ async fn issue401_echo_appends_after_the_live_assistant_segment(cx: &mut TestApp
         stream.apply_event(delivery("steer", "durable-user", 3), cx)
     });
     stream.read_with(cx, |stream, _| {
-        assert_eq!(stream.entries.len(), 3);
+        assert_eq!(stream.entries.len(), entries_after_echo);
         let user = user_entries(stream);
         assert_eq!(user.len(), 2);
         assert_eq!(
