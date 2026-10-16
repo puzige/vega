@@ -1,11 +1,8 @@
 use super::*;
-use gpui_kit::{
-    Bounds, Modifiers, MouseButton, Pixels, Point, TextLayout, VisualTestContext, point, px, size,
-};
+use gpui_kit::{Bounds, Modifiers, MouseButton, Pixels, Point, VisualTestContext, point, px, size};
 use std::time::Duration;
 
-const BODY_LINES: usize = 90;
-const LINE_HEIGHT_SLACK: Pixels = px(20.);
+const SEGMENT_COUNT: usize = 220;
 
 struct HoverScrollHarness {
     stream: Entity<ConversationStream>,
@@ -34,7 +31,7 @@ fn open_hover_harness(cx: &mut TestAppContext) -> (Entity<ConversationStream>, V
         .expect("issue402 hover window")
     });
     cx.run_until_parked();
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(1000.), px(900.)));
     visual.run_until_parked();
     (stream, visual)
@@ -47,11 +44,12 @@ fn draw(visual: &mut VisualTestContext) {
     visual.run_until_parked();
 }
 
+/// One long single-line body. GPUI wraps it inside the bubble, so the fixture
+/// stays a single selection run whose text equals its layout text.
 fn body_text() -> String {
-    (0..BODY_LINES)
-        .map(|line| format!("issue402 body line {line:03}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    (0..SEGMENT_COUNT)
+        .map(|segment| format!("issue402 segment {segment:03} "))
+        .collect()
 }
 
 fn seed_scrollable(visual: &mut VisualTestContext, stream: &Entity<ConversationStream>) {
@@ -85,73 +83,80 @@ fn viewport(visual: &mut VisualTestContext) -> Bounds<Pixels> {
         .expect("transcript viewport")
 }
 
-fn visible_slice(run: Bounds<Pixels>, viewport: Bounds<Pixels>) -> Pixels {
-    run.intersect(&viewport).size.height
-}
-
-fn widest_visible_run(viewport: Bounds<Pixels>) -> Option<(String, TextLayout, Bounds<Pixels>)> {
+/// The single wrapped body run, matching the production text exactly.
+fn body_layout(text: &str) -> gpui_kit::TextLayout {
     selection::SELECTION_RUN_LAYOUTS.with_borrow(|runs| {
         runs.iter()
-            .filter(|(text, _, bounds)| {
-                !text.trim().is_empty()
-                    && bounds.center().x > viewport.left()
-                    && bounds.center().x < viewport.right()
-            })
-            .max_by(|left, right| {
-                visible_slice(left.2, viewport)
-                    .partial_cmp(&visible_slice(right.2, viewport))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(text, layout, bounds)| (text.clone(), layout.clone(), *bounds))
+            .rev()
+            .find(|(run_text, _, _)| run_text == text)
+            .map(|(_, layout, _)| layout.clone())
+            .expect("production selection text layout")
     })
 }
 
-fn selectable_run(
-    visual: &mut VisualTestContext,
-    stream: &Entity<ConversationStream>,
-    viewport: Bounds<Pixels>,
-) -> (String, TextLayout, Bounds<Pixels>) {
-    for _ in 0..12 {
-        if let Some((text, layout, bounds)) = widest_visible_run(viewport)
-            && visible_slice(bounds, viewport) >= LINE_HEIGHT_SLACK
-        {
-            return (text, layout, bounds);
-        }
-        stream.update(visual, |stream, cx| {
-            stream.list.scroll_by(px(-24.));
-            cx.notify();
-        });
-        visual.run_until_parked();
-        draw(visual);
+fn text_point(layout: &gpui_kit::TextLayout, index: usize, edge: bool) -> Point<Pixels> {
+    let mut point = layout
+        .position_for_index(index)
+        .expect("text index geometry");
+    point.y += layout.line_height() / 2.;
+    if edge {
+        point.x += px(2.);
+    } else {
+        point.x += px(0.5);
     }
-    panic!("no message body line stayed visible inside the transcript viewport");
+    point
 }
 
-fn run_edges(
-    layout: &TextLayout,
-    run: Bounds<Pixels>,
+/// Picks a selection index whose line stays inside `viewport`, so the drag
+/// never depends on how far the transcript happens to be scrolled.
+fn index_in_viewport(
+    layout: &gpui_kit::TextLayout,
+    viewport: Bounds<Pixels>,
+    target_y: Pixels,
+) -> usize {
+    let probe = point(viewport.center().x, target_y);
+    layout
+        .index_for_position(probe)
+        .unwrap_or_else(|index| index)
+}
+
+fn selection_span(
     text: &str,
+    layout: &gpui_kit::TextLayout,
     viewport: Bounds<Pixels>,
 ) -> (Point<Pixels>, Point<Pixels>) {
-    let y = run
-        .center()
-        .y
-        .clamp(viewport.top() + px(2.), viewport.bottom() - px(2.))
-        .clamp(run.top() + px(1.), run.bottom() - px(1.));
-    let last = text.trim_end().len().saturating_sub(1);
-    let start = layout
-        .position_for_index(0)
-        .expect("run start geometry")
-        .x
-        .clamp(viewport.left() + px(2.), viewport.right() - px(2.))
-        + px(0.5);
-    let end = layout
-        .position_for_index(last)
-        .expect("run end geometry")
-        .x
-        .clamp(viewport.left() + px(2.), viewport.right() - px(2.))
-        + px(2.);
-    (point(start, y), point(end, y))
+    let last = text.len().saturating_sub(1);
+    let start = index_in_viewport(layout, viewport, viewport.top() + px(60.)).min(last);
+    let end = index_in_viewport(layout, viewport, viewport.bottom() - px(60.)).min(last);
+    let (first, last) = if start <= end {
+        (start, (end + 1).min(last))
+    } else {
+        (end, (start + 1).min(last))
+    };
+    (
+        text_point(layout, first, false),
+        text_point(layout, last, true),
+    )
+}
+
+fn body_copy(visual: &VisualTestContext, stream: &Entity<ConversationStream>) -> MessageCopy {
+    stream.read_with(visual, |stream, _| match &stream.entries[0] {
+        StreamEntry::User { copy, .. } => copy.clone(),
+        _ => panic!("the fixture seeds exactly one user entry"),
+    })
+}
+
+fn select_body_text(visual: &mut VisualTestContext, stream: &Entity<ConversationStream>) -> bool {
+    draw(visual);
+    let viewport = viewport(visual);
+    let layout = body_layout(&body_text());
+    let (start, end) = selection_span(&body_text(), &layout, viewport);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let copy = body_copy(visual, stream);
+    copy.has_selected_text()
 }
 
 fn settle(visual: &mut VisualTestContext) {
@@ -175,18 +180,6 @@ fn edge_point(viewport: Bounds<Pixels>) -> Point<Pixels> {
     point(viewport.center().x, viewport.bottom() - px(4.))
 }
 
-fn select_body_text(visual: &mut VisualTestContext, stream: &Entity<ConversationStream>) -> String {
-    draw(visual);
-    let viewport = viewport(visual);
-    let (text, layout, run) = selectable_run(visual, stream, viewport);
-    let (start, end) = run_edges(&layout, run, &text, viewport);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    visual.update(gpui_kit::base::TextSelection::selected_text)
-}
-
 #[gpui_kit::test]
 fn issue402_a1_hover_in_body_after_selection_does_not_scroll(cx: &mut TestAppContext) {
     let (stream, mut visual) = open_hover_harness(cx);
@@ -195,7 +188,7 @@ fn issue402_a1_hover_in_body_after_selection_does_not_scroll(cx: &mut TestAppCon
 
     let selected = select_body_text(&mut visual, &stream);
     assert!(
-        !selected.trim().is_empty(),
+        selected,
         "the fixture must land on selectable body text, otherwise A1 passes vacuously"
     );
     assert!(
@@ -227,8 +220,8 @@ fn issue402_a2_drag_to_viewport_edge_still_auto_scrolls(cx: &mut TestAppContext)
     draw(&mut visual);
 
     let viewport = viewport(&mut visual);
-    let (text, layout, run) = selectable_run(&mut visual, &stream, viewport);
-    let (start, _) = run_edges(&layout, run, &text, viewport);
+    let layout = body_layout(&body_text());
+    let (start, _) = selection_span(&body_text(), &layout, viewport);
     let edge = edge_point(viewport);
     let before = scroll_top(&visual, &stream);
 
@@ -254,7 +247,7 @@ fn issue402_a3_body_drag_still_selects_text(cx: &mut TestAppContext) {
 
     let selected = select_body_text(&mut visual, &stream);
     assert!(
-        !selected.trim().is_empty(),
+        selected,
         "dragging across body text must still produce a selection"
     );
 }
