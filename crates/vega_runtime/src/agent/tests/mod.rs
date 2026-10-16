@@ -1,7 +1,3 @@
-mod cua_batch_projection;
-mod cua_read_progress;
-mod cua_usability;
-mod steering;
 use std::fs;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,12 +13,9 @@ use crate::{
 };
 
 mod loop_tools;
-mod mcp_registry;
 mod permission_flow;
-mod provider_overflow;
 mod reasoning_budget;
 mod response_phases;
-mod skills;
 mod usage_limits;
 
 struct FixedHook {

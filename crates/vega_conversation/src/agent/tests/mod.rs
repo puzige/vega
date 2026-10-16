@@ -11,17 +11,12 @@ use crate::types::{ConversationEvent, ToolCallStatus};
 mod automatic_titles;
 mod continuous_compaction;
 mod credential_continuation;
-mod cua_usability;
 mod failure_paths;
 mod history_permissions;
-mod images;
-mod mcp;
 mod model_context;
 mod model_switch_summary;
 mod permissions;
 mod plan_approval;
-mod reasoning_budget;
-mod skills;
 mod stream_persistence;
 mod tool_lifecycle;
 

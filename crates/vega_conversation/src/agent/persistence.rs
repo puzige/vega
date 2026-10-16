@@ -35,6 +35,7 @@ pub struct PersistenceActorConfig {
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InjectedPersistenceFailure {
+    Retrying,
     Running,
     Finished,
     PanicRunning,

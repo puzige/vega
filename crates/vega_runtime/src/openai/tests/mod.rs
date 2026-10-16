@@ -6,8 +6,6 @@ use crate::provider::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-mod network_retry;
-
 const KEY: &str = "vrg-test-key-123";
 const MODEL: &str = "test-model";
 

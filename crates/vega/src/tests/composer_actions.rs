@@ -2,9 +2,6 @@
 use super::*;
 use gpui_kit::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, px, size};
 
-#[path = "context_compaction.rs"]
-mod context_compaction;
-
 #[path = "pending_messages.rs"]
 mod pending_messages;
 

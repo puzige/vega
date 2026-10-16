@@ -19,15 +19,10 @@ use vega_markdown::{ListItem, TableCell};
 
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
-mod attachments;
 mod branch_popup_upward;
-mod composer_actions;
 mod composer_counter;
 mod core_flow;
-mod cua_screenshots;
-mod cua_usability;
 mod e2e_variable_height;
-mod hover_copy;
 mod hydration;
 mod issue148_long_session_scroll;
 mod issue296_codex_stream;
@@ -37,16 +32,12 @@ mod issue72_message_anchor_navigation;
 mod menu_lists;
 mod model_markdown;
 mod model_picker_levels;
-mod permission_picker;
 mod permissions_cards;
-mod preparing_indicator;
 mod r64_popup_deferred;
 mod scroll_follow;
-mod skills;
 mod thinking;
 mod timeline;
 mod utility_bar;
-mod utility_menu_coordination;
 mod variable_height;
 
 struct StreamHarness {

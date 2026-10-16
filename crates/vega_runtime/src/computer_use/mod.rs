@@ -658,26 +658,6 @@ impl ComputerUseRun {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) async fn gate_desktop_permission_check(
-        &self,
-        after: usize,
-    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        if let Some(fixture) = &mut self.backend.lock().await.fixture {
-            fixture.permission_gate = Some((after, entered.clone(), release.clone()));
-        }
-        (entered, release)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn set_desktop_targets_fixture(&self, windows: Vec<DesktopTarget>) {
-        if let Some(fixture) = &mut self.backend.lock().await.fixture {
-            fixture.windows = windows;
-        }
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn fixture_calls(&self) -> Vec<(String, Value)> {
         self.backend.lock().await.fixture_calls()

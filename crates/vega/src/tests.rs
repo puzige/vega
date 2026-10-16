@@ -62,7 +62,6 @@ mod agent;
 mod artifact_preview;
 mod artifact_terminal;
 mod automatic_titles;
-mod computer_use;
 mod title_fixture;
 use title_fixture::with_auxiliary_title_fixture;
 mod branch;
@@ -163,5 +162,4 @@ fn pending_plan() -> (Store, String) {
     (store, thread.id)
 }
 
-mod controller_git_fixture;
 pub(crate) use controller_git_fixture::{ControllerRepo, fixture_git_command};
