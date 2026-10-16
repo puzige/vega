@@ -46,3 +46,60 @@
 - PR check 通过后按仓库交付流程主动 squash 合并并置 `In review`，等待用户在云端发布的应用上手测。未收到通过结论前不关闭 Issue、不置 Done、不清理分支/worktree。回滚方式为回退本卡合并提交。
 
 变更记录：2026-10-16，依据用户指定的 #403 及公开参考图建立实现前规格与验收矩阵。
+
+## 用户手测退回：活动标题穿入 Composer（2026-10-16）
+
+PR #407 合并后，用户截图显示会话中的工具活动图标与标题绘制在 Composer 输入区域内，紧邻输入光标。截图仅作为本地手测证据，不公开用户会话内容。#403 因此退回 `In progress`；此前 CI 通过不能代替本次手测结论。
+
+源码确认：活动阶段及完成汇总使用 `StickyDisclosure`，即使未吸顶也通过 `window.defer_draw(..., 1, ...)` 延后绘制标题。现有底部前景走普通绘制；`occlude()` 仅阻止鼠标命中，不能挡住随后绘制的标题。因此本次修复必须覆盖真实活动标题的绘制层级，不能只验证普通消息背景和点击遮挡。
+
+补充验收矩阵在修复代码之前冻结：
+
+| ID | 前置与操作 | 可观察结果 | 层级与证据 | 状态 |
+|---|---|---|---|---|
+| R1 | 使用生产事件形成运行中阶段与完成汇总，将真实活动标题滚入渐隐区和 Composer 实色区域；浅深主题 | 活动标题及其图标位于渐隐与实色前景之下；输入区域、左右及底部不出现标题碎片；消息视口仍真实延伸至前景后方 | GPUI 真实 deferred 标题背景的场景绘制顺序与重叠几何；用户像素手测 | 待回归 / 待 CI / 待手测 |
+| R2 | 标题被 Composer 遮住时点按遮挡处，再将标题滚回可读区并展开；展开后滚动至吸顶 | 遮住的标题不被误触；可读区内标题可操作，吸顶与滚轮语义保留 | GPUI 生产命中与已有 sticky 回归 | 待回归 / 待 CI |
+| R3 | 打开模型、权限、添加上下文、文件选择与待发送菜单，改变 Composer 高度，悬停消息锚点 | 合法浮层仍在前景之上；关闭、回焦、动态余量与锚点位置保留；渐隐仍不拦滚轮 | 既有生产菜单、动态高度、阅读保护与锚点回归 | 待 CI / 待手测 |
+| R4 | 会话之后绘制应用级遮罩或面板，例如命令面板、删除确认与窄窗口环境面板 | 会话标题与底部前景不反盖应用级遮罩，不抢其命中 | 生产绘制结构审查与必要的组合根渲染回归 | 待回归 / 待 CI |
+
+实施顺序：实现 agent 先补能在旧实现检出 R1 的真实生产回归，保持生产代码不变，由云端 PR Check 留存失败证据；随后仅修复会话前景与已有 deferred 标题的绘制关系，再运行同一云端门禁。禁止用测试专用假标题、取消吸顶、复制第二个标题、裁短消息视口、移除渐隐或放宽旧断言来通过测试。可按吸顶原规格采用等价的局部布局/绘制方法，保留原控件、自然尺寸、当前帧偏移及 prepaint/paint 裁剪。不能仅把整个底部前景升到全窗口延后绘制而反盖后绘制的应用级遮罩。背景 Quad 只用于证明同一真实标题子树的绘制阶段，不将其称为实际字形或像素验收。
+
+主 agent 继续拥有本规格、集成及交付；实现 agent 拥有 `conversation_stream/render.rs`、本卡测试及交付记录。若最小修复需要修改其他生产模块，先说明原因。保留本地仅快速检查和云端编译/测试限制；不新增产品文字、依赖或配置。
+
+### 执行交接 v1：Codex → Vega
+
+准备本轮回归期间，master 合入 `6a2363f8`（PR #415）的角色工作流更新。本次是用户手测发现的 Bug，后续执行改按该规则：Codex 发布具体方案与现有回归代码，Ready 等 Vega 领取；Vega 完成后交回 Codex 审查、PR/Actions 与合并。此前“先由 Codex 开测试草稿 PR，再派子 agent 修复”的安排由本节取代。当前尚未开本轮 PR、启动 CI 或修改生产代码；旧实现失败点是已查明的源码证据，新增用例的运行结果仍待 Actions。原实现分支和 worktree 保留，不因交接清理。
+
+**基线与依赖**：`origin/master` 的 `6a2363f8`，其中生产 UI 与 #407 合并提交 `1e90dbe7` 一致。任务分支 `feat/403-composer-occlusion`。领取前 fetch 并核对 Issue 最新交接 commit；复用当前卡的独立 worktree，其他主机可在 `~/Workspace/worktrees/` 新建同分支 worktree，禁止覆盖脏文件或让两名实现者并写。本方案无待决产品事项、依赖或迁移。若基线变化影响布局/元素 API，停止实现并回报 Codex，不自行改规格。
+
+**改前调用链与证据**：`ConversationStream::render` 在完整消息列表之后普通绘制 `render_conversation_foreground`；真实 `RunActivityGroup::render_segment_with_top` 与完成汇总入口均以带 `bg_base` 的单一标题构造 `StickyDisclosure`。其 `prepaint` 对所有标题调用全窗口 `defer_draw(priority=1)`；GPUI 在普通 root paint 后绘制这些元素，且其命中区域也在延后 prepaint 中排入。故标题反盖 Composer，命中亦有反盖风险。`ClippedHeader` 已显式在 prepaint/paint 使用相同 mask。GPUI `AnyElement` 在 prepaint 保存偏移后的 bounds，之后普通 paint 使用保存的 bounds；无需全窗口延后才能保持吸顶位置。
+
+**允许修改范围**：`crates/vega_ui/src/conversation_stream/sticky_disclosure.rs`、现有 `tests/issue403_conversation_underlay.rs`（必要时测试模块注册）及本卡 delivery 文档。`render.rs`、业务状态、权限、存储、GPUI 依赖、主题 token 和应用级遮罩实现保持现有代码；确有必要时先按 exec-guide §6 回报 Codex。不得新增依赖、产品文案、代码注释、重复可聚焦标题或测试专用生产 API。
+
+按以下顺序执行：
+
+1. 核对已提交的三项真实回归、R1–R4 和旧 sticky S01–S06 规格。保留其所有身份、布局、裁剪、点击、键盘与阅读保护断言，不删除或放宽旧测试。当前测试已由专用子 agent 编写并经 Codex 静态审查，没有本地或云端运行结果。
+2. 将 `StickyDisclosure::prepaint` 的标题处理改为局部子树 prepaint：保留现有 `placement`（当前帧自然标题/连续区域/viewport 的计算）、状态与 sections 的 prepaint；通过 `self.header.as_mut()` 保留原标题，设置同一 mask，然后在 `window.with_element_offset(point(px(0.), offset), ...)` 内调用该标题的 `prepaint`。去掉把标题 `take()` 并送入全窗口 `defer_draw` 的路径，不改变自然布局或复制标题。偏移为相对当前元素的增量，不能误用绝对坐标或上帧 ScrollHandle bounds。
+3. 在 `StickyDisclosure::paint` 中继续先 paint 所有 sections，再 paint 保存的原 header。保留 `ClippedHeader` 的两阶段 mask；标题仍盖住所属区域的展开内容，同时回到所属消息子树的正常绘制及命中顺序，随后 Composer 的渐变、实色背景及控件能够遮住它。全窗口菜单仍沿原 deferred 优先级绘制。不需要把底部前景改为全局 deferred。
+4. 新增 R4 组合根回归：真实 `ConversationStream` 后接普通不透明遮罩，使用已存在的真实事件构成 live/final 标题；先断言标题与 Composer 实际重叠，再以真实场景 Quad 检查标题、fade、surface、shell 均早于后绘制遮罩。遮罩命中应阻止下面标题动作。该测试验证组合绘制作用域，不声称已经操作实际命令面板或删除确认。不要用假标题或手工 deferred 元素替代生产活动标题。
+5. 只做 `cargo fmt --all -- --check`、`git diff --check` 及文本静态审查；不运行 Vega、编译、Clippy 或任何测试。更新 delivery 的实现动作、文件、静态检查原始输出、耗时和待 CI 项，提交任务分支并回报原 Issue。没有预期以外的产品/接口变化，偏离必须为无；实现方案不成立时回报具体阻碍并停止。
+
+**供 Actions 执行**：功能点过滤命令为 `cargo nextest run -p vega_ui issue403_`，旧吸顶回归过滤为 `cargo nextest run -p vega_ui issue296_sticky_`；现有 PR gate 的 `cargo nextest run --workspace` 会实际包含两者，以及模型/权限/上下文/待发送菜单、动态高度、锚点与阅读保护回归。fmt、Clippy 与 workspace Nextest 命令沿用 `.github/workflows/pr-check.yml`。预期新增三项、R4 及既有 suite 均通过；若可在云端保留改前红证据，须命中真实绘制顺序或遮挡点击断言，不能把 fixture/API 编译失败当作缺陷复现。不为取得红证据在本地执行测试或修改 CI 拓扑。
+
+**回报与等待点**：Vega 在 #403 写实现分支/commit、文件、静态检查及退出码、未执行测试、耗时、限制和偏离（应为无），保持 `In progress`，阶段改“等待 Codex 审查”，当前执行者写“待领取”、下一执行者写“Codex”，然后停止写入。Vega 不开 PR、不合并、不关闭 Issue 或清理。Codex 后续审查并开 PR，最新 head required check 通过后合并，才 In review 等用户手测；合并时也保留本卡远端分支和本地 worktree。
+
+**用户手测与回滚**：在云端发布的新版本中，让运行阶段与完成汇总分别经过渐隐区和输入框，浅深主题检查标题图标/文字不残留，遮住处不误触，滚回可读区后可展开、吸顶和收起；检查模型/权限/上下文等浮层、动态输入高度与锚点，以及命令面板、删除确认和窄窗口环境面板的遮挡关系。手测未执行前不能记通过。补丁上线后的回滚为回退本轮修复的 squash 合并提交；当前交接仅含 spec/测试，无生产行为可回滚。
+
+### 用户明确指定本轮由 Codex 直接修复
+
+2026-10-16，发布交接后用户明确要求“你直接开始修复”。本轮按此授权由当前 Codex 主会话继续组织修复，取代 v1 中等待 Vega 领取的角色安排；R1–R4、具体局部绘制方案及安全/验证边界保持。Codex 更新 In progress 并记录当前执行者，专用实现子 agent 独占 `sticky_disclosure.rs`、本卡测试与 delivery，主会话负责本规格、审查、PR/Actions、合并与交付，不再等待其他执行者。生产实现仍先于本轮应用手测，用户明确通过前不关闭卡片或清理分支/worktree。
+
+### R1 场景排序判据澄清
+
+修复 head `8d4f4d18` 的 CI 确认两项标题绘制测试中，真实标题已经早于前景，点击、R4 与全部旧吸顶测试通过，但原新增测试误将 `painted_quads()` 当作全局调用顺序，额外要求互不重叠的渐隐和实色背景在场景数组中也严格先后。锁定 GPUI 的 `Scene::insert_primitive` 使用 `BoundsTree` 对相交区域递增 `order`，`Scene::finish` 再按 order 排序；互不相交的区域可安全重排。日志中完成标题 #6、surface #17、fade #18、shell #19，以及运行标题 #7、surface #19、fade #20、shell #21，均体现该差异。这里是测试额外条件错误，不是批准放宽标题遮挡行为。
+
+R1 保留真实事件、运行/完成、浅深主题、实际重叠、四种背景定位及全部点击/旧断言，绘制判据改为相关区域的严格偏序：标题实际位于 fade 内时，标题 Quad 的 `order` 必须小于 fade；实际位于 shell 内时，必须验证其也与实色 surface 重叠，并满足标题 `order < surface order < shell order`。不对互不相交的 header/fade 或 fade/surface 强加全局数组顺序。原改前 CI 的标题反盖（live #22 > fade #15、final #23 > fade #15）及遮挡点击仍必然失败，不改变红证据针对的判据。生产局部绘制补丁保持不变；只由专用子 agent 修正上述新测试并保留本轮失败原始输出，再由新 head 完整 CI 验证。
+
+### 合并前基线同步
+
+判据修正后的 `3cb9519c` 在 run `38848565692` 全绿，实际 Nextest 为 2739 passed / 5 skipped。合并时 master 刚进入 `f5b4614e`（PR #417，#416 的 Final 首次收起规则），严格分支保护要求同步后重验。已将本卡三个提交无冲突 rebase 至该基线；本卡的局部绘制和 R1–R4 契约不变，继续遵守上游首次可信 Final 收起及其后手动展开的行为，不恢复旧 reading guards，不修改该卡的实现或断言。旧绿记录只证明旧 head，新基线须取得自己的 required check 结果。

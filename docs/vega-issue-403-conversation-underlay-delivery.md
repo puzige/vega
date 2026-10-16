@@ -130,3 +130,181 @@ Summary [176.399s] 2734 tests run: 2731 passed, 3 failed, 5 skipped
 4. 检查定位失败、电脑操作权限 / 暂停提示、隐私检查错误与提交面板仍可见可操作。空任务保留欢迎内容和 utility bar。
 
 LIMIT：本地仅格式及静态证据，未启动或截图真实 Vega。前景高度在实际布局测量后只对变化进行延后更新；首次与多行高度变化的实际绘制、边缘像素和设备输入须由 CI / 用户真实应用确认。没有存储迁移。回滚为回退本卡合并提交；Issue、Project 和分支 / worktree 的交付状态由主 agent 管理，用户手测前不关闭或清理。
+
+## 用户手测退回：活动标题穿入 Composer
+
+此前 [PR #407](https://github.com/puzige/vega/pull/407) 最终 head `8fc744262a3373bd6a3c8db681cb8e3030202a16` 的[云端检查](https://github.com/puzige/vega/actions/runs/38836312543)通过，Clippy 成功，Nextest 原始汇总为：
+
+```text
+Summary [201.464s] 2735 tests run: 2735 passed, 5 skipped
+```
+
+随后 squash 合入 master `1e90dbe75d60d2402bc658ee8d77e799896c7073`。用户手测截图仍显示真实工具活动图标、标题绘制在 Composer 内，故 [Issue #403 退回 In progress](https://github.com/puzige/vega/issues/403#issuecomment-6207184088)。此前云端通过不等于用户手测通过；不改写上述失败和修复历史，不公开用户截图内容。
+
+本轮分支 `feat/403-composer-occlusion`，基线为上述 master。第一阶段只新增真实生产回归和本节记录，生产代码保持不变，由主 agent 开 PR 留云端失败证据后再决策修复。
+
+| 用例 | 生产前置与操作 | 判据 | 第一阶段状态 |
+|---|---|---|---|
+| R1 live | ConversationEvent 生成含两个工具的运行阶段；浅深主题，滚入 fade 与 Composer | 存在实际重叠，真实标题 wrapper 的背景 Quad 早于 fade / 实色前景 / shell | 已新增 / 待云端红证据 |
+| R1 final | ConversationEvent 确认 Final 并完成会话，形成完成聚合标题；同上操作 | 相同的真实绘制顺序契约；不使用假标题或手工 deferred 元素 | 已新增 / 待云端红证据 |
+| R2 | 标题移入输入框空白边缘后点击，再滚回可读区点击 | 被遮住时不展开，回到阅读区域后可展开真实活动内容 | 已新增 / 待云端验证 |
+| R3 | 合法菜单、动态高度与锚点 | 保留已有生产回归 | 已有 suite / 待云端验证 |
+| R4 | 应用级后绘制遮罩 | 后续实现不得把整个前景抬高到应用遮罩之上 | 后续组合根回归 / 修复评审 |
+
+证据边界：精确标题 bounds + `bg_base` Quad 定位同一真实标题子树的绘制阶段。标题文字与图标属于该子树，但 Quad 顺序不冒充字形或真实像素验收。保持本地禁止编译 / 测试，仅做快速格式和差异检查；第一阶段不修生产代码，不提交、push 或操作 CI。
+
+新增测试均在 `crates/vega_ui/src/conversation_stream/tests/issue403_conversation_underlay.rs`：
+
+- `issue403_live_deferred_header_paints_beneath_foreground`：真实两个工具调用形成 `run commands` 阶段，断言真实图标和标题在同一 header 内，浅深主题分别覆盖 fade 与 shell 的有效重叠。
+- `issue403_completed_deferred_header_paints_beneath_foreground`：同一事件流经 Final 元数据和 MessageFinished 形成折叠完成汇总，执行相同绘制顺序断言。
+- `issue403_foreground_occludes_real_run_header_clicks`：运行和完成两态均点击 shell 顶部空白边缘与标题重叠处，断言不展开；滚回可读区后点击真实标题，断言可展开。点击位置避开文本输入区域，避免由输入控件吞事件伪装前景遮挡。
+
+预期旧生产代码在两项绘制测试的 `header_index < fade_index` 条件失败：真实标题 wrapper 经 priority 1 全局延后，出现在普通绘制的 fade / surface / shell 后方。测试先断言实际位置与重叠并查找精确背景 Quad；找不到真实标题、没有重叠或主题不匹配都会单独失败，不能冒充已检出层级缺陷。此为源码推断，尚未获得本轮云端失败输出。
+
+本阶段本地实际执行的轻量检查：
+
+```text
+cargo fmt --all -- --check
+首次 exit 1：仅报告本次新增测试区域的格式差异；按输出手工修正。
+最终 exit 0
+(no output)
+
+git diff --check
+exit 0
+(no output)
+```
+
+NOT RUN：本轮新增三项测试、Clippy、Nextest 与应用像素手测均未在本地执行；主 agent 后续通过云端 PR Check 留存红证据。当前仅测试和交付记录有本阶段改动，规格改动由主 agent 持有，生产代码未修改。未添加依赖、产品文案或调试 selector，保留原有全部断言。
+
+后续用户手测：让含多条命令的运行阶段及完成汇总分别滚过输入框上沿，浅深主题检查图标、文字随真实渐隐被遮盖；输入区、侧边和底部无标题碎片。遮住时点按不展开，滚回阅读区后能展开并吸顶；模型 / 权限等菜单及命令面板等应用级遮罩仍在上层。当前回归仅观测同一真实子树的背景和命中，字形像素及外部应用集成仍待用户手测。
+
+### 工作流更新后的实际交付边界
+
+回归准备完成时，最新 master 合入 PR #415（`6a2363f8`），明确手测失败的 Bug 由 Codex 分析并发布具体方案，Ready 等 Vega 领取执行。主 agent 已将本轮分支 rebase 到该基线，未出现冲突；上游仅改角色工作流文档，没有 UI 或测试基线变化。
+
+因此本轮不再启动测试草稿 PR，也不由当前子 agent 实施生产修复。前述“主 agent 后续开 PR 留红证据”计划由冻结规格最后的“执行交接 v1：Codex → Vega”取代：发布现有三项回归及精确到 `StickyDisclosure::prepaint` / `paint` 的局部绘制方案，Vega 补生产修复与 R4 组合根回归后交回 Codex。不能将源码推断写成已运行红测试；本轮三项、R4 与旧 suite 的执行结果均待后续 Actions。
+
+当前生产代码与 `origin/master` 一致，只有本卡测试及两份规格/交付文档变化。没有开本轮 PR、CI、合并、打包或更新应用；没有公开用户截图、会话原文、配置或本机数据。子 agent 已停止写入，主 agent 完成方案发布后停止该卡实现；下一执行者为 Vega，当前执行者为待领取，不声称 Vega 已开始工作。
+
+交接后继续保留本卡原分支、新修复分支与 worktree，Issue 保持开放，Project Ready 等领取。后续 Vega 回报只改变执行阶段，保持 In progress 并交回 Codex；通过最新 head 的 required check 合并后才回到 In review。实际 handoff commit 与可访问链接写入 #403 最新交接评论，领取者必须核对该版本。
+
+2026-10-16 03:23 UTC / 11:23 Asia/Shanghai，rebase 后最终快速复查：`cargo fmt --all -- --check` 退出 0、无输出；`git diff --check origin/master` 退出 0、无输出。文本静态审查退出 0，原始输出：
+
+```text
+Changed production files: 0
+Added code comments: 0
+Added ignored tests: 0
+Added GPUI regressions: 3 (not executed)
+```
+
+未运行 Vega、编译、构建、Clippy、任何测试或打包。当前没有本轮 CI 红/绿结果，新增 R4 组合根测试待 Vega 按方案补充；发布 handoff 不代表修复已实现或 Vega 已领取。
+
+### 用户授权 Codex 继续第二阶段修复
+
+用户随后明确要求“你直接开始修复”，主 agent 已在[同卡评论](https://github.com/puzige/vega/issues/403#issuecomment-6207499799)记录本轮覆盖角色安排，并将 Project 恢复 In progress。此前 Ready / 等待 Vega 的历史保留；本轮按规格末尾授权由 Codex 主会话组织、专用子 agent 独占实现，主会话审查及集成。
+
+本轮实现基线 `b4864e2a` 已包含第一阶段三项真实回归与已发布的具体方案，已由主 agent fetch / rebase 至 `origin/master` 的 `6a2363f8`。允许范围仅 `sticky_disclosure.rs`、本卡测试及本记录，规格由主 agent 持有。R1–R3 的已有断言全部保留；R4 按实现前冻结的以下用例落实到测试：
+
+| 用例 | 前置与操作 | 判据 | 状态 |
+|---|---|---|---|
+| R4 组合根 | 真正的 ConversationStream 使用现有事件形成 live / final 标题，将标题滚入 Composer，随后挂载普通绘制的不透明兄弟遮罩 | 真实标题与 Composer 有效重叠；标题背景 / fade / surface / shell 均在遮罩之前；点击重叠处由遮罩收到，底层标题不展开 | 已新增 / 待 CI |
+
+修复动作按冻结方案：保留原 header 与自然布局、当前帧 placement / StickyState / 连续区域和 viewport 的交集；sections prepaint 后以相对元素偏移普通 prepaint 原 header，paint 继续先 sections 后原 header。ClippedHeader 两阶段 mask 保留，不将整个前景升为全窗口 deferred。无接口、存储、依赖或产品文案变化。
+
+本阶段修改文件与实际动作：
+
+- `crates/vega_ui/src/conversation_stream/sticky_disclosure.rs`：将 `header.take()` / 全窗口 priority 1 `defer_draw` 改为 `header.as_mut()` 和 `with_element_offset(point(px(0.), offset), ...)` 内局部 prepaint；paint 在 sections 后绘制同一个 header。未改变 placement、StickyState、自然尺寸或 ClippedHeader 的 prepaint / paint mask。
+- `crates/vega_ui/src/conversation_stream/tests/issue403_conversation_underlay.rs`：新增 `issue403_later_application_overlay_covers_conversation`。浅深主题、live / final 两态均使用原事件序列，断言实际重叠与遮罩挂载前后标题位置不变；检查真实标题背景、fade、surface、shell 的 Quad 均早于普通后绘制遮罩；实际点击由遮罩计数，底层标题保持折叠。仅抽出共用事件和支持两种测试 root 的 bounds helper，原三项回归的有效断言保留，不需改 tests/mod.rs。
+- 本 delivery 追加授权、实现、检查与未执行证据。主 agent 的规格修改保留，未由实现 agent 修改。
+
+锁定 `gpui-pre 0.3.4` 的静态核对：`with_element_offset` 在当前元素偏移上累加；Drawable 在 prepaint 保存含偏移的 bounds，paint 使用保存的 bounds，因此 paint 无需再次累加偏移。原 mask 继续在 ClippedHeader 两阶段生效；标题位于所属展开内容之后、会话普通前景之前，保留原 deferred 菜单路径，不影响后绘制的普通应用级遮罩。
+
+本阶段从 2026-10-16 03:37:34 UTC / 11:37:34 Asia/Shanghai 的实施记录开始；本地仅执行快速检查。首次格式检查 3.453 秒退出 1，输出仅为本次 R4 测试新增区域的格式差异，已按输出手工修正。源码修改后的最终原始结果：
+
+```text
+cargo fmt --all -- --check
+exit 0
+(no output)
+wall time: 3.228s
+
+git diff --check
+exit 0
+(no output)
+```
+
+NOT RUN：本地未运行 Vega、编译、构建、Clippy、test / nextest、打包或安装。本阶段未提交、push、开 PR、读取或轮询 CI；云端改前红证据和修复后结果由主 agent 在对应 head 上核实。R1–R4、旧 sticky S01–S06、合法菜单、动态高度、消息锚点、滚轮和阅读保护均待 Actions 验证，不能沿用 #407 的通过结果。本阶段偏离冻结技术方案：无。
+
+LIMIT：R4 是真实 ConversationStream 与普通兄弟遮罩的进程内组合根回归，不代表已操作真实命令面板 / 删除确认 / 环境面板。Quad 顺序不替代标题字形与图标的像素手测；窗口缩放、吸顶末端和菜单交互仍由既有 suite 及后续用户手测确认。用户明确通过前不关闭 Issue、不清理分支 / worktree；本轮回滚方式仍是回退后续修复的 squash 合并提交。
+
+### 修复前云端失败证据
+
+[PR #418](https://github.com/puzige/vega/pull/418) 的[改前运行 38846335746](https://github.com/puzige/vega/actions/runs/38846335746)验证远端仅回归提交 `b4864e2ab0c406eb6b531c9efefde87e00421e46`。生产代码仍为旧实现，Clippy（含 fmt）成功；Nextest 退出 100，只有本轮新增的三项回归失败，原始汇总：
+
+```text
+Summary [ 194.181s] 2738 tests run: 2735 passed, 3 failed, 5 skipped
+```
+
+运行阶段与完成汇总均完成实际几何和背景定位后，失败于冻结的绘制顺序；点击回归实际展开了被 Composer 遮住的标题：
+
+```text
+run-activity-toggle overlapping conversation-bottom-fade: real header quad #23 must precede fade #15, surface #17, shell #19
+run-stage-toggle-0 must not expand through the Composer
+run-stage-toggle-0 overlapping conversation-bottom-fade: real header quad #22 must precede fade #15, surface #20, shell #21
+```
+
+这不是 fixture 或编译失败；三项均命中真实生产行为的预期失败点。旧 suite 的 2735 项通过只描述改前 head，不替代本轮修复后的门禁。当前局部绘制补丁和新增 R4 正待推送后由新一轮 CI 验证。
+
+原始日志临时保存，不入仓库；Nextest SHA-256 为 `1516b542fb3f7548c010858c4dfdbec20fd87e6d6956345950a55d1eca116a30`，Clippy SHA-256 为 `a5bdb3b5c8067115ba6f8fdce1415168902cd8d9ea6390aa4264e0cff640c1c9`。本地仍未运行编译、测试或应用。
+
+### 修复后 CI 与 R1 场景排序判据修正
+
+[修复运行 38847291538](https://github.com/puzige/vega/actions/runs/38847291538) 对应 head `8d4f4d1830c4198a53944ae8e69f05dc3f9095be`。Clippy（含 fmt）成功；Nextest 退出 100，原始 footer：
+
+```text
+Summary [ 122.709s] 2739 tests run: 2737 passed, 2 failed, 5 skipped
+error: test run failed
+Process completed with exit code 100.
+```
+
+仅两项标题绘制测试失败，原始诊断为：
+
+```text
+run-activity-toggle overlapping conversation-bottom-fade: real header quad #6 must precede fade #18, surface #17, shell #19
+run-stage-toggle-0 overlapping conversation-bottom-fade: real header quad #7 must precede fade #20, surface #19, shell #21
+```
+
+真实标题已在相交前景之前；失败来自此前新增测试的额外 `fade_index < surface_index` 总排序条件。旧 sticky S01–S06、原五项 #403 回归、真实标题遮挡点击与 R4 均在此 head 通过。此轮失败、原始输出与修复前红证据均保留，2737 项通过不替代下一 head 的完整 CI。
+
+静态复核锁定 `gpui-pre 0.3.4`：`Scene::insert_primitive` 使用裁剪后的 bounds，通过 `BoundsTree::insert` 为与已有图元相交的区域取 `max_intersecting + 1`；`Scene::finish` 将 quads 按 `order` 排序。互不相交的 fade / surface 可安全重排，shell 场景的标题与 fade 也不相交，场景数组不是全局 paint 调用顺序。前述新增的总排序假设错误，不能据此修改生产绘制代码。
+
+按主 agent 先行澄清的 R1 规格，只修正 `assert_run_header_layering`：保留两态、浅深主题、fade / shell 两区域、四种真实背景定位、实际重叠、图标与标题同属 header，以及其他所有断言。fade 场景严格比较 `header.order < fade.order`；shell 场景额外断言标题与实色 surface 有效重叠，严格比较 `header.order < surface.order < shell.order`。不接受任一前景遮挡即通过，不比较互不相交背景的全局位置。修复前红证据的标题在 fade 后方及遮挡点击仍违反相同真实缺陷判据。
+
+本切片仅改上述测试判据及本记录；生产代码、旧测试、命中测试和 R4 不变。原始日志 Nextest SHA-256 为 `bbc71d1934753fdcd24969dc148f3deb769dd8cfac7c36d758311ccf454e31d3`，Clippy SHA-256 为 `1b6fec99fdbad6506c2d69a2cf1ec81671dee9ebeb06b6dfedc49dc1df2656b6`；仅将已下载日志作为诊断数据读取，未查询或轮询 CI。
+
+本切片轻量检查原始结果：
+
+```text
+cargo fmt --all -- --check
+exit 0
+(no output)
+wall time: 3.424s
+
+git diff --check
+exit 0
+(no output)
+```
+
+NOT RUN：修正后的两项绘制测试与完整门禁待下一 head 的 Actions。本地未运行 Vega、编译、构建、Clippy、测试、打包或安装；未提交或 push。规格由主 agent 修改，本切片只落实已澄清的相交区域严格排序，偏离为无；用户像素手测与前述 LIMIT 保留。
+
+### 判据修正后全绿与基线同步
+
+[run 38848565692](https://github.com/puzige/vega/actions/runs/38848565692) 验证 `3cb9519c1a816e3415c86a2b15db92d98dfa5055`，fmt、Clippy、Nextest 与 required check 均成功。九项 #403（含本轮四项）、九项旧 sticky S01–S06 均 PASS，原始输出：
+
+```text
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 27s
+Summary [ 188.591s] 2739 tests run: 2739 passed, 5 skipped
+```
+
+原始日志 Nextest SHA-256 为 `79bc078b2a014c927859bc37561892b4f3ee669e8b84c3b4b544abdf63037f1b`，Clippy 为 `7f8d65b1614a6134f8a900a0b592e24353c1b7a23ebe0bd6bbfc0fbad2dd344b`。
+
+随后尝试 squash 被分支保护拒绝：`the head branch is not up to date with the base branch`。期间 master 已合入 PR #417 的 `f5b4614e`，涉及 Final 首次收起及焦点/选区恢复。主 agent 已读相关调用链、设计守则更新和 diff，将本卡三个提交无冲突 rebase 至该基线；StickyDisclosure 局部绘制方案和本卡测试保持，未恢复旧 reading guards 或改写上游断言。仅向本卡 feature 分支使用限定旧 head 的 force-with-lease，同步后重新走完整 CI，不绕过 strict 保护、不把旧 head 结果当作新基线通过。实际安装与用户手测仍未执行。

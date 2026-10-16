@@ -165,15 +165,12 @@ impl Element for StickyDisclosure {
             section.element.prepaint(window, cx);
         }
         if let Some((offset, mask)) = placement
-            && let Some(header) = self.header.take()
+            && let Some(header) = self.header.as_mut()
         {
             self.mask.set(Some(mask));
-            window.defer_draw(
-                header,
-                window.element_offset() + point(px(0.), offset),
-                1,
-                Some(ContentMask { bounds: mask }),
-            );
+            window.with_element_offset(point(px(0.), offset), |window| {
+                header.prepaint(window, cx);
+            });
         }
     }
 
@@ -189,6 +186,9 @@ impl Element for StickyDisclosure {
     ) {
         for section in &mut self.sections {
             section.element.paint(window, cx);
+        }
+        if let Some(header) = self.header.as_mut() {
+            header.paint(window, cx);
         }
     }
 }
