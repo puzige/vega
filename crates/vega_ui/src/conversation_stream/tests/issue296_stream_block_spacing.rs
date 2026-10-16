@@ -344,16 +344,17 @@ async fn issue296_spacing_b04_artifact_only_segment_keeps_its_original_height(
 ) {
     use vega_conversation::types::AssistantResponseKind;
 
-    let repo = tempfile::tempdir().unwrap();
-    let workspace = Arc::new(vega_conversation::GitWorkspaceService::new(repo.path()).unwrap());
-    let service =
-        vega_conversation::ArtifactService::new(workspace, "p".into(), "t".into(), 1).unwrap();
-    let call = ToolCall {
+    for secondary_button in [false, true] {
+        let repo = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(vega_conversation::GitWorkspaceService::new(repo.path()).unwrap());
+        let service =
+            vega_conversation::ArtifactService::new(workspace, "p".into(), "t".into(), 1).unwrap();
+        let call = ToolCall {
         id: "c".into(),
         tool: "write".into(),
         input_json: serde_json::json!({"audit_version":"write_edit_v1","tool":"write","path":"synthetic.txt","content_bytes":1,"fingerprint_v1":"a".repeat(64)}).to_string(),
     };
-    let projection = service
+        let projection = service
         .capture(
             &call,
             &ToolResult {
@@ -370,53 +371,79 @@ async fn issue296_spacing_b04_artifact_only_segment_keeps_its_original_height(
         .await
         .unwrap()
         .unwrap();
-    let artifact = cx.new(|cx| ArtifactCard::new("t".into(), "p".into(), projection, cx));
-    let (window, stream, _) = open_controller_stream(cx, "spacing-artifact");
-    stream.update(cx, |stream, cx| {
-        begin(stream, cx);
-        stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
-        assert!(stream.apply_artifact_card("c", artifact.clone(), cx));
-        prose(stream, "OK", cx);
-        response(stream, "final", 0, 2, AssistantResponseKind::Final, cx);
-        stream.apply_event(
-            ConversationEvent::MessageFinished {
-                message_id: "spacing".into(),
-                stop_reason: vega_conversation::types::ConversationStopReason::End,
-                execution_duration_ms: None,
-            },
-            cx,
-        );
-    });
-    cx.run_until_parked();
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
-    let expected = stream.read_with(&visual, |stream, cx| {
-        let group = &stream.run_activity_groups["spacing"];
-        assert!(group.read(cx).process_in_details());
-        let (index, segment) = stream
-            .entries
-            .iter()
-            .enumerate()
-            .find_map(|(index, entry)| match entry {
-                StreamEntry::RunActivitySegment { segment, .. } => Some((index, *segment)),
-                _ => None,
+        let artifact = cx.new(|cx| ArtifactCard::new("t".into(), "p".into(), projection, cx));
+        let (window, stream, _) = open_controller_stream(cx, "spacing-artifact");
+        stream.update(cx, |stream, cx| {
+            begin(stream, cx);
+            stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
+            assert!(stream.apply_artifact_card("c", artifact.clone(), cx));
+            prose(stream, "OK", cx);
+        });
+        cx.run_until_parked();
+        let focus = window
+            .update(cx, |_, window, cx| {
+                let first = artifact.read(cx).focus_handle(cx);
+                first.focus(window, cx);
+                if secondary_button {
+                    for _ in 0..20 {
+                        window.focus_next(cx);
+                        if artifact.read(cx).contains_focus(window, cx) && !first.is_focused(window)
+                        {
+                            break;
+                        }
+                    }
+                    assert!(artifact.read(cx).contains_focus(window, cx));
+                    assert!(!first.is_focused(window));
+                }
+                window.focused(cx).expect("artifact button focus")
             })
             .unwrap();
-        let expected = artifact.read(cx).row_count() as f32 * ROW_HEIGHT;
-        let inset = stream.stage_top_insets(cx)[&index];
-        assert_eq!(
-            group
-                .read(cx)
-                .estimated_segment_height_with_top(segment, 600., inset, cx),
+        stream.update(cx, |stream, cx| {
+            response(stream, "final", 0, 2, AssistantResponseKind::Final, cx);
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: "spacing".into(),
+                    stop_reason: vega_conversation::types::ConversationStopReason::End,
+                    execution_duration_ms: None,
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| {
+            assert!(focus.is_focused(window));
+            assert!(artifact.read(cx).contains_focus(window, cx));
+        });
+        let expected = stream.read_with(&visual, |stream, cx| {
+            let group = &stream.run_activity_groups["spacing"];
+            assert!(group.read(cx).process_in_details());
+            let (index, segment) = stream
+                .entries
+                .iter()
+                .enumerate()
+                .find_map(|(index, entry)| match entry {
+                    StreamEntry::RunActivitySegment { segment, .. } => Some((index, *segment)),
+                    _ => None,
+                })
+                .unwrap();
+            let expected = artifact.read(cx).row_count() as f32 * ROW_HEIGHT;
+            let inset = stream.stage_top_insets(cx)[&index];
+            assert_eq!(
+                group
+                    .read(cx)
+                    .estimated_segment_height_with_top(segment, 600., inset, cx),
+                expected
+            );
             expected
+        });
+        assert_eq!(
+            visual
+                .debug_bounds("run-timeline-segment-0")
+                .unwrap()
+                .size
+                .height,
+            px(expected)
         );
-        expected
-    });
-    assert_eq!(
-        visual
-            .debug_bounds("run-timeline-segment-0")
-            .unwrap()
-            .size
-            .height,
-        px(expected)
-    );
+    }
 }

@@ -244,10 +244,12 @@ async fn issue98_a3_button_is_centred_on_the_content_column(cx: &mut TestAppCont
         f32::from(button.center().x),
         f32::from(column.center().x),
     );
-    assert!(
-        button.top() >= column.bottom(),
-        "the button must sit outside the transcript viewport"
-    );
+    let navigation = bounds(window, "conversation-reading-navigation", cx);
+    let composer = bounds(window, "composer-shell", cx);
+    assert!(button.top() >= navigation.top());
+    assert!(button.bottom() <= navigation.bottom());
+    assert!(navigation.bottom() <= composer.top());
+    assert!(column.bottom() >= composer.bottom());
 }
 
 /// A5: a real click re-engages tail follow through `resume_tail`, and the
@@ -350,7 +352,12 @@ async fn issue98_a11_button_paints_in_reserved_navigation_region(cx: &mut TestAp
 
     let button = bounds(window, BUTTON, cx);
     let column = bounds(window, COLUMN, cx);
-    assert!(button.top() >= column.bottom());
+    let navigation = bounds(window, "conversation-reading-navigation", cx);
+    let composer = bounds(window, "composer-shell", cx);
+    assert!(button.top() >= navigation.top());
+    assert!(button.bottom() <= navigation.bottom());
+    assert!(navigation.bottom() <= composer.top());
+    assert!(column.bottom() >= composer.bottom());
     let (quads, scale) = painted_quads(window, cx);
     let scaled = button.scale(scale);
 

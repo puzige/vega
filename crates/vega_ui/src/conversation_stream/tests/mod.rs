@@ -50,6 +50,7 @@ mod issue350_network_retry;
 mod issue395_thinking_performance;
 mod issue395_thinking_window;
 mod issue402_hover_auto_scroll;
+mod issue403_conversation_underlay;
 mod issue64_context_usage;
 mod issue70_tool_activity;
 mod issue72_message_anchor_navigation;
@@ -473,6 +474,28 @@ fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext
         .expect("single process header");
     visual.simulate_click(header.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
+}
+
+fn assert_run_disclosure_keyboard_focus(
+    group: &Entity<RunActivityGroup>,
+    visual: &mut gpui_kit::VisualTestContext,
+    context: &str,
+) {
+    let expanded = group.read_with(visual, |group, _| group.expanded());
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        group.read_with(visual, |group, _| group.expanded()),
+        !expanded,
+        "{context}: first Enter must reach the visible run disclosure"
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        group.read_with(visual, |group, _| group.expanded()),
+        expanded,
+        "{context}: second Enter must restore the run disclosure"
+    );
 }
 
 fn confirm_test_final(

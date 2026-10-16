@@ -56,6 +56,7 @@ pub struct ConversationStream {
     /// natural heights. The same state owns the scroll position and the P4
     /// tail-follow semantics (`FollowMode::Tail`).
     pub(crate) list: gpui_kit::ListState,
+    pub(crate) foreground_height: Pixels,
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
     pub(crate) measured_entry_heights: HashMap<String, f32>,
     pub(crate) message_anchor_hovered: Option<String>,
@@ -453,6 +454,10 @@ impl ConversationStream {
             entries: Vec::new(),
             counters: Arc::new(StreamCounters::default()),
             list,
+            foreground_height: px(Layout::READING_NAVIGATION_HEIGHT
+                + Layout::COMPOSER_PADDING_TOP
+                + Layout::COMPOSER_MIN_HEIGHT
+                + Layout::COMPOSER_PADDING_BOTTOM),
             entry_identities: Vec::new(),
             measured_entry_heights: HashMap::new(),
             assistant_role_rows: Vec::new(),

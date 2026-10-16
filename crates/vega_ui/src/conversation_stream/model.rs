@@ -924,6 +924,29 @@ impl MessageCopy {
         *self.projected_selection.borrow_mut() = None;
     }
 
+    pub(super) fn selection_has_cursor(&self, cx: &App) -> bool {
+        self.selection_handle
+            .borrow()
+            .as_ref()
+            .and_then(|handle| {
+                handle
+                    .snapshot(cx)
+                    .map(|snapshot| snapshot.cursor().entity_id() == Some(handle.entity_id()))
+            })
+            .unwrap_or_else(|| self.has_selected_text() || self.local_selection_range().is_some())
+    }
+
+    pub(super) fn clear_hidden_selection(&self, window: &mut Window, cx: &mut App) {
+        let handle = self.selection_handle.borrow().clone();
+        if let Some(handle) = handle {
+            if handle.snapshot(cx).is_some() || handle.has_local_selection(cx) {
+                gpui_kit::base::TextSelection::clear(window, cx);
+            }
+            handle.set_local_selection(false, cx);
+        }
+        self.invalidate_selection();
+    }
+
     pub(super) fn local_selection_range(&self) -> Option<std::ops::Range<usize>> {
         self.local_selection_range.borrow().clone()
     }

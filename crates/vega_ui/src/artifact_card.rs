@@ -73,6 +73,12 @@ impl Focusable for ArtifactCard {
 }
 
 impl ArtifactCard {
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus
+            .iter()
+            .any(|handle| handle.contains_focused(window, cx))
+    }
+
     pub fn new(
         thread_id: String,
         project_id: String,

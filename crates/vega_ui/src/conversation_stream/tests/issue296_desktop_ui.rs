@@ -47,7 +47,12 @@ async fn issue296_reading_column_and_navigation_do_not_compete(cx: &mut TestAppC
             assert_eq!(rail.size.width, px(24.));
             assert_eq!(rail.size.height, px(90.));
             assert_eq!(rail.center().x, px(16.));
-            assert!((f32::from(rail.center().y - list.center().y)).abs() < 1.);
+            let foreground = visual
+                .debug_bounds("conversation-foreground")
+                .expect("foreground");
+            let readable_center = (list.top() + foreground.top()) / 2.;
+            assert!((f32::from(rail.center().y - readable_center)).abs() < 1.);
+            assert!(rail.top() >= list.top() && rail.bottom() <= foreground.top());
             assert!(rail.right() <= list.left());
             let (quads, scale) =
                 visual.update(|window, _| (window.painted_quads(), window.scale_factor()));
@@ -71,7 +76,8 @@ async fn issue296_reading_column_and_navigation_do_not_compete(cx: &mut TestAppC
                 .debug_bounds("conversation-reading-navigation")
                 .expect("reserved navigation row");
             assert_eq!(navigation.size.height, px(40.));
-            assert!(navigation.top() >= list.bottom());
+            assert!(navigation.top() >= list.top());
+            assert!(list.bottom() >= composer.bottom());
             assert!(navigation.bottom() <= composer.top());
             assert!(visual.debug_bounds("scroll-to-bottom").is_none());
         }
@@ -104,7 +110,10 @@ async fn issue296_resume_tail_keeps_reading_viewport_stable(cx: &mut TestAppCont
     assert_eq!(list, before);
     assert_eq!(button.size.height, px(32.));
     assert_eq!(button.size.width, button.size.height);
-    assert!(button.top() >= list.bottom());
+    let composer = visual.debug_bounds("composer-shell").expect("composer");
+    assert!(navigation.top() >= list.top());
+    assert!(button.bottom() <= composer.top());
+    assert!(list.bottom() >= composer.bottom());
     assert_eq!(button.top() - navigation.top(), px(4.));
     assert_eq!(navigation.bottom() - button.bottom(), px(4.));
     let anchor = stream.read_with(&visual, |stream, _| stream.scroll_anchor_snapshot());
