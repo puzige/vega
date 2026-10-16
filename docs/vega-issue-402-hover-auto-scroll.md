@@ -39,8 +39,8 @@
 
 | ID | 需求/风险 | 前置状态 | 实际操作 | 预期可观察结果 | 测试层级 | 状态 |
 |---|---|---|---|---|---|---|
-| A1 | hover 不滚动 | 正文可滚动且已脱离贴底 | `issue402_a1_hover_in_body_after_selection_does_not_scroll`：在正文拖拽选中后，鼠标移到视口下边缘（不按键），推进时钟 6×20ms | 列表 `logical_scroll_top()` 的 `item_ix` 与 `offset_in_item` 均不变 | 生产 GPUI 测试上下文 | 待 CI 验证 |
-| A2 | 拖拽滚动保留 | 同上 | `issue402_a2_drag_to_viewport_edge_still_auto_scrolls`：正文按下左键并拖到下边缘，推进时钟 | `logical_scroll_top()` 改变 | 生产 GPUI 测试上下文 | 待 CI 验证 |
+| A1 | hover 不滚动 | 正文可滚动且已脱离贴底 | `issue402_a1_hover_in_body_after_selection_does_not_scroll`：在正文拖拽选中后，鼠标移到视口上边缘（不按键），推进时钟 6×20ms | 列表 `logical_scroll_top()` 的 `item_ix` 与 `offset_in_item` 均不变 | 生产 GPUI 测试上下文 | 待 CI 验证 |
+| A2 | 拖拽滚动保留 | 同上 | `issue402_a2_drag_to_viewport_edge_still_auto_scrolls`：正文按下左键并拖到视口上边缘，推进时钟 | `logical_scroll_top()` 改变 | 生产 GPUI 测试上下文 | 待 CI 验证 |
 | A3 | 选择能力保留 | 正文有可选择文本 | `issue402_a3_body_drag_still_selects_text`：在正文文本上拖拽选择 | 该消息 `MessageCopy::has_selected_text()` 为真 | 生产 GPUI 测试上下文 | 待 CI 验证 |
 | A4 | 依赖可编译且既有回归不破 | 补丁升级后 | 云端 `cargo fmt` / `clippy` / `nextest` 全量 | 汇总 check 通过 | 云端 PR Check | 待 CI 验证 |
 

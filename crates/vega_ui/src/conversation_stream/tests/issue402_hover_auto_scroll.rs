@@ -177,7 +177,7 @@ fn scroll_top(
 }
 
 fn edge_point(viewport: Bounds<Pixels>) -> Point<Pixels> {
-    point(viewport.center().x, viewport.bottom() - px(4.))
+    point(viewport.center().x, viewport.top() + px(4.))
 }
 
 #[gpui_kit::test]
