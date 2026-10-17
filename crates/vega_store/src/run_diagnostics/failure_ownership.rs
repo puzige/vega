@@ -91,9 +91,9 @@ pub fn compaction_failure_message_ids(
                 row.get::<_, Option<i64>>(10)?,
                 row.get::<_, Option<i64>>(11)?,
                 row.get::<_, Option<i64>>(12)?,
-                row.get::<_, Option<i64>>(13)?,
+                row.get::<_, Option<u16>>(13)?,
                 row.get::<_, Option<String>>(14)?,
-                row.get::<_, Option<i64>>(15)?,
+                row.get::<_, Option<u32>>(15)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -122,12 +122,12 @@ pub fn compaction_failure_message_ids(
             failure_source,
             failure_kind,
             failure_scope,
-            failure_observed,
-            failure_limit,
+            failure_observed: opt_u64(failure_observed, "failure_observed")?,
+            failure_limit: opt_u64(failure_limit, "failure_limit")?,
             failure_units,
-            failure_observed_items,
-            failure_limit_items,
-            failure_tool_index,
+            failure_observed_items: opt_u64(failure_observed_items, "failure_observed_items")?,
+            failure_limit_items: opt_u64(failure_limit_items, "failure_limit_items")?,
+            failure_tool_index: opt_u64(failure_tool_index, "failure_tool_index")?,
             http_status,
             request_id,
             retry_count,
@@ -594,11 +594,7 @@ mod tests {
         event
     }
 
-    fn finish(
-        conn: &Connection,
-        mut event: NewDiagnosticEvent,
-        code: Option<DiagnosticFailureCode>,
-    ) {
+    fn finish(conn: &Connection, event: NewDiagnosticEvent, code: Option<DiagnosticFailureCode>) {
         finish_state(
             conn,
             event,

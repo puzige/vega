@@ -3,7 +3,7 @@ use super::*;
 use crate::icons::Icon;
 use vega_conversation::types::TaskSummaryOutcome;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RunNoticeKind {
     Retrying {
         attempt: u32,
@@ -382,6 +382,12 @@ impl ConversationStream {
                     }
                     _ => true,
                 });
+                let resolved_compaction_failure = failure.is_none()
+                    && matches!(
+                        source.failure,
+                        Some(RunFailureKind::Compaction(code))
+                            if self.compaction_failure_resolved_for_owner(&message_id, code)
+                    );
                 let kind = if source.compaction_failure.is_some()
                     && failure.is_none_or(is_generic_failure)
                 {
@@ -418,7 +424,7 @@ impl ConversationStream {
                     })
                 } else {
                     match source.status {
-                        Some(RunActivityStatus::Failed) => {
+                        Some(RunActivityStatus::Failed) if !resolved_compaction_failure => {
                             Some(RunNoticeKind::Failure(RunFailureKind::Persisted))
                         }
                         _ => None,
@@ -429,7 +435,24 @@ impl ConversationStream {
             .collect()
     }
 
+    fn clear_resolved_compaction_controller_error(&mut self) {
+        let Some((message_id, failure)) = self.controller_runtime_error.clone() else {
+            return;
+        };
+        let RunFailureKind::Compaction(code) = failure else {
+            return;
+        };
+        if self.compaction_failure_resolved_for_owner(&message_id, code) {
+            self.controller_runtime_error = None;
+            let error_message = failure.message();
+            if self.controller_error.as_deref() == Some(error_message.as_str()) {
+                self.controller_error = None;
+            }
+        }
+    }
+
     pub(crate) fn refresh_run_notices(&mut self, cx: &App) {
+        self.clear_resolved_compaction_controller_error();
         let notices = self.run_notice_projection(cx);
         let changed = self
             .run_notices
