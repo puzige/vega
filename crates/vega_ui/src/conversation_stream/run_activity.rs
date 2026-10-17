@@ -334,11 +334,15 @@ impl RunActivityGroup {
         pending: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.final_confirmed {
+        // A steered run confirms one final per message segment, so a later
+        // segment's copies join the run's process instead of being dropped.
+        // A repeated confirmation of an already-confirmed segment must not
+        // re-arm the collapse after the reader reopened the process.
+        if self.final_confirmed && copies.iter().all(|id| self.process_copies.contains(id)) {
             return;
         }
         self.final_confirmed = true;
-        self.process_copies = copies;
+        self.process_copies.extend(copies);
         self.collapse_pending = pending;
         if !pending {
             self.expanded = false;

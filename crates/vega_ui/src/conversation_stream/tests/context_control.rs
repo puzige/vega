@@ -701,6 +701,7 @@ async fn issue117_restore_is_historical_idempotent_and_rejects_late_results(
                     }],
                     older_cursor: None,
                     newer_cursor: None,
+                    assistant_run_activities: Vec::new(),
                     newest_seq: Some(1),
                 },
                 cx,
@@ -1111,6 +1112,7 @@ async fn compaction_failure_hydration_drops_resolved_cause_and_keeps_provider_er
                         status: AssistantStatus::Failed,
                         execution_duration_ms: Some(1),
                     }],
+                    assistant_run_activities: Vec::new(),
                     older_cursor: None,
                     newer_cursor: None,
                     newest_seq: None,
@@ -1389,6 +1391,7 @@ async fn issue365_reopened_context_error_uses_owned_shared_notice(cx: &mut TestA
                     ],
                     older_cursor: None,
                     newer_cursor: None,
+                    assistant_run_activities: Vec::new(),
                     newest_seq: None,
                 },
                 cx,
@@ -1551,6 +1554,7 @@ async fn issue372_reopened_steered_reasoning_error_keeps_one_card_and_independen
                     ],
                     older_cursor: None,
                     newer_cursor: None,
+                    assistant_run_activities: Vec::new(),
                     newest_seq: None,
                 },
                 cx,
@@ -1634,7 +1638,9 @@ async fn restored_provider_failures_keep_the_specific_notice(cx: &mut TestAppCon
                 content: String::new(),
                 status: AssistantStatus::Failed,
                 execution_duration_ms: Some(1),
-            }).collect(), older_cursor: None, newer_cursor: None, newest_seq: None,
+            }).collect(),
+            assistant_run_activities: Vec::new(),
+            older_cursor: None, newer_cursor: None, newest_seq: None,
         }, cx);
         let failures = kinds.iter().enumerate().map(|(index, kind)| (format!("failure-{index}"), *kind)).collect::<Vec<_>>();
         stream.restore_context_run_failures(&failures, cx);

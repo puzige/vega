@@ -284,6 +284,7 @@ fn hydration_page(entries: Vec<HistoryEntry>, older_cursor: Option<i64>) -> Hist
         entries,
         older_cursor,
         newer_cursor: None,
+        assistant_run_activities: Vec::new(),
         newest_seq: None,
     }
 }

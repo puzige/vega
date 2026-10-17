@@ -1610,7 +1610,7 @@ impl Render for ConversationStream {
             self.focus_composer(window, cx);
         }
         self.reset_image_visibility(cx);
-        for group in self.run_activity_groups.values() {
+        for group in self.unique_run_activity_groups() {
             for child in group.read(cx).children() {
                 if let RunActivityChild::Thinking(card) = child {
                     card.read(cx).reset_body_visibility();

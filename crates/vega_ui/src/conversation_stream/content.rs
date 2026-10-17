@@ -1,5 +1,14 @@
 use super::*;
 
+/// Mutable sinks for one page's hydrated entries. The page builder appends
+/// entries and their durable identities in lockstep, so both vectors must
+/// grow together; bundling them keeps the hydration helpers within the
+/// argument-count budget.
+struct HydratedRunActivity<'a> {
+    entries: &'a mut Vec<StreamEntry>,
+    identities: &'a mut Vec<StreamEntryIdentity>,
+}
+
 fn run_activity_status(status: vega_conversation::history::AssistantStatus) -> RunActivityStatus {
     match status {
         vega_conversation::history::AssistantStatus::Done => RunActivityStatus::Completed,
@@ -113,7 +122,7 @@ impl ConversationStream {
         self.ensure_entry_identities();
         let anchor = self.scroll_anchor_snapshot();
         let (mut hydrated, mut hydrated_identities) =
-            self.hydrate_history_entries(page.entries, cx);
+            self.hydrate_history_entries(page.entries, page.assistant_run_activities, cx);
         let prepended_entries = hydrated.len();
         hydrated.append(&mut self.entries);
         self.entries = hydrated;
@@ -122,6 +131,12 @@ impl ConversationStream {
         self.list_prepend(prepended_entries);
         if prepended_entries > 0 {
             self.grow_entry_indices(0, prepended_entries);
+        }
+        // The header may have been rendered from a newer page; put it above
+        // this run's first member before the viewport anchor is restored so
+        // the anchor sees the final geometry.
+        self.move_run_activity_headers_to_first_member();
+        if prepended_entries > 0 {
             self.restore_scroll_anchor(&anchor);
         }
         self.hydration.older_cursor = page.older_cursor;
@@ -139,11 +154,12 @@ impl ConversationStream {
         let anchor = self.scroll_anchor_snapshot();
         let previous_len = self.entries.len();
         let (mut hydrated, mut hydrated_identities) =
-            self.hydrate_history_entries(page.entries, cx);
+            self.hydrate_history_entries(page.entries, page.assistant_run_activities, cx);
         let appended_entries = hydrated.len();
         self.entries.append(&mut hydrated);
         self.entry_identities.append(&mut hydrated_identities);
         self.list_append(previous_len);
+        self.move_run_activity_headers_to_first_member();
         self.hydration.newer_cursor = page.newer_cursor;
         self.hydration.loading = false;
         self.hydration.paused = false;
@@ -157,12 +173,27 @@ impl ConversationStream {
     fn hydrate_history_entries(
         &mut self,
         history_entries: Vec<HistoryEntry>,
+        run_activities: Vec<vega_conversation::history::AssistantRunActivity>,
         cx: &mut Context<Self>,
     ) -> (Vec<StreamEntry>, Vec<StreamEntryIdentity>) {
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
         let mut assistant_segments: HashMap<String, usize> = HashMap::new();
         let response_boundaries = phase::history_response_boundaries(&history_entries);
+        for activity in &run_activities {
+            self.run_activity_members
+                .insert(activity.message_id.clone(), activity.run_id.clone());
+            if activity.terminal_status.is_some() {
+                self.run_terminal_owners.insert(
+                    activity.run_id.clone(),
+                    activity.terminal_message_id.clone(),
+                );
+            }
+        }
+        let activities_by_message: HashMap<_, _> = run_activities
+            .iter()
+            .map(|activity| (activity.message_id.as_str(), activity))
+            .collect();
         let mut assistant_offsets = HashMap::<String, usize>::new();
         let activity_runs: HashSet<_> = history_entries
             .iter()
@@ -259,17 +290,46 @@ impl ConversationStream {
                     status,
                     execution_duration_ms,
                 } => {
-                    if let Some((terminal_status, duration)) = terminal_runs.get(&message_id) {
+                    let activity = activities_by_message.get(message_id.as_str()).copied();
+                    let activity_id = activity
+                        .map(|activity| activity.run_id.clone())
+                        .unwrap_or_else(|| message_id.clone());
+                    self.run_activity_members
+                        .insert(message_id.clone(), activity_id.clone());
+                    let projection = activity
+                        .map(|activity| {
+                            (
+                                activity
+                                    .terminal_status
+                                    .map(run_activity_status)
+                                    .unwrap_or(RunActivityStatus::Running),
+                                activity.execution_duration_ms,
+                            )
+                        })
+                        .or_else(|| {
+                            terminal_runs
+                                .get(&message_id)
+                                .map(|(status, duration)| (run_activity_status(*status), *duration))
+                        });
+                    if let Some(projection) = projection {
                         self.ensure_hydrated_run_activity_group(
+                            &activity_id,
                             &message_id,
-                            run_activity_status(*terminal_status),
-                            *duration,
-                            &mut hydrated,
-                            &mut hydrated_identities,
+                            projection,
+                            &mut HydratedRunActivity {
+                                entries: &mut hydrated,
+                                identities: &mut hydrated_identities,
+                            },
                             cx,
                         );
                     }
-                    if status == vega_conversation::history::AssistantStatus::Done
+                    // Only the run's own terminal row may vanish when it
+                    // carries no text; unmapped legacy rows keep the previous
+                    // per-message rule.
+                    let empty_terminal = activity
+                        .is_none_or(|activity| activity.message_id == activity.terminal_message_id);
+                    if empty_terminal
+                        && status == vega_conversation::history::AssistantStatus::Done
                         && content.is_empty()
                         && execution_duration_ms.is_some()
                     {
@@ -334,10 +394,12 @@ impl ConversationStream {
                     if let Some(duration) = execution_duration_ms {
                         self.ensure_hydrated_run_activity_group(
                             &id,
-                            RunActivityStatus::Completed,
-                            Some(duration),
-                            &mut hydrated,
-                            &mut hydrated_identities,
+                            &id,
+                            (RunActivityStatus::Completed, Some(duration)),
+                            &mut HydratedRunActivity {
+                                entries: &mut hydrated,
+                                identities: &mut hydrated_identities,
+                            },
                             cx,
                         );
                     }
@@ -387,22 +449,23 @@ impl ConversationStream {
                     let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
-                    let run_details =
-                        self.run_activity_groups
-                            .get(&message_id)
-                            .cloned()
-                            .or_else(|| {
-                                terminal_runs.get(&message_id).map(|(status, duration)| {
-                                    self.ensure_hydrated_run_activity_group(
-                                        &message_id,
-                                        run_activity_status(*status),
-                                        *duration,
-                                        &mut hydrated,
-                                        &mut hydrated_identities,
-                                        cx,
-                                    )
-                                })
-                            });
+                    let activity_id = self.run_activity_id_for(&message_id).to_owned();
+                    let run_details = match self.run_activity_groups.get(&activity_id).cloned() {
+                        Some(group) => Some(group),
+                        None => terminal_runs.get(&message_id).map(|(status, duration)| {
+                            let projection = (run_activity_status(*status), *duration);
+                            self.ensure_hydrated_run_activity_group(
+                                &activity_id,
+                                &message_id,
+                                projection,
+                                &mut HydratedRunActivity {
+                                    entries: &mut hydrated,
+                                    identities: &mut hydrated_identities,
+                                },
+                                cx,
+                            )
+                        }),
+                    };
                     if let Some(group) = run_details {
                         let segment = hydrated.last().and_then(|entry| match entry {
                             StreamEntry::RunActivitySegment {
@@ -458,7 +521,7 @@ impl ConversationStream {
             }
         }
         for (message_id, responses) in restored_responses {
-            if let Some(group) = self.run_activity_groups.get(&message_id)
+            if let Some(group) = self.run_activity_group_for(&message_id)
                 && terminal_runs.get(&message_id).is_some_and(|(status, _)| {
                     *status == vega_conversation::history::AssistantStatus::Done
                 })
@@ -472,26 +535,139 @@ impl ConversationStream {
         (hydrated, hydrated_identities)
     }
 
+    fn move_run_activity_headers_to_first_member(&mut self) {
+        let activity_ids = self
+            .run_activity_members
+            .values()
+            .cloned()
+            .collect::<HashSet<_>>();
+        for activity_id in activity_ids {
+            let Some(group) = self.run_activity_groups.get(&activity_id).cloned() else {
+                continue;
+            };
+            let Some(header_index) = self.entries.iter().position(
+                |entry| matches!(entry, StreamEntry::RunActivity { group: owned } if owned == &group),
+            ) else {
+                continue;
+            };
+            let Some(member_index) = self
+                .entry_identities
+                .iter()
+                .enumerate()
+                .filter(|(index, identity)| {
+                    *index != header_index
+                        && identity.message_id.as_ref().is_some_and(|message_id| {
+                            self.run_activity_members.get(message_id) == Some(&activity_id)
+                                && matches!(
+                                    self.entries.get(*index),
+                                    Some(StreamEntry::Assistant { .. })
+                                        | Some(StreamEntry::Tool { .. })
+                                        | Some(StreamEntry::ToolGroup { .. })
+                                        | Some(StreamEntry::Artifact { .. })
+                                        | Some(StreamEntry::Screenshot { .. })
+                                )
+                        })
+                })
+                .map(|(index, _)| index)
+                .min()
+            else {
+                continue;
+            };
+            let group_is_first_activity_for_member = self.entries[..header_index]
+                .iter()
+                .all(|entry| !matches!(entry, StreamEntry::RunActivitySegment { group: owner, .. } if owner == &group));
+            if member_index >= header_index || !group_is_first_activity_for_member {
+                continue;
+            }
+            let entry = self.entries.remove(header_index);
+            let identity = self.entry_identities[header_index].clone();
+            self.list_remove(header_index);
+            self.shift_entry_indices(header_index, 1);
+            self.entries.insert(member_index, entry);
+            self.list_insert(member_index);
+            self.set_entry_identity(member_index, identity);
+            self.grow_entry_indices(member_index, 1);
+        }
+    }
+
+    pub(crate) fn unique_run_activity_groups(&self) -> Vec<Entity<RunActivityGroup>> {
+        let mut identities = HashSet::new();
+        self.run_activity_groups
+            .values()
+            .filter(|group| identities.insert(group.entity_id()))
+            .cloned()
+            .collect()
+    }
+
+    /// The activity group a message id resolves to. Every assistant message of
+    /// one outer run aliases the same group; a message without a run mapping
+    /// is its own single-message run.
+    pub(crate) fn run_activity_group_for(
+        &self,
+        message_id: &str,
+    ) -> Option<Entity<RunActivityGroup>> {
+        self.run_activity_groups
+            .get(self.run_activity_id_for(message_id))
+            .cloned()
+    }
+
+    /// The stable activity identity this message belongs to (itself when the
+    /// message predates run-activity mapping).
+    pub(crate) fn run_activity_id_for<'a>(&'a self, message_id: &'a str) -> &'a str {
+        self.run_activity_members
+            .get(message_id)
+            .map(String::as_str)
+            .unwrap_or(message_id)
+    }
+
+    /// Whether this message's run already presented its terminal through a
+    /// different segment. A superseded segment may still report its own
+    /// segment end (or a stale failure) after the run moved on.
+    fn run_terminal_elsewhere(&self, message_id: &str) -> bool {
+        let activity_id = self.run_activity_id_for(message_id);
+        self.run_terminal_owners
+            .get(activity_id)
+            .is_some_and(|owner| owner != message_id)
+    }
+
+    fn record_terminal_run_owner(&mut self, message_id: &str) {
+        let activity_id = self.run_activity_id_for(message_id).to_owned();
+        self.run_terminal_owners
+            .insert(activity_id, message_id.to_owned());
+    }
+
     fn ensure_hydrated_run_activity_group(
         &mut self,
+        activity_id: &str,
         message_id: &str,
-        status: RunActivityStatus,
-        execution_duration_ms: Option<u64>,
-        entries: &mut Vec<StreamEntry>,
-        identities: &mut Vec<StreamEntryIdentity>,
+        projection: (RunActivityStatus, Option<u64>),
+        hydrated: &mut HydratedRunActivity<'_>,
         cx: &mut Context<Self>,
     ) -> Entity<RunActivityGroup> {
-        if let Some(group) = self.run_activity_groups.get(message_id) {
-            return group.clone();
+        let (status, execution_duration_ms) = projection;
+        if let Some(group) = self.run_activity_groups.get(activity_id).cloned() {
+            // The group already owns its single header row wherever that row
+            // currently sits; a later page only aliases its own message id.
+            if status != RunActivityStatus::Running {
+                group.update(cx, |group, cx| {
+                    group.complete(status, execution_duration_ms, cx)
+                });
+            }
+            self.run_activity_groups
+                .insert(message_id.to_owned(), group.clone());
+            return group;
         }
         let group = cx.new(|cx| RunActivityGroup::new(status, execution_duration_ms, false, cx));
         self.observe_run_activity_group(&group, cx);
-        entries.push(StreamEntry::RunActivity {
+        hydrated.entries.push(StreamEntry::RunActivity {
             group: group.clone(),
         });
-        identities.push(self.durable_entry_identity(message_id, "run-activity", None));
+        let identity = self.durable_entry_identity(activity_id, "run-activity", None);
+        hydrated.identities.push(identity);
         self.run_activity_groups
-            .insert(message_id.to_string(), group.clone());
+            .insert(activity_id.to_owned(), group.clone());
+        self.run_activity_groups
+            .insert(message_id.to_owned(), group.clone());
         group
     }
 
@@ -589,7 +765,7 @@ impl ConversationStream {
         else {
             return false;
         };
-        if let Some(group) = self.run_activity_groups.get(message_id)
+        if let Some(group) = self.run_activity_group_for(message_id)
             && group.read(cx).process_in_details()
         {
             group.update(cx, |group, cx| group.reveal_detail(0, 0., cx));
@@ -651,6 +827,9 @@ impl ConversationStream {
         self.list.reset(0);
         self.tool_cards.clear();
         self.run_activity_groups.clear();
+        self.run_activity_members.clear();
+        self.run_terminal_owners.clear();
+        self.superseded_segments.clear();
         self.run_responses.clear();
         self.artifact_cards.clear();
         self.plan_cards.clear();
@@ -1128,7 +1307,7 @@ impl ConversationStream {
         execution_duration_ms: Option<u64>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(group) = self.run_activity_groups.get(message_id).cloned() {
+        if let Some(group) = self.run_activity_group_for(message_id) {
             if self
                 .active_agent_message
                 .as_ref()
@@ -1216,6 +1395,24 @@ impl ConversationStream {
             } => {
                 self.append_pending_user(&pending_id, &message_id, seq, &content, images, cx);
             }
+            ConversationEvent::AssistantMessageContinues {
+                message_id,
+                next_message_id,
+            } => {
+                if self
+                    .active_agent_message
+                    .as_ref()
+                    .is_some_and(|(active_id, _)| active_id == &message_id)
+                    && let Some(group) = self.run_activity_group_for(&message_id)
+                {
+                    let activity_id = self.run_activity_id_for(&message_id).to_owned();
+                    self.run_activity_members
+                        .insert(next_message_id.clone(), activity_id);
+                    self.run_activity_groups
+                        .insert(next_message_id.clone(), group);
+                    self.superseded_segments.insert(message_id);
+                }
+            }
             ConversationEvent::MessageStarted { message_id, seq } => {
                 if self.active_agent_message.is_some() {
                     self.apply_controller_error(cx);
@@ -1229,9 +1426,20 @@ impl ConversationStream {
                 self.active_thinking = None;
                 self.active_skills.clear();
                 self.active_skill_focuses.clear();
-                let group =
-                    cx.new(|cx| RunActivityGroup::new(RunActivityStatus::Running, None, false, cx));
-                self.observe_run_activity_group(&group, cx);
+                let activity_id = self.run_activity_id_for(&message_id).to_owned();
+                let group = if let Some(group) = self.run_activity_group_for(&message_id) {
+                    group
+                } else {
+                    let group = cx.new(|cx| {
+                        RunActivityGroup::new(RunActivityStatus::Running, None, false, cx)
+                    });
+                    self.observe_run_activity_group(&group, cx);
+                    self.run_activity_groups
+                        .insert(activity_id.clone(), group.clone());
+                    group
+                };
+                self.run_activity_members
+                    .insert(message_id.clone(), activity_id.clone());
                 self.run_activity_groups
                     .insert(message_id.clone(), group.clone());
                 self.active_run_activity = Some((message_id.clone(), group.clone()));
@@ -1467,19 +1675,35 @@ impl ConversationStream {
                 execution_duration_ms,
                 ..
             } => {
-                self.finish_run_activity(
-                    &message_id,
-                    RunActivityStatus::Completed,
-                    execution_duration_ms,
-                    cx,
-                );
-                self.record_composer_terminal(&message_id, false);
-                self.finish_agent_message(&message_id, cx);
+                if self.run_terminal_elsewhere(&message_id) {
+                    return;
+                }
+                if self.superseded_segments.contains(&message_id) {
+                    // Segment boundary: freeze this body, keep the shared
+                    // activity group, its clock and the composer run alive.
+                    self.finish_agent_message(&message_id, cx);
+                } else {
+                    self.record_terminal_run_owner(&message_id);
+                    self.finish_run_activity(
+                        &message_id,
+                        RunActivityStatus::Completed,
+                        execution_duration_ms,
+                        cx,
+                    );
+                    self.record_composer_terminal(&message_id, false);
+                    self.finish_agent_message(&message_id, cx);
+                }
             }
             ConversationEvent::Interrupted {
                 message_id,
                 execution_duration_ms,
             } => {
+                if self.superseded_segments.contains(&message_id)
+                    || self.run_terminal_elsewhere(&message_id)
+                {
+                    return;
+                }
+                self.record_terminal_run_owner(&message_id);
                 self.finish_run_activity(
                     &message_id,
                     RunActivityStatus::Interrupted,
@@ -1496,21 +1720,24 @@ impl ConversationStream {
             } => {
                 let failure = RunFailureKind::from_runtime(&error);
                 if let Some(message_id) = message_id {
-                    let failure =
-                        if self
-                            .run_activity_groups
-                            .get(&message_id)
-                            .is_some_and(|group| {
-                                group.read(cx).status() != RunActivityStatus::Completed
-                            })
-                            && self.entry_identities.iter().any(|identity| {
-                                identity.message_id.as_deref() == Some(message_id.as_str())
-                            })
-                        {
-                            self.remember_run_failure(&message_id, failure)
-                        } else {
-                            failure
-                        };
+                    if self.superseded_segments.contains(&message_id)
+                        || self.run_terminal_elsewhere(&message_id)
+                    {
+                        return;
+                    }
+                    self.record_terminal_run_owner(&message_id);
+                    let failure = if self
+                        .run_activity_group_for(&message_id)
+                        .is_some_and(|group| {
+                            group.read(cx).status() != RunActivityStatus::Completed
+                        })
+                        && self.entry_identities.iter().any(|identity| {
+                            identity.message_id.as_deref() == Some(message_id.as_str())
+                        }) {
+                        self.remember_run_failure(&message_id, failure)
+                    } else {
+                        failure
+                    };
                     self.finish_run_activity(
                         &message_id,
                         RunActivityStatus::Failed,
@@ -1594,10 +1821,11 @@ impl ConversationStream {
         self.active_response_start = None;
         self.active_agent_sequence = None;
         self.active_run_activity_segment = None;
-        if self
-            .active_run_activity
-            .as_ref()
-            .is_some_and(|(active, _)| active == message_id)
+        if !self.superseded_segments.contains(message_id)
+            && self
+                .active_run_activity
+                .as_ref()
+                .is_some_and(|(active, _)| active == message_id)
         {
             self.active_run_activity = None;
         }

@@ -77,6 +77,7 @@ fn page(
         entries,
         older_cursor: None,
         newer_cursor: None,
+        assistant_run_activities: Vec::new(),
         newest_seq: None,
     }
 }
