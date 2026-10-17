@@ -26,6 +26,7 @@ pub mod summary_card;
 pub mod text_input;
 mod tool_activity_group;
 pub mod tool_card;
+mod user_question_panel;
 
 use gpui_kit::{App, KeyBinding};
 
@@ -42,6 +43,52 @@ pub fn init(cx: &mut App) {
     cx.on_app_quit(|_| vega_conversation::terminal::shutdown_all())
         .detach();
     cx.bind_keys([
+        KeyBinding::new(
+            "enter",
+            user_question_panel::QuestionAdvance,
+            Some("UserQuestionOptions"),
+        ),
+        KeyBinding::new(
+            "space",
+            user_question_panel::QuestionActivate,
+            Some("UserQuestionOptions"),
+        ),
+        KeyBinding::new(
+            "enter",
+            user_question_panel::QuestionActivate,
+            Some("UserQuestionControl"),
+        ),
+        KeyBinding::new(
+            "space",
+            user_question_panel::QuestionActivate,
+            Some("UserQuestionControl"),
+        ),
+        KeyBinding::new(
+            "escape",
+            user_question_panel::QuestionEscape,
+            Some("UserQuestionPanel"),
+        ),
+        KeyBinding::new(
+            "tab",
+            user_question_panel::QuestionNextFocus,
+            Some("UserQuestionPanel"),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            user_question_panel::QuestionPreviousFocus,
+            Some("UserQuestionPanel"),
+        ),
+        KeyBinding::new(
+            "enter",
+            user_question_panel::QuestionNoteNewline,
+            Some("UserQuestionNote"),
+        ),
+        KeyBinding::new(
+            "shift-enter",
+            user_question_panel::QuestionNoteNewline,
+            Some("UserQuestionNote"),
+        ),
+        KeyBinding::new("cmd-c", text_input::Copy, Some("UserQuestionNote")),
         KeyBinding::new("cmd-k", command_palette::OpenPalette, None),
         KeyBinding::new("cmd-o", command_palette::OpenWorkspacePicker, None),
         KeyBinding::new("cmd-j", command_palette::ToggleWorkspaceTerminal, None),

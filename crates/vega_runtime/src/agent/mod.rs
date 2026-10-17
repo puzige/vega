@@ -33,6 +33,9 @@ use crate::{
     decide_capability, decide_execute_permission,
 };
 
+mod user_questions;
+pub use user_questions::*;
+
 mod mcp_registry;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
 mod credential_redaction;
@@ -202,6 +205,7 @@ pub struct RuntimeToolConfig {
     /// `0` means unlimited. Set from `[agent] turn_limit` in config.toml.
     pub turn_limit: usize,
     steering_source: Option<Arc<dyn RuntimeSteeringSource>>,
+    user_questions: Option<Arc<dyn RuntimeUserQuestionHook>>,
     mcp_candidates: Vec<McpCandidate>,
     skills: Option<RuntimeSkillConfig>,
     computer_use: Option<crate::computer_use::ComputerUseRun>,
@@ -231,6 +235,7 @@ impl RuntimeToolConfig {
             exact_rules,
             turn_limit: 0,
             steering_source: None,
+            user_questions: None,
             mcp_candidates: Vec::new(),
             skills: None,
             computer_use: None,
@@ -250,6 +255,11 @@ impl RuntimeToolConfig {
             self.run_mode == RuntimeRunMode::Execute
                 && self.permission_mode != RuntimePermissionMode::ReadOnly
         });
+        self
+    }
+
+    pub fn with_user_questions(mut self, hook: Option<Arc<dyn RuntimeUserQuestionHook>>) -> Self {
+        self.user_questions = hook;
         self
     }
 

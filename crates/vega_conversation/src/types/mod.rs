@@ -95,3 +95,6 @@ pub use pending_messages::*;
 pub use vega_credentials::CredentialBinding;
 
 pub use crate::privacy::{PrivacyFinding, PrivacyReview};
+
+mod user_questions;
+pub use user_questions::*;

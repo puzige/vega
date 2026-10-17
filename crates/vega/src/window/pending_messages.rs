@@ -295,6 +295,15 @@ impl VegaWindow {
             PendingQueueAction::Steer(id) => Some(id.clone()),
             _ => None,
         };
+        if steer_id.is_some() && stream.read(cx).has_pending_user_question() {
+            self.reject_pending_queue_action(
+                &stream,
+                &thread_id,
+                "请先回答问题，或停止当前任务",
+                cx,
+            );
+            return;
+        }
         let promoted_generation = generation.clone();
         if resume && self.agent_controller.active.contains_key(&thread_id) {
             self.reject_pending_queue_action(&stream, &thread_id, "当前任务仍在运行", cx);
@@ -509,6 +518,7 @@ impl VegaWindow {
                 .queue_dispatches
                 .contains_key(thread_id)
             || stream.read(cx).permission_queue().has_pending()
+            || stream.read(cx).has_pending_user_question()
         {
             return;
         }

@@ -883,6 +883,7 @@ impl ConversationStream {
             || self.trusted_action_busy
             || self.active_permission.is_some()
             || self.permission_queue.has_pending()
+            || self.has_pending_user_question()
             || self.has_pending_plan_review(cx)
     }
 
@@ -1398,6 +1399,7 @@ impl ConversationStream {
                         }
                     });
                     self.install_pending_permission(cx);
+                    self.install_pending_user_question(cx);
                     return;
                 }
                 self.close_active_segment_before_tool();
@@ -1407,6 +1409,7 @@ impl ConversationStream {
                 self.append_live_tool(card.clone(), true, cx);
                 self.tool_cards.insert(call_id, card);
                 self.install_pending_permission(cx);
+                self.install_pending_user_question(cx);
                 cx.notify();
             }
             ConversationEvent::ToolCallApproved { call_id, approval } => {
@@ -1438,6 +1441,7 @@ impl ConversationStream {
             }
             ConversationEvent::ToolCallFinished { call_id, result } => {
                 self.timeout_permission_for_call(&call_id, cx);
+                self.finish_user_question(&call_id, cx);
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     let card = card.clone();
                     card.update(cx, |card, cx| {
@@ -1552,6 +1556,7 @@ impl ConversationStream {
                         self.finish_agent_message(&message_id, cx);
                     }
                     self.timeout_permission(cx);
+                    self.cancel_user_questions(cx);
                     cx.notify();
                 }
             }
@@ -1602,6 +1607,7 @@ impl ConversationStream {
             self.active_run_activity = None;
         }
         self.timeout_permission(cx);
+        self.cancel_user_questions(cx);
         cx.notify();
     }
 

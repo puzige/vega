@@ -314,6 +314,7 @@ impl ConversationStream {
             self.finish_agent_message(&message_id, cx);
         }
         self.timeout_permission(cx);
+        self.cancel_user_questions(cx);
         self.actions.running = false;
         self.actions.restore_focus = self.actions.stopping;
         self.actions.stopping = false;

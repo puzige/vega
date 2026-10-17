@@ -585,9 +585,10 @@ impl VegaWindow {
                 control.stop();
             }
             active.cancel.cancel();
-            active
-                .stream
-                .update(cx, |stream, cx| stream.timeout_permission(cx));
+            active.stream.update(cx, |stream, cx| {
+                stream.timeout_permission(cx);
+                stream.cancel_user_questions(cx);
+            });
         }
         if let Some((generation, stream)) = artifact_run {
             self.poison_artifact_agent_generation(generation, &stream);
@@ -777,6 +778,7 @@ impl VegaWindow {
         let pricing_catalog = self.pricing_controller.catalog_for_run(&thread.model);
 
         let permission_queue = stream.read(cx).permission_queue();
+        let user_questions = stream.read(cx).user_question_queue();
         let Some((generation, cancel)) = self.agent_controller.begin(
             thread_id.to_string(),
             stream.clone(),
@@ -861,6 +863,7 @@ impl VegaWindow {
                     thread,
                     run,
                     permission_queue,
+                    user_questions,
                     cancel,
                     worker_sender,
                     pricing_catalog,
@@ -957,7 +960,8 @@ impl VegaWindow {
                         let mut queue_ready = success
                             && !cancelled
                             && finished_run.queue_ready
-                            && !stream.read(cx).permission_queue().has_pending();
+                            && !stream.read(cx).permission_queue().has_pending()
+                            && !stream.read(cx).has_pending_user_question();
                         let ActiveAgentRun {
                             pending_user_content: pending_user,
                             pending_approved_instruction,

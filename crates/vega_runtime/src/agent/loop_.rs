@@ -2620,6 +2620,8 @@ where
             ));
         }
 
+        let mixed_question_batch =
+            calls.len() != 1 && calls.iter().any(|call| call.name == USER_QUESTION_TOOL);
         let batch_policy = classify_tool_batch(
             &calls
                 .iter()
@@ -2640,7 +2642,9 @@ where
             let prior_mutation = completed
                 .get(&call.id)
                 .filter(|_| matches!(call.name.as_str(), "Write" | "Edit" | "write" | "edit"));
-            let prepared = if let Some(prior) = prior_mutation {
+            let prepared = if mixed_question_batch {
+                prepare_mixed_rejection_call(tools, &tool_config, &capabilities, call)
+            } else if let Some(prior) = prior_mutation {
                 prepare_completed_mutation(tools, &tool_config, &capabilities, call, prior)
             } else if batch_policy == BatchPolicy::RejectOtherTools
                 && call.name != crate::skills::LOAD_SKILL_TOOL_NAME
@@ -2816,6 +2820,44 @@ where
                 );
                 continue;
             }
+            if mixed_question_batch {
+                let result = if completed.contains_key(&call.id) {
+                    let result = conflict_result(&call);
+                    emit!(
+                        events,
+                        sink,
+                        RuntimeEvent::ToolCallConflict {
+                            call: call.clone(),
+                            result: result.clone()
+                        }
+                    );
+                    result
+                } else {
+                    emit!(events, sink, RuntimeEvent::ToolCallProposed(call.clone()));
+                    let result = terminal_result(
+                        &call,
+                        USER_QUESTION_BATCH_REJECTED.into(),
+                        RuntimeToolStatus::Rejected,
+                        Some(validation_audit()),
+                    );
+                    emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
+                    completed.insert(
+                        call.id.clone(),
+                        CompletedToolCall {
+                            tool: call.name.clone(),
+                            input_json: call.input_json.clone(),
+                            result: result.clone(),
+                        },
+                    );
+                    result
+                };
+                messages.push(ChatMessage::projected_tool_result(
+                    &call.id,
+                    &call.name,
+                    &result.output,
+                ));
+                continue;
+            }
             if let Some(prior) = completed.get(&call.id).cloned() {
                 if matches!(
                     call.name.as_str(),
@@ -2855,6 +2897,7 @@ where
                 result.reused = true;
                 result.truncated = None;
                 redact_runtime_tool_result(&tool_config, &mut result);
+                user_questions::validate_redacted_result(&call, &mut result);
                 emit!(
                     events,
                     sink,
@@ -2883,6 +2926,7 @@ where
                 );
                 let mut result = result;
                 redact_runtime_tool_result(&tool_config, &mut result);
+                user_questions::validate_redacted_result(&call, &mut result);
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
                 messages.push(ChatMessage::projected_tool_result(
                     &call.id,
@@ -3153,6 +3197,7 @@ where
                 }
             }
             redact_runtime_tool_result(&tool_config, &mut result);
+            user_questions::validate_redacted_result(&call, &mut result);
             if call.name == "ComputerScreenshot"
                 && result.status == RuntimeToolStatus::Success
                 && !cancel.is_cancelled()

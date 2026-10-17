@@ -121,3 +121,12 @@ pub use retry::RetryPolicy;
 
 pub mod provider_check;
 pub mod skills;
+
+pub use agent::{
+    RuntimeUserQuestionHook, RuntimeUserQuestionRequest, RuntimeUserQuestionResponse,
+    USER_QUESTION_BATCH_REJECTED, USER_QUESTION_CANCELLED, USER_QUESTION_MAX_BYTES,
+    USER_QUESTION_TOOL, USER_QUESTION_UNAVAILABLE, USER_QUESTION_UNSAFE_RESPONSE, UserQuestion,
+    UserQuestionAnswer, UserQuestionAnswers, UserQuestionInput, UserQuestionOption,
+    user_question_validation_audit, user_question_validation_error,
+    user_question_validation_output,
+};

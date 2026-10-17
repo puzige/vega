@@ -278,6 +278,7 @@ impl ConversationStream {
                     && !self.visible_pending_messages().is_empty(),
                 |column| column.child(self.render_pending_queue(cx)),
             )
+            .children(self.active_user_question.clone())
             .child(
                 div()
                     .debug_selector(|| "composer-shell".into())

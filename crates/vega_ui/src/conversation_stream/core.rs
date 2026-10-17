@@ -87,6 +87,11 @@ pub struct ConversationStream {
     pub(crate) commit_panel: Entity<CommitPanel>,
     /// Concrete runtime permission hook shared by the owning conversation.
     pub(crate) permission_queue: PermissionQueue,
+    pub(crate) user_question_queue: vega_conversation::agent::UserQuestionQueue,
+    pub(crate) deferred_user_question: Option<vega_conversation::agent::PendingUserQuestion>,
+    pub(crate) active_user_question: Option<Entity<crate::user_question_panel::UserQuestionPanel>>,
+    pub(crate) active_user_question_call_id: Option<String>,
+    pub(crate) _user_question_listener_task: gpui_kit::Task<()>,
     /// Request retained after the queue listener wakes before its durable
     /// ToolCallProposed event reaches this stream.
     pub(crate) deferred_permission: Option<PendingPermission>,
@@ -373,6 +378,18 @@ impl ConversationStream {
             },
         )
         .detach();
+        let user_question_queue = vega_conversation::agent::UserQuestionQueue::new();
+        let mut question_listener = user_question_queue.subscribe();
+        let user_question_listener_task = cx.spawn(async move |this, cx| {
+            while question_listener.changed().await {
+                if this
+                    .update(cx, |this, cx| this.install_pending_user_question(cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let mut listener = permission_queue.subscribe();
         let permission_listener_task = cx.spawn(async move |this, cx| {
             while listener.changed().await {
@@ -487,6 +504,11 @@ impl ConversationStream {
             branch_selector,
             commit_panel,
             permission_queue,
+            user_question_queue,
+            deferred_user_question: None,
+            active_user_question: None,
+            active_user_question_call_id: None,
+            _user_question_listener_task: user_question_listener_task,
             deferred_permission: None,
             active_permission: None,
             active_permission_call_id: None,

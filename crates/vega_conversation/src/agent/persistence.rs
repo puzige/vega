@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    pub(crate) user_questions: Option<Arc<dyn vega_runtime::RuntimeUserQuestionHook>>,
     pub(crate) credential_continuation_id: Option<String>,
     pub(crate) steering_cancel: Option<CancellationToken>,
     pub(crate) pending_message_id: Option<String>,
@@ -44,6 +45,13 @@ pub(crate) enum InjectedPersistenceFailure {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_user_questions(
+        mut self,
+        hook: Arc<dyn vega_runtime::RuntimeUserQuestionHook>,
+    ) -> Self {
+        self.user_questions = Some(hook);
+        self
+    }
     pub fn with_replay_session_registry(
         mut self,
         registry: super::ReplaySessionRegistry,

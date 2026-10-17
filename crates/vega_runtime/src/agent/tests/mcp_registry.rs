@@ -673,10 +673,16 @@ fn issue73_run_snapshot_does_not_gain_a_refreshed_schema_or_tool() {
     });
     current.push(candidate(id, "new_tool"));
     assert_eq!(snapshot.mcp_count(), 1);
-    assert_eq!(
-        snapshot.definitions()[6].input_schema["properties"]["query"]["type"],
-        "string"
-    );
+    let search = snapshot
+        .definitions()
+        .iter()
+        .find(|definition| {
+            snapshot
+                .mcp_tool(&definition.name)
+                .is_some_and(|tool| tool.server_id() == id && tool.exact_tool_name() == "search")
+        })
+        .expect("frozen search tool");
+    assert_eq!(search.input_schema["properties"]["query"]["type"], "string");
     let next = RunCapabilitySnapshot::freeze(
         RuntimeRunMode::Execute,
         RuntimePermissionMode::Auto,

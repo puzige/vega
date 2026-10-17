@@ -52,6 +52,7 @@
 | A2-19 | 错误态 | API 失败/限流，自动重试+可见提示 | P1 | 全员 |
 | A2-20 | 思考流展示 | reasoning delta 折叠区（模型支持时） | P1 | ZC/AG |
 | A2-21 | /命令 | /model /plan /permissions /clear 等快捷指令 | P2 | CD/AG |
+| A2-22 | 结构化提问面板 | Composer 上方逐题回答、Other/备注、跳过/停止及只读问答历史；见 [#445 规格](vega-issue-445-ask-user-question.md) | P1 | CD |
 
 ## A3 · Vega Runtime（自研 Agent 核心）[Phase 1-2]
 
@@ -74,6 +75,7 @@
 | A3-15 | 多 Provider | Anthropic 原生、DeepSeek、Ollama | P1 (Ph2) | AG/ZC |
 | A3-16 | web_fetch 工具 | 抓取网页转 markdown 注入 | P1 (Ph2) | 全员 |
 | A3-17 | 闲时执行接口 | 任务可标记「闲时跑」，由 A7 调度低价模型 | P2 (Ph3) | ZC |
+| A3-18 | AskUserQuestion 工具 | Native agent 挂起等待用户答复，按问题 ID 回灌；无默认超时，沿用工具持久化与取消链路；见 [#445 规格](vega-issue-445-ask-user-question.md) | P1 | CD |
 
 ## A5 · 产物 & Diff 审阅 [Phase 1-2]
 
