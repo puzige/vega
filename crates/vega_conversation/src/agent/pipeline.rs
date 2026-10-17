@@ -821,6 +821,12 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         },
     )
     .map_err(runtime_store_error)?;
+    messages::associate_assistant_run_activity(
+        &transaction,
+        &assistant_message_id,
+        &assistant_message_id,
+    )
+    .map_err(runtime_store_error)?;
 
     if let Some(receipt) = &continuation {
         vega_store::credential_continuation::attach(

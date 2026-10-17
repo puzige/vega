@@ -179,11 +179,22 @@ impl AssistantStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistantRunActivity {
+    pub message_id: String,
+    pub run_id: String,
+    pub terminal_message_id: String,
+    pub terminal_status: Option<AssistantStatus>,
+    pub execution_duration_ms: Option<u64>,
+    pub member_count: usize,
+}
+
 /// Result of one hydration projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPage {
     /// Entries in ascending seq position (oldest → newest).
     pub entries: Vec<HistoryEntry>,
+    pub assistant_run_activities: Vec<AssistantRunActivity>,
     /// `Some(oldest_seq)` when older history may exist — pass
     /// [`PageCursor::Before`] into [`history_page_before`]. `None` marks the
     /// durable beginning of the thread.
@@ -442,8 +453,52 @@ fn assemble(
             });
         }
     }
+    let assistant_run_activities = page
+        .assistant_run_activities
+        .into_iter()
+        .map(|activity| {
+            if activity.message_id.is_empty()
+                || activity.run_id.is_empty()
+                || activity.member_count == 0
+            {
+                return Err(ConversationError::CorruptRow(
+                    "assistant run activity membership is invalid".into(),
+                ));
+            }
+            let terminal_status = activity
+                .terminal_status
+                .as_deref()
+                .map(|status| {
+                    AssistantStatus::parse(status).ok_or_else(|| {
+                        ConversationError::CorruptRow(
+                            "assistant run status outside vocabulary".into(),
+                        )
+                    })
+                })
+                .transpose()?;
+            let execution_duration_ms = activity
+                .execution_duration_ms
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| {
+                    ConversationError::CorruptRow("negative assistant run duration".into())
+                })?;
+            let terminal_message_id = activity.terminal_message_id.ok_or_else(|| {
+                ConversationError::CorruptRow("assistant run terminal missing".into())
+            })?;
+            Ok(AssistantRunActivity {
+                message_id: activity.message_id,
+                run_id: activity.run_id,
+                terminal_message_id,
+                terminal_status,
+                execution_duration_ms,
+                member_count: activity.member_count,
+            })
+        })
+        .collect::<Result<Vec<_>, ConversationError>>()?;
     Ok(HistoryPage {
         entries,
+        assistant_run_activities,
         older_cursor: page.older_cursor,
         newer_cursor: page.newer_cursor,
         newest_seq,
@@ -961,6 +1016,7 @@ mod issue287_codex_acp_history_tests {
                 plan_reviewed_at: None,
             }],
             execution_durations_ms: HashMap::new(),
+            assistant_run_activities: Vec::new(),
             assistant_responses: Vec::new(),
             older_cursor: None,
             newer_cursor: None,
@@ -1081,6 +1137,7 @@ mod issue146_tests {
                 plan_reviewed_at: None,
             }],
             execution_durations_ms: HashMap::from([("assistant".into(), 10_001)]),
+            assistant_run_activities: Vec::new(),
             assistant_responses: Vec::new(),
             older_cursor: None,
             newer_cursor: None,

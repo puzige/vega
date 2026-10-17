@@ -334,6 +334,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
         tables,
         [
             "assistant_responses",
+            "assistant_run_activity_members",
             "assistant_run_durations",
             "builtin_skill_activations",
             "codex_session_creations",

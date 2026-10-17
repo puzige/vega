@@ -365,6 +365,149 @@ fn separate_connections_serialize_completions_to_one_pending() {
 }
 
 #[test]
+fn issue401_migration_backfills_only_adjacent_delivered_steer_segments() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("vega.db")).unwrap();
+    for migration in crate::MIGRATIONS.iter().take(25) {
+        store.conn().execute_batch(migration).unwrap();
+    }
+    store
+        .conn()
+        .pragma_update(None, "user_version", 25_u32)
+        .unwrap();
+    store
+        .conn()
+        .execute_batch(
+            "INSERT INTO projects VALUES ('p','/tmp/p','p',NULL,0,0); \
+             INSERT INTO threads (id,project_id,mode,model,created_at,updated_at) \
+             VALUES ('t','p','plan','mock',0,0); \
+             INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES \
+             ('original-user','t',1,'user','text','start','done',1), \
+             ('root','t',2,'assistant','text','first','done',2), \
+             ('steer-user-one','t',3,'user','text','one','done',3), \
+             ('middle','t',4,'assistant','text','second','done',4), \
+             ('steer-user-two','t',5,'user','text','two','done',5), \
+             ('terminal','t',6,'assistant','text','third','done',6), \
+             ('queue-user','t',7,'user','text','queued','done',7), \
+             ('ordinary','t',8,'assistant','text','separate','done',8); \
+             INSERT INTO pending_messages \
+             (id,thread_id,ordinal,behavior,generation,payload,state,created_at) VALUES \
+             ('steer-user-one','t',0,'steer','generation','', 'delivered',3), \
+             ('steer-user-two','t',1,'steer','generation','', 'delivered',5), \
+             ('queue-user','t',2,'queue','generation','', 'delivered',7);",
+        )
+        .unwrap();
+    store.migrate().unwrap();
+    assert_eq!(
+        assistant_run_activity_id(store.conn(), "root")
+            .unwrap()
+            .as_deref(),
+        Some("root")
+    );
+    assert_eq!(
+        assistant_run_activity_id(store.conn(), "middle")
+            .unwrap()
+            .as_deref(),
+        Some("root")
+    );
+    assert_eq!(
+        assistant_run_activity_id(store.conn(), "terminal")
+            .unwrap()
+            .as_deref(),
+        Some("root")
+    );
+    assert_eq!(
+        assistant_run_activity_id(store.conn(), "ordinary").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn issue401_assistant_run_activity_projection_keeps_one_terminal_owner() {
+    let (store, _dir) = setup();
+    for (id, seq, duration) in [
+        ("root", 2, None),
+        ("middle", 4, None),
+        ("terminal", 6, Some(12_345)),
+    ] {
+        insert(store.conn(), &streaming(id, seq)).unwrap();
+        finish_streaming(store.conn(), id, "answer", "done", duration).unwrap();
+    }
+    associate_assistant_run_activity(store.conn(), "root", "root").unwrap();
+    associate_assistant_run_activity(store.conn(), "middle", "root").unwrap();
+    associate_assistant_run_activity(store.conn(), "terminal", "root").unwrap();
+    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
+    assert_eq!(page.assistant_run_activities.len(), 3);
+    assert!(page.assistant_run_activities.iter().all(|activity| {
+        activity.run_id == "root"
+            && activity.terminal_message_id.as_deref() == Some("terminal")
+            && activity.terminal_status.as_deref() == Some("done")
+            && activity.execution_duration_ms == Some(12_345)
+            && activity.member_count == 3
+    }));
+    assert_eq!(
+        assistant_run_activity_id(store.conn(), "middle")
+            .unwrap()
+            .as_deref(),
+        Some("root")
+    );
+    assert_eq!(
+        assistant_run_activity_id(store.conn(), "unmapped").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn issue401_activity_association_is_idempotent_but_rejects_conflicts() {
+    let (store, _dir) = setup();
+    insert(store.conn(), &streaming("root", 2)).unwrap();
+    insert(store.conn(), &streaming("next", 4)).unwrap();
+    associate_assistant_run_activity(store.conn(), "root", "root").unwrap();
+    associate_assistant_run_activity(store.conn(), "next", "root").unwrap();
+    associate_assistant_run_activity(store.conn(), "next", "root").unwrap();
+    assert!(associate_assistant_run_activity(store.conn(), "next", "next").is_err());
+    assert_eq!(
+        assistant_run_activity_id(store.conn(), "next")
+            .unwrap()
+            .as_deref(),
+        Some("root")
+    );
+}
+
+#[test]
+fn issue401_activity_projection_uses_latest_message_for_a_live_run() {
+    let (store, _dir) = setup();
+    insert(store.conn(), &streaming("root", 2)).unwrap();
+    finish_streaming(store.conn(), "root", "first", "done", None).unwrap();
+    insert(store.conn(), &streaming("next", 4)).unwrap();
+    associate_assistant_run_activity(store.conn(), "root", "root").unwrap();
+    associate_assistant_run_activity(store.conn(), "next", "root").unwrap();
+    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
+    assert!(page.assistant_run_activities.iter().all(|activity| {
+        activity.run_id == "root"
+            && activity.terminal_message_id.as_deref() == Some("next")
+            && activity.terminal_status.is_none()
+            && activity.execution_duration_ms.is_none()
+    }));
+}
+
+#[test]
+fn issue401_membership_rejects_non_assistant_owners() {
+    let (store, _dir) = setup();
+    insert(store.conn(), &streaming("root", 2)).unwrap();
+    assert!(associate_assistant_run_activity(store.conn(), "root", "missing").is_err());
+    store
+        .conn()
+        .execute(
+            "INSERT INTO messages(id,thread_id,seq,role,kind,content,status,created_at) \
+         VALUES ('user','t',1,'user','text','hi','done',1)",
+            [],
+        )
+        .unwrap();
+    assert!(associate_assistant_run_activity(store.conn(), "user", "root").is_err());
+}
+
+#[test]
 fn issue146_terminal_durations_are_persisted_and_projected_by_page() {
     let (store, _dir) = setup();
     for (id, status, duration) in [
@@ -823,8 +966,10 @@ fn page_read_issues_constant_statements_regardless_of_row_count() {
         small_statements, large_statements,
         "per-page statement count must not scale with rows (C7 零 N+1)"
     );
+    // The run-activity membership projection adds one constant statement, so the
+    // bound stays independent of the number of rows on the page.
     assert!(
-        large_statements <= 8,
+        large_statements <= 9,
         "one page stays a bounded constant statement count, got {large_statements}"
     );
 }

@@ -345,6 +345,10 @@ pub enum ConversationEvent {
         message_id: MessageId,
         started_at: std::time::Instant,
     },
+    AssistantMessageContinues {
+        message_id: MessageId,
+        next_message_id: MessageId,
+    },
     AssistantResponseCompleted {
         message_id: MessageId,
         response: AssistantResponseMetadata,
@@ -499,6 +503,9 @@ impl std::fmt::Debug for ConversationEvent {
                 .debug_struct("RunStarted")
                 .field("message_id_bytes", &message_id.len())
                 .finish(),
+            Self::AssistantMessageContinues { .. } => {
+                formatter.write_str("AssistantMessageContinues")
+            }
             Self::AssistantResponseCompleted {
                 message_id,
                 response,

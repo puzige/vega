@@ -99,6 +99,49 @@ async fn issue299_multiple_steers_persist_causal_history_and_reference_snapshot(
         ]
     );
     assert!(rows.iter().all(|message| message.status == "done"));
+    let root_activity = rows[1].id.as_str();
+    let interval_page =
+        messages::page_before(store.conn(), "thread-1", messages::PageCursor::Head, 3).unwrap();
+    assert_eq!(interval_page.assistant_run_activities.len(), 2);
+    assert!(
+        interval_page
+            .assistant_run_activities
+            .iter()
+            .all(|activity| {
+                activity.run_id == root_activity
+                    && activity.terminal_message_id.as_deref() == Some(rows[5].id.as_str())
+                    && activity.terminal_status.as_deref() == Some("done")
+                    && activity.member_count == 3
+            })
+    );
+    let page =
+        messages::page_before(store.conn(), "thread-1", messages::PageCursor::Head, 50).unwrap();
+    assert_eq!(page.assistant_run_activities.len(), 3);
+    assert!(page.assistant_run_activities.iter().all(|activity| {
+        activity.run_id == root_activity
+            && activity.terminal_message_id.as_deref() == Some(rows[5].id.as_str())
+            && activity.terminal_status.as_deref() == Some("done")
+            && activity.execution_duration_ms.is_some()
+            && activity.member_count == 3
+    }));
+    let continuation_events = run
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ConversationEvent::AssistantMessageContinues {
+                message_id,
+                next_message_id,
+            } => Some((message_id.as_str(), next_message_id.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        continuation_events,
+        [
+            (rows[1].id.as_str(), rows[3].id.as_str()),
+            (rows[3].id.as_str(), rows[5].id.as_str())
+        ]
+    );
     let retries = run
         .events
         .iter()
@@ -112,8 +155,6 @@ async fn issue299_multiple_steers_persist_causal_history_and_reference_snapshot(
         })
         .collect::<Vec<_>>();
     assert_eq!(retries, [(rows[3].id.as_str(), 0)]);
-    let page =
-        messages::page_before(store.conn(), "thread-1", messages::PageCursor::Head, 50).unwrap();
     assert_eq!(page.assistant_responses.len(), 3);
     for (response, assistant) in page
         .assistant_responses
@@ -152,6 +193,14 @@ async fn issue299_multiple_steers_persist_causal_history_and_reference_snapshot(
     );
     let history = crate::history::latest_history_page(&reopened, "thread-1", 50).unwrap();
     assert!(!format!("{history:?}").contains("TODO: persist me"));
+    assert_eq!(history.assistant_run_activities.len(), 3);
+    assert!(history.assistant_run_activities.iter().all(|activity| {
+        activity.run_id == root_activity
+            && activity.terminal_message_id == rows[5].id
+            && activity.terminal_status == Some(crate::history::AssistantStatus::Done)
+            && activity.execution_duration_ms.is_some()
+            && activity.member_count == 3
+    }));
     assert_eq!(
         run.events
             .iter()

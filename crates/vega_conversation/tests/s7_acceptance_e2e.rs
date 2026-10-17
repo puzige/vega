@@ -563,13 +563,14 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     // cleanup outbox in migration 0012; #74 Skills adds migration 0013;
     // #146 execution duration adds migration 0014. Migration 0015 adds run
     // diagnostics; #284 Codex task identity adds migration 0016 and two tables.
+    // #401 adds the assistant run activity membership table in migration 0026.
     // No credential values enter either MCP table.
     let user_version: i64 = reopened
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
     assert_eq!(
-        user_version, 25,
-        "all twenty-five ordered migrations including safe failure details are applied"
+        user_version, 26,
+        "all twenty-six ordered migrations including run activity membership are applied"
     );
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
@@ -582,6 +583,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         tables,
         vec![
             "assistant_responses",
+            "assistant_run_activity_members",
             "assistant_run_durations",
             "builtin_skill_activations",
             "codex_session_creations",
