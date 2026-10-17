@@ -3,7 +3,8 @@ use serde::Serialize;
 
 mod failure_ownership;
 pub use failure_ownership::{
-    budget_failure_message_ids, classified_failure_message_ids, projection_reasoning_failure,
+    budget_failure_message_ids, classified_failure_message_ids, compaction_failure_message_ids,
+    projection_reasoning_failure,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

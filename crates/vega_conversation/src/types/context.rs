@@ -78,6 +78,32 @@ pub enum ContextCompactionFailureCode {
     Unavailable,
 }
 
+impl ContextCompactionFailureCode {
+    #[allow(missing_docs)]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Cancelled => "Context compaction cancelled",
+            Self::SourceChanged => "History changed. Retry compaction.",
+            Self::NoCompactablePrefix => "No complete history is available to compact.",
+            Self::TooLarge => {
+                "History is too large to compact safely. Continue in a new conversation."
+            }
+            Self::InvalidSummary => "The compaction result was invalid. Retry compaction.",
+            Self::TimedOut => "Context compaction timed out. Retry compaction.",
+            Self::ImagesUnsupported => {
+                "Historical images cannot be compacted safely. Start a new conversation."
+            }
+            Self::OverLimit => {
+                "Context exceeds the available budget. Shorten the input or start a new conversation."
+            }
+            Self::ReasoningLimit => {
+                "The run exceeded the local reasoning limit. Send your message again to continue."
+            }
+            Self::Unavailable => "Context compaction failed. Retry compaction.",
+        }
+    }
+}
+
 /// Summary-call accounting state carried by a status record.  This is kept
 /// separate from the assistant usage event because a summary has no message
 /// id; `Unknown` also prevents a later priced primary call from making the

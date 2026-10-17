@@ -836,6 +836,473 @@ async fn issue365_compaction_failure_deduplicates_only_owned_budget_error(cx: &m
 }
 
 #[gpui_kit::test]
+async fn compaction_failure_same_typed_cause_has_one_owned_notice(cx: &mut TestAppContext) {
+    for status_first in [true, false] {
+        let window = setup(cx);
+        window
+            .update(cx, |stream, _, cx| {
+                stream.begin_composer_run(cx);
+                stream.apply_event(
+                    ConversationEvent::MessageStarted {
+                        message_id: "owned-run".into(),
+                        seq: 1,
+                    },
+                    cx,
+                );
+                let failure = RunFailureKind::Compaction(Failure::SourceChanged);
+                let failed_compaction_index = if status_first {
+                    let mut record = status(1, Status::Failed);
+                    record.failure = Some(Failure::SourceChanged);
+                    assert!(stream.apply_context_status("context-thread", "mock", record, cx));
+                    let index = stream.entries.len() - 1;
+                    let identity = stream.durable_entry_identity("owned-run", "compaction-1", None);
+                    stream.set_entry_identity(index, identity);
+                    Some(index)
+                } else {
+                    None
+                };
+                stream.apply_event(
+                    ConversationEvent::Error {
+                        message_id: Some("owned-run".into()),
+                        error: std::sync::Arc::new(vega_runtime::VegaError::Context(
+                            vega_runtime::ContextRuntimeError::SourceChanged,
+                        )),
+                        execution_duration_ms: Some(1),
+                    },
+                    cx,
+                );
+                let compaction_index = match failed_compaction_index {
+                    Some(index) => index,
+                    None => {
+                        let mut record = status(1, Status::Failed);
+                        record.failure = Some(Failure::SourceChanged);
+                        assert!(stream.apply_context_status("context-thread", "mock", record, cx));
+                        let index = stream.entries.len() - 1;
+                        let identity =
+                            stream.durable_entry_identity("owned-run", "compaction-1", None);
+                        stream.set_entry_identity(index, identity);
+                        index
+                    }
+                };
+                stream.refresh_run_notices(cx);
+
+                assert_eq!(stream.run_notices.len(), 1);
+                let notice_index = *stream.run_notices.keys().next().expect("run notice");
+                assert_eq!(
+                    stream.run_notices[&notice_index].kind,
+                    run_notice::RunNoticeKind::Failure(failure)
+                );
+                assert_eq!(
+                    stream.run_notices[&notice_index].text(),
+                    status_label_for(Status::Failed, Some(Failure::SourceChanged))
+                );
+                assert!(stream.compaction_failure_is_represented(compaction_index));
+                assert!(stream.compaction_reports_run_failure("owned-run", failure));
+                assert!(!stream.compaction_reports_run_failure("other-run", failure));
+                assert!(!stream.compaction_reports_run_failure(
+                    "owned-run",
+                    RunFailureKind::Compaction(Failure::TimedOut)
+                ));
+                assert!(stream.controller_error_is_run_notice());
+            })
+            .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+async fn compaction_failure_preserves_provider_cause_in_both_arrival_orders(
+    cx: &mut TestAppContext,
+) {
+    for provider_first in [true, false] {
+        let window = setup(cx);
+        window
+            .update(cx, |stream, _, cx| {
+                stream.begin_composer_run(cx);
+                stream.apply_event(
+                    ConversationEvent::MessageStarted {
+                        message_id: "owned-run".into(),
+                        seq: 1,
+                    },
+                    cx,
+                );
+                if provider_first {
+                    stream.apply_event(
+                        ConversationEvent::Error {
+                            message_id: Some("owned-run".into()),
+                            error: std::sync::Arc::new(vega_runtime::VegaError::Provider {
+                                status: Some(401),
+                                message: "unauthorized".into(),
+                                retryable: false,
+                            }),
+                            execution_duration_ms: Some(1),
+                        },
+                        cx,
+                    );
+                    stream.apply_event(
+                        ConversationEvent::Error {
+                            message_id: Some("owned-run".into()),
+                            error: std::sync::Arc::new(vega_runtime::VegaError::Context(
+                                vega_runtime::ContextRuntimeError::SummaryFormatInvalid,
+                            )),
+                            execution_duration_ms: Some(2),
+                        },
+                        cx,
+                    );
+                } else {
+                    stream.apply_event(
+                        ConversationEvent::Error {
+                            message_id: Some("owned-run".into()),
+                            error: std::sync::Arc::new(vega_runtime::VegaError::Context(
+                                vega_runtime::ContextRuntimeError::SummaryFormatInvalid,
+                            )),
+                            execution_duration_ms: Some(1),
+                        },
+                        cx,
+                    );
+                    stream.apply_event(
+                        ConversationEvent::Error {
+                            message_id: Some("owned-run".into()),
+                            error: std::sync::Arc::new(vega_runtime::VegaError::Provider {
+                                status: Some(401),
+                                message: "unauthorized".into(),
+                                retryable: false,
+                            }),
+                            execution_duration_ms: Some(2),
+                        },
+                        cx,
+                    );
+                }
+                stream.apply_event(
+                    ConversationEvent::Error {
+                        message_id: Some("owned-run".into()),
+                        error: std::sync::Arc::new(vega_runtime::VegaError::Tool {
+                            tool: "fixture".into(),
+                            message: "unavailable".into(),
+                        }),
+                        execution_duration_ms: Some(3),
+                    },
+                    cx,
+                );
+                let mut record = status(1, Status::Failed);
+                record.failure = Some(Failure::InvalidSummary);
+                assert!(stream.apply_context_status("context-thread", "mock", record, cx));
+                let index = stream.entries.len() - 1;
+                let identity = stream.durable_entry_identity("owned-run", "compaction-1", None);
+                stream.set_entry_identity(index, identity);
+                stream.refresh_run_notices(cx);
+
+                let notice = &stream.run_notices[&index];
+                assert_eq!(stream.run_notices.len(), 1);
+                assert_eq!(
+                    notice.kind,
+                    run_notice::RunNoticeKind::FailureWithCompaction(
+                        RunFailureKind::ProviderAuthorization,
+                        Some(Failure::InvalidSummary)
+                    )
+                );
+                assert_eq!(notice.text().lines().count(), 2);
+                assert!(notice.text().contains("rejected your credentials"));
+                assert!(notice.text().contains("compaction result was invalid"));
+                assert!(!notice.text().contains("runtime environment"));
+                assert!(stream.compaction_failure_is_represented(index));
+            })
+            .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+async fn compaction_source_change_survives_late_generic_failure_and_interruption(
+    cx: &mut TestAppContext,
+) {
+    for source_changed_first in [true, false] {
+        let window = setup(cx);
+        window
+            .update(cx, |stream, _, cx| {
+                stream.begin_composer_run(cx);
+                stream.apply_event(
+                    ConversationEvent::MessageStarted {
+                        message_id: "source-changed-run".into(),
+                        seq: 1,
+                    },
+                    cx,
+                );
+                let source_changed = || ConversationEvent::Error {
+                    message_id: Some("source-changed-run".into()),
+                    error: std::sync::Arc::new(vega_runtime::VegaError::Context(
+                        vega_runtime::ContextRuntimeError::SourceChanged,
+                    )),
+                    execution_duration_ms: Some(1),
+                };
+                let generic = || ConversationEvent::Error {
+                    message_id: Some("source-changed-run".into()),
+                    error: std::sync::Arc::new(vega_runtime::VegaError::Tool {
+                        tool: "fixture".into(),
+                        message: "consumer unavailable".into(),
+                    }),
+                    execution_duration_ms: Some(2),
+                };
+                if source_changed_first {
+                    stream.apply_event(source_changed(), cx);
+                    stream.apply_event(generic(), cx);
+                } else {
+                    stream.apply_event(generic(), cx);
+                    stream.apply_event(source_changed(), cx);
+                }
+                stream.apply_event(
+                    ConversationEvent::Interrupted {
+                        message_id: "source-changed-run".into(),
+                        execution_duration_ms: Some(3),
+                    },
+                    cx,
+                );
+                stream.refresh_run_notices(cx);
+                assert_eq!(stream.run_notices.len(), 1);
+                let notice = stream.run_notices.values().next().unwrap();
+                assert_eq!(
+                    notice.kind,
+                    run_notice::RunNoticeKind::Failure(RunFailureKind::Compaction(
+                        Failure::SourceChanged
+                    ))
+                );
+                assert_eq!(
+                    notice.text(),
+                    status_label_for(Status::Failed, Some(Failure::SourceChanged))
+                );
+                assert!(!notice.text().contains("runtime environment"));
+            })
+            .unwrap();
+    }
+
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "cancelled-run".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            let mut cancelled = status(1, Status::Cancelled);
+            cancelled.failure = None;
+            assert!(stream.apply_context_status("context-thread", "mock", cancelled, cx));
+            assert!(!stream.run_failures.contains_key("cancelled-run"));
+            assert!(stream.run_notice_projection(cx).is_empty());
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn compaction_failure_hydration_drops_resolved_cause_and_keeps_provider_error(
+    cx: &mut TestAppContext,
+) {
+    use vega_conversation::history::{AssistantStatus, HistoryEntry, HistoryPage};
+
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.apply_history_page(
+                HistoryPage {
+                    entries: vec![HistoryEntry::AssistantText {
+                        seq: 1,
+                        message_id: "owned-run".into(),
+                        content: String::new(),
+                        status: AssistantStatus::Failed,
+                        execution_duration_ms: Some(1),
+                    }],
+                    older_cursor: None,
+                    newer_cursor: None,
+                    newest_seq: None,
+                },
+                cx,
+            );
+            stream.restore_context_run_failures(
+                &[(
+                    "owned-run".into(),
+                    RunFailureKind::Compaction(Failure::SourceChanged),
+                )],
+                cx,
+            );
+            stream.refresh_run_notices(cx);
+            assert_eq!(
+                stream.run_notices.values().next().unwrap().kind,
+                run_notice::RunNoticeKind::Failure(RunFailureKind::Compaction(
+                    Failure::SourceChanged
+                ))
+            );
+
+            assert_eq!(stream.reserve_context_operation_id(cx), Some(1));
+            assert!(stream.restore_owned_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Succeeded),
+                Some("owned-run"),
+                cx
+            ));
+            assert!(matches!(
+                stream.entries.last(),
+                Some(StreamEntry::ContextCompaction { record, .. })
+                    if record.generation == 2 && record.status == Status::Succeeded
+            ));
+            let success_index = stream.entries.len() - 1;
+
+            stream.set_entry_identity(
+                success_index,
+                stream.durable_entry_identity("other-run", "compaction-2", None),
+            );
+            assert!(
+                !stream.compaction_failure_resolved_for_owner("owned-run", Failure::SourceChanged)
+            );
+            let unrelated_owner = stream.run_notice_projection(cx);
+            assert_eq!(unrelated_owner.len(), 1);
+            assert_eq!(
+                unrelated_owner.values().next().unwrap().kind,
+                run_notice::RunNoticeKind::Failure(RunFailureKind::Compaction(
+                    Failure::SourceChanged
+                ))
+            );
+
+            stream.set_entry_identity(
+                success_index,
+                stream.durable_entry_identity("owned-run", "compaction-2", None),
+            );
+            if let StreamEntry::ContextCompaction { model, .. } = &mut stream.entries[success_index]
+            {
+                *model = "other-model".into();
+            }
+            assert!(
+                !stream.compaction_failure_resolved_for_owner("owned-run", Failure::SourceChanged)
+            );
+            assert_eq!(stream.run_notice_projection(cx).len(), 1);
+            if let StreamEntry::ContextCompaction { model, .. } = &mut stream.entries[success_index]
+            {
+                *model = "mock".into();
+            }
+            assert!(stream.run_notice_projection(cx).is_empty());
+            stream.apply_agent_runtime_error_for(
+                Some("owned-run"),
+                RunFailureKind::ProviderAuthorization,
+                cx,
+            );
+            stream.refresh_run_notices(cx);
+            assert_eq!(stream.run_notices.len(), 1);
+            assert_eq!(
+                stream.run_notices.values().next().unwrap().kind,
+                run_notice::RunNoticeKind::Failure(RunFailureKind::ProviderAuthorization)
+            );
+            assert!(stream.controller_error_is_run_notice());
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn compaction_failure_live_resolution_clears_controller_error_and_keeps_provider_failure(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "owned-run".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::Error {
+                    message_id: Some("owned-run".into()),
+                    error: std::sync::Arc::new(vega_runtime::VegaError::Context(
+                        vega_runtime::ContextRuntimeError::SourceChanged,
+                    )),
+                    execution_duration_ms: Some(1),
+                },
+                cx,
+            );
+            stream.refresh_run_notices(cx);
+            assert!(stream.controller_error_is_run_notice());
+
+            let mut failed = status(1, Status::Failed);
+            failed.failure = Some(Failure::SourceChanged);
+            assert!(stream.apply_context_status("context-thread", "mock", failed, cx));
+            let failed_index = stream.entries.len() - 1;
+            stream.set_entry_identity(
+                failed_index,
+                stream.durable_entry_identity("owned-run", "compaction-1", None),
+            );
+            stream.refresh_run_notices(cx);
+            assert_eq!(stream.run_notices.len(), 1);
+            assert_eq!(
+                stream.run_notices.values().next().unwrap().kind,
+                run_notice::RunNoticeKind::Failure(RunFailureKind::Compaction(
+                    Failure::SourceChanged
+                ))
+            );
+
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Succeeded),
+                cx
+            ));
+            let success_index = stream.entries.len() - 1;
+            stream.set_entry_identity(
+                success_index,
+                stream.durable_entry_identity("owned-run", "compaction-2", None),
+            );
+            stream.refresh_run_notices(cx);
+            assert!(stream.run_notice_projection(cx).is_empty());
+            assert!(stream.run_notices.is_empty());
+            assert!(stream.controller_error.is_none());
+            assert!(stream.controller_runtime_error.is_none());
+
+            stream.apply_agent_runtime_error_for(
+                Some("owned-run"),
+                RunFailureKind::ProviderAuthorization,
+                cx,
+            );
+            stream.refresh_run_notices(cx);
+            assert_eq!(stream.run_notices.len(), 1);
+            assert_eq!(
+                stream.run_notices.values().next().unwrap().kind,
+                run_notice::RunNoticeKind::Failure(RunFailureKind::ProviderAuthorization)
+            );
+            assert!(stream.controller_error_is_run_notice());
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn compaction_failure_replaces_generic_notice_without_composer_duplicate(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.remember_run_failure("owned-run", RunFailureKind::Runtime);
+            let mut record = status(1, Status::Failed);
+            record.failure = Some(Failure::TimedOut);
+            assert!(stream.apply_context_status("context-thread", "mock", record, cx));
+            let index = stream.entries.len() - 1;
+            let identity = stream.durable_entry_identity("owned-run", "compaction-1", None);
+            stream.set_entry_identity(index, identity);
+            stream.controller_runtime_error = Some(("owned-run".into(), RunFailureKind::Runtime));
+            stream.controller_error = Some(RunFailureKind::Runtime.message());
+            stream.refresh_run_notices(cx);
+
+            assert_eq!(stream.run_notices.len(), 1);
+            assert_eq!(
+                stream.run_notices[&index].kind,
+                run_notice::RunNoticeKind::CompactionFailure(Some(Failure::TimedOut))
+            );
+            assert!(stream.controller_error_is_run_notice());
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
 async fn issue365_compaction_states_keep_compact_natural_height(cx: &mut TestAppContext) {
     for (generation, state) in [
         Status::Compacting,
@@ -1364,6 +1831,128 @@ async fn issue397_new_success_resolves_old_compaction_but_preserves_run_failure(
                 notices.values().next().unwrap().text(),
                 RunFailureKind::ProviderQuota.message()
             );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn issue397_manual_compaction_failure_resolves_without_assistant_owner(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            let mut failed = status(1, Status::Failed);
+            failed.failure = Some(Failure::TimedOut);
+            assert!(stream.apply_context_status("context-thread", "mock", failed, cx));
+            let failed_index = stream.entries.len() - 1;
+            assert!(stream.entry_identities[failed_index].message_id.is_none());
+            assert!(!stream.compaction_failure_resolved(failed_index));
+
+            assert!(!stream.apply_context_status(
+                "context-thread",
+                "other-model",
+                status(2, Status::Succeeded),
+                cx
+            ));
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Compacting),
+                cx
+            ));
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Succeeded),
+                cx
+            ));
+
+            assert!(stream.entry_identities[failed_index].message_id.is_none());
+            assert!(stream.entry_identities.last().unwrap().message_id.is_none());
+            assert!(stream.compaction_failure_resolved(failed_index));
+            assert!(stream.process_entry_hidden(failed_index, cx));
+            assert!(stream.run_notice_projection(cx).is_empty());
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+async fn issue413_owned_compaction_resolution_requires_owner_model_and_newer_generation(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "owned-run".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            let mut failed = status(1, Status::Failed);
+            failed.failure = Some(Failure::SourceChanged);
+            assert!(stream.apply_context_status("context-thread", "mock", failed, cx));
+            let failed_index = stream.entries.len() - 1;
+            stream.remember_run_failure(
+                "owned-run",
+                RunFailureKind::Compaction(Failure::SourceChanged),
+            );
+            assert!(!stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(1, Status::Succeeded),
+                cx
+            ));
+
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Succeeded),
+                cx
+            ));
+            let success_index = stream.entries.len() - 1;
+            stream.set_entry_identity(
+                success_index,
+                stream.durable_entry_identity("other-run", "compaction-2", None),
+            );
+            assert!(!stream.compaction_failure_resolved(failed_index));
+            assert!(
+                !stream.compaction_failure_resolved_for_owner("owned-run", Failure::SourceChanged)
+            );
+            assert!(!stream.run_notice_projection(cx).is_empty());
+
+            stream.set_entry_identity(
+                success_index,
+                stream.durable_entry_identity("owned-run", "compaction-2", None),
+            );
+            if let StreamEntry::ContextCompaction { model, .. } = &mut stream.entries[success_index]
+            {
+                *model = "other-model".into();
+            }
+            assert!(!stream.compaction_failure_resolved(failed_index));
+            assert!(
+                !stream.compaction_failure_resolved_for_owner("owned-run", Failure::SourceChanged)
+            );
+            assert!(!stream.apply_context_status(
+                "context-thread",
+                "other-model",
+                status(3, Status::Succeeded),
+                cx
+            ));
+            assert!(!stream.run_notice_projection(cx).is_empty());
+
+            if let StreamEntry::ContextCompaction { model, .. } = &mut stream.entries[success_index]
+            {
+                *model = "mock".into();
+            }
+            assert!(stream.compaction_failure_resolved(failed_index));
+            assert!(
+                stream.compaction_failure_resolved_for_owner("owned-run", Failure::SourceChanged)
+            );
+            assert!(stream.run_notice_projection(cx).is_empty());
         })
         .unwrap();
 }

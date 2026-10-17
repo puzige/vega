@@ -1,5 +1,28 @@
 use super::*;
 
+struct ContextFailureProvider(std::sync::Mutex<Option<VegaError>>);
+
+impl ContextFailureProvider {
+    fn new(error: VegaError) -> Self {
+        Self(std::sync::Mutex::new(Some(error)))
+    }
+}
+
+impl vega_runtime::Provider for ContextFailureProvider {
+    fn chat_stream(
+        &self,
+        _request: vega_runtime::ChatRequest,
+        _cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
+        let error = self.0.lock().unwrap().take().unwrap();
+        Box::pin(async move {
+            let events =
+                futures::stream::once(async move { Err::<ProviderEvent, VegaError>(error) });
+            Ok(Box::pin(events) as vega_runtime::EventStream)
+        })
+    }
+}
+
 #[tokio::test]
 async fn live_sink_failure_stops_runtime_and_marks_assistant_failed() {
     let (store, dir, _project_id) = setup();
@@ -202,6 +225,192 @@ async fn provider_error_maps_to_error_event_and_failed_message() {
         })
         .unwrap();
     assert_eq!(responses, 0);
+}
+
+#[tokio::test]
+async fn compaction_failure_runtime_errors_persist_and_restore_exact_owner() {
+    use crate::types::{ContextCompactionFailureCode as Failure, RunFailureKind};
+    use vega_runtime::{ContextEstimateError, ContextRuntimeError as ContextError, VegaError};
+    use vega_store::run_diagnostics::{
+        DiagnosticFailureCode as Code, DiagnosticPhase, DiagnosticState,
+    };
+
+    let (store, directory, _) = setup();
+    let tools = vega_tools::Tools::new(directory.path()).unwrap();
+    let cases = [
+        (
+            ContextError::SourceChanged,
+            Code::SummarySourceChanged,
+            RunFailureKind::Compaction(Failure::SourceChanged),
+        ),
+        (
+            ContextError::SummaryTimedOut,
+            Code::SummaryTimeout,
+            RunFailureKind::Compaction(Failure::TimedOut),
+        ),
+        (
+            ContextError::SummaryOutputTruncated {
+                visible_bytes: 10,
+                thinking_bytes: 4,
+                output_tokens: Some(3),
+            },
+            Code::SummaryTruncated,
+            RunFailureKind::Compaction(Failure::InvalidSummary),
+        ),
+        (
+            ContextError::SummaryEmpty,
+            Code::SummaryEmpty,
+            RunFailureKind::Compaction(Failure::InvalidSummary),
+        ),
+        (
+            ContextError::InvalidSummary,
+            Code::SummaryFormatInvalid,
+            RunFailureKind::Compaction(Failure::InvalidSummary),
+        ),
+        (
+            ContextError::SummaryFormatInvalid,
+            Code::SummaryFormatInvalid,
+            RunFailureKind::Compaction(Failure::InvalidSummary),
+        ),
+        (
+            ContextError::SummaryProjectionInvalid,
+            Code::SummaryProjectionInvalid,
+            RunFailureKind::Compaction(Failure::InvalidSummary),
+        ),
+        (
+            ContextError::InvalidProjection,
+            Code::SummaryProjectionInvalid,
+            RunFailureKind::Compaction(Failure::InvalidSummary),
+        ),
+        (
+            ContextError::SystemMessageInResult,
+            Code::SummaryProjectionInvalid,
+            RunFailureKind::Compaction(Failure::InvalidSummary),
+        ),
+        (
+            ContextError::NoCompactablePrefix,
+            Code::SummaryNoCompactablePrefix,
+            RunFailureKind::Compaction(Failure::NoCompactablePrefix),
+        ),
+        (
+            ContextError::SourceTooLarge,
+            Code::SummarySourceTooLarge,
+            RunFailureKind::Compaction(Failure::TooLarge),
+        ),
+        (
+            ContextError::AggregateTooLarge,
+            Code::SummaryAggregateTooLarge,
+            RunFailureKind::Compaction(Failure::TooLarge),
+        ),
+        (
+            ContextError::ImagesUnsupported,
+            Code::SummaryImagesUnsupported,
+            RunFailureKind::Compaction(Failure::ImagesUnsupported),
+        ),
+        (
+            ContextError::AlreadyAttempted,
+            Code::SummaryAlreadyAttempted,
+            RunFailureKind::Compaction(Failure::Unavailable),
+        ),
+        (
+            ContextError::OverLimit {
+                estimated_tokens: 101,
+                input_budget: 100,
+            },
+            Code::ContextOverLimit,
+            RunFailureKind::ContextOverLimit,
+        ),
+        (
+            ContextError::SummaryInputOverLimit {
+                estimated_tokens: 101,
+                input_budget: 100,
+            },
+            Code::ContextOverLimit,
+            RunFailureKind::ContextOverLimit,
+        ),
+        (
+            ContextError::ResultOverLimit {
+                estimated_tokens: 101,
+                target_tokens: 100,
+            },
+            Code::ContextOverLimit,
+            RunFailureKind::ContextOverLimit,
+        ),
+        (
+            ContextError::Estimate(ContextEstimateError::InputTooLarge),
+            Code::ContextOverLimit,
+            RunFailureKind::ContextOverLimit,
+        ),
+        (
+            ContextError::MissingHook,
+            Code::UnknownSafeFailure,
+            RunFailureKind::Runtime,
+        ),
+        (
+            ContextError::Estimate(ContextEstimateError::InvalidBudget),
+            Code::UnknownSafeFailure,
+            RunFailureKind::Runtime,
+        ),
+        (
+            ContextError::Estimate(ContextEstimateError::Overflow),
+            Code::UnknownSafeFailure,
+            RunFailureKind::Runtime,
+        ),
+    ];
+
+    let mut expected_failures = Vec::new();
+    for (index, (context_error, expected_code, expected_kind)) in cases.into_iter().enumerate() {
+        let provider = ContextFailureProvider::new(VegaError::Context(context_error));
+        let run = run_thread_task(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            &format!("context failure {index}"),
+            "System",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(run.failed);
+        let live_error = run.events.iter().find_map(|event| match event {
+            ConversationEvent::Error {
+                message_id: Some(message_id),
+                error,
+                ..
+            } if message_id == &run.assistant_message_id => Some(error.as_ref()),
+            _ => None,
+        });
+        assert_eq!(
+            live_error.map(RunFailureKind::from_runtime),
+            Some(expected_kind),
+            "live error {index}"
+        );
+        let root = vega_store::run_diagnostics::read_by_thread(store.conn(), "thread-1")
+            .unwrap()
+            .into_iter()
+            .find(|row| {
+                row.event.run_id == run.assistant_message_id
+                    && row.event.phase == DiagnosticPhase::Run
+                    && row.event.state == DiagnosticState::Failed
+            })
+            .expect("persisted run terminal");
+        assert_eq!(root.event.failure_code, Some(expected_code), "root {index}");
+        expected_failures.push((run.assistant_message_id, expected_kind));
+    }
+
+    let reopened = Store::open_read_only(store.database_path().unwrap()).unwrap();
+    let projection = crate::agent::read_context_projection_with_provider(
+        &reopened,
+        "thread-1",
+        "mock-model",
+        None,
+        "system",
+    )
+    .unwrap();
+    for failure in expected_failures {
+        assert!(projection.run_failures.contains(&failure), "{failure:?}");
+    }
 }
 
 #[tokio::test]

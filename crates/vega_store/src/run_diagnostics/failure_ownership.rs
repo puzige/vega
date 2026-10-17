@@ -55,6 +55,337 @@ pub fn budget_failure_message_ids(
 }
 
 #[allow(missing_docs)]
+pub fn compaction_failure_message_ids(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Vec<(String, DiagnosticFailureCode)>, DiagnosticError> {
+    validate_identity(thread_id, "thread_id")?;
+    let mut statement = conn.prepare(
+        "SELECT run_id, attempt_id, failure_code, id, failure_source, failure_kind, failure_scope,
+                failure_observed, failure_limit, failure_units, failure_observed_items,
+                failure_limit_items, failure_tool_index, http_status, request_id, retry_count
+         FROM run_diagnostic_events
+         WHERE thread_id = ?1 AND parent_attempt_id IS NULL
+         AND phase = 'run' AND state = 'failed'
+         AND failure_code IN (
+            'summary_timeout', 'summary_truncated', 'summary_empty', 'summary_format_invalid',
+            'summary_projection_invalid', 'summary_source_changed', 'summary_source_too_large',
+            'summary_aggregate_too_large', 'summary_images_unsupported',
+            'summary_no_compactable_prefix', 'summary_already_attempted', 'unknown_safe_failure'
+         )
+         ORDER BY id",
+    )?;
+    let roots = statement
+        .query_map([thread_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<i64>>(11)?,
+                row.get::<_, Option<i64>>(12)?,
+                row.get::<_, Option<u16>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<u32>>(15)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut failures = Vec::new();
+    for (
+        run_id,
+        root_attempt_id,
+        raw_code,
+        root_event_id,
+        failure_source,
+        failure_kind,
+        failure_scope,
+        failure_observed,
+        failure_limit,
+        failure_units,
+        failure_observed_items,
+        failure_limit_items,
+        failure_tool_index,
+        http_status,
+        request_id,
+        retry_count,
+    ) in roots
+    {
+        let direct_code = summary_diagnostic_code(&raw_code);
+        let metrics = DiagnosticMetrics {
+            failure_source,
+            failure_kind,
+            failure_scope,
+            failure_observed: opt_u64(failure_observed, "failure_observed")?,
+            failure_limit: opt_u64(failure_limit, "failure_limit")?,
+            failure_units,
+            failure_observed_items: opt_u64(failure_observed_items, "failure_observed_items")?,
+            failure_limit_items: opt_u64(failure_limit_items, "failure_limit_items")?,
+            failure_tool_index: opt_u64(failure_tool_index, "failure_tool_index")?,
+            http_status,
+            request_id,
+            retry_count,
+            ..DiagnosticMetrics::default()
+        };
+        let code = match direct_code {
+            Some(code) => Some(code),
+            None if raw_code == "unknown_safe_failure" && generic_failure_metrics(&metrics) => {
+                let Some(message_id) =
+                    failed_assistant_owner(conn, thread_id, &run_id, &root_attempt_id)?
+                else {
+                    continue;
+                };
+                legacy_compaction_failure_code(
+                    conn,
+                    thread_id,
+                    &run_id,
+                    &root_attempt_id,
+                    root_event_id,
+                    &message_id,
+                )?
+            }
+            _ => None,
+        };
+        let Some(code) = code else {
+            continue;
+        };
+        if let Some(message_id) =
+            failed_assistant_owner(conn, thread_id, &run_id, &root_attempt_id)?
+        {
+            failures.push((message_id, code));
+        }
+    }
+    Ok(failures)
+}
+
+fn generic_failure_metrics(metrics: &DiagnosticMetrics) -> bool {
+    let no_details = metrics.failure_scope.is_none()
+        && metrics.failure_observed.is_none()
+        && metrics.failure_limit.is_none()
+        && metrics.failure_units.is_none()
+        && metrics.failure_observed_items.is_none()
+        && metrics.failure_limit_items.is_none()
+        && metrics.failure_tool_index.is_none()
+        && metrics.http_status.is_none()
+        && metrics.request_id.is_none()
+        && metrics.retry_count.is_none();
+    no_details
+        && ((metrics.failure_source.is_none() && metrics.failure_kind.is_none())
+            || (metrics.failure_source.as_deref() == Some("runtime")
+                && metrics.failure_kind.as_deref() == Some("unknown")))
+}
+
+fn legacy_compaction_failure_code(
+    conn: &Connection,
+    thread_id: &str,
+    run_id: &str,
+    root_attempt_id: &str,
+    root_event_id: i64,
+    message_id: &str,
+) -> Result<Option<DiagnosticFailureCode>, DiagnosticError> {
+    let terminal = conn
+        .query_row(
+            "SELECT id, attempt_id, phase, state, failure_code
+             FROM run_diagnostic_events
+             WHERE thread_id = ?1 AND run_id = ?2 AND parent_attempt_id = ?3
+             AND phase IN ('primary_model', 'tool', 'context_summary')
+             AND state <> 'started' AND id < ?4
+             ORDER BY id DESC LIMIT 1",
+            params![thread_id, run_id, root_attempt_id, root_event_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((terminal_id, operation_key, phase, state, raw_code)) = terminal else {
+        return Ok(None);
+    };
+    if phase != "context_summary" || state != "failed" {
+        return Ok(None);
+    }
+    let Some(code) = raw_code.as_deref().and_then(summary_diagnostic_code) else {
+        return Ok(None);
+    };
+    let Some(generation) = operation_generation(message_id, &operation_key) else {
+        return Ok(None);
+    };
+    let root_started = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM run_diagnostic_events
+             WHERE thread_id = ?1 AND run_id = ?2 AND attempt_id = ?3
+             AND parent_attempt_id IS NULL AND phase = 'run' AND state = 'started'",
+        )?;
+        statement
+            .query_map(params![thread_id, run_id, root_attempt_id], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let summary_started = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM run_diagnostic_events
+             WHERE thread_id = ?1 AND run_id = ?2 AND attempt_id = ?3
+             AND parent_attempt_id = ?4 AND phase = 'context_summary' AND state = 'started'",
+        )?;
+        statement
+            .query_map(
+                params![thread_id, run_id, operation_key, root_attempt_id],
+                |row| row.get::<_, i64>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let summary_terminal_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM run_diagnostic_events
+         WHERE thread_id = ?1 AND run_id = ?2 AND attempt_id = ?3
+         AND parent_attempt_id = ?4 AND phase = 'context_summary' AND state <> 'started'",
+        params![thread_id, run_id, operation_key, root_attempt_id],
+        |row| row.get(0),
+    )?;
+    if root_started.len() != 1
+        || summary_started.len() != 1
+        || summary_terminal_count != 1
+        || root_started[0] >= summary_started[0]
+        || summary_started[0] >= terminal_id
+        || terminal_id >= root_event_id
+    {
+        return Ok(None);
+    }
+    let incomplete_child: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM run_diagnostic_events started
+            WHERE started.thread_id = ?1 AND started.run_id = ?2
+              AND started.parent_attempt_id = ?3
+              AND started.phase IN ('primary_model', 'tool', 'context_summary')
+              AND started.state = 'started' AND started.id < ?4
+              AND NOT EXISTS(
+                  SELECT 1 FROM run_diagnostic_events terminal
+                  WHERE terminal.thread_id = started.thread_id
+                    AND terminal.run_id = started.run_id
+                    AND terminal.attempt_id = started.attempt_id
+                    AND terminal.parent_attempt_id = started.parent_attempt_id
+                    AND terminal.phase = started.phase
+                    AND terminal.state <> 'started' AND terminal.id < ?4
+              )
+        )",
+        params![thread_id, run_id, root_attempt_id, root_event_id],
+        |row| row.get(0),
+    )?;
+    if incomplete_child {
+        return Ok(None);
+    }
+    let status_rows = {
+        let mut statement = conn.prepare(
+            "SELECT model, generation, phase,
+                    CASE WHEN failure_detail = 'summary_timeout' THEN failure_detail ELSE failure END
+             FROM context_compaction_status
+             WHERE thread_id = ?1 AND operation_key = ?2
+               AND phase IN ('failed', 'succeeded', 'cancelled')
+             ORDER BY id",
+        )?;
+        statement
+            .query_map(params![thread_id, operation_key], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    if status_rows.len() != 1
+        || status_rows[0].1 != generation
+        || status_rows[0].2 != "failed"
+        || status_rows[0].3.as_deref() != Some(compaction_status_failure(code))
+    {
+        return Ok(None);
+    }
+    let prefix = format!("{message_id}:context-generation-");
+    let newer_successes = {
+        let mut statement = conn.prepare(
+            "SELECT operation_key, generation FROM context_compaction_status
+             WHERE thread_id = ?1 AND model = ?2 AND phase = 'succeeded' AND generation > ?3
+               AND substr(operation_key, 1, length(?4)) = ?4",
+        )?;
+        statement
+            .query_map(
+                params![thread_id, status_rows[0].0, generation, prefix],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let newer_success = newer_successes
+        .into_iter()
+        .any(|(operation_key, stored_generation)| {
+            operation_generation(message_id, &operation_key) == Some(stored_generation)
+                && stored_generation > generation
+        });
+    if newer_success {
+        return Ok(None);
+    }
+    Ok(Some(code))
+}
+
+fn operation_generation(message_id: &str, operation_key: &str) -> Option<i64> {
+    let prefix = format!("{message_id}:context-generation-");
+    let suffix = operation_key.strip_prefix(&prefix)?;
+    let (generation, attempt) = suffix.split_once(":attempt-")?;
+    if attempt.is_empty() {
+        return None;
+    }
+    generation
+        .parse::<i64>()
+        .ok()
+        .filter(|generation| *generation > 0)
+}
+
+fn summary_diagnostic_code(value: &str) -> Option<DiagnosticFailureCode> {
+    Some(match value {
+        "summary_timeout" => DiagnosticFailureCode::SummaryTimeout,
+        "summary_truncated" => DiagnosticFailureCode::SummaryTruncated,
+        "summary_empty" => DiagnosticFailureCode::SummaryEmpty,
+        "summary_format_invalid" => DiagnosticFailureCode::SummaryFormatInvalid,
+        "summary_projection_invalid" => DiagnosticFailureCode::SummaryProjectionInvalid,
+        "summary_source_changed" => DiagnosticFailureCode::SummarySourceChanged,
+        "summary_source_too_large" => DiagnosticFailureCode::SummarySourceTooLarge,
+        "summary_aggregate_too_large" => DiagnosticFailureCode::SummaryAggregateTooLarge,
+        "summary_images_unsupported" => DiagnosticFailureCode::SummaryImagesUnsupported,
+        "summary_no_compactable_prefix" => DiagnosticFailureCode::SummaryNoCompactablePrefix,
+        "summary_already_attempted" => DiagnosticFailureCode::SummaryAlreadyAttempted,
+        _ => return None,
+    })
+}
+
+fn compaction_status_failure(code: DiagnosticFailureCode) -> &'static str {
+    match code {
+        DiagnosticFailureCode::SummarySourceChanged => "source_changed",
+        DiagnosticFailureCode::SummaryNoCompactablePrefix => "no_compactable_prefix",
+        DiagnosticFailureCode::SummarySourceTooLarge
+        | DiagnosticFailureCode::SummaryAggregateTooLarge => "too_large",
+        DiagnosticFailureCode::SummaryImagesUnsupported => "images_unsupported",
+        DiagnosticFailureCode::SummaryAlreadyAttempted => "unavailable",
+        DiagnosticFailureCode::SummaryTimeout => "summary_timeout",
+        DiagnosticFailureCode::SummaryTruncated
+        | DiagnosticFailureCode::SummaryEmpty
+        | DiagnosticFailureCode::SummaryFormatInvalid
+        | DiagnosticFailureCode::SummaryProjectionInvalid => "invalid_summary",
+        _ => "",
+    }
+}
+
+#[allow(missing_docs)]
 pub fn projection_reasoning_failure(
     conn: &Connection,
     thread_id: &str,
@@ -219,6 +550,26 @@ mod tests {
         store
     }
 
+    fn other_thread(conn: &Connection) {
+        threads::create_standalone(
+            conn,
+            threads::NewThread {
+                id: "other-thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+    }
+
     fn start(
         conn: &Connection,
         run: &str,
@@ -243,16 +594,26 @@ mod tests {
         event
     }
 
-    fn finish(
+    fn finish(conn: &Connection, event: NewDiagnosticEvent, code: Option<DiagnosticFailureCode>) {
+        finish_state(
+            conn,
+            event,
+            if code.is_some() {
+                DiagnosticState::Failed
+            } else {
+                DiagnosticState::Succeeded
+            },
+            code,
+        );
+    }
+
+    fn finish_state(
         conn: &Connection,
         mut event: NewDiagnosticEvent,
+        state: DiagnosticState,
         code: Option<DiagnosticFailureCode>,
     ) {
-        event.state = if code.is_some() {
-            DiagnosticState::Failed
-        } else {
-            DiagnosticState::Succeeded
-        };
+        event.state = state;
         event.failure_code = code;
         event.duration_ms = Some(1);
         event.occurred_at = 2;
@@ -335,6 +696,93 @@ mod tests {
         finish(conn, root, Some(DiagnosticFailureCode::UnknownSafeFailure));
     }
 
+    fn context_status(
+        conn: &Connection,
+        operation_key: &str,
+        generation: u64,
+        phase: &str,
+        failure: Option<&str>,
+    ) {
+        crate::context_compaction::insert_status(
+            conn,
+            crate::context_compaction::NewContextCompactionStatus {
+                thread_id: "thread",
+                model: "mock",
+                operation_key,
+                generation,
+                phase,
+                usage_state: if phase == "started" {
+                    "pending"
+                } else {
+                    "unknown"
+                },
+                failure,
+                source_version: 1,
+                estimated_tokens: 80,
+                input_budget: 100,
+                target_tokens: 70,
+                created_at: 2,
+            },
+        )
+        .unwrap();
+    }
+
+    fn legacy_compaction_failure(
+        code: DiagnosticFailureCode,
+        status_failure: &str,
+        metrics: DiagnosticMetrics,
+        later_child: Option<(
+            DiagnosticPhase,
+            DiagnosticState,
+            Option<DiagnosticFailureCode>,
+        )>,
+    ) -> Store {
+        let store = store();
+        message(store.conn(), "compact-run", 1, "assistant", "failed", "");
+        let mut root = start(
+            store.conn(),
+            "compact-run",
+            "root",
+            "root",
+            DiagnosticPhase::Run,
+        );
+        let operation_key = "compact-run:context-generation-1:attempt-one";
+        let summary = start(
+            store.conn(),
+            "compact-run",
+            "root",
+            operation_key,
+            DiagnosticPhase::ContextSummary,
+        );
+        finish(store.conn(), summary, Some(code));
+        context_status(store.conn(), operation_key, 1, "started", None);
+        context_status(
+            store.conn(),
+            operation_key,
+            1,
+            "failed",
+            Some(status_failure),
+        );
+        if let Some((phase, state, code)) = later_child {
+            let attempt_id = if phase == DiagnosticPhase::ContextSummary {
+                "compact-run:context-generation-2:attempt-later"
+            } else {
+                "later-child"
+            };
+            let child = start(store.conn(), "compact-run", "root", attempt_id, phase);
+            if state != DiagnosticState::Started {
+                finish_state(store.conn(), child, state, code);
+            }
+        }
+        root.metrics = metrics;
+        finish(
+            store.conn(),
+            root,
+            Some(DiagnosticFailureCode::UnknownSafeFailure),
+        );
+        store
+    }
+
     #[test]
     fn classified_failure_details_only_restore_the_failed_owner() {
         let store = store();
@@ -367,6 +815,297 @@ mod tests {
             .unwrap();
         assert!(
             classified_failure_message_ids(store.conn(), "thread")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn compaction_failure_new_root_codes_restore_without_metrics() {
+        let codes = [
+            DiagnosticFailureCode::SummarySourceChanged,
+            DiagnosticFailureCode::SummaryTimeout,
+            DiagnosticFailureCode::SummaryTruncated,
+            DiagnosticFailureCode::SummaryEmpty,
+            DiagnosticFailureCode::SummaryFormatInvalid,
+            DiagnosticFailureCode::SummaryProjectionInvalid,
+            DiagnosticFailureCode::SummaryNoCompactablePrefix,
+            DiagnosticFailureCode::SummarySourceTooLarge,
+            DiagnosticFailureCode::SummaryAggregateTooLarge,
+            DiagnosticFailureCode::SummaryImagesUnsupported,
+            DiagnosticFailureCode::SummaryAlreadyAttempted,
+        ];
+        let store = store();
+        let mut expected = Vec::new();
+        for (index, code) in codes.into_iter().enumerate() {
+            let run_id = format!("new-run-{index}");
+            message(
+                store.conn(),
+                &run_id,
+                index as i64 + 1,
+                "assistant",
+                "failed",
+                "",
+            );
+            let root = start(
+                store.conn(),
+                &run_id,
+                &format!("root-{index}"),
+                &format!("root-{index}"),
+                DiagnosticPhase::Run,
+            );
+            finish(store.conn(), root, Some(code));
+            expected.push((run_id, code));
+        }
+        assert_eq!(
+            compaction_failure_message_ids(store.conn(), "thread").unwrap(),
+            expected
+        );
+        assert!(
+            compaction_failure_message_ids(store.conn(), "missing-thread")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn compaction_failure_legacy_roots_require_complete_matching_status_evidence() {
+        let cases = [
+            (
+                DiagnosticFailureCode::SummarySourceChanged,
+                "source_changed",
+            ),
+            (DiagnosticFailureCode::SummaryTimeout, "summary_timeout"),
+            (DiagnosticFailureCode::SummaryTruncated, "invalid_summary"),
+            (DiagnosticFailureCode::SummaryEmpty, "invalid_summary"),
+            (
+                DiagnosticFailureCode::SummaryFormatInvalid,
+                "invalid_summary",
+            ),
+            (
+                DiagnosticFailureCode::SummaryProjectionInvalid,
+                "invalid_summary",
+            ),
+            (
+                DiagnosticFailureCode::SummaryNoCompactablePrefix,
+                "no_compactable_prefix",
+            ),
+            (DiagnosticFailureCode::SummarySourceTooLarge, "too_large"),
+            (DiagnosticFailureCode::SummaryAggregateTooLarge, "too_large"),
+            (
+                DiagnosticFailureCode::SummaryImagesUnsupported,
+                "images_unsupported",
+            ),
+            (
+                DiagnosticFailureCode::SummaryAlreadyAttempted,
+                "unavailable",
+            ),
+        ];
+        for (index, (code, status_failure)) in cases.into_iter().enumerate() {
+            for metrics in [
+                DiagnosticMetrics::default(),
+                DiagnosticMetrics {
+                    failure_source: Some("runtime".into()),
+                    failure_kind: Some("unknown".into()),
+                    ..DiagnosticMetrics::default()
+                },
+            ] {
+                let store = legacy_compaction_failure(code, status_failure, metrics, None);
+                assert_eq!(
+                    compaction_failure_message_ids(store.conn(), "thread").unwrap(),
+                    [("compact-run".into(), code)],
+                    "case {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compaction_failure_legacy_recovery_rejects_ambiguous_or_resolved_evidence() {
+        let mutations = [
+            "DELETE FROM run_diagnostic_events WHERE attempt_id = 'compact-run:context-generation-1:attempt-one' AND state = 'started'",
+            "DELETE FROM run_diagnostic_events WHERE attempt_id = 'root' AND state = 'started'",
+            "UPDATE run_diagnostic_events SET parent_attempt_id = 'other-root' WHERE attempt_id = 'root' AND state = 'started'",
+            "UPDATE run_diagnostic_events SET id = 100 WHERE attempt_id = 'root' AND state = 'started'",
+            "UPDATE run_diagnostic_events SET id = 100 WHERE attempt_id = 'compact-run:context-generation-1:attempt-one' AND state = 'started'",
+            "UPDATE run_diagnostic_events SET id = 100 WHERE attempt_id = 'compact-run:context-generation-1:attempt-one' AND state = 'failed'",
+            "UPDATE run_diagnostic_events SET run_id = 'other-run' WHERE attempt_id = 'compact-run:context-generation-1:attempt-one'",
+            "UPDATE run_diagnostic_events SET run_id = 'other-run' WHERE attempt_id = 'root'",
+            "UPDATE run_diagnostic_events SET parent_attempt_id = 'other-root' WHERE attempt_id = 'root' AND state = 'failed'",
+            "UPDATE run_diagnostic_events SET attempt_id = 'other-owner:context-generation-1:attempt-one' WHERE attempt_id = 'compact-run:context-generation-1:attempt-one'",
+            "DELETE FROM context_compaction_status WHERE operation_key = 'compact-run:context-generation-1:attempt-one' AND phase = 'failed'",
+            "UPDATE context_compaction_status SET failure = 'too_large' WHERE operation_key = 'compact-run:context-generation-1:attempt-one' AND phase = 'failed'",
+            "UPDATE context_compaction_status SET generation = 2 WHERE operation_key = 'compact-run:context-generation-1:attempt-one' AND phase = 'failed'",
+            "UPDATE run_diagnostic_events SET parent_attempt_id = 'other-root' WHERE attempt_id = 'compact-run:context-generation-1:attempt-one' AND state = 'failed'",
+            "UPDATE run_diagnostic_events SET failure_code = 'summary_empty' WHERE attempt_id = 'compact-run:context-generation-1:attempt-one' AND state = 'failed'",
+            "UPDATE run_diagnostic_events SET failure_source = 'provider', failure_kind = 'unknown' WHERE attempt_id = 'root' AND state = 'failed'",
+            "UPDATE run_diagnostic_events SET failure_code = 'provider_http' WHERE attempt_id = 'root' AND state = 'failed'",
+            "UPDATE messages SET status = 'done' WHERE id = 'compact-run'",
+        ];
+        for mutation in mutations {
+            let store = legacy_compaction_failure(
+                DiagnosticFailureCode::SummarySourceChanged,
+                "source_changed",
+                DiagnosticMetrics::default(),
+                None,
+            );
+            store.conn().execute(mutation, []).unwrap();
+            assert!(
+                compaction_failure_message_ids(store.conn(), "thread")
+                    .unwrap()
+                    .is_empty(),
+                "{mutation}"
+            );
+        }
+
+        let store = legacy_compaction_failure(
+            DiagnosticFailureCode::SummarySourceChanged,
+            "source_changed",
+            DiagnosticMetrics::default(),
+            None,
+        );
+        other_thread(store.conn());
+        store.conn().execute(
+            "UPDATE run_diagnostic_events SET thread_id = 'other-thread' WHERE attempt_id = 'compact-run:context-generation-1:attempt-one'",
+            [],
+        ).unwrap();
+        assert!(
+            compaction_failure_message_ids(store.conn(), "thread")
+                .unwrap()
+                .is_empty()
+        );
+
+        let store = legacy_compaction_failure(
+            DiagnosticFailureCode::SummarySourceChanged,
+            "source_changed",
+            DiagnosticMetrics::default(),
+            None,
+        );
+        context_status(
+            store.conn(),
+            "compact-run:context-generation-1:attempt-one",
+            1,
+            "failed",
+            Some("source_changed"),
+        );
+        assert!(
+            compaction_failure_message_ids(store.conn(), "thread")
+                .unwrap()
+                .is_empty()
+        );
+
+        let store = legacy_compaction_failure(
+            DiagnosticFailureCode::SummarySourceChanged,
+            "source_changed",
+            DiagnosticMetrics::default(),
+            None,
+        );
+        context_status(
+            store.conn(),
+            "compact-run:context-generation-1:attempt-one",
+            1,
+            "succeeded",
+            None,
+        );
+        assert!(
+            compaction_failure_message_ids(store.conn(), "thread")
+                .unwrap()
+                .is_empty()
+        );
+
+        let store = legacy_compaction_failure(
+            DiagnosticFailureCode::SummarySourceChanged,
+            "source_changed",
+            DiagnosticMetrics::default(),
+            Some((
+                DiagnosticPhase::PrimaryModel,
+                DiagnosticState::Succeeded,
+                None,
+            )),
+        );
+        assert!(
+            compaction_failure_message_ids(store.conn(), "thread")
+                .unwrap()
+                .is_empty()
+        );
+
+        for (phase, state, code) in [
+            (
+                DiagnosticPhase::PrimaryModel,
+                DiagnosticState::Succeeded,
+                None,
+            ),
+            (
+                DiagnosticPhase::PrimaryModel,
+                DiagnosticState::Cancelled,
+                Some(DiagnosticFailureCode::Cancelled),
+            ),
+            (
+                DiagnosticPhase::PrimaryModel,
+                DiagnosticState::Failed,
+                Some(DiagnosticFailureCode::ProviderHttp),
+            ),
+            (DiagnosticPhase::Tool, DiagnosticState::Succeeded, None),
+            (
+                DiagnosticPhase::Tool,
+                DiagnosticState::Cancelled,
+                Some(DiagnosticFailureCode::Cancelled),
+            ),
+            (
+                DiagnosticPhase::Tool,
+                DiagnosticState::Failed,
+                Some(DiagnosticFailureCode::ProviderHttp),
+            ),
+            (
+                DiagnosticPhase::ContextSummary,
+                DiagnosticState::Succeeded,
+                None,
+            ),
+            (
+                DiagnosticPhase::ContextSummary,
+                DiagnosticState::Cancelled,
+                Some(DiagnosticFailureCode::Cancelled),
+            ),
+            (
+                DiagnosticPhase::ContextSummary,
+                DiagnosticState::Failed,
+                Some(DiagnosticFailureCode::ProviderHttp),
+            ),
+            (
+                DiagnosticPhase::PrimaryModel,
+                DiagnosticState::Started,
+                None,
+            ),
+        ] {
+            let store = legacy_compaction_failure(
+                DiagnosticFailureCode::SummarySourceChanged,
+                "source_changed",
+                DiagnosticMetrics::default(),
+                Some((phase, state, code)),
+            );
+            assert!(
+                compaction_failure_message_ids(store.conn(), "thread")
+                    .unwrap()
+                    .is_empty(),
+                "{phase:?} {state:?}"
+            );
+        }
+
+        let store = legacy_compaction_failure(
+            DiagnosticFailureCode::SummarySourceChanged,
+            "source_changed",
+            DiagnosticMetrics::default(),
+            None,
+        );
+        context_status(
+            store.conn(),
+            "compact-run:context-generation-2:attempt-two",
+            2,
+            "succeeded",
+            None,
+        );
+        assert!(
+            compaction_failure_message_ids(store.conn(), "thread")
                 .unwrap()
                 .is_empty()
         );

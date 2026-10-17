@@ -194,7 +194,7 @@ impl ConversationStream {
                     failure,
                     ..
                 } => {
-                    self.run_failures.insert(message_id, failure);
+                    self.remember_run_failure(&message_id, failure);
                 }
                 HistoryEntry::AssistantResponseMetadata {
                     message_id,
@@ -1525,17 +1525,23 @@ impl ConversationStream {
                     {
                         self.append_empty_terminal_segment();
                     }
-                    if let Some((active_id, entry_index)) = self.active_agent_message.as_ref()
-                        && active_id == &message_id
-                        && let Some(StreamEntry::Assistant {
+                    let active_failure_index =
+                        self.active_agent_message
+                            .as_ref()
+                            .and_then(|(active_id, index)| {
+                                (active_id == &message_id && *index != usize::MAX).then_some(*index)
+                            });
+                    if let Some(entry_index) = active_failure_index {
+                        let failure = self.remember_run_failure(&message_id, failure);
+                        if let Some(StreamEntry::Assistant {
                             failure: active_failure,
                             ..
-                        }) = self.entries.get_mut(*entry_index)
-                    {
-                        *active_failure = Some(failure);
-                        self.run_failures.insert(message_id.clone(), failure);
-                        self.controller_runtime_error = Some((message_id.clone(), failure));
-                        self.controller_error = Some(failure.message());
+                        }) = self.entries.get_mut(entry_index)
+                        {
+                            *active_failure = Some(failure);
+                            self.controller_runtime_error = Some((message_id.clone(), failure));
+                            self.controller_error = Some(failure.message());
+                        }
                     }
                     self.record_composer_terminal(&message_id, false);
                     self.finish_agent_message(&message_id, cx);

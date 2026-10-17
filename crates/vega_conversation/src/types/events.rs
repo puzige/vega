@@ -42,12 +42,46 @@ pub enum RunFailureKind {
     CredentialOutcomeUnknown,
     ContextOverLimit,
     #[allow(missing_docs)]
+    Compaction(ContextCompactionFailureCode),
+    #[allow(missing_docs)]
     ReasoningLimit(Option<vega_runtime::ReasoningBudgetScope>),
     /// A durable failed row whose original reason was not persisted.
     Persisted,
 }
 
 impl RunFailureKind {
+    pub(crate) fn from_compaction_diagnostic_code(
+        code: vega_store::run_diagnostics::DiagnosticFailureCode,
+    ) -> Option<Self> {
+        use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
+        match code {
+            Code::ContextOverLimit => Some(Self::ContextOverLimit),
+            Code::SummaryTimeout => Some(Self::Compaction(ContextCompactionFailureCode::TimedOut)),
+            Code::SummaryTruncated
+            | Code::SummaryEmpty
+            | Code::SummaryFormatInvalid
+            | Code::SummaryProjectionInvalid => Some(Self::Compaction(
+                ContextCompactionFailureCode::InvalidSummary,
+            )),
+            Code::SummarySourceChanged => Some(Self::Compaction(
+                ContextCompactionFailureCode::SourceChanged,
+            )),
+            Code::SummarySourceTooLarge | Code::SummaryAggregateTooLarge => {
+                Some(Self::Compaction(ContextCompactionFailureCode::TooLarge))
+            }
+            Code::SummaryImagesUnsupported => Some(Self::Compaction(
+                ContextCompactionFailureCode::ImagesUnsupported,
+            )),
+            Code::SummaryNoCompactablePrefix => Some(Self::Compaction(
+                ContextCompactionFailureCode::NoCompactablePrefix,
+            )),
+            Code::SummaryAlreadyAttempted => {
+                Some(Self::Compaction(ContextCompactionFailureCode::Unavailable))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn from_diagnostic(
         metrics: &vega_store::run_diagnostics::DiagnosticMetrics,
     ) -> Self {
@@ -166,6 +200,37 @@ impl RunFailureKind {
                 | vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
                 | vega_runtime::ContextRuntimeError::ResultOverLimit { .. },
             ) => Self::ContextOverLimit,
+            vega_runtime::VegaError::Context(vega_runtime::ContextRuntimeError::SourceChanged) => {
+                Self::Compaction(ContextCompactionFailureCode::SourceChanged)
+            }
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::SummaryTimedOut,
+            ) => Self::Compaction(ContextCompactionFailureCode::TimedOut),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::SummaryOutputTruncated { .. }
+                | vega_runtime::ContextRuntimeError::SummaryEmpty
+                | vega_runtime::ContextRuntimeError::InvalidSummary
+                | vega_runtime::ContextRuntimeError::SummaryFormatInvalid
+                | vega_runtime::ContextRuntimeError::SummaryProjectionInvalid
+                | vega_runtime::ContextRuntimeError::InvalidProjection
+                | vega_runtime::ContextRuntimeError::SystemMessageInResult,
+            ) => Self::Compaction(ContextCompactionFailureCode::InvalidSummary),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::NoCompactablePrefix,
+            ) => Self::Compaction(ContextCompactionFailureCode::NoCompactablePrefix),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::SourceTooLarge
+                | vega_runtime::ContextRuntimeError::AggregateTooLarge,
+            ) => Self::Compaction(ContextCompactionFailureCode::TooLarge),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::ImagesUnsupported,
+            ) => Self::Compaction(ContextCompactionFailureCode::ImagesUnsupported),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::AlreadyAttempted,
+            ) => Self::Compaction(ContextCompactionFailureCode::Unavailable),
+            vega_runtime::VegaError::Context(vega_runtime::ContextRuntimeError::Estimate(
+                vega_runtime::ContextEstimateError::InputTooLarge,
+            )) => Self::ContextOverLimit,
             vega_runtime::VegaError::ReasoningBudgetExceeded { scope, .. }
             | vega_runtime::VegaError::ReasoningReplayBudgetExceeded { scope, .. } => {
                 Self::ReasoningLimit(Some(*scope))
@@ -205,6 +270,7 @@ impl RunFailureKind {
             Self::ContextOverLimit => {
                 "Context exceeds available capacity. The conversation is preserved. Adjust context capacity, narrow tool queries, or start a new conversation.".into()
             }
+            Self::Compaction(failure) => failure.message().into(),
             Self::ReasoningLimit(_) => {
                 "The run exceeded the local reasoning limit. Send your message again to continue.".into()
             }
@@ -1031,7 +1097,154 @@ mod run_failure_tests {
         }
         assert_eq!(
             RunFailureKind::from_runtime(&VegaError::Context(ContextRuntimeError::SourceChanged)),
+            RunFailureKind::Compaction(super::super::ContextCompactionFailureCode::SourceChanged)
+        );
+    }
+
+    #[test]
+    fn compaction_failure_runtime_variants_keep_typed_conversation_causes() {
+        use super::super::ContextCompactionFailureCode as Failure;
+        use vega_runtime::{ContextEstimateError, ContextRuntimeError as ContextError};
+
+        let cases = [
+            (
+                ContextError::SourceChanged,
+                RunFailureKind::Compaction(Failure::SourceChanged),
+            ),
+            (
+                ContextError::SummaryTimedOut,
+                RunFailureKind::Compaction(Failure::TimedOut),
+            ),
+            (
+                ContextError::SummaryOutputTruncated {
+                    visible_bytes: 1,
+                    thinking_bytes: 2,
+                    output_tokens: Some(3),
+                },
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::SummaryEmpty,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::InvalidSummary,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::SummaryFormatInvalid,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::SummaryProjectionInvalid,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::InvalidProjection,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::SystemMessageInResult,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::NoCompactablePrefix,
+                RunFailureKind::Compaction(Failure::NoCompactablePrefix),
+            ),
+            (
+                ContextError::SourceTooLarge,
+                RunFailureKind::Compaction(Failure::TooLarge),
+            ),
+            (
+                ContextError::AggregateTooLarge,
+                RunFailureKind::Compaction(Failure::TooLarge),
+            ),
+            (
+                ContextError::ImagesUnsupported,
+                RunFailureKind::Compaction(Failure::ImagesUnsupported),
+            ),
+            (
+                ContextError::AlreadyAttempted,
+                RunFailureKind::Compaction(Failure::Unavailable),
+            ),
+            (
+                ContextError::Estimate(ContextEstimateError::InputTooLarge),
+                RunFailureKind::ContextOverLimit,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let actual = RunFailureKind::from_runtime(&VegaError::Context(error));
+            assert_eq!(actual, expected);
+            assert!(!actual.message().contains("runtime environment"));
+        }
+        assert_eq!(
+            RunFailureKind::from_runtime(&VegaError::Context(ContextError::MissingHook)),
             RunFailureKind::Runtime
+        );
+    }
+
+    #[test]
+    fn compaction_failure_diagnostic_codes_fold_to_safe_display_categories() {
+        use super::super::ContextCompactionFailureCode as Failure;
+        use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
+
+        let cases = [
+            (
+                Code::SummarySourceChanged,
+                RunFailureKind::Compaction(Failure::SourceChanged),
+            ),
+            (
+                Code::SummaryTimeout,
+                RunFailureKind::Compaction(Failure::TimedOut),
+            ),
+            (
+                Code::SummaryTruncated,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                Code::SummaryEmpty,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                Code::SummaryFormatInvalid,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                Code::SummaryProjectionInvalid,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                Code::SummaryNoCompactablePrefix,
+                RunFailureKind::Compaction(Failure::NoCompactablePrefix),
+            ),
+            (
+                Code::SummarySourceTooLarge,
+                RunFailureKind::Compaction(Failure::TooLarge),
+            ),
+            (
+                Code::SummaryAggregateTooLarge,
+                RunFailureKind::Compaction(Failure::TooLarge),
+            ),
+            (
+                Code::SummaryImagesUnsupported,
+                RunFailureKind::Compaction(Failure::ImagesUnsupported),
+            ),
+            (
+                Code::SummaryAlreadyAttempted,
+                RunFailureKind::Compaction(Failure::Unavailable),
+            ),
+            (Code::ContextOverLimit, RunFailureKind::ContextOverLimit),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(
+                RunFailureKind::from_compaction_diagnostic_code(code),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            RunFailureKind::from_compaction_diagnostic_code(Code::UnknownSafeFailure),
+            None
         );
     }
 
