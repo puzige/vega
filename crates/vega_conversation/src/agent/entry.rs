@@ -556,6 +556,112 @@ where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
     let mut actor_config = actor_config;
+    let binding = if let Some(path) = store.database_path() {
+        let path = path.to_path_buf();
+        let worker_path = path.clone();
+        let thread = thread_id.to_string();
+        let existing = actor_config.automation_claim.clone();
+        let claim = tokio::task::spawn_blocking(move || {
+            let store = Store::open(worker_path).map_err(|_| "自动任务存储不可用".to_string())?;
+            if let Some(claim) = existing {
+                if let Some(claim) = crate::automation::activate_claim(&store, &claim)? {
+                    Ok(Some(claim))
+                } else {
+                    crate::automation::finish_unsettled_claim(
+                        &store,
+                        &claim,
+                        crate::automation::now_ms(),
+                    )?;
+                    Err("自动任务已撤销".into())
+                }
+            } else {
+                crate::automation::claim(&store, &thread, None, crate::automation::now_ms())
+            }
+        })
+        .await
+        .map_err(|_| ConversationError::CorruptRow("自动任务处理失败".into()))?
+        .map_err(ConversationError::CorruptRow)?;
+        claim.map(|claim| Arc::new(crate::automation::AutomationBinding::new(path, claim)))
+    } else {
+        None
+    };
+    actor_config.automation_claim = binding.as_ref().map(|binding| binding.claim.clone());
+    actor_config.automation_hook = binding
+        .clone()
+        .map(|hook| hook as Arc<dyn vega_runtime::RuntimeAutomationHook>);
+    let started = std::time::Instant::now();
+    let result = run_thread_task_with_automation_inner(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        permission_hook,
+        &mut event_sink,
+        actor_config,
+        persisted_user_message_id,
+        pricing_catalog,
+        reasoning,
+        images,
+        mcp_servers,
+    )
+    .await;
+    if let Some(binding) = binding {
+        let success = result.as_ref().is_ok_and(|run| {
+            !run.failed
+                && !run.interrupted
+                && run.events.iter().rev().find_map(|event| match event {
+                    ConversationEvent::MessageFinished { stop_reason, .. } => Some(*stop_reason),
+                    _ => None,
+                }) == Some(crate::types::ConversationStopReason::End)
+        });
+        let complete = binding.usage_complete();
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if let Some(path) = store.database_path() {
+            let path = path.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                let store = Store::open(path).map_err(|_| "自动任务存储不可用".to_string())?;
+                crate::automation::finish(
+                    &store,
+                    &binding.claim,
+                    success,
+                    complete,
+                    elapsed,
+                    crate::automation::now_ms(),
+                )
+            })
+            .await
+            .map_err(|_| ConversationError::CorruptRow("自动任务记账失败".into()))?
+            .map_err(ConversationError::CorruptRow)?;
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_thread_task_with_automation_inner<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    mut event_sink: F,
+    actor_config: PersistenceActorConfig,
+    persisted_user_message_id: Option<String>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
+    images: Vec<crate::types::ImageAttachment>,
+    mcp_servers: Vec<vega_runtime::McpReadyServer>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    let mut actor_config = actor_config;
     actor_config.steering_cancel = Some(cancel.clone());
     crate::attachments::validate_images(&images)
         .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;

@@ -204,6 +204,7 @@ pub struct RuntimeToolConfig {
     /// Maximum number of agentic turns (provider round-trips) in this run.
     /// `0` means unlimited. Set from `[agent] turn_limit` in config.toml.
     pub turn_limit: usize,
+    automation: Option<Arc<dyn automation::RuntimeAutomationHook>>,
     steering_source: Option<Arc<dyn RuntimeSteeringSource>>,
     user_questions: Option<Arc<dyn RuntimeUserQuestionHook>>,
     mcp_candidates: Vec<McpCandidate>,
@@ -234,6 +235,7 @@ impl RuntimeToolConfig {
             checkpoint_root,
             exact_rules,
             turn_limit: 0,
+            automation: None,
             steering_source: None,
             user_questions: None,
             mcp_candidates: Vec::new(),
@@ -260,6 +262,14 @@ impl RuntimeToolConfig {
 
     pub fn with_user_questions(mut self, hook: Option<Arc<dyn RuntimeUserQuestionHook>>) -> Self {
         self.user_questions = hook;
+        self
+    }
+
+    pub fn with_automation(
+        mut self,
+        hook: Option<Arc<dyn automation::RuntimeAutomationHook>>,
+    ) -> Self {
+        self.automation = hook;
         self
     }
 
@@ -469,8 +479,12 @@ impl RuntimeToolConfig {
             )?
             .with_skills(load_skill, skills_configured)?
             .with_computer_use(self.computer_use.as_ref())
+            .with_automation(self.automation.as_ref())
             .definitions()
             .to_vec();
+            if let Some(hook) = &self.automation {
+                add(30, hook.context().to_string().as_bytes());
+            }
             add(29, catalog.as_bytes());
             add(23, &(definitions.len() as u64).to_le_bytes());
             for definition in definitions {
@@ -1271,3 +1285,6 @@ pub use loop_::{
 };
 pub(crate) use tools_exec::*;
 pub use tools_exec::{tool_definitions, tool_names_equivalent};
+
+mod automation;
+pub use automation::RuntimeAutomationHook;

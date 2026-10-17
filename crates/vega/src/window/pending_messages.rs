@@ -62,6 +62,7 @@ impl VegaWindow {
         if stream.read(cx).task_backend() != TaskBackend::Native {
             return;
         }
+        self.bind_automation(stream.clone(), thread_id.clone(), cx);
         let Some(database) = self.queue_database(cx) else {
             return;
         };

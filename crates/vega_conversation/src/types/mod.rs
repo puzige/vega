@@ -98,3 +98,6 @@ pub use crate::privacy::{PrivacyFinding, PrivacyReview};
 
 mod user_questions;
 pub use user_questions::*;
+
+mod automation;
+pub use automation::*;

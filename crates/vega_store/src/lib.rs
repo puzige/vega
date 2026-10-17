@@ -37,6 +37,7 @@
 //! owns `config.toml` under the config root, `keystore` owns
 //! owner-only plaintext local credentials; `projects` / `git_detect` are T10 additions.
 
+pub mod automation;
 pub mod codex_tasks;
 pub mod computer_use_delivery;
 pub mod config;
@@ -98,6 +99,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0023_credential_continuations.sql"),
     include_str!("../migrations/0024_credential_privacy.sql"),
     include_str!("../migrations/0025_failure_details.sql"),
+    include_str!("../migrations/0026_automation.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -428,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_thirty_six_tables() {
+    fn migrate_creates_exactly_the_thirty_eight_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -447,6 +449,8 @@ mod tests {
             vec![
                 "assistant_responses",
                 "assistant_run_durations",
+                "automation_runs",
+                "automation_tasks",
                 "builtin_skill_activations",
                 "codex_session_creations",
                 "codex_task_snapshots",
@@ -723,7 +727,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 36);
+        assert_eq!(tables, 38);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
@@ -814,7 +818,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 36);
+        assert_eq!(tables, 38);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {

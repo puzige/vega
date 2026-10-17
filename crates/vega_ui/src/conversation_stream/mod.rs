@@ -399,3 +399,6 @@ pub struct CredentialContinuationRequested {
     pub thread_id: String,
     pub message_id: String,
 }
+
+mod automation;
+pub use automation::AutomationRequested;

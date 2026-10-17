@@ -1,6 +1,16 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
+    matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")
+        && input_json.len() <= 32 * 1024
+        && serde_json::from_str::<serde_json::Value>(input_json).is_ok_and(|value| {
+            value
+                .as_object()
+                .is_some_and(|object| tool != "get_goal" || object.is_empty())
+        })
+}
+
 pub(crate) fn valid_skill_call_projection(tool: &str, input_json: &str) -> bool {
     if input_json == "{}" {
         return true;
@@ -59,6 +69,9 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
                 input_json: input_json.to_string(),
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
+        }
+        "get_goal" | "update_goal" | "schedule_wakeup" => {
+            valid_automation_call_projection(tool, input_json)
         }
         "Read" | "read" | "glob" | "grep" => serde_json::from_str::<serde_json::Value>(input_json)
             .is_ok_and(|value| value.is_object()),
@@ -1006,6 +1019,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     runtime_config
                 };
                 runtime_config
+                    .with_automation(config.automation_hook.clone())
                     .with_foreign_call_ids(foreign_call_ids)
                     .with_turn_limit(config.turn_limit as usize)
             },
@@ -1128,6 +1142,57 @@ pub(crate) fn validate_recovered_projection(
         return Ok(input_json.to_owned());
     }
     match tool {
+        "get_goal" | "update_goal" | "schedule_wakeup" => {
+            let valid_json = valid_automation_call_projection(tool, input_json);
+            let valid_output = match status {
+                RuntimeToolStatus::Success => {
+                    approval.source == ApprovalSource::ReadonlyTool
+                        && approval.decision == Approval::Once
+                        && serde_json::from_str::<serde_json::Value>(output)
+                            .is_ok_and(|value| value.is_object())
+                }
+                RuntimeToolStatus::Failed => {
+                    approval.source == ApprovalSource::ReadonlyTool
+                        && approval.decision == Approval::Once
+                        && output.starts_with("Tool error: tool 'automation' failed:")
+                }
+                RuntimeToolStatus::Cancelled => {
+                    approval.decision == Approval::Once
+                        && matches!(
+                            approval.source,
+                            ApprovalSource::ReadonlyTool
+                                | ApprovalSource::Recovery
+                                | ApprovalSource::Timeout
+                        )
+                        && matches!(
+                            output,
+                            vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                                | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                        )
+                }
+                RuntimeToolStatus::Rejected => {
+                    approval.decision == Approval::Deny
+                        && ((approval.source == ApprovalSource::RunMode
+                            && input_json == "{}"
+                            && output == "Tool error: denied: unavailable tool")
+                            || (approval.source == ApprovalSource::Recovery
+                                && output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT)
+                            || (approval.source == ApprovalSource::Timeout
+                                && output == "Tool error: permission denied"))
+                }
+            };
+            if !valid_json
+                || !valid_output
+                || output.len() > 128 * 1024
+                || exit_code.is_some()
+                || duration_ms.is_some()
+                || approval.note.is_some()
+                || approval.danger.is_some()
+            {
+                return Err(corrupt());
+            }
+            Ok(input_json.to_string())
+        }
         "load_skill" | "read_skill_resource" => {
             if exit_code.is_some()
                 || duration_ms.is_some()
@@ -1620,6 +1685,19 @@ pub(crate) fn approval_source_matches(
         };
     }
     match tool {
+        "get_goal" | "update_goal" | "schedule_wakeup" => match status {
+            RuntimeToolStatus::Rejected => matches!(
+                source,
+                ApprovalSource::RunMode | ApprovalSource::Recovery | ApprovalSource::Timeout
+            ),
+            RuntimeToolStatus::Success | RuntimeToolStatus::Failed => {
+                source == ApprovalSource::ReadonlyTool
+            }
+            RuntimeToolStatus::Cancelled => matches!(
+                source,
+                ApprovalSource::ReadonlyTool | ApprovalSource::Recovery | ApprovalSource::Timeout
+            ),
+        },
         "load_skill" | "read_skill_resource" => {
             if status == RuntimeToolStatus::Rejected {
                 matches!(

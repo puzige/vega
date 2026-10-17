@@ -26,6 +26,7 @@ mod app_agent;
 mod app_palette;
 mod app_usage;
 mod artifact_controller;
+mod automation_controller;
 mod branch_controller;
 mod codex_agent;
 mod commit_controller;
@@ -110,6 +111,7 @@ fn main() {
         // states, opened thread). On failure the app still boots and the
         // sidebar blocks degrade to inline error bars (ui-spec §4.6).
         vega_ui::sidebar::init(cx);
+        automation_controller::startup(cx);
 
         // #73: one app-scoped revocation domain is shared by Settings and
         // every worker. A second service constructed against the same SQLite

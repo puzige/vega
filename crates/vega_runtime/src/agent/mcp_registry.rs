@@ -936,6 +936,17 @@ impl RunCapabilitySnapshot {
         self
     }
 
+    pub(crate) fn with_automation(
+        mut self,
+        hook: Option<&Arc<dyn super::automation::RuntimeAutomationHook>>,
+    ) -> Self {
+        if let Some(hook) = hook {
+            self.definitions
+                .extend(super::automation::definitions(&hook.context()));
+        }
+        self
+    }
+
     pub(crate) fn definitions(&self) -> &[ToolDefinition] {
         &self.definitions
     }

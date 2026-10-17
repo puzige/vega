@@ -8,6 +8,9 @@ mod context_compaction;
 #[path = "pending_messages.rs"]
 mod pending_messages;
 
+#[path = "automation.rs"]
+mod automation;
+
 struct Fixture {
     _data: TempDir,
     repo: ControllerRepo,

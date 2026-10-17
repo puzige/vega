@@ -1,0 +1,615 @@
+use super::*;
+use crate::automation_controller::{AutomationGlobal, ensure_global};
+
+impl VegaWindow {
+    fn automation_database(&self, cx: &App) -> Option<PathBuf> {
+        cx.global::<VegaStore>()
+            .0
+            .as_ref()
+            .ok()?
+            .database_path()
+            .map(std::path::Path::to_path_buf)
+    }
+    fn automation_error(
+        &self,
+        stream: &Entity<ConversationStream>,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        let mut projection = stream.read(cx).automation_projection().clone();
+        projection.busy = false;
+        projection.error = Some(error);
+        stream.update(cx, |stream, cx| {
+            stream.reject_composer_submission(cx);
+            stream.apply_automation(projection, cx);
+        });
+    }
+    pub(crate) fn intercept_automation(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &ComposerSubmitted,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let command = match vega_conversation::automation::parse_command(&request.content) {
+            Ok(None) => return false,
+            Ok(Some(command)) => command,
+            Err(error) => {
+                self.automation_error(&stream, error, cx);
+                return true;
+            }
+        };
+        if stream.read(cx).task_backend() != TaskBackend::Native {
+            self.automation_error(
+                &stream,
+                "持续目标与循环任务仅适用于 Vega 原生任务".into(),
+                cx,
+            );
+        } else if !request.images.is_empty() || request.skill_intent.is_some() {
+            self.automation_error(
+                &stream,
+                "自动任务命令不支持图片或 Skill 选择，请先移除附件".into(),
+                cx,
+            );
+        } else {
+            self.change_automation(
+                stream,
+                &request.thread_id,
+                command,
+                Some(request.content.clone()),
+                cx,
+            );
+        }
+        true
+    }
+    pub(crate) fn automation_requested(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &AutomationRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if self.owns_stream_request(&stream, &request.thread_id, cx) {
+            self.change_automation(
+                stream,
+                &request.thread_id,
+                request.command.clone(),
+                None,
+                cx,
+            );
+        }
+    }
+    fn change_automation(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread: &str,
+        command: AutomationCommand,
+        original: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        ensure_global(cx);
+        if stream.read(cx).task_backend() != TaskBackend::Native {
+            return;
+        }
+        if let AutomationCommand::Status(kind) = command {
+            if stream
+                .read(cx)
+                .automation_projection()
+                .tasks
+                .iter()
+                .any(|task| task.kind == kind)
+            {
+                stream.update(cx, |stream, cx| stream.reject_composer_submission(cx));
+                self.bind_automation(stream, thread.to_string(), cx);
+            } else {
+                self.automation_error(
+                    &stream,
+                    if kind == AutomationKind::Goal {
+                        "/goal [--budget 正整数] 任务内容 · pause / resume / clear"
+                    } else {
+                        "/loop [5m] 任务内容 · pause / resume / clear"
+                    }
+                    .into(),
+                    cx,
+                );
+            }
+            return;
+        }
+        if cx
+            .global::<AutomationGlobal>()
+            .mutations
+            .contains_key(thread)
+        {
+            self.automation_error(&stream, "任务正在保存，请稍后重试".into(), cx);
+            return;
+        }
+        let Some(database) = self.automation_database(cx) else {
+            self.automation_error(&stream, "自动任务存储不可用，请重新打开会话".into(), cx);
+            return;
+        };
+        let draft = self.draft_for_route(thread);
+        if draft.is_some() && !matches!(command, AutomationCommand::Create { .. }) {
+            self.automation_error(&stream, "尚未设置该任务".into(), cx);
+            return;
+        }
+        let cancelled_kind = match command {
+            AutomationCommand::Control(
+                kind,
+                AutomationControl::Pause | AutomationControl::Clear,
+            ) => Some(kind),
+            _ => None,
+        };
+        if let Some(kind) = cancelled_kind
+            && let Some(run) = cx.global::<AutomationGlobal>().runs.get(thread)
+            && run.claim.as_ref().and_then(|claim| claim.source) == Some(kind)
+        {
+            run.cancel.cancel();
+        }
+        let epoch = cx.update_global::<AutomationGlobal, _>(|global, _| {
+            if let Some(kind) = cancelled_kind {
+                global.revoked.insert((thread.into(), kind));
+            }
+            let epoch = global.invalidate(thread);
+            global.mutations.insert(thread.into(), epoch);
+            epoch
+        });
+        let counter = cx.update_global::<AutomationGlobal, _>(|global, _| global.counter(thread));
+        let lane = cx.global::<AutomationGlobal>().mutation_lane.clone();
+        let pending_pauses: Vec<_> = cx
+            .global::<AutomationGlobal>()
+            .revoked
+            .iter()
+            .filter(|(id, _)| id == thread)
+            .map(|(_, kind)| *kind)
+            .collect();
+        let enabled_kind = match &command {
+            AutomationCommand::Create { kind, .. }
+            | AutomationCommand::Control(kind, AutomationControl::Resume) => Some(*kind),
+            _ => None,
+        };
+        let mut projection = stream.read(cx).automation_projection().clone();
+        projection.busy = true;
+        projection.error = None;
+        stream.update(cx, |stream, cx| stream.apply_automation(projection, cx));
+        self.automation_controller
+            .streams
+            .insert(thread.into(), stream.clone());
+        self.start_automation_timer(cx);
+        let thread = thread.to_string();
+        let worker_thread = thread.clone();
+        let config_path = self.composer_config_path();
+        let model = stream.read(cx).displayed_model().to_owned();
+        let mcp_settings = self.mcp_settings.clone();
+        #[cfg(test)]
+        let provider_override = self.agent_provider_override.is_some();
+        #[cfg(not(test))]
+        let provider_override = false;
+        let worker = cx.background_executor().spawn(async move {
+            let _lane = lane.lock().map_err(|_| "自动任务保存失败".to_string())?;
+            if counter.load(Ordering::SeqCst) != epoch {
+                return Err("自动任务操作已撤销".into());
+            }
+            let store =
+                vega_store::Store::open(database).map_err(|_| "自动任务存储不可用".to_string())?;
+            let pending: Vec<_> = vega_conversation::automation::load(&store, &worker_thread)?
+                .into_iter()
+                .filter(|task| pending_pauses.contains(&task.kind))
+                .collect();
+            vega_conversation::automation::pause_matching(
+                &store,
+                &worker_thread,
+                &pending,
+                "已由你暂停",
+            )?;
+            if let AutomationCommand::Create { instruction, .. } = &command {
+                let mut credentials = mcp_settings
+                    .as_ref()
+                    .map(|service| service.current_owner_credential_values())
+                    .transpose()
+                    .map_err(|_| "凭据检查失败，请检查服务设置".to_string())?
+                    .unwrap_or_default();
+                if !provider_override {
+                    let path = config_path.as_deref().ok_or("请先配置服务提供方")?;
+                    let config =
+                        vega_store::config::read_from(path).map_err(|_| "服务配置读取失败")?;
+                    let provider = unique_provider_for_model(&config, &model)
+                        .ok_or("请检查模型的服务提供方设置")?;
+                    let root = path.parent().ok_or("服务配置读取失败")?;
+                    credentials.push(
+                        vega_store::keystore::get_key(root, &provider.key_ref)
+                            .map_err(|_| "服务凭据读取失败")?,
+                    );
+                }
+                if vega_runtime::contains_sensitive_credential(instruction, &credentials) {
+                    return Err("任务内容包含凭据，请删除后重试".into());
+                }
+            }
+            let now = vega_conversation::automation::now_ms();
+            let result = if let Some(draft) = &draft {
+                vega_conversation::automation::command_for_draft(&store, draft, &command, now)?
+            } else {
+                vega_conversation::automation::command(&store, &worker_thread, &command, now)?
+            };
+            Ok::<_, String>((result, draft.is_some()))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            cx.update_global::<AutomationGlobal, _>(|global, _| {
+                if global.mutations.get(&thread) == Some(&epoch) {
+                    global.mutations.remove(&thread);
+                }
+            });
+            let _ = this.update(cx, |this, cx| {
+                if cx.global::<AutomationGlobal>().epoch(&thread) != epoch {
+                    return;
+                }
+                match result {
+                    Ok((tasks, materialized)) => {
+                        if let Some(kind) = enabled_kind {
+                            cx.update_global::<AutomationGlobal, _>(|global, _| {
+                                global.revoked.remove(&(thread.clone(), kind));
+                            });
+                        }
+                        if materialized
+                            && this.draft.as_ref().is_some_and(|draft| draft.id == thread)
+                        {
+                            this.draft = None;
+                        }
+                        stream.update(cx, |stream, cx| {
+                            if materialized {
+                                stream.set_draft_route(false, cx);
+                            }
+                            stream.apply_automation(
+                                AutomationProjection {
+                                    tasks,
+                                    busy: false,
+                                    error: None,
+                                },
+                                cx,
+                            );
+                            if let Some(original) = original {
+                                stream.accept_automation_command(&original, cx);
+                            }
+                        });
+                        this.bind_automation(stream.clone(), thread.clone(), cx);
+                        this.sidebar
+                            .update(cx, |sidebar, cx| sidebar.reload_sessions(cx));
+                        cx.notify();
+                    }
+                    Err(error) => this.automation_error(&stream, error, cx),
+                }
+            });
+        })
+        .detach();
+    }
+    pub(crate) fn pause_automation_all(
+        &mut self,
+        thread: &str,
+        reason: &str,
+        cx: &mut Context<Self>,
+    ) {
+        ensure_global(cx);
+        let epoch = cx.update_global::<AutomationGlobal, _>(|global, _| {
+            let epoch = global.invalidate(thread);
+            global.mutations.insert(thread.into(), epoch);
+            global.revoked.extend([
+                (thread.into(), AutomationKind::Goal),
+                (thread.into(), AutomationKind::Loop),
+            ]);
+            if let Some(run) = global.runs.get(thread) {
+                run.cancel.cancel();
+            }
+            epoch
+        });
+        let counter = cx.update_global::<AutomationGlobal, _>(|global, _| global.counter(thread));
+        let lane = cx.global::<AutomationGlobal>().mutation_lane.clone();
+        let Some(database) = self.automation_database(cx) else {
+            cx.update_global::<AutomationGlobal, _>(|global, _| {
+                if global.mutations.get(thread) == Some(&epoch) {
+                    global.mutations.remove(thread);
+                }
+            });
+            if let Some(stream) = self.automation_controller.streams.get(thread) {
+                self.automation_error(stream, "自动任务存储不可用，请重新打开会话".into(), cx);
+            }
+            return;
+        };
+        let thread = thread.to_string();
+        let reason = reason.to_string();
+        let worker_thread = thread.clone();
+        let worker = cx.background_executor().spawn(async move {
+            let _lane = lane.lock().map_err(|_| "自动任务暂停失败".to_string())?;
+            if counter.load(Ordering::SeqCst) != epoch {
+                return Err("自动任务操作已撤销".into());
+            }
+            let store =
+                vega_store::Store::open(database).map_err(|_| "自动任务存储不可用".to_string())?;
+            vega_conversation::automation::pause_all(&store, &worker_thread, &reason)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            cx.update_global::<AutomationGlobal, _>(|global, _| {
+                if global.mutations.get(&thread) == Some(&epoch) {
+                    global.mutations.remove(&thread);
+                }
+            });
+            let _ = this.update(cx, |this, cx| {
+                if cx.global::<AutomationGlobal>().epoch(&thread) != epoch {
+                    return;
+                }
+                if let Some(stream) = this.automation_controller.streams.get(&thread).cloned() {
+                    match result {
+                        Ok(tasks) => stream.update(cx, |stream, cx| {
+                            stream.apply_automation(
+                                AutomationProjection {
+                                    tasks,
+                                    busy: false,
+                                    error: None,
+                                },
+                                cx,
+                            )
+                        }),
+                        Err(error) => this.automation_error(&stream, error, cx),
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+    pub(crate) fn bind_automation(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread: String,
+        cx: &mut Context<Self>,
+    ) {
+        if stream.read(cx).task_backend() != TaskBackend::Native {
+            return;
+        }
+        ensure_global(cx);
+        cx.update_global::<AutomationGlobal, _>(|global, _| {
+            global.register_stream(&thread, &self.window_alive, &stream);
+        });
+        self.automation_controller
+            .streams
+            .insert(thread.clone(), stream);
+        self.start_automation_timer(cx);
+        self.poll_automation_thread(&thread, cx);
+    }
+    fn start_automation_timer(&mut self, cx: &mut Context<Self>) {
+        if self.automation_controller.timer_started {
+            return;
+        }
+        self.automation_controller.timer_started = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        let threads: Vec<_> =
+                            this.automation_controller.streams.keys().cloned().collect();
+                        for thread in threads {
+                            this.poll_automation_thread(&thread, cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+    fn automation_ready(
+        &self,
+        thread: &str,
+        stream: &Entity<ConversationStream>,
+        cx: &App,
+    ) -> bool {
+        self.window_alive.load(Ordering::SeqCst)
+            && cx.global::<AutomationGlobal>().ready
+            && cx.global::<AutomationGlobal>().streams_ready(thread, cx)
+            && !crate::updater::installing()
+            && !cx.global::<SettingsOpen>().0
+            && !self.trusted_actions.is_busy()
+            && self.reasoning_save_pending.is_none()
+            && !self.model_catalog_loading
+            && !self.agent_controller.active.contains_key(thread)
+            && !thread_is_running(thread, cx)
+            && !self.agent_controller.queue_operations.contains_key(thread)
+            && !self.agent_controller.queue_dispatches.contains_key(thread)
+            && !self.agent_controller.pending_review.contains_key(thread)
+            && !cx
+                .global::<AutomationGlobal>()
+                .mutations
+                .contains_key(thread)
+            && stream.read(cx).automation_can_run(cx)
+    }
+    fn poll_automation_thread(&mut self, thread: &str, cx: &mut Context<Self>) {
+        if self.automation_controller.pending.contains(thread) {
+            return;
+        }
+        let Some(stream) = self.automation_controller.streams.get(thread).cloned() else {
+            return;
+        };
+        let Some(database) = self.automation_database(cx) else {
+            return;
+        };
+        let owns = cx.update_global::<AutomationGlobal, _>(|global, _| {
+            global.acquire(thread, &self.window_alive)
+        });
+        let eligible = owns && self.automation_ready(thread, &stream, cx);
+        let epoch = cx.global::<AutomationGlobal>().epoch(thread);
+        let counter = cx.update_global::<AutomationGlobal, _>(|global, _| global.counter(thread));
+        let lane = cx.global::<AutomationGlobal>().mutation_lane.clone();
+        let observed_run = cx
+            .global::<AutomationGlobal>()
+            .runs
+            .get(thread)
+            .and_then(|run| run.claim.clone().map(|claim| (run.generation, claim)));
+        let revoked: Vec<_> = cx
+            .global::<AutomationGlobal>()
+            .revoked
+            .iter()
+            .filter(|(id, _)| id == thread)
+            .map(|(_, kind)| *kind)
+            .collect();
+        self.automation_controller.pending.insert(thread.into());
+        let thread = thread.to_string();
+        let worker_thread = thread.clone();
+        #[cfg(test)]
+        let now_override = self.automation_controller.now_override;
+        let worker = cx.background_executor().spawn(async move {
+            let _lane = lane.lock().map_err(|_| "自动任务读取失败".to_string())?;
+            let store = vega_store::Store::open(&database)
+                .map_err(|_| "自动任务读取失败，请重新打开会话".to_string())?;
+            let now = vega_conversation::automation::now_ms();
+            #[cfg(test)]
+            let now = now_override.unwrap_or(now);
+            let mut tasks = vega_conversation::automation::refresh(&store, &worker_thread, now)?;
+            let eligible = eligible && counter.load(Ordering::SeqCst) == epoch;
+            if eligible && !revoked.is_empty() {
+                let pending: Vec<_> = tasks
+                    .iter()
+                    .filter(|task| revoked.contains(&task.kind))
+                    .cloned()
+                    .collect();
+                vega_conversation::automation::pause_matching(
+                    &store,
+                    &worker_thread,
+                    &pending,
+                    "已由你暂停",
+                )?;
+                tasks = vega_conversation::automation::load(&store, &worker_thread)?;
+            }
+            let invalid_run = observed_run.and_then(|(generation, claim)| {
+                let finished =
+                    vega_store::automation::run(store.conn(), &claim.thread_id, &claim.id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|(finished, _)| finished);
+                (!finished
+                    && !vega_conversation::automation::current_claim(&store, &claim)
+                        .unwrap_or(false))
+                .then_some((generation, claim.id))
+            });
+            let eligible_tasks: Vec<_> = tasks
+                .iter()
+                .filter(|task| !revoked.contains(&task.kind))
+                .cloned()
+                .collect();
+            let claim = if eligible
+                && let Some(kind) = vega_conversation::automation::due_kind(&eligible_tasks, now)
+            {
+                vega_conversation::automation::claim(&store, &worker_thread, Some(kind), now)?
+            } else {
+                None
+            };
+            Ok::<_, String>((tasks, claim, database, invalid_run))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let cleanup = result.as_ref().ok().and_then(|(_, claim, database, _)| {
+                claim.clone().map(|claim| (database.clone(), claim))
+            });
+            let mut accepted = false;
+            let mut failed_start = false;
+            let _ = this.update(cx, |this, cx| {
+                this.automation_controller.pending.remove(&thread);
+                match result {
+                    Err(error) => {
+                        this.automation_error(&stream, error, cx);
+                        this.automation_controller.streams.remove(&thread);
+                        cx.update_global::<AutomationGlobal, _>(|global, _| {
+                            global.release(&thread, &this.window_alive)
+                        });
+                    }
+                    Ok((tasks, claim, _, invalid_run)) => {
+                        if let Some((generation, id)) = invalid_run
+                            && let Some(run) = cx.global::<AutomationGlobal>().runs.get(&thread)
+                            && run.generation == generation
+                            && run.claim.as_ref().is_some_and(|claim| claim.id == id)
+                        {
+                            run.cancel.cancel();
+                        }
+                        let current = cx.global::<AutomationGlobal>().epoch(&thread) == epoch;
+                        if current
+                            && !cx
+                                .global::<AutomationGlobal>()
+                                .mutations
+                                .contains_key(&thread)
+                        {
+                            let error = if !cx.global::<AutomationGlobal>().ready {
+                                Some("自动任务恢复失败，请重启 Vega 后重试".into())
+                            } else {
+                                stream.read(cx).automation_projection().error.clone()
+                            };
+                            stream.update(cx, |stream, cx| {
+                                stream.apply_automation(
+                                    AutomationProjection {
+                                        tasks: tasks.clone(),
+                                        busy: false,
+                                        error,
+                                    },
+                                    cx,
+                                )
+                            });
+                        }
+                        if let Some(claim) = claim
+                            && current
+                            && this.automation_ready(&thread, &stream, cx)
+                        {
+                            this.automation_controller
+                                .dispatch
+                                .insert(thread.clone(), claim.clone());
+                            this.start_agent_run(
+                                stream.clone(),
+                                &thread,
+                                PendingAgentRun::Automation(Box::new(claim.clone())),
+                                cx,
+                            );
+                            this.automation_controller.dispatch.remove(&thread);
+                            if this.agent_controller.active.contains_key(&thread) {
+                                accepted = true;
+                                return;
+                            }
+                            failed_start = true;
+                            this.automation_error(
+                                &stream,
+                                "自动任务未能开始，请检查模型和会话状态后恢复".into(),
+                                cx,
+                            );
+                        }
+                        if tasks.is_empty() {
+                            this.automation_controller.streams.remove(&thread);
+                            cx.update_global::<AutomationGlobal, _>(|global, _| {
+                                global.release(&thread, &this.window_alive)
+                            });
+                        }
+                    }
+                }
+            });
+            if !accepted && let Some((database, claim)) = cleanup {
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Ok(store) = vega_store::Store::open(database) {
+                            if failed_start {
+                                let _ = vega_conversation::automation::finish(
+                                    &store,
+                                    &claim,
+                                    false,
+                                    true,
+                                    0,
+                                    vega_conversation::automation::now_ms(),
+                                );
+                            } else {
+                                let _ =
+                                    vega_conversation::automation::release_claim(&store, &claim);
+                            }
+                        }
+                    })
+                    .detach();
+            }
+        })
+        .detach();
+    }
+}
