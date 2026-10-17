@@ -31,6 +31,7 @@ mod reasoning_replay;
 mod responses;
 mod skills;
 mod stream_persistence;
+mod terminal_history_compaction;
 mod tool_lifecycle;
 
 struct FixedPermissionHook {
