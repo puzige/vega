@@ -307,21 +307,39 @@ async fn automatic_compaction_rejects_owned_durable_changes_and_preserves_checkp
         .unwrap();
         let source_before =
             vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
-        let mut request_messages = history_from_context_source_with_checkpoint(
-            &source_before,
-            Some(&checkpoint_before),
-            "",
-        )
-        .unwrap();
+        let mut request_messages = initial.messages.clone();
+        let owned_batch = request_messages
+            .iter()
+            .find(|message| !message.tool_calls.is_empty())
+            .unwrap();
+        assert_eq!(
+            owned_batch
+                .tool_calls
+                .iter()
+                .map(|call| call.id.as_str())
+                .collect::<Vec<_>>(),
+            ["call-4", "call-5"]
+        );
+        assert_eq!(
+            request_messages
+                .iter()
+                .filter(|message| message.role == vega_runtime::ChatRole::Tool)
+                .map(|message| message.tool_call_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["call-4", "call-5"]
+        );
+        let estimate_before_mutation =
+            vega_runtime::estimate_chat_context("system", &request_messages, &[]).unwrap();
         mutate_owned_messages(mutation, &mut request_messages);
         let rejecting_provider = MockProvider::new(Vec::new());
 
-        let rejected = compact_live_history(
+        let rejected = compact_live_history_with_estimate(
             &store,
             dir.path().join("vega.db"),
             &rejecting_provider,
             request_messages,
             "mock-model",
+            estimate_before_mutation,
         )
         .await;
 
@@ -384,13 +402,50 @@ enum OwnedMutation {
 
 fn seed_two_completed_rounds(store: &Store) -> Vec<vega_runtime::ChatMessage> {
     store.conn().execute(
-        "INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at) VALUES ('goal', 'thread-1', 1, 'user', 'text', 'Implement task goal; preserve progress', 'done', 1), ('active', 'thread-1', 2, 'assistant', 'text', '', 'streaming', 2)",
+        "INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at) VALUES ('goal', 'thread-1', 1, 'user', 'text', 'Implement task goal; preserve progress', 'done', 1), ('active', 'thread-1', 2, 'assistant', 'text', '', 'done', 2)",
         [],
     ).unwrap();
     append_round(store, 1);
     append_round(store, 2);
     let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
-    history_from_context_source_with_checkpoint(&source, None, "").unwrap()
+    let history = history_from_context_source_with_checkpoint(&source, None, "").unwrap();
+    let batches = history
+        .iter()
+        .filter(|message| !message.tool_calls.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(batches.len(), 2);
+    assert_eq!(
+        batches[0]
+            .tool_calls
+            .iter()
+            .map(|call| call.id.as_str())
+            .collect::<Vec<_>>(),
+        ["call-2", "call-3"]
+    );
+    assert_eq!(
+        batches[1]
+            .tool_calls
+            .iter()
+            .map(|call| call.id.as_str())
+            .collect::<Vec<_>>(),
+        ["call-4", "call-5"]
+    );
+    assert_eq!(
+        history
+            .iter()
+            .filter(|message| message.role == vega_runtime::ChatRole::Tool)
+            .map(|message| message.tool_call_id.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["call-2", "call-3", "call-4", "call-5"]
+    );
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET status = 'streaming' WHERE id = 'active'",
+            [],
+        )
+        .unwrap();
+    history
 }
 
 fn attach_runtime_reasoning(
@@ -494,8 +549,20 @@ async fn compact_live_history(
     messages: Vec<vega_runtime::ChatMessage>,
     model: &str,
 ) -> Result<vega_runtime::ContextCompactionResult, vega_runtime::ContextCompactionFailure> {
-    let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     let estimate = vega_runtime::estimate_chat_context("system", &messages, &[]).unwrap();
+    compact_live_history_with_estimate(store, database_path, provider, messages, model, estimate)
+        .await
+}
+
+async fn compact_live_history_with_estimate(
+    store: &Store,
+    database_path: std::path::PathBuf,
+    provider: &MockProvider,
+    messages: Vec<vega_runtime::ChatMessage>,
+    model: &str,
+    estimate: vega_runtime::ContextEstimate,
+) -> Result<vega_runtime::ContextCompactionResult, vega_runtime::ContextCompactionFailure> {
+    let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     let budget = vega_runtime::ContextBudget::new(428_000, 128_000, true).unwrap();
     let hook =
         ConversationCompactionHook::new(provider, database_path, "thread-1", model, None, None);
