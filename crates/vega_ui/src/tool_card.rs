@@ -271,6 +271,19 @@ impl ToolCard {
                 .is_some_and(|input| input == &tool_card_input_projection(call))
     }
 
+    pub(crate) fn matches_pending_user_question(&self, call: &ToolCall) -> bool {
+        matches!(
+            self.status,
+            ToolCallStatus::PendingApproval | ToolCallStatus::Approved | ToolCallStatus::Running
+        ) && self.result.is_none()
+            && self.input.as_ref().is_some_and(|input| {
+                matches!(
+                    input,
+                    ToolCardInputProjection::UserQuestion { input: Ok(_) }
+                ) && input == &tool_card_input_projection(call)
+            })
+    }
+
     /// Converts an illegal transition to the fixed corrupt state.
     pub fn fail_corrupt(&mut self, cx: &mut gpui_kit::Context<Self>) {
         self.set_corrupt();

@@ -38,7 +38,7 @@ impl ConversationStream {
         let Ok(input_json) = request.input.to_json() else {
             return;
         };
-        if !card.read(cx).matches_call(&ToolCall {
+        if !card.read(cx).matches_pending_user_question(&ToolCall {
             id: call_id.clone(),
             tool: USER_QUESTION_TOOL.into(),
             input_json,

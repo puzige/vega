@@ -78,6 +78,17 @@ pub fn init(cx: &mut App) {
             user_question_panel::QuestionPreviousFocus,
             Some("UserQuestionPanel"),
         ),
+        KeyBinding::new(
+            "enter",
+            user_question_panel::QuestionNoteNewline,
+            Some("UserQuestionNote"),
+        ),
+        KeyBinding::new(
+            "shift-enter",
+            user_question_panel::QuestionNoteNewline,
+            Some("UserQuestionNote"),
+        ),
+        KeyBinding::new("cmd-c", text_input::Copy, Some("UserQuestionNote")),
         KeyBinding::new("cmd-k", command_palette::OpenPalette, None),
         KeyBinding::new("cmd-o", command_palette::OpenWorkspacePicker, None),
         KeyBinding::new("cmd-j", command_palette::ToggleWorkspaceTerminal, None),

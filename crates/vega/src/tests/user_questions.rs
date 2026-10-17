@@ -10,7 +10,21 @@ async fn question_navigation_retains_production_stream_and_stop_is_thread_scoped
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.executor().allow_parking();
-    let repo = diff_controller_repo();
+    let repo = tempfile::tempdir().unwrap();
+    let _git = vega_conversation::register_git_test_executor(
+        repo.path(),
+        Arc::new(|command, _, _| {
+            let args = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(args.ends_with(&["rev-parse".into(), "--show-toplevel".into()]));
+            Err(vega_conversation::types::GitWorkspaceError::for_test(
+                vega_conversation::types::GitWorkspaceErrorCode::NotRepository,
+            ))
+        }),
+    )
+    .unwrap();
     let data = tempfile::tempdir().unwrap();
     let store = Store::open(data.path().join("vega.db")).unwrap();
     store.migrate().unwrap();

@@ -17,6 +17,7 @@ actions!(
         QuestionAdvance,
         QuestionActivate,
         QuestionEscape,
+        QuestionNoteNewline,
         QuestionNextFocus,
         QuestionPreviousFocus
     ]
@@ -415,6 +416,7 @@ impl Render for UserQuestionPanel {
                         .flex()
                         .flex_col()
                         .gap_1()
+                        .key_context("UserQuestionNote")
                         .child(if custom { "Your answer" } else { "Note" })
                         .when(enabled, |content| content.child(note))
                         .when(!enabled, |content| content.child(note_text)),
@@ -447,6 +449,14 @@ impl Render for UserQuestionPanel {
             .on_action(cx.listener(|this, _: &QuestionEscape, window, cx| {
                 if !this.drafts[this.page].note.read(cx).is_composing() {
                     this.composer_focus.focus(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &QuestionNoteNewline, window, cx| {
+                let note = &this.drafts[this.page].note;
+                if !this.submitted && !this.pending.is_resolved() && !note.read(cx).is_composing() {
+                    note.update(cx, |note, cx| {
+                        note.insert_newline(&crate::text_input::InsertNewline, window, cx)
+                    });
                 }
             }))
             .on_action(|_: &QuestionNextFocus, window, cx| window.focus_next(cx))
@@ -490,7 +500,7 @@ impl Render for UserQuestionPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::{TestAppContext, WindowHandle};
+    use gpui_kit::{EntityInputHandler, TestAppContext, WindowHandle};
     use std::future::Future;
     use std::pin::Pin;
     use tokio_util::sync::CancellationToken;
@@ -512,8 +522,14 @@ mod tests {
                 .w_full()
                 .flex()
                 .flex_col()
+                .key_context("ConversationStream")
+                .on_action(|_: &crate::conversation_stream::CopySelectedText, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                        "Message selection".into(),
+                    ));
+                })
                 .children(self.panel.clone())
-                .child(self.composer.clone())
+                .child(div().key_context("Composer").child(self.composer.clone()))
         }
     }
 
@@ -603,6 +619,46 @@ mod tests {
                     panel.drafts[0]
                         .note
                         .update(cx, |note, cx| note.set_text("Keep the layout", cx));
+                });
+            })
+            .unwrap();
+        cx.update(|cx| {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("sentinel".into()))
+        });
+        cx.simulate_keystrokes(window.into(), "cmd-a cmd-c right");
+        assert_eq!(
+            cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("Keep the layout".into())
+        );
+        cx.simulate_keystrokes(window.into(), "enter k shift-enter s");
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    assert_eq!(panel.page, 0);
+                    assert!(!panel.submitted);
+                    assert!(!panel.pending.is_resolved());
+                    assert_eq!(
+                        panel.drafts[0].note.read(cx).text(),
+                        "Keep the layout\nk\ns"
+                    );
+                    panel.drafts[0].note.update(cx, |note, cx| {
+                        note.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+                    });
+                });
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "enter escape");
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    assert_eq!(panel.page, 0);
+                    assert!(!panel.submitted);
+                    panel.drafts[0].note.update(cx, |note, cx| {
+                        assert!(note.is_composing());
+                        assert!(note.focus_handle(cx).is_focused(window));
+                        assert_eq!(note.text(), "Keep the layout\nk\nsni");
+                        note.replace_text_in_range(None, "", window, cx);
+                    });
                     panel.focus_current_option(window, cx);
                 });
             })
@@ -666,7 +722,7 @@ mod tests {
         };
         assert_eq!(
             answers.answers["choice_0"].answers,
-            ["A (Recommended)", "user_note: Keep the layout"]
+            ["A (Recommended)", "user_note: Keep the layout\nk\ns"]
         );
         assert_eq!(
             answers.answers["choice_1"].answers,

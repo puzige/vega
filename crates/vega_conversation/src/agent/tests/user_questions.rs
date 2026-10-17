@@ -216,3 +216,119 @@ fn question_history_rejects_truncation_and_debug_never_contains_answers() {
         crate::types::ToolCardResultProjection::Corrupt
     );
 }
+
+#[tokio::test]
+async fn invalid_question_pending_recovery_reopens_history_and_continues_without_prompt() {
+    let (store, dir, _) = setup();
+    let database = dir.path().join("vega.db");
+    let raw = r#"{"questions":[]}"#;
+    let input = vega_runtime::user_question_validation_audit("questions_count", raw);
+    messages::insert(
+        store.conn(),
+        &messages::MessageRow {
+            id: "stale-question-message".into(),
+            thread_id: "thread-1".into(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: "Choose an approach".into(),
+            status: "streaming".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+    tool_calls::insert_pending(
+        store.conn(),
+        tool_calls::NewToolCall {
+            id: "stale-invalid-question",
+            thread_id: "thread-1",
+            message_id: "stale-question-message",
+            seq: 1,
+            tool: USER_QUESTION_TOOL,
+            input_json: &input,
+            status: "pending_approval",
+            created_at: 1,
+        },
+    )
+    .unwrap();
+    drop(store);
+    let store = Store::open(&database).unwrap();
+    let history = crate::history::restart_history_page(&store, "thread-1", 20).unwrap();
+    assert!(history.entries.iter().any(|entry| matches!(
+        entry,
+        crate::history::HistoryEntry::Tool {
+            call_id,
+            status: ToolCallStatus::Rejected,
+            input: Some(crate::types::ToolCardInputProjection::UserQuestion { input: Err(code) }),
+            result: Some(crate::types::ToolCardResultProjection::UserQuestion { output, .. }),
+            ..
+        } if call_id == "stale-invalid-question" && code == "questions_count"
+            && output.text() == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+    )));
+    let persisted: (String, String, String, String) = store.conn().query_row(
+        "SELECT status, approval, input_json, output_text FROM tool_calls WHERE id='stale-invalid-question'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).unwrap();
+    assert_eq!(
+        persisted,
+        (
+            "rejected".into(),
+            vega_store::recovery::RECOVERY_DENIAL_APPROVAL_JSON.into(),
+            input,
+            vega_store::recovery::RECOVERY_REJECTED_OUTPUT.into(),
+        )
+    );
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "stale-invalid-question".into(),
+                name: USER_QUESTION_TOOL.into(),
+                input_json: raw.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("Resumed".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+    ]);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let config =
+        PersistenceActorConfig::default().with_user_questions(Arc::new(StoredQuestionHook {
+            database,
+            count: calls.clone(),
+        }));
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let run = run_thread_task_with_pricing(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Continue",
+        "System",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        config,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.content, "Resumed");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.requests().len(), 2);
+    assert!(run.events.iter().any(|event| matches!(event,
+        ConversationEvent::ToolCallFinished { call_id, result }
+            if call_id == "stale-invalid-question" && result.reused
+                && result.status == ToolCallStatus::Rejected
+                && result.output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+    )));
+}

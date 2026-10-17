@@ -186,6 +186,18 @@ mod skills_s16;
 mod universal_tools;
 mod usage_limits;
 
+fn tool_round_context_budget(request: &AgentRequest) -> ContextBudget {
+    let initial_tokens = crate::estimate_chat_context(
+        &request.system_prompt,
+        &request.history,
+        &tool_definitions(request.tool_config.run_mode),
+    )
+    .unwrap()
+    .input_tokens;
+    let input_budget = (initial_tokens + 100) * 5 / 4 + 1;
+    ContextBudget::new(input_budget + 1_000, 1_000, true).unwrap()
+}
+
 #[tokio::test]
 async fn issue91_valid_primary_usage_prevents_premature_tool_round_compaction() {
     let project = tempdir().unwrap();
@@ -214,7 +226,8 @@ async fn issue91_valid_primary_usage_prevents_premature_tool_round_compaction() 
     ]);
     let calls = Arc::new(AtomicUsize::new(0));
     let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
-    req.context_budget = Some(ContextBudget::new(11_000, 1_000, true).unwrap());
+    let budget = tool_round_context_budget(&req);
+    req.context_budget = Some(budget);
     req.context_source_version = Some(1);
     req.context_compaction_hook = Some(Arc::new(RecordingCompactionHook {
         calls: calls.clone(),
@@ -236,8 +249,8 @@ async fn issue91_valid_primary_usage_prevents_premature_tool_round_compaction() 
     let raw_second = crate::estimate_wire_context(&requests[1].messages, &requests[1].tools)
         .unwrap()
         .input_tokens;
-    assert!(raw_first < 8_000);
-    assert!(raw_second >= 8_000);
+    assert!(raw_first < budget.trigger_tokens().unwrap());
+    assert!(raw_second >= budget.trigger_tokens().unwrap());
     let decisions = outcome
         .events
         .iter()
@@ -289,7 +302,8 @@ async fn issue91_usage_anchor_still_rejects_a_genuinely_large_tool_tail() {
     ])]]);
     let calls = Arc::new(AtomicUsize::new(0));
     let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
-    req.context_budget = Some(ContextBudget::new(11_000, 1_000, true).unwrap());
+    let budget = tool_round_context_budget(&req);
+    req.context_budget = Some(budget);
     req.context_source_version = Some(1);
     req.context_compaction_hook = Some(Arc::new(TailPreservingCompactionHook {
         calls: calls.clone(),
@@ -306,7 +320,14 @@ async fn issue91_usage_anchor_still_rejects_a_genuinely_large_tool_tail() {
         "result={result:?}"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests().len(), 1);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        crate::estimate_wire_context(&requests[0].messages, &requests[0].tools)
+            .unwrap()
+            .input_tokens
+            < budget.trigger_tokens().unwrap()
+    );
 }
 
 #[tokio::test]
@@ -339,7 +360,7 @@ async fn issue91_missing_zero_or_inconsistent_usage_falls_back_before_next_round
         ]);
         let calls = Arc::new(AtomicUsize::new(0));
         let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
-        req.context_budget = Some(ContextBudget::new(11_000, 1_000, true).unwrap());
+        req.context_budget = Some(tool_round_context_budget(&req));
         req.context_source_version = Some(1);
         req.context_compaction_hook = Some(Arc::new(RecordingCompactionHook {
             calls: calls.clone(),
@@ -363,6 +384,7 @@ async fn issue91_missing_zero_or_inconsistent_usage_falls_back_before_next_round
             })
             .collect::<Vec<_>>();
         assert_eq!(decisions.len(), 2);
+        assert!(decisions[0].predicted_input < decisions[0].trigger_tokens);
         assert_eq!(decisions[1].source, ContextAccountingSource::Estimated);
         assert_eq!(decisions[1].provider_input_baseline, None);
         assert_eq!(decisions[1].revision, 1);

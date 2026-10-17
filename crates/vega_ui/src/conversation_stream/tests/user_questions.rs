@@ -14,6 +14,15 @@ fn question_request() -> RuntimeUserQuestionRequest {
 
 #[gpui_kit::test]
 async fn question_panel_waits_for_proposal_and_durable_matching_terminal(cx: &mut TestAppContext) {
+    assert_question_panel_lifecycle(cx, true).await;
+}
+
+#[gpui_kit::test]
+async fn question_panel_installs_when_request_arrives_after_running(cx: &mut TestAppContext) {
+    assert_question_panel_lifecycle(cx, false).await;
+}
+
+async fn assert_question_panel_lifecycle(cx: &mut TestAppContext, request_first: bool) {
     init_permission_test(cx);
     let (window, _) = open_permission_stream(cx);
     let queue = window
@@ -23,15 +32,18 @@ async fn question_panel_waits_for_proposal_and_durable_matching_terminal(cx: &mu
         })
         .unwrap();
     let request = question_request();
-    let future = queue.request(request.clone(), CancellationToken::new());
-    cx.run_until_parked();
-    window
-        .update(cx, |stream, _, _| {
-            assert!(stream.has_pending_user_question());
-            assert!(stream.active_user_question.is_none());
-            assert!(stream.deferred_user_question.is_some());
-        })
-        .unwrap();
+    let mut future = None;
+    if request_first {
+        future = Some(queue.request(request.clone(), CancellationToken::new()));
+        cx.run_until_parked();
+        window
+            .update(cx, |stream, _, _| {
+                assert!(stream.has_pending_user_question());
+                assert!(stream.active_user_question.is_none());
+                assert!(stream.deferred_user_question.is_some());
+            })
+            .unwrap();
+    }
     propose(
         window,
         cx,
@@ -41,6 +53,33 @@ async fn question_panel_waits_for_proposal_and_durable_matching_terminal(cx: &mu
             input_json: request.input.to_json().unwrap(),
         },
     );
+    window
+        .update(cx, |stream, _, cx| {
+            stream.apply_event(
+                ConversationEvent::ToolCallApproved {
+                    call_id: request.call_id.clone(),
+                    approval: Approval::Once,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::ToolCallRunning {
+                    call_id: request.call_id.clone(),
+                },
+                cx,
+            );
+        })
+        .unwrap();
+    if !request_first {
+        cx.run_until_parked();
+        window
+            .update(cx, |stream, _, _| {
+                assert!(!stream.has_pending_user_question());
+                assert!(stream.active_user_question.is_none());
+            })
+            .unwrap();
+        future = Some(queue.request(request.clone(), CancellationToken::new()));
+    }
     cx.run_until_parked();
     let active = window
         .update(cx, |stream, window, cx| {
@@ -56,7 +95,7 @@ async fn question_panel_waits_for_proposal_and_durable_matching_terminal(cx: &mu
     visual.run_until_parked();
     cx.simulate_keystrokes(window.into(), "enter");
     assert!(!queue.has_pending());
-    let RuntimeUserQuestionResponse::Answered(answers) = future.await else {
+    let RuntimeUserQuestionResponse::Answered(answers) = future.unwrap().await else {
         panic!("selected answer must be delivered");
     };
     let result = ToolResult {

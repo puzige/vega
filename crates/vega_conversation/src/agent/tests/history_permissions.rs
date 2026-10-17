@@ -26,6 +26,106 @@ fn save_issue76_model_policy(store: &Store, input_limit: u64, output_reserve: u6
     .unwrap();
 }
 
+fn tool_round_fixture() -> (Store, tempfile::TempDir, String) {
+    let fixture = setup();
+    let (store, dir, _) = &fixture;
+    fs::write(dir.path().join("large.txt"), "L".repeat(6_000)).unwrap();
+    for seq in 1..=8_i64 {
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: format!("tool-threshold-history-{seq}"),
+                thread_id: "thread-1".into(),
+                seq,
+                role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
+                kind: "text".into(),
+                content: format!("tool-threshold-history-{seq}-{}", "x".repeat(2_300)),
+                status: "done".into(),
+                created_at: seq,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+    }
+    fixture
+}
+
+async fn tool_round_initial_tokens(user_content: &str, system_prompt: &str) -> u64 {
+    let (store, dir, _) = tool_round_fixture();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
+    let run = run_issue76_model_owned(&store, &provider, &tools, user_content, system_prompt, None)
+        .await
+        .unwrap();
+    assert!(!run.failed);
+    assert!(!run.interrupted);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert!(!request.tools.is_empty());
+    assert_eq!(
+        request
+            .messages
+            .iter()
+            .filter(|message| history_observation(message)
+                .is_some_and(|value| value["kind"] == "assistant_text"))
+            .count(),
+        4
+    );
+    vega_runtime::estimate_wire_context(&request.messages, &request.tools)
+        .unwrap()
+        .input_tokens
+}
+
+async fn run_tool_round_model_owned(
+    store: &Store,
+    provider: &MockProvider,
+    tools: &vega_tools::Tools,
+    initial_tokens: u64,
+    trigger_tokens: u64,
+) -> Result<ConversationRun, ConversationError> {
+    let mut initial_accounting = false;
+    let result = run_thread_task_with_permission_config_and_reasoning(
+        store,
+        provider,
+        tools,
+        "thread-1",
+        "tool threshold current",
+        "system",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |event| {
+            if let ConversationEvent::ContextAccounting { record, .. } = event
+                && record.stage == crate::types::ContextAccountingStage::PrimaryPreflight
+                && record.revision == 0
+            {
+                assert_eq!(
+                    record.predicted_input, initial_tokens,
+                    "first accounting must match the production request baseline: {record:?}"
+                );
+                assert_eq!(record.trigger_tokens, trigger_tokens);
+                assert!(
+                    record.predicted_input < record.trigger_tokens,
+                    "initial request must not compact: {record:?}"
+                );
+                initial_accounting = true;
+            }
+            Ok(())
+        },
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        Some(FrozenReasoning::unknown("mock-provider", "mock-model")),
+    )
+    .await;
+    assert!(initial_accounting, "first accounting must be observed");
+    result
+}
+
 #[test]
 fn issue64_context_projection_uses_only_exact_saved_model_input_capacity() {
     let (store, _dir, _) = setup();
@@ -2629,30 +2729,15 @@ async fn issue300_live_write_compaction_ignores_only_sidecars_and_rejects_histor
 
 #[tokio::test]
 async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecution() {
-    let (store, dir, _project_id) = setup();
-    // Keep the initial request below the trigger with the expanded file-tool schemas.
-    let input_limit = 11_200;
+    let (store, dir, _project_id) = tool_round_fixture();
     let output_reserve = 1_000;
-    fs::write(dir.path().join("large.txt"), "L".repeat(6_000)).unwrap();
-    for seq in 1..=8_i64 {
-        messages::insert(
-            store.conn(),
-            &messages::MessageRow {
-                id: format!("tool-threshold-history-{seq}"),
-                thread_id: "thread-1".into(),
-                seq,
-                role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
-                kind: "text".into(),
-                content: format!("tool-threshold-history-{seq}-{}", "x".repeat(2_300)),
-                status: "done".into(),
-                created_at: seq,
-                plan_status: None,
-                plan_review_note: None,
-                plan_reviewed_at: None,
-            },
-        )
-        .unwrap();
-    }
+    let initial_tokens = tool_round_initial_tokens("tool threshold current", "system").await;
+    let input_limit = (initial_tokens + 100) * 5 / 4 + 1;
+    let trigger_tokens =
+        vega_runtime::ContextBudget::new(input_limit + output_reserve, output_reserve, true)
+            .unwrap()
+            .trigger_tokens()
+            .unwrap();
     save_issue76_model_policy(&store, input_limit, output_reserve);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
@@ -2685,26 +2770,16 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
             },
         ])],
     ]);
-    let run = run_issue76_model_owned(
-        &store,
-        &provider,
-        &tools,
-        "tool threshold current",
-        "system",
-        None,
-    )
-    .await
-    .unwrap();
+    let run = run_tool_round_model_owned(&store, &provider, &tools, initial_tokens, trigger_tokens)
+        .await
+        .unwrap();
     assert_eq!(run.content, "continued after compaction");
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
-    let budget =
-        vega_runtime::ContextBudget::new(input_limit + output_reserve, output_reserve, true)
-            .unwrap();
-    let trigger_tokens = budget.trigger_tokens().unwrap();
     let initial_estimate =
         vega_runtime::estimate_wire_context(&requests[0].messages, &requests[0].tools).unwrap();
     assert!(!requests[0].tools.is_empty());
+    assert_eq!(initial_estimate.input_tokens, initial_tokens);
     assert!(initial_estimate.input_tokens < trigger_tokens);
     let compaction =
         vega_store::context_compaction::latest_status(store.conn(), "thread-1", "mock-model")
@@ -2738,29 +2813,15 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
 
 #[tokio::test]
 async fn issue168_auto_compaction_then_primary_failure_keeps_checkpoint_and_fails_run() {
-    let (store, dir, _project_id) = setup();
-    let input_limit = 11_200;
+    let (store, dir, _project_id) = tool_round_fixture();
     let output_reserve = 1_000;
-    fs::write(dir.path().join("large.txt"), "L".repeat(6_000)).unwrap();
-    for seq in 1..=8_i64 {
-        messages::insert(
-            store.conn(),
-            &messages::MessageRow {
-                id: format!("tool-threshold-history-{seq}"),
-                thread_id: "thread-1".into(),
-                seq,
-                role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
-                kind: "text".into(),
-                content: format!("tool-threshold-history-{seq}-{}", "x".repeat(2_300)),
-                status: "done".into(),
-                created_at: seq,
-                plan_status: None,
-                plan_review_note: None,
-                plan_reviewed_at: None,
-            },
-        )
-        .unwrap();
-    }
+    let initial_tokens = tool_round_initial_tokens("tool threshold current", "system").await;
+    let input_limit = (initial_tokens + 100) * 5 / 4 + 1;
+    let trigger_tokens =
+        vega_runtime::ContextBudget::new(input_limit + output_reserve, output_reserve, true)
+            .unwrap()
+            .trigger_tokens()
+            .unwrap();
     save_issue76_model_policy(&store, input_limit, output_reserve);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
@@ -2794,14 +2855,7 @@ async fn issue168_auto_compaction_then_primary_failure_keeps_checkpoint_and_fail
     ]);
     let run = tokio::time::timeout(
         Duration::from_secs(5),
-        run_issue76_model_owned(
-            &store,
-            &provider,
-            &tools,
-            "tool threshold current",
-            "system",
-            None,
-        ),
+        run_tool_round_model_owned(&store, &provider, &tools, initial_tokens, trigger_tokens),
     )
     .await
     .expect("the failed primary request must finish the conversation run")
@@ -2843,6 +2897,12 @@ async fn issue168_auto_compaction_then_primary_failure_keeps_checkpoint_and_fail
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
+    assert!(
+        vega_runtime::estimate_wire_context(&requests[0].messages, &requests[0].tools)
+            .unwrap()
+            .input_tokens
+            < trigger_tokens
+    );
     assert!(requests[1].tools.is_empty());
     assert!(!requests[2].tools.is_empty());
     assert!(
@@ -2860,6 +2920,7 @@ async fn issue168_auto_compaction_then_primary_failure_keeps_checkpoint_and_fail
             .unwrap()
             .unwrap();
     assert_eq!(status.phase, "succeeded");
+    assert!(status.estimated_tokens >= trigger_tokens);
     let assistant: (String, String) = store
         .conn()
         .query_row(

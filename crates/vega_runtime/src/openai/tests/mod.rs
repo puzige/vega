@@ -270,7 +270,7 @@ fn issue85_vega_tools_emit_strict_chat_completions_wire() {
 
     let wire = build_request_body(&request);
     let functions = wire["tools"].as_array().unwrap();
-    assert_eq!(functions.len(), 6);
+    assert_eq!(functions.len(), 7);
     assert!(
         functions
             .iter()

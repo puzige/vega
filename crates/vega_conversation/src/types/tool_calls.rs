@@ -1248,7 +1248,8 @@ fn user_question_result_projection(
     let output = match input {
         Err(code)
             if result.status == ToolCallStatus::Rejected
-                && result.output == vega_runtime::user_question_validation_output(code) =>
+                && (result.output == vega_runtime::user_question_validation_output(code)
+                    || result.output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT) =>
         {
             result.output.clone()
         }

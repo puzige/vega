@@ -1059,10 +1059,12 @@ pub(crate) fn validate_recovered_projection(
         if let Some(code) = vega_runtime::user_question_validation_error(input_json) {
             return (status == RuntimeToolStatus::Rejected
                 && approval.decision == Approval::Deny
-                && approval.source == ApprovalSource::Validation
-                && output == vega_runtime::user_question_validation_output(&code))
-            .then(|| input_json.to_string())
-            .ok_or_else(corrupt);
+                && ((approval.source == ApprovalSource::Validation
+                    && output == vega_runtime::user_question_validation_output(&code))
+                    || (approval.source == ApprovalSource::Recovery
+                        && output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT)))
+                .then(|| input_json.to_string())
+                .ok_or_else(corrupt);
         }
         let input =
             vega_runtime::UserQuestionInput::from_json(input_json).map_err(|_| corrupt())?;
