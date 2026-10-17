@@ -194,6 +194,7 @@ impl Render for VegaWindow {
                     let cached = self
                         .agent_controller
                         .active_stream_for_thread(&thread.id)
+                        .or_else(|| self.automation_controller.streams.get(&thread.id).cloned())
                         .or_else(|| match &self.stream_view {
                             Some((thread_id, view)) if *thread_id == thread.id => {
                                 Some(view.clone())
@@ -358,6 +359,13 @@ impl Render for VegaWindow {
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.submit_composer(stream.clone(), request, cx);
                             })
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &AutomationRequested, cx| {
+                                    this.automation_requested(stream.clone(), request, cx)
+                                },
+                            )
                             .detach();
                             cx.subscribe(
                                 &view,
@@ -562,6 +570,9 @@ impl Render for VegaWindow {
                                 });
                             }
                             self.stream_view = Some((thread.id.clone(), view.clone()));
+                            if !draft_route {
+                                self.load_pending_queue(view.clone(), thread.id.clone(), cx);
+                            }
                             if let Some(anchor) = self.thread_scroll_states.get(&thread.id) {
                                 view.update(cx, |stream, cx| {
                                     if !stream.restore_scroll_anchor(&anchor)

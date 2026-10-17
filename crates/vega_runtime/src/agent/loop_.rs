@@ -1061,6 +1061,8 @@ where
     } else {
         request.system_prompt.clone()
     };
+    let base_system_prompt =
+        automation::system_context(base_system_prompt, request.tool_config.automation.as_ref());
     let mut system_message = ChatMessage::new(ChatRole::System, base_system_prompt.clone());
     system_message.attach_replay_frame(replay_frame);
     messages.push(system_message);
@@ -1099,7 +1101,8 @@ where
         tool_config.mcp_candidates.clone(),
     )?
     .with_skills(!skill_catalog.is_empty(), skill_config.is_some())?
-    .with_computer_use(tool_config.computer_use.as_ref());
+    .with_computer_use(tool_config.computer_use.as_ref())
+    .with_automation(tool_config.automation.as_ref());
     let mut exact_rules: HashSet<RuntimeExactRule> =
         tool_config.exact_rules.iter().cloned().collect();
     let mut events = Vec::new();
@@ -1897,6 +1900,9 @@ where
         let call = match if cancel.is_cancelled() {
             Err(VegaError::Cancelled)
         } else {
+            if let Some(hook) = &tool_config.automation {
+                hook.provider_started();
+            }
             provider
                 .chat_stream_recovering(chat_request, cancel.clone())
                 .await
@@ -2016,6 +2022,12 @@ where
                     attempt,
                     max_retries,
                 }) => {
+                    if let Some(hook) = &tool_config.automation {
+                        if !usage_seen {
+                            hook.missing_usage();
+                        }
+                        hook.provider_started();
+                    }
                     discard_reasoning_events(&mut events, reasoning_event_start);
                     final_text.truncate(response_text_start);
                     assistant_text.clear();
@@ -2325,6 +2337,9 @@ where
                             pricing,
                         }
                     );
+                    if let Some(hook) = &tool_config.automation {
+                        hook.provider_usage();
+                    }
                 }
                 Ok(ProviderEvent::Done {
                     stop_reason: reason,
@@ -2517,6 +2532,9 @@ where
                     call_ids: calls.iter().map(|call| call.id.clone()).collect(),
                 }
             );
+        }
+        if !usage_seen && let Some(hook) = &tool_config.automation {
+            hook.missing_usage();
         }
         let response_kind = if !calls.is_empty() {
             Some(RuntimeAssistantResponseKind::Commentary)

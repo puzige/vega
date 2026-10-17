@@ -107,6 +107,8 @@ pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
 /// click dispatch all consume this one projection, so they cannot drift.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerActionRow {
+    Goal,
+    Loop,
     AddImages,
     CredentialReview,
     ComputerTakeover,
@@ -121,6 +123,8 @@ enum ComposerActionRow {
 impl ComposerActionRow {
     fn label(self) -> &'static str {
         match self {
+            Self::Goal => "持续目标",
+            Self::Loop => "循环任务",
             Self::AddImages => "添加图片",
             Self::CredentialReview => "凭据检查",
             Self::ComputerTakeover => "接管电脑操作",
@@ -133,7 +137,11 @@ impl ComposerActionRow {
     /// Whether this row shows the thread's current authoritative value.
     fn is_selected(self, thread: &Thread) -> bool {
         match self {
-            Self::AddImages | Self::ComputerTakeover | Self::CredentialReview => false,
+            Self::Goal
+            | Self::Loop
+            | Self::AddImages
+            | Self::ComputerTakeover
+            | Self::CredentialReview => false,
             Self::FileReference => false,
             Self::Mode(mode) => thread.mode == mode,
             Self::Permission(mode) => thread.permission_mode == mode,
@@ -143,6 +151,8 @@ impl ComposerActionRow {
     /// Stable selector for the production click and keyboard tests.
     fn selector(self) -> &'static str {
         match self {
+            Self::Goal => "composer-action-goal",
+            Self::Loop => "composer-action-loop",
             Self::AddImages => "composer-action-images",
             Self::CredentialReview => "composer-action-credentials",
             Self::ComputerTakeover => "composer-action-computer-takeover",
@@ -163,6 +173,8 @@ impl ComposerActionRow {
     /// this row holds the thread's authoritative value.
     fn check_selector(self) -> &'static str {
         match self {
+            Self::Goal => "composer-action-goal-check",
+            Self::Loop => "composer-action-loop-check",
             Self::AddImages => "composer-action-images-check",
             Self::CredentialReview => "composer-action-credentials-check",
             Self::ComputerTakeover => "composer-action-computer-takeover-check",
@@ -264,6 +276,7 @@ impl ComposerActions {
                     .map(ComposerActionRow::Permission),
             );
             rows.push(ComposerActionRow::AddImages);
+            rows.extend([ComposerActionRow::Goal, ComposerActionRow::Loop]);
         }
         rows
     }
@@ -487,6 +500,7 @@ impl ConversationStream {
         if self.actions.running || self.composer_submit_pending {
             controls.push(self.action_focus[1].clone());
         }
+        controls.extend(self.automation_focuses());
         controls.extend(
             self.active_skill_focuses
                 .iter()
@@ -604,6 +618,21 @@ impl ConversationStream {
             return;
         }
         match row {
+            ComposerActionRow::Goal | ComposerActionRow::Loop => {
+                let command = if row == ComposerActionRow::Goal {
+                    "/goal"
+                } else {
+                    "/loop"
+                };
+                let original = self.input.read(cx).text().to_owned();
+                self.actions.close_menu();
+                self.actions.slash = None;
+                self.input.update(cx, |input, cx| {
+                    input.set_text(&format!("{command} {original}"), cx)
+                });
+                self.focus_composer(window, cx);
+                cx.notify();
+            }
             ComposerActionRow::ComputerTakeover => {
                 if !self.composer_takeover_enabled() {
                     self.focus_composer(window, cx);

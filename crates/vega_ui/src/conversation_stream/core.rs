@@ -36,6 +36,7 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
     pub(crate) computer_use_diagnostic: Option<(u64, String)>,
@@ -535,6 +536,7 @@ impl ConversationStream {
             meter: ConversationMeter::default(),
             composer_history: Vec::new(),
             composer_submit_pending: false,
+            automation: super::automation::AutomationUi::default(),
             pending_queue: PendingQueueProjection::default(),
             pending_behavior_override: None,
             pending_submission_revision: None,

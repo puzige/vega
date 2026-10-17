@@ -15,6 +15,11 @@ pub(crate) enum PreparedRuntimeCall {
         call: RuntimeToolCall,
         code: String,
     },
+    Automation {
+        call: RuntimeToolCall,
+        arguments: Value,
+        hook: Arc<dyn automation::RuntimeAutomationHook>,
+    },
     ComputerUse {
         call: RuntimeToolCall,
         arguments: Value,
@@ -88,6 +93,7 @@ impl PreparedRuntimeCall {
         match self {
             Self::UserQuestion { call, .. }
             | Self::InvalidUserQuestion { call, .. }
+            | Self::Automation { call, .. }
             | Self::ComputerUse { call, .. }
             | Self::Readonly(call)
             | Self::InvalidRead(call)
@@ -139,7 +145,7 @@ impl PreparedRuntimeCall {
         let call = self.call();
         let input_json = match self {
             Self::UserQuestion { input, .. } => input.to_json().ok()?,
-            Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
+            Self::Automation { arguments, .. } | Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
             Self::Write { prepared, .. } => prepared.model_input_json(),
             Self::Edit { prepared, .. } => prepared.model_input_json()?,
             Self::Bash { prepared, .. } if prepared.timeout_ms() % 1000 == 0 => serde_json::json!({"command":prepared.command(),"timeout":prepared.timeout_ms()/1000}).to_string(),
@@ -302,6 +308,28 @@ pub(crate) fn prepare_runtime_call(
                 code: code.into(),
             },
         });
+    }
+    if automation::is_tool(&raw_call.name) {
+        if let Some(hook) = config.automation.clone()
+            && capabilities
+                .definitions()
+                .iter()
+                .any(|definition| definition.name == raw_call.name)
+            && raw_call.input_json.len() <= 32 * 1024
+            && config.redact_tool_output(&raw_call.input_json)? == raw_call.input_json
+            && let Ok(arguments) = serde_json::from_str::<Value>(&raw_call.input_json)
+            && arguments.is_object()
+        {
+            return Ok(PreparedRuntimeCall::Automation {
+                call: raw_call,
+                arguments,
+                hook,
+            });
+        }
+        return Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
+            input_json: "{}".into(),
+            ..raw_call
+        }));
     }
     if let Some(capability) = crate::computer_use::ComputerUseRun::tool_capability(&raw_call.name) {
         let arguments = serde_json::from_str::<Value>(&raw_call.input_json).unwrap_or(Value::Null);
@@ -982,7 +1010,8 @@ pub(crate) async fn authorize_call(
                 })
             }
         }
-        PreparedRuntimeCall::Readonly(_)
+        PreparedRuntimeCall::Automation { .. }
+        | PreparedRuntimeCall::Readonly(_)
         | PreparedRuntimeCall::InvalidRead(_)
         | PreparedRuntimeCall::PinnedRead { .. } => {
             if cancel.is_cancelled() {
@@ -1317,6 +1346,14 @@ pub(crate) async fn execute_prepared_waiting(
                 (result, cancelled)
             }
         },
+        PreparedRuntimeCall::Automation {call,arguments,hook} => {
+            if cancel.is_cancelled() { return (terminal_result(&call,CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),false); }
+            let result = hook.call(call.name.clone(),arguments,cancel.clone()).await;
+            match result {
+                Ok(value) => (terminal_result(&call,value.to_string(),RuntimeToolStatus::Success,None),true),
+                Err(error) => (failed_tool_result(&call,error.to_string()),false),
+            }
+        }
         PreparedRuntimeCall::ComputerUse {
             call,
             arguments,

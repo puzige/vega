@@ -3,6 +3,9 @@ use super::*;
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
     pub(crate) user_questions: Option<Arc<dyn vega_runtime::RuntimeUserQuestionHook>>,
+    pub(crate) automation_claim: Option<crate::types::AutomationRunClaim>,
+    pub(crate) automation_hook:
+        Option<Arc<dyn vega_runtime::agent::automation::RuntimeAutomationHook>>,
     pub(crate) credential_continuation_id: Option<String>,
     pub(crate) steering_cancel: Option<CancellationToken>,
     pub(crate) pending_message_id: Option<String>,
@@ -52,6 +55,15 @@ impl PersistenceActorConfig {
         self.user_questions = Some(hook);
         self
     }
+
+    pub fn with_automation_claim(
+        mut self,
+        claim: Option<crate::types::AutomationRunClaim>,
+    ) -> Self {
+        self.automation_claim = claim;
+        self
+    }
+
     pub fn with_replay_session_registry(
         mut self,
         registry: super::ReplaySessionRegistry,
@@ -253,6 +265,29 @@ impl PersistenceActor {
                             {
                                 return Err(VegaError::Cancelled);
                             }
+                            let usage = match event.as_ref() {
+                                RuntimeEvent::UsageUpdated { usage, .. } => {
+                                    Some((usage.input, usage.output))
+                                }
+                                RuntimeEvent::ContextCompactionUsageUpdated { usage } => {
+                                    Some((usage.usage.input, usage.usage.output))
+                                }
+                                _ => None,
+                            };
+                            if let RuntimeEvent::ContextCompactionStatusUpdated { status } =
+                                event.as_ref()
+                                && status.usage
+                                    == vega_runtime::ContextCompactionUsageState::Unknown
+                                && let Some(hook) = &config.automation_hook
+                            {
+                                hook.missing_usage();
+                            }
+                            let transaction =
+                                if usage.is_some() && config.automation_claim.is_some() {
+                                    Some(store.immediate_transaction()?)
+                                } else {
+                                    None
+                                };
                             persist_runtime_event(
                                 &store,
                                 &project_id,
@@ -264,7 +299,28 @@ impl PersistenceActor {
                                 &mut next_tool_seq,
                                 &event,
                                 execution_duration_ms,
-                            )
+                            )?;
+                            if let (Some((input, output)), Some(claim)) =
+                                (usage, config.automation_claim.as_ref())
+                            {
+                                crate::automation::record_usage(
+                                    store.conn(),
+                                    claim,
+                                    store.conn().last_insert_rowid(),
+                                    input,
+                                    output,
+                                )
+                                .map_err(|message| {
+                                    VegaError::Tool {
+                                        tool: "automation".into(),
+                                        message,
+                                    }
+                                })?;
+                            }
+                            if let Some(transaction) = transaction {
+                                transaction.commit()?;
+                            }
+                            Ok(())
                         });
                         if result.is_ok()
                             && let RuntimeEvent::SteeringAccepted(input) = event.as_ref()

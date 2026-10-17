@@ -331,11 +331,16 @@ pub fn set_thread_status(
     thread_id: &str,
     status: ThreadStatus,
 ) -> Result<(), ConversationError> {
-    let updated =
-        store::set_status(store.conn(), thread_id, status.as_str()).map_err(store_error)?;
+    let tx = store.immediate_transaction().map_err(store_error)?;
+    let updated = store::set_status(&tx, thread_id, status.as_str()).map_err(store_error)?;
     if updated == 0 {
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
+    if status == ThreadStatus::Archived {
+        crate::automation::pause_in_transaction(&tx, thread_id, "会话已归档")
+            .map_err(ConversationError::CorruptRow)?;
+    }
+    tx.commit().map_err(store_error)?;
     Ok(())
 }
 
@@ -437,8 +442,9 @@ pub fn update_thread(
     if update.is_empty() {
         return Ok(());
     }
+    let tx = store.immediate_transaction().map_err(store_error)?;
     let updated = store::update(
-        store.conn(),
+        &tx,
         thread_id,
         update.title.as_deref(),
         update.status.map(ThreadStatus::as_str),
@@ -449,6 +455,11 @@ pub fn update_thread(
     if updated == 0 {
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
+    if update.status == Some(ThreadStatus::Archived) {
+        crate::automation::pause_in_transaction(&tx, thread_id, "会话已归档")
+            .map_err(ConversationError::CorruptRow)?;
+    }
+    tx.commit().map_err(store_error)?;
     Ok(())
 }
 

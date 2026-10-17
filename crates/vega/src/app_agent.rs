@@ -95,6 +95,7 @@ impl AgentWorkerStartProbe {
 pub(crate) use crate::agent_context::SYSTEM_PROMPT;
 
 pub(crate) enum PendingAgentRun {
+    Automation(AutomationRunClaim),
     UserMessage(UserSubmission),
     ApprovedPlan(String),
     CredentialContinuation(String),
@@ -896,6 +897,7 @@ pub(crate) fn run_agent_worker(
         None,
         vega_tools::ReadState::default(),
         None,
+        Vec::new(),
         provider_override,
         Some(vega_conversation::agent::ReplaySessionRegistry::new()),
         worker_start_probe,
@@ -926,12 +928,29 @@ pub(crate) fn run_agent_worker_with_mcp(
     mcp_service: Option<vega_conversation::McpServerSettingsService>,
     file_read_state: vega_tools::ReadState,
     queue_context: Option<PendingRunContext>,
+    automation_pauses: Vec<AutomationTask>,
     #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
     replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
     #[cfg(test)] worker_start_probe: Arc<AgentWorkerStartProbe>,
 ) {
     #[cfg(test)]
     worker_start_probe.record();
+    let automation_claim = match &run {
+        PendingAgentRun::Automation(claim) => Some(claim.clone()),
+        _ => None,
+    };
+    let automation_path = database_path.clone();
+    let automation_thread = thread.id.clone();
+    let automation_snapshot = Store::open(&automation_path)
+        .ok()
+        .and_then(|store| vega_conversation::automation::load(&store, &automation_thread).ok())
+        .unwrap_or_default();
+    let run = match run {
+        PendingAgentRun::Automation(claim) => {
+            PendingAgentRun::UserMessage(automation_trigger(&claim).into())
+        }
+        other => other,
+    };
     let mut reference_failure = None;
     let mut credential_failure = false;
     let mut computer_use: Option<ComputerUseRun> = None;
@@ -956,6 +975,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         };
         let store = Store::open(&database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
+        vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "已由你暂停").map_err(|_| ())?;
         // Resolve provider identity once, before constructing the provider and
         // before entering the runtime. The resulting FrozenReasoning is moved
         // into the selected entry point and is never re-read during retries
@@ -1231,6 +1251,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         });
         let pending_message_id = queue_context.and_then(|context| context.message_id);
         let result = match run {
+            PendingAgentRun::Automation(_) => return Err(()),
             PendingAgentRun::UserMessage(submission) => {
                 let content = submission.content;
                 // #65 R2: freeze only composer text, before expanding referenced files.
@@ -1326,6 +1347,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         &permission_queue,
                         event_sink,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_automation_claim(automation_claim.clone())
                             .with_automatic_title(automatic_title)
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1493,6 +1515,23 @@ pub(crate) fn run_agent_worker_with_mcp(
         Ok(result.is_ok_and(|run| !run.failed))
     })()
     .unwrap_or(false);
+    if let Ok(store) = Store::open(automation_path) {
+        if let Some(claim) = &automation_claim {
+            let _ = vega_conversation::automation::finish_unsettled_claim(
+                &store,
+                claim,
+                vega_conversation::automation::now_ms(),
+            );
+        }
+        if !success {
+            let _ = vega_conversation::automation::pause_matching(
+                &store,
+                &automation_thread,
+                &automation_snapshot,
+                "本轮未能完成，请检查会话后恢复",
+            );
+        }
+    }
     if let Some(run) = &computer_use {
         run.control.stop();
     }
@@ -1582,5 +1621,13 @@ mod reasoning_replay_tests {
         for secret in ["user", "password", "query-secret", "credential-one"] {
             assert!(!rendered.contains(secret));
         }
+    }
+}
+
+pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
+    if claim.source == Some(AutomationKind::Loop) {
+        "执行已设置的循环任务。"
+    } else {
+        "继续推进已设置的持续目标。"
     }
 }

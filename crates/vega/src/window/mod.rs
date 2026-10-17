@@ -18,6 +18,7 @@ use vega_ui::sidebar::*;
 
 mod agent;
 mod artifact;
+mod automation;
 mod branch;
 mod commit;
 mod commit_reconcile;
@@ -140,6 +141,7 @@ pub(crate) struct VegaWindow {
     /// is durable (or the draft was just materialized).
     pub(crate) draft: Option<Thread>,
     pub(crate) agent_controller: AppAgentController,
+    pub(crate) automation_controller: crate::automation_controller::AutomationController,
     pub(crate) context_controller: context::ContextController,
     pub(crate) file_index_controller: FileIndexController,
     pub(crate) diff_controller: DiffController,
@@ -242,6 +244,14 @@ impl VegaWindow {
 
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         cx.on_release(|this, cx| {
+            if cx
+                .try_global::<crate::automation_controller::AutomationGlobal>()
+                .is_some()
+            {
+                cx.update_global::<crate::automation_controller::AutomationGlobal, _>(
+                    |global, _| global.close_window(&this.window_alive),
+                );
+            }
             let thread_ids: Vec<String> = this.agent_controller.active.keys().cloned().collect();
             for thread_id in thread_ids {
                 vega_ui::sidebar::set_thread_running(&thread_id, false, cx);
@@ -331,6 +341,7 @@ impl VegaWindow {
             deferred_message_location: None,
             draft: None,
             agent_controller: AppAgentController::default(),
+            automation_controller: crate::automation_controller::AutomationController::default(),
             context_controller: context::ContextController::default(),
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),

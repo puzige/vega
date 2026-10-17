@@ -619,6 +619,7 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
+        self.pause_automation_all(&request.thread_id, "已由你停止", cx);
         if self
             .agent_controller
             .active
@@ -661,7 +662,8 @@ impl VegaWindow {
                         stream.update(cx, ConversationStream::reject_composer_submission);
                         stream.update(cx, ConversationStream::apply_agent_error);
                     }
-                    PendingAgentRun::ApprovedPlan(_)
+                    PendingAgentRun::Automation(_)
+                    | PendingAgentRun::ApprovedPlan(_)
                     | PendingAgentRun::CredentialContinuation(_) => {
                         stream.update(cx, ConversationStream::apply_agent_error);
                     }
@@ -681,6 +683,8 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         if !self.owns_stream_request(&stream, thread_id, cx)
+            && !(self.automation_controller.dispatch.contains_key(thread_id)
+                && self.automation_controller.streams.get(thread_id) == Some(&stream))
             && !self.owns_pending_dispatch(&stream, thread_id, cx)
             && !self
                 .agent_controller
@@ -691,6 +695,7 @@ impl VegaWindow {
             return;
         }
         if crate::updater::installing()
+            || thread_is_running(thread_id, cx)
             || self.agent_controller.active.contains_key(thread_id)
             || self
                 .agent_controller
@@ -710,18 +715,23 @@ impl VegaWindow {
                     stream.update(cx, ConversationStream::reject_composer_submission);
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
-                PendingAgentRun::ApprovedPlan(_) | PendingAgentRun::CredentialContinuation(_) => {
+                PendingAgentRun::Automation(_)
+                | PendingAgentRun::ApprovedPlan(_)
+                | PendingAgentRun::CredentialContinuation(_) => {
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
             }
             return;
         }
         let pending_user_content = match &run {
+            PendingAgentRun::Automation(claim) => Some(automation_trigger(claim).into()),
             PendingAgentRun::UserMessage(content) => Some(content.content.clone()),
             PendingAgentRun::ApprovedPlan(_) | PendingAgentRun::CredentialContinuation(_) => None,
         };
         let pending_approved_instruction = match &run {
-            PendingAgentRun::UserMessage(_) | PendingAgentRun::CredentialContinuation(_) => None,
+            PendingAgentRun::Automation(_)
+            | PendingAgentRun::UserMessage(_)
+            | PendingAgentRun::CredentialContinuation(_) => None,
             PendingAgentRun::ApprovedPlan(instruction_id) => Some(instruction_id.clone()),
         };
         if stream.read(cx).has_pending_model_selection()
@@ -735,7 +745,9 @@ impl VegaWindow {
                     stream.update(cx, ConversationStream::reject_composer_submission);
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
-                PendingAgentRun::ApprovedPlan(_) | PendingAgentRun::CredentialContinuation(_) => {
+                PendingAgentRun::Automation(_)
+                | PendingAgentRun::ApprovedPlan(_)
+                | PendingAgentRun::CredentialContinuation(_) => {
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
             }
@@ -788,6 +800,22 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         };
+        crate::automation_controller::ensure_global(cx);
+        let claim = match &run {
+            PendingAgentRun::Automation(claim) => Some(claim.clone()),
+            _ => None,
+        };
+        cx.update_global::<crate::automation_controller::AutomationGlobal, _>(|global, _| {
+            global.runs.insert(
+                thread_id.to_string(),
+                crate::automation_controller::AutomationRunOwner {
+                    generation,
+                    owner: Arc::downgrade(&self.window_alive),
+                    claim,
+                    cancel: cancel.clone(),
+                },
+            );
+        });
         let pending_id = self.agent_controller.queue_dispatches.remove(thread_id);
         let queue_delivery = pending_id.as_ref().and_then(|id| {
             stream
@@ -850,6 +878,18 @@ impl VegaWindow {
         let replay_registry = cx
             .try_global::<crate::app_agent::AppReplaySessions>()
             .map(|sessions| sessions.0.clone());
+        let automation_pauses: Vec<_> = stream
+            .read(cx)
+            .automation_projection()
+            .tasks
+            .iter()
+            .filter(|task| {
+                cx.global::<crate::automation_controller::AutomationGlobal>()
+                    .revoked
+                    .contains(&(thread_id.to_string(), task.kind))
+            })
+            .cloned()
+            .collect();
         #[cfg(test)]
         let provider_override = self.agent_provider_override.clone();
         #[cfg(test)]
@@ -873,6 +913,7 @@ impl VegaWindow {
                     mcp_settings,
                     file_read_state,
                     queue_context,
+                    automation_pauses,
                     #[cfg(test)]
                     provider_override,
                     replay_registry,
@@ -888,6 +929,9 @@ impl VegaWindow {
             // A spawn failure releases the run it just registered; the row
             // must not keep spinning for a worker that never started.
             vega_ui::sidebar::set_thread_running(thread_id, false, cx);
+            cx.update_global::<crate::automation_controller::AutomationGlobal, _>(|global, _| {
+                global.finish_run(thread_id, generation, &self.window_alive);
+            });
             self.finish_context_primary_owner(generation);
             if failed_run
                 .as_ref()
@@ -951,6 +995,16 @@ impl VegaWindow {
                                     credential_failure,
                                 } => (success, run, reference_failure, credential_failure),
                             };
+                        if cx
+                            .try_global::<crate::automation_controller::AutomationGlobal>()
+                            .is_some()
+                        {
+                            cx.update_global::<crate::automation_controller::AutomationGlobal, _>(
+                                |global, _| {
+                                    global.finish_run(&thread_id, generation, &this.window_alive);
+                                },
+                            );
+                        }
                         let cancelled = finished_run.cancel.is_cancelled();
                         if this.owns_stream_request(&stream, &thread_id, cx) {
                             this.refresh_context_projection(false, cx);
@@ -1090,6 +1144,13 @@ impl VegaWindow {
         if (request.content.is_empty() && request.images.is_empty())
             || !self.owns_stream_request(&stream, &request.thread_id, cx)
         {
+            return;
+        }
+        crate::automation_controller::ensure_global(cx);
+        cx.update_global::<crate::automation_controller::AutomationGlobal, _>(|global, _| {
+            global.register_stream(&request.thread_id, &self.window_alive, &stream);
+        });
+        if self.intercept_automation(stream.clone(), request, cx) {
             return;
         }
         if stream.read(cx).task_backend() == TaskBackend::Native

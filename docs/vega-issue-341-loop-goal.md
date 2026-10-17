@@ -1,6 +1,6 @@
 # 持久 Goal 与 Loop
 
-版本：v1，2026-10-17。关联 [#341](https://github.com/puzige/vega/issues/341)。实现基线 `3705c687`；任务分支 `feat/341-loop-goal`。
+版本：v1.1，2026-10-17。关联 [#341](https://github.com/puzige/vega/issues/341)。实现基线 `3705c687`；任务分支 `feat/341-loop-goal`。v1.1 澄清报告仅在成功终态生效、唤醒工具限 Loop tick、上下文失效边界，并显式列出所有归档接缝；产品范围不变。
 
 Issue 的第三方静态调研是背景，不是需要复制的接口或实现。本文件冻结 Vega 自有行为。用户明确要求实现，并选择：目标和循环跨重启保存；重新打开 Vega 后手动恢复；Loop 支持固定间隔及模型安排下次唤醒。
 
@@ -78,17 +78,17 @@ Goal 成功且仍 Active 后以短的可取消让步（至少 1 秒）续跑；L
 
 - `get_goal {}`：读取本线程已启用的目标、真实计量、状态和剩余预算。
 - `update_goal {status, progress?, reason, blocker?}`：`status` 为 `active|complete|blocked`。每个 run 最多接受一次进展报告，重复调用不能累加 streak；Active 的 `progress` 为 `progress|waiting|no_progress`。reason 必须有非空证据。waiting 必须给出本轮核实仍活跃的具体等待对象/证据，不把计划或空转视为等待。complete 必须陈述逐项完成证据，prompt 要求先检查当前事实；这是模型自审，不冒充独立裁判。blocked 仅同一 blocker 连续三轮时生效；前两轮可记录该次报告但不得停止。progress/waiting 清零 no-progress；不同 blocker 重新计数。模型不能 pause/resume/替换目标、提高预算或给别的线程改状态。
-- `schedule_wakeup {delay_seconds?, reason?, noop?, stop?}`：仅当前动态 Loop revision 可调下一次，秒数整数、60–3600 越界明确拒绝。`stop:true` 对当前 Loop 停止后续调度（固定 Loop 也允许停止，但不可调间隔）。每次只保存一个下一次时间；历史回放/旧 run 不可改变它。noop 只记录未变，不删除真实输出或计量。
+- `schedule_wakeup {delay_seconds?, reason?, noop?, stop?}`：仅本次 Loop tick 暴露并接受该工具，只有当前动态 Loop revision 可调下一次，秒数整数、60–3600 越界明确拒绝。`stop:true` 对当前 Loop 停止后续调度（固定 Loop 也允许停止，但不可调间隔）。普通消息/Goal 回合不得修改尚未触发的 Loop；这些回合也不把待执行的 Loop prompt 当作当前任务注入。每次只保存一个下一次时间；历史回放/旧 run 不可改变它。noop 只记录未变，不删除真实输出或计量。
 - 没有有效 Goal 报告的成功回合按 no-progress 处理，连续三轮进入 Blocked 并给出可恢复原因；不同失败由上一节停止，不混淆成业务完成。
 
-完整 objective/prompt 始终作为 JSON data 边界注入，与当前模型上下文预算共用现有装配/压缩流程；不自行截断、不创建第二套文件附件或伪装 system authority。无论工具调用是否成功，本轮结束都只从持久状态决定续跑，不读自然语言中的“完成”字样。Goal 与 Loop 同时存在时，本轮可同时报告目标进展，但 Loop 的停止不自动清除 Goal，Goal 完成也不自动删除 Loop。
+完整 objective/prompt 始终作为 JSON data 边界注入，与当前模型上下文预算共用现有装配/压缩流程；不自行截断、不创建第二套文件附件或伪装 system authority。实际注入的任务 identity/revision/data 必须进入既有 replay/context fingerprint，不能仅以工具 schema 相同重用旧目标上下文。工具报告绑定本 run 先暂存，只有成功终态才应用进展、完成和下一次调度；本轮后续失败时不能显示目标已完成。无论工具调用是否成功，本轮结束都只从持久状态决定续跑，不读自然语言中的“完成”字样。Goal 与 Loop 同时存在时，本轮可同时报告目标进展，但 Loop 的停止不自动清除 Goal，Goal 完成也不自动删除 Loop。
 
 ## 7. 实现顺序与文件归属
 
 同一专职实现 agent 是唯一代码写入者，Codex 主会话只改规格/审查/集成。
 
 1. `vega_store/src/automation.rs`（可拆分）、`migrations/`、store `lib.rs`：持久状态、原子 claim、幂等记账、恢复/级联；新增迁移可精确更新既有表数断言，不能删除原断言。
-2. `vega_conversation/src/automation/`、`types/automation.rs`、模块导出：命令解析、领域服务、纯时间决策、报告/预算/恢复。对接 `agent/entry.rs`、`pipeline.rs`、`events.rs`/`persistence.rs` 的现有正常回合链。
+2. `vega_conversation/src/automation/`、`types/automation.rs`、模块导出：命令解析、领域服务、纯时间决策、报告/预算/恢复。对接 `agent/entry.rs`、`pipeline.rs`、`events.rs`/`persistence.rs` 的现有正常回合链；`threads.rs` 的 `set_thread_status` 与 `update_thread` 两个归档入口均需撤销自动任务，删除依赖现有事务及外键清理。
 3. `vega_runtime/src/agent/automation.rs`、`mod.rs`、`mcp_registry.rs`、`tools_exec.rs`、必要的 `loop_.rs`：专用受限 hook 与工具生命周期，不绕过现有审计/取消/credential redaction。
 4. `vega/src/automation_controller.rs`、`window/automation.rs`、`window/agent.rs`、`pending_messages.rs`、`session.rs`/`navigation.rs`、`app_agent.rs`、启动/模块导出、`thread_reload.rs`：命令、持久 worker、调度所有权、停止/删除/恢复、状态投影；更改限制在这些功能接缝。
 5. `vega_ui/src/conversation_stream/automation.rs`、composer/actions/render/mod 相关接缝、必要的 theme token：菜单、命令与状态动作及键盘行为；相关单元/进程内/GPUI 测试。
