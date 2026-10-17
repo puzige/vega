@@ -60,6 +60,8 @@ bash 增加有界原因枚举：malformed_json、input_not_object、missing_comm
 
 ## 审计与模型历史
 
+2026-10-17 [#434 历史工具观察规格](vega-issue-434-historical-tool-observations.md)取代本节中把历史工具拼成 Assistant 正文及提前生成 primary 历史文本的具体表示：内部保留 stored 标记的 rich 审计身份/真实状态，只在模型边界生成独立、无指令权威的 User JSON 观察。live 参数侧车、整组配对、脱敏、幂等与 source/CAS 保护继续有效；不恢复缺失参数，不清洗用户/模型原文。该修订尚待实现与 CI，不宣称已生效。
+
 模型协议历史和持久化审计必须分离。`RuntimeToolCall`、事件、数据库、卡片、幂等账本继续使用已有脱敏审计。有效调用的真实业务参数只在本次运行内存中保留，沿用凭据检查；不得新增原文持久化字段、原文日志或诊断。
 
 在模型请求投影中，live 有合法完整参数的调用使用真实参数与配对结果；仅有审计或被安全策略移除参数的调用变成带工具名、call id、真实结果的明确历史文本，不再发成 function call。不能伪造 placeholder content 让其表面符合 schema。无效参数同样不回显可能包含凭据的 raw JSON，保留固定失败指导。MCP、skill 等也遵守这一规则，不能只修 Write/Edit。
