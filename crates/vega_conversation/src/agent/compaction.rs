@@ -1465,7 +1465,7 @@ impl ConversationCompactionHook<'_> {
             let request_without_owned_group =
                 remove_owned_live_group(&request.messages, &owned_call_ids);
             let request_without_owned_group =
-                normalize_completed_live_groups(&source, owner_id, &request_without_owned_group)?;
+                normalize_terminal_history_groups(&source, owner_id, &request_without_owned_group)?;
             let persisted_history = persisted_history.iter().collect::<Vec<_>>();
             let request_without_owned_group =
                 request_without_owned_group.iter().collect::<Vec<_>>();
@@ -1957,7 +1957,7 @@ fn classify_summary_input_overflow(error: &VegaError) -> Option<SummaryInputOver
         .map(|token_gap| SummaryInputOverflow { token_gap })
 }
 
-fn normalize_completed_live_groups(
+fn normalize_terminal_history_groups(
     source: &vega_store::context_compaction::ContextSource,
     current_owner: &str,
     messages: &[ChatMessage],
@@ -1994,7 +1994,7 @@ fn normalize_completed_live_groups(
                 message.id == owner
                     && message.id != current_owner
                     && message.role == "assistant"
-                    && message.status == "done"
+                    && matches!(message.status.as_str(), "done" | "interrupted" | "failed")
             })
             .ok_or_else(invalid)?;
         validate_complete_projection(group)?;
