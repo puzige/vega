@@ -637,7 +637,8 @@ where
         .request
         .tool_config
         .with_mcp_servers(mcp_servers)
-        .with_computer_use(actor_config.computer_use.clone());
+        .with_computer_use(actor_config.computer_use.clone())
+        .with_user_questions(actor_config.user_questions.clone());
     let skill_launch = super::skills::prepare_skill_run(
         store,
         &prepared.project_id,

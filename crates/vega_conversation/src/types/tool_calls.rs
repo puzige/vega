@@ -324,6 +324,9 @@ impl ReadOnlyToolKind {
 /// Strict, content-free tool input prepared for UI cards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardInputProjection {
+    UserQuestion {
+        input: Result<UserQuestionInput, String>,
+    },
     ComputerUse {
         tool: String,
         action: String,
@@ -376,6 +379,7 @@ impl ToolCardInputProjection {
     /// Stable known tool name, absent for corrupt input.
     pub fn tool(&self) -> Option<&str> {
         match self {
+            Self::UserQuestion { .. } => Some(USER_QUESTION_TOOL),
             Self::ComputerUse { tool, .. } => Some(tool),
             Self::ReadOnly { tool, .. } => Some(tool.as_str()),
             Self::Bash { .. } => Some("bash"),
@@ -402,7 +406,10 @@ impl ToolCardInputProjection {
             Self::ReadOnly {
                 permission_path, ..
             } => permission_path.as_deref(),
-            Self::ComputerUse { .. } | Self::Skill { .. } | Self::Corrupt => None,
+            Self::UserQuestion { .. }
+            | Self::ComputerUse { .. }
+            | Self::Skill { .. }
+            | Self::Corrupt => None,
         }
     }
 }
@@ -410,6 +417,11 @@ impl ToolCardInputProjection {
 /// Strict terminal projection safe for a tool card to retain and render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardResultProjection {
+    UserQuestion {
+        status: ToolCallStatus,
+        output: UserQuestionHistoryText,
+        reused: bool,
+    },
     ComputerUse {
         status: ToolCallStatus,
         output: String,
@@ -478,6 +490,15 @@ pub enum ToolCardResultProjection {
 
 /// Strictly reduces a shared safe proposal to the fields T27 may retain.
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
+    if call.tool == USER_QUESTION_TOOL {
+        return if let Ok(input) = UserQuestionInput::from_json(&call.input_json) {
+            ToolCardInputProjection::UserQuestion { input: Ok(input) }
+        } else if let Some(code) = vega_runtime::user_question_validation_error(&call.input_json) {
+            ToolCardInputProjection::UserQuestion { input: Err(code) }
+        } else {
+            ToolCardInputProjection::Corrupt
+        };
+    }
     if vega_runtime::computer_use::ComputerUseRun::tool_capability(&call.tool).is_some() {
         if !vega_runtime::computer_use::ComputerUseAudit::valid(&call.input_json) {
             return ToolCardInputProjection::Corrupt;
@@ -713,6 +734,9 @@ pub fn tool_card_result_projection(
         return ToolCardResultProjection::Corrupt;
     };
     match input {
+        ToolCardInputProjection::UserQuestion { input } => {
+            user_question_result_projection(input, result)
+        }
         ToolCardInputProjection::ComputerUse { .. } => {
             let superseded = result.output.len() <= 2048
                 && serde_json::from_str::<serde_json::Value>(&result.output)
@@ -917,6 +941,7 @@ fn skill_card_result_projection(
             let allowed = match result.output.as_str() {
                 "Tool error: invalid Skill input" => name.is_none(),
                 "Tool error: mixed Skill load batch rejected other tools"
+                | vega_runtime::USER_QUESTION_BATCH_REJECTED
                 | "Tool error: permission denied" => true,
                 other => other == vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
             };
@@ -1156,7 +1181,9 @@ pub(crate) fn mutation_failure_output_allowed(
         ToolCallStatus::Rejected => {
             matches!(
                 result.output.as_str(),
-                "Tool error: permission denied" | "Tool error: denied by run mode"
+                "Tool error: permission denied"
+                    | "Tool error: denied by run mode"
+                    | vega_runtime::USER_QUESTION_BATCH_REJECTED
             ) || result.output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
                 || result.output
                     == format!(
@@ -1196,3 +1223,94 @@ pub(crate) fn is_terminal(status: ToolCallStatus) -> bool {
 
 #[cfg(test)]
 mod asset_metadata_tests;
+
+fn user_question_result_projection(
+    input: &Result<UserQuestionInput, String>,
+    result: &ToolResult,
+) -> ToolCardResultProjection {
+    if result.exit_code.is_some()
+        || result.duration_ms.is_some()
+        || !is_terminal(result.status)
+        || (result.status == ToolCallStatus::Success && !mutation_success_truncation_valid(result))
+        || (result.status != ToolCallStatus::Success && result.truncated.is_some())
+    {
+        return ToolCardResultProjection::Corrupt;
+    }
+    if result.status == ToolCallStatus::Rejected
+        && result.output == vega_runtime::USER_QUESTION_BATCH_REJECTED
+    {
+        return ToolCardResultProjection::UserQuestion {
+            status: result.status,
+            output: UserQuestionHistoryText(result.output.clone()),
+            reused: result.reused,
+        };
+    }
+    let output = match input {
+        Err(code)
+            if result.status == ToolCallStatus::Rejected
+                && result.output == vega_runtime::user_question_validation_output(code) =>
+        {
+            result.output.clone()
+        }
+        Ok(input) => {
+            let answers = if result.status == ToolCallStatus::Success {
+                let Ok(answers) = UserQuestionAnswers::from_json(&result.output, input) else {
+                    return ToolCardResultProjection::Corrupt;
+                };
+                Some(answers)
+            } else if matches!(
+                (result.status, result.output.as_str()),
+                (
+                    ToolCallStatus::Cancelled,
+                    USER_QUESTION_CANCELLED
+                        | vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                        | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                ) | (
+                    ToolCallStatus::Rejected,
+                    vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+                ) | (
+                    ToolCallStatus::Failed,
+                    USER_QUESTION_UNAVAILABLE | USER_QUESTION_UNSAFE_RESPONSE
+                )
+            ) {
+                None
+            } else {
+                return ToolCardResultProjection::Corrupt;
+            };
+            let mut rows = Vec::new();
+            for question in &input.questions {
+                rows.push(question.question.clone());
+                if let Some(answer) = answers
+                    .as_ref()
+                    .and_then(|answers| answers.answers.get(&question.id))
+                {
+                    if answer.answers.is_empty() {
+                        rows.push("Skipped".into());
+                    }
+                    for value in &answer.answers {
+                        rows.push(
+                            value
+                                .strip_prefix("user_note: ")
+                                .unwrap_or(value)
+                                .to_string(),
+                        );
+                    }
+                } else {
+                    rows.push(if result.status == ToolCallStatus::Failed {
+                        result.output.clone()
+                    } else {
+                        "Interrupted".into()
+                    });
+                }
+                rows.push(String::new());
+            }
+            rows.join("\n")
+        }
+        _ => return ToolCardResultProjection::Corrupt,
+    };
+    ToolCardResultProjection::UserQuestion {
+        status: result.status,
+        output: UserQuestionHistoryText(output),
+        reused: result.reused,
+    }
+}

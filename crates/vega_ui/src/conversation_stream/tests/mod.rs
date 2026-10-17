@@ -72,6 +72,7 @@ mod scroll_follow;
 mod skills;
 mod thinking;
 mod timeline;
+mod user_questions;
 mod utility_bar;
 mod utility_menu_coordination;
 mod variable_height;

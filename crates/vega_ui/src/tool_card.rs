@@ -19,6 +19,7 @@ const CORRUPT_LABEL: &str = "Tool result corrupted";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolActivityCategory {
     Shell,
+    Question,
     Read,
     Find,
     Search,
@@ -42,6 +43,7 @@ pub(crate) fn sentence_initial(phrase: &str) -> String {
 impl ToolActivityCategory {
     pub(crate) const fn action_phrase(self) -> &'static str {
         match self {
+            Self::Question => "ask questions",
             Self::Shell => "run commands",
             Self::Read => "read files",
             Self::Find => "find files",
@@ -58,6 +60,7 @@ impl ToolActivityCategory {
 
     pub(crate) const fn icon(self) -> Icon {
         match self {
+            Self::Question => Icon::Help,
             Self::Shell => Icon::Terminal,
             Self::Search => Icon::Search,
             Self::Read => Icon::BookOpen,
@@ -458,6 +461,9 @@ impl ToolCard {
     pub(crate) fn activity_category(&self) -> ToolActivityCategory {
         match (&self.input, &self.result) {
             (_, Some(ToolCardResultProjection::Corrupt)) => ToolActivityCategory::Other,
+            (Some(ToolCardInputProjection::UserQuestion { .. }), _) => {
+                ToolActivityCategory::Question
+            }
             (Some(ToolCardInputProjection::ReadOnly { tool, .. }), _) => match tool {
                 ReadOnlyToolKind::Read => ToolActivityCategory::Read,
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
@@ -483,6 +489,7 @@ impl ToolCard {
 
     pub(crate) fn stage_activity_category(&self) -> ToolActivityCategory {
         match &self.input {
+            Some(ToolCardInputProjection::UserQuestion { .. }) => ToolActivityCategory::Question,
             Some(ToolCardInputProjection::ReadOnly { tool, .. }) => match tool {
                 ReadOnlyToolKind::Read => ToolActivityCategory::Read,
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
@@ -885,6 +892,12 @@ impl ToolCard {
                 generic_verb("use", self.activity_state(), self.status),
                 name.as_deref().unwrap_or("unknown")
             ),
+            (Some(ToolCardInputProjection::UserQuestion { .. }), _) => match self.status {
+                ToolCallStatus::Success => "Questions completed".into(),
+                ToolCallStatus::Cancelled => "Questions interrupted".into(),
+                ToolCallStatus::Failed | ToolCallStatus::Rejected => "Question failed".into(),
+                _ => "Waiting for your answer".into(),
+            },
             (Some(ToolCardInputProjection::ComputerUse { tool, action }), _) => {
                 if self.activity_state() == ToolActivityState::Superseded {
                     return "Not run after takeover".into();
@@ -995,7 +1008,8 @@ impl ToolCard {
     fn has_detail(&self) -> bool {
         match &self.input {
             Some(ToolCardInputProjection::Bash { .. }) => true,
-            Some(ToolCardInputProjection::ReadOnly { .. })
+            Some(ToolCardInputProjection::UserQuestion { .. })
+            | Some(ToolCardInputProjection::ReadOnly { .. })
             | Some(ToolCardInputProjection::Mcp { .. })
             | Some(ToolCardInputProjection::ComputerUse { .. })
             | Some(ToolCardInputProjection::CodexAcp { .. }) => !self.output_rows.is_empty(),
@@ -1006,7 +1020,8 @@ impl ToolCard {
     fn detail_row_count(&self) -> usize {
         match &self.input {
             Some(ToolCardInputProjection::Bash { .. }) => 3 + self.output_rows.len(),
-            Some(ToolCardInputProjection::ReadOnly { .. })
+            Some(ToolCardInputProjection::UserQuestion { .. })
+            | Some(ToolCardInputProjection::ReadOnly { .. })
             | Some(ToolCardInputProjection::Mcp { .. })
             | Some(ToolCardInputProjection::ComputerUse { .. })
             | Some(ToolCardInputProjection::CodexAcp { .. }) => self.output_rows.len(),
@@ -1028,14 +1043,15 @@ impl ToolCard {
                 },
                 footer: Some((self.terminal_footer(), self.activity_state())),
             }),
-            Some(ToolCardInputProjection::ReadOnly { .. }) if !self.output_rows.is_empty() => {
-                Some(ToolDetail {
-                    title: None,
-                    command: None,
-                    output: self.output_rows.clone(),
-                    footer: None,
-                })
-            }
+            Some(
+                ToolCardInputProjection::UserQuestion { .. }
+                | ToolCardInputProjection::ReadOnly { .. },
+            ) if !self.output_rows.is_empty() => Some(ToolDetail {
+                title: None,
+                command: None,
+                output: self.output_rows.clone(),
+                footer: None,
+            }),
             Some(
                 ToolCardInputProjection::Mcp { .. } | ToolCardInputProjection::ComputerUse { .. },
             ) if !self.output_rows.is_empty() => Some(ToolDetail {
@@ -1192,6 +1208,9 @@ fn human_elapsed(seconds: u64) -> String {
 
 fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> {
     let output = match projection {
+        ToolCardResultProjection::UserQuestion { output, .. } => {
+            return output.text().lines().map(str::to_string).collect();
+        }
         ToolCardResultProjection::Bash { output, .. }
         | ToolCardResultProjection::ReadOnly { output, .. }
         | ToolCardResultProjection::Mcp { output, .. }

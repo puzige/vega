@@ -1348,3 +1348,5 @@ async fn issue75_observation_failure_reaches_next_provider_and_rediscovery() {
         assert!(!format!("{:?}", outcome.events).contains("PRIVATE_RAW"));
     }
 }
+
+mod user_questions;

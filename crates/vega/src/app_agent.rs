@@ -886,6 +886,7 @@ pub(crate) fn run_agent_worker(
         thread,
         run,
         permission_queue,
+        vega_conversation::agent::UserQuestionQueue::new(),
         cancel,
         sender,
         pricing_catalog,
@@ -908,6 +909,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     thread: Thread,
     run: PendingAgentRun,
     permission_queue: vega_conversation::agent::PermissionQueue,
+    user_questions: vega_conversation::agent::UserQuestionQueue,
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<AgentUpdate>,
     // S7-T39/C3: frozen run-start pricing selection handed off with run
@@ -1329,6 +1331,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
+                            .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1405,6 +1408,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
+                            .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1471,6 +1475,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
+                            .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),

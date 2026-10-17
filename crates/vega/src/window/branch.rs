@@ -191,6 +191,7 @@ impl VegaWindow {
             && !stream.read(cx).has_active_agent()
             && !stream.read(cx).has_pending_model_selection()
             && !stream.read(cx).has_pending_permission()
+            && !stream.read(cx).has_pending_user_question()
             && !stream.read(cx).has_pending_plan_review(cx)
     }
 

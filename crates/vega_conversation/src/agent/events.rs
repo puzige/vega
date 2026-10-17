@@ -1094,6 +1094,13 @@ pub(crate) fn validate_runtime_proposal(
             .then_some(())
             .ok_or_else(|| safe_audit_error(&call.name));
     }
+    if call.name == vega_runtime::USER_QUESTION_TOOL {
+        let valid = vega_runtime::UserQuestionInput::from_json(&call.input_json).is_ok()
+            || vega_runtime::user_question_validation_error(&call.input_json).is_some();
+        return valid
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if matches!(call.name.as_str(), "load_skill" | "read_skill_resource") {
         return super::pipeline::valid_skill_call_projection(&call.name, &call.input_json)
             .then_some(())

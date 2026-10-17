@@ -59,6 +59,7 @@ mod privacy;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 mod attachments;
 mod pending_messages;
+mod user_questions;
 pub use pending_messages::{PendingQueueAction, PendingQueueRequested, RunningMessageDefault};
 pub mod bench;
 mod computer_use;

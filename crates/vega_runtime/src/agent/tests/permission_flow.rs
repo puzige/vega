@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn run_modes_advertise_exact_three_or_six_strict_tools() {
+fn run_modes_advertise_exact_four_or_seven_strict_tools() {
     let assert_strict_schemas = |tools: &[ToolDefinition]| {
         for tool in tools {
             assert!(tool.strict, "{} must declare strict intent", tool.name);
@@ -23,7 +23,7 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["read", "glob", "grep"]
+            vec!["ask_user_question", "read", "glob", "grep"]
         );
         assert_strict_schemas(&tools);
     }
@@ -33,7 +33,15 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["read", "glob", "grep", "write", "edit", "bash"]
+        vec![
+            "ask_user_question",
+            "read",
+            "glob",
+            "grep",
+            "write",
+            "edit",
+            "bash"
+        ]
     );
     assert_strict_schemas(&tools);
     let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();

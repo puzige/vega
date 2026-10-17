@@ -6,6 +6,15 @@ const MCP_ARGUMENT_LIMIT: usize = 256 * 1024;
 const MCP_RESULT_LIMIT: usize = 256 * 1024;
 
 pub(crate) enum PreparedRuntimeCall {
+    UserQuestion {
+        call: RuntimeToolCall,
+        input: UserQuestionInput,
+        hook: Option<Arc<dyn RuntimeUserQuestionHook>>,
+    },
+    InvalidUserQuestion {
+        call: RuntimeToolCall,
+        code: String,
+    },
     ComputerUse {
         call: RuntimeToolCall,
         arguments: Value,
@@ -77,7 +86,9 @@ impl fmt::Debug for PreparedRuntimeCall {
 impl PreparedRuntimeCall {
     pub(crate) fn call(&self) -> &RuntimeToolCall {
         match self {
-            Self::ComputerUse { call, .. }
+            Self::UserQuestion { call, .. }
+            | Self::InvalidUserQuestion { call, .. }
+            | Self::ComputerUse { call, .. }
             | Self::Readonly(call)
             | Self::InvalidRead(call)
             | Self::PinnedRead { call, .. }
@@ -127,6 +138,7 @@ impl PreparedRuntimeCall {
     pub(crate) fn model_call(&self) -> Option<ChatToolCall> {
         let call = self.call();
         let input_json = match self {
+            Self::UserQuestion { input, .. } => input.to_json().ok()?,
             Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
             Self::Write { prepared, .. } => prepared.model_input_json(),
             Self::Edit { prepared, .. } => prepared.model_input_json()?,
@@ -262,6 +274,35 @@ pub(crate) fn prepare_runtime_call(
     capabilities: &RunCapabilitySnapshot,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
+    if raw_call.name == USER_QUESTION_TOOL {
+        let parsed = UserQuestionInput::from_json(&raw_call.input_json).and_then(|input| {
+            let json = input.to_json()?;
+            if !config
+                .redact_tool_output(&json)
+                .is_ok_and(|redacted| redacted == json)
+            {
+                return Err("credentials");
+            }
+            Ok((input, json))
+        });
+        return Ok(match parsed {
+            Ok((input, input_json)) => PreparedRuntimeCall::UserQuestion {
+                call: RuntimeToolCall {
+                    input_json,
+                    ..raw_call
+                },
+                input,
+                hook: config.user_questions.clone(),
+            },
+            Err(code) => PreparedRuntimeCall::InvalidUserQuestion {
+                call: RuntimeToolCall {
+                    input_json: user_question_validation_audit(code, &raw_call.input_json),
+                    ..raw_call
+                },
+                code: code.into(),
+            },
+        });
+    }
     if let Some(capability) = crate::computer_use::ComputerUseRun::tool_capability(&raw_call.name) {
         let arguments = serde_json::from_str::<Value>(&raw_call.input_json).unwrap_or(Value::Null);
         let input =
@@ -670,6 +711,23 @@ pub(crate) async fn authorize_call(
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
     match prepared {
+        PreparedRuntimeCall::InvalidUserQuestion { call, code } => {
+            Ok(Authorization::Terminal(terminal_result(
+                call,
+                user_question_validation_output(code),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            )))
+        }
+        PreparedRuntimeCall::UserQuestion { .. } => {
+            match decide_capability(config.run_mode, RuntimeToolClass::Readonly) {
+                RuntimeCapabilityOutcome::Approved(audit) => Ok(Authorization::Approved {
+                    audit,
+                    remember_rule: None,
+                }),
+                _ => Err(safe_permission_error()),
+            }
+        }
         PreparedRuntimeCall::ComputerUse {
             call,
             run,
@@ -1239,6 +1297,26 @@ pub(crate) async fn execute_prepared_waiting(
     cancel: &CancellationToken,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
+        PreparedRuntimeCall::InvalidUserQuestion { call, code } => (terminal_result(&call, user_question_validation_output(&code), RuntimeToolStatus::Rejected, Some(validation_audit())), false),
+        PreparedRuntimeCall::UserQuestion { call, input, hook } => {
+            let response = match hook {
+                Some(hook) => hook.request(RuntimeUserQuestionRequest { call_id: call.id.clone(), input: input.clone() }, cancel.clone()).await,
+                None => RuntimeUserQuestionResponse::Unavailable,
+            };
+            let (output, status, cancelled) = match response {
+                RuntimeUserQuestionResponse::Answered(answers) => match answers.to_json(&input) {
+                    Ok(output) => (output, RuntimeToolStatus::Success, false),
+                    Err(_) => (USER_QUESTION_UNSAFE_RESPONSE.into(), RuntimeToolStatus::Failed, false),
+                },
+                RuntimeUserQuestionResponse::Cancelled => (USER_QUESTION_CANCELLED.into(), RuntimeToolStatus::Cancelled, true),
+                RuntimeUserQuestionResponse::Unavailable => (USER_QUESTION_UNAVAILABLE.into(), RuntimeToolStatus::Failed, false),
+            };
+            {
+                let mut result = terminal_result(&call, output, status, None);
+                result.truncated = (status == RuntimeToolStatus::Success).then_some(false);
+                (result, cancelled)
+            }
+        },
         PreparedRuntimeCall::ComputerUse {
             call,
             arguments,
@@ -1905,6 +1983,7 @@ pub(crate) fn truncate_output_lines(text: &str) -> String {
 /// so controllers never reconstruct a drifted schema locally.
 pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     let mut definitions = vec![
+        user_questions::definition(),
         ToolDefinition {
             name: "read".into(),
             description: "Read a text file. path is relative to the project root or absolute; external files require permission. Output has line numbers: omit those prefixes when editing. Read an existing file before write/edit and read again if it changes. offset is one-based; null offset/limit uses the default range. Example: {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}. bash cd does not change this tool's project root.".into(),

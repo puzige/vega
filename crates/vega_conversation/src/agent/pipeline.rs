@@ -47,6 +47,10 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
         "Write" | "Edit" | "write" | "edit" => vega_tools::WriteEditAudit::from_json(input_json)
             .is_ok_and(|audit| audit.tool().as_str().eq_ignore_ascii_case(tool)),
         "bash" => vega_tools::bash_permission_signature(input_json).is_ok(),
+        vega_runtime::USER_QUESTION_TOOL => {
+            vega_runtime::UserQuestionInput::from_json(input_json).is_ok()
+                || vega_runtime::user_question_validation_error(input_json).is_some()
+        }
         "load_skill" | "read_skill_resource" => valid_skill_call_projection(tool, input_json),
         _ if tool.starts_with("mcp_") => {
             let call = crate::types::ToolCall {
@@ -1033,12 +1037,67 @@ pub(crate) fn validate_recovered_projection(
     if status == RuntimeToolStatus::Rejected
         && approval.decision == Approval::Deny
         && approval.source == ApprovalSource::Validation
-        && output == "Tool error: mixed Skill load batch rejected other tools"
+        && matches!(
+            output,
+            "Tool error: mixed Skill load batch rejected other tools"
+                | vega_runtime::USER_QUESTION_BATCH_REJECTED
+        )
         && exit_code.is_none()
         && duration_ms.is_none()
         && valid_mixed_skill_rejection_input(tool, input_json)
     {
         return Ok(input_json.to_string());
+    }
+    if tool == vega_runtime::USER_QUESTION_TOOL {
+        if exit_code.is_some()
+            || duration_ms.is_some()
+            || approval.note.is_some()
+            || approval.danger.is_some()
+        {
+            return Err(corrupt());
+        }
+        if let Some(code) = vega_runtime::user_question_validation_error(input_json) {
+            return (status == RuntimeToolStatus::Rejected
+                && approval.decision == Approval::Deny
+                && approval.source == ApprovalSource::Validation
+                && output == vega_runtime::user_question_validation_output(&code))
+            .then(|| input_json.to_string())
+            .ok_or_else(corrupt);
+        }
+        let input =
+            vega_runtime::UserQuestionInput::from_json(input_json).map_err(|_| corrupt())?;
+        let valid = match status {
+            RuntimeToolStatus::Success => {
+                approval.decision == Approval::Once
+                    && approval.source == ApprovalSource::ReadonlyTool
+                    && vega_runtime::UserQuestionAnswers::from_json(output, &input).is_ok()
+            }
+            RuntimeToolStatus::Failed => {
+                approval.decision == Approval::Once
+                    && approval.source == ApprovalSource::ReadonlyTool
+                    && matches!(
+                        output,
+                        vega_runtime::USER_QUESTION_UNAVAILABLE
+                            | vega_runtime::USER_QUESTION_UNSAFE_RESPONSE
+                    )
+            }
+            RuntimeToolStatus::Cancelled => {
+                approval.decision == Approval::Once
+                    && approval.source == ApprovalSource::ReadonlyTool
+                    && matches!(
+                        output,
+                        vega_runtime::USER_QUESTION_CANCELLED
+                            | vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                            | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                    )
+            }
+            RuntimeToolStatus::Rejected => {
+                approval.decision == Approval::Deny
+                    && approval.source == ApprovalSource::Recovery
+                    && output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+            }
+        };
+        return valid.then(|| input_json.to_string()).ok_or_else(corrupt);
     }
     if vega_runtime::computer_use::ComputerUseRun::tool_capability(tool).is_some() {
         let superseded = output.len() <= 2048
@@ -1528,6 +1587,16 @@ pub(crate) fn approval_source_matches(
             )
         } else {
             source == ApprovalSource::ComputerUse
+        };
+    }
+    if tool == vega_runtime::USER_QUESTION_TOOL {
+        return if status == RuntimeToolStatus::Rejected {
+            matches!(
+                source,
+                ApprovalSource::Validation | ApprovalSource::Recovery
+            )
+        } else {
+            source == ApprovalSource::ReadonlyTool
         };
     }
     if invalid_projection {

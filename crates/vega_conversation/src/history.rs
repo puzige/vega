@@ -833,6 +833,32 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         input_json: call.input_json.clone(),
     };
     let input = tool_card_input_projection(&proposal);
+    if matches!(
+        &input,
+        ToolCardInputProjection::UserQuestion { input: Ok(_) }
+    ) && matches!(
+        status,
+        ToolCallStatus::PendingApproval | ToolCallStatus::Approved | ToolCallStatus::Running
+    ) {
+        let result = crate::types::ToolResult {
+            status: ToolCallStatus::Cancelled,
+            output: crate::types::USER_QUESTION_CANCELLED.into(),
+            reused: true,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            invalid: None,
+        };
+        return HistoryEntry::Tool {
+            seq: call.seq,
+            message_id: call.message_id.clone(),
+            call_id: call.id.clone(),
+            status: ToolCallStatus::Cancelled,
+            approval,
+            result: Some(tool_card_result_projection(Some(&input), &result)),
+            input: Some(input),
+        };
+    }
     let invalid_superseded_claim = matches!(input, ToolCardInputProjection::ComputerUse { .. })
         && call.output_text.as_deref()
             == Some(vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT)
