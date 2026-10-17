@@ -16,6 +16,97 @@ use crate::{
     ReasoningDisabledWire, ReasoningProtocol, ScriptStep,
 };
 
+fn replay_fixture_events(
+    events: Vec<ProviderEvent>,
+    policy: crate::ReasoningReplayPolicy,
+) -> Vec<ProviderEvent> {
+    let mut output = Vec::new();
+    let mut text = String::new();
+    let mut thinking = String::new();
+    let mut reasoning = Vec::new();
+    let mut calls = Vec::new();
+    for event in events {
+        match &event {
+            ProviderEvent::TextDelta(delta) => text.push_str(delta),
+            ProviderEvent::ThinkingDelta(delta) => thinking.push_str(delta),
+            ProviderEvent::ReasoningReplay(items) => reasoning.extend(items.iter().cloned()),
+            ProviderEvent::ToolUse {
+                id,
+                name,
+                input_json,
+            } => calls.push((id.clone(), name.clone(), input_json.clone())),
+            ProviderEvent::RetryScheduled { .. } => {
+                text.clear();
+                thinking.clear();
+                reasoning.clear();
+                calls.clear();
+            }
+            ProviderEvent::Done { .. } => {
+                if policy == crate::ReasoningReplayPolicy::ResponsesItems {
+                    let mut slots = reasoning
+                        .iter()
+                        .cloned()
+                        .map(crate::ResponseReplaySlot::Reasoning)
+                        .collect::<Vec<_>>();
+                    if !text.is_empty() {
+                        slots.push(crate::ResponseReplaySlot::Message(serde_json::json!({
+                            "type":"message", "role":"assistant", "content":[{"type":"output_text","text":text}]
+                        })));
+                    }
+                    for (id, name, arguments) in &calls {
+                        slots.push(crate::ResponseReplaySlot::FunctionCall {
+                            item: serde_json::json!({"type":"function_call","call_id":id,"name":name,"arguments":arguments}),
+                            call_id: id.clone(), name: name.clone(), arguments: arguments.clone(),
+                        });
+                    }
+                    output.push(ProviderEvent::ResponseReplay(crate::ResponseReplayLayout {
+                        response_id: None,
+                        slots,
+                    }));
+                } else {
+                    output.push(ProviderEvent::ChatReasoningContent(
+                        if thinking.is_empty() {
+                            crate::ChatReasoningPresence::Empty
+                        } else {
+                            crate::ChatReasoningPresence::NonEmpty(thinking.clone())
+                        },
+                    ));
+                }
+                text.clear();
+                thinking.clear();
+                reasoning.clear();
+                calls.clear();
+            }
+            _ => {}
+        }
+        output.push(event);
+    }
+    output
+}
+
+fn replay_fixture_request(
+    history: Vec<ChatMessage>,
+    policy: crate::ReasoningReplayPolicy,
+) -> AgentRequest {
+    let mut req = request(history);
+    req.reasoning = Some(FrozenReasoning {
+        provider: "fixture".into(),
+        model: req.model.clone(),
+        protocol: if policy == crate::ReasoningReplayPolicy::ResponsesItems {
+            ReasoningProtocol::ResponsesApi
+        } else {
+            ReasoningProtocol::DeepSeekChatCompletions
+        },
+        replay_policy: policy,
+        choice: ReasoningChoice::ProviderDefault,
+        supports_disabled: false,
+        disabled_wire: None,
+        declared_efforts: Vec::new(),
+    });
+    req.replay_frame = Some(crate::ReplayFrame::new(1, policy));
+    req
+}
+
 struct RecordingCompactionHook {
     calls: Arc<AtomicUsize>,
     messages: Vec<ChatMessage>,
@@ -49,6 +140,8 @@ impl ContextCompactionHook for TailPreservingCompactionHook {
                 messages,
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
+                replay_cold_prefix_messages: Some(1),
+                replay_interleaved_user_boundary: None,
                 usages: Vec::new(),
                 usage_complete: false,
             })
@@ -71,6 +164,8 @@ impl ContextCompactionHook for RecordingCompactionHook {
                 messages,
                 source_version,
                 source_fingerprint: None,
+                replay_cold_prefix_messages: None,
+                replay_interleaved_user_boundary: None,
                 usages: Vec::new(),
                 usage_complete: false,
             })
@@ -84,6 +179,7 @@ mod mcp_registry;
 mod permission_flow;
 mod provider_overflow;
 mod reasoning_budget;
+mod reasoning_replay;
 mod response_phases;
 mod skills;
 mod skills_s16;
@@ -105,8 +201,8 @@ async fn issue91_valid_primary_usage_prevents_premature_tool_round_compaction() 
             ProviderEvent::Usage {
                 input: 500,
                 output: 80,
-                cache_read: 400,
-                cache_write: 0,
+                cache_read: Some(400),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -184,8 +280,8 @@ async fn issue91_usage_anchor_still_rejects_a_genuinely_large_tool_tail() {
         ProviderEvent::Usage {
             input: 500,
             output: 80,
-            cache_read: 400,
-            cache_write: 0,
+            cache_read: Some(400),
+            cache_write: Some(0),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::ToolUse,
@@ -228,8 +324,8 @@ async fn issue91_missing_zero_or_inconsistent_usage_falls_back_before_next_round
             first.push(ProviderEvent::Usage {
                 input,
                 output: 10,
-                cache_read,
-                cache_write: 0,
+                cache_read: Some(cache_read),
+                cache_write: Some(0),
             });
         }
         first.push(ProviderEvent::Done {
@@ -315,8 +411,8 @@ async fn issue91_later_missing_usage_retires_anchor_with_monotonic_revision() {
             ProviderEvent::Usage {
                 input: 500,
                 output: 20,
-                cache_read: 100,
-                cache_write: 0,
+                cache_read: Some(100),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -391,8 +487,8 @@ async fn issue91_duplicate_done_cannot_anchor_a_following_tool_round() {
             ProviderEvent::Usage {
                 input: 500,
                 output: 10,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -505,6 +601,7 @@ fn request(history: Vec<ChatMessage>) -> AgentRequest {
         tool_config: RuntimeToolConfig::default(),
         pricing_catalog: None,
         reasoning: None,
+        replay_frame: None,
         context_budget: None,
         context_source_version: None,
         context_source_fingerprint: None,
@@ -798,20 +895,31 @@ async fn assert_reasoning_follow_up(
     let data = tempdir().unwrap();
     fs::write(project.path().join("source.txt"), "source").unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let mut first_response = vec![ProviderEvent::ThinkingDelta("private chain".into())];
+    if expected_reasoning_content.is_some() {
+        first_response.push(ProviderEvent::ChatReasoningContent(
+            crate::ChatReasoningPresence::NonEmpty("private chain".into()),
+        ));
+    }
+    first_response.extend([
+        ProviderEvent::ToolUse {
+            id: "read-1".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"source.txt"}"#.into(),
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
+    ]);
     let provider = MockProvider::new_rounds(vec![
-        vec![ScriptStep::events(vec![
-            ProviderEvent::ThinkingDelta("private chain".into()),
-            ProviderEvent::ToolUse {
-                id: "read-1".into(),
-                name: "read".into(),
-                input_json: r#"{"path":"source.txt"}"#.into(),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::ToolUse,
-            },
-        ])],
+        vec![ScriptStep::events(first_response)],
         vec![ScriptStep::events(vec![
             ProviderEvent::TextDelta("done".into()),
+            ProviderEvent::ChatReasoningContent(if expected_reasoning_content.is_some() {
+                crate::ChatReasoningPresence::Empty
+            } else {
+                crate::ChatReasoningPresence::Absent
+            }),
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
             },
@@ -853,9 +961,9 @@ async fn non_preserving_reasoning_is_omitted_from_tool_round() {
             provider: "openai".into(),
             model: "mock".into(),
             protocol: ReasoningProtocol::OpenAiChatCompletions,
+            replay_policy: crate::ReasoningReplayPolicy::StandardChat,
             choice: ReasoningChoice::Effort("low".into()),
             supports_disabled: false,
-            preserve_reasoning_content: false,
             disabled_wire: None,
             declared_efforts: vec!["low".into()],
         },
@@ -871,9 +979,9 @@ async fn preserving_reasoning_is_replayed_in_tool_round_memory_only() {
             provider: "zhipu".into(),
             model: "mock".into(),
             protocol: ReasoningProtocol::ZhipuChatCompletions,
+            replay_policy: crate::ReasoningReplayPolicy::GlmPreserved,
             choice: ReasoningChoice::Effort("low".into()),
             supports_disabled: false,
-            preserve_reasoning_content: true,
             disabled_wire: None,
             declared_efforts: vec!["low".into()],
         },
@@ -888,13 +996,13 @@ async fn unknown_reasoning_protocol_is_provider_default_and_omits_replay() {
 }
 
 #[tokio::test]
-async fn unknown_reasoning_replay_claim_fails_before_provider_call() {
+async fn unknown_protocol_cannot_claim_a_known_replay_policy() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
     let provider = MockProvider::new(vec![]);
     let mut req = request(Vec::new());
     let mut reasoning = FrozenReasoning::unknown("custom", "mock");
-    reasoning.preserve_reasoning_content = true;
+    reasoning.replay_policy = crate::ReasoningReplayPolicy::DeepSeekTools;
     req.reasoning = Some(reasoning);
     let result = run_agent(&provider, &tools, req, CancellationToken::new()).await;
     assert!(matches!(
@@ -914,9 +1022,9 @@ async fn mismatched_disabled_wire_fails_before_provider_call() {
         provider: "openai".into(),
         model: "mock".into(),
         protocol: ReasoningProtocol::OpenAiChatCompletions,
+        replay_policy: crate::ReasoningReplayPolicy::StandardChat,
         choice: ReasoningChoice::ProviderDefault,
         supports_disabled: true,
-        preserve_reasoning_content: false,
         disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
         declared_efforts: vec!["low".into()],
     });
@@ -959,16 +1067,19 @@ async fn i71_summary_response_is_bounded_and_opaque_replay_can_span_many_rounds(
             .count(),
         4
     );
-    let mut rounds: Vec<_> = (0..5).map(|i| vec![ScriptStep::events(vec![
+    let mut rounds: Vec<_> = (0..5).map(|i| vec![ScriptStep::events(replay_fixture_events(vec![
         ProviderEvent::ReasoningReplay(vec![serde_json::json!({"type":"reasoning","encrypted_content":"x".repeat(220*1024)})]),
         ProviderEvent::ToolUse { id:format!("read-{i}"),name:"read".into(),input_json:r#"{"path":"source.txt"}"#.into() },
         ProviderEvent::Done { stop_reason:StopReason::ToolUse },
-    ])]).collect();
-    rounds.push(vec![ScriptStep::events(vec![ProviderEvent::Done {
-        stop_reason: StopReason::End,
-    }])]);
+    ], crate::ReasoningReplayPolicy::ResponsesItems))]).collect();
+    rounds.push(vec![ScriptStep::events(replay_fixture_events(
+        vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }],
+        crate::ReasoningReplayPolicy::ResponsesItems,
+    ))]);
     let provider = MockProvider::new_rounds(rounds);
-    let mut req = request(Vec::new());
+    let mut req = replay_fixture_request(Vec::new(), crate::ReasoningReplayPolicy::ResponsesItems);
     req.tool_config = RuntimeToolConfig::new(
         RuntimeRunMode::Ask,
         RuntimePermissionMode::ReadOnly,

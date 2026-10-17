@@ -47,8 +47,8 @@ fn usage(input: u64, output: u64) -> ProviderEvent {
     ProviderEvent::Usage {
         input,
         output,
-        cache_read: 0,
-        cache_write: 0,
+        cache_read: Some(0),
+        cache_write: Some(0),
     }
 }
 
@@ -332,8 +332,8 @@ fn checked_overflow_latches_the_whole_counter_to_dash() {
         usage: vega_conversation::types::TokenUsage {
             input: 1,
             output: 0,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         cost: Microcents(0),
         pricing: None,
@@ -355,8 +355,8 @@ fn checked_overflow_latches_the_whole_counter_to_dash() {
         usage: vega_conversation::types::TokenUsage {
             input: 0,
             output: 0,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         cost: Microcents(1),
         pricing: Some(vega_conversation::types::UsagePricing {
@@ -386,8 +386,8 @@ fn late_events_after_terminal_cannot_move_the_counter() {
         usage: vega_conversation::types::TokenUsage {
             input: 100,
             output: 10,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         cost: Microcents(120),
         pricing: Some(vega_conversation::types::UsagePricing {
@@ -412,8 +412,8 @@ fn late_events_after_terminal_cannot_move_the_counter() {
         usage: vega_conversation::types::TokenUsage {
             input: 1_000_000,
             output: 1_000_000,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         cost: Microcents(9_999_999),
         pricing: Some(vega_conversation::types::UsagePricing {
@@ -875,8 +875,8 @@ async fn restart_restores_calibrated_baseline_from_checked_aggregate() -> Result
         usage: vega_conversation::types::TokenUsage {
             input: 10,
             output: 10,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         cost: Microcents(30),
         pricing: Some(vega_conversation::types::UsagePricing {

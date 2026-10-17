@@ -159,6 +159,8 @@ impl fmt::Debug for ToolFragment {
 pub(crate) struct SseAssembler {
     pub(crate) tools: BTreeMap<u64, ToolFragment>,
     pub(crate) finish_reason: Option<StopReason>,
+    reasoning_content_present: bool,
+    reasoning_content: String,
 }
 
 impl fmt::Debug for SseAssembler {
@@ -167,6 +169,8 @@ impl fmt::Debug for SseAssembler {
             .debug_struct("SseAssembler")
             .field("tool_count", &self.tools.len())
             .field("finish_reason", &self.finish_reason)
+            .field("reasoning_content_present", &self.reasoning_content_present)
+            .field("reasoning_content_bytes", &self.reasoning_content.len())
             .finish()
     }
 }
@@ -187,10 +191,42 @@ impl SseAssembler {
         let mut events = Vec::new();
         // usage：stream_options.include_usage 的最终 chunk（choices 为空数组）
         if let Some(usage) = chunk.get("usage").filter(|u| !u.is_null()) {
-            events.push(usage_event(usage));
+            events.push(usage_event(usage)?);
         }
         if let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) {
             if let Some(delta) = choice.get("delta") {
+                if let Some(delta_object) = delta.as_object()
+                    && let Some(raw_reasoning) = delta_object.get("reasoning_content")
+                    && !raw_reasoning.is_null()
+                {
+                    let Some(raw_reasoning) = raw_reasoning.as_str() else {
+                        return Err(VegaError::ProviderDiagnostic {
+                            kind: ProviderFailureKind::Protocol,
+                            status: None,
+                            message: "invalid reasoning_content field".to_string(),
+                            retryable: false,
+                            retry_count: None,
+                            request_id: None,
+                        });
+                    };
+                    if self
+                        .reasoning_content
+                        .len()
+                        .saturating_add(raw_reasoning.len())
+                        > crate::REASONING_TURN_MAX_BYTES
+                    {
+                        return Err(VegaError::ReasoningBudgetExceeded {
+                            scope: crate::ReasoningBudgetScope::Turn,
+                            observed_bytes: self
+                                .reasoning_content
+                                .len()
+                                .saturating_add(raw_reasoning.len()),
+                            limit_bytes: crate::REASONING_TURN_MAX_BYTES,
+                        });
+                    }
+                    self.reasoning_content_present = true;
+                    self.reasoning_content.push_str(raw_reasoning);
+                }
                 if let Some(text) = str_field(delta, "content")
                     && !text.is_empty()
                 {
@@ -256,6 +292,14 @@ impl SseAssembler {
                 request_id: None,
             })?;
         let mut events = self.flush_tools()?;
+        let presence = if !self.reasoning_content_present {
+            ChatReasoningPresence::Absent
+        } else if self.reasoning_content.is_empty() {
+            ChatReasoningPresence::Empty
+        } else {
+            ChatReasoningPresence::NonEmpty(std::mem::take(&mut self.reasoning_content))
+        };
+        events.push(ProviderEvent::ChatReasoningContent(presence));
         events.push(ProviderEvent::Done {
             stop_reason: finish_reason,
         });
@@ -306,22 +350,46 @@ pub(crate) fn map_finish_reason(reason: &str) -> StopReason {
     }
 }
 
-/// Maps the final usage chunk onto [`ProviderEvent::Usage`].
-///
-/// `prompt_tokens_details.cached_tokens` is the OpenAI-compatible cache-hit
-/// counter; cache-write reporting has no cross-vendor wire field, so it
-/// stays 0 until a provider documents one.
-pub(crate) fn usage_event(usage: &serde_json::Value) -> ProviderEvent {
-    let get = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-    let cache_read = usage
+pub(crate) fn usage_event(usage: &serde_json::Value) -> Result<ProviderEvent, VegaError> {
+    let get = |key: &str| usage.get(key).and_then(|v| v.as_u64());
+    let input = get("prompt_tokens").ok_or_else(invalid_usage)?;
+    let output = get("completion_tokens").ok_or_else(invalid_usage)?;
+    let declared_cache_read = get("prompt_cache_hit_tokens");
+    let nested_cache_read = usage
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    ProviderEvent::Usage {
-        input: get("prompt_tokens"),
-        output: get("completion_tokens"),
+        .and_then(|v| v.as_u64());
+    if declared_cache_read
+        .zip(nested_cache_read)
+        .is_some_and(|(declared, nested)| declared != nested)
+    {
+        return Err(invalid_usage());
+    }
+    let cache_read = declared_cache_read.or(nested_cache_read);
+    let cache_miss = get("prompt_cache_miss_tokens");
+    if cache_read.is_some_and(|hit| hit > input) || cache_miss.is_some_and(|miss| miss > input) {
+        return Err(invalid_usage());
+    }
+    if let (Some(hit), Some(miss)) = (cache_read, cache_miss)
+        && hit.checked_add(miss) != Some(input)
+    {
+        return Err(invalid_usage());
+    }
+    Ok(ProviderEvent::Usage {
+        input,
+        output,
         cache_read,
-        cache_write: 0,
+        cache_write: None,
+    })
+}
+
+fn invalid_usage() -> VegaError {
+    VegaError::ProviderDiagnostic {
+        kind: ProviderFailureKind::Protocol,
+        status: None,
+        message: "invalid usage counters".into(),
+        retryable: false,
+        retry_count: None,
+        request_id: None,
     }
 }

@@ -177,8 +177,8 @@ fn title_provider() -> Arc<TitleProvider> {
             vega_runtime::ProviderEvent::Usage {
                 input: 10,
                 output: 3,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             vega_runtime::ProviderEvent::Done {
                 stop_reason: vega_runtime::StopReason::End,

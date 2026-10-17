@@ -145,6 +145,38 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
         for item in &message.response_reasoning {
             tagged(&mut hasher, 23, item.to_string().as_bytes());
         }
+        match &message.response_replay_layout {
+            Some(layout) => {
+                tagged(&mut hasher, 24, &[1]);
+                match &layout.response_id {
+                    Some(response_id) => tagged(&mut hasher, 25, response_id.as_bytes()),
+                    None => tagged(&mut hasher, 26, &[]),
+                }
+                tagged(&mut hasher, 27, &(layout.slots.len() as u64).to_le_bytes());
+                for slot in &layout.slots {
+                    match slot {
+                        crate::ResponseReplaySlot::Reasoning(item) => {
+                            tagged(&mut hasher, 28, &serde_json::to_vec(item).ok()?);
+                        }
+                        crate::ResponseReplaySlot::Message(item) => {
+                            tagged(&mut hasher, 29, &serde_json::to_vec(item).ok()?);
+                        }
+                        crate::ResponseReplaySlot::FunctionCall {
+                            item,
+                            call_id,
+                            name,
+                            arguments,
+                        } => {
+                            tagged(&mut hasher, 30, &serde_json::to_vec(item).ok()?);
+                            tagged(&mut hasher, 31, call_id.as_bytes());
+                            tagged(&mut hasher, 32, name.as_bytes());
+                            tagged(&mut hasher, 33, arguments.as_bytes());
+                        }
+                    }
+                }
+            }
+            None => tagged(&mut hasher, 34, &[]),
+        }
         match &message.tool_call_id {
             Some(value) => tagged(&mut hasher, 6, value.as_bytes()),
             None => tagged(&mut hasher, 7, &[]),
@@ -398,6 +430,108 @@ mod tests {
         assert_eq!(a.images[0].bytes().len(), b.images[0].bytes().len());
         assert_ne!(fingerprint(&[a], &[]), fingerprint(&[b], &[]));
     }
+    #[test]
+    fn automatic_replay_responses_layout_is_estimated_and_invalidates_anchor_on_phase_or_order() {
+        let reasoning_item = serde_json::json!({
+            "type":"reasoning",
+            "id":"rs_1",
+            "phase":"analysis",
+            "summary":[],
+            "encrypted_content":"opaque-replay-payload"
+        });
+        let message_item = serde_json::json!({
+            "type":"message",
+            "id":"msg_1",
+            "role":"assistant",
+            "status":"completed",
+            "phase":"final",
+            "content":[{"type":"output_text","text":"answer"}]
+        });
+        let mut assistant = ChatMessage::new(crate::ChatRole::Assistant, "answer");
+        assistant.response_reasoning = vec![reasoning_item.clone()];
+        assistant.response_replay_layout = Some(crate::ResponseReplayLayout {
+            response_id: Some("resp_1".into()),
+            slots: vec![
+                crate::ResponseReplaySlot::Reasoning(reasoning_item),
+                crate::ResponseReplaySlot::Message(message_item),
+            ],
+        });
+        let messages = vec![
+            ChatMessage::new(crate::ChatRole::System, "system"),
+            assistant.clone(),
+        ];
+        let wire = crate::estimate_wire_context(&messages, &[]).unwrap();
+        let standalone = crate::estimate_chat_context("system", &[assistant.clone()], &[]).unwrap();
+        assert_eq!(wire, standalone);
+        let mut without_layout = assistant.clone();
+        without_layout.response_reasoning.clear();
+        without_layout.response_replay_layout = None;
+        assert!(
+            wire.input_tokens
+                > crate::estimate_wire_context(
+                    &[
+                        ChatMessage::new(crate::ChatRole::System, "system"),
+                        without_layout,
+                    ],
+                    &[]
+                )
+                .unwrap()
+                .input_tokens
+        );
+
+        let mut sent = request();
+        sent.messages = messages;
+        let anchor = PendingInputAnchor::from_request(&sent)
+            .unwrap()
+            .unwrap()
+            .complete(wire.input_tokens)
+            .unwrap();
+        let mut changed_phase = sent.messages.clone();
+        let Some(crate::ResponseReplaySlot::Message(item)) = changed_phase[1]
+            .response_replay_layout
+            .as_mut()
+            .and_then(|layout| layout.slots.get_mut(1))
+        else {
+            panic!("message replay slot missing");
+        };
+        item["phase"] = serde_json::json!("commentary");
+        assert_eq!(
+            InputAnchor::decide(
+                Some(&anchor),
+                &changed_phase,
+                &sent.tools,
+                &sent.model,
+                sent.reasoning.as_ref(),
+                sent.max_tokens,
+                1,
+            )
+            .unwrap()
+            .source,
+            super::super::ContextAccountingSource::Estimated
+        );
+        let mut changed_order = sent.messages.clone();
+        changed_order[1]
+            .response_replay_layout
+            .as_mut()
+            .unwrap()
+            .slots
+            .swap(0, 1);
+        assert_eq!(
+            InputAnchor::decide(
+                Some(&anchor),
+                &changed_order,
+                &sent.tools,
+                &sent.model,
+                sent.reasoning.as_ref(),
+                sent.max_tokens,
+                1,
+            )
+            .unwrap()
+            .source,
+            super::super::ContextAccountingSource::Estimated
+        );
+    }
+
     #[test]
     fn issue375_opaque_replay_is_accounted_and_invalidates_same_size_anchor() {
         let mut message = ChatMessage::new(crate::ChatRole::Assistant, "progress");

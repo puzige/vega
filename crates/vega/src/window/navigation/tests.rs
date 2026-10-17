@@ -522,6 +522,136 @@ async fn navigation_settings_returns_to_empty_without_database(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+async fn automatic_replay_survives_new_task_navigation_roundtrip(cx: &mut TestAppContext) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let f = fixture(cx);
+    std::fs::write(f.data.path().join("replay.txt"), "replay target").unwrap();
+    let registry = vega_conversation::agent::ReplaySessionRegistry::new();
+    cx.update(|cx| cx.set_global(crate::app_agent::AppReplaySessions(registry.clone())));
+    let provider = vega_runtime::MockProvider::new_rounds(vec![
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("checking the file".into()),
+            vega_runtime::ProviderEvent::ChatReasoningContent(
+                vega_runtime::ChatReasoningPresence::NonEmpty("private tool reasoning".into()),
+            ),
+            vega_runtime::ProviderEvent::ToolUse {
+                id: "navigation-read".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"replay.txt"}"#.into(),
+            },
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::ToolUse,
+            },
+        ])],
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("first final answer".into()),
+            vega_runtime::ProviderEvent::ChatReasoningContent(
+                vega_runtime::ChatReasoningPresence::NonEmpty("private final reasoning".into()),
+            ),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ])],
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("second final answer".into()),
+            vega_runtime::ProviderEvent::ChatReasoningContent(
+                vega_runtime::ChatReasoningPresence::NonEmpty("private second reasoning".into()),
+            ),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ])],
+    ]);
+    let tools = vega_tools::Tools::new(f.data.path()).unwrap();
+    let reasoning = vega_runtime::FrozenReasoning {
+        provider: "deepseek".into(),
+        model: f.first.model.clone(),
+        protocol: vega_runtime::ReasoningProtocol::DeepSeekChatCompletions,
+        replay_policy: vega_runtime::ReasoningReplayPolicy::DeepSeekTools,
+        choice: vega_runtime::ReasoningChoice::ProviderDefault,
+        supports_disabled: false,
+        disabled_wire: None,
+        declared_efforts: Vec::new(),
+    };
+    let first = runtime
+        .block_on(
+            vega_conversation::agent::run_thread_task_with_images_reasoning_and_mcp(
+                &f.store,
+                &provider,
+                &tools,
+                &f.first.id,
+                "first request before navigation",
+                "system",
+                tokio_util::sync::CancellationToken::new(),
+                &vega_conversation::agent::RejectPermissionHook,
+                |_| Ok(()),
+                vega_conversation::agent::PersistenceActorConfig::default()
+                    .with_replay_session_registry(registry.clone(), [91; 32]),
+                None,
+                None,
+                Some(reasoning.clone()),
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+    assert!(!first.failed);
+
+    cx.update(|cx| {
+        cx.set_global(OpenedThread(None));
+        cx.set_global(SelectedProject(None));
+        cx.refresh_windows();
+    });
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, _| root.draft.is_some())
+    });
+    cx.update(|cx| {
+        cx.set_global(SelectedProject(Some(f.first.project_id.clone())));
+        cx.set_global(OpenedThread(Some(f.first.clone())));
+        cx.refresh_windows();
+    });
+    settled(&f, &f.first.id, cx);
+
+    let second = runtime
+        .block_on(
+            vega_conversation::agent::run_thread_task_with_images_reasoning_and_mcp(
+                &f.store,
+                &provider,
+                &tools,
+                &f.first.id,
+                "second request after navigation",
+                "system",
+                tokio_util::sync::CancellationToken::new(),
+                &vega_conversation::agent::RejectPermissionHook,
+                |_| Ok(()),
+                vega_conversation::agent::PersistenceActorConfig::default()
+                    .with_replay_session_registry(registry, [91; 32]),
+                None,
+                None,
+                Some(reasoning),
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+    assert!(!second.failed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    let replayed = &requests[2].messages;
+    assert!(replayed.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::Assistant
+            && message
+                .tool_calls
+                .iter()
+                .any(|call| call.id == "navigation-read")
+            && message.reasoning_content.as_deref() == Some("private tool reasoning")
+    }));
+}
+
+#[gpui_kit::test]
 async fn navigation_resolver_rejects_real_sidebar_delete_before_ack(cx: &mut TestAppContext) {
     let f = fixture(cx);
     palette_second(&f, cx);

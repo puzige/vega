@@ -55,9 +55,12 @@ impl SettingsView {
                 this.codex_profile_saving = false;
                 match result {
                     Ok(config) => {
+                        let replay_identity_changed = this.config.agent != config.agent;
                         this.config = config;
                         this.error = None;
-                        cx.emit(SettingsSaved);
+                        cx.emit(SettingsSaved {
+                            replay_identity_changed,
+                        });
                     }
                     Err(error) => this.error = Some(error.into()),
                 }

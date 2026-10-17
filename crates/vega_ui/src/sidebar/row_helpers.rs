@@ -12,7 +12,6 @@ pub fn render_delete_confirm_overlay(
     thread: &Thread,
     sidebar: Entity<Sidebar>,
     colors: ThemeColors,
-    before_delete: impl Fn(&str, &mut App) + 'static,
 ) -> AnyElement {
     let thread_id = thread.id.clone();
     let cancel = |_event: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
@@ -97,7 +96,6 @@ pub fn render_delete_confirm_overlay(
                                     MouseButton::Left,
                                     move |_: &MouseUpEvent, _window, cx: &mut App| {
                                         if cx.global::<PendingDeleteConfirm>().0.as_ref().is_some_and(|thread| thread.id == thread_id) {
-                                            before_delete(&thread_id, cx);
                                             sidebar.update(cx, Sidebar::confirm_pending_delete);
                                         }
                                     },

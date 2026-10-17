@@ -298,7 +298,7 @@ async fn issue296_catalog_effort_import_preserves_wire_preference_and_replay(
         efforts: vec!["high".into()],
         supports_disabled: true,
         disabled_wire: Some(ReasoningDisabledWire::ReasoningEffortNone),
-        preserve_reasoning_content: true,
+        replay_profile: vega_conversation::types::ReasoningReplaySetting::Auto,
         preference: ReasoningChoice::Effort("high".into()),
     };
     view.update(cx, |view, cx| {

@@ -59,8 +59,6 @@ pub fn thread_usage_seed(
     let tokens = aggregate
         .input_tokens
         .checked_add(aggregate.output_tokens)
-        .and_then(|total| total.checked_add(aggregate.cache_read_tokens))
-        .and_then(|total| total.checked_add(aggregate.cache_write_tokens))
         .ok_or_else(|| ConversationError::Store("token usage aggregate overflow".to_string()))?;
     let unknown_summary_usage = store::find(store.conn(), thread_id)
         .map_err(store_error)?

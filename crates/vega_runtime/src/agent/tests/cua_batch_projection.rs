@@ -954,6 +954,8 @@ impl ContextCompactionHook for BatchCompaction {
                 )],
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
+                replay_cold_prefix_messages: None,
+                replay_interleaved_user_boundary: None,
                 usages: Vec::new(),
                 usage_complete: false,
             })

@@ -785,6 +785,29 @@ pub fn load_source(conn: &Connection, thread_id: &str) -> Result<ContextSource, 
     Ok(source)
 }
 
+pub fn load_source_and_latest_checkpoint(
+    conn: &Connection,
+    thread_id: &str,
+    model: &str,
+) -> Result<(ContextSource, Option<ContextCheckpoint>), rusqlite::Error> {
+    if thread_id.trim().is_empty() || model.trim().is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "empty replay source identity".to_string(),
+        ));
+    }
+    let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Deferred)?;
+    let stored_model = crate::threads::find(&transaction, thread_id)?.map(|thread| thread.model);
+    if stored_model.as_deref() != Some(model) {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "replay model changed".to_string(),
+        ));
+    }
+    let source = load_source_inner(&transaction, thread_id, true)?;
+    let checkpoint = latest_checkpoint_in_transaction(&transaction, thread_id, model)?;
+    transaction.commit()?;
+    Ok((source, checkpoint))
+}
+
 pub fn redact_legacy_thread_content<F>(
     conn: &Connection,
     thread_id: &str,

@@ -32,6 +32,7 @@ mod commit_controller;
 mod diff_controller;
 mod model_catalog;
 mod pricing_controller;
+mod reasoning_capabilities;
 mod thread_reload;
 mod trusted_action;
 mod updater;
@@ -132,6 +133,7 @@ fn main() {
                 })
             });
         cx.set_global(app_agent::AppMcpSettings(mcp_settings));
+        cx.set_global(app_agent::AppReplaySessions::default());
 
         let bounds = Bounds::centered(
             None,

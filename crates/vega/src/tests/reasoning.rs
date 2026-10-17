@@ -20,7 +20,7 @@ fn three_tier_reasoning_config() -> vega_store::reasoning::ReasoningConfig {
             efforts: vec!["low".into(), "medium".into(), "high".into()],
             supports_disabled: false,
             disabled_wire: None,
-            preserve_reasoning_content: false,
+            replay_profile: "auto".into(),
             preference: "medium".into(),
         }],
     }
@@ -994,6 +994,250 @@ async fn settings_unknown_reasoning_template_saves_reads_back_and_reaches_mock_r
 }
 
 #[gpui_kit::test]
+async fn settings_ack_keeps_explicit_glm_interleaved_authority_for_the_next_run(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let config_root = tempfile::tempdir().expect("glm reasoning config root");
+    let config_path = config_root.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"[[providers]]
+name = "zhipu"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+models = ["glm-4.7"]
+key_ref = "zhipu"
+
+[defaults]
+model = "glm-4.7"
+permission_mode = "confirm"
+
+[ui]
+theme = "dark"
+"#,
+    )
+    .expect("write glm reasoning config");
+    vega_store::keystore::set_key(
+        config_root.path(),
+        "zhipu",
+        "fake-zhipu-provider-key-reasoning-73",
+    )
+    .expect("glm reasoning credential");
+    let reasoning_path = config_root.path().join("reasoning.toml");
+
+    let data_root = tempfile::tempdir().expect("glm reasoning data root");
+    let database_path = data_root.path().join("vega.db");
+    let store = Store::open(&database_path).expect("glm reasoning store");
+    store.migrate().expect("glm reasoning migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        data_root.path().to_str().expect("UTF-8 glm reasoning path"),
+        "glm-reasoning-ack",
+        None,
+    )
+    .expect("glm reasoning project");
+    let thread = vega_conversation::threads::create_thread(
+        &store,
+        &project.id,
+        "glm-4.7",
+        PermissionMode::Confirm.as_str(),
+    )
+    .expect("glm reasoning thread");
+    cx.update(|cx| {
+        install_diff_window_globals(
+            Store::open(&database_path).expect("glm reasoning global store"),
+            thread.clone(),
+            cx,
+        )
+    });
+
+    let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("glm interleaved saved".into()),
+            vega_runtime::ProviderEvent::ChatReasoningContent(
+                vega_runtime::ChatReasoningPresence::Empty,
+            ),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ]),
+    ]));
+    let root = cx.new(VegaWindow::new);
+    root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(config_path.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
+        root.stream_view = Some((thread.id.clone(), stream.clone()));
+    });
+    cx.update(|cx| cx.set_global(SettingsOpen(true)));
+    let settings =
+        cx.new(|cx| SettingsView::from_config(vega_store::config::AppConfig::default(), None, cx));
+    root.update(cx, |root, cx| {
+        cx.subscribe(
+            &settings,
+            |root, view, request: &ReasoningProfileSaveRequested, cx| {
+                root.request_reasoning_profile_save(view.clone(), request, cx);
+            },
+        )
+        .detach();
+        root.settings_view = Some(settings.clone());
+        root.start_model_catalog_load(cx);
+    });
+
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| {
+            root.configured_models.is_some()
+                && root.configured_reasoning_authority.is_some()
+                && root.settings_view.is_some()
+        }) && settings.read_with(cx, |settings, _| {
+            matches!(
+                settings.reasoning_projection(),
+                ReasoningSettingsProjection::Ready {
+                    profiles,
+                    error: None,
+                    ..
+                } if profiles.iter().any(|profile| profile.provider == "zhipu"
+                    && profile.model == "glm-4.7"
+                    && profile.replay_profile
+                        == vega_conversation::types::ReasoningReplaySetting::GlmPreserved)
+            )
+        })
+    });
+    assert!(!reasoning_path.exists());
+    let catalog_choice = stream
+        .read_with(cx, |stream, _| stream.frozen_reasoning_for_submit())
+        .expect("automatic GLM catalog freezes")
+        .expect("automatic GLM capability exists");
+    let worker_choice = reasoning_for_provider_model(
+        "zhipu",
+        vega_store::config::ProviderApi::ChatCompletions,
+        "https://open.bigmodel.cn/api/paas/v4",
+        "glm-4.7",
+        Some(&reasoning_path),
+    )
+    .expect("worker resolves the same automatic capability");
+    assert_eq!(catalog_choice, worker_choice);
+    assert!(catalog_choice.supports_disabled);
+    cx.update(|cx| cx.set_global(SettingsOpen(false)));
+    root.update(cx, |root, cx| root.start_model_catalog_load(cx));
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| {
+            !root.model_catalog_loading
+                && root.configured_reasoning_authority.is_some()
+                && root.configured_reasoning_error.is_none()
+        })
+    });
+    root.update(cx, |root, cx| {
+        root.persist_composer_thinking(
+            stream.clone(),
+            &vega_ui::conversation_stream::ComposerDefaultsRequested {
+                thread_id: thread.id.clone(),
+                defaults: ComposerDefaults {
+                    model: "glm-4.7".into(),
+                    thinking: "max".into(),
+                    ..Default::default()
+                },
+            },
+            cx,
+        );
+        assert!(root.reasoning_save_pending.is_some());
+    });
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| {
+            root.reasoning_save_pending.is_none() && root.configured_reasoning_error.is_none()
+        }) && stream.read_with(cx, |stream, _| stream.thinking_choice() == "max")
+    });
+    let saved_preference =
+        vega_store::reasoning::read_from(&reasoning_path).expect("first automatic preference save");
+    let saved_preference = saved_preference
+        .profile("zhipu", "glm-4.7")
+        .expect("first save creates a valid model profile");
+    assert_eq!(saved_preference.preference, "max");
+    assert_eq!(saved_preference.replay_profile, "auto");
+    assert_eq!(saved_preference.protocol, "zhipu_chat_completions");
+    assert!(saved_preference.supports_disabled);
+    cx.update(|cx| cx.set_global(SettingsOpen(true)));
+    root.update(cx, |root, cx| {
+        root.request_reasoning_reload(settings.clone(), cx)
+    });
+    pump_test_app(cx, |cx| {
+        !root.read_with(cx, |root, _| root.model_catalog_loading)
+            && settings.read_with(cx, |settings, _| {
+                matches!(settings.reasoning_projection(), ReasoningSettingsProjection::Ready {
+                    profiles, error: None, ..
+                } if profiles.iter().any(|profile| profile.provider == "zhipu"
+                    && profile.model == "glm-4.7"
+                    && profile.preference == ReasoningChoice::Effort("max".into())
+                    && profile.replay_profile == vega_conversation::types::ReasoningReplaySetting::GlmPreserved))
+            })
+    });
+    settings.update(cx, |settings, cx| {
+        settings.apply_reasoning_template(0, ReasoningTemplate::GlmInterleaved, cx);
+    });
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| {
+            root.reasoning_save_pending.is_none()
+                && root.configured_reasoning_authority.is_some()
+                && root.configured_reasoning_error.is_none()
+        }) && settings.read_with(cx, |settings, _| {
+            matches!(
+                settings.reasoning_projection(),
+                ReasoningSettingsProjection::Ready {
+                    profiles,
+                    error: None,
+                    ..
+                } if profiles.iter().any(|profile| profile.provider == "zhipu"
+                    && profile.model == "glm-4.7"
+                    && profile.protocol == ReasoningProtocol::ZhipuChatCompletions
+                    && profile.replay_profile
+                        == vega_conversation::types::ReasoningReplaySetting::GlmInterleaved)
+            )
+        })
+    });
+    let saved = vega_store::reasoning::read_from(&reasoning_path)
+        .expect("read acknowledged glm reasoning authority");
+    let profile = saved
+        .profile("zhipu", "glm-4.7")
+        .expect("saved glm profile");
+    assert_eq!(profile.replay_profile, "glm_interleaved");
+    assert_eq!(profile.preference, "max");
+
+    cx.update(|cx| {
+        cx.set_global(SettingsOpen(false));
+        cx.refresh_windows();
+    });
+    let frozen = stream
+        .read_with(cx, |stream, _| stream.frozen_reasoning_for_submit())
+        .expect("glm profile freezes for submit")
+        .expect("explicit glm profile");
+    assert_eq!(
+        frozen.replay_policy,
+        vega_runtime::ReasoningReplayPolicy::GlmInterleaved
+    );
+    root.update(cx, |root, cx| {
+        root.start_agent_run_with_reasoning(
+            stream.clone(),
+            &thread.id,
+            PendingAgentRun::UserMessage("use saved glm template".into()),
+            Some(frozen),
+            cx,
+        );
+    });
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
+            && provider.requests().len() == 1
+    });
+    let request = provider
+        .requests()
+        .into_iter()
+        .next()
+        .expect("glm mock request");
+    assert_eq!(
+        request.reasoning.map(|reasoning| reasoning.replay_policy),
+        Some(vega_runtime::ReasoningReplayPolicy::GlmInterleaved)
+    );
+}
+
+#[gpui_kit::test]
 async fn frozen_reasoning_owner_change_same_model_fails_before_provider(
     cx: &mut gpui_kit::TestAppContext,
 ) {
@@ -1048,7 +1292,7 @@ async fn frozen_reasoning_owner_change_same_model_fails_before_provider(
             efforts: vec!["low".into(), "high".into(), "max".into()],
             supports_disabled: false,
             disabled_wire: None,
-            preserve_reasoning_content: false,
+            replay_profile: vega_conversation::types::ReasoningReplaySetting::StandardChat,
             preference: ReasoningChoice::Effort("high".into()),
         }]);
         root.configured_reasoning_authority = Some((
@@ -1165,7 +1409,7 @@ async fn provider_catalog_refresh_gates_settings_until_new_generation_is_ready(
     // The live Settings view must leave Ready(old_generation) before the gate
     // is released, so an attempted edit cannot become an unacknowledged stale
     // Saving request.
-    root.update(cx, |root, cx| root.on_settings_saved(cx));
+    root.update(cx, |root, cx| root.on_settings_saved(false, cx));
     assert!(root.read_with(cx, |root, _| {
         root.model_catalog_loading && root.model_catalog_generation > old_generation
     }));
@@ -1306,7 +1550,7 @@ async fn exercise_catalog_reasoning_save_order(
     // A Provider SettingsSaved signal arrives while reasoning owns the
     // authority. It records intent only; it cannot launch a worker that would
     // overwrite Saving or leave model_catalog_loading stuck.
-    root.update(cx, |root, cx| root.on_settings_saved(cx));
+    root.update(cx, |root, cx| root.on_settings_saved(false, cx));
     assert!(root.read_with(cx, |root, _| {
         root.model_catalog_refresh_pending && root.model_catalog_loading
     }));
@@ -1478,7 +1722,7 @@ async fn failed_reasoning_save_keeps_error_and_draft_through_catalog_refresh(
         settings.apply_reasoning_template(0, ReasoningTemplate::OpenAi, cx);
     });
     assert!(root.read_with(cx, |root, _| root.reasoning_save_pending.is_some()));
-    root.update(cx, |root, cx| root.on_settings_saved(cx));
+    root.update(cx, |root, cx| root.on_settings_saved(false, cx));
     assert!(root.read_with(cx, |root, _| {
         root.model_catalog_refresh_pending && root.model_catalog_loading
     }));
@@ -1497,7 +1741,7 @@ async fn failed_reasoning_save_keeps_error_and_draft_through_catalog_refresh(
             efforts: vec!["low".into(), "high".into(), "max".into()],
             supports_disabled: true,
             disabled_wire: Some("reasoning_effort_none".into()),
-            preserve_reasoning_content: false,
+            replay_profile: "auto".into(),
             preference: "provider_default".into(),
         }],
     };

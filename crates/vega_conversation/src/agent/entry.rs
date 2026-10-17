@@ -677,6 +677,28 @@ where
         }
     }
 
+    let replay_registry = actor_config.replay_registry.clone();
+    if let (Some(route), Some(frame)) = (
+        actor_config.replay_route_fingerprint,
+        prepared.request.replay_frame.as_mut(),
+    ) {
+        frame.attach_route_fingerprint(route);
+    }
+    if let (Some(lease), Some(frame)) = (
+        prepared.replay_lease.as_ref(),
+        prepared.request.replay_frame.as_mut(),
+    ) && let Some(session) = lease.candidate()
+        && session.frame().is_some_and(|frame| {
+            frame.seal_eligible()
+                && frame.environment_fingerprint() == Some(session.environment_fingerprint())
+        })
+    {
+        frame.attach_candidate(
+            session.messages().to_vec(),
+            session.environment_fingerprint(),
+        );
+    }
+
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
         project_id: prepared.project_id.clone(),
@@ -858,8 +880,24 @@ where
             _ => None,
         })
         .unwrap_or_else(|| prepared.assistant_message_id.clone());
+    let mut successful_replay_messages = None;
     let (content, interrupted, failed) = match (processor_result, runtime_result) {
         (Ok(()), Ok(outcome)) => {
+            let replay_run_succeeded = !outcome.interrupted
+                && !outcome.failed
+                && outcome.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        RuntimeEvent::Finished(vega_runtime::RuntimeFinishReason::End)
+                    )
+                })
+                && !outcome
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, RuntimeEvent::Error(_)));
+            if replay_run_succeeded {
+                successful_replay_messages = Some(outcome.messages);
+            }
             let (state, failure_code) = if outcome.interrupted {
                 (
                     vega_store::run_diagnostics::DiagnosticState::Cancelled,
@@ -1009,6 +1047,37 @@ where
             .map_err(|_| ConversationError::Store("Skill revocation audit unavailable".into()))?;
         }
     }
+    if let (Some(messages), Some(registry), Some(lease)) = (
+        successful_replay_messages,
+        replay_registry,
+        prepared.replay_lease.take(),
+    ) {
+        let database_path = prepared.database_path.clone();
+        let durable_thread_id = thread_id.to_owned();
+        let durable_owner_id = final_assistant_message_id.clone();
+        let durable_result = tokio::task::spawn_blocking(move || {
+            let fence = durable_replay_fence(
+                &database_path,
+                &durable_thread_id,
+                &durable_owner_id,
+                &messages,
+            );
+            (fence, messages)
+        })
+        .await;
+        if let Ok((Some((source_version, source_fingerprint, checkpoint_fence)), messages)) =
+            durable_result
+        {
+            registry.seal(
+                lease,
+                source_version,
+                source_fingerprint,
+                checkpoint_fence,
+                final_assistant_message_id.clone(),
+                messages,
+            );
+        }
+    }
     Ok(ConversationRun {
         user_message_id: prepared.user_message_id,
         assistant_message_id: final_assistant_message_id,
@@ -1017,6 +1086,84 @@ where
         interrupted,
         failed,
     })
+}
+
+fn durable_replay_fence(
+    database_path: &std::path::Path,
+    thread_id: &str,
+    owner_message_id: &str,
+    runtime_messages: &[vega_runtime::ChatMessage],
+) -> Option<(u64, String, ReplayCheckpointFence)> {
+    let store = Store::open_read_only(database_path).ok()?;
+    let thread = vega_store::threads::find(store.conn(), thread_id).ok()??;
+    let (source, checkpoint) = vega_store::context_compaction::load_source_and_latest_checkpoint(
+        store.conn(),
+        thread_id,
+        &thread.model,
+    )
+    .ok()?;
+    let owner = source
+        .messages
+        .iter()
+        .find(|message| message.id == owner_message_id)?;
+    if owner.thread_id != thread_id
+        || owner.role != "assistant"
+        || owner.status != "done"
+        || source
+            .messages
+            .last()
+            .is_none_or(|message| message.id != owner_message_id)
+        || source.source_version != u64::try_from(owner.seq).ok()?
+        || source.tool_calls.iter().any(|call| {
+            !matches!(
+                call.status.as_str(),
+                "success" | "failed" | "rejected" | "cancelled"
+            )
+        })
+    {
+        return None;
+    }
+    let mut durable = super::pipeline::primary_history_from_context_source_with_checkpoint(
+        &source,
+        checkpoint.as_ref(),
+        "",
+    )
+    .ok()?;
+    let mut runtime = runtime_messages
+        .iter()
+        .filter(|message| message.role != vega_runtime::ChatRole::System)
+        .cloned()
+        .collect::<Vec<_>>();
+    vega_runtime::computer_use::redact_ephemeral_messages(&mut durable);
+    vega_runtime::computer_use::redact_ephemeral_messages(&mut runtime);
+    if runtime
+        .last()
+        .is_none_or(|message| message.role != vega_runtime::ChatRole::Assistant)
+    {
+        return None;
+    }
+    let durable = durable.iter().collect::<Vec<_>>();
+    let mut runtime = runtime.iter().collect::<Vec<_>>();
+    if runtime.len() == durable.len().saturating_add(1)
+        && durable
+            .last()
+            .is_some_and(|message| message.role == vega_runtime::ChatRole::Tool)
+        && runtime.last().is_some_and(|message| {
+            message.content.is_empty()
+                && message.images.is_empty()
+                && message.tool_call_id.is_none()
+                && message.tool_calls.is_empty()
+        })
+    {
+        runtime.pop();
+    }
+    if !super::compaction::durable_messages_equal(&durable, &runtime) {
+        return None;
+    }
+    let checkpoint_fence = ReplayCheckpointFence::from_checkpoint(checkpoint.as_ref());
+    let source_version = source.source_version;
+    let source_fingerprint = source.fingerprint;
+    Some((source_version, source_fingerprint, checkpoint_fence))
 }
 
 #[allow(clippy::too_many_arguments)]

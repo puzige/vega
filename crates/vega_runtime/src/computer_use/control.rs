@@ -1,4 +1,5 @@
 use super::{Capability, ComputerUseError, DesktopTarget, Observation, Target};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -65,6 +66,63 @@ impl std::fmt::Debug for ComputerUseControl {
 }
 
 impl ComputerUseControl {
+    pub(crate) fn replay_snapshot_fingerprint(&self) -> [u8; 32] {
+        let Ok(state) = self.0.state.lock() else {
+            return Sha256::digest(b"computer-use-state-unavailable").into();
+        };
+        let mut hasher = Sha256::new();
+        let mut add = |tag: u8, value: &[u8]| {
+            hasher.update([tag]);
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value);
+        };
+        add(1, format!("{:?}", state.phase).as_bytes());
+        add(2, format!("{:?}", state.capability).as_bytes());
+        add(3, &state.epoch.to_le_bytes());
+        add(4, state.target_label.as_bytes());
+        for window in &state.windows {
+            add(5, window.selection_id.as_bytes());
+            add(6, window.application.as_bytes());
+            add(7, window.bundle_id.as_bytes());
+            add(8, &window.pid.to_le_bytes());
+            add(9, &window.window_id.to_le_bytes());
+            add(10, window.title.as_bytes());
+        }
+        for target in [
+            state.browser_target.as_ref(),
+            state.desktop.as_ref(),
+            state.browser.as_ref(),
+        ] {
+            match target {
+                Some(Target::Desktop(window)) => {
+                    add(11, window.selection_id.as_bytes());
+                    add(12, window.application.as_bytes());
+                    add(13, window.bundle_id.as_bytes());
+                    add(14, &window.pid.to_le_bytes());
+                    add(15, &window.window_id.to_le_bytes());
+                    add(16, window.title.as_bytes());
+                }
+                Some(Target::DesktopCatalog) => add(17, b"desktop-catalog"),
+                Some(Target::Browser {
+                    connection,
+                    index,
+                    title,
+                    url,
+                }) => {
+                    add(18, connection.as_bytes());
+                    add(19, &index.to_le_bytes());
+                    add(20, title.as_bytes());
+                    add(21, url.as_bytes());
+                }
+                None => add(22, &[]),
+            }
+        }
+        for observation in &state.observations {
+            add(23, &observation.replay_snapshot_fingerprint());
+        }
+        hasher.finalize().into()
+    }
+
     pub fn same_instance(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }

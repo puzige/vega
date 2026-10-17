@@ -1596,7 +1596,7 @@ fn explicit_openai_profile(provider: &str, model: &str) -> ReasoningProfileProje
         efforts: vec!["low".into(), "high".into()],
         supports_disabled: true,
         disabled_wire: Some(ReasoningDisabledWire::ReasoningEffortNone),
-        preserve_reasoning_content: false,
+        replay_profile: vega_conversation::types::ReasoningReplaySetting::Auto,
         preference: ReasoningChoice::ProviderDefault,
     }
 }
@@ -1688,6 +1688,138 @@ async fn reasoning_template_is_explicit_and_failed_draft_keeps_exact_owner(
 }
 
 #[gpui_kit::test]
+async fn reasoning_templates_preserve_existing_model_preferences_for_save(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    let events = Arc::new(Mutex::new(Vec::<ReasoningProfileSaveRequested>::new()));
+    let captured = events.clone();
+    cx.update(|cx| {
+        cx.subscribe(&view, move |_, event: &ReasoningProfileSaveRequested, _| {
+            captured
+                .lock()
+                .expect("reasoning events")
+                .push(event.clone());
+        })
+        .detach();
+    });
+    let glm = ReasoningProfileProjection {
+        provider: "zai".into(),
+        model: "glm-4.7".into(),
+        protocol: ReasoningProtocol::ZhipuChatCompletions,
+        support: ReasoningSupport::Optional,
+        efforts: vec!["low".into(), "high".into(), "max".into()],
+        supports_disabled: true,
+        disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
+        replay_profile: ReasoningReplaySetting::Auto,
+        preference: ReasoningChoice::Disabled,
+    };
+    let deepseek = ReasoningProfileProjection {
+        provider: "deepseek".into(),
+        model: "deepseek-flash".into(),
+        protocol: ReasoningProtocol::DeepSeekChatCompletions,
+        support: ReasoningSupport::Optional,
+        efforts: ["low", "high", "max", "minimal", "medium", "xhigh"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        supports_disabled: true,
+        disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
+        replay_profile: ReasoningReplaySetting::DeepSeekTools,
+        preference: ReasoningChoice::Effort("medium".into()),
+    };
+    let forced_glm = ReasoningProfileProjection {
+        provider: "zai".into(),
+        model: "glm-5.3".into(),
+        protocol: ReasoningProtocol::ZhipuChatCompletions,
+        support: ReasoningSupport::Required,
+        efforts: vec!["low".into(), "high".into(), "max".into()],
+        supports_disabled: false,
+        disabled_wire: None,
+        replay_profile: ReasoningReplaySetting::Auto,
+        preference: ReasoningChoice::Effort("xhigh".into()),
+    };
+    view.update(cx, |view, cx| {
+        view.apply_reasoning_projection(
+            ReasoningSettingsProjection::Ready {
+                generation: 1,
+                profiles: vec![glm.clone(), deepseek.clone(), forced_glm.clone()],
+                error: None,
+            },
+            cx,
+        );
+        view.apply_reasoning_template(0, ReasoningTemplate::GlmPreserved, cx);
+    });
+    let preserved = events.lock().expect("preserved save")[0].profile.clone();
+    assert_eq!(
+        preserved.replay_profile,
+        ReasoningReplaySetting::GlmPreserved
+    );
+    assert_eq!(preserved.support, ReasoningSupport::Optional);
+    assert!(preserved.supports_disabled);
+    assert_eq!(
+        preserved.disabled_wire,
+        Some(ReasoningDisabledWire::ThinkingTypeDisabled)
+    );
+    assert_eq!(preserved.preference, ReasoningChoice::Disabled);
+
+    view.update(cx, |view, cx| {
+        view.apply_reasoning_projection(
+            ReasoningSettingsProjection::Ready {
+                generation: 2,
+                profiles: vec![glm.clone(), deepseek.clone(), forced_glm.clone()],
+                error: None,
+            },
+            cx,
+        );
+        view.apply_reasoning_template(0, ReasoningTemplate::GlmInterleaved, cx);
+        view.apply_reasoning_projection(
+            ReasoningSettingsProjection::Ready {
+                generation: 2,
+                profiles: vec![glm.clone(), deepseek.clone(), forced_glm.clone()],
+                error: None,
+            },
+            cx,
+        );
+        view.apply_reasoning_template(1, ReasoningTemplate::DeepSeek, cx);
+    });
+    let all_events = events.lock().expect("all preference saves");
+    let interleaved = &all_events[1].profile;
+    assert_eq!(
+        interleaved.replay_profile,
+        ReasoningReplaySetting::GlmInterleaved
+    );
+    assert_eq!(interleaved.preference, ReasoningChoice::Disabled);
+    assert!(interleaved.supports_disabled);
+    let deepseek_saved = &all_events[2].profile;
+    assert_eq!(
+        deepseek_saved.preference,
+        ReasoningChoice::Effort("medium".into())
+    );
+    assert!(deepseek_saved.efforts.contains(&"medium".to_string()));
+    drop(all_events);
+    view.update(cx, |view, cx| {
+        view.apply_reasoning_projection(
+            ReasoningSettingsProjection::Ready {
+                generation: 2,
+                profiles: vec![glm.clone(), deepseek.clone(), forced_glm.clone()],
+                error: None,
+            },
+            cx,
+        );
+        view.apply_reasoning_template(2, ReasoningTemplate::GlmPreserved, cx);
+    });
+    let events = events.lock().expect("forced GLM save");
+    assert_eq!(
+        events[3].profile.preference,
+        ReasoningChoice::Effort("xhigh".into())
+    );
+    assert_eq!(events[3].profile.efforts, forced_glm.efforts);
+}
+
+#[gpui_kit::test]
 async fn reasoning_unknown_template_is_tab_reachable_and_enter_activates(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());
@@ -1750,6 +1882,16 @@ async fn reasoning_unknown_template_is_tab_reachable_and_enter_activates(cx: &mu
         })
         .expect("focus reasoning reload");
     cx.simulate_keystrokes(window.into(), "tab enter");
+    assert!(view.read_with(cx, |view, _| view.reasoning_advanced));
+    window
+        .update(cx, |_, window, cx| {
+            view.read(cx)
+                .reasoning_focus(&ReasoningFocusTarget::Reload)
+                .unwrap()
+                .focus(window, cx);
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "tab tab enter");
     let event = events
         .lock()
         .expect("template event")
@@ -1785,7 +1927,7 @@ async fn reasoning_unknown_template_is_tab_reachable_and_enter_activates(cx: &mu
             reload.focus(window, cx);
         })
         .expect("refocus reasoning reload");
-    cx.simulate_keystrokes(window.into(), "tab space");
+    cx.simulate_keystrokes(window.into(), "tab tab space");
     assert_eq!(
         events.lock().expect("template events").len(),
         2,

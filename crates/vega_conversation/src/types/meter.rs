@@ -87,8 +87,6 @@ impl RunUsageEstimator {
 /// counter closed as `—` after a checked-overflow latch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeterSnapshot {
-    /// Cumulative usage tokens (all four fields) plus any provisional
-    /// estimate while streaming.
     pub tokens: u64,
     /// Cumulative calibrated cost, or the provisional estimate while
     /// streaming; `None` displays `—`.
@@ -154,7 +152,6 @@ pub(crate) fn format_usd(microcents: i64) -> String {
 /// checked `vega_store::token_usage` aggregate projected into meter space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestoredUsage {
-    /// Sum of all four usage token fields across the thread's priced rows.
     pub tokens: u64,
     /// Checked cost total, or `None` when any row is legacy/unpriced or the
     /// aggregate failed closed.
@@ -279,11 +276,7 @@ impl ConversationMeter {
                 }
                 self.round_chars = 0;
                 self.round_visible = false;
-                let call_tokens = usage
-                    .input
-                    .checked_add(usage.output)
-                    .and_then(|total| total.checked_add(usage.cache_read))
-                    .and_then(|total| total.checked_add(usage.cache_write));
+                let call_tokens = usage.input.checked_add(usage.output);
                 let Some(call_tokens) = call_tokens else {
                     self.degrade();
                     return true;
@@ -318,11 +311,7 @@ impl ConversationMeter {
                 cost,
                 pricing,
             } => {
-                let call_tokens = usage
-                    .input
-                    .checked_add(usage.output)
-                    .and_then(|total| total.checked_add(usage.cache_read))
-                    .and_then(|total| total.checked_add(usage.cache_write));
+                let call_tokens = usage.input.checked_add(usage.output);
                 let Some(call_tokens) = call_tokens else {
                     self.degrade();
                     return true;

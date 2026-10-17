@@ -19,15 +19,24 @@ pub(super) fn reasoning_error_code(
 }
 
 fn reasoning_profile_patch(
+    authority: &vega_store::reasoning::ReasoningConfig,
     base: &ReasoningProfileProjection,
     candidate: &ReasoningProfileProjection,
 ) -> Result<vega_store::reasoning::ReasoningProfilePatch, ReasoningSettingsErrorCode> {
     if base.provider != candidate.provider || base.model != candidate.model {
         return Err(ReasoningSettingsErrorCode::Invalid);
     }
+    let stored = authority
+        .profile(&base.provider, &base.model)
+        .map(ReasoningProfileProjection::from_store)
+        .transpose()
+        .map_err(|_| ReasoningSettingsErrorCode::Invalid)?
+        .unwrap_or_else(|| ReasoningProfileProjection::unknown(&base.provider, &base.model));
     let protocol = |protocol| match protocol {
         ReasoningProtocol::OpenAiChatCompletions => "openai_chat_completions",
         ReasoningProtocol::ZhipuChatCompletions => "zhipu_chat_completions",
+        ReasoningProtocol::DeepSeekChatCompletions => "deepseek_chat_completions",
+        ReasoningProtocol::ResponsesApi => "responses_api",
         ReasoningProtocol::Unknown => "unknown",
     };
     let support = |support| match support {
@@ -48,17 +57,16 @@ fn reasoning_profile_patch(
     Ok(vega_store::reasoning::ReasoningProfilePatch {
         provider: candidate.provider.clone(),
         model: candidate.model.clone(),
-        protocol: (base.protocol != candidate.protocol)
+        protocol: (stored.protocol != candidate.protocol)
             .then(|| protocol(candidate.protocol).into()),
-        support: (base.support != candidate.support).then(|| support(candidate.support).into()),
-        efforts: (base.efforts != candidate.efforts).then(|| candidate.efforts.clone()),
-        supports_disabled: (base.supports_disabled != candidate.supports_disabled)
+        support: (stored.support != candidate.support).then(|| support(candidate.support).into()),
+        efforts: (stored.efforts != candidate.efforts).then(|| candidate.efforts.clone()),
+        supports_disabled: (stored.supports_disabled != candidate.supports_disabled)
             .then_some(candidate.supports_disabled),
-        disabled_wire: (base.disabled_wire != candidate.disabled_wire).then_some(disabled_wire),
-        preserve_reasoning_content: (base.preserve_reasoning_content
-            != candidate.preserve_reasoning_content)
-            .then_some(candidate.preserve_reasoning_content),
-        preference: (base.preference != candidate.preference).then_some(preference),
+        disabled_wire: (stored.disabled_wire != candidate.disabled_wire).then_some(disabled_wire),
+        replay_profile: (base.replay_profile != candidate.replay_profile)
+            .then(|| candidate.replay_profile.as_store_str().to_string()),
+        preference: (stored.preference != candidate.preference).then_some(preference),
     })
 }
 
@@ -128,12 +136,15 @@ fn reconcile_reasoning_profiles(
     catalog
         .into_iter()
         .map(|catalog_profile| {
-            let provider = catalog_profile.provider;
-            let model = catalog_profile.model;
-            match config.profile(&provider, &model) {
-                Some(profile) => ReasoningProfileProjection::from_store(profile).map_err(|_| ()),
-                None => Ok(ReasoningProfileProjection::unknown(provider, model)),
-            }
+            let provider = catalog_profile.provider.clone();
+            let model = catalog_profile.model.clone();
+            let configured = config
+                .profile(&provider, &model)
+                .map(ReasoningProfileProjection::from_store)
+                .transpose()
+                .map_err(|_| ())?;
+            crate::reasoning_capabilities::reconcile_catalog_profile(&catalog_profile, configured)
+                .map_err(|_| ())
         })
         .collect()
 }
@@ -286,7 +297,7 @@ impl VegaWindow {
         {
             return;
         }
-        let patch = match reasoning_profile_patch(&request.base, &request.profile) {
+        let patch = match reasoning_profile_patch(&base_config, &request.base, &request.profile) {
             Ok(patch) => patch,
             Err(error) => {
                 self.reasoning_error_hold = Some(error);
@@ -339,9 +350,7 @@ impl VegaWindow {
     /// persistence mechanism: the slider's `ThinkingTierSelected` becomes the
     /// same `ReasoningProfilePatch { preference }` a Settings edit produces,
     /// written through the same authority, single-flight owner, and
-    /// reconciliation. Only the profile's `preference` field is patched, so
-    /// picking a tier cannot change the declared `efforts` the slider's own
-    /// dot count comes from.
+    /// reconciliation.
     ///
     /// The intent is validated against the app's own authority, never against
     /// the stream's copy: a tier the profile does not declare is refused with
@@ -428,7 +437,7 @@ impl VegaWindow {
         }
         let mut candidate = profile.clone();
         candidate.preference = next;
-        let patch = match reasoning_profile_patch(&profile, &candidate) {
+        let patch = match reasoning_profile_patch(&base_config, &profile, &candidate) {
             Ok(patch) => patch,
             Err(_) => {
                 self.apply_reasoning_profile_to_stream(&stream, &model, cx);
@@ -582,7 +591,13 @@ impl VegaWindow {
             authority,
             mut error,
         } = result;
+        let previous_snapshot = self
+            .configured_reasoning_authority
+            .as_ref()
+            .map(|(_, snapshot)| snapshot.clone());
+        let mut replay_identity_changed = false;
         if let Some((config, snapshot)) = authority {
+            replay_identity_changed = previous_snapshot.as_ref() != Some(&snapshot);
             let catalog = self.configured_reasoning.take().unwrap_or_default();
             let fallback_catalog = catalog.clone();
             match reconcile_reasoning_profiles(&config, catalog) {
@@ -604,6 +619,11 @@ impl VegaWindow {
             // uncertain post-rename error. Keep the visible profiles only as
             // a draft context and require an explicit reload to reconcile.
             self.configured_reasoning_authority = None;
+        }
+        if replay_identity_changed
+            && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
+        {
+            sessions.0.invalidate_all();
         }
         self.reasoning_error_hold = error;
         self.configured_reasoning_error = error;
@@ -719,7 +739,7 @@ mod tests {
             efforts: vec!["low".into(), "high".into(), "max".into()],
             supports_disabled: false,
             disabled_wire: None,
-            preserve_reasoning_content: true,
+            replay_profile: "glm_preserved".into(),
             preference: "max".into(),
         }
     }
@@ -738,9 +758,15 @@ mod tests {
         assert_eq!(reconciled.len(), 1);
         assert_eq!(reconciled[0].provider, "zhipu");
         assert_eq!(reconciled[0].model, "glm-5.3");
-        assert_eq!(reconciled[0].support, ReasoningSupport::Unknown);
-        assert_eq!(reconciled[0].preference, ReasoningChoice::ProviderDefault);
-        assert!(!reconciled[0].preserve_reasoning_content);
+        assert_eq!(reconciled[0].support, ReasoningSupport::Required);
+        assert_eq!(
+            reconciled[0].preference,
+            ReasoningChoice::Effort("max".into())
+        );
+        assert_eq!(
+            reconciled[0].replay_profile,
+            vega_conversation::types::ReasoningReplaySetting::GlmPreserved
+        );
     }
 
     #[gpui_kit::test]

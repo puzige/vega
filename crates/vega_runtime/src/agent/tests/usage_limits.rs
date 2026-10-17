@@ -10,8 +10,8 @@ async fn priced_usage_carries_exact_quote_provenance() {
         ProviderEvent::Usage {
             input: 200_000,
             output: 100_000,
-            cache_read: 20_000,
-            cache_write: 0,
+            cache_read: Some(20_000),
+            cache_write: Some(0),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -36,8 +36,8 @@ async fn priced_usage_carries_exact_quote_provenance() {
                 usage: RuntimeTokenUsage {
                     input: 200_000,
                     output: 100_000,
-                    cache_read: 20_000,
-                    cache_write: 0,
+                    cache_read: Some(20_000),
+                    cache_write: Some(0),
                 },
                 cost_microcents,
                 pricing: Some(RuntimeUsagePricing { version, profile, .. }),
@@ -58,14 +58,14 @@ async fn duplicate_usage_fails_closed() {
         ProviderEvent::Usage {
             input: 10,
             output: 2,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         ProviderEvent::Usage {
             input: 900,
             output: 90,
-            cache_read: 0,
-            cache_write: 9,
+            cache_read: Some(0),
+            cache_write: Some(9),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -118,8 +118,8 @@ async fn usage_after_terminal_fails_closed() {
         ProviderEvent::Usage {
             input: 12,
             output: 3,
-            cache_read: 2,
-            cache_write: 1,
+            cache_read: Some(2),
+            cache_write: Some(1),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -127,8 +127,8 @@ async fn usage_after_terminal_fails_closed() {
         ProviderEvent::Usage {
             input: 900,
             output: 90,
-            cache_read: 800,
-            cache_write: 700,
+            cache_read: Some(800),
+            cache_write: Some(700),
         },
     ])]]);
     let outcome = run_agent(
@@ -173,8 +173,8 @@ async fn unpriced_model_keeps_zero_cost_legacy_row() {
         ProviderEvent::Usage {
             input: 40,
             output: 8,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -205,8 +205,8 @@ async fn over_input_limit_fails_closed_without_pricing() {
         ProviderEvent::Usage {
             input: 500,
             output: 2,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,

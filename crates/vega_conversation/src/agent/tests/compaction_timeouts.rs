@@ -60,8 +60,8 @@ fn usage(output: u64) -> ScriptStep {
     ScriptStep::events(vec![ProviderEvent::Usage {
         input: 42,
         output,
-        cache_read: 0,
-        cache_write: 0,
+        cache_read: Some(0),
+        cache_write: Some(0),
     }])
 }
 

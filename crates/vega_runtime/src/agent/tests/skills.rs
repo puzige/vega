@@ -121,6 +121,8 @@ impl ContextCompactionHook for RevokingSkillCompaction {
                 messages: vec![ChatMessage::new(ChatRole::User, "summary")],
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
+                replay_cold_prefix_messages: None,
+                replay_interleaved_user_boundary: None,
                 usages: Vec::new(),
                 usage_complete: false,
             })
@@ -166,6 +168,8 @@ impl ContextCompactionHook for CaptureSkillCompaction {
                 messages: vec![ChatMessage::new(ChatRole::User, "summary")],
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
+                replay_cold_prefix_messages: None,
+                replay_interleaved_user_boundary: None,
                 usages: Vec::new(),
                 usage_complete: false,
             })
@@ -2048,6 +2052,11 @@ async fn issue74_s18_model_load_compacts_near_configured_context_budget() {
         let mut messages = std::iter::once(ChatMessage::new(ChatRole::System, system))
             .chain(history_for(archive_len))
             .collect::<Vec<_>>();
+        let cold_prefix_len = messages.len();
+        messages[0].attach_replay_frame(crate::ReplayFrame::new(
+            cold_prefix_len,
+            crate::ReasoningReplayPolicy::Unknown,
+        ));
         if activated {
             messages.push(ChatMessage::assistant_with_tools(
                 String::new(),

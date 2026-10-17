@@ -553,8 +553,8 @@ fn summary_usage() -> ProviderEvent {
     ProviderEvent::Usage {
         input: 1201,
         output: 37,
-        cache_read: 11,
-        cache_write: 5,
+        cache_read: Some(11),
+        cache_write: Some(5),
     }
 }
 
@@ -588,8 +588,8 @@ fn success_provider(usage: bool) -> MockProvider {
             ProviderEvent::Usage {
                 input: 101,
                 output: 9,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,

@@ -72,8 +72,8 @@ pub fn usage(input: u64, output: u64) -> ProviderEvent {
     ProviderEvent::Usage {
         input,
         output,
-        cache_read: 0,
-        cache_write: 0,
+        cache_read: Some(0),
+        cache_write: Some(0),
     }
 }
 

@@ -722,6 +722,8 @@ pub(crate) fn run_manual_context_worker(
         }
         None => reasoning_for_provider_model(
             &configured.name,
+            configured.api,
+            &configured.base_url,
             &model,
             Some(&config_path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME)),
         )?,

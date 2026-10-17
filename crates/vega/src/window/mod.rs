@@ -160,6 +160,7 @@ pub(crate) struct VegaWindow {
         vega_store::reasoning::ReasoningConfig,
         vega_store::reasoning::ReasoningFileSnapshot,
     )>,
+    loaded_replay_config: Option<vega_store::config::AppConfig>,
     /// App-level owner for the independent reasoning profile save. Settings
     /// can close while the worker is running, so this gate lives above the
     /// Settings entity and still blocks a new run until the exact ack lands.
@@ -240,13 +241,6 @@ impl VegaWindow {
     }
 
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        // R8 backstop: releasing this window's root (window closed) means no
-        // run it owned can still be live, so clear any liveness the normal
-        // finish path could not report. `on_release` runs before `Drop`, while
-        // the controller map is still populated, and only the shared liveness
-        // projection is cleared here — the map itself is left for
-        // `window_terminal_cleanup`, which still has to cancel each run's
-        // token.
         cx.on_release(|this, cx| {
             let thread_ids: Vec<String> = this.agent_controller.active.keys().cloned().collect();
             for thread_id in thread_ids {
@@ -311,12 +305,19 @@ impl VegaWindow {
             .and_then(|store| store.database_path())
             .and_then(|path| path.parent())
             .map(|root| Arc::new(PricingSettingsService::new(root.join("pricing.json"))));
+        let sidebar = cx.new(Sidebar::new);
+        cx.subscribe(&sidebar, |this, _, event: &SidebarEvent, cx| match event {
+            SidebarEvent::ThreadDeleted(thread_id) => {
+                this.cancel_agent_for_thread(thread_id, cx);
+            }
+        })
+        .detach();
         let mut window = Self {
             updater: crate::updater::Updater::default(),
             update_notice_dismissed: false,
             navigation: navigation::Navigation::new(cx, None),
             palette: crate::app_palette::AppPalette::default(),
-            sidebar: cx.new(Sidebar::new),
+            sidebar,
             settings_view: None,
             mcp_settings: cx
                 .try_global::<crate::app_agent::AppMcpSettings>()
@@ -348,6 +349,7 @@ impl VegaWindow {
             configured_reasoning: None,
             configured_reasoning_error: None,
             configured_reasoning_authority: None,
+            loaded_replay_config: None,
             reasoning_save_pending: None,
             composer_reasoning_operation: 0,
             pending_composer_thinking: None,

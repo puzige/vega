@@ -13,6 +13,9 @@ impl SettingsView {
         };
         let base = self.config.clone();
         let theme_changed = base.ui.theme != candidate.ui.theme;
+        let replay_identity_changed = base.providers != candidate.providers
+            || base.agent != candidate.agent
+            || base.defaults.permission_mode != candidate.defaults.permission_mode;
         self.provider_management.saving = true;
         let worker = cx.background_executor().spawn(async move {
             if base.providers != candidate.providers { return Err("供应商编辑必须使用专用表单"); }
@@ -60,7 +63,9 @@ impl SettingsView {
                         }
                         this.config = config;
                         this.error = None;
-                        cx.emit(SettingsSaved);
+                        cx.emit(SettingsSaved {
+                            replay_identity_changed,
+                        });
                     }
                     Err(error) => this.error = Some(error.into()),
                 }

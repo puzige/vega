@@ -506,6 +506,36 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let thread = vega_store::threads::find(&transaction, &thread_id)
         .map_err(runtime_store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
+    let preinsert_source =
+        vega_store::context_compaction::load_source_in_transaction(&transaction, &thread_id)
+            .map_err(runtime_store_error)?;
+    let preinsert_checkpoint = vega_store::context_compaction::latest_checkpoint_in_transaction(
+        &transaction,
+        &thread_id,
+        &thread.model,
+    )
+    .map_err(runtime_store_error)?;
+    let preinsert_history = primary_history_from_context_source_with_checkpoint(
+        &preinsert_source,
+        preinsert_checkpoint.as_ref(),
+        &assistant_message_id,
+    )?;
+    let cold_prefix_len = preinsert_history
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| ConversationError::CorruptRow("history length overflow".into()))?;
+    let replay_lease = if !uses_existing_user && config.credential_continuation_id.is_none() {
+        config.replay_registry.as_ref().map(|registry| {
+            registry.begin(
+                &thread_id,
+                preinsert_source.source_version,
+                &preinsert_source.fingerprint,
+                ReplayCheckpointFence::from_checkpoint(preinsert_checkpoint.as_ref()),
+            )
+        })
+    } else {
+        None
+    };
     let run_mode = ThreadMode::parse(&thread.mode)
         .ok_or_else(|| ConversationError::CorruptRow(format!("run mode: {}", thread.mode)))?;
     let permission_mode =
@@ -906,6 +936,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         );
     }
 
+    let replay_frame = vega_runtime::ReplayFrame::new(
+        cold_prefix_len,
+        reasoning
+            .as_ref()
+            .map(|profile| profile.replay_policy)
+            .unwrap_or(vega_runtime::ReasoningReplayPolicy::Unknown),
+    );
+
     Ok(PreparedRun {
         database_path,
         project_id: thread.project_id.clone(),
@@ -922,6 +960,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             completed_tool_results,
             pricing_catalog,
             reasoning,
+            replay_frame: Some(replay_frame),
             context_budget,
             context_source_version: Some(source.source_version),
             context_source_fingerprint: Some(source.fingerprint.clone()),
@@ -968,6 +1007,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             },
         },
         next_tool_seq,
+        replay_lease,
     })
 }
 

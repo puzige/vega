@@ -484,8 +484,8 @@ async fn real_run_hydrates_tools_costs_summary_and_redacts_inputs() -> Result<()
             ProviderEvent::Usage {
                 input: 100_000,
                 output: 10_000,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -509,8 +509,8 @@ async fn real_run_hydrates_tools_costs_summary_and_redacts_inputs() -> Result<()
             ProviderEvent::Usage {
                 input: 50_000,
                 output: 5_000,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,

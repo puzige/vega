@@ -236,6 +236,12 @@ pub struct PendingDeleteConfirm(pub Option<Thread>);
 
 impl Global for PendingDeleteConfirm {}
 
+pub enum SidebarEvent {
+    ThreadDeleted(String),
+}
+
+impl EventEmitter<SidebarEvent> for Sidebar {}
+
 /// Whether the 「项目」 block is collapsed (persisted as
 /// `ui.projects_collapsed`, T12 ruling: config 载体).
 pub struct ProjectsCollapsed(pub bool);
@@ -562,6 +568,7 @@ impl Sidebar {
         crate::navigation::finish_task_mutation(cx);
         match result {
             Ok(()) => {
+                cx.emit(SidebarEvent::ThreadDeleted(thread.id.clone()));
                 // 删除的是打开中的会话：内容区回落 §4.6 空态。
                 if cx
                     .global::<OpenedThread>()
@@ -855,11 +862,14 @@ pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};
 mod tests {
 
     use super::{
-        OpenedThread, RenameResolution, RunningThreadsGlobal, archive_section_visible,
+        OpenedThread, PendingDeleteConfirm, RenameResolution, RunningThreadsGlobal,
+        SelectedProject, Sidebar, SidebarEvent, VegaStore, archive_section_visible,
         civil_from_days, clear_opened_thread_of_project, relative_time_from, resolve_rename,
         row_shows_actions, set_thread_running, shows_timestamp_at_rest, thread_is_running,
         thread_title,
     };
+    use gpui_kit::AppContext;
+    use std::sync::{Arc, Mutex};
     use vega_conversation::types::Thread;
 
     fn thread_with_title(title: &str) -> Thread {
@@ -892,6 +902,96 @@ mod tests {
             clear_opened_thread_of_project("p1", cx);
             assert!(cx.global::<OpenedThread>().0.is_none());
         });
+    }
+
+    #[gpui_kit::test]
+    async fn deleting_noncurrent_thread_emits_success_event_after_store_commit(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("vega.db");
+        let store = vega_store::Store::open(&database).unwrap();
+        store.migrate().unwrap();
+        let project = vega_store::projects::create(
+            store.conn(),
+            directory.path().to_str().unwrap(),
+            "delete-event",
+            None,
+        )
+        .unwrap();
+        let current =
+            vega_conversation::threads::create_thread(&store, &project.id, "model", "confirm")
+                .unwrap();
+        let deleted =
+            vega_conversation::threads::create_thread(&store, &project.id, "model", "confirm")
+                .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        cx.update(|cx| {
+            cx.set_global(VegaStore(Ok(vega_store::Store::open(&database).unwrap())));
+            cx.set_global(SelectedProject(Some(project.id.clone())));
+            cx.set_global(OpenedThread(Some(current.clone())));
+            cx.set_global(PendingDeleteConfirm(Some(deleted.clone())));
+        });
+        let sidebar = cx.new(Sidebar::new);
+        let observed = events.clone();
+        cx.update(|cx| {
+            cx.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                let SidebarEvent::ThreadDeleted(thread_id) = event;
+                observed.lock().unwrap().push(thread_id.clone());
+            })
+            .detach();
+        });
+        sidebar.update(cx, Sidebar::confirm_pending_delete);
+        cx.run_until_parked();
+        assert!(
+            vega_store::threads::find(store.conn(), &deleted.id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            std::slice::from_ref(&deleted.id)
+        );
+        assert_eq!(
+            cx.update(|cx| cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|thread| thread.id.clone())),
+            Some(current.id)
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn failed_thread_delete_emits_no_invalidation_event(cx: &mut gpui_kit::TestAppContext) {
+        let thread = thread_with_title("still here");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        cx.update(|cx| {
+            cx.set_global(VegaStore(Err("store unavailable".into())));
+            cx.set_global(SelectedProject(None));
+            cx.set_global(OpenedThread(Some(thread.clone())));
+            cx.set_global(PendingDeleteConfirm(Some(thread.clone())));
+        });
+        let sidebar = cx.new(Sidebar::new);
+        let observed = events.clone();
+        cx.update(|cx| {
+            cx.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                let SidebarEvent::ThreadDeleted(thread_id) = event;
+                observed.lock().unwrap().push(thread_id.clone());
+            })
+            .detach();
+        });
+        sidebar.update(cx, Sidebar::confirm_pending_delete);
+        cx.run_until_parked();
+        assert!(events.lock().unwrap().is_empty());
+        assert_eq!(
+            cx.update(|cx| cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|opened| opened.id.clone())),
+            Some(thread.id)
+        );
     }
 
     #[test]

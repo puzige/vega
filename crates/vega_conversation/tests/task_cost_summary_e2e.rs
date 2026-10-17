@@ -37,8 +37,8 @@ fn usage(input: u64, output: u64, cache_read: u64) -> ProviderEvent {
     ProviderEvent::Usage {
         input,
         output,
-        cache_read,
-        cache_write: 0,
+        cache_read: Some(cache_read),
+        cache_write: Some(0),
     }
 }
 
@@ -142,8 +142,8 @@ async fn one_provider_call_without_tools_projects_priced_summary() -> Result<(),
         Some(TokenUsage {
             input: 80_000,
             output: 8_000,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         })
     );
     // $1/1M * 80k + $2/1M * 8k = 96_000 µ¢.
@@ -197,8 +197,8 @@ async fn two_provider_calls_with_two_tools_project_exact_cache_ratio() -> Result
         Some(TokenUsage {
             input: 150_000,
             output: 15_000,
-            cache_read: 50_000,
-            cache_write: 0,
+            cache_read: Some(50_000),
+            cache_write: Some(0),
         })
     );
     // Round 1: uncached 60_000×$1 + 10_000×$2 + 40_000×$0.1 (per 1M)
@@ -389,8 +389,8 @@ async fn unpriced_legacy_rows_show_tokens_but_unavailable_cost() -> Result<(), B
         Some(TokenUsage {
             input: 80_000,
             output: 8_000,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         }),
         "tokens stay visible"
     );

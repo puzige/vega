@@ -258,8 +258,8 @@ impl vega_runtime::Provider for Issue91LaterChildFailureProvider {
             events.push(Ok(ProviderEvent::Usage {
                 input: 9_406,
                 output: if success { 800 } else { 8_192 },
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             }));
         }
         events.push(Ok(ProviderEvent::Done {
@@ -293,8 +293,8 @@ impl vega_runtime::Provider for Issue91AdaptiveLengthProvider {
             Ok(ProviderEvent::Usage {
                 input: 9_406,
                 output: if exhausted { 8_192 } else { 900 },
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             }),
             Ok(ProviderEvent::Done {
                 stop_reason: if exhausted {
@@ -329,8 +329,8 @@ impl vega_runtime::Provider for Issue91AccumulatingSummaryProvider {
             Ok(ProviderEvent::Usage {
                 input: 10_000,
                 output: if exhausted { 8192 } else { 1200 },
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             }),
             Ok(ProviderEvent::Done {
                 stop_reason: if exhausted {
@@ -387,8 +387,8 @@ impl vega_runtime::Provider for Issue88DenseSecondStageProvider {
             Ok(ProviderEvent::Usage {
                 input: 200,
                 output: if exhausted { 8192 } else { 1852 },
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             }),
             Ok(ProviderEvent::Done {
                 stop_reason: if exhausted {
@@ -417,8 +417,8 @@ impl vega_runtime::Provider for Issue88OutputCapProvider {
             Ok(ProviderEvent::Usage {
                 input: 200,
                 output: if cap <= 4096 { cap } else { 5000 } as u64,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             }),
             Ok(ProviderEvent::Done {
                 stop_reason: if cap <= 4096 {
@@ -510,6 +510,8 @@ async fn assembles_system_and_history_by_sequence_with_current_user_last() {
         )
         .unwrap();
     }
+    let preview =
+        read_context_projection(&store, "thread-1", "mock-model", "system first").unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::TextDelta("answer".into()),
@@ -529,21 +531,30 @@ async fn assembles_system_and_history_by_sequence_with_current_user_last() {
     .await
     .unwrap();
     let requests = provider.requests();
-    let history: Vec<(vega_runtime::ChatRole, &str)> = requests[0]
-        .messages
-        .iter()
-        .map(|message| (message.role, message.content.as_str()))
-        .collect();
+    let history = &requests[0].messages;
+    assert_eq!(history.len(), 5);
     assert_eq!(
-        history,
-        vec![
-            (vega_runtime::ChatRole::System, "system first"),
-            (vega_runtime::ChatRole::User, "old question"),
-            (vega_runtime::ChatRole::Assistant, "partial answer"),
-            (vega_runtime::ChatRole::Assistant, "failed answer"),
-            (vega_runtime::ChatRole::User, "current question"),
-        ]
+        preview.estimated_tokens,
+        Some(
+            vega_runtime::estimate_wire_context(&history[..4], &requests[0].tools)
+                .unwrap()
+                .input_tokens
+        )
     );
+    for (index, role, content) in [
+        (0, vega_runtime::ChatRole::System, "system first"),
+        (1, vega_runtime::ChatRole::User, "old question"),
+        (4, vega_runtime::ChatRole::User, "current question"),
+    ] {
+        assert_eq!(history[index].role, role);
+        assert_eq!(history[index].content, content);
+    }
+    for (index, text) in [(2, "partial answer"), (3, "failed answer")] {
+        assert_eq!(history[index].role, vega_runtime::ChatRole::User);
+        let observation: serde_json::Value = serde_json::from_str(&history[index].content).unwrap();
+        assert_eq!(observation["vega_history_observation"]["text"], text);
+        assert_eq!(observation["vega_history_observation"]["authority"], "none");
+    }
 }
 
 #[tokio::test]
@@ -716,8 +727,14 @@ async fn issue76_history_projection_splits_text_and_pairs_each_tool_group() {
     );
     let history_wire = projection.as_slice();
     assert_eq!(history_wire.len(), 8);
-    assert_eq!(history_wire[0].role, vega_runtime::ChatRole::Assistant);
-    assert_eq!(history_wire[0].content, "textA");
+    for (index, text) in [(0, "textA"), (3, " textB"), (6, " textC")] {
+        assert_eq!(history_wire[index].role, vega_runtime::ChatRole::User);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&history_wire[index].content).unwrap()["vega_history_observation"]
+                ["text"],
+            text
+        );
+    }
     assert_eq!(history_wire[1].role, vega_runtime::ChatRole::User);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&history_wire[1].content).unwrap()["vega_history_observation"]
@@ -730,13 +747,11 @@ async fn issue76_history_projection_splits_text_and_pairs_each_tool_group() {
             ["output"],
         "result1"
     );
-    assert_eq!(history_wire[3].content, " textB");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&history_wire[5].content).unwrap()["vega_history_observation"]
             ["output"],
         "result2"
     );
-    assert_eq!(history_wire[6].content, " textC");
     assert_eq!(
         history_wire.last().map(|message| message.content.as_str()),
         Some("current")
@@ -1095,8 +1110,8 @@ async fn issue76_manual_tool_history_uses_rich_summary_and_labelled_primary_afte
         ProviderEvent::Usage {
             input: 22,
             output: 5,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -1442,8 +1457,8 @@ async fn issue76_configured_run_uses_summary_provider_then_primary_and_installs_
             ProviderEvent::Usage {
                 input: 100,
                 output: 12,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
@@ -1722,8 +1737,8 @@ async fn codex_parity_large_prior_checkpoint_is_reduced_and_raw_history_preserve
         ProviderEvent::Usage {
             input: 300,
             output: 50,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -1817,8 +1832,8 @@ async fn issue76_priced_summary_usage_is_a_thread_level_audit_row() {
             ProviderEvent::Usage {
                 input: 100,
                 output: 12,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
@@ -1899,8 +1914,8 @@ async fn issue76_summary_usage_received_before_failure_is_persisted_without_chec
         ScriptStep::events(vec![ProviderEvent::Usage {
             input: 77,
             output: 9,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         }]),
         ScriptStep::Error {
             status: Some(503),
@@ -1991,8 +2006,8 @@ async fn issue76_manual_failure_returns_usage_and_typed_terminal_event() {
         ScriptStep::events(vec![ProviderEvent::Usage {
             input: 41,
             output: 7,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         }]),
         ScriptStep::Error {
             status: Some(503),
@@ -2048,8 +2063,8 @@ async fn issue76_manual_cancel_returns_usage_and_cancelled_terminal_event() {
         ScriptStep::events(vec![ProviderEvent::Usage {
             input: 43,
             output: 8,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         }]),
         ScriptStep::Cancelled,
     ]);
@@ -2439,6 +2454,7 @@ async fn issue300_live_write_compaction_ignores_only_sidecars_and_rejects_histor
             ),
             pricing_catalog: None,
             reasoning: None,
+            replay_frame: None,
             context_budget: None,
             context_source_version: None,
             context_source_fingerprint: None,
@@ -2655,8 +2671,8 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
             ProviderEvent::Usage {
                 input: 120,
                 output: 16,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
@@ -2763,8 +2779,8 @@ async fn issue168_auto_compaction_then_primary_failure_keeps_checkpoint_and_fail
             ProviderEvent::Usage {
                 input: 120,
                 output: 16,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
@@ -3619,8 +3635,8 @@ async fn issue91_generic_invalid_summary_does_not_retry_a_splittable_source() {
         ProviderEvent::Usage {
             input: 9_406,
             output: 300,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -3731,8 +3747,8 @@ async fn claude_ptl_retry_failure_and_cancel_preserve_known_usage() {
                     ProviderEvent::Usage {
                         input: 101,
                         output: 11,
-                        cache_read: 0,
-                        cache_write: 0,
+                        cache_read: Some(0),
+                        cache_write: Some(0),
                     },
                 ]),
                 ScriptStep::Error {
@@ -3806,8 +3822,8 @@ async fn claude_source_mutation_rejects_checkpoint_and_retains_usage() {
             ProviderEvent::Usage {
                 input: 103,
                 output: 13,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
@@ -4903,8 +4919,8 @@ async fn claude_failed_summary_rechecks_source_before_soft_fallback() {
         let mut steps = vec![ScriptStep::events(vec![ProviderEvent::Usage {
             input: 43,
             output: 7,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         }])];
         if overlarge {
             steps.push(ScriptStep::events(vec![

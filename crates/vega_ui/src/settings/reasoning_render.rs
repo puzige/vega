@@ -157,103 +157,153 @@ impl SettingsView {
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
                     .child(reasoning_protocol_label(profile.protocol)),
-            );
-
-        if profile.protocol == ReasoningProtocol::Unknown
-            || matches!(profile.support, ReasoningSupport::Unknown)
-        {
-            card = card.child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .child("尚未声明此模型的协议与能力；请选择一个明确的起始模板"),
-            );
-            let openai_focus = self.reasoning_focus(&ReasoningFocusTarget::Template {
-                index,
-                template: ReasoningTemplate::OpenAi,
-            });
-            let zhipu_focus = self.reasoning_focus(&ReasoningFocusTarget::Template {
-                index,
-                template: ReasoningTemplate::Zhipu,
-            });
-            card = card.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .child(action_button(
-                        "使用 OpenAI 兼容模板",
-                        colors,
-                        openai_focus,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            this.apply_reasoning_template(index, ReasoningTemplate::OpenAi, cx);
-                        }),
-                    ))
-                    .child(action_button(
-                        "使用智谱 GLM 模板",
-                        colors,
-                        zhipu_focus,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            this.apply_reasoning_template(index, ReasoningTemplate::Zhipu, cx);
-                        }),
-                    )),
-            );
-            return card.into_any_element();
-        }
-
-        card = card
-            .child(settings_field(
-                format!("reasoning-protocol-{index}"),
-                "协议",
-                None,
-                settings_actions().children(
-                    [
-                        ReasoningProtocol::Unknown,
-                        ReasoningProtocol::OpenAiChatCompletions,
-                        ReasoningProtocol::ZhipuChatCompletions,
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(option, protocol)| {
-                        reasoning_option(
-                            format!("reasoning-protocol-{index}-option-{option}"),
-                            reasoning_protocol_label(protocol),
-                            profile.protocol == protocol,
-                            colors,
-                            cx.listener(move |this, _, _, cx| {
-                                this.select_reasoning_protocol(index, protocol, cx)
-                            }),
-                        )
-                    }),
-                ),
+            )
+            .child(action_button(
+                if self.reasoning_advanced {
+                    "收起高级协议"
+                } else {
+                    "高级协议"
+                },
                 colors,
-            ))
-            .child(settings_field(
-                format!("reasoning-support-{index}"),
-                "支持范围",
+                self.reasoning_focus(&ReasoningFocusTarget::Advanced(index)),
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    this.toggle_reasoning_advanced(index, cx);
+                }),
+            ));
+
+        if self.reasoning_advanced {
+            let templates = if profile.protocol == ReasoningProtocol::ResponsesApi {
+                vec![(ReasoningTemplate::Responses, "Responses 条目回传")]
+            } else {
+                vec![
+                    (ReasoningTemplate::OpenAi, "OpenAI 兼容"),
+                    (ReasoningTemplate::Zhipu, "智谱旧兼容"),
+                    (ReasoningTemplate::DeepSeek, "DeepSeek 工具回传"),
+                    (ReasoningTemplate::GlmPreserved, "GLM 保留思考"),
+                    (ReasoningTemplate::GlmInterleaved, "GLM 当前轮思考"),
+                ]
+            };
+            card = card.child(settings_field(
+                format!("reasoning-advanced-templates-{index}"),
+                "协议模板",
                 None,
-                settings_actions().children(
-                    [
-                        ReasoningSupport::Required,
-                        ReasoningSupport::Optional,
-                        ReasoningSupport::Unsupported,
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(option, support)| {
-                        reasoning_option(
-                            format!("reasoning-support-{index}-option-{option}"),
-                            reasoning_support_label(support),
-                            profile.support == support,
+                settings_actions()
+                    .flex_wrap()
+                    .children(templates.into_iter().map(|(template, label)| {
+                        let focus = self
+                            .reasoning_focus(&ReasoningFocusTarget::Template { index, template });
+                        let selected = profile.replay_profile == template_replay_setting(template);
+                        reasoning_option_with_focus(
+                            format!("reasoning-template-{index}-{}", template_id(template)),
+                            label,
+                            selected,
                             colors,
+                            focus,
                             cx.listener(move |this, _, _, cx| {
-                                this.select_reasoning_support(index, support, cx)
+                                this.apply_reasoning_template(index, template, cx);
                             }),
                         )
-                    }),
-                ),
+                    })),
                 colors,
             ));
+            if profile.protocol != ReasoningProtocol::ResponsesApi {
+                card = card.child(settings_field(
+                    format!("reasoning-protocol-{index}"),
+                    "协议",
+                    None,
+                    settings_actions().children(
+                        [
+                            ReasoningProtocol::Unknown,
+                            ReasoningProtocol::OpenAiChatCompletions,
+                            ReasoningProtocol::ZhipuChatCompletions,
+                            ReasoningProtocol::DeepSeekChatCompletions,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(option, protocol)| {
+                            reasoning_option(
+                                format!("reasoning-protocol-{index}-option-{option}"),
+                                reasoning_protocol_label(protocol),
+                                profile.protocol == protocol,
+                                colors,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.select_reasoning_protocol(index, protocol, cx)
+                                }),
+                            )
+                        }),
+                    ),
+                    colors,
+                ));
+                if profile.protocol != ReasoningProtocol::Unknown {
+                    card = card.child(settings_field(
+                        format!("reasoning-support-{index}"),
+                        "支持范围",
+                        None,
+                        settings_actions().children(
+                            [
+                                ReasoningSupport::Required,
+                                ReasoningSupport::Optional,
+                                ReasoningSupport::Unsupported,
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(option, support)| {
+                                reasoning_option(
+                                    format!("reasoning-support-{index}-option-{option}"),
+                                    reasoning_support_label(support),
+                                    profile.support == support,
+                                    colors,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.select_reasoning_support(index, support, cx)
+                                    }),
+                                )
+                            }),
+                        ),
+                        colors,
+                    ));
+                }
+                if profile.protocol != ReasoningProtocol::Unknown
+                    && !standard_glm(&profile)
+                    && !matches!(
+                        profile.support,
+                        ReasoningSupport::Unsupported | ReasoningSupport::Unknown
+                    )
+                {
+                    card = card.child(settings_field(
+                        format!("reasoning-disabled-{index}"),
+                        "允许关闭思考",
+                        None,
+                        settings_switch(
+                            format!("reasoning-disabled-toggle-{index}"),
+                            "允许关闭思考",
+                            profile.supports_disabled,
+                            true,
+                            colors,
+                        )
+                        .when_some(
+                            self.reasoning_focus(&ReasoningFocusTarget::Disabled(index)),
+                            |control, focus| control.track_focus(&focus),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.toggle_reasoning_disabled(index, cx)
+                            }),
+                        )
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    this.toggle_reasoning_disabled(index, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        )),
+                        colors,
+                    ));
+                }
+            }
+        }
+
         let effort_enabled = !matches!(
             profile.support,
             ReasoningSupport::Unsupported | ReasoningSupport::Unknown
@@ -328,85 +378,29 @@ impl SettingsView {
             )),
             colors,
         ));
-        if standard_glm(&profile) {
-            card = card.child(settings_field(
-                format!("reasoning-disabled-{index}"),
-                "关闭思考",
-                None,
-                div()
-                    .text_color(colors.text_secondary)
-                    .child("标准 GLM 模型固定开启"),
-                colors,
-            ));
-        } else {
-            card = card.child(settings_field(
-                format!("reasoning-disabled-{index}"),
-                "允许关闭思考",
-                None,
-                settings_switch(
-                    format!("reasoning-disabled-toggle-{index}"),
-                    "允许关闭思考",
-                    profile.supports_disabled,
-                    true,
-                    colors,
-                )
-                .when_some(
-                    self.reasoning_focus(&ReasoningFocusTarget::Disabled(index)),
-                    |control, focus| control.track_focus(&focus),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| this.toggle_reasoning_disabled(index, cx)),
-                )
-                .on_key_down(cx.listener(
-                    move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.toggle_reasoning_disabled(index, cx);
-                            cx.stop_propagation();
-                        }
-                    },
-                )),
-                colors,
-            ));
-        }
-        let replay_editable = profile.protocol != ReasoningProtocol::Unknown
-            && !matches!(
-                profile.support,
-                ReasoningSupport::Unsupported | ReasoningSupport::Unknown
-            );
-        card = card.child(settings_field(
-            format!("reasoning-replay-{index}"),
-            "工具轮回传",
-            None,
-            settings_switch(
-                format!("reasoning-replay-toggle-{index}"),
-                "工具轮回传",
-                profile.preserve_reasoning_content,
-                replay_editable,
-                colors,
-            )
-            .when_some(
-                self.reasoning_focus(&ReasoningFocusTarget::Replay(index)),
-                |control, focus| control.track_focus(&focus),
-            )
-            .when(replay_editable, |control| {
-                control
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.toggle_reasoning_replay(index, cx)),
-                    )
-                    .on_key_down(
-                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.toggle_reasoning_replay(index, cx);
-                                cx.stop_propagation();
-                            }
-                        }),
-                    )
-            }),
-            colors,
-        ));
         card.into_any_element()
+    }
+}
+
+fn template_id(template: ReasoningTemplate) -> &'static str {
+    match template {
+        ReasoningTemplate::OpenAi => "openai",
+        ReasoningTemplate::Zhipu => "zhipu-legacy",
+        ReasoningTemplate::DeepSeek => "deepseek",
+        ReasoningTemplate::GlmPreserved => "glm-preserved",
+        ReasoningTemplate::GlmInterleaved => "glm-interleaved",
+        ReasoningTemplate::Responses => "responses",
+    }
+}
+
+fn template_replay_setting(template: ReasoningTemplate) -> ReasoningReplaySetting {
+    match template {
+        ReasoningTemplate::OpenAi => ReasoningReplaySetting::StandardChat,
+        ReasoningTemplate::Zhipu => ReasoningReplaySetting::LegacyTextTools,
+        ReasoningTemplate::DeepSeek => ReasoningReplaySetting::DeepSeekTools,
+        ReasoningTemplate::GlmPreserved => ReasoningReplaySetting::GlmPreserved,
+        ReasoningTemplate::GlmInterleaved => ReasoningReplaySetting::GlmInterleaved,
+        ReasoningTemplate::Responses => ReasoningReplaySetting::ResponsesItems,
     }
 }
 
@@ -415,6 +409,17 @@ fn reasoning_option(
     label: impl Into<gpui_kit::SharedString>,
     selected: bool,
     colors: vega_theme::ThemeColors,
+    listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    reasoning_option_with_focus(id, label, selected, colors, None, listener)
+}
+
+fn reasoning_option_with_focus(
+    id: String,
+    label: impl Into<gpui_kit::SharedString>,
+    selected: bool,
+    colors: vega_theme::ThemeColors,
+    focus: Option<FocusHandle>,
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let selector = id.clone();
@@ -426,6 +431,7 @@ fn reasoning_option(
         .interactive(colors, true, selected)
         .focusable()
         .tab_stop(true)
+        .when_some(focus, |button, focus| button.track_focus(&focus))
         .cursor_pointer()
         .focus_visible(move |style| style.border_color(colors.accent))
         .when(selected, |button| button.text_color(colors.accent))
@@ -463,6 +469,8 @@ fn reasoning_protocol_label(protocol: ReasoningProtocol) -> &'static str {
     match protocol {
         ReasoningProtocol::OpenAiChatCompletions => "OpenAI 兼容",
         ReasoningProtocol::ZhipuChatCompletions => "智谱 GLM",
+        ReasoningProtocol::DeepSeekChatCompletions => "DeepSeek Chat",
+        ReasoningProtocol::ResponsesApi => "Responses API",
         ReasoningProtocol::Unknown => "未声明",
     }
 }

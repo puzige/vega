@@ -21,9 +21,9 @@ pub struct TokenUsage {
     /// Completion tokens.
     pub output: u64,
     /// Cache-read tokens.
-    pub cache_read: u64,
+    pub cache_read: Option<u64>,
     /// Cache-write tokens.
-    pub cache_write: u64,
+    pub cache_write: Option<u64>,
 }
 
 /// Durable terminal outcome of one summarized assistant task (S7-T40).
@@ -89,12 +89,13 @@ impl TaskCostSummary {
     /// (C4). The arithmetic runs on `u128` and is checked, so a pathological
     /// aggregate degrades to unavailable instead of wrapping.
     pub fn cache_hit_percent(usage: TokenUsage) -> Option<u8> {
+        let cache_read = usage.cache_read?;
         if usage.input == 0 {
             return Some(0);
         }
         // percent = cache_read * 100 / input, half-up:
         // half_up(a/b) = (2a + b) / (2b) with a = cache_read*100, b = input.
-        let numerator = (u128::from(usage.cache_read)) * 200;
+        let numerator = (u128::from(cache_read)) * 200;
         let denominator = u128::from(usage.input) * 2;
         let percent = numerator
             .checked_add(u128::from(usage.input))?

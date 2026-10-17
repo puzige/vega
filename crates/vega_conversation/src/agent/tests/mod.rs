@@ -27,6 +27,7 @@ mod permissions;
 mod plan_approval;
 mod provider_overflow;
 mod reasoning_budget;
+mod reasoning_replay;
 mod responses;
 mod skills;
 mod stream_persistence;
@@ -138,8 +139,8 @@ fn scripted_provider(call_id: &str, input_json: &str) -> MockProvider {
             ProviderEvent::Usage {
                 input: 12,
                 output: 3,
-                cache_read: 2,
-                cache_write: 1,
+                cache_read: Some(2),
+                cache_write: Some(1),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -150,8 +151,8 @@ fn scripted_provider(call_id: &str, input_json: &str) -> MockProvider {
             ProviderEvent::Usage {
                 input: 20,
                 output: 5,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,

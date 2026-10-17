@@ -128,8 +128,14 @@ fn token_line(usage: &Option<TokenUsage>) -> String {
         "输入 {} · 输出 {} · 缓存读 {} · 缓存写 {}",
         compact_tokens(usage.input),
         compact_tokens(usage.output),
-        compact_tokens(usage.cache_read),
-        compact_tokens(usage.cache_write),
+        usage
+            .cache_read
+            .map(compact_tokens)
+            .unwrap_or_else(|| UNAVAILABLE.to_string()),
+        usage
+            .cache_write
+            .map(compact_tokens)
+            .unwrap_or_else(|| UNAVAILABLE.to_string()),
     )
 }
 
@@ -195,7 +201,12 @@ fn format_duration(duration_ms: u64) -> String {
 mod tests {
     use super::*;
 
-    fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Option<TokenUsage> {
+    fn usage(
+        input: u64,
+        output: u64,
+        cache_read: Option<u64>,
+        cache_write: Option<u64>,
+    ) -> Option<TokenUsage> {
         Some(TokenUsage {
             input,
             output,
@@ -239,7 +250,7 @@ mod tests {
         let summary = TaskCostSummary {
             message_id: "message".into(),
             outcome: TaskSummaryOutcome::Completed,
-            usage: usage(130, 25, 50, 0),
+            usage: usage(130, 25, Some(50), Some(0)),
             cost: SummaryCost::Priced(Microcents(150_000)),
             duration_ms: Some(1_500),
             tool_count: 2,
@@ -251,6 +262,22 @@ mod tests {
         assert!(text.contains("成本 US$0.150000"));
         assert!(text.contains("耗时 1.5s"));
         assert!(text.contains("工具 2 · 缓存命中 38%"));
+    }
+
+    #[test]
+    fn missing_cache_usage_renders_as_unavailable() {
+        let summary = TaskCostSummary {
+            message_id: "message".into(),
+            outcome: TaskSummaryOutcome::Completed,
+            usage: usage(130, 25, None, None),
+            cost: SummaryCost::Unavailable,
+            duration_ms: None,
+            tool_count: 0,
+            cache_hit_percent: None,
+        };
+        let text = SummaryCard::new(summary).visible_text();
+        assert!(text.contains("输入 130 · 输出 25 · 缓存读 — · 缓存写 —"));
+        assert!(text.contains("缓存命中 —"));
     }
 
     mod gpui_tests {
@@ -304,7 +331,7 @@ mod tests {
             let summary = TaskCostSummary {
                 message_id: "cjk-message".into(),
                 outcome: TaskSummaryOutcome::Completed,
-                usage: usage(150_000, 15_000, 50_000, 0),
+                usage: usage(150_000, 15_000, Some(50_000), Some(0)),
                 cost: SummaryCost::Priced(Microcents(135_000)),
                 duration_ms: Some(12_400),
                 tool_count: 2,

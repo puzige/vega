@@ -24,20 +24,38 @@ async fn i71_response_replay_tool_loop_and_private_history() {
             ProviderEvent::Usage {
                 input: 12,
                 output: 3,
-                cache_read: 2,
-                cache_write: 0,
+                cache_read: Some(2),
+                cache_write: Some(0),
             },
+            ProviderEvent::ResponseReplay(vega_runtime::ResponseReplayLayout {
+                response_id: Some("resp-owned".into()),
+                slots: vec![
+                    vega_runtime::ResponseReplaySlot::Reasoning(reasoning.clone()),
+                    vega_runtime::ResponseReplaySlot::FunctionCall {
+                        item: json!({"type":"function_call","call_id":"read-owned","name":"read","arguments":"{\"path\":\"lib.rs\"}"}),
+                        call_id: "read-owned".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"lib.rs"}"#.into(),
+                    },
+                ],
+            }),
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
             },
         ])],
         vec![ScriptStep::events(vec![
             ProviderEvent::TextDelta("Found the TODO.".into()),
+            ProviderEvent::ResponseReplay(vega_runtime::ResponseReplayLayout {
+                response_id: Some("resp-final".into()),
+                slots: vec![vega_runtime::ResponseReplaySlot::Message(
+                    json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Found the TODO."}]}),
+                )],
+            }),
             ProviderEvent::Usage {
                 input: 12,
                 output: 3,
-                cache_read: 2,
-                cache_write: 0,
+                cache_read: Some(2),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
@@ -46,7 +64,7 @@ async fn i71_response_replay_tool_loop_and_private_history() {
     ]);
     let mut live_thinking = Vec::new();
     let mut live_summaries = Vec::new();
-    let run = run_thread_task_with_sink(
+    let run = run_thread_task_with_images_reasoning_and_mcp(
         &store,
         &provider,
         &tools,
@@ -54,6 +72,7 @@ async fn i71_response_replay_tool_loop_and_private_history() {
         "Read lib.rs",
         "Owned system",
         CancellationToken::new(),
+        &RejectPermissionHook,
         |event| {
             match event {
                 ConversationEvent::ThinkingDelta { delta, .. } => live_thinking.push(delta.clone()),
@@ -62,6 +81,21 @@ async fn i71_response_replay_tool_loop_and_private_history() {
             }
             Ok(())
         },
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        Some(vega_runtime::FrozenReasoning {
+            provider: "fixture".into(),
+            model: "mock-model".into(),
+            protocol: vega_runtime::ReasoningProtocol::ResponsesApi,
+            replay_policy: vega_runtime::ReasoningReplayPolicy::ResponsesItems,
+            choice: vega_runtime::ReasoningChoice::ProviderDefault,
+            supports_disabled: false,
+            disabled_wire: None,
+            declared_efforts: Vec::new(),
+        }),
+        Vec::new(),
+        Vec::new(),
     )
     .await
     .unwrap();

@@ -257,8 +257,8 @@ fn converts_text_thinking_and_usage_runtime_events() {
     let usage = vega_runtime::RuntimeTokenUsage {
         input: 10,
         output: 4,
-        cache_read: 3,
-        cache_write: 2,
+        cache_read: Some(3),
+        cache_write: Some(2),
     };
     assert!(matches!(
         from_runtime_event(
@@ -273,8 +273,8 @@ fn converts_text_thinking_and_usage_runtime_events() {
             usage: TokenUsage {
                 input: 10,
                 output: 4,
-                cache_read: 3,
-                cache_write: 2
+                cache_read: Some(3),
+                cache_write: Some(2)
             },
             cost: Microcents(0),
             ..
@@ -449,8 +449,8 @@ fn unknown_summary_usage_keeps_later_primary_cost_unknown() {
         usage: TokenUsage {
             input: 10,
             output: 2,
-            cache_read: 0,
-            cache_write: 0,
+            cache_read: Some(0),
+            cache_write: Some(0),
         },
         cost: Microcents(12),
         pricing: Some(UsagePricing {

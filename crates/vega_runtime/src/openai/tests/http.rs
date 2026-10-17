@@ -100,9 +100,12 @@ async fn happy_path_sends_openai_wire_format_and_streams_events() {
             Ok(ProviderEvent::Usage {
                 input: 10,
                 output: 2,
-                cache_read: 6,
-                cache_write: 0,
+                cache_read: Some(6),
+                cache_write: None,
             }),
+            Ok(ProviderEvent::ChatReasoningContent(
+                ChatReasoningPresence::Absent,
+            )),
             Ok(ProviderEvent::Done {
                 stop_reason: StopReason::End,
             }),
@@ -184,6 +187,7 @@ async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
             tool_config: crate::RuntimeToolConfig::default(),
             pricing_catalog: None,
             reasoning: None,
+            replay_frame: None,
             context_budget: Some(crate::ContextBudget::new(428_000, 128_000, true).unwrap()),
             context_source_version: None,
             context_source_fingerprint: None,
@@ -224,10 +228,10 @@ async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
     assert!(follow_up.as_array().is_some_and(|messages| {
         messages.iter().any(|message| {
             message["role"] == "assistant"
+                && message["tool_calls"][0]["id"] == "call-read"
                 && message["tool_calls"][0]["function"]["name"] == "read"
                 && message["tool_calls"][0]["function"]["arguments"].as_str()
-                    .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok())
-                    == Some(serde_json::json!({"path": tools.root().join("README.md"), "offset": null, "limit": null}))
+                    == Some(r#"{"path":"README.md"}"#)
         }) && messages.iter().any(|message| {
             message["role"] == "tool"
                 && message["tool_call_id"] == "call-read"
@@ -341,9 +345,9 @@ async fn mismatched_reasoning_model_fails_before_loopback_http() {
             provider: "openai".into(),
             model: "different-model".into(),
             protocol: ReasoningProtocol::OpenAiChatCompletions,
+            replay_policy: crate::ReasoningReplayPolicy::StandardChat,
             choice: ReasoningChoice::Effort("low".into()),
             supports_disabled: false,
-            preserve_reasoning_content: false,
             disabled_wire: None,
             declared_efforts: vec!["low".into()],
         }),
@@ -414,6 +418,9 @@ async fn retries_5xx_with_backoff_then_succeeds() {
         &events,
         &[
             Ok(ProviderEvent::TextDelta("Hi".into())),
+            Ok(ProviderEvent::ChatReasoningContent(
+                ChatReasoningPresence::Absent,
+            )),
             Ok(ProviderEvent::Done {
                 stop_reason: StopReason::End,
             }),
@@ -453,7 +460,13 @@ async fn retry_429_honors_retry_after_header() {
     .expect("chat_stream stalled")
     .unwrap();
     let events = collect_events(stream, 4).await;
-    assert_eq!(events.len(), 2, "expected the retried stream to succeed");
+    assert_eq!(events.len(), 3, "expected the retried stream to succeed");
+    assert!(matches!(
+        &events[1],
+        Ok(ProviderEvent::ChatReasoningContent(
+            ChatReasoningPresence::Absent
+        ))
+    ));
     assert!(
         started.elapsed() < Duration::from_millis(500),
         "Retry-After: 0 must be honored over the 1s exponential schedule"
@@ -590,6 +603,9 @@ async fn network_error_is_retried_then_succeeds() {
         &events,
         &[
             Ok(ProviderEvent::TextDelta("Hi".into())),
+            Ok(ProviderEvent::ChatReasoningContent(
+                ChatReasoningPresence::Absent,
+            )),
             Ok(ProviderEvent::Done {
                 stop_reason: StopReason::End,
             }),

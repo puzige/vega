@@ -72,8 +72,8 @@ async fn composer_counter_projects_estimate_calibration_and_fences(cx: &mut Test
                 usage: vega_conversation::types::TokenUsage {
                     input: 100,
                     output: 10,
-                    cache_read: 0,
-                    cache_write: 0,
+                    cache_read: Some(0),
+                    cache_write: Some(0),
                 },
                 cost: Microcents(120),
                 pricing: Some(vega_conversation::types::UsagePricing {

@@ -393,8 +393,8 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
                 vega_runtime::ProviderEvent::Usage {
                     input: usage,
                     output: 7,
-                    cache_read: 0,
-                    cache_write: 0,
+                    cache_read: Some(0),
+                    cache_write: Some(0),
                 },
                 vega_runtime::ProviderEvent::Done {
                     stop_reason: vega_runtime::StopReason::End,
