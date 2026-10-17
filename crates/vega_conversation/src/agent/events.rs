@@ -194,6 +194,10 @@ where
                             }
                             if let RuntimeEvent::SteeringAccepted(input) = &event {
                                 let transitioned = [
+                                    ConversationEvent::AssistantMessageContinues {
+                                        message_id: message_id.clone(),
+                                        next_message_id: input.assistant_message_id.clone(),
+                                    },
                                     ConversationEvent::MessageFinished {
                                         message_id: message_id.clone(),
                                         stop_reason: crate::types::ConversationStopReason::End,
@@ -513,6 +517,13 @@ pub(crate) fn persist_runtime_event(
                     },
                 )?;
             }
+            let activity_id = messages::assistant_run_activity_id(&tx, message_id)?
+                .unwrap_or_else(|| message_id.to_owned());
+            messages::associate_assistant_run_activity(
+                &tx,
+                &input.assistant_message_id,
+                &activity_id,
+            )?;
             for (ordinal, image) in input.message.images.iter().enumerate() {
                 vega_store::image_attachments::insert(&tx, &input.id, ordinal, image.bytes())?;
             }

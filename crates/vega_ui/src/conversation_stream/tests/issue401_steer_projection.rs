@@ -1,6 +1,6 @@
 use super::*;
 use gpui_kit::VisualTestContext;
-use vega_conversation::types::PendingMessage;
+use vega_conversation::types::{AssistantResponseKind, AssistantResponseMetadata, PendingMessage};
 
 const GENERATION: &str = "run-one";
 
@@ -420,5 +420,531 @@ async fn issue401_paused_steer_stays_in_the_rail_without_an_active_run(cx: &mut 
         assert!(stream.pending_echoes.is_empty());
         assert!(stream.pending_queue.paused);
         assert_eq!(stream.visible_pending_messages().len(), 1);
+    });
+}
+
+#[gpui_kit::test]
+async fn issue401_steer_segment_reuses_one_live_activity_and_terminal_owns_the_run(
+    cx: &mut TestAppContext,
+) {
+    let (_, stream, _) = open_controller_stream(cx, "issue401-shared-activity");
+    stream.update(cx, |stream, cx| {
+        let started_at = Instant::now() - Duration::from_secs(15);
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "assistant-one".into(),
+                seq: 2,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::RunStarted {
+                message_id: "assistant-one".into(),
+                started_at,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "assistant-one".into(),
+                delta: "first thought".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "assistant-one".into(),
+                delta: "first answer".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::AssistantResponseCompleted {
+                message_id: "assistant-one".into(),
+                response: AssistantResponseMetadata {
+                    response_id: "first-commentary".into(),
+                    text_start_bytes: 0,
+                    text_end_bytes: 6,
+                    kind: AssistantResponseKind::Commentary,
+                },
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::AssistantResponseCompleted {
+                message_id: "assistant-one".into(),
+                response: AssistantResponseMetadata {
+                    response_id: "first-final".into(),
+                    text_start_bytes: 0,
+                    text_end_bytes: "first answer".len(),
+                    kind: AssistantResponseKind::Final,
+                },
+            },
+            cx,
+        );
+        let group = stream.run_activity_groups["assistant-one"].clone();
+        let initial_clock = group.read(cx).test_clock().0;
+        assert_eq!(initial_clock, Some(started_at));
+        stream.apply_event(
+            ConversationEvent::AssistantMessageContinues {
+                message_id: "assistant-one".into(),
+                next_message_id: "assistant-two".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::MessageFinished {
+                message_id: "assistant-one".into(),
+                stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
+            },
+            cx,
+        );
+        assert_eq!(group.read(cx).status(), RunActivityStatus::Running);
+        assert_eq!(
+            (0..stream.entries.len())
+                .filter(|index| stream.process_entry_hidden(*index, cx))
+                .count(),
+            0
+        );
+        stream.apply_event(delivery("steer", "steer-user", 3), cx);
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "assistant-two".into(),
+                seq: 4,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::RunStarted {
+                message_id: "assistant-two".into(),
+                started_at: Instant::now(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "assistant-two".into(),
+                delta: "continued thought".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("steer-tool", "pwd"),
+            },
+            cx,
+        );
+        let group_children = group.read(cx).children();
+        assert!(
+            group_children
+                .iter()
+                .any(|child| matches!(child, RunActivityChild::Thinking(_)))
+        );
+        assert!(
+            group_children
+                .iter()
+                .any(|child| matches!(child, RunActivityChild::Tool(_)))
+        );
+        assert_eq!(stream.run_activity_groups["assistant-two"], group);
+        assert_eq!(stream.run_activity_groups["assistant-one"], group);
+        assert!(stream.run_responses.contains_key("assistant-one"));
+        assert!(!stream.run_responses.contains_key("assistant-two"));
+        // Both bodies stay visible until the run's own final collapses them.
+        assert_eq!(
+            (0..stream.entries.len())
+                .filter(|index| stream.process_entry_hidden(*index, cx))
+                .count(),
+            0
+        );
+        assert_eq!(group.read(cx).test_clock().0, initial_clock);
+        assert_eq!(group.read(cx).status(), RunActivityStatus::Running);
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::RunActivity { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .zip(&stream.entry_identities)
+                .filter(|(entry, identity)| {
+                    identity.message_id.as_deref() == Some("assistant-one")
+                        && matches!(entry, StreamEntry::Assistant { .. })
+                })
+                .count(),
+            1
+        );
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "assistant-two".into(),
+                delta: "second answer".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::AssistantResponseCompleted {
+                message_id: "assistant-two".into(),
+                response: AssistantResponseMetadata {
+                    response_id: "second-final".into(),
+                    text_start_bytes: 0,
+                    text_end_bytes: "second answer".len(),
+                    kind: AssistantResponseKind::Final,
+                },
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::MessageFinished {
+                message_id: "assistant-two".into(),
+                stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: Some(15_000),
+            },
+            cx,
+        );
+        assert!(stream.run_responses.contains_key("assistant-one"));
+        assert!(stream.run_responses.contains_key("assistant-two"));
+        assert_eq!(
+            group.read(cx).test_projection(),
+            (RunActivityStatus::Completed, Some(15_000), false, true)
+        );
+        stream.apply_event(
+            ConversationEvent::Error {
+                message_id: Some("assistant-one".into()),
+                error: Arc::new(vega_runtime::VegaError::Provider {
+                    status: Some(503),
+                    message: "stale segment error".into(),
+                    retryable: false,
+                }),
+                execution_duration_ms: Some(30_000),
+            },
+            cx,
+        );
+        assert_eq!(
+            group.read(cx).test_projection(),
+            (RunActivityStatus::Completed, Some(15_000), false, true)
+        );
+        let texts = stream
+            .entries
+            .iter()
+            .zip(&stream.entry_identities)
+            .filter_map(|(entry, identity)| {
+                if !matches!(entry, StreamEntry::Assistant { .. }) {
+                    return None;
+                }
+                let message_id = identity.message_id.as_deref()?;
+                let text = match entry {
+                    StreamEntry::Assistant { copy, .. } => copy.original_text(),
+                    _ => unreachable!(),
+                };
+                Some((message_id.to_owned(), text))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            [
+                ("assistant-one".into(), "first answer".into()),
+                ("assistant-two".into(), "second answer".into()),
+            ]
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn issue401_shared_activity_uses_only_the_outer_failure_or_interruption(
+    cx: &mut TestAppContext,
+) {
+    let (_, stream, _) = open_controller_stream(cx, "issue401-shared-terminals");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "failed-one".into(),
+                seq: 1,
+            },
+            cx,
+        );
+        let failed_group = stream.run_activity_groups["failed-one"].clone();
+        stream.apply_event(
+            ConversationEvent::AssistantMessageContinues {
+                message_id: "failed-one".into(),
+                next_message_id: "failed-two".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::MessageFinished {
+                message_id: "failed-one".into(),
+                stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "failed-two".into(),
+                seq: 3,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::Error {
+                message_id: Some("failed-two".into()),
+                error: Arc::new(vega_runtime::VegaError::Provider {
+                    status: Some(503),
+                    message: "provider unavailable".into(),
+                    retryable: false,
+                }),
+                execution_duration_ms: Some(22_000),
+            },
+            cx,
+        );
+        assert_eq!(stream.run_activity_groups["failed-one"], failed_group);
+        assert_eq!(stream.run_activity_groups["failed-two"], failed_group);
+        assert_eq!(
+            failed_group.read(cx).test_projection(),
+            (RunActivityStatus::Failed, Some(22_000), false, true)
+        );
+        let failures = stream.run_notice_projection(cx);
+        assert_eq!(failures.len(), 1);
+        let (failure_index, notice) = failures.iter().next().expect("run failure notice");
+        assert_eq!(notice.message_id, "failed-two");
+        assert_eq!(
+            stream.entry_identities[*failure_index]
+                .message_id
+                .as_deref(),
+            Some("failed-two")
+        );
+
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "stopped-one".into(),
+                seq: 4,
+            },
+            cx,
+        );
+        let interrupted_group = stream.run_activity_groups["stopped-one"].clone();
+        stream.apply_event(
+            ConversationEvent::AssistantMessageContinues {
+                message_id: "stopped-one".into(),
+                next_message_id: "stopped-two".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::MessageFinished {
+                message_id: "stopped-one".into(),
+                stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "stopped-two".into(),
+                seq: 6,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::Interrupted {
+                message_id: "stopped-two".into(),
+                execution_duration_ms: Some(31_000),
+            },
+            cx,
+        );
+        assert_eq!(stream.run_activity_groups["stopped-one"], interrupted_group);
+        assert_eq!(stream.run_activity_groups["stopped-two"], interrupted_group);
+        assert_eq!(
+            interrupted_group.read(cx).test_projection(),
+            (RunActivityStatus::Interrupted, Some(31_000), false, true)
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn issue401_superseded_segments_never_end_the_shared_activity(cx: &mut TestAppContext) {
+    let (_, stream, _) = open_controller_stream(cx, "issue401-superseded-terminals");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "segment-one".into(),
+                seq: 1,
+            },
+            cx,
+        );
+        let group = stream.run_activity_groups["segment-one"].clone();
+        stream.apply_event(
+            ConversationEvent::AssistantMessageContinues {
+                message_id: "segment-one".into(),
+                next_message_id: "segment-two".into(),
+            },
+            cx,
+        );
+        // Segment boundary: body only, the run keeps running.
+        stream.apply_event(
+            ConversationEvent::MessageFinished {
+                message_id: "segment-one".into(),
+                stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "segment-two".into(),
+                seq: 3,
+            },
+            cx,
+        );
+        // A late interrupt or failure naming the superseded segment is a
+        // stale segment event, not the run's terminal.
+        stream.apply_event(
+            ConversationEvent::Interrupted {
+                message_id: "segment-one".into(),
+                execution_duration_ms: Some(5_000),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::Error {
+                message_id: Some("segment-one".into()),
+                error: Arc::new(vega_runtime::VegaError::Provider {
+                    status: Some(503),
+                    message: "stale segment failure".into(),
+                    retryable: false,
+                }),
+                execution_duration_ms: Some(6_000),
+            },
+            cx,
+        );
+        assert_eq!(
+            group.read(cx).test_projection(),
+            (RunActivityStatus::Running, None, false, false)
+        );
+        assert!(stream.run_notice_projection(cx).is_empty());
+        // The run's own terminal still lands exactly once.
+        stream.apply_event(
+            ConversationEvent::MessageFinished {
+                message_id: "segment-two".into(),
+                stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: Some(9_000),
+            },
+            cx,
+        );
+        assert_eq!(
+            group.read(cx).test_projection(),
+            (RunActivityStatus::Completed, Some(9_000), false, true)
+        );
+        // A duplicate terminal never re-completes or rewrites the duration.
+        stream.apply_event(
+            ConversationEvent::Interrupted {
+                message_id: "segment-two".into(),
+                execution_duration_ms: Some(12_000),
+            },
+            cx,
+        );
+        assert_eq!(
+            group.read(cx).test_projection(),
+            (RunActivityStatus::Completed, Some(9_000), false, true)
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn issue401_reopened_steer_pages_share_one_activity_header(cx: &mut TestAppContext) {
+    let (_, stream, _) = open_controller_stream(cx, "issue401-reopened-activity");
+    let status = vega_conversation::history::AssistantStatus::Done;
+    stream.update(cx, |stream, cx| {
+        stream.apply_history_page(
+            HistoryPage {
+                entries: vec![HistoryEntry::AssistantText {
+                    seq: 4,
+                    message_id: "assistant-two".into(),
+                    content: "second answer".into(),
+                    status,
+                    execution_duration_ms: Some(15_000),
+                }],
+                assistant_run_activities: vec![vega_conversation::history::AssistantRunActivity {
+                    message_id: "assistant-two".into(),
+                    run_id: "assistant-one".into(),
+                    terminal_message_id: "assistant-two".into(),
+                    terminal_status: Some(status),
+                    execution_duration_ms: Some(15_000),
+                    member_count: 2,
+                }],
+                older_cursor: Some(2),
+                newer_cursor: None,
+                newest_seq: Some(4),
+            },
+            cx,
+        );
+        stream.apply_history_page(
+            HistoryPage {
+                entries: vec![HistoryEntry::AssistantText {
+                    seq: 2,
+                    message_id: "assistant-one".into(),
+                    content: "first answer".into(),
+                    status,
+                    execution_duration_ms: None,
+                }],
+                assistant_run_activities: vec![vega_conversation::history::AssistantRunActivity {
+                    message_id: "assistant-one".into(),
+                    run_id: "assistant-one".into(),
+                    terminal_message_id: "assistant-two".into(),
+                    terminal_status: Some(status),
+                    execution_duration_ms: Some(15_000),
+                    member_count: 2,
+                }],
+                older_cursor: None,
+                newer_cursor: Some(2),
+                newest_seq: Some(2),
+            },
+            cx,
+        );
+        assert_eq!(
+            stream.run_activity_groups["assistant-one"],
+            stream.run_activity_groups["assistant-two"]
+        );
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::RunActivity { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::Assistant { .. }))
+                .count(),
+            2
+        );
+        let header_index = stream
+            .entries
+            .iter()
+            .position(|entry| matches!(entry, StreamEntry::RunActivity { .. }))
+            .expect("run activity header");
+        let first_assistant_index = stream
+            .entries
+            .iter()
+            .zip(&stream.entry_identities)
+            .position(|(entry, identity)| {
+                identity.message_id.as_deref() == Some("assistant-one")
+                    && matches!(entry, StreamEntry::Assistant { .. })
+            })
+            .expect("first assistant segment");
+        assert!(header_index < first_assistant_index);
+        assert_eq!(
+            stream.run_activity_groups["assistant-one"]
+                .read(cx)
+                .test_projection(),
+            (RunActivityStatus::Completed, Some(15_000), false, true)
+        );
     });
 }

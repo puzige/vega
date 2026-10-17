@@ -98,6 +98,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0023_credential_continuations.sql"),
     include_str!("../migrations/0024_credential_privacy.sql"),
     include_str!("../migrations/0025_failure_details.sql"),
+    include_str!("../migrations/0026_assistant_run_activity.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -428,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_thirty_six_tables() {
+    fn migrate_creates_exactly_the_thirty_seven_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -446,6 +447,7 @@ mod tests {
             tables,
             vec![
                 "assistant_responses",
+                "assistant_run_activity_members",
                 "assistant_run_durations",
                 "builtin_skill_activations",
                 "codex_session_creations",
@@ -723,7 +725,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 36);
+        assert_eq!(tables, 37);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
@@ -814,7 +816,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 36);
+        assert_eq!(tables, 37);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {

@@ -294,6 +294,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
         tables,
         vec![
             "assistant_responses",
+            "assistant_run_activity_members",
             "assistant_run_durations",
             "builtin_skill_activations",
             "codex_session_creations",

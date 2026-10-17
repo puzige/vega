@@ -12,6 +12,16 @@ const COLUMNS: &str = "id, thread_id, seq, role, kind, content, status, created_
                        plan_status, plan_review_note, plan_reviewed_at";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistantRunActivityRow {
+    pub message_id: String,
+    pub run_id: String,
+    pub terminal_message_id: Option<String>,
+    pub terminal_status: Option<String>,
+    pub execution_duration_ms: Option<i64>,
+    pub member_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageRow {
     pub id: String,
     pub thread_id: String,
@@ -53,6 +63,40 @@ pub enum PlanTransitionError {
     Store(#[from] rusqlite::Error),
     #[error("plan transition found corrupt state")]
     CorruptState,
+}
+
+pub fn associate_assistant_run_activity(
+    conn: &Connection,
+    message_id: &str,
+    run_id: &str,
+) -> Result<(), rusqlite::Error> {
+    let inserted = conn.execute(
+        "INSERT INTO assistant_run_activity_members(message_id, run_id) \
+         SELECT member.id, root.id FROM messages member \
+         JOIN messages root ON root.id = ?2 AND root.thread_id = member.thread_id \
+         WHERE member.id = ?1 AND member.role = 'assistant' AND root.role = 'assistant' \
+         ON CONFLICT(message_id) DO NOTHING",
+        params![message_id, run_id],
+    )?;
+    if inserted == 1 {
+        return Ok(());
+    }
+    match assistant_run_activity_id(conn, message_id)? {
+        Some(existing) if existing == run_id => Ok(()),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+pub fn assistant_run_activity_id(
+    conn: &Connection,
+    message_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT run_id FROM assistant_run_activity_members WHERE message_id = ?1",
+        [message_id],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 pub fn next_seq(conn: &Connection, thread_id: &str) -> Result<i64, rusqlite::Error> {
@@ -351,6 +395,7 @@ pub struct MessagePage {
     /// [`recent`]; `interrupted`/`failed` rows are durable and included).
     pub rows: Vec<MessageRow>,
     pub execution_durations_ms: std::collections::HashMap<String, i64>,
+    pub assistant_run_activities: Vec<AssistantRunActivityRow>,
     pub assistant_responses: Vec<AssistantResponseRow>,
     /// `Some(oldest_seq)` when older rows may exist — pass
     /// [`PageCursor::Before`] to continue. `None` marks the oldest end of the
@@ -422,6 +467,7 @@ pub fn page_before(
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
+    let assistant_run_activities = page_assistant_run_activities(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
@@ -429,6 +475,7 @@ pub fn page_before(
         images,
         rows,
         execution_durations_ms,
+        assistant_run_activities,
         assistant_responses,
         older_cursor,
         newer_cursor,
@@ -516,12 +563,14 @@ pub fn page_containing_message(
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
+    let assistant_run_activities = page_assistant_run_activities(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
     tx.commit()?;
     Ok(Some(MessagePage {
         images,
         rows,
         execution_durations_ms,
+        assistant_run_activities,
         assistant_responses,
         older_cursor,
         newer_cursor,
@@ -566,6 +615,7 @@ pub fn page_after(
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
+    let assistant_run_activities = page_assistant_run_activities(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
@@ -573,6 +623,7 @@ pub fn page_after(
         images,
         rows,
         execution_durations_ms,
+        assistant_run_activities,
         assistant_responses,
         older_cursor,
         newer_cursor,
@@ -613,6 +664,54 @@ fn page_tool_calls(
         })?
         .collect::<Result<_, _>>()?;
     Ok(calls)
+}
+
+fn page_assistant_run_activities(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    rows: &[MessageRow],
+) -> Result<Vec<AssistantRunActivityRow>, rusqlite::Error> {
+    let (Some(oldest), Some(newest)) = (rows.first(), rows.last()) else {
+        return Ok(Vec::new());
+    };
+    let mut statement = tx.prepare(
+        "SELECT member.message_id, member.run_id, terminal.id, \
+         CASE WHEN terminal.status = 'streaming' THEN NULL ELSE terminal.status END, \
+         duration.execution_duration_ms, \
+         (SELECT COUNT(*) FROM assistant_run_activity_members count_member \
+          WHERE count_member.run_id = member.run_id) \
+         FROM assistant_run_activity_members member \
+         JOIN messages page ON page.id = member.message_id \
+         JOIN messages terminal ON terminal.id = ( \
+             SELECT terminal_member.message_id \
+             FROM assistant_run_activity_members terminal_member \
+             JOIN messages terminal_message ON terminal_message.id = terminal_member.message_id \
+             WHERE terminal_member.run_id = member.run_id \
+             ORDER BY terminal_message.seq DESC LIMIT 1 \
+         ) \
+         LEFT JOIN assistant_run_durations duration ON duration.message_id = terminal.id \
+         WHERE page.thread_id = ?1 AND page.seq >= ?2 AND page.seq <= ?3 \
+         AND page.role = 'assistant' AND page.status != 'streaming' \
+         ORDER BY page.seq",
+    )?;
+    statement
+        .query_map(params![thread_id, oldest.seq, newest.seq], |row| {
+            let execution_duration_ms = row.get::<_, Option<i64>>(4)?;
+            let member_count = row.get::<_, i64>(5)?;
+            if execution_duration_ms.is_some_and(|duration| duration < 0) || member_count < 1 {
+                return Err(corrupt_row_error("invalid assistant run activity"));
+            }
+            Ok(AssistantRunActivityRow {
+                message_id: row.get(0)?,
+                run_id: row.get(1)?,
+                terminal_message_id: Some(row.get(2)?),
+                terminal_status: row.get(3)?,
+                execution_duration_ms,
+                member_count: usize::try_from(member_count)
+                    .map_err(|_| corrupt_row_error("invalid assistant run activity count"))?,
+            })
+        })?
+        .collect()
 }
 
 fn page_execution_durations(

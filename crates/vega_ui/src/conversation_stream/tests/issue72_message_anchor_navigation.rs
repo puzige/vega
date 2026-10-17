@@ -36,6 +36,7 @@ fn issue72_page_range(start_index: usize, count: usize, content_repetitions: usi
             .collect(),
         older_cursor: None,
         newer_cursor: None,
+        assistant_run_activities: Vec::new(),
         newest_seq: Some((start_index + count) as i64),
     }
 }
@@ -81,6 +82,7 @@ async fn anchors_use_unique_durable_message_ids_and_safe_text_projections(cx: &m
                 ],
                 older_cursor: None,
                 newer_cursor: None,
+                assistant_run_activities: Vec::new(),
                 newest_seq: Some(3),
             },
             cx,
@@ -151,6 +153,7 @@ async fn run_activity_entries_contribute_geometry_without_duplicating_message_an
                 ],
                 older_cursor: None,
                 newer_cursor: None,
+                assistant_run_activities: Vec::new(),
                 newest_seq: Some(4),
             },
             cx,

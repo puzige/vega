@@ -79,6 +79,19 @@ pub struct ConversationStream {
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     pub(crate) run_responses: HashMap<String, phase::RunResponses>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
+    /// Assistant message id -> the run's first assistant message id. Every
+    /// message of one outer run shares one activity group and one timer.
+    pub(crate) run_activity_members: HashMap<String, String>,
+    /// Run identity -> the message id that owns its terminal presentation.
+    /// A superseded message segment may still report its own segment end (or
+    /// a stale failure) after the run moved on; only this owner may present
+    /// the run's terminal state.
+    pub(crate) run_terminal_owners: HashMap<String, String>,
+    /// Message segments superseded by a steer continuation. A superseded
+    /// segment owns no part of the run's terminal: its `MessageFinished` is a
+    /// body boundary only, and any later `Interrupted`/`Error` naming it is a
+    /// stale segment event that must not end the shared activity group.
+    pub(crate) superseded_segments: HashSet<String>,
     /// Exact call id to its sole inline artifact card.
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
     /// Route-owned safe branch selector; Git authority remains in the app controller.
@@ -483,6 +496,9 @@ impl ConversationStream {
             tool_cards: HashMap::new(),
             run_responses: HashMap::new(),
             run_activity_groups: HashMap::new(),
+            run_activity_members: HashMap::new(),
+            run_terminal_owners: HashMap::new(),
+            superseded_segments: HashSet::new(),
             artifact_cards: HashMap::new(),
             branch_selector,
             commit_panel,
@@ -1647,14 +1663,14 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         if message_id
-            .and_then(|id| self.run_activity_groups.get(id))
+            .and_then(|id| self.run_activity_group_for(id))
             .is_some_and(|group| group.read(cx).status() == RunActivityStatus::Completed)
         {
             return;
         }
         let failure = if let Some(id) = message_id {
             let failure = self.remember_run_failure(id, failure);
-            if let Some(group) = self.run_activity_groups.get(id).cloned() {
+            if let Some(group) = self.run_activity_group_for(id) {
                 group.update(cx, |group, cx| {
                     group.complete(RunActivityStatus::Failed, None, cx)
                 });
@@ -1729,6 +1745,11 @@ impl ConversationStream {
                 .as_ref()
                 .is_some_and(|(active_id, _)| active_id == message_id),
             ConversationEvent::MessageFinished { message_id, .. }
+                if self.superseded_segments.contains(message_id) =>
+            {
+                false
+            }
+            ConversationEvent::MessageFinished { message_id, .. }
             | ConversationEvent::Interrupted { message_id, .. } => self
                 .active_agent_message
                 .as_ref()
@@ -1748,6 +1769,7 @@ impl ConversationStream {
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::PendingMessageDelivered { .. }
+            | ConversationEvent::AssistantMessageContinues { .. }
             | ConversationEvent::RunStarted { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }

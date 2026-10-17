@@ -440,6 +440,7 @@ async fn target_window_replacement_drops_old_cards_and_preserves_thread_state(
         ],
         older_cursor: Some(1),
         newer_cursor: None,
+        assistant_run_activities: Vec::new(),
         newest_seq: Some(4),
     };
     stream.update(cx, |stream, cx| stream.apply_history_page(old_page, cx));
@@ -458,6 +459,7 @@ async fn target_window_replacement_drops_old_cards_and_preserves_thread_state(
         ],
         older_cursor: Some(800),
         newer_cursor: Some(901),
+        assistant_run_activities: Vec::new(),
         newest_seq: Some(901),
     };
     let found = stream.update(cx, |stream, cx| {
@@ -505,6 +507,7 @@ async fn newer_page_appends_and_preserves_the_existing_anchor(cx: &mut TestAppCo
                     .collect(),
                 older_cursor: Some(1),
                 newer_cursor: Some(40),
+                assistant_run_activities: Vec::new(),
                 newest_seq: Some(40),
             },
             cx,
@@ -535,6 +538,7 @@ async fn newer_page_appends_and_preserves_the_existing_anchor(cx: &mut TestAppCo
                     .collect(),
                 older_cursor: None,
                 newer_cursor: None,
+                assistant_run_activities: Vec::new(),
                 newest_seq: Some(55),
             },
             cx,
@@ -585,6 +589,7 @@ async fn newer_page_request_waits_until_the_list_reaches_the_bottom(cx: &mut Tes
                     .collect(),
                 older_cursor: None,
                 newer_cursor: Some(40),
+                assistant_run_activities: Vec::new(),
                 newest_seq: Some(40),
             },
             cx,

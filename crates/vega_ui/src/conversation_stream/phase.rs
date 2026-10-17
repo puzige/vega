@@ -374,9 +374,8 @@ impl ConversationStream {
         }
         let Some(group) = self.entry_identities[index]
             .message_id
-            .as_ref()
-            .and_then(|id| self.run_activity_groups.get(id))
-            .cloned()
+            .as_deref()
+            .and_then(|id| self.run_activity_group_for(id))
         else {
             return false;
         };
@@ -415,11 +414,12 @@ impl ConversationStream {
         {
             return;
         }
+        let group = self.run_activity_group_for(message_id);
         let responses = self.run_responses.entry(message_id.to_owned()).or_default();
         let closes_response = response.kind == AssistantResponseKind::Commentary;
         let inserted = responses.push(response);
         let copies = process_copies(message_id, responses, &self.entries, &self.entry_identities);
-        if let Some(group) = self.run_activity_groups.get(message_id) {
+        if let Some(group) = group {
             group.update(cx, |group, cx| {
                 if let Some(copies) = copies {
                     group.confirm_final(copies, true, cx);
@@ -482,8 +482,8 @@ impl ConversationStream {
         }
         self.entry_identities
             .get(index)
-            .and_then(|identity| identity.message_id.as_ref())
-            .and_then(|id| self.run_activity_groups.get(id))
+            .and_then(|identity| identity.message_id.as_deref())
+            .and_then(|id| self.run_activity_group_for(id))
             .is_some_and(|group| group.read(cx).hides_copy(copy.id))
     }
 
@@ -493,10 +493,9 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         let groups = self
-            .run_activity_groups
-            .values()
+            .unique_run_activity_groups()
+            .into_iter()
             .filter(|group| group.read(cx).collapse_pending())
-            .cloned()
             .collect::<Vec<_>>();
         for group in groups {
             let copies = self

@@ -234,6 +234,22 @@ fn failure_matches_compaction(
 }
 
 impl ConversationStream {
+    /// The message id that presents one run's notice. All message segments of
+    /// one outer run share a single notice: the live owner while the run is
+    /// active, otherwise the segment that carried the run's terminal.
+    fn run_notice_owner(&self, message_id: &str) -> String {
+        let activity_id = self.run_activity_id_for(message_id);
+        if let Some((active_id, _)) = &self.active_run_activity
+            && self.run_activity_id_for(active_id) == activity_id
+        {
+            return active_id.clone();
+        }
+        self.run_terminal_owners
+            .get(activity_id)
+            .cloned()
+            .unwrap_or_else(|| message_id.to_owned())
+    }
+
     pub(crate) fn remember_run_failure(
         &mut self,
         message_id: &str,
@@ -314,11 +330,18 @@ impl ConversationStream {
                 continue;
             };
             let source = sources
-                .entry(message_id.clone())
+                .entry(self.run_notice_owner(message_id))
                 .or_insert_with(|| RunNoticeSource {
                     end: ends[index],
                     ..Default::default()
                 });
+            // One outer run may span several message segments across a steer
+            // turn, so its notice belongs after the run's last progress entry.
+            // Detached cards (a per-run summary appended later) never extend
+            // the region: a notice must not drift past a newer user turn.
+            if !matches!(entry, StreamEntry::Summary { .. }) {
+                source.end = source.end.max(ends[index]);
+            }
             if index < source.end && !self.process_entry_hidden(index, cx) {
                 let visible = !matches!(entry, StreamEntry::RunActivitySegment { group, segment } if group.read(cx).segment_row_count(*segment, cx) == 0);
                 if visible
@@ -369,7 +392,8 @@ impl ConversationStream {
             }
         }
         for (message_id, failure) in &self.run_failures {
-            if let Some(source) = sources.get_mut(message_id) {
+            let owner = self.run_notice_owner(message_id);
+            if let Some(source) = sources.get_mut(&owner) {
                 source.failure = Some(merge_run_failure(source.failure, *failure));
             }
         }
