@@ -57,6 +57,81 @@ fn follow_up_messages_serialize_exact_tool_call_wire_shape() {
 }
 
 #[test]
+fn historical_observations_use_user_json_in_both_openai_wires() {
+    let mut stored = ChatMessage::assistant_with_tools(
+        "checked before restart",
+        vec![ChatToolCall {
+            id: "old-read".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"PRIVATE_PATH"}"#.into(),
+        }],
+    );
+    stored
+        .mark_stored_tool_calls_with_statuses(vec!["rejected".into()])
+        .unwrap();
+    let request = ChatRequest {
+        model: MODEL.into(),
+        messages: vec![
+            stored,
+            ChatMessage::tool_result("old-read", "historical output"),
+            ChatMessage::assistant_with_tools(
+                "",
+                vec![ChatToolCall {
+                    id: "live-read".into(),
+                    name: "read".into(),
+                    input_json: r#"{"path":"current.txt"}"#.into(),
+                }],
+            ),
+            ChatMessage::tool_result("live-read", "live output"),
+        ],
+        ..Default::default()
+    };
+    let mut projected_request = request.clone();
+    projected_request.messages = crate::project_model_messages(&request.messages).unwrap();
+    let chat = build_request_body(&projected_request);
+    assert_eq!(chat["messages"][0]["role"], "assistant");
+    assert_eq!(chat["messages"][0]["content"], "checked before restart");
+    assert!(chat["messages"][0].get("tool_calls").is_none());
+    assert_eq!(chat["messages"][1]["role"], "user");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(chat["messages"][1]["content"].as_str().unwrap())
+            .unwrap()["vega_history_observation"]["kind"],
+        "tool_activity"
+    );
+    assert_eq!(chat["messages"][2]["role"], "user");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(chat["messages"][2]["content"].as_str().unwrap())
+            .unwrap()["vega_history_observation"]["output"],
+        "historical output"
+    );
+    assert_eq!(
+        chat["messages"][3]["tool_calls"][0]["function"]["arguments"],
+        r#"{"path":"current.txt"}"#
+    );
+    assert_eq!(chat["messages"][4]["tool_call_id"], "live-read");
+
+    let responses = responses::build_body(&projected_request).unwrap();
+    let input = responses["input"].as_array().unwrap();
+    assert_eq!(input[0]["role"], "assistant");
+    assert_eq!(input[0]["content"][0]["type"], "output_text");
+    assert_eq!(input[1]["role"], "user");
+    assert_eq!(input[1]["content"][0]["type"], "input_text");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(input[1]["content"][0]["text"].as_str().unwrap())
+            .unwrap()["vega_history_observation"]["kind"],
+        "tool_activity"
+    );
+    assert_eq!(input[2]["role"], "user");
+    assert_eq!(input[2]["content"][0]["type"], "input_text");
+    assert_eq!(input[3]["type"], "function_call");
+    assert_eq!(input[3]["call_id"], "live-read");
+    assert_eq!(input[4]["type"], "function_call_output");
+    assert_eq!(input[4]["output"], "live output");
+    assert!(!chat.to_string().contains("PRIVATE_PATH"));
+    assert!(!responses.to_string().contains("PRIVATE_PATH"));
+}
+
+#[test]
 fn issue85_vega_tools_emit_strict_chat_completions_wire() {
     let request = ChatRequest {
         model: MODEL.into(),

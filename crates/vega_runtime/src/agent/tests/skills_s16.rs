@@ -351,10 +351,18 @@ async fn run_script_skill_case(case: ScriptCase) -> ScriptObservation {
                         .unwrap()
                         .messages
                         .iter()
-                        .filter(|message| message.tool_call_id.is_none()
-                            && message.content.contains("Historical tool result")
-                            && message.content.contains(&format!("call_id={call_id}"))
-                            && message.content.ends_with(output))
+                        .filter(|message| {
+                            message.tool_call_id.is_none()
+                                && serde_json::from_str::<serde_json::Value>(&message.content)
+                                    .ok()
+                                    .is_some_and(|value| {
+                                        value["vega_history_observation"]["kind"] == "tool_result"
+                                            && value["vega_history_observation"]["call_id"]
+                                                == call_id
+                                            && value["vega_history_observation"]["status"].is_null()
+                                            && value["vega_history_observation"]["output"] == output
+                                    })
+                        })
                         .count(),
                     1
                 );

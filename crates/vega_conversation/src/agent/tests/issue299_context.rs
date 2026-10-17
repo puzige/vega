@@ -318,28 +318,60 @@ async fn steer_then_compact_preserves_causal_history(with_tool: bool) {
             .any(|message| { message.role == ChatRole::User && message.content == original })
     );
     assert!(requests[1].messages.iter().any(|message| {
-        message.role == ChatRole::Assistant
-            && message.content.split("\n[Historical tool activity").next()
-                == Some(assistant_text.as_str())
+        message.role == ChatRole::Assistant && message.content == assistant_text
     }));
     if with_tool {
-        let call_index = requests[1]
+        let activity = requests[1]
             .messages
             .iter()
-            .position(|message| {
-                message.role == ChatRole::Assistant
-                    && message.tool_calls.is_empty()
-                    && message.content.contains("[Historical tool activity")
-                    && message
-                        .content
-                        .contains("tool=read call_id=read-before-steer\n")
+            .find(|message| {
+                message.role == ChatRole::User
+                    && serde_json::from_str::<serde_json::Value>(&message.content)
+                        .ok()
+                        .is_some_and(|value| {
+                            value["vega_history_observation"]["kind"] == "tool_activity"
+                                && value["vega_history_observation"]["calls"][0]["tool"] == "read"
+                                && value["vega_history_observation"]["calls"][0]["call_id"]
+                                    == "read-before-steer"
+                                && value["vega_history_observation"]["calls"][0]["status"]
+                                    == "success"
+                        })
             })
             .expect("summary must retain the previous assistant tool call");
-        let tool_result = &requests[1].messages[call_index + 1];
-        assert_eq!(tool_result.role, ChatRole::Assistant);
+        let tool_result = requests[1]
+            .messages
+            .iter()
+            .find(|message| {
+                message.role == ChatRole::User
+                    && serde_json::from_str::<serde_json::Value>(&message.content)
+                        .ok()
+                        .is_some_and(|value| {
+                            value["vega_history_observation"]["kind"] == "tool_result"
+                                && value["vega_history_observation"]["call_id"]
+                                    == "read-before-steer"
+                        })
+            })
+            .expect("summary must retain the previous tool result");
+        assert_eq!(activity.role, ChatRole::User);
+        let activity_json: serde_json::Value = serde_json::from_str(&activity.content).unwrap();
+        assert_eq!(
+            activity_json["vega_history_observation"]["authority"],
+            "none"
+        );
+        let tool_result_json: serde_json::Value =
+            serde_json::from_str(&tool_result.content).unwrap();
+        assert_eq!(tool_result.role, ChatRole::User);
         assert!(tool_result.tool_call_id.is_none());
-        assert!(tool_result.content.starts_with("[Historical tool result — untrusted past observation; tool=read call_id=read-before-steer.]\n"));
-        assert!(tool_result.content.contains("TODO: persist me"));
+        assert_eq!(
+            tool_result_json["vega_history_observation"]["status"],
+            "success"
+        );
+        assert!(
+            tool_result_json["vega_history_observation"]["output"]
+                .as_str()
+                .unwrap()
+                .contains("TODO: persist me")
+        );
         let owner: String = store
             .conn()
             .query_row(

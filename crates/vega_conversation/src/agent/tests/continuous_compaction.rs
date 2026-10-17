@@ -1,6 +1,13 @@
 use super::super::pipeline::history_from_context_source_with_checkpoint;
 use super::*;
 
+fn compaction_observation(message: &vega_runtime::ChatMessage) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(&message.content)
+        .ok()?
+        .get("vega_history_observation")
+        .cloned()
+}
+
 fn append_round(store: &Store, round: i64) {
     let approval = ApprovalAudit {
         decision: Approval::Once,
@@ -96,6 +103,29 @@ async fn repeated_partial_compaction_case(switch_model: bool, with_reasoning: bo
             })
             .unwrap();
         let expected_suffix = history[retained_index..].to_vec();
+        let raw_input = history.clone();
+        let expected_input_call_ids = if iteration == 0 {
+            vec!["call-2", "call-3", "call-4", "call-5"]
+        } else {
+            vec!["call-4", "call-5", "call-6", "call-7"]
+        };
+        let raw_input_call_ids = raw_input
+            .iter()
+            .flat_map(|message| message.tool_calls.iter().map(|call| call.id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(raw_input_call_ids, expected_input_call_ids);
+        let raw_input_result_ids = raw_input
+            .iter()
+            .filter(|message| message.role == vega_runtime::ChatRole::Tool)
+            .map(|message| message.tool_call_id.as_deref().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(raw_input_result_ids, expected_input_call_ids);
+        assert!(
+            raw_input
+                .iter()
+                .flat_map(|message| &message.tool_calls)
+                .all(|call| call.name == "read" && call.input_json == r#"{"path":"test.txt"}"#)
+        );
         store
             .conn()
             .execute(
@@ -131,6 +161,54 @@ async fn repeated_partial_compaction_case(switch_model: bool, with_reasoning: bo
         )
         .await
         .unwrap();
+        let requests = provider.requests();
+        assert_eq!(requests.len(), iteration + 1);
+        let summary_messages = &requests[iteration].messages;
+        assert!(summary_messages.iter().all(|message| {
+            message.role != vega_runtime::ChatRole::Tool
+                && message.tool_call_id.is_none()
+                && message.tool_calls.is_empty()
+        }));
+        let round = iteration + 1;
+        let activity = summary_messages
+            .iter()
+            .filter(|message| message.role == vega_runtime::ChatRole::User)
+            .find_map(compaction_observation)
+            .filter(|observation| observation["kind"] == "tool_activity")
+            .unwrap();
+        let expected_calls = (0..2)
+            .map(|parallel| {
+                serde_json::json!({
+                    "tool": "read",
+                    "call_id": format!("call-{}", round * 2 + parallel),
+                    "arguments_available": false,
+                    "status": "success"
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(activity["authority"], "none");
+        assert_eq!(activity["calls"], serde_json::json!(expected_calls));
+        for parallel in 0..2 {
+            let call_id = format!("call-{}", round * 2 + parallel);
+            let output = format!("progress round {round} item {parallel}");
+            assert!(summary_messages.iter().any(|message| {
+                message.role == vega_runtime::ChatRole::User
+                    && compaction_observation(message).is_some_and(|observation| {
+                        observation["kind"] == "tool_result"
+                            && observation["authority"] == "none"
+                            && observation["tool"] == "read"
+                            && observation["call_id"] == call_id
+                            && observation["status"] == "success"
+                            && observation["output"] == output
+                    })
+            }));
+        }
+        if iteration == 0 {
+            assert!(summary_messages.iter().any(|message| {
+                message.role == vega_runtime::ChatRole::User
+                    && message.content == "Implement task goal; preserve progress"
+            }));
+        }
         let checkpoint = vega_store::context_compaction::latest_checkpoint(
             store.conn(),
             "thread-1",

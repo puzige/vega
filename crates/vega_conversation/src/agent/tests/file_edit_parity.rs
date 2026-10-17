@@ -72,17 +72,49 @@ async fn issue300_batch_edit_persists_redacted_identity_and_replays_across_name_
         2
     );
     let restored = crate::agent::history_from_context_source(&source, "none", None).unwrap();
+    assert!(restored.iter().any(|message| {
+        message
+            .tool_calls
+            .iter()
+            .any(|call| call.id == "batch-edit")
+    }));
     let projected = vega_runtime::project_model_messages(&restored).unwrap();
     assert!(
         projected
             .iter()
             .all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none())
     );
-    assert!(
-        projected
-            .iter()
-            .any(|message| message.content.contains("call_id=batch-edit")
-                && message.content.contains("replacements"))
+    let activity = projected
+        .iter()
+        .find_map(|message| {
+            let observation = serde_json::from_str::<serde_json::Value>(&message.content).ok()?;
+            (message.role == vega_runtime::ChatRole::User
+                && observation["vega_history_observation"]["kind"] == "tool_activity")
+                .then_some(observation["vega_history_observation"].clone())
+        })
+        .unwrap();
+    let call = activity["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|call| call["call_id"] == "batch-edit")
+        .unwrap();
+    assert_eq!(call["arguments_available"], false);
+    assert_eq!(call["status"], source.tool_calls[0].status.as_str());
+    let result = projected
+        .iter()
+        .find_map(|message| {
+            let observation = serde_json::from_str::<serde_json::Value>(&message.content).ok()?;
+            (message.role == vega_runtime::ChatRole::User
+                && observation["vega_history_observation"]["kind"] == "tool_result"
+                && observation["vega_history_observation"]["call_id"] == "batch-edit")
+                .then_some(observation["vega_history_observation"].clone())
+        })
+        .unwrap();
+    assert_eq!(result["status"], source.tool_calls[0].status.as_str());
+    assert_eq!(
+        result["output"],
+        source.tool_calls[0].output_text.as_deref().unwrap()
     );
 }
 

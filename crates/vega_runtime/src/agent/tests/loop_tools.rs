@@ -1132,11 +1132,23 @@ async fn issue302_reused_validation_result_redacts_before_shell_projection() {
         .messages
         .iter()
         .find(|message| {
-            message.content.contains("Historical tool result")
-                && message.content.contains("prior-invalid-bash")
+            serde_json::from_str::<serde_json::Value>(&message.content)
+                .ok()
+                .is_some_and(|value| {
+                    value["vega_history_observation"]["kind"] == "tool_result"
+                        && value["vega_history_observation"]["call_id"] == "prior-invalid-bash"
+                })
         })
         .unwrap();
-    assert!(feedback.content.ends_with(&expected.content));
+    let observation: serde_json::Value = serde_json::from_str(&feedback.content).unwrap();
+    assert_eq!(
+        observation["vega_history_observation"]["status"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        observation["vega_history_observation"]["output"],
+        expected.content
+    );
     assert!(feedback.tool_call_id.is_none());
     assert!(!expected.content.contains(&secret[..16]));
     assert!(outcome.events.iter().any(|event| matches!(event, RuntimeEvent::ToolCallValidationRejected { result, .. } if result.output == redacted && result.reused && result.status == RuntimeToolStatus::Rejected)));

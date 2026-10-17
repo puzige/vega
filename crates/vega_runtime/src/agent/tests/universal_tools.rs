@@ -199,6 +199,24 @@ async fn issue300_redacted_live_arguments_are_never_replayed_with_placeholder_co
         .await
         .unwrap();
     let requests = provider.requests();
+    let terminal = outcome
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RuntimeEvent::ToolCallFinished(result) if result.call_id == "secret-write" => {
+                Some(result)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(terminal.status, RuntimeToolStatus::Success);
+    let write = vega_tools::WriteSuccessOutput::from_json(&terminal.output).unwrap();
+    assert_eq!(write.path, "new.txt");
+    assert_eq!(write.bytes_written, u64::try_from(secret.len()).unwrap());
+    assert_eq!(
+        fs::read_to_string(project.path().join("new.txt")).unwrap(),
+        secret
+    );
     assert!(
         requests[1]
             .messages
@@ -206,7 +224,15 @@ async fn issue300_redacted_live_arguments_are_never_replayed_with_placeholder_co
             .all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none())
     );
     let wire = crate::openai::build_request_body(&requests[1]).to_string();
-    assert!(wire.contains("Historical tool result"));
+    assert!(wire.contains("vega_history_observation"));
+    assert!(requests[1].messages.iter().any(|message| {
+        serde_json::from_str::<serde_json::Value>(&message.content)
+            .ok()
+            .is_some_and(|value| {
+                value["vega_history_observation"]["kind"] == "tool_result"
+                    && value["vega_history_observation"]["status"].is_null()
+            })
+    }));
     assert!(!wire.contains(secret));
     assert!(!wire.contains("write_edit_v1"));
     assert!(!format!("{:?}", outcome.messages).contains(secret));
