@@ -776,10 +776,26 @@ async fn historical_observation_quotes_survive_stream_and_restart_byte_for_byte(
     let stored_calls = [
         ("quoted-history-call", "success", historical_output),
         ("history-failed", "failed", "read failed"),
-        ("history-rejected", "rejected", "read rejected"),
+        (
+            "history-rejected",
+            "rejected",
+            "Tool error: permission denied",
+        ),
         ("history-cancelled", "cancelled", "read cancelled"),
     ];
     for (index, (id, status, output)) in stored_calls.iter().enumerate() {
+        let call_approval = if *status == "rejected" {
+            ApprovalAudit {
+                decision: Approval::Deny,
+                note: None,
+                source: ApprovalSource::User,
+                danger: None,
+            }
+            .to_json()
+            .unwrap()
+        } else {
+            approval.clone()
+        };
         store
             .conn()
             .execute(
@@ -793,7 +809,7 @@ async fn historical_observation_quotes_survive_stream_and_restart_byte_for_byte(
                     i64::try_from(index + 1).unwrap(),
                     *output,
                     *status,
-                    &approval,
+                    &call_approval,
                     i64::try_from(prior_assistant_text.len()).unwrap(),
                 ),
             )
@@ -1263,12 +1279,33 @@ async fn issue76_manual_primary_tail_keeps_terminal_tool_data_without_old_protoc
     )
     .await
     .unwrap();
-    assert!(
-        result
-            .messages
-            .iter()
-            .all(|message| { message.tool_call_id.is_none() && message.tool_calls.is_empty() })
-    );
+    let latest_user_index = result
+        .messages
+        .iter()
+        .position(|message| {
+            message.role == vega_runtime::ChatRole::User && message.content == "latest question"
+        })
+        .unwrap();
+    let tail_call_index = result
+        .messages
+        .iter()
+        .position(|message| {
+            message.role == vega_runtime::ChatRole::Assistant
+                && message.tool_calls.iter().any(|call| call.id == "tail-read")
+        })
+        .unwrap();
+    assert!(latest_user_index < tail_call_index);
+    let tail_call = &result.messages[tail_call_index];
+    assert_eq!(tail_call.content, "tail");
+    assert_eq!(tail_call.tool_calls.len(), 1);
+    assert_eq!(tail_call.tool_calls[0].id, "tail-read");
+    assert_eq!(tail_call.tool_calls[0].name, "read");
+    assert_eq!(tail_call.tool_calls[0].input_json, r#"{"path":"tail.rs"}"#);
+    let tail_result = &result.messages[tail_call_index + 1];
+    assert_eq!(tail_result.role, vega_runtime::ChatRole::Tool);
+    assert_eq!(tail_result.tool_call_id.as_deref(), Some("tail-read"));
+    assert_eq!(tail_result.content, "tail result");
+    assert_eq!(result.messages[tail_call_index + 2].content, " text");
     let result_text = result
         .messages
         .iter()
@@ -1276,12 +1313,37 @@ async fn issue76_manual_primary_tail_keeps_terminal_tool_data_without_old_protoc
         .collect::<Vec<_>>()
         .join("\n");
     assert!(result_text.contains("tail result"));
-    assert!(result.messages.iter().any(|message| {
-        history_observation(message).is_some_and(|observation| {
-            observation["kind"] == "tool_activity"
-                && observation["calls"][0]["call_id"] == "tail-read"
-                && observation["calls"][0]["status"] == "success"
-        })
+    let projected_result = vega_runtime::project_model_messages(&result.messages).unwrap();
+    assert!(projected_result.iter().all(|message| {
+        message.role != vega_runtime::ChatRole::Tool
+            && message.tool_call_id.is_none()
+            && message.tool_calls.is_empty()
+    }));
+    assert!(projected_result.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::User && message.content == "latest question"
+    }));
+    assert!(projected_result.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::User
+            && history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_activity"
+                    && observation["calls"]
+                        == serde_json::json!([{
+                            "tool": "read",
+                            "call_id": "tail-read",
+                            "arguments_available": false,
+                            "status": "success"
+                        }])
+            })
+    }));
+    assert!(projected_result.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::User
+            && history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_result"
+                    && observation["tool"] == "read"
+                    && observation["call_id"] == "tail-read"
+                    && observation["status"] == "success"
+                    && observation["output"] == "tail result"
+            })
     }));
 
     let projection = read_context_projection(&store, "thread-1", "mock-model", "system").unwrap();
@@ -1317,18 +1379,37 @@ async fn issue76_manual_primary_tail_keeps_terminal_tool_data_without_old_protoc
         .collect::<Vec<_>>()
         .join("\n");
     assert!(primary.iter().any(|message| {
-        history_observation(message).is_some_and(|observation| {
-            observation["kind"] == "tool_activity"
-                && observation["calls"][0]["call_id"] == "tail-read"
-                && observation["calls"][0]["status"] == "success"
-        })
+        message.role == vega_runtime::ChatRole::User && message.content == "latest question"
+    }));
+    assert!(primary.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::User
+            && history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_activity"
+                    && observation["calls"]
+                        == serde_json::json!([{
+                            "tool": "read",
+                            "call_id": "tail-read",
+                            "arguments_available": false,
+                            "status": "success"
+                        }])
+            })
+    }));
+    assert!(primary.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::User
+            && history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_result"
+                    && observation["tool"] == "read"
+                    && observation["call_id"] == "tail-read"
+                    && observation["status"] == "success"
+                    && observation["output"] == "tail result"
+            })
     }));
     assert!(primary_text.contains("tail result"));
-    assert!(
-        primary
-            .iter()
-            .all(|message| { message.tool_call_id.is_none() && message.tool_calls.is_empty() })
-    );
+    assert!(primary.iter().all(|message| {
+        message.role != vega_runtime::ChatRole::Tool
+            && message.tool_call_id.is_none()
+            && message.tool_calls.is_empty()
+    }));
 }
 
 #[tokio::test]
@@ -5013,15 +5094,16 @@ async fn issue302_reopened_shell_projection_matches_compaction_and_preserves_sto
         &source, None, "none",
     )
     .unwrap();
+    let wire_history = vega_runtime::project_model_messages(&history).unwrap();
     assert_eq!(
-        history
+        wire_history
             .iter()
             .filter(|message| message.content.contains("Shell output shortened"))
             .count(),
         2
     );
     assert!(
-        history
+        wire_history
             .iter()
             .all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none())
     );

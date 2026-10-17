@@ -635,15 +635,14 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
         let mut next = message.without_live_tool_arguments();
         next.model_projection = true;
         if !message.tool_calls.is_empty() {
-            if let Some(statuses) = &message.historical_tool_statuses {
-                if statuses.len() != message.tool_calls.len()
+            if let Some(statuses) = &message.historical_tool_statuses
+                && (statuses.len() != message.tool_calls.len()
                     || statuses
                         .iter()
                         .zip(&message.tool_calls)
-                        .any(|(status, call)| status.id != call.id || status.name != call.name)
-                {
-                    return Err(invalid());
-                }
+                        .any(|(status, call)| status.id != call.id || status.name != call.name))
+            {
+                return Err(invalid());
             }
             let model_calls = if let Some(live) = &message.live_tool_calls {
                 if live.len() != message.tool_calls.len() {

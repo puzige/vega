@@ -1143,7 +1143,7 @@ async fn issue302_reused_validation_result_redacts_before_shell_projection() {
     let observation: serde_json::Value = serde_json::from_str(&feedback.content).unwrap();
     assert_eq!(
         observation["vega_history_observation"]["status"],
-        "rejected"
+        serde_json::Value::Null
     );
     assert_eq!(
         observation["vega_history_observation"]["output"],

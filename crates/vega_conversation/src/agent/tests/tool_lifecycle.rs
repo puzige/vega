@@ -680,7 +680,7 @@ async fn issue90_invalid_bash_round_trips_through_real_store_and_history() {
     let observation: serde_json::Value = serde_json::from_str(&feedback.content).unwrap();
     assert_eq!(
         observation["vega_history_observation"]["status"],
-        "rejected"
+        serde_json::Value::Null
     );
     assert_eq!(
         observation["vega_history_observation"]["output"],

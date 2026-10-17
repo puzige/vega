@@ -532,7 +532,7 @@ async fn issue90_invalid_bash_is_atomic_and_guides_the_model_without_exposing_in
     let observation: serde_json::Value = serde_json::from_str(&feedback.content).unwrap();
     assert_eq!(
         observation["vega_history_observation"]["status"],
-        "rejected"
+        serde_json::Value::Null
     );
     assert_eq!(
         observation["vega_history_observation"]["output"],

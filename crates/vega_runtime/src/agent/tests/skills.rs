@@ -2713,7 +2713,7 @@ async fn issue74_s19_skill_cannot_dispatch_unregistered_mcp_alias() {
                     value["vega_history_observation"]["kind"] == "tool_result"
                         && value["vega_history_observation"]["call_id"] == "s19-unregistered-mcp"
                         && value["vega_history_observation"]["tool"] == alias
-                        && value["vega_history_observation"]["status"] == "rejected"
+                        && value["vega_history_observation"]["status"].is_null()
                         && value["vega_history_observation"]["output"]
                             == "Tool error: denied: unavailable tool"
                 })

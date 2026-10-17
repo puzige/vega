@@ -1053,6 +1053,7 @@ fn assert_recovery(
         "s18-no-active-owner",
     )
     .unwrap();
+    let wire_history = vega_runtime::project_model_messages(&history).unwrap();
     assert_eq!(
         history
             .iter()
@@ -1061,14 +1062,23 @@ fn assert_recovery(
         1
     );
     assert!(
-        history
+        wire_history
             .iter()
             .any(|message| message.role == ChatRole::User && message.content == TASK)
     );
-    assert!(history.iter().all(|message| message.tool_calls.is_empty()
-        && message.tool_call_id.is_none()
-        && message.role != ChatRole::Tool));
+    assert!(
+        wire_history
+            .iter()
+            .all(|message| message.tool_calls.is_empty()
+                && message.tool_call_id.is_none()
+                && message.role != ChatRole::Tool)
+    );
     assert!(history.iter().any(|message| !message.images.is_empty()));
+    assert!(
+        wire_history
+            .iter()
+            .any(|message| !message.images.is_empty())
+    );
     assert!(
         durable_rows(store, true) == rows,
         "read-only recovery leaves every durable tuple unchanged"

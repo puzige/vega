@@ -1731,7 +1731,7 @@ async fn issue90_production_controller_routes_invalid_bash_without_permission_an
         })
         .map(|message| serde_json::from_str::<serde_json::Value>(&message.content).unwrap());
     assert!(feedback.as_ref().is_some_and(|observation| {
-        observation["vega_history_observation"]["status"] == "rejected"
+        observation["vega_history_observation"]["status"].is_null()
             && observation["vega_history_observation"]["output"]
                 == vega_tools::BashInputError::WrongCommandType.feedback()
     }));

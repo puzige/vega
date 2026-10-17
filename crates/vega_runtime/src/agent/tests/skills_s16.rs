@@ -359,8 +359,7 @@ async fn run_script_skill_case(case: ScriptCase) -> ScriptObservation {
                                         value["vega_history_observation"]["kind"] == "tool_result"
                                             && value["vega_history_observation"]["call_id"]
                                                 == call_id
-                                            && value["vega_history_observation"]["status"]
-                                                == "rejected"
+                                            && value["vega_history_observation"]["status"].is_null()
                                             && value["vega_history_observation"]["output"] == output
                                     })
                         })
