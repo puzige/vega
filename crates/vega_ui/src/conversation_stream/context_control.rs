@@ -386,9 +386,60 @@ impl ConversationStream {
         else {
             return false;
         };
-        record.status == Status::Failed && self.entries.iter().any(|entry| matches!(entry,
-            StreamEntry::ContextCompaction { model: owner, record: newer, .. }
-                if owner == model && newer.generation > record.generation && newer.status == Status::Succeeded))
+        let message_id = self
+            .entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_deref());
+        record.status == Status::Failed
+            && self.entries.iter().zip(&self.entry_identities).any(
+                |(entry, identity)| match entry {
+                    StreamEntry::ContextCompaction {
+                        model: owner,
+                        record: newer,
+                        ..
+                    } => {
+                        owner == model
+                            && identity.message_id.as_deref() == message_id
+                            && newer.generation > record.generation
+                            && newer.status == Status::Succeeded
+                    }
+                    _ => false,
+                },
+            )
+    }
+
+    pub(crate) fn compaction_failure_resolved_for_owner(
+        &self,
+        message_id: &str,
+        failure: vega_conversation::types::ContextCompactionFailureCode,
+    ) -> bool {
+        let owned_statuses = self
+            .entries
+            .iter()
+            .zip(&self.entry_identities)
+            .filter_map(|(entry, identity)| match entry {
+                StreamEntry::ContextCompaction { model, record, .. }
+                    if identity.message_id.as_deref() == Some(message_id) =>
+                {
+                    Some((model, record))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let has_owned_failure = owned_statuses
+            .iter()
+            .any(|(_, record)| record.status == Status::Failed);
+        owned_statuses.iter().any(|(model, record)| {
+            record.status == Status::Succeeded
+                && *model == &self.thread.model
+                && (!has_owned_failure
+                    || owned_statuses.iter().any(|(failed_model, failed)| {
+                        failed.status == Status::Failed
+                            && failed.failure == Some(failure)
+                            && failed_model == model
+                            && failed.generation < record.generation
+                    }))
+        })
     }
 
     /// Restore the latest durable result at the loaded history tail. Legacy
@@ -408,7 +459,7 @@ impl ConversationStream {
                 .iter()
                 .any(|identity| identity.message_id.as_ref() == Some(message_id))
             {
-                self.run_failures.insert(message_id.clone(), *failure);
+                self.remember_run_failure(message_id, *failure);
             }
         }
         self.refresh_run_notices(cx);
@@ -481,25 +532,7 @@ pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'st
         Status::Compacting => "Compacting context",
         Status::Succeeded => "Context compacted",
         Status::Cancelled => "Context compaction cancelled",
-        Status::Failed => match failure {
-            Some(Failure::SourceChanged) => "History changed. Retry compaction.",
-            Some(Failure::NoCompactablePrefix) => "No complete history is available to compact.",
-            Some(Failure::TooLarge) => {
-                "History is too large to compact safely. Continue in a new conversation."
-            }
-            Some(Failure::OverLimit) => {
-                "Context exceeds the available budget. Shorten the input or start a new conversation."
-            }
-            Some(Failure::ReasoningLimit) => {
-                "The run exceeded the local reasoning limit. Send your message again to continue."
-            }
-            Some(Failure::ImagesUnsupported) => {
-                "Historical images cannot be compacted safely. Start a new conversation."
-            }
-            Some(Failure::InvalidSummary) => "The compaction result was invalid. Retry compaction.",
-            Some(Failure::TimedOut) => "Context compaction timed out. Retry compaction.",
-            _ => "Context compaction failed. Retry compaction.",
-        },
+        Status::Failed => failure.unwrap_or(Failure::Unavailable).message(),
     }
 }
 

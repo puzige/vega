@@ -286,6 +286,33 @@ pub fn read_context_projection_with_provider(
             ));
         }
     }
+    for (message_id, code) in
+        vega_store::run_diagnostics::compaction_failure_message_ids(&transaction, thread_id)
+            .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
+    {
+        if !assistant_ids.contains(message_id.as_str()) {
+            continue;
+        }
+        let Some(failure) = crate::types::RunFailureKind::from_compaction_diagnostic_code(code)
+        else {
+            continue;
+        };
+        if let Some((_, existing)) = run_failures
+            .iter_mut()
+            .find(|(owner, _)| owner == &message_id)
+        {
+            if matches!(
+                existing,
+                crate::types::RunFailureKind::Runtime
+                    | crate::types::RunFailureKind::Persisted
+                    | crate::types::RunFailureKind::Compaction(_)
+            ) {
+                *existing = failure;
+            }
+        } else {
+            run_failures.push((message_id, failure));
+        }
+    }
     let reasoning_failure = match (status.as_ref(), last_status_message_id.as_deref()) {
         (Some(status), Some(owner))
             if status.phase == "failed" && status.failure.as_deref() == Some("too_large") =>
@@ -582,7 +609,7 @@ pub async fn compact_thread_manually_with_credential_reader(
         ),
         Err(failure) => (
             vega_store::run_diagnostics::DiagnosticState::Failed,
-            summary_diagnostic_failure(failure.error.as_ref()),
+            super::diagnostics::failure_code(failure.error.as_ref()),
         ),
     };
     diagnostics.root_event(
@@ -1027,7 +1054,7 @@ impl ContextCompactionHook for ConversationCompactionHook<'_> {
                     ),
                     Err(failure) => (
                         vega_store::run_diagnostics::DiagnosticState::Failed,
-                        summary_diagnostic_failure(failure.error.as_ref()),
+                        super::diagnostics::failure_code(failure.error.as_ref()),
                     ),
                 };
                 diagnostics.stage_event(
@@ -1267,7 +1294,7 @@ impl ConversationCompactionHook<'_> {
                         &attempt_id,
                         vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
                         state,
-                        summary_diagnostic_failure(stage_failure.failure.error.as_ref()),
+                        super::diagnostics::failure_code(stage_failure.failure.error.as_ref()),
                         started_at,
                         super::diagnostics::with_failure_metrics(
                             summary_store_metrics(&stage_failure.metrics),
@@ -2469,70 +2496,6 @@ fn summary_store_metrics(
     }
 }
 
-fn summary_diagnostic_failure(
-    error: &VegaError,
-) -> Option<vega_store::run_diagnostics::DiagnosticFailureCode> {
-    use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
-    if error.context_input_overflow().is_some() {
-        return Some(Code::ContextOverLimit);
-    }
-    match error {
-        VegaError::Cancelled => None,
-        VegaError::ProviderPayloadTooLarge { .. } => Some(Code::ProviderProtocol),
-        VegaError::ReasoningBudgetExceeded { .. }
-        | VegaError::ReasoningReplayBudgetExceeded { .. } => Some(Code::ReasoningLimit),
-        VegaError::ProviderDiagnostic { kind, .. } => Some(match kind {
-            vega_runtime::ProviderFailureKind::Http => Code::ProviderHttp,
-            vega_runtime::ProviderFailureKind::Transport => Code::ProviderTransportOrStream,
-            vega_runtime::ProviderFailureKind::Protocol => Code::ProviderProtocol,
-            vega_runtime::ProviderFailureKind::Rejected
-            | vega_runtime::ProviderFailureKind::OutputLimit => Code::ProviderRejected,
-        }),
-        VegaError::Provider {
-            status: Some(_), ..
-        } => Some(Code::ProviderHttp),
-        VegaError::Context(ContextRuntimeError::SummaryTimedOut) => Some(Code::SummaryTimeout),
-        VegaError::Context(ContextRuntimeError::SummaryOutputTruncated { .. }) => {
-            Some(Code::SummaryTruncated)
-        }
-        VegaError::Context(ContextRuntimeError::SummaryEmpty) => Some(Code::SummaryEmpty),
-        VegaError::Context(ContextRuntimeError::SummaryFormatInvalid)
-        | VegaError::Context(ContextRuntimeError::InvalidSummary) => {
-            Some(Code::SummaryFormatInvalid)
-        }
-        VegaError::Context(
-            ContextRuntimeError::SummaryProjectionInvalid
-            | ContextRuntimeError::InvalidProjection
-            | ContextRuntimeError::SystemMessageInResult,
-        ) => Some(Code::SummaryProjectionInvalid),
-        VegaError::Context(ContextRuntimeError::SourceChanged) => Some(Code::SummarySourceChanged),
-        VegaError::Context(
-            ContextRuntimeError::OverLimit { .. }
-            | ContextRuntimeError::SummaryInputOverLimit { .. }
-            | ContextRuntimeError::ResultOverLimit { .. },
-        ) => Some(Code::ContextOverLimit),
-        VegaError::Context(ContextRuntimeError::NoCompactablePrefix) => {
-            Some(Code::SummaryNoCompactablePrefix)
-        }
-        VegaError::Context(ContextRuntimeError::SourceTooLarge) => {
-            Some(Code::SummarySourceTooLarge)
-        }
-        VegaError::Context(ContextRuntimeError::AggregateTooLarge) => {
-            Some(Code::SummaryAggregateTooLarge)
-        }
-        VegaError::Context(ContextRuntimeError::ImagesUnsupported) => {
-            Some(Code::SummaryImagesUnsupported)
-        }
-        VegaError::Context(ContextRuntimeError::AlreadyAttempted) => {
-            Some(Code::SummaryAlreadyAttempted)
-        }
-        VegaError::Context(ContextRuntimeError::Estimate(
-            vega_runtime::ContextEstimateError::InputTooLarge,
-        )) => Some(Code::ContextOverLimit),
-        _ => Some(Code::UnknownSafeFailure),
-    }
-}
-
 fn normalize_summary(text: &str) -> Result<String, ContextRuntimeError> {
     let mut remaining = text.trim();
     let tagged = ["<analysis>", "</analysis>", "<summary>", "</summary>"]
@@ -3005,7 +2968,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_preflight_errors_keep_their_safe_diagnostic_classes() {
+    fn compaction_failure_summary_errors_keep_their_safe_diagnostic_classes() {
         use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
 
         let cases = [
@@ -3076,7 +3039,7 @@ mod tests {
         ];
         for (error, expected) in cases {
             assert_eq!(
-                summary_diagnostic_failure(&VegaError::Context(error)),
+                crate::agent::diagnostics::failure_code(&VegaError::Context(error)),
                 Some(expected)
             );
         }
@@ -3103,7 +3066,10 @@ mod tests {
                 retry_count: None,
                 request_id: None,
             };
-            assert_eq!(summary_diagnostic_failure(&error), Some(expected));
+            assert_eq!(
+                crate::agent::diagnostics::failure_code(&error),
+                Some(expected)
+            );
         }
     }
 

@@ -297,17 +297,77 @@ impl DiagnosticsWriter {
     }
 }
 
-pub(crate) fn run_failure(error: &vega_runtime::VegaError) -> DiagnosticFailureCode {
-    let metrics = error.diagnostic_metrics();
-    match metrics.failure_kind {
-        Some("reasoning_limit") => DiagnosticFailureCode::ReasoningLimit,
-        Some("context_over_limit") => DiagnosticFailureCode::ContextOverLimit,
-        Some("http") => DiagnosticFailureCode::ProviderHttp,
-        Some("transport") => DiagnosticFailureCode::ProviderTransportOrStream,
-        Some("protocol") => DiagnosticFailureCode::ProviderProtocol,
-        Some("rejected" | "output_limit") => DiagnosticFailureCode::ProviderRejected,
-        _ => DiagnosticFailureCode::UnknownSafeFailure,
+pub(crate) fn failure_code(error: &vega_runtime::VegaError) -> Option<DiagnosticFailureCode> {
+    use vega_runtime::{ContextEstimateError, ContextRuntimeError, ProviderFailureKind, VegaError};
+    if error.context_input_overflow().is_some() {
+        return Some(DiagnosticFailureCode::ContextOverLimit);
     }
+    match error {
+        VegaError::Cancelled => None,
+        VegaError::ProviderPayloadTooLarge { .. } => Some(DiagnosticFailureCode::ProviderProtocol),
+        VegaError::ReasoningBudgetExceeded { .. }
+        | VegaError::ReasoningReplayBudgetExceeded { .. } => {
+            Some(DiagnosticFailureCode::ReasoningLimit)
+        }
+        VegaError::ProviderDiagnostic { kind, .. } => Some(match kind {
+            ProviderFailureKind::Http => DiagnosticFailureCode::ProviderHttp,
+            ProviderFailureKind::Transport => DiagnosticFailureCode::ProviderTransportOrStream,
+            ProviderFailureKind::Protocol => DiagnosticFailureCode::ProviderProtocol,
+            ProviderFailureKind::Rejected | ProviderFailureKind::OutputLimit => {
+                DiagnosticFailureCode::ProviderRejected
+            }
+        }),
+        VegaError::Provider {
+            status: Some(_), ..
+        } => Some(DiagnosticFailureCode::ProviderHttp),
+        VegaError::Context(ContextRuntimeError::SummaryTimedOut) => {
+            Some(DiagnosticFailureCode::SummaryTimeout)
+        }
+        VegaError::Context(ContextRuntimeError::SummaryOutputTruncated { .. }) => {
+            Some(DiagnosticFailureCode::SummaryTruncated)
+        }
+        VegaError::Context(ContextRuntimeError::SummaryEmpty) => {
+            Some(DiagnosticFailureCode::SummaryEmpty)
+        }
+        VegaError::Context(ContextRuntimeError::SummaryFormatInvalid)
+        | VegaError::Context(ContextRuntimeError::InvalidSummary) => {
+            Some(DiagnosticFailureCode::SummaryFormatInvalid)
+        }
+        VegaError::Context(
+            ContextRuntimeError::SummaryProjectionInvalid
+            | ContextRuntimeError::InvalidProjection
+            | ContextRuntimeError::SystemMessageInResult,
+        ) => Some(DiagnosticFailureCode::SummaryProjectionInvalid),
+        VegaError::Context(ContextRuntimeError::SourceChanged) => {
+            Some(DiagnosticFailureCode::SummarySourceChanged)
+        }
+        VegaError::Context(
+            ContextRuntimeError::OverLimit { .. }
+            | ContextRuntimeError::SummaryInputOverLimit { .. }
+            | ContextRuntimeError::ResultOverLimit { .. }
+            | ContextRuntimeError::Estimate(ContextEstimateError::InputTooLarge),
+        ) => Some(DiagnosticFailureCode::ContextOverLimit),
+        VegaError::Context(ContextRuntimeError::NoCompactablePrefix) => {
+            Some(DiagnosticFailureCode::SummaryNoCompactablePrefix)
+        }
+        VegaError::Context(ContextRuntimeError::SourceTooLarge) => {
+            Some(DiagnosticFailureCode::SummarySourceTooLarge)
+        }
+        VegaError::Context(ContextRuntimeError::AggregateTooLarge) => {
+            Some(DiagnosticFailureCode::SummaryAggregateTooLarge)
+        }
+        VegaError::Context(ContextRuntimeError::ImagesUnsupported) => {
+            Some(DiagnosticFailureCode::SummaryImagesUnsupported)
+        }
+        VegaError::Context(ContextRuntimeError::AlreadyAttempted) => {
+            Some(DiagnosticFailureCode::SummaryAlreadyAttempted)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn run_failure(error: &vega_runtime::VegaError) -> DiagnosticFailureCode {
+    failure_code(error).unwrap_or(DiagnosticFailureCode::UnknownSafeFailure)
 }
 
 pub(crate) fn failure_metrics(error: &vega_runtime::VegaError) -> DiagnosticMetrics {
@@ -412,6 +472,198 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compaction_failure_codes_preserve_closed_runtime_classification() {
+        use vega_runtime::{ContextRuntimeError as ContextError, VegaError};
+
+        let cases = [
+            (
+                VegaError::Context(ContextError::SourceChanged),
+                DiagnosticFailureCode::SummarySourceChanged,
+            ),
+            (
+                VegaError::Context(ContextError::SummaryTimedOut),
+                DiagnosticFailureCode::SummaryTimeout,
+            ),
+            (
+                VegaError::Context(ContextError::SummaryOutputTruncated {
+                    visible_bytes: 12,
+                    thinking_bytes: 8,
+                    output_tokens: Some(3),
+                }),
+                DiagnosticFailureCode::SummaryTruncated,
+            ),
+            (
+                VegaError::Context(ContextError::SummaryEmpty),
+                DiagnosticFailureCode::SummaryEmpty,
+            ),
+            (
+                VegaError::Context(ContextError::InvalidSummary),
+                DiagnosticFailureCode::SummaryFormatInvalid,
+            ),
+            (
+                VegaError::Context(ContextError::SummaryFormatInvalid),
+                DiagnosticFailureCode::SummaryFormatInvalid,
+            ),
+            (
+                VegaError::Context(ContextError::SummaryProjectionInvalid),
+                DiagnosticFailureCode::SummaryProjectionInvalid,
+            ),
+            (
+                VegaError::Context(ContextError::InvalidProjection),
+                DiagnosticFailureCode::SummaryProjectionInvalid,
+            ),
+            (
+                VegaError::Context(ContextError::SystemMessageInResult),
+                DiagnosticFailureCode::SummaryProjectionInvalid,
+            ),
+            (
+                VegaError::Context(ContextError::NoCompactablePrefix),
+                DiagnosticFailureCode::SummaryNoCompactablePrefix,
+            ),
+            (
+                VegaError::Context(ContextError::SourceTooLarge),
+                DiagnosticFailureCode::SummarySourceTooLarge,
+            ),
+            (
+                VegaError::Context(ContextError::AggregateTooLarge),
+                DiagnosticFailureCode::SummaryAggregateTooLarge,
+            ),
+            (
+                VegaError::Context(ContextError::ImagesUnsupported),
+                DiagnosticFailureCode::SummaryImagesUnsupported,
+            ),
+            (
+                VegaError::Context(ContextError::AlreadyAttempted),
+                DiagnosticFailureCode::SummaryAlreadyAttempted,
+            ),
+            (
+                VegaError::Context(ContextError::Estimate(
+                    vega_runtime::ContextEstimateError::InputTooLarge,
+                )),
+                DiagnosticFailureCode::ContextOverLimit,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(failure_code(&error), Some(expected));
+            assert_eq!(run_failure(&error), expected);
+        }
+        assert_eq!(failure_code(&VegaError::Cancelled), None);
+        assert_eq!(
+            run_failure(&VegaError::Cancelled),
+            DiagnosticFailureCode::UnknownSafeFailure
+        );
+        assert_eq!(
+            failure_code(&VegaError::Context(ContextError::MissingHook)),
+            None
+        );
+    }
+
+    #[test]
+    fn compaction_failure_codes_preserve_provider_reasoning_and_unknown_fallbacks() {
+        use vega_runtime::{ProviderFailureKind, ReasoningBudgetScope, VegaError};
+
+        for (kind, expected) in [
+            (
+                ProviderFailureKind::Http,
+                DiagnosticFailureCode::ProviderHttp,
+            ),
+            (
+                ProviderFailureKind::Transport,
+                DiagnosticFailureCode::ProviderTransportOrStream,
+            ),
+            (
+                ProviderFailureKind::Protocol,
+                DiagnosticFailureCode::ProviderProtocol,
+            ),
+            (
+                ProviderFailureKind::Rejected,
+                DiagnosticFailureCode::ProviderRejected,
+            ),
+            (
+                ProviderFailureKind::OutputLimit,
+                DiagnosticFailureCode::ProviderRejected,
+            ),
+        ] {
+            let error = VegaError::ProviderDiagnostic {
+                kind,
+                status: None,
+                message: "private provider payload".into(),
+                retryable: false,
+                retry_count: None,
+                request_id: None,
+            };
+            assert_eq!(failure_code(&error), Some(expected));
+            assert_eq!(run_failure(&error), expected);
+        }
+
+        let error = VegaError::ProviderPayloadTooLarge {
+            observed_bytes: 4_200_000,
+            limit_bytes: 4_194_304,
+        };
+        assert_eq!(
+            failure_code(&error),
+            Some(DiagnosticFailureCode::ProviderProtocol)
+        );
+        assert_eq!(run_failure(&error), DiagnosticFailureCode::ProviderProtocol);
+
+        let error = VegaError::Provider {
+            status: Some(503),
+            message: "private provider payload".into(),
+            retryable: false,
+        };
+        assert_eq!(
+            failure_code(&error),
+            Some(DiagnosticFailureCode::ProviderHttp)
+        );
+        let provider_without_status = VegaError::Provider {
+            status: None,
+            message: "private provider payload says quota exceeded".into(),
+            retryable: false,
+        };
+        assert_eq!(failure_code(&provider_without_status), None);
+        assert_eq!(
+            run_failure(&provider_without_status),
+            DiagnosticFailureCode::UnknownSafeFailure
+        );
+
+        let overflow = VegaError::Provider {
+            status: Some(400),
+            message: r#"{"error":{"code":"context_length_exceeded","requested_tokens":130000,"max_context_tokens":128000}}"#.into(),
+            retryable: false,
+        };
+        assert_eq!(
+            failure_code(&overflow),
+            Some(DiagnosticFailureCode::ContextOverLimit)
+        );
+        for error in [
+            VegaError::ReasoningBudgetExceeded {
+                scope: ReasoningBudgetScope::Turn,
+                observed_bytes: 262_145,
+                limit_bytes: 262_144,
+            },
+            VegaError::ReasoningReplayBudgetExceeded {
+                scope: ReasoningBudgetScope::Run,
+                observed_bytes: 262_145,
+                limit_bytes: 262_144,
+                observed_items: 9,
+                limit_items: 8,
+            },
+        ] {
+            assert_eq!(
+                failure_code(&error),
+                Some(DiagnosticFailureCode::ReasoningLimit)
+            );
+            assert_eq!(run_failure(&error), DiagnosticFailureCode::ReasoningLimit);
+        }
+        assert_eq!(
+            failure_code(&VegaError::Cancelled),
+            None,
+            "cancelled errors are not reclassified as failures"
+        );
+    }
 
     fn event() -> NewDiagnosticEvent {
         NewDiagnosticEvent {
