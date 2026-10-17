@@ -165,6 +165,154 @@ fn commit_summary_binary_bytes_are_deterministically_escaped() {
 }
 
 #[tokio::test]
+async fn provider_draft_production_parsers_accept_replay_metadata_without_git_mutation() {
+    const DRAFT: &str = "feat: preserve draft\n\nKeep editable text.\n";
+    let chat_sse = |reasoning: Option<&str>| {
+        let mut delta = serde_json::json!({"content":DRAFT});
+        if let Some(reasoning) = reasoning {
+            delta["reasoning_content"] = serde_json::json!(reasoning);
+        }
+        let completion = serde_json::json!({
+            "choices":[{"index":0,"delta":delta,"finish_reason":"stop"}]
+        });
+        let usage = serde_json::json!({
+            "choices":[],
+            "usage":{"prompt_tokens":11,"completion_tokens":3}
+        });
+        format!("data: {completion}\n\ndata: {usage}\n\ndata: [DONE]\n\n")
+    };
+    let response = serde_json::json!({
+        "type":"response.completed",
+        "response":{
+            "id":"response-1", "status":"completed",
+            "output":[{"id":"message-1", "type":"message", "role":"assistant",
+                       "content":[{"type":"output_text", "text":DRAFT}]}],
+            "usage":{"input_tokens":11,"output_tokens":3}
+        }
+    });
+    for (responses, sse, succeeds) in [
+        (false, chat_sse(None), true),
+        (false, chat_sse(Some("")), true),
+        (true, format!("data: {response}\n\n"), true),
+        (false, chat_sse(Some("private reasoning")), false),
+    ] {
+        let fixture = command_stub::PolicyFixture::new("staged");
+        let (trusted, prepared) = fixture.prepared().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let captured_calls = calls.clone();
+        let provider = vega_runtime::OpenAiProvider::new("https://provider.test/v1", "fixture-key")
+            .unwrap()
+            .with_responses_api(responses)
+            .with_retry_policy(vega_runtime::RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            })
+            .with_test_sse_responder(move |request| {
+                captured_calls.fetch_add(1, Ordering::SeqCst);
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["model"], "commit-model");
+                assert!(body.get("tools").is_none());
+                assert_eq!(
+                    body[if responses {
+                        "max_output_tokens"
+                    } else {
+                        "max_tokens"
+                    }],
+                    256
+                );
+                assert_eq!(
+                    request.url().path(),
+                    if responses {
+                        "/v1/responses"
+                    } else {
+                        "/v1/chat/completions"
+                    }
+                );
+                sse.clone()
+            });
+        let result = trusted
+            .draft(
+                prepared.id,
+                "commit-model".into(),
+                Arc::new(provider),
+                CancellationToken::new(),
+            )
+            .await;
+        if succeeds {
+            assert_eq!(result.expect("complete draft").text(), DRAFT);
+        } else {
+            assert_eq!(result, Err(CommitErrorCode::DraftFailed));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        fixture.assert_no_mutation();
+    }
+}
+
+#[tokio::test]
+async fn provider_draft_replay_metadata_preserves_usage_and_terminal_boundaries() {
+    use vega_runtime::ScriptStep;
+
+    let done = ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    };
+    let text = ProviderEvent::TextDelta("feat: safe".into());
+    let usage = ProviderEvent::Usage {
+        input: 11,
+        output: 3,
+        cache_read: None,
+        cache_write: None,
+    };
+    for metadata in [
+        ProviderEvent::ChatReasoningContent(vega_runtime::ChatReasoningPresence::Absent),
+        ProviderEvent::ResponseReplay(vega_runtime::ResponseReplayLayout::default()),
+    ] {
+        let valid = Arc::new(vega_runtime::MockProvider::new(vec![ScriptStep::events(
+            vec![
+                metadata.clone(),
+                text.clone(),
+                metadata.clone(),
+                usage.clone(),
+                metadata.clone(),
+                done.clone(),
+            ],
+        )]));
+        assert_eq!(
+            collect_draft(valid, ChatRequest::default(), CancellationToken::new()).await,
+            Ok("feat: safe".into()),
+        );
+        for events in [
+            vec![text.clone(), metadata.clone()],
+            vec![text.clone(), done.clone(), metadata.clone()],
+            vec![usage.clone(), metadata.clone(), text.clone(), done.clone()],
+            vec![
+                text.clone(),
+                metadata.clone(),
+                ProviderEvent::Done {
+                    stop_reason: StopReason::Length,
+                },
+            ],
+            vec![
+                text.clone(),
+                metadata.clone(),
+                ProviderEvent::ReasoningReplay(vec![
+                    serde_json::json!({"type":"reasoning","encrypted_content":"private"}),
+                ]),
+                done.clone(),
+            ],
+        ] {
+            let provider = Arc::new(vega_runtime::MockProvider::new(vec![ScriptStep::events(
+                events,
+            )]));
+            assert_eq!(
+                collect_draft(provider, ChatRequest::default(), CancellationToken::new()).await,
+                Err(CommitErrorCode::DraftFailed),
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn provider_draft_uses_strict_done_eof_grammar_and_redacted_output() {
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![
         vega_runtime::ScriptStep::text("feat: safe"),
