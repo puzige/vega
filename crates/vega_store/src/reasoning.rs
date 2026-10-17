@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// Current on-disk format version.
-pub const REASONING_CONFIG_VERSION: u32 = 1;
+pub const REASONING_CONFIG_VERSION: u32 = 2;
 /// File name under [`crate::paths::config_dir`].
 pub const REASONING_FILE_NAME: &str = "reasoning.toml";
 
@@ -48,6 +48,7 @@ pub enum ReasoningConfigError {
 
 /// Raw, versioned reasoning file. All fields are non-secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReasoningConfig {
     /// On-disk schema version.
     #[serde(default = "default_version")]
@@ -130,8 +131,7 @@ pub struct ReasoningProfilePatch {
     pub supports_disabled: Option<bool>,
     /// New explicit disabled operation, if edited.
     pub disabled_wire: Option<Option<String>>,
-    /// New replay requirement, if edited.
-    pub preserve_reasoning_content: Option<bool>,
+    pub replay_profile: Option<String>,
     /// New user preference, if edited.
     pub preference: Option<String>,
 }
@@ -142,12 +142,12 @@ fn default_version() -> u32 {
 
 /// One explicit capability and preference for one exact provider/model pair.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReasoningProfile {
     /// Exact provider identifier.
     pub provider: String,
     /// Exact model identifier.
     pub model: String,
-    /// `openai_chat_completions`, `zhipu_chat_completions`, or `unknown`.
     #[serde(default = "default_protocol")]
     pub protocol: String,
     /// `required`, `optional`, `unsupported`, or `unknown`.
@@ -162,9 +162,8 @@ pub struct ReasoningProfile {
     /// `thinking_type_disabled` or `reasoning_effort_none` when enabled.
     #[serde(default)]
     pub disabled_wire: Option<String>,
-    /// Keep original GLM reasoning content for tool-round replay.
-    #[serde(default)]
-    pub preserve_reasoning_content: bool,
+    #[serde(default = "default_replay_profile")]
+    pub replay_profile: String,
     /// `provider_default`, `disabled`, or one of `efforts`.
     #[serde(default = "default_preference")]
     pub preference: String,
@@ -181,7 +180,10 @@ impl ReasoningProfile {
         }
         if !matches!(
             self.protocol.as_str(),
-            "openai_chat_completions" | "zhipu_chat_completions" | "unknown"
+            "openai_chat_completions"
+                | "zhipu_chat_completions"
+                | "deepseek_chat_completions"
+                | "unknown"
         ) {
             return Err("protocol is not declared".to_string());
         }
@@ -214,7 +216,10 @@ impl ReasoningProfile {
             && !matches!(
                 (self.protocol.as_str(), self.disabled_wire.as_deref()),
                 ("openai_chat_completions", Some("reasoning_effort_none"))
-                    | ("zhipu_chat_completions", Some("thinking_type_disabled"))
+                    | (
+                        "zhipu_chat_completions" | "deepseek_chat_completions",
+                        Some("thinking_type_disabled")
+                    )
             )
         {
             return Err(
@@ -239,12 +244,20 @@ impl ReasoningProfile {
         {
             return Err("unsupported/unknown profile must use provider_default".to_string());
         }
-        if self.protocol == "unknown"
-            && (self.supports_disabled
-                || !self.efforts.is_empty()
-                || self.preserve_reasoning_content)
-        {
-            return Err("unknown protocol cannot declare wire controls or replay".to_string());
+        if !matches!(
+            self.replay_profile.as_str(),
+            "auto"
+                | "standard_chat"
+                | "deepseek_tools"
+                | "glm_preserved"
+                | "glm_interleaved"
+                | "responses_items"
+                | "legacy_text_tools"
+        ) {
+            return Err("replay profile is not declared".to_string());
+        }
+        if self.protocol == "unknown" && (self.supports_disabled || !self.efforts.is_empty()) {
+            return Err("unknown protocol cannot declare wire controls".to_string());
         }
         if self.protocol == "zhipu_chat_completions"
             && matches!(self.model.as_str(), "glm-5.3" | "glm-5.3-flash")
@@ -258,6 +271,21 @@ impl ReasoningProfile {
         {
             return Err(
                 "standard GLM 5.3 profiles support only low/high/max and cannot be disabled"
+                    .to_string(),
+            );
+        }
+        if self.protocol == "deepseek_chat_completions"
+            && (self
+                .efforts
+                .iter()
+                .any(|effort| !matches!(effort.as_str(), "low" | "high" | "max"))
+                || self
+                    .disabled_wire
+                    .as_deref()
+                    .is_some_and(|wire| wire != "thinking_type_disabled"))
+        {
+            return Err(
+                "DeepSeek profiles support only low/high/max and thinking_type_disabled"
                     .to_string(),
             );
         }
@@ -275,6 +303,66 @@ fn default_support() -> String {
 
 fn default_preference() -> String {
     "provider_default".to_string()
+}
+
+fn default_replay_profile() -> String {
+    "auto".to_string()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReasoningConfigV1 {
+    #[serde(default = "default_legacy_version")]
+    version: u32,
+    #[serde(default)]
+    profiles: Vec<ReasoningProfileV1>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReasoningProfileV1 {
+    provider: String,
+    model: String,
+    #[serde(default = "default_protocol")]
+    protocol: String,
+    #[serde(default = "default_support")]
+    support: String,
+    #[serde(default)]
+    efforts: Vec<String>,
+    #[serde(default)]
+    supports_disabled: bool,
+    #[serde(default)]
+    disabled_wire: Option<String>,
+    #[serde(default)]
+    preserve_reasoning_content: bool,
+    #[serde(default = "default_preference")]
+    preference: String,
+}
+
+impl From<ReasoningProfileV1> for ReasoningProfile {
+    fn from(profile: ReasoningProfileV1) -> Self {
+        let replay_profile =
+            if profile.protocol == "zhipu_chat_completions" || profile.preserve_reasoning_content {
+                "legacy_text_tools"
+            } else {
+                "auto"
+            };
+        Self {
+            provider: profile.provider,
+            model: profile.model,
+            protocol: profile.protocol,
+            support: profile.support,
+            efforts: profile.efforts,
+            supports_disabled: profile.supports_disabled,
+            disabled_wire: profile.disabled_wire,
+            replay_profile: replay_profile.to_string(),
+            preference: profile.preference,
+        }
+    }
+}
+
+fn default_legacy_version() -> u32 {
+    1
 }
 
 /// Snapshot used for a worker-side compare-before-rename.
@@ -436,7 +524,35 @@ fn coordinator_poisoned() -> ReasoningConfigError {
 
 fn decode(bytes: &[u8]) -> Result<ReasoningConfig, ReasoningConfigError> {
     let text = String::from_utf8(bytes.to_vec())?;
-    let config: ReasoningConfig = toml::from_str(&text)?;
+    let value: toml::Value = toml::from_str(&text)?;
+    let version = match value.get("version") {
+        Some(version) => version.as_integer().ok_or_else(|| {
+            ReasoningConfigError::InvalidProfile("version is not an integer".to_string())
+        })?,
+        None => 1,
+    };
+    let config = match version {
+        1 => {
+            let legacy: ReasoningConfigV1 = toml::from_str(&text)?;
+            if legacy.version != 1 {
+                return Err(ReasoningConfigError::UnsupportedVersion(legacy.version));
+            }
+            ReasoningConfig {
+                version: REASONING_CONFIG_VERSION,
+                profiles: legacy
+                    .profiles
+                    .into_iter()
+                    .map(ReasoningProfile::from)
+                    .collect(),
+            }
+        }
+        2 => toml::from_str::<ReasoningConfig>(&text)?,
+        other => {
+            return Err(ReasoningConfigError::UnsupportedVersion(
+                u32::try_from(other).unwrap_or(u32::MAX),
+            ));
+        }
+    };
     config.validate()?;
     Ok(config)
 }
@@ -459,7 +575,7 @@ fn merge_profile_patch(
                 efforts: Vec::new(),
                 supports_disabled: false,
                 disabled_wire: None,
-                preserve_reasoning_content: false,
+                replay_profile: default_replay_profile(),
                 preference: default_preference(),
             })
         })
@@ -506,11 +622,11 @@ fn merge_profile_patch(
         &mut profile.disabled_wire,
     )?;
     merge_field(
-        "preserve_reasoning_content",
-        base_profile.map(|profile| &profile.preserve_reasoning_content),
-        current_profile.map(|profile| &profile.preserve_reasoning_content),
-        patch.preserve_reasoning_content.as_ref(),
-        &mut profile.preserve_reasoning_content,
+        "replay_profile",
+        base_profile.map(|profile| &profile.replay_profile),
+        current_profile.map(|profile| &profile.replay_profile),
+        patch.replay_profile.as_ref(),
+        &mut profile.replay_profile,
     )?;
     merge_field(
         "preference",
@@ -622,7 +738,7 @@ mod tests {
             efforts: vec!["low".into(), "high".into(), "max".into()],
             supports_disabled: false,
             disabled_wire: None,
-            preserve_reasoning_content: true,
+            replay_profile: "auto".into(),
             preference: "max".into(),
         }
     }
@@ -638,7 +754,7 @@ mod tests {
     #[test]
     fn glm_standard_profile_rejects_disabled_and_preserves_declared_efforts() {
         let mut config = ReasoningConfig {
-            version: 1,
+            version: REASONING_CONFIG_VERSION,
             profiles: vec![glm()],
         };
         config.validate().unwrap();
@@ -651,7 +767,7 @@ mod tests {
         disabled_capability.disabled_wire = Some("thinking_type_disabled".into());
         assert!(
             ReasoningConfig {
-                version: 1,
+                version: REASONING_CONFIG_VERSION,
                 profiles: vec![disabled_capability],
             }
             .validate()
@@ -669,7 +785,7 @@ mod tests {
             efforts: vec!["low".into()],
             supports_disabled: true,
             disabled_wire: Some("thinking_type_disabled".into()),
-            preserve_reasoning_content: false,
+            replay_profile: "auto".into(),
             preference: "provider_default".into(),
         };
         assert!(openai.validate().is_err());
@@ -682,6 +798,26 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_profile_uses_only_its_declared_disabled_wire_and_efforts() {
+        let mut deepseek = glm();
+        deepseek.provider = "deepseek".into();
+        deepseek.model = "deepseek-v4-pro".into();
+        deepseek.protocol = "deepseek_chat_completions".into();
+        deepseek.support = "optional".into();
+        deepseek.efforts = vec!["low".into(), "high".into(), "max".into()];
+        deepseek.supports_disabled = true;
+        deepseek.disabled_wire = Some("thinking_type_disabled".into());
+        deepseek.validate().unwrap();
+
+        deepseek.disabled_wire = Some("reasoning_effort_none".into());
+        assert!(deepseek.validate().is_err());
+        deepseek.supports_disabled = false;
+        deepseek.disabled_wire = None;
+        deepseek.efforts.push("xhigh".into());
+        assert!(deepseek.validate().is_err());
+    }
+
+    #[test]
     fn openai_profile_accepts_xhigh_but_standard_glm_rejects_it() {
         let mut openai = glm();
         openai.provider = "openai".into();
@@ -690,9 +826,9 @@ mod tests {
         openai.support = "optional".into();
         openai.efforts = vec!["low".into(), "xhigh".into(), "max".into()];
         openai.preference = "xhigh".into();
-        openai.preserve_reasoning_content = false;
+        openai.replay_profile = "auto".into();
         ReasoningConfig {
-            version: 1,
+            version: REASONING_CONFIG_VERSION,
             profiles: vec![openai],
         }
         .validate()
@@ -702,7 +838,7 @@ mod tests {
         invalid_glm.efforts.push("xhigh".into());
         assert!(
             ReasoningConfig {
-                version: 1,
+                version: REASONING_CONFIG_VERSION,
                 profiles: vec![invalid_glm],
             }
             .validate()
@@ -711,15 +847,33 @@ mod tests {
     }
 
     #[test]
-    fn unknown_protocol_cannot_claim_reasoning_replay() {
+    fn unknown_protocol_accepts_every_declared_replay_profile() {
         let mut unknown = glm();
         unknown.protocol = "unknown".into();
         unknown.support = "unknown".into();
         unknown.efforts.clear();
         unknown.preference = "provider_default".into();
+        for replay_profile in [
+            "auto",
+            "standard_chat",
+            "deepseek_tools",
+            "glm_preserved",
+            "glm_interleaved",
+            "responses_items",
+            "legacy_text_tools",
+        ] {
+            unknown.replay_profile = replay_profile.into();
+            ReasoningConfig {
+                version: REASONING_CONFIG_VERSION,
+                profiles: vec![unknown.clone()],
+            }
+            .validate()
+            .unwrap();
+        }
+        unknown.replay_profile = "not_a_profile".into();
         assert!(
             ReasoningConfig {
-                version: 1,
+                version: REASONING_CONFIG_VERSION,
                 profiles: vec![unknown],
             }
             .validate()
@@ -732,7 +886,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join(REASONING_FILE_NAME);
         let original = ReasoningConfig {
-            version: 1,
+            version: REASONING_CONFIG_VERSION,
             profiles: vec![glm()],
         };
         let first = ReasoningFileSnapshot::absent();
@@ -744,7 +898,7 @@ mod tests {
         openai.protocol = "openai_chat_completions".into();
         openai.support = "optional".into();
         openai.preference = "provider_default".into();
-        openai.preserve_reasoning_content = false;
+        openai.replay_profile = "auto".into();
         second_config.upsert_profile(openai);
         save_if_unchanged(&path, &after_first, &second_config).unwrap();
         let stale = save_if_unchanged(&path, &first, &original);
@@ -771,15 +925,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join(REASONING_FILE_NAME);
         let base = ReasoningConfig {
-            version: 1,
+            version: REASONING_CONFIG_VERSION,
             profiles: vec![glm()],
         };
         let expected = save_if_unchanged(&path, &ReasoningFileSnapshot::absent(), &base).unwrap();
 
-        // A cooperative external writer changes preserve_reasoning_content;
-        // the preference patch can merge on top without replacing it.
         let mut external = base.clone();
-        external.profiles[0].preserve_reasoning_content = false;
+        external.profiles[0].replay_profile = "standard_chat".into();
         let external_snapshot = save_if_unchanged(&path, &expected, &external).unwrap();
         let merged = save_profile_patch(
             &path,
@@ -795,10 +947,9 @@ mod tests {
         .unwrap();
         let merged_config = read_from(&path).unwrap();
         assert_eq!(merged_config.profiles[0].preference, "low");
-        assert!(!merged_config.profiles[0].preserve_reasoning_content);
+        assert_eq!(merged_config.profiles[0].replay_profile, "standard_chat");
         assert_ne!(merged, external_snapshot);
 
-        // A same-field external edit cannot be overwritten by a stale draft.
         let mut same_field = merged_config.clone();
         same_field.profiles[0].preference = "high".into();
         let current = read_snapshot_from(&path).unwrap();
@@ -818,5 +969,201 @@ mod tests {
             conflict,
             Err(ReasoningConfigError::ConcurrentModification)
         ));
+    }
+
+    #[test]
+    fn v1_profiles_migrate_in_memory_without_rewriting_the_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(REASONING_FILE_NAME);
+        let bytes = br#"version = 1
+
+[[profiles]]
+provider = "custom"
+model = "false-profile"
+protocol = "openai_chat_completions"
+support = "optional"
+preserve_reasoning_content = false
+
+[[profiles]]
+provider = "custom"
+model = "missing-profile"
+protocol = "unknown"
+support = "unknown"
+
+[[profiles]]
+provider = "custom"
+model = "true-profile"
+protocol = "unknown"
+support = "unknown"
+preserve_reasoning_content = true
+
+[[profiles]]
+provider = "zhipu"
+model = "glm-5.3"
+protocol = "zhipu_chat_completions"
+support = "required"
+efforts = ["low", "high", "max"]
+preserve_reasoning_content = false
+"#;
+        fs::write(&path, bytes).unwrap();
+        let loaded = read_from(&path).unwrap();
+
+        assert_eq!(loaded.version, REASONING_CONFIG_VERSION);
+        assert_eq!(
+            loaded
+                .profile("custom", "false-profile")
+                .unwrap()
+                .replay_profile,
+            "auto"
+        );
+        assert_eq!(
+            loaded
+                .profile("custom", "missing-profile")
+                .unwrap()
+                .replay_profile,
+            "auto"
+        );
+        assert_eq!(
+            loaded
+                .profile("custom", "true-profile")
+                .unwrap()
+                .replay_profile,
+            "legacy_text_tools"
+        );
+        assert_eq!(
+            loaded.profile("zhipu", "glm-5.3").unwrap().replay_profile,
+            "legacy_text_tools"
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn v2_rejects_legacy_bool_and_unknown_replay_values() {
+        let legacy_field = br#"version = 2
+
+[[profiles]]
+provider = "custom"
+model = "model"
+preserve_reasoning_content = true
+"#;
+        assert!(matches!(
+            decode(legacy_field),
+            Err(ReasoningConfigError::Parse(_))
+        ));
+
+        let mut profile = glm();
+        profile.replay_profile = "invented".into();
+        assert!(matches!(
+            ReasoningConfig {
+                version: REASONING_CONFIG_VERSION,
+                profiles: vec![profile],
+            }
+            .validate(),
+            Err(ReasoningConfigError::InvalidProfile(_))
+        ));
+    }
+
+    #[test]
+    fn v2_rejects_duplicate_profiles_and_unsupported_versions() {
+        let duplicate = ReasoningConfig {
+            version: REASONING_CONFIG_VERSION,
+            profiles: vec![glm(), glm()],
+        };
+        assert!(matches!(
+            duplicate.validate(),
+            Err(ReasoningConfigError::InvalidProfile(_))
+        ));
+
+        let unsupported = decode(b"version = 3\n").unwrap_err();
+        assert!(matches!(
+            unsupported,
+            ReasoningConfigError::UnsupportedVersion(3)
+        ));
+    }
+
+    #[test]
+    fn profile_patch_rejects_same_field_replay_profile_changes() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(REASONING_FILE_NAME);
+        let base = ReasoningConfig {
+            version: REASONING_CONFIG_VERSION,
+            profiles: vec![glm()],
+        };
+        let expected = save_if_unchanged(&path, &ReasoningFileSnapshot::absent(), &base).unwrap();
+        let mut external = base.clone();
+        external.profiles[0].replay_profile = "legacy_text_tools".into();
+        save_if_unchanged(&path, &expected, &external).unwrap();
+
+        let conflict = save_profile_patch(
+            &path,
+            &expected,
+            &base,
+            &ReasoningProfilePatch {
+                provider: "zhipu".into(),
+                model: "glm-5.3".into(),
+                replay_profile: Some("glm_preserved".into()),
+                ..ReasoningProfilePatch::default()
+            },
+        );
+        assert!(matches!(
+            conflict,
+            Err(ReasoningConfigError::ConcurrentModification)
+        ));
+    }
+
+    #[test]
+    fn preference_patch_migrates_v1_to_v2_and_preserves_other_profiles() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(REASONING_FILE_NAME);
+        let bytes = br#"version = 1
+
+[[profiles]]
+provider = "custom"
+model = "main"
+protocol = "openai_chat_completions"
+support = "optional"
+efforts = ["low", "high"]
+preference = "low"
+preserve_reasoning_content = false
+
+[[profiles]]
+provider = "custom"
+model = "other"
+protocol = "unknown"
+support = "unknown"
+"#;
+        fs::write(&path, bytes).unwrap();
+        let (base, snapshot) = read_authority_from(&path).unwrap();
+        let saved = save_profile_patch(
+            &path,
+            &snapshot,
+            &base,
+            &ReasoningProfilePatch {
+                provider: "custom".into(),
+                model: "main".into(),
+                preference: Some("high".into()),
+                ..ReasoningProfilePatch::default()
+            },
+        )
+        .unwrap();
+        let output = fs::read(&path).unwrap();
+        let text = String::from_utf8(output.clone()).unwrap();
+        let migrated = decode(&output).unwrap();
+
+        assert_eq!(migrated.version, REASONING_CONFIG_VERSION);
+        assert_eq!(
+            migrated.profile("custom", "main").unwrap().preference,
+            "high"
+        );
+        assert_eq!(
+            migrated.profile("custom", "main").unwrap().replay_profile,
+            "auto"
+        );
+        assert_eq!(
+            migrated.profile("custom", "other").unwrap().replay_profile,
+            "auto"
+        );
+        assert!(!text.contains("preserve_reasoning_content"));
+        assert_eq!(saved.bytes, output);
     }
 }
