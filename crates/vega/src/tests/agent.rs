@@ -1722,12 +1722,18 @@ async fn issue90_production_controller_routes_invalid_bash_without_permission_an
         .messages
         .iter()
         .find(|message| {
-            message.content.contains("Historical tool result")
-                && message.content.contains("call_id=issue90-bash")
+            serde_json::from_str::<serde_json::Value>(&message.content)
+                .ok()
+                .is_some_and(|value| {
+                    value["vega_history_observation"]["kind"] == "tool_result"
+                        && value["vega_history_observation"]["call_id"] == "issue90-bash"
+                })
         })
-        .map(|message| message.content.clone());
-    assert!(feedback.as_deref().is_some_and(|content| {
-        content.ends_with(&vega_tools::BashInputError::WrongCommandType.feedback())
+        .map(|message| serde_json::from_str::<serde_json::Value>(&message.content).unwrap());
+    assert!(feedback.as_ref().is_some_and(|observation| {
+        observation["vega_history_observation"]["status"] == "rejected"
+            && observation["vega_history_observation"]["output"]
+                == vega_tools::BashInputError::WrongCommandType.feedback()
     }));
 
     let reopened = Store::open(&database_path).expect("issue90 reopened store");

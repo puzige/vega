@@ -669,14 +669,22 @@ async fn issue90_invalid_bash_round_trips_through_real_store_and_history() {
         .messages
         .iter()
         .find(|message| {
-            message.content.contains("Historical tool result")
-                && message.content.contains("call_id=bad-bash")
+            serde_json::from_str::<serde_json::Value>(&message.content)
+                .ok()
+                .is_some_and(|value| {
+                    value["vega_history_observation"]["kind"] == "tool_result"
+                        && value["vega_history_observation"]["call_id"] == "bad-bash"
+                })
         })
         .unwrap();
-    assert!(
-        feedback
-            .content
-            .ends_with(&vega_tools::BashInputError::WrongCommandType.feedback())
+    let observation: serde_json::Value = serde_json::from_str(&feedback.content).unwrap();
+    assert_eq!(
+        observation["vega_history_observation"]["status"],
+        "rejected"
+    );
+    assert_eq!(
+        observation["vega_history_observation"]["output"],
+        vega_tools::BashInputError::WrongCommandType.feedback()
     );
     assert!(feedback.tool_call_id.is_none());
     assert!(

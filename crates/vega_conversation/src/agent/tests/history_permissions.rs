@@ -4,6 +4,13 @@ use vega_store::permissions;
 
 type UsageRow = (Option<String>, i64, Option<String>, Option<String>);
 
+fn history_observation(message: &vega_runtime::ChatMessage) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(&message.content)
+        .ok()?
+        .get("vega_history_observation")
+        .cloned()
+}
+
 fn save_issue76_model_policy(store: &Store, input_limit: u64, output_reserve: u64) {
     vega_store::context_compaction::save_model_policy(
         store.conn(),
@@ -685,26 +692,328 @@ async fn issue76_history_projection_splits_text_and_pairs_each_tool_group() {
     .await
     .unwrap();
     let messages = &provider.requests()[0].messages;
+    assert_eq!(
+        rich.iter()
+            .filter(|message| !message.tool_calls.is_empty())
+            .count(),
+        2
+    );
+    assert_eq!(
+        rich.iter()
+            .filter(|message| message.role == vega_runtime::ChatRole::Tool)
+            .count(),
+        2
+    );
+    assert_eq!(
+        rich.last().map(|message| message.content.as_str()),
+        Some(" textC")
+    );
     let projection = messages.iter().skip(1).collect::<Vec<_>>();
     assert!(
         projection
             .iter()
             .all(|message| { message.tool_call_id.is_none() && message.tool_calls.is_empty() })
     );
-    let rendered = projection
-        .iter()
-        .map(|message| message.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("tool read call_id: call-1 status: success"));
-    assert!(rendered.contains("result1"));
-    assert!(rendered.contains("result2"));
-    assert!(rendered.contains("textA"));
-    assert!(rendered.contains("textB"));
-    assert!(rendered.contains("textC"));
+    let history_wire = projection.as_slice();
+    assert_eq!(history_wire.len(), 8);
+    assert_eq!(history_wire[0].role, vega_runtime::ChatRole::Assistant);
+    assert_eq!(history_wire[0].content, "textA");
+    assert_eq!(history_wire[1].role, vega_runtime::ChatRole::User);
     assert_eq!(
-        projection.last().map(|message| message.content.as_str()),
+        serde_json::from_str::<serde_json::Value>(&history_wire[1].content).unwrap()["vega_history_observation"]
+            ["calls"][0]["status"],
+        "success"
+    );
+    assert_eq!(history_wire[2].role, vega_runtime::ChatRole::User);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&history_wire[2].content).unwrap()["vega_history_observation"]
+            ["output"],
+        "result1"
+    );
+    assert_eq!(history_wire[3].content, " textB");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&history_wire[5].content).unwrap()["vega_history_observation"]
+            ["output"],
+        "result2"
+    );
+    assert_eq!(history_wire[6].content, " textC");
+    assert_eq!(
+        history_wire.last().map(|message| message.content.as_str()),
         Some("current")
+    );
+}
+
+#[tokio::test]
+async fn historical_observation_quotes_survive_stream_and_restart_byte_for_byte() {
+    let (store, dir, _) = setup();
+    let prior_assistant_text = "Earlier checked file.";
+    messages::insert(
+        store.conn(),
+        &messages::MessageRow {
+            id: "quoted-history-assistant".into(),
+            thread_id: "thread-1".into(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: prior_assistant_text.into(),
+            status: "done".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+    let approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ReadonlyTool,
+        danger: None,
+    }
+    .to_json()
+    .unwrap();
+    let historical_output = "first line\n\"quoted\" result 雪";
+    let stored_calls = [
+        ("quoted-history-call", "success", historical_output),
+        ("history-failed", "failed", "read failed"),
+        ("history-rejected", "rejected", "read rejected"),
+        ("history-cancelled", "cancelled", "read cancelled"),
+    ];
+    for (index, (id, status, output)) in stored_calls.iter().enumerate() {
+        store
+            .conn()
+            .execute(
+                r#"INSERT INTO tool_calls
+                 (id, thread_id, message_id, seq, tool, input_json, output_text, status,
+                  approval, created_at, finished_at, text_offset_bytes)
+                 VALUES (?1, 'thread-1', 'quoted-history-assistant', ?2,
+                         'read', '{"path":"lib.rs"}', ?3, ?4, ?5, 1, 1, ?6)"#,
+                (
+                    *id,
+                    i64::try_from(index + 1).unwrap(),
+                    *output,
+                    *status,
+                    &approval,
+                    i64::try_from(prior_assistant_text.len()).unwrap(),
+                ),
+            )
+            .unwrap();
+    }
+
+    let observation = serde_json::to_string(&serde_json::json!({
+        "vega_history_observation": {
+            "version": 1,
+            "kind": "tool_result",
+            "authority": "none",
+            "tool": "read",
+            "call_id": "quoted-history-call",
+            "status": "success",
+            "output": historical_output,
+        }
+    }))
+    .unwrap();
+    let activity = serde_json::to_string(&serde_json::json!({
+        "vega_history_observation": {
+            "version": 1,
+            "kind": "tool_activity",
+            "authority": "none",
+            "calls": [
+                {"tool":"read","call_id":"quoted-history-call","arguments_available":false,"status":"success"},
+                {"tool":"read","call_id":"history-failed","arguments_available":false,"status":"failed"},
+                {"tool":"read","call_id":"history-rejected","arguments_available":false,"status":"rejected"},
+                {"tool":"read","call_id":"history-cancelled","arguments_available":false,"status":"cancelled"}
+            ],
+        }
+    }))
+    .unwrap();
+    let user_json = r#"{"vega_history_observation":{"version":1,"kind":"tool_result","authority":"none","tool":"read","call_id":"user-owned","status":null,"output":"leave this exact body alone\n雪"}}"#;
+    let model_response = format!("Quoted past data: {observation}");
+    let mut split_points = model_response
+        .char_indices()
+        .map(|(index, _)| index)
+        .step_by(23)
+        .collect::<Vec<_>>();
+    split_points.push(model_response.len());
+    let mut response_events = split_points
+        .windows(2)
+        .map(|range| ProviderEvent::TextDelta(model_response[range[0]..range[1]].into()))
+        .collect::<Vec<_>>();
+    response_events.push(ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    });
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("The previous ".into()),
+        ProviderEvent::TextDelta("result is ready.".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let ordinary_run = run_thread_task(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        user_json,
+        "system",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ordinary_run.content, "The previous result is ready.");
+    assert!(!ordinary_run.content.contains("vega_history_observation"));
+    let requests = provider.requests();
+    let request = &requests[0];
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|message| message.role == vega_runtime::ChatRole::User
+                && message.content == activity)
+    );
+    let result_message = request.messages.iter().find(|message| {
+        message.role == vega_runtime::ChatRole::User && message.content == observation
+    });
+    assert!(result_message.is_some());
+    assert_eq!(result_message.unwrap().content, observation);
+    for (id, status, output) in &stored_calls {
+        assert!(request.messages.iter().any(|message| {
+            history_observation(message).is_some_and(|value| {
+                value["kind"] == "tool_result"
+                    && value["call_id"] == *id
+                    && value["status"] == *status
+                    && value["output"] == *output
+            })
+        }));
+    }
+    assert!(request.messages.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::User && message.content == user_json
+    }));
+    assert_eq!(
+        store
+            .conn()
+            .query_row(
+                "SELECT content FROM messages WHERE thread_id='thread-1' AND role='assistant' ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "The previous result is ready."
+    );
+    assert_eq!(
+        store
+            .conn()
+            .query_row(
+                "SELECT content FROM messages WHERE thread_id='thread-1' AND role='user' ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        user_json
+    );
+    let stored_old_assistant: String = store
+        .conn()
+        .query_row(
+            "SELECT content FROM messages WHERE id='quoted-history-assistant'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_old_assistant, prior_assistant_text);
+    let mut raw_rows = store
+        .conn()
+        .prepare("SELECT id, status, output_text FROM tool_calls ORDER BY seq")
+        .unwrap();
+    let raw_outputs = raw_rows
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        raw_outputs,
+        stored_calls
+            .iter()
+            .map(|(id, status, output)| {
+                (id.to_string(), status.to_string(), output.to_string())
+            })
+            .collect::<Vec<_>>()
+    );
+    drop(raw_rows);
+
+    drop(store);
+    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+    let quote_provider = MockProvider::new(vec![ScriptStep::events(response_events)]);
+    let quote_request = "Quote the previous historical result exactly.";
+    let quoted = run_thread_task(
+        &reopened,
+        &quote_provider,
+        &tools,
+        "thread-1",
+        quote_request,
+        "system",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(quoted.content, model_response);
+    let quote_requests = quote_provider.requests();
+    assert!(quote_requests[0].messages.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::User && message.content == observation
+    }));
+    assert_eq!(
+        reopened
+            .conn()
+            .query_row(
+                "SELECT content FROM messages WHERE thread_id='thread-1' AND role='assistant' ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        model_response
+    );
+    let restored = crate::history::restart_history_page(&reopened, "thread-1", 20).unwrap();
+    assert!(restored.entries.iter().any(|entry| matches!(
+        entry,
+        crate::history::HistoryEntry::UserText { content, .. } if content == user_json
+    )));
+    assert!(restored.entries.iter().any(|entry| matches!(
+        entry,
+        crate::history::HistoryEntry::AssistantText { content, .. } if content == &model_response
+    )));
+    assert!(restored.entries.iter().any(|entry| matches!(
+        entry,
+        crate::history::HistoryEntry::AssistantText { content, .. }
+            if content == "The previous result is ready."
+    )));
+    let mut reloaded_statement = reopened
+        .conn()
+        .prepare("SELECT id, status, output_text FROM tool_calls ORDER BY seq")
+        .unwrap();
+    let reloaded_outputs = reloaded_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        reloaded_outputs,
+        stored_calls
+            .iter()
+            .map(|(id, status, output)| {
+                (id.to_string(), status.to_string(), output.to_string())
+            })
+            .collect::<Vec<_>>()
     );
 }
 
@@ -797,18 +1106,19 @@ async fn issue76_manual_tool_history_uses_rich_summary_and_labelled_primary_afte
     )));
     let summary_request = &summary_provider.requests()[0];
     assert!(summary_request.tools.is_empty());
-    assert!(summary_request.messages.iter().any(|message| {
-        message.content.contains("Historical tool activity")
-            && message.content.contains("tool=read")
+    let summary_wire = vega_runtime::project_model_messages(&summary_request.messages).unwrap();
+    assert!(summary_wire.iter().any(|message| {
+        serde_json::from_str::<serde_json::Value>(&message.content)
+            .is_ok_and(|value| value["vega_history_observation"]["kind"] == "tool_activity")
     }));
-    assert!(
-        summary_request
-            .messages
-            .iter()
-            .any(|m| m.tool_call_id.is_none()
-                && m.content.contains("Historical tool result")
-                && m.content.ends_with("old read result"))
-    );
+    assert!(summary_wire.iter().any(|message| {
+        serde_json::from_str::<serde_json::Value>(&message.content).is_ok_and(|value| {
+            value["vega_history_observation"]["kind"] == "tool_result"
+                && value["vega_history_observation"]["call_id"] == "old-read"
+                && value["vega_history_observation"]["status"] == "success"
+                && value["vega_history_observation"]["output"] == "old read result"
+        })
+    }));
     assert!(
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
             .unwrap()
@@ -966,7 +1276,13 @@ async fn issue76_manual_primary_tail_keeps_terminal_tool_data_without_old_protoc
         .collect::<Vec<_>>()
         .join("\n");
     assert!(result_text.contains("tail result"));
-    assert!(result_text.contains("tool read call_id: tail-read status: success"));
+    assert!(result.messages.iter().any(|message| {
+        history_observation(message).is_some_and(|observation| {
+            observation["kind"] == "tool_activity"
+                && observation["calls"][0]["call_id"] == "tail-read"
+                && observation["calls"][0]["status"] == "success"
+        })
+    }));
 
     let projection = read_context_projection(&store, "thread-1", "mock-model", "system").unwrap();
     let estimated_tokens = projection.estimated_tokens;
@@ -1000,7 +1316,13 @@ async fn issue76_manual_primary_tail_keeps_terminal_tool_data_without_old_protoc
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(primary_text.contains("tool read call_id: tail-read status: success"));
+    assert!(primary.iter().any(|message| {
+        history_observation(message).is_some_and(|observation| {
+            observation["kind"] == "tool_activity"
+                && observation["calls"][0]["call_id"] == "tail-read"
+                && observation["calls"][0]["status"] == "success"
+        })
+    }));
     assert!(primary_text.contains("tail result"));
     assert!(
         primary
@@ -2191,8 +2513,13 @@ async fn issue300_live_write_compaction_ignores_only_sidecars_and_rejects_histor
         requests[0]
             .messages
             .iter()
-            .any(|message| message.content.contains("Historical tool result")
-                && message.content.contains("call_id=live-write"))
+            .any(
+                |message| history_observation(message).is_some_and(|observation| {
+                    observation["kind"] == "tool_result"
+                        && observation["call_id"] == "live-write"
+                        && observation["status"] == "success"
+                })
+            )
     );
     assert!(
         !requests[0]
@@ -2540,18 +2867,31 @@ async fn issue88_long_completed_tool_history_compacts_and_continues_same_run() {
             summaries
                 .iter()
                 .flat_map(|request| &request.messages)
-                .any(
-                    |message| message.content.contains("Historical tool activity")
-                        && message.content.contains(&format!("call_id={call_id}"))
-                )
+                .any(|message| {
+                    history_observation(message).is_some_and(|observation| {
+                        observation["kind"] == "tool_activity"
+                            && observation["calls"].as_array().is_some_and(|calls| {
+                                calls.iter().any(|call| {
+                                    call["call_id"] == call_id
+                                        && call["status"] == "success"
+                                        && call["arguments_available"] == false
+                                })
+                            })
+                    })
+                })
         );
         assert!(
             summaries
                 .iter()
                 .flat_map(|request| &request.messages)
-                .any(|message| message.tool_call_id.is_none()
-                    && message.content.contains("Historical tool result")
-                    && message.content.contains(&format!("call_id={call_id}")))
+                .any(|message| {
+                    message.tool_call_id.is_none()
+                        && history_observation(message).is_some_and(|observation| {
+                            observation["kind"] == "tool_result"
+                                && observation["call_id"] == call_id
+                                && observation["status"] == "success"
+                        })
+                })
         );
     }
     assert!(!requests.last().unwrap().tools.is_empty());
@@ -2741,9 +3081,12 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
             .any(|message| message.content.contains(&input))
     );
     assert!(requests[0].messages.iter().any(|message| {
-        message.content.contains("Historical tool result")
-            && message.content.contains("call_id=long-result")
-            && message.content.ends_with(&output)
+        history_observation(message).is_some_and(|observation| {
+            observation["kind"] == "tool_result"
+                && observation["call_id"] == "long-result"
+                && observation["status"] == "success"
+                && observation["output"] == output
+        })
     }));
     let after = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     assert_eq!(before, after, "raw messages and tool audit are unchanged");
@@ -2925,18 +3268,18 @@ async fn claude_large_completed_summary_is_not_sliced_or_reduced() {
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     let first_segment_summary = "s".repeat(24 * 1024);
+    let historical_result = requests[0]
+        .messages
+        .iter()
+        .find(|message| {
+            message.tool_call_id.is_none()
+                && history_observation(message).is_some_and(|observation| {
+                    observation["kind"] == "tool_result" && observation["call_id"] == "long-result"
+                })
+        })
+        .unwrap();
     assert_eq!(
-        requests[0]
-            .messages
-            .iter()
-            .find(|m| m.tool_call_id.is_none()
-                && m.content.starts_with("[Historical tool result")
-                && m.content.contains("call_id=long-result"))
-            .unwrap()
-            .content
-            .split_once('\n')
-            .unwrap()
-            .1,
+        history_observation(historical_result).unwrap()["output"],
         output
     );
     assert_eq!(
@@ -2984,18 +3327,18 @@ async fn claude_summary_does_not_accumulate_partial_checkpoints() {
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].max_tokens, Some(20_000));
+    let historical_result = requests[0]
+        .messages
+        .iter()
+        .find(|message| {
+            message.tool_call_id.is_none()
+                && history_observation(message).is_some_and(|observation| {
+                    observation["kind"] == "tool_result" && observation["call_id"] == "long-result"
+                })
+        })
+        .unwrap();
     assert_eq!(
-        requests[0]
-            .messages
-            .iter()
-            .find(|m| m.tool_call_id.is_none()
-                && m.content.starts_with("[Historical tool result")
-                && m.content.contains("call_id=long-result"))
-            .unwrap()
-            .content
-            .split_once('\n')
-            .unwrap()
-            .1,
+        history_observation(historical_result).unwrap()["output"],
         output
     );
     assert!(result.messages[0].content.contains("fact-stage-1"));
@@ -3255,17 +3598,23 @@ async fn issue88_empty_completed_tool_result_keeps_an_explicit_paired_marker() {
     .await
     .unwrap();
     let request = &provider.requests()[0];
-    assert!(
-        request
-            .messages
-            .iter()
-            .any(|message| message.tool_calls.is_empty()
-                && message.content.contains("Historical tool activity")
-                && message.content.contains("call_id=long-result"))
-    );
-    assert!(request.messages.iter().any(|m| m.tool_call_id.is_none()
-        && m.content.starts_with("[Historical tool result")
-        && m.content.ends_with("call_id=long-result.]\n")));
+    assert!(request.messages.iter().any(|message| {
+        message.tool_calls.is_empty()
+            && history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_activity"
+                    && observation["calls"][0]["call_id"] == "long-result"
+                    && observation["calls"][0]["status"] == "success"
+            })
+    }));
+    assert!(request.messages.iter().any(|message| {
+        message.tool_call_id.is_none()
+            && history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_result"
+                    && observation["call_id"] == "long-result"
+                    && observation["status"] == "success"
+                    && observation["output"] == ""
+            })
+    }));
 }
 
 #[tokio::test]
@@ -4383,9 +4732,14 @@ async fn claude_direct_summary_preserves_roles_and_uses_20k_cap() {
     let calls = provider.requests();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].max_tokens, Some(20_000));
-    assert!(calls[0].messages.iter().any(|m| m.tool_call_id.is_none()
-        && m.content.contains("Historical tool result")
-        && m.content.ends_with(&output)));
+    assert!(calls[0].messages.iter().any(|message| {
+        message.tool_call_id.is_none()
+            && history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_result"
+                    && observation["call_id"] == "long-result"
+                    && observation["output"] == output
+            })
+    }));
     assert_eq!(
         calls[0]
             .messages
@@ -4446,9 +4800,14 @@ async fn claude_prompt_too_long_retries_without_discarding_complete_rounds() {
             .iter()
             .any(|message| message.content == "message-1")
     );
-    assert!(calls[1].messages.iter().any(|m| m.tool_call_id.is_none()
-        && m.content.contains("Historical tool result")
-        && m.content.ends_with("full tool result")));
+    assert!(calls[1].messages.iter().any(|message| {
+        message.tool_call_id.is_none()
+            && history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_result"
+                    && observation["call_id"] == "long-result"
+                    && observation["output"] == "full tool result"
+            })
+    }));
     assert_eq!(
         vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
         before
@@ -4699,14 +5058,16 @@ async fn issue302_reopened_shell_projection_matches_compaction_and_preserves_sto
         .messages
         .iter()
         .find(|message| {
-            message.content.contains("Historical tool result")
-                && message.content.contains("call_id=long-result")
+            history_observation(message).is_some_and(|observation| {
+                observation["kind"] == "tool_result" && observation["call_id"] == "long-result"
+            })
         })
         .unwrap();
     assert!(historical_result.tool_call_id.is_none());
-    assert!(historical_result.content.ends_with(
-        &vega_runtime::ChatMessage::projected_tool_result("long-result", "bash", &output).content
-    ));
+    assert_eq!(
+        history_observation(historical_result).unwrap()["output"],
+        vega_runtime::ChatMessage::projected_tool_result("long-result", "bash", &output).content
+    );
     assert_eq!(
         vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap(),
         source

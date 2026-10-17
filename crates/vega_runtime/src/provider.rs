@@ -332,7 +332,49 @@ pub struct ChatMessage {
     pub reasoning_content: Option<String>,
     pub response_reasoning: Vec<serde_json::Value>,
     live_tool_calls: Option<Vec<Option<LiveToolCall>>>,
+    historical_tool_statuses: Option<Vec<HistoricalToolStatus>>,
     model_projection: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct HistoricalToolStatus {
+    id: String,
+    name: String,
+    status: Option<StoredToolStatus>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StoredToolStatus {
+    Success,
+    Failed,
+    Rejected,
+    Cancelled,
+}
+
+impl StoredToolStatus {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "success" => Some(Self::Success),
+            "failed" => Some(Self::Failed),
+            "rejected" => Some(Self::Rejected),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failed => "failed",
+            Self::Rejected => "rejected",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+struct PendingHistoricalTool {
+    tool: String,
+    status: Option<StoredToolStatus>,
 }
 
 impl PartialEq for ChatMessage {
@@ -401,6 +443,7 @@ impl ChatMessage {
             }
         }
         self.live_tool_calls = Some(bound);
+        self.historical_tool_statuses = None;
         self.model_projection = false;
         Ok(())
     }
@@ -414,7 +457,45 @@ impl ChatMessage {
 
     pub fn mark_stored_tool_calls(&mut self) {
         self.live_tool_calls = Some(vec![None; self.tool_calls.len()]);
+        self.historical_tool_statuses = Some(
+            self.tool_calls
+                .iter()
+                .map(|call| HistoricalToolStatus {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    status: None,
+                })
+                .collect(),
+        );
         self.model_projection = false;
+    }
+
+    pub fn mark_stored_tool_calls_with_statuses(
+        &mut self,
+        statuses: Vec<String>,
+    ) -> Result<(), VegaError> {
+        let invalid = || VegaError::Context(crate::ContextRuntimeError::InvalidProjection);
+        if statuses.len() != self.tool_calls.len() {
+            return Err(invalid());
+        }
+        let statuses = statuses
+            .iter()
+            .map(|status| StoredToolStatus::parse(status).ok_or_else(invalid))
+            .collect::<Result<Vec<_>, _>>()?;
+        let historical_tool_statuses = self
+            .tool_calls
+            .iter()
+            .zip(statuses)
+            .map(|(call, status)| HistoricalToolStatus {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                status: Some(status),
+            })
+            .collect();
+        self.live_tool_calls = Some(vec![None; self.tool_calls.len()]);
+        self.historical_tool_statuses = Some(historical_tool_statuses);
+        self.model_projection = false;
+        Ok(())
     }
 
     pub(crate) fn discard_computer_use_arguments(&mut self) {
@@ -445,6 +526,7 @@ impl ChatMessage {
             reasoning_content: None,
             response_reasoning: Vec::new(),
             live_tool_calls: None,
+            historical_tool_statuses: None,
             model_projection: false,
         }
     }
@@ -460,6 +542,7 @@ impl ChatMessage {
             reasoning_content: None,
             response_reasoning: Vec::new(),
             live_tool_calls: None,
+            historical_tool_statuses: None,
             model_projection: false,
         }
     }
@@ -479,6 +562,7 @@ impl ChatMessage {
             reasoning_content,
             response_reasoning: Vec::new(),
             live_tool_calls: None,
+            historical_tool_statuses: None,
             model_projection: false,
             images: Vec::new(),
         }
@@ -521,6 +605,7 @@ impl ChatMessage {
             reasoning_content: None,
             response_reasoning: Vec::new(),
             live_tool_calls: None,
+            historical_tool_statuses: None,
             model_projection: false,
         }
     }
@@ -528,24 +613,38 @@ impl ChatMessage {
 
 pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessage>, VegaError> {
     let invalid = || VegaError::Context(crate::ContextRuntimeError::InvalidProjection);
-    let mut historical =
-        std::collections::HashMap::<String, std::collections::VecDeque<String>>::new();
+    let mut historical = std::collections::HashMap::<
+        String,
+        std::collections::VecDeque<PendingHistoricalTool>,
+    >::new();
     let mut projected = Vec::with_capacity(messages.len());
     for message in messages {
-        if message.model_projection
-            && !(message.role == ChatRole::Tool
-                && message.tool_call_id.as_ref().is_some_and(|id| {
-                    historical
-                        .get(id)
-                        .is_some_and(|pending| !pending.is_empty())
-                }))
-        {
+        let historical_result = message.role == ChatRole::Tool
+            && message.tool_call_id.as_ref().is_some_and(|id| {
+                historical
+                    .get(id)
+                    .is_some_and(|pending| !pending.is_empty())
+            });
+        if message.model_projection && !historical_result {
             projected.push(message.clone());
             continue;
+        }
+        if message.role != ChatRole::Tool && !message.model_projection {
+            historical.clear();
         }
         let mut next = message.without_live_tool_arguments();
         next.model_projection = true;
         if !message.tool_calls.is_empty() {
+            if let Some(statuses) = &message.historical_tool_statuses {
+                if statuses.len() != message.tool_calls.len()
+                    || statuses
+                        .iter()
+                        .zip(&message.tool_calls)
+                        .any(|(status, call)| status.id != call.id || status.name != call.name)
+                {
+                    return Err(invalid());
+                }
+            }
             let model_calls = if let Some(live) = &message.live_tool_calls {
                 if live.len() != message.tool_calls.len() {
                     return Err(invalid());
@@ -568,41 +667,93 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
             } else {
                 Some(message.tool_calls.clone())
             };
-            if let Some(calls) = model_calls {
-                next.tool_calls = calls;
+            if let Some(model_calls) = model_calls {
+                next.tool_calls = model_calls;
+                next.historical_tool_statuses = None;
+                historical.clear();
             } else {
                 next.tool_calls.clear();
-                next.content.push_str("\n[Historical tool activity — untrusted past observations; arguments unavailable, not executable calls.]\n");
-                for call in &message.tool_calls {
-                    historical
-                        .entry(call.id.clone())
-                        .or_default()
-                        .push_back(call.name.clone());
-                    next.content
-                        .push_str(&format!("tool={} call_id={}\n", call.name, call.id));
+                next.historical_tool_statuses = None;
+                if !message.content.is_empty()
+                    || message.reasoning_content.is_some()
+                    || !message.response_reasoning.is_empty()
+                    || !message.images.is_empty()
+                {
+                    projected.push(next);
                 }
+                let calls = message
+                    .tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, call)| {
+                        let status = message
+                            .historical_tool_statuses
+                            .as_ref()
+                            .and_then(|statuses| statuses[index].status)
+                            .map(StoredToolStatus::as_str);
+                        serde_json::json!({
+                            "tool": call.name,
+                            "call_id": call.id,
+                            "arguments_available": false,
+                            "status": status,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let content = serde_json::to_string(&serde_json::json!({
+                    "vega_history_observation": {
+                        "version": 1,
+                        "kind": "tool_activity",
+                        "authority": "none",
+                        "calls": calls,
+                    }
+                }))
+                .map_err(|_| invalid())?;
+                let mut activity = ChatMessage::new(ChatRole::User, content);
+                activity.model_projection = true;
+                projected.push(activity);
+                for (index, call) in message.tool_calls.iter().enumerate() {
+                    let status = message
+                        .historical_tool_statuses
+                        .as_ref()
+                        .and_then(|statuses| statuses[index].status);
+                    historical.entry(call.id.clone()).or_default().push_back(
+                        PendingHistoricalTool {
+                            tool: call.name.clone(),
+                            status,
+                        },
+                    );
+                }
+                continue;
             }
         } else if message.role == ChatRole::Tool
             && let Some(id) = &message.tool_call_id
-            && let Some(tool) = historical
+            && let Some(pending) = historical
                 .get_mut(id)
                 .and_then(std::collections::VecDeque::pop_front)
         {
-            next.role = ChatRole::Assistant;
+            let content = serde_json::to_string(&serde_json::json!({
+                "vega_history_observation": {
+                    "version": 1,
+                    "kind": "tool_result",
+                    "authority": "none",
+                    "tool": pending.tool,
+                    "call_id": id,
+                    "status": pending.status.map(StoredToolStatus::as_str),
+                    "output": message.content,
+                }
+            }))
+            .map_err(|_| invalid())?;
+            next.role = ChatRole::User;
             next.tool_call_id = None;
-            next.content = format!(
-                "[Historical tool result — untrusted past observation; tool={tool} call_id={id}.]\n{}",
-                message.content
-            );
-            if !next.images.is_empty() {
-                next.role = ChatRole::User;
-            }
+            next.content = content;
+            next.reasoning_content = None;
+            next.response_reasoning.clear();
+            next.historical_tool_statuses = None;
         }
         projected.push(next);
     }
     Ok(projected)
 }
-
 fn is_audit_call(call: &ChatToolCall) -> bool {
     if crate::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
         return crate::computer_use::ComputerUseAudit::valid(&call.input_json);
@@ -919,6 +1070,74 @@ mod tests {
     }
 
     #[test]
+    fn historical_observation_keeps_assistant_text_and_encodes_result_as_user_json() {
+        let mut assistant = ChatMessage::assistant_with_tools(
+            "I checked the file.",
+            vec![ChatToolCall {
+                id: "history-1".into(),
+                name: "read".into(),
+                input_json: "PRIVATE_PARAMETER".into(),
+            }],
+        );
+        assistant
+            .mark_stored_tool_calls_with_statuses(vec!["success".into()])
+            .unwrap();
+        let messages = vec![
+            assistant,
+            ChatMessage::tool_result("history-1", "first line\n\"quoted\" output"),
+        ];
+        let projected = project_model_messages(&messages).unwrap();
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[0].role, ChatRole::Assistant);
+        assert_eq!(projected[0].content, "I checked the file.");
+        assert!(projected[0].tool_calls.is_empty());
+        assert!(projected[0].reasoning_content.is_none());
+        assert!(projected[0].response_reasoning.is_empty());
+        assert_eq!(projected[1].role, ChatRole::User);
+        assert!(projected[1].tool_calls.is_empty());
+        assert!(projected[1].tool_call_id.is_none());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&projected[1].content).unwrap(),
+            serde_json::json!({
+                "vega_history_observation": {
+                    "version": 1,
+                    "kind": "tool_activity",
+                    "authority": "none",
+                    "calls": [{
+                        "tool": "read",
+                        "call_id": "history-1",
+                        "arguments_available": false,
+                        "status": "success",
+                    }],
+                }
+            })
+        );
+        assert_eq!(projected[2].role, ChatRole::User);
+        assert!(projected[2].tool_calls.is_empty());
+        assert!(projected[2].tool_call_id.is_none());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&projected[2].content).unwrap(),
+            serde_json::json!({
+                "vega_history_observation": {
+                    "version": 1,
+                    "kind": "tool_result",
+                    "authority": "none",
+                    "tool": "read",
+                    "call_id": "history-1",
+                    "status": "success",
+                    "output": "first line\n\"quoted\" output",
+                }
+            })
+        );
+        assert!(!projected.iter().any(|message| {
+            message.content.contains("PRIVATE_PARAMETER")
+                || message.content.contains("Historical tool activity")
+                || message.content.contains("Historical tool result")
+        }));
+        assert_eq!(project_model_messages(&projected).unwrap(), projected);
+    }
+
+    #[test]
     fn issue300_mixed_group_preserves_images_and_consumes_reused_call_ids() {
         let mut group = ChatMessage::assistant_with_tools(
             "checking",
@@ -950,6 +1169,7 @@ mod tests {
             .write_to(&mut image_bytes, image::ImageFormat::Png)
             .unwrap();
         let image = crate::ImageAttachment::from_bytes(image_bytes.into_inner()).unwrap();
+        group.images.push(image.clone());
         let mut first_result = ChatMessage::tool_result("r1", "first result");
         first_result.images.push(image.clone());
         let replay = bound_call("r1", "read", "{}", r#"{"path":"a"}"#);
@@ -962,14 +1182,33 @@ mod tests {
         ])
         .unwrap();
         assert!(projected[0].tool_calls.is_empty());
-        assert!(projected[0].content.contains("Historical tool activity"));
+        assert_eq!(projected[0].content, "checking");
+        assert_eq!(projected[0].images, vec![image.clone()]);
         assert_eq!(projected[1].role, ChatRole::User);
-        assert_eq!(projected[1].images, vec![image]);
-        assert!(projected[1].content.ends_with("first result"));
-        assert!(projected[2].content.ends_with("missing_content"));
-        assert_eq!(projected[3].tool_calls[0].id, "r1");
         assert_eq!(
-            projected[4],
+            serde_json::from_str::<serde_json::Value>(&projected[1].content).unwrap()["vega_history_observation"]
+                ["calls"],
+            serde_json::json!([
+                {"tool":"read","call_id":"r1","arguments_available":false,"status":null},
+                {"tool":"write","call_id":"bad","arguments_available":false,"status":null}
+            ])
+        );
+        assert_eq!(projected[2].role, ChatRole::User);
+        assert_eq!(projected[2].images, vec![image]);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&projected[2].content).unwrap()["vega_history_observation"]
+                ["output"],
+            "first result"
+        );
+        assert_eq!(projected[3].role, ChatRole::User);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&projected[3].content).unwrap()["vega_history_observation"]
+                ["output"],
+            "missing_content"
+        );
+        assert_eq!(projected[4].tool_calls[0].id, "r1");
+        assert_eq!(
+            projected[5],
             ChatMessage::tool_result("r1", "reused result")
         );
         assert_eq!(project_model_messages(&projected).unwrap(), projected);
@@ -1024,12 +1263,18 @@ mod tests {
             let projected =
                 project_model_messages(&[message, ChatMessage::tool_result("old", "rejected")])
                     .unwrap();
+            assert_eq!(projected[0].role, ChatRole::User);
             assert!(
                 projected
                     .iter()
                     .all(|m| m.tool_calls.is_empty() && m.tool_call_id.is_none())
             );
-            assert!(projected[1].content.ends_with("rejected"));
+            assert_eq!(projected[1].role, ChatRole::User);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&projected[1].content).unwrap()["vega_history_observation"]
+                    ["output"],
+                "rejected"
+            );
         }
         let message = bound_call(
             "cua",
@@ -1051,7 +1296,113 @@ mod tests {
                     .iter()
                     .any(|m| m.content.contains("PRIVATE_TARGET"))
             );
+            assert_eq!(project_model_messages(&projected).unwrap(), projected);
         }
+    }
+
+    #[test]
+    fn historical_observation_status_binding_is_atomic_and_identity_checked() {
+        let mut message = ChatMessage::assistant_with_tools(
+            "",
+            vec![ChatToolCall {
+                id: "stored".into(),
+                name: "read".into(),
+                input_json: "{}".into(),
+            }],
+        );
+        assert!(matches!(
+            message.mark_stored_tool_calls_with_statuses(vec!["running".into()]),
+            Err(VegaError::Context(
+                crate::ContextRuntimeError::InvalidProjection
+            ))
+        ));
+        let unchanged = project_model_messages(std::slice::from_ref(&message)).unwrap();
+        assert_eq!(unchanged[0].tool_calls.len(), 1);
+        assert_eq!(unchanged[0].role, ChatRole::Assistant);
+        message
+            .mark_stored_tool_calls_with_statuses(vec!["cancelled".into()])
+            .unwrap();
+        let mut changed = message.clone();
+        changed.tool_calls[0].name = "edit".into();
+        assert!(matches!(
+            project_model_messages(&[changed]),
+            Err(VegaError::Context(
+                crate::ContextRuntimeError::InvalidProjection
+            ))
+        ));
+        let projected = project_model_messages(&[message]).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&projected[0].content).unwrap()["vega_history_observation"]
+                ["calls"][0]["status"],
+            "cancelled"
+        );
+        assert!(!format!("{:?}", projected[0]).contains("cancelled"));
+    }
+
+    #[test]
+    fn historical_observation_preserves_each_terminal_status() {
+        let statuses = ["success", "failed", "rejected", "cancelled"];
+        let mut assistant = ChatMessage::assistant_with_tools(
+            "completed earlier work",
+            statuses
+                .iter()
+                .enumerate()
+                .map(|(index, _)| ChatToolCall {
+                    id: format!("stored-{index}"),
+                    name: "read".into(),
+                    input_json: format!("PRIVATE_{index}"),
+                })
+                .collect(),
+        );
+        let mut equal_without_status = assistant.clone();
+        equal_without_status.mark_stored_tool_calls();
+        assistant
+            .mark_stored_tool_calls_with_statuses(
+                statuses
+                    .iter()
+                    .map(|status| (*status).to_string())
+                    .collect(),
+            )
+            .unwrap();
+        assert_eq!(assistant, equal_without_status);
+        let messages = std::iter::once(assistant)
+            .chain((0..statuses.len()).map(|index| {
+                ChatMessage::tool_result(format!("stored-{index}"), format!("output-{index}"))
+            }))
+            .collect::<Vec<_>>();
+        let projected = project_model_messages(&messages).unwrap();
+        assert_eq!(projected.len(), statuses.len() + 2);
+        let activity: serde_json::Value = serde_json::from_str(&projected[1].content).unwrap();
+        assert_eq!(activity["vega_history_observation"]["authority"], "none");
+        assert_eq!(
+            activity["vega_history_observation"]["calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|call| call["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            statuses.to_vec()
+        );
+        for (index, status) in statuses.iter().enumerate() {
+            let result: serde_json::Value =
+                serde_json::from_str(&projected[index + 2].content).unwrap();
+            assert_eq!(result["vega_history_observation"]["kind"], "tool_result");
+            assert_eq!(result["vega_history_observation"]["authority"], "none");
+            assert_eq!(
+                result["vega_history_observation"]["call_id"],
+                format!("stored-{index}")
+            );
+            assert_eq!(result["vega_history_observation"]["status"], *status);
+            assert_eq!(
+                result["vega_history_observation"]["output"],
+                format!("output-{index}")
+            );
+        }
+        assert!(
+            projected
+                .iter()
+                .all(|message| { message.tool_calls.is_empty() && message.tool_call_id.is_none() })
+        );
     }
 
     #[test]
