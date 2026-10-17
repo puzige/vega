@@ -214,7 +214,6 @@ fn validate_replay_response(
             crate::ReasoningReplayPolicy::DeepSeekTools
                 | crate::ReasoningReplayPolicy::GlmPreserved
                 | crate::ReasoningReplayPolicy::GlmInterleaved
-                | crate::ReasoningReplayPolicy::LegacyTextTools
         ) && matches!(presence, crate::ChatReasoningPresence::Absent)
         {
             return Err(VegaError::ReasoningReplayIncomplete);

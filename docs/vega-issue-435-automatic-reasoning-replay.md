@@ -2,10 +2,31 @@
 
 ## 冻结与授权
 
-- 版本：v1.0，2026-10-17。Issue：[自动适配模型思考回传并移除普通设置开关](https://github.com/puzige/vega/issues/435)。
+- 版本：v1.1，2026-10-17。Issue：[自动适配模型思考回传并移除普通设置开关](https://github.com/puzige/vega/issues/435)。v1.1 修订见下节；其余 v1.0 契约继续适用。
 - 用户明确要求补齐方案、转 Ready、交 Vega 实现。本 Feature 适用明确委派例外；Codex 完成需求审查、后续代码审查、PR/CI 与集成，Vega 按此契约实施。
 - 代码基线：`4eb22a1d776155be00a2e940889f8da15d125f55`；任务分支：`feat/435-automatic-reasoning-replay`。交接提交及固定版本链接以 Issue 最新交接为准。
 - 本文交付时只有方案，无运行代码、PR、自动测试或手测通过结论。所有自动回归仅由 GitHub Actions 执行，本地只做快速静态检查。
+
+## v1.1：旧兼容声明不能新增必填字段
+
+v1.0 已由 PR #439 合入 `436d8919f4f9e02efe94e87fbfccf1ffaa4f58aa`。用户在 0.1.145 手测普通 Markdown 链接回复失败，本修订接回同卡，由用户已授权接手的 Codex 主 agent 独占实施。基线为该集成提交；复用原 worktree，分支 `feat/435-final-response-validation`，旧分支保留。
+
+脱敏证据：失败会话选择自定义 Chat Completions 上的 `gpt-6-luna`，v1 配置为 `openai_chat_completions`、`preserve_reasoning_content=true`、档位 max。诊断记录 HTTP 200、stop=end、完整可见文本 66 bytes、工具调用 0 次；随后发生 runtime/protocol/response 错误，模型 attempt 用时 7559 ms。未修改用户运行配置、历史或凭据。
+
+根因链：v1 decoder 将旧 true 迁移为 `legacy_text_tools`，自定义端点 resolver 保留此有限兼容能力；runtime 的 `validate_replay_response` 却把它与必须返回文本推理的明确协议一起校验。请求带 tools 即要求 `reasoning_content` 存在，导致普通回复在正文完成后失败；同样会误拦无该字段的工具回复。旧 true 只授权原样回传实际返回的字段，不证明服务每次必须返回该字段。这是 Vega 对迁移声明的误用，不能由该诊断推断代理丢字段。
+
+先验收，后实施；以下新增用例初始均待 Actions 验证：
+
+| 用例 | 前置及操作 | 可观察结果 | 层级与证据 |
+|---|---|---|---|
+| R1 | v1 自定义 OpenAI Chat、旧 true、max；首次请求声明 tools，响应只返回 Markdown 链接及 stop | 首轮成功落库、final 归属正确、没有错误诊断和工具执行；用户配置不被启动过程改写 | App → v1 codec/resolver → worker → SSE parser → runtime → store |
+| R2 | 同一会话继续；模型发出不带推理字段的 read，再完成回复，再发下一用户消息 | read 仅执行一次、工具结果正确；后续请求保留普通回复及完整工具组，没有伪造 reasoning_content 或 GLM/DeepSeek 控制参数；档位仍 max | App 多 worker、真实 wire 捕获、独立执行计数 |
+| R3 | v1 及已保存 v2 legacy 声明分别接收 absent、empty、nonempty 字段 | 三种状态均不凭空报缺失；存在时保持原文（含空串），缺失时不补字段；跨用户轮保持一致 | 同一生产调用链参数化回归 |
+| R4 | 明确 DeepSeek/GLM 必需状态缺失、Responses layout 不完整、Unknown 推理加工具调用 | 原有拒绝、零工具执行、失败不封存及冷恢复断言继续通过 | 现有 runtime/conversation/provider 负例与全量 CI |
+
+实现顺序：先修订本契约；再从 `agent/loop_.rs::validate_replay_response` 的必需字段分支排除 `LegacyTextTools`，同步 `provider.rs` 的必需回传能力谓词，保持原样保留/序列化路径；最后在 `crates/vega/src/tests/automatic_reasoning_replay_app.rs` 增加上述进程内 App 回归。限定本次修复为 legacy 的可选字段语义，不改变已知协议强制校验、路由识别、配置格式、预算、权限、脱敏、压缩或 warm/cold 边界。无新依赖、DDL 或产品文案。
+
+Actions 执行完整 required check `check (fmt, clippy, test)`；本地仅 fmt/diff 等快速静态检查。用户手测：新建同模型聊天请求 Markdown 链接，确认正常完成；再在同会话发一个读取文件任务并继续一轮，确认无错误且工具结果可继续使用。合并后仍 In review 等手测，不能把进程内替身当作真实 CPA 验收；回滚只 revert 本次修复提交，不改用户配置。
 
 ## 现状、证据与改后行为
 
@@ -53,7 +74,7 @@
 | `glm_preserved` | 原始文本；本周期所有响应 | 合并 `thinking.clear_thinking:false`；已有合法 type/effort 仍由思考偏好决定，forced-thinking 禁用约束保留 |
 | `glm_interleaved` | 原始文本；至少当前用户轮内完整工具链 | 仅明确兼容声明可选；不额外发送 preserved 参数；下一真实用户轮按此声明开始新的推理保留范围 |
 | `responses_items` | 校验后的原始 reasoning items，绑定原始响应及顺序；相同精确路由/模型 | 保持现有 `store:false`、加密 include、手工完整 input；省略未明确声明的 `reasoning.context`，由服务按对应模型默认处理 |
-| `legacy_text_tools` | 仅从旧自定义配置显式 true 迁移的有限兼容能力；有 tools 时保留所有文本响应 | 原样文本回传，不据此添加 GLM/DeepSeek 的其他参数；不作为新 UI 模板 |
+| `legacy_text_tools` | 旧自定义声明的有限兼容能力；有 tools 时保留实际返回的文本推理 | absent 合法且不补字段；empty/nonempty 原样回传，不据此要求响应必含推理或添加 GLM/DeepSeek 的其他参数；不作为新 UI 模板 |
 | `unknown` | 无足够协议声明 | 不发送猜测的扩展；见下面错误处理 |
 
 V1 不引入 Anthropic 等新 transport、`previous_response_id`/服务端 conversation、自动付费探测或请求失败后轮流试参数。Responses API 的现有明确选择本身足以采用 `responses_items`；它不意味着支持 GLM 字段或任意新 OpenAI 参数。

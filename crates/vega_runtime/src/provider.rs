@@ -59,10 +59,7 @@ impl ReasoningReplayPolicy {
     }
 
     pub fn requires_chat_replay_for_tools(self) -> bool {
-        matches!(
-            self,
-            Self::DeepSeekTools | Self::LegacyTextTools | Self::GlmPreserved
-        )
+        matches!(self, Self::DeepSeekTools | Self::GlmPreserved)
     }
 }
 
