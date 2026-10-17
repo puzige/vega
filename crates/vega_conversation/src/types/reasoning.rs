@@ -7,7 +7,7 @@
 
 pub use vega_runtime::{
     FrozenReasoning, ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire,
-    ReasoningProtocol,
+    ReasoningProtocol, ReasoningReplayPolicy,
 };
 
 use vega_store::reasoning::ReasoningProfile;
@@ -23,6 +23,57 @@ pub enum ReasoningSupport {
     Unsupported,
     /// No protocol/capability declaration is available.
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReasoningReplaySetting {
+    #[default]
+    Auto,
+    StandardChat,
+    DeepSeekTools,
+    GlmPreserved,
+    GlmInterleaved,
+    ResponsesItems,
+    LegacyTextTools,
+}
+
+impl ReasoningReplaySetting {
+    fn from_store(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "standard_chat" => Some(Self::StandardChat),
+            "deepseek_tools" => Some(Self::DeepSeekTools),
+            "glm_preserved" => Some(Self::GlmPreserved),
+            "glm_interleaved" => Some(Self::GlmInterleaved),
+            "responses_items" => Some(Self::ResponsesItems),
+            "legacy_text_tools" => Some(Self::LegacyTextTools),
+            _ => None,
+        }
+    }
+
+    pub fn as_store_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::StandardChat => "standard_chat",
+            Self::DeepSeekTools => "deepseek_tools",
+            Self::GlmPreserved => "glm_preserved",
+            Self::GlmInterleaved => "glm_interleaved",
+            Self::ResponsesItems => "responses_items",
+            Self::LegacyTextTools => "legacy_text_tools",
+        }
+    }
+
+    pub fn runtime_policy(self) -> Option<ReasoningReplayPolicy> {
+        match self {
+            Self::Auto => None,
+            Self::StandardChat => Some(ReasoningReplayPolicy::StandardChat),
+            Self::DeepSeekTools => Some(ReasoningReplayPolicy::DeepSeekTools),
+            Self::GlmPreserved => Some(ReasoningReplayPolicy::GlmPreserved),
+            Self::GlmInterleaved => Some(ReasoningReplayPolicy::GlmInterleaved),
+            Self::ResponsesItems => Some(ReasoningReplayPolicy::ResponsesItems),
+            Self::LegacyTextTools => Some(ReasoningReplayPolicy::LegacyTextTools),
+        }
+    }
 }
 
 /// UI-safe projection of one exact provider/model profile.
@@ -42,8 +93,7 @@ pub struct ReasoningProfileProjection {
     pub supports_disabled: bool,
     /// Explicit disabled operation, if any.
     pub disabled_wire: Option<ReasoningDisabledWire>,
-    /// Whether original reasoning content must be replayed through tools.
-    pub preserve_reasoning_content: bool,
+    pub replay_profile: ReasoningReplaySetting,
     /// Persisted user preference.
     pub preference: ReasoningChoice,
 }
@@ -55,6 +105,8 @@ impl ReasoningProfileProjection {
         let protocol = match profile.protocol.as_str() {
             "openai_chat_completions" => ReasoningProtocol::OpenAiChatCompletions,
             "zhipu_chat_completions" => ReasoningProtocol::ZhipuChatCompletions,
+            "deepseek_chat_completions" => ReasoningProtocol::DeepSeekChatCompletions,
+            "responses_api" => ReasoningProtocol::ResponsesApi,
             "unknown" => ReasoningProtocol::Unknown,
             _ => return Err("reasoning protocol is not declared".to_string()),
         };
@@ -76,6 +128,8 @@ impl ReasoningProfileProjection {
             "disabled" => ReasoningChoice::Disabled,
             effort => ReasoningChoice::Effort(effort.to_string()),
         };
+        let replay_profile = ReasoningReplaySetting::from_store(&profile.replay_profile)
+            .ok_or_else(|| "reasoning replay profile is not declared".to_string())?;
         Ok(Self {
             provider: profile.provider.clone(),
             model: profile.model.clone(),
@@ -84,20 +138,33 @@ impl ReasoningProfileProjection {
             efforts: profile.efforts.clone(),
             supports_disabled: profile.supports_disabled,
             disabled_wire,
-            preserve_reasoning_content: profile.preserve_reasoning_content,
+            replay_profile,
             preference,
         })
     }
 
     /// Creates the immutable runtime choice used by one run.
     pub fn freeze(&self) -> Result<FrozenReasoning, vega_runtime::VegaError> {
+        self.freeze_resolved(
+            self.protocol,
+            self.replay_profile
+                .runtime_policy()
+                .unwrap_or(ReasoningReplayPolicy::Unknown),
+        )
+    }
+
+    pub fn freeze_resolved(
+        &self,
+        protocol: ReasoningProtocol,
+        replay_policy: ReasoningReplayPolicy,
+    ) -> Result<FrozenReasoning, vega_runtime::VegaError> {
         let frozen = FrozenReasoning {
             provider: self.provider.clone(),
             model: self.model.clone(),
-            protocol: self.protocol,
+            protocol,
+            replay_policy,
             choice: self.preference.clone(),
             supports_disabled: self.supports_disabled,
-            preserve_reasoning_content: self.preserve_reasoning_content,
             disabled_wire: self.disabled_wire,
             declared_efforts: self.efforts.clone(),
         };
@@ -116,7 +183,7 @@ impl ReasoningProfileProjection {
             efforts: Vec::new(),
             supports_disabled: false,
             disabled_wire: None,
-            preserve_reasoning_content: false,
+            replay_profile: ReasoningReplaySetting::Auto,
             preference: ReasoningChoice::ProviderDefault,
         }
     }

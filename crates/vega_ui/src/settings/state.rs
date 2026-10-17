@@ -63,6 +63,7 @@ pub struct SettingsView {
     /// rebuilt with the projection so Tab/Enter/Space use the same action
     /// route as the existing Settings controls.
     pub(crate) reasoning_focuses: Vec<(ReasoningFocusTarget, FocusHandle)>,
+    pub(crate) reasoning_advanced: bool,
     /// Last failed edit retained for an explicit retry/reload decision.
     pub(crate) reasoning_draft: Option<ReasoningProfileProjection>,
     pub(crate) next_reasoning_operation: u64,
@@ -243,6 +244,7 @@ impl SettingsView {
             pricing_focuses: Vec::new(),
             reasoning: ReasoningSettingsProjection::Loading,
             reasoning_focuses: Vec::new(),
+            reasoning_advanced: false,
             reasoning_draft: None,
             next_reasoning_operation: 0,
         }
@@ -533,6 +535,7 @@ impl SettingsView {
                 cx.notify();
                 return;
             }
+            let replay_identity_changed = candidate.providers != self.config.providers;
             self.config = candidate;
             self.provider_management.form = false;
             self.provider_management.selected = Some(name);
@@ -543,7 +546,9 @@ impl SettingsView {
             self.models_input.update(cx, TextInput::clear);
             self.key_input.update(cx, TextInput::clear);
             self.error = None;
-            cx.emit(SettingsSaved);
+            cx.emit(SettingsSaved {
+                replay_identity_changed: replay_identity_changed || !key.is_empty(),
+            });
             cx.notify();
         }
     }
@@ -828,6 +833,9 @@ impl SettingsView {
                         cx.emit(ReasoningReloadRequested);
                     }
                 }
+                ReasoningFocusTarget::Advanced(index) => {
+                    self.toggle_reasoning_advanced(index, cx);
+                }
                 ReasoningFocusTarget::Template { index, template } => {
                     self.apply_reasoning_template(index, template, cx);
                 }
@@ -845,9 +853,6 @@ impl SettingsView {
                 }
                 ReasoningFocusTarget::Disabled(index) => {
                     self.toggle_reasoning_disabled(index, cx);
-                }
-                ReasoningFocusTarget::Replay(index) => {
-                    self.toggle_reasoning_replay(index, cx);
                 }
             }
             return;

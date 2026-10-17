@@ -45,6 +45,7 @@ pub enum RunFailureKind {
     Compaction(ContextCompactionFailureCode),
     #[allow(missing_docs)]
     ReasoningLimit(Option<vega_runtime::ReasoningBudgetScope>),
+    ReasoningReplay,
     /// A durable failed row whose original reason was not persisted.
     Persisted,
 }
@@ -94,6 +95,12 @@ impl RunFailureKind {
                 .map(Self::ProviderHttp)
                 .unwrap_or(Self::ProviderRejected),
             Some("transport") => Self::ProviderTransport,
+            Some("protocol")
+                if metrics.failure_source.as_deref() == Some("runtime")
+                    && metrics.failure_scope.as_deref() == Some("response") =>
+            {
+                Self::ReasoningReplay
+            }
             Some("protocol") => Self::ProviderProtocol,
             Some("rejected") => Self::ProviderRejected,
             Some("output_limit") => Self::ProviderOutputLimit,
@@ -235,6 +242,8 @@ impl RunFailureKind {
             | vega_runtime::VegaError::ReasoningReplayBudgetExceeded { scope, .. } => {
                 Self::ReasoningLimit(Some(*scope))
             }
+            vega_runtime::VegaError::ReasoningReplayUnsupported
+            | vega_runtime::VegaError::ReasoningReplayIncomplete => Self::ReasoningReplay,
             _ => Self::Runtime,
         }
     }
@@ -273,6 +282,9 @@ impl RunFailureKind {
             Self::Compaction(failure) => failure.message().into(),
             Self::ReasoningLimit(_) => {
                 "The run exceeded the local reasoning limit. Send your message again to continue.".into()
+            }
+            Self::ReasoningReplay => {
+                "The model returned reasoning state that cannot be continued. Choose a matching advanced protocol template, then retry.".into()
             }
             Self::Runtime => "The run failed. Check the runtime environment, then retry.".into(),
             Self::Persisted => "This response failed. Check provider status, quota, or the runtime environment, then retry.".into(),

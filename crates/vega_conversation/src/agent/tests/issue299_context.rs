@@ -187,7 +187,13 @@ async fn issue299_queued_reference_preserves_raw_history_and_frozen_model_snapsh
         .filter(|message| message.role == ChatRole::User)
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(users, [expanded.as_str(), "Continue from the earlier file"]);
+    assert_eq!(users.len(), 3);
+    assert_eq!(users[0], expanded);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(users[1]).unwrap()["vega_history_observation"]["text"],
+        "snapshot understood"
+    );
+    assert_eq!(users[2], "Continue from the earlier file");
     assert!(
         requests[1]
             .messages

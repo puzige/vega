@@ -84,7 +84,15 @@ async fn claude_compaction_soft_failure_continues_and_stops_after_three_then_new
             .expect("sendable original context must continue");
         assert!(!outcome.failed);
         assert_eq!(provider.requests().len(), 6);
-        assert_eq!(&provider.requests()[0].messages[1..], original);
+        assert_eq!(&outcome.messages[1..1 + original.len()], original);
+        let wire = &provider.requests()[0].messages;
+        assert_eq!(wire[1].content, original[0].content);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&wire[2].content).unwrap()["vega_history_observation"]
+                ["text"],
+            original[1].content
+        );
+        assert_eq!(wire[3].content, original[2].content);
         assert_eq!(calls.load(Ordering::SeqCst), run * 3);
         let phases: Vec<_> = outcome
             .events
@@ -257,8 +265,8 @@ impl ContextCompactionHook for RacingSummaryFailure {
                     usage: crate::RuntimeTokenUsage {
                         input: 42,
                         output: 7,
-                        cache_read: 0,
-                        cache_write: 0,
+                        cache_read: Some(0),
+                        cache_write: Some(0),
                     },
                     cost_microcents: 0,
                     pricing: None,

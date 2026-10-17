@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ChatRole, ProviderEvent};
+use crate::{ChatRole, ProviderEvent, ReasoningReplayPolicy};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -84,8 +84,9 @@ fn response_error(kind: crate::ProviderFailureKind) -> VegaError {
 pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
     let mut reasoning = json!({"summary": "auto"});
     if let Some(profile) = &req.reasoning {
-        if profile.preserve_reasoning_content
+        if profile.replay_policy != ReasoningReplayPolicy::ResponsesItems
             || profile.protocol == ReasoningProtocol::ZhipuChatCompletions
+            || profile.protocol == ReasoningProtocol::DeepSeekChatCompletions
             || (profile.choice == ReasoningChoice::Disabled
                 && profile.disabled_wire != Some(ReasoningDisabledWire::ReasoningEffortNone))
         {
@@ -99,6 +100,10 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
     }
     let mut input = Vec::new();
     for message in &req.messages {
+        if let Some(layout) = response_layout_items(message)? {
+            input.extend(layout);
+            continue;
+        }
         input.extend(message.response_reasoning.iter().cloned());
         if message.role == ChatRole::Tool {
             let output = if message.images.is_empty() {
@@ -137,6 +142,88 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
         body["max_output_tokens"] = json!(limit);
     }
     Ok(body)
+}
+
+pub(crate) fn response_layout_items(
+    message: &crate::ChatMessage,
+) -> Result<Option<Vec<Value>>, VegaError> {
+    let Some(layout) = &message.response_replay_layout else {
+        return Ok(None);
+    };
+    let invalid = || VegaError::Context(crate::ContextRuntimeError::InvalidProjection);
+    if message.role != ChatRole::Assistant {
+        return Err(invalid());
+    }
+    let mut items = Vec::with_capacity(layout.slots.len());
+    let mut replay_reasoning = Vec::new();
+    let mut call_slots = BTreeSet::new();
+    let mut message_text = String::new();
+    for slot in &layout.slots {
+        match slot {
+            crate::ResponseReplaySlot::Reasoning(item) => {
+                if item["type"] != "reasoning" || !item.is_object() {
+                    return Err(invalid());
+                }
+                replay_reasoning.push(item.clone());
+                items.push(item.clone());
+            }
+            crate::ResponseReplaySlot::Message(item) => {
+                if item["type"] != "message"
+                    || item["role"].as_str() != Some("assistant")
+                    || !item.is_object()
+                {
+                    return Err(invalid());
+                }
+                let content = item["content"].as_array().ok_or_else(invalid)?;
+                for part in content {
+                    match part["type"].as_str() {
+                        Some("output_text") => {
+                            message_text.push_str(part["text"].as_str().ok_or_else(invalid)?);
+                        }
+                        Some("refusal") => {
+                            message_text.push_str(part["refusal"].as_str().ok_or_else(invalid)?);
+                        }
+                        _ => return Err(invalid()),
+                    }
+                }
+                items.push(item.clone());
+            }
+            crate::ResponseReplaySlot::FunctionCall {
+                item,
+                call_id,
+                name,
+                arguments,
+            } => {
+                if item["type"] != "function_call"
+                    || item["call_id"].as_str() != Some(call_id)
+                    || item["name"].as_str() != Some(name)
+                    || item["arguments"].as_str() != Some(arguments)
+                    || !call_slots.insert(call_id.clone())
+                {
+                    return Err(invalid());
+                }
+                let call = message
+                    .tool_calls
+                    .iter()
+                    .find(|call| call.id == *call_id && call.name == *name)
+                    .ok_or_else(invalid)?;
+                if call.input_json != *arguments
+                    || !serde_json::from_str::<Value>(arguments)
+                        .is_ok_and(|value| value.is_object())
+                {
+                    return Err(invalid());
+                }
+                items.push(item.clone());
+            }
+        }
+    }
+    if message_text != message.content
+        || call_slots.len() != message.tool_calls.len()
+        || replay_reasoning != message.response_reasoning
+    {
+        return Err(invalid());
+    }
+    Ok(Some(items))
 }
 
 #[derive(Default)]
@@ -326,6 +413,7 @@ impl Assembler {
                 }
                 let mut replay = Vec::new();
                 let mut tools = Vec::new();
+                let mut slots = Vec::with_capacity(self.items.len());
                 for (index, item) in &self.items {
                     if !self.complete.contains(index) {
                         return Err(invalid());
@@ -333,6 +421,7 @@ impl Assembler {
                     match item["type"].as_str() {
                         Some("reasoning") => {
                             replay.push(item.clone());
+                            slots.push(crate::ResponseReplaySlot::Reasoning(item.clone()));
                         }
                         Some("function_call") => {
                             let arguments = item["arguments"].as_str().ok_or_else(invalid)?;
@@ -350,19 +439,34 @@ impl Assembler {
                                 .as_str()
                                 .filter(|name| !name.is_empty())
                                 .ok_or_else(invalid)?;
+                            slots.push(crate::ResponseReplaySlot::FunctionCall {
+                                item: item.clone(),
+                                call_id: id.into(),
+                                name: name.into(),
+                                arguments: arguments.into(),
+                            });
                             tools.push(ProviderEvent::ToolUse {
                                 id: id.into(),
                                 name: name.into(),
                                 input_json: arguments.into(),
                             });
                         }
-                        Some("message") => {}
+                        Some("message") => {
+                            if item["role"].as_str() != Some("assistant") {
+                                return Err(invalid());
+                            }
+                            slots.push(crate::ResponseReplaySlot::Message(item.clone()))
+                        }
                         _ => return Err(invalid()),
                     }
                 }
                 if !replay.is_empty() {
                     out.push(ProviderEvent::ReasoningReplay(replay));
                 }
+                out.push(ProviderEvent::ResponseReplay(crate::ResponseReplayLayout {
+                    response_id: event["response"]["id"].as_str().map(str::to_owned),
+                    slots,
+                }));
                 let stop_reason = if tools.is_empty() {
                     StopReason::End
                 } else {
@@ -370,13 +474,17 @@ impl Assembler {
                 };
                 out.extend(tools);
                 if let Some(usage) = event["response"].get("usage").filter(|v| !v.is_null()) {
+                    let input = usage["input_tokens"].as_u64().ok_or_else(invalid)?;
+                    let output = usage["output_tokens"].as_u64().ok_or_else(invalid)?;
+                    let cache_read = usage["input_tokens_details"]["cached_tokens"].as_u64();
+                    if cache_read.is_some_and(|tokens| tokens > input) {
+                        return Err(invalid());
+                    }
                     out.push(ProviderEvent::Usage {
-                        input: usage["input_tokens"].as_u64().unwrap_or(0),
-                        output: usage["output_tokens"].as_u64().unwrap_or(0),
-                        cache_read: usage["input_tokens_details"]["cached_tokens"]
-                            .as_u64()
-                            .unwrap_or(0),
-                        cache_write: 0,
+                        input,
+                        output,
+                        cache_read,
+                        cache_write: None,
                     });
                 }
                 out.push(ProviderEvent::Done { stop_reason });

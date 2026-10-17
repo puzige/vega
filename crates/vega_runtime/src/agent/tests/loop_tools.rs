@@ -192,8 +192,8 @@ async fn text_only_preserves_events_usage_and_visible_content() {
         ProviderEvent::Usage {
             input: 5,
             output: 2,
-            cache_read: 1,
-            cache_write: 0,
+            cache_read: Some(1),
+            cache_write: Some(0),
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -224,7 +224,7 @@ async fn text_only_preserves_events_usage_and_visible_content() {
             RuntimeEvent::TextDelta(first),
             RuntimeEvent::ThinkingDelta(thinking),
             RuntimeEvent::TextDelta(second),
-            RuntimeEvent::UsageUpdated { usage: RuntimeTokenUsage { input: 5, output: 2, cache_read: 1, cache_write: 0 }, cost_microcents: 0, pricing: None },
+            RuntimeEvent::UsageUpdated { usage: RuntimeTokenUsage { input: 5, output: 2, cache_read: Some(1), cache_write: Some(0) }, cost_microcents: 0, pricing: None },
             RuntimeEvent::AssistantResponseCompleted { text_start_bytes: 0, text_end_bytes: 2, kind: RuntimeAssistantResponseKind::Final, .. },
             RuntimeEvent::Finished(RuntimeFinishReason::End),
         ] if first == "a" && thinking == "reason" && second == "b"));
@@ -246,8 +246,8 @@ async fn tool_observe_round_uses_real_grep_and_converges() {
             ProviderEvent::Usage {
                 input: 10,
                 output: 2,
-                cache_read: 1,
-                cache_write: 0,
+                cache_read: Some(1),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -987,8 +987,8 @@ async fn issue302_large_bash_output_is_bounded_for_fresh_and_reused_model_result
             ProviderEvent::Usage {
                 input: 131_289,
                 output: 80,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,

@@ -571,6 +571,9 @@ impl VegaWindow {
     }
 
     pub(super) fn cancel_agent_for_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        if let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>() {
+            sessions.0.invalidate_thread(thread_id);
+        }
         let pending_review = self.agent_controller.pending_review.remove(thread_id);
         let artifact_run = self
             .agent_controller
@@ -842,6 +845,9 @@ impl VegaWindow {
         // the token through its last tool/provider call, even if this window
         // cancels or closes before the worker can acknowledge termination.
         let worker_activity = vega_ui::sidebar::register_project_worker(&thread.project_id, cx);
+        let replay_registry = cx
+            .try_global::<crate::app_agent::AppReplaySessions>()
+            .map(|sessions| sessions.0.clone());
         #[cfg(test)]
         let provider_override = self.agent_provider_override.clone();
         #[cfg(test)]
@@ -866,6 +872,7 @@ impl VegaWindow {
                     queue_context,
                     #[cfg(test)]
                     provider_override,
+                    replay_registry,
                     #[cfg(test)]
                     worker_start_probe,
                 );

@@ -1,4 +1,83 @@
 use super::*;
+use vega_runtime::ChatRequest;
+
+fn replay_reasoning_profile() -> FrozenReasoning {
+    FrozenReasoning {
+        provider: "deepseek".into(),
+        model: "mock-model".into(),
+        protocol: vega_runtime::ReasoningProtocol::DeepSeekChatCompletions,
+        replay_policy: vega_runtime::ReasoningReplayPolicy::DeepSeekTools,
+        choice: vega_runtime::ReasoningChoice::ProviderDefault,
+        supports_disabled: false,
+        disabled_wire: None,
+        declared_efforts: Vec::new(),
+    }
+}
+
+fn replay_terminal_script(text: &str) -> Vec<ScriptStep> {
+    vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta(text.into()),
+        ProviderEvent::ChatReasoningContent(vega_runtime::ChatReasoningPresence::NonEmpty(
+            "terminal replay state".into(),
+        )),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]
+}
+
+fn replay_tool_script(call_id: &str, tool: &str, input_json: &str) -> Vec<ScriptStep> {
+    vec![ScriptStep::events(vec![
+        ProviderEvent::ChatReasoningContent(vega_runtime::ChatReasoningPresence::NonEmpty(
+            format!("partial {call_id} reasoning"),
+        )),
+        ProviderEvent::ToolUse {
+            id: call_id.into(),
+            name: tool.into(),
+            input_json: input_json.into(),
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
+    ])]
+}
+
+async fn run_registry_turn(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    content: &str,
+    registry: &crate::agent::ReplaySessionRegistry,
+    route: [u8; 32],
+    config: PersistenceActorConfig,
+) -> Result<crate::agent::ConversationRun, crate::types::ConversationError> {
+    run_thread_task_with_images_reasoning_and_mcp(
+        store,
+        provider,
+        tools,
+        "thread-1",
+        content,
+        "System",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        config.with_replay_session_registry(registry.clone(), route),
+        None,
+        None,
+        Some(replay_reasoning_profile()),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+}
+
+fn assert_next_replay_is_cold(request: &ChatRequest) {
+    let frame = request.messages[0]
+        .replay_frame()
+        .expect("next run carries a cold source frame");
+    assert_eq!(frame.cold_prefix_len(), request.messages.len() - 1);
+    assert!(frame.cold_prefix_len() > 1);
+}
 
 struct DelayedIssue146Permission;
 
@@ -270,8 +349,8 @@ async fn diagnostics_keep_tool_success_before_later_provider_failure() {
             ProviderEvent::Usage {
                 input: 12,
                 output: 3,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -754,21 +833,25 @@ async fn running_persistence_failure_prevents_tool_start_and_next_round() {
                 ))
             })
         }));
+    let registry = crate::agent::ReplaySessionRegistry::new();
+    let route = [31; 32];
     let provider = MockProvider::new_rounds(vec![
-        vec![ScriptStep::events(vec![
-            ProviderEvent::ToolUse {
-                id: "blocked-call".into(),
-                name: "bash".into(),
-                input_json: r#"{"cmd":"never-run"}"#.into(),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::ToolUse,
-            },
-        ])],
-        vec![ScriptStep::events(vec![ProviderEvent::Done {
-            stop_reason: StopReason::End,
-        }])],
+        replay_terminal_script("Registry seed answer."),
+        replay_tool_script("blocked-call", "bash", r#"{"cmd":"never-run"}"#),
+        replay_terminal_script("Answer after failed running barrier."),
     ]);
+    let seed = run_registry_turn(
+        &store,
+        &provider,
+        &tools,
+        "Registry seed request.",
+        &registry,
+        route,
+        PersistenceActorConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert!(!seed.failed);
     let config = PersistenceActorConfig {
         fail_event: Some(InjectedPersistenceFailure::Running),
         ..PersistenceActorConfig::default()
@@ -776,17 +859,7 @@ async fn running_persistence_failure_prevents_tool_start_and_next_round() {
 
     let result = tokio::time::timeout(
         Duration::from_millis(500),
-        run_thread_task_with_sink_config(
-            &store,
-            &provider,
-            &tools,
-            "thread-1",
-            "Read",
-            "System",
-            CancellationToken::new(),
-            |_| Ok(()),
-            config,
-        ),
+        run_registry_turn(&store, &provider, &tools, "Read", &registry, route, config),
     )
     .await
     .expect("running barrier failure must stop before tool execution")
@@ -794,7 +867,7 @@ async fn running_persistence_failure_prevents_tool_start_and_next_round() {
 
     assert!(result.to_string().contains("critical persistence failure"));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.requests().len(), 2);
     let status: String = store
         .conn()
         .query_row(
@@ -804,34 +877,62 @@ async fn running_persistence_failure_prevents_tool_start_and_next_round() {
         )
         .unwrap();
     assert_eq!(status, "approved");
+    let next = run_registry_turn(
+        &store,
+        &provider,
+        &tools,
+        "Next request after running acknowledgement failure.",
+        &registry,
+        route,
+        PersistenceActorConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert!(!next.failed);
+    assert_next_replay_is_cold(&provider.requests()[2]);
+    assert!(provider.requests()[2].messages.iter().all(|message| {
+        message.reasoning_content.as_deref() != Some("partial blocked-call reasoning")
+    }));
 }
 
 #[tokio::test]
 async fn terminal_persistence_failure_prevents_the_next_provider_round() {
     let (store, dir, _project_id) = setup();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    let provider = scripted_provider("terminal-fail", r#"{"pattern":"TODO"}"#);
+    let registry = crate::agent::ReplaySessionRegistry::new();
+    let route = [32; 32];
+    let provider = MockProvider::new_rounds(vec![
+        replay_terminal_script("Registry seed answer."),
+        replay_tool_script("terminal-fail", "grep", r#"{"pattern":"TODO"}"#),
+        replay_terminal_script("Answer after terminal persistence failure."),
+    ]);
+    let seed = run_registry_turn(
+        &store,
+        &provider,
+        &tools,
+        "Registry seed request.",
+        &registry,
+        route,
+        PersistenceActorConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert!(!seed.failed);
     let config = PersistenceActorConfig {
         fail_event: Some(InjectedPersistenceFailure::Finished),
         ..PersistenceActorConfig::default()
     };
 
-    let error = run_thread_task_with_sink_config(
-        &store,
-        &provider,
-        &tools,
-        "thread-1",
-        "Find",
-        "System",
-        CancellationToken::new(),
-        |_| Ok(()),
-        config,
+    let error = tokio::time::timeout(
+        Duration::from_millis(500),
+        run_registry_turn(&store, &provider, &tools, "Find", &registry, route, config),
     )
     .await
+    .expect("terminal persistence failure must not hang the run")
     .unwrap_err();
 
     assert!(error.to_string().contains("critical persistence failure"));
-    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.requests().len(), 2);
     let status: String = store
         .conn()
         .query_row(
@@ -841,22 +942,47 @@ async fn terminal_persistence_failure_prevents_the_next_provider_round() {
         )
         .unwrap();
     assert_eq!(status, "running");
+    let next = run_registry_turn(
+        &store,
+        &provider,
+        &tools,
+        "Next request after terminal persistence failure.",
+        &registry,
+        route,
+        PersistenceActorConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert!(!next.failed);
+    assert_next_replay_is_cold(&provider.requests()[2]);
+    assert!(provider.requests()[2].messages.iter().all(|message| {
+        message.reasoning_content.as_deref() != Some("partial terminal-fail reasoning")
+    }));
 }
 
 #[tokio::test]
 async fn actor_panic_closes_ack_and_returns_without_hanging() {
     let (store, dir, _project_id) = setup();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    let provider = MockProvider::new(vec![ScriptStep::events(vec![
-        ProviderEvent::ToolUse {
-            id: "panic-call".into(),
-            name: "read".into(),
-            input_json: r#"{"path":"lib.rs"}"#.into(),
-        },
-        ProviderEvent::Done {
-            stop_reason: StopReason::ToolUse,
-        },
-    ])]);
+    let registry = crate::agent::ReplaySessionRegistry::new();
+    let route = [33; 32];
+    let provider = MockProvider::new_rounds(vec![
+        replay_terminal_script("Registry seed answer."),
+        replay_tool_script("panic-call", "read", r#"{"path":"lib.rs"}"#),
+        replay_terminal_script("Answer after acknowledgement close."),
+    ]);
+    let seed = run_registry_turn(
+        &store,
+        &provider,
+        &tools,
+        "Registry seed request.",
+        &registry,
+        route,
+        PersistenceActorConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert!(!seed.failed);
     let config = PersistenceActorConfig {
         fail_event: Some(InjectedPersistenceFailure::PanicRunning),
         ..PersistenceActorConfig::default()
@@ -865,7 +991,7 @@ async fn actor_panic_closes_ack_and_returns_without_hanging() {
 
     let error = tokio::time::timeout(
         Duration::from_millis(500),
-        run_thread_task_with_sink_config(
+        run_thread_task_with_images_reasoning_and_mcp(
             &store,
             &provider,
             &tools,
@@ -873,19 +999,24 @@ async fn actor_panic_closes_ack_and_returns_without_hanging() {
             "Read",
             "System",
             CancellationToken::new(),
+            &RejectPermissionHook,
             |event| {
                 if let ConversationEvent::Error { error, .. } = event {
                     surfaced = Some(error.clone());
                 }
                 Ok(())
             },
-            config,
+            config.with_replay_session_registry(registry.clone(), route),
+            None,
+            None,
+            Some(replay_reasoning_profile()),
+            Vec::new(),
+            Vec::new(),
         ),
     )
     .await
     .expect("actor panic must close its async acknowledgement")
     .unwrap_err();
-
     assert!(error.to_string().contains("dropped event acknowledgement"));
     assert!(matches!(
         error,
@@ -893,7 +1024,23 @@ async fn actor_panic_closes_ack_and_returns_without_hanging() {
             if matches!(error.as_ref(), VegaError::Io(_))
     ));
     assert!(matches!(surfaced.as_deref(), Some(VegaError::Io(_))));
-    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.requests().len(), 2);
+    let next = run_registry_turn(
+        &store,
+        &provider,
+        &tools,
+        "Next request after acknowledgement close.",
+        &registry,
+        route,
+        PersistenceActorConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert!(!next.failed);
+    assert_next_replay_is_cold(&provider.requests()[2]);
+    assert!(provider.requests()[2].messages.iter().all(|message| {
+        message.reasoning_content.as_deref() != Some("partial panic-call reasoning")
+    }));
 }
 
 #[tokio::test]

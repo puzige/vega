@@ -612,7 +612,7 @@ impl VegaWindow {
                         } else {
                             PendingMessageBehavior::Queue
                         }));
-                        this.on_settings_saved(cx);
+                        this.on_settings_saved(false, cx);
                     }
                     Err(()) => projection.error = Some("默认发送方式保存失败，请重试".into()),
                 }

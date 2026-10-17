@@ -103,8 +103,8 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
         )
     });
     root.update(cx, |_, cx| {
-        cx.subscribe(&settings, |root, _, _: &SettingsSaved, cx| {
-            root.on_settings_saved(cx);
+        cx.subscribe(&settings, |root, _, event: &SettingsSaved, cx| {
+            root.on_settings_saved(event.replay_identity_changed, cx);
         })
         .detach();
     });
@@ -136,7 +136,11 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
         stream.read_with(cx, |stream, _| stream.displayed_model().to_string());
     let pending_before = stream.read_with(cx, |stream, _| stream.has_pending_model_selection());
     fs::write(&config_path, &original_config).expect("restore model config");
-    settings.update(cx, |_, cx| cx.emit(SettingsSaved));
+    settings.update(cx, |_, cx| {
+        cx.emit(SettingsSaved {
+            replay_identity_changed: true,
+        })
+    });
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| {
             root.configured_models.is_some()

@@ -57,6 +57,8 @@ impl ContextCompactionHook for RetainLastRound {
                 messages,
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
+                replay_cold_prefix_messages: Some(1),
+                replay_interleaved_user_boundary: None,
                 usages: Vec::new(),
                 usage_complete: false,
             })
@@ -71,14 +73,22 @@ async fn issue372_repeated_compaction_releases_only_discarded_reasoning_and_repl
     let tools = vega_tools::Tools::new(project.path()).unwrap();
     let text = "progress ".repeat(4_000);
     let mut rounds = (0..10)
-        .map(|index| vec![ScriptStep::events(tool_round(index, &text, true))])
+        .map(|index| {
+            vec![ScriptStep::events(replay_fixture_events(
+                tool_round(index, &text, true),
+                crate::ReasoningReplayPolicy::DeepSeekTools,
+            ))]
+        })
         .collect::<Vec<_>>();
-    rounds.push(vec![ScriptStep::events(vec![
-        ProviderEvent::TextDelta("final answer".into()),
-        ProviderEvent::Done {
-            stop_reason: StopReason::End,
-        },
-    ])]);
+    rounds.push(vec![ScriptStep::events(replay_fixture_events(
+        vec![
+            ProviderEvent::TextDelta("final answer".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ],
+        crate::ReasoningReplayPolicy::DeepSeekTools,
+    ))]);
     let provider = MockProvider::new_rounds(rounds);
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -89,10 +99,10 @@ async fn issue372_repeated_compaction_releases_only_discarded_reasoning_and_repl
     req.reasoning = Some(FrozenReasoning {
         provider: "deepseek".into(),
         model: "mock".into(),
-        protocol: ReasoningProtocol::OpenAiChatCompletions,
+        protocol: ReasoningProtocol::DeepSeekChatCompletions,
+        replay_policy: crate::ReasoningReplayPolicy::DeepSeekTools,
         choice: ReasoningChoice::ProviderDefault,
         supports_disabled: false,
-        preserve_reasoning_content: true,
         disabled_wire: None,
         declared_efforts: Vec::new(),
     });
@@ -233,17 +243,23 @@ async fn issue372_retry_discards_partial_thinking_replay_and_tools_before_rechar
     }
     stream.extend(tool_round(99, "accepted", true));
     let provider = MockProvider::new_rounds(vec![
-        vec![ScriptStep::events(stream)],
-        vec![ScriptStep::events(vec![ProviderEvent::Done {
-            stop_reason: StopReason::End,
-        }])],
+        vec![ScriptStep::events(replay_fixture_events(
+            stream,
+            crate::ReasoningReplayPolicy::ResponsesItems,
+        ))],
+        vec![ScriptStep::events(replay_fixture_events(
+            vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }],
+            crate::ReasoningReplayPolicy::ResponsesItems,
+        ))],
     ]);
     let mut accepted_thinking = 0;
     let mut retry_count = 0;
     let outcome = run_agent_with_sink(
         &provider,
         &tools,
-        request(Vec::new()),
+        replay_fixture_request(Vec::new(), crate::ReasoningReplayPolicy::ResponsesItems),
         CancellationToken::new(),
         |event| {
             match event {
@@ -358,69 +374,96 @@ async fn large_thinking_and_summary_complete_with_bounded_retention() {
 
 #[tokio::test]
 async fn large_reasoning_and_replay_reach_tool_continuation_unchanged() {
-    let project = tempdir().unwrap();
-    fs::write(project.path().join("source.txt"), "source result").unwrap();
-    let tools = vega_tools::Tools::new(project.path()).unwrap();
-    let reasoning = "推理".repeat(100_000);
-    let replay = (0..300).map(|index| serde_json::json!({"id":format!("reasoning-{index}"), "type":"reasoning", "encrypted_content":"x".repeat(2048)})).collect::<Vec<_>>();
-    let provider = MockProvider::new_rounds(vec![
-        vec![ScriptStep::events(vec![
-            ProviderEvent::ThinkingDelta(reasoning.clone()),
-            ProviderEvent::ReasoningReplay(replay.clone()),
-            ProviderEvent::ToolUse {
-                id: "call".into(),
-                name: "read".into(),
-                input_json: r#"{"path":"source.txt"}"#.into(),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::ToolUse,
-            },
-        ])],
-        vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta("finished".into()),
-            ProviderEvent::Done {
-                stop_reason: StopReason::End,
-            },
-        ])],
-    ]);
-    let mut req = request(Vec::new());
-    req.reasoning = Some(FrozenReasoning {
-        provider: "deepseek".into(),
-        model: "mock".into(),
-        protocol: ReasoningProtocol::OpenAiChatCompletions,
-        choice: ReasoningChoice::ProviderDefault,
-        supports_disabled: false,
-        preserve_reasoning_content: true,
-        disabled_wire: None,
-        declared_efforts: Vec::new(),
-    });
-    let mut prior = ChatMessage::new(ChatRole::Assistant, "prior reasoning");
-    prior.reasoning_content = Some(reasoning.clone());
-    prior.response_reasoning = replay.clone();
-    req.history.push(prior.clone());
-    req.context_budget = Some(ContextBudget::new(10_000_000, 1_000, true).unwrap());
-    let result = run_agent(&provider, &tools, req, CancellationToken::new())
-        .await
-        .unwrap();
-    assert!(!result.failed);
-    assert_eq!(result.final_text, "finished");
-    assert_eq!(result.executed_tool_call_count, 1);
-    let requests = provider.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].messages[1], prior);
-    let message = requests[1]
-        .messages
-        .iter()
-        .find(|message| !message.tool_calls.is_empty())
-        .unwrap();
-    assert_eq!(
-        message.reasoning_content.as_deref(),
-        Some(reasoning.as_str())
-    );
-    assert_eq!(message.response_reasoning, replay);
+    for policy in [
+        crate::ReasoningReplayPolicy::DeepSeekTools,
+        crate::ReasoningReplayPolicy::ResponsesItems,
+    ] {
+        let project = tempdir().unwrap();
+        fs::write(project.path().join("source.txt"), "source result").unwrap();
+        let tools = vega_tools::Tools::new(project.path()).unwrap();
+        let reasoning = "推理".repeat(100_000);
+        let replay = (0..300).map(|index| serde_json::json!({"id":format!("reasoning-{index}"), "type":"reasoning", "encrypted_content":"x".repeat(2048)})).collect::<Vec<_>>();
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(replay_fixture_events(
+                vec![
+                    ProviderEvent::ThinkingDelta(reasoning.clone()),
+                    ProviderEvent::ReasoningReplay(replay.clone()),
+                    ProviderEvent::ToolUse {
+                        id: "call".into(),
+                        name: "read".into(),
+                        input_json: r#"{"path":"source.txt"}"#.into(),
+                    },
+                    ProviderEvent::Done {
+                        stop_reason: StopReason::ToolUse,
+                    },
+                ],
+                policy,
+            ))],
+            vec![ScriptStep::events(replay_fixture_events(
+                vec![
+                    ProviderEvent::TextDelta("finished".into()),
+                    ProviderEvent::Done {
+                        stop_reason: StopReason::End,
+                    },
+                ],
+                policy,
+            ))],
+        ]);
+        let mut req = replay_fixture_request(Vec::new(), policy);
+        let mut prior = ChatMessage::new(ChatRole::Assistant, "prior reasoning");
+        if policy == crate::ReasoningReplayPolicy::DeepSeekTools {
+            prior.reasoning_content = Some(reasoning.clone());
+        } else {
+            prior.response_reasoning = replay.clone();
+            let mut slots = replay
+                .iter()
+                .cloned()
+                .map(crate::ResponseReplaySlot::Reasoning)
+                .collect::<Vec<_>>();
+            slots.push(crate::ResponseReplaySlot::Message(serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"prior reasoning"}]})));
+            prior.response_replay_layout = Some(crate::ResponseReplayLayout {
+                response_id: None,
+                slots,
+            });
+        }
+        req.history.push(prior.clone());
+        req.context_budget = Some(ContextBudget::new(10_000_000, 1_000, true).unwrap());
+        let result = run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(!result.failed);
+        assert_eq!(result.final_text, "finished");
+        assert_eq!(result.executed_tool_call_count, 1);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].messages[1].content, prior.content);
+        assert_eq!(
+            requests[0].messages[1].reasoning_content,
+            prior.reasoning_content
+        );
+        assert_eq!(
+            requests[0].messages[1].response_reasoning,
+            prior.response_reasoning
+        );
+        let message = requests[1]
+            .messages
+            .iter()
+            .find(|message| !message.tool_calls.is_empty())
+            .unwrap();
+        if policy == crate::ReasoningReplayPolicy::DeepSeekTools {
+            assert_eq!(
+                message.reasoning_content.as_deref(),
+                Some(reasoning.as_str())
+            );
+            assert!(message.response_reasoning.is_empty());
+        } else {
+            assert_eq!(message.response_reasoning, replay);
+            assert!(message.reasoning_content.is_none());
+        }
+    }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum Boundary {
     Timeout,
     SourceChanged,
@@ -453,7 +496,10 @@ impl ContextCompactionHook for BoundaryHook {
                     ));
                 }
                 Boundary::InvalidSystem => vec![ChatMessage::new(ChatRole::System, "invalid")],
-                Boundary::OverTarget => request.messages,
+                Boundary::OverTarget => vec![ChatMessage::new(
+                    ChatRole::User,
+                    "x".repeat(usize::try_from(request.target_tokens).unwrap() * 4),
+                )],
                 Boundary::Cancelled => {
                     cancel.cancel();
                     vec![ChatMessage::new(ChatRole::User, "summary")]
@@ -463,6 +509,8 @@ impl ContextCompactionHook for BoundaryHook {
                 messages,
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
+                replay_cold_prefix_messages: None,
+                replay_interleaved_user_boundary: None,
                 usages: Vec::new(),
                 usage_complete: false,
             })
@@ -488,7 +536,8 @@ async fn issue372_rejected_projection_and_cancellation_never_release_retained_ca
             history.push(message);
         }
         history.push(ChatMessage::new(ChatRole::User, "continue"));
-        let mut req = request(history.clone());
+        let mut req =
+            replay_fixture_request(history.clone(), crate::ReasoningReplayPolicy::DeepSeekTools);
         let estimate = crate::estimate_chat_context(
             &req.system_prompt,
             &history,
@@ -502,6 +551,7 @@ async fn issue372_rejected_projection_and_cancellation_never_release_retained_ca
         req.context_compaction_hook = Some(Arc::new(BoundaryHook(behavior)));
         let provider = MockProvider::new(vec![ScriptStep::events(vec![
             ProviderEvent::ThinkingDelta("x".into()),
+            ProviderEvent::ChatReasoningContent(crate::ChatReasoningPresence::NonEmpty("x".into())),
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
             },
@@ -516,7 +566,8 @@ async fn issue372_rejected_projection_and_cancellation_never_release_retained_ca
         assert!(
             !observed
                 .iter()
-                .any(|event| matches!(event, RuntimeEvent::ReasoningRetentionReleased))
+                .any(|event| matches!(event, RuntimeEvent::ReasoningRetentionReleased)),
+            "{behavior:?} must retain the existing reasoning state"
         );
         match behavior {
             Boundary::Timeout => {
@@ -535,6 +586,15 @@ async fn issue372_rejected_projection_and_cancellation_never_release_retained_ca
                 let outcome = result.unwrap();
                 assert!(outcome.interrupted);
                 assert_eq!(&outcome.messages[1..], history);
+                assert!(provider.requests().is_empty());
+            }
+            Boundary::OverTarget => {
+                assert!(matches!(
+                    result,
+                    Err(VegaError::Context(
+                        ContextRuntimeError::ResultOverLimit { .. }
+                    ))
+                ));
                 assert!(provider.requests().is_empty());
             }
             _ => {
@@ -559,20 +619,32 @@ async fn issue372_retry_does_not_release_reasoning_retained_before_the_current_c
     });
     first.extend(tool_round(0, "", false));
     let provider = MockProvider::new_rounds(vec![
-        vec![ScriptStep::events(first)],
-        vec![ScriptStep::events(tool_round(1, "", false))],
-        vec![ScriptStep::events(tool_round(2, "", false))],
-        vec![ScriptStep::events(vec![
-            ProviderEvent::SummaryDelta("x".into()),
-            ProviderEvent::Done {
-                stop_reason: StopReason::End,
-            },
-        ])],
+        vec![ScriptStep::events(replay_fixture_events(
+            first,
+            crate::ReasoningReplayPolicy::DeepSeekTools,
+        ))],
+        vec![ScriptStep::events(replay_fixture_events(
+            tool_round(1, "", false),
+            crate::ReasoningReplayPolicy::DeepSeekTools,
+        ))],
+        vec![ScriptStep::events(replay_fixture_events(
+            tool_round(2, "", false),
+            crate::ReasoningReplayPolicy::DeepSeekTools,
+        ))],
+        vec![ScriptStep::events(replay_fixture_events(
+            vec![
+                ProviderEvent::SummaryDelta("x".into()),
+                ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                },
+            ],
+            crate::ReasoningReplayPolicy::DeepSeekTools,
+        ))],
     ]);
     let outcome = run_agent(
         &provider,
         &tools,
-        request(vec![prior]),
+        replay_fixture_request(vec![prior], crate::ReasoningReplayPolicy::DeepSeekTools),
         CancellationToken::new(),
     )
     .await
@@ -710,13 +782,19 @@ async fn issue375_replay_items_across_rounds_follow_context_budget_not_lifetime_
         let mut events = tool_round(index, "progress", false);
         events.retain(|event| !matches!(event, ProviderEvent::ThinkingDelta(_)));
         events.insert(0, ProviderEvent::ReasoningReplay((0..64).map(|item| serde_json::json!({"type":"reasoning", "id":format!("replay-{index}-{item}")})).collect()));
-        vec![ScriptStep::events(events)]
+        vec![ScriptStep::events(replay_fixture_events(events, crate::ReasoningReplayPolicy::ResponsesItems))]
     }).collect::<Vec<_>>();
-    rounds.push(vec![ScriptStep::events(vec![ProviderEvent::Done {
-        stop_reason: StopReason::End,
-    }])]);
+    rounds.push(vec![ScriptStep::events(replay_fixture_events(
+        vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }],
+        crate::ReasoningReplayPolicy::ResponsesItems,
+    ))]);
     let provider = MockProvider::new_rounds(rounds);
-    let mut req = request(vec![ChatMessage::new(ChatRole::User, "task goal")]);
+    let mut req = replay_fixture_request(
+        vec![ChatMessage::new(ChatRole::User, "task goal")],
+        crate::ReasoningReplayPolicy::ResponsesItems,
+    );
     req.context_budget = Some(ContextBudget::new(1_000_000, 1_000, true).unwrap());
     let result = run_agent(&provider, &tools, req, CancellationToken::new())
         .await

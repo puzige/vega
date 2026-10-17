@@ -10,19 +10,6 @@
 //! constants and asserts the production DB aggregate matches it with exactly
 //! zero error. THIS IS NOT REAL PROVIDER BILLING EVIDENCE: the provider is the
 //! scripted `MockProvider` and no key, network or real fee is involved.
-//!
-//! KNOWN SEMANTIC NOTE (documented in docs/vega-s7-report.md, observation
-//! carried to S8): the calibrated counter and the restart seed both sum all
-//! four usage fields (`input+output+cache_read+cache_write`; see
-//! `ConversationMeter::apply`'s `UsageUpdated` branch and
-//! `thread_usage_seed`), so live and restored counters agree exactly. Under
-//! the frozen C2 OpenAI-compatible semantics the `input` field already
-//! contains `cache_read`, so the DISPLAYED token total counts cached tokens
-//! twice (this fixture: 425 displayed vs 310 input+output); the T39 preflight
-//! had proposed `input+output` instead. Cost is unaffected (priced via
-//! `uncached = input - cache_read`, asserted exactly below). The assertions
-//! pin the current production values so any S8 scope decision must
-//! consciously update them.
 
 use std::error::Error;
 use std::path::Path;
@@ -123,8 +110,8 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Provider
     ProviderEvent::Usage {
         input,
         output,
-        cache_read,
-        cache_write,
+        cache_read: Some(cache_read),
+        cache_write: Some(cache_write),
     }
 }
 
@@ -347,12 +334,9 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         true,
         "round-1 streaming",
     );
-    // Round-1 usage calibrates in place: cost is exact; the token sum pins
-    // the current production meter scope (all four fields — see the module
-    // note: 100+20+40+10 = 170).
     assert_reading(
         snapshot_after(&captured, &timeline, &is_usage, 0),
-        170,
+        120,
         ORACLE_ROUND_1_MICROCENTS,
         false,
         "round-1 calibrated",
@@ -361,7 +345,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     // calibrated call-1 base ("完成" = 2 scalars → 1 token).
     assert_reading(
         snapshot_after(&captured, &timeline, &is_text("完成"), 0),
-        171,
+        121,
         ORACLE_ROUND_1_MICROCENTS + provisional_output_quote(&catalog, 1),
         true,
         "round-2 first delta",
@@ -370,16 +354,14 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     // not adding to — the earlier round-2 estimate.
     assert_reading(
         snapshot_after(&captured, &timeline, &is_text("✅abcd"), 0),
-        172,
+        122,
         ORACLE_ROUND_1_MICROCENTS + provisional_output_quote(&catalog, 2),
         true,
         "round-2 round-total estimate",
     );
-    // Round-2 usage arrives: authoritative totals only, provisional gone
-    // (current production token scope: 170 + 160+30+60+5 = 425).
     assert_reading(
         snapshot_after(&captured, &timeline, &is_usage, 1),
-        425,
+        310,
         ORACLE_TOTAL_MICROCENTS,
         false,
         "round-2 calibrated",
@@ -387,12 +369,12 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     let final_snapshot = *timeline.last().unwrap();
     assert_reading(
         final_snapshot,
-        425,
+        310,
         ORACLE_TOTAL_MICROCENTS,
         false,
         "terminal",
     );
-    assert_eq!(final_snapshot.display(), "425 tok · US$0.000355");
+    assert_eq!(final_snapshot.display(), "310 tok · US$0.000355");
 
     // ─── exact durable rows (A10-01) ───
     let rows = usage_rows(&store)?;
@@ -496,8 +478,8 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         Some(vega_conversation::types::TokenUsage {
             input: 260,
             output: 50,
-            cache_read: 100,
-            cache_write: 15,
+            cache_read: Some(100),
+            cache_write: Some(15),
         })
     );
     assert_eq!(
@@ -532,7 +514,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     assert_eq!(
         seed,
         RestoredUsage {
-            tokens: 425,
+            tokens: 310,
             cost: Some(Microcents(ORACLE_TOTAL_MICROCENTS)),
         },
         "restart restores the exact pre-restart baseline"
@@ -540,7 +522,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     // A fresh meter restores it and renders identically.
     let mut restored_meter = ConversationMeter::default();
     restored_meter.restore(seed);
-    assert_eq!(restored_meter.snapshot().display(), "425 tok · US$0.000355");
+    assert_eq!(restored_meter.snapshot().display(), "310 tok · US$0.000355");
 
     let restarted = task_cost_summary(&reopened, THREAD_ID, &run.assistant_message_id, None)?;
     assert_eq!(restarted.outcome, pre_restart.outcome);

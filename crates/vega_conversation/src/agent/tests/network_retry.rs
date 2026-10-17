@@ -19,8 +19,8 @@ fn retrying_provider() -> MockProvider {
             ProviderEvent::Usage {
                 input: 10,
                 output: 2,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::RetryScheduled {
                 attempt: 1,
@@ -30,8 +30,8 @@ fn retrying_provider() -> MockProvider {
             ProviderEvent::Usage {
                 input: 20,
                 output: 3,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,

@@ -183,6 +183,7 @@ impl ReasoningProfile {
             "openai_chat_completions"
                 | "zhipu_chat_completions"
                 | "deepseek_chat_completions"
+                | "responses_api"
                 | "unknown"
         ) {
             return Err("protocol is not declared".to_string());
@@ -216,6 +217,7 @@ impl ReasoningProfile {
             && !matches!(
                 (self.protocol.as_str(), self.disabled_wire.as_deref()),
                 ("openai_chat_completions", Some("reasoning_effort_none"))
+                    | ("responses_api", Some("reasoning_effort_none"))
                     | (
                         "zhipu_chat_completions" | "deepseek_chat_completions",
                         Some("thinking_type_disabled")
@@ -275,19 +277,12 @@ impl ReasoningProfile {
             );
         }
         if self.protocol == "deepseek_chat_completions"
-            && (self
-                .efforts
-                .iter()
-                .any(|effort| !matches!(effort.as_str(), "low" | "high" | "max"))
-                || self
-                    .disabled_wire
-                    .as_deref()
-                    .is_some_and(|wire| wire != "thinking_type_disabled"))
+            && self
+                .disabled_wire
+                .as_deref()
+                .is_some_and(|wire| wire != "thinking_type_disabled")
         {
-            return Err(
-                "DeepSeek profiles support only low/high/max and thinking_type_disabled"
-                    .to_string(),
-            );
+            return Err("DeepSeek profiles support only thinking_type_disabled".to_string());
         }
         Ok(())
     }
@@ -813,7 +808,7 @@ mod tests {
         assert!(deepseek.validate().is_err());
         deepseek.supports_disabled = false;
         deepseek.disabled_wire = None;
-        deepseek.efforts.push("xhigh".into());
+        deepseek.efforts.push("ultra".into());
         assert!(deepseek.validate().is_err());
     }
 
@@ -847,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_protocol_accepts_every_declared_replay_profile() {
+    fn unknown_protocol_profile_stores_known_replay_values_for_route_resolution() {
         let mut unknown = glm();
         unknown.protocol = "unknown".into();
         unknown.support = "unknown".into();

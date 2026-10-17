@@ -17,6 +17,7 @@ type ModelCatalogLoadResult = Result<
         // draft takes its model/permission from the same `config::load()`
         // source `create_task` used, without any config IO during render.
         NewTaskDefaults,
+        Option<vega_store::config::AppConfig>,
     ),
     (),
 >;
@@ -52,6 +53,14 @@ fn finish_thread_model_selection(
         return;
     }
 
+    let replay_model_changed = outcome
+        .as_ref()
+        .is_ok_and(|thread| stream.read(cx).displayed_model() != thread.model);
+    if replay_model_changed
+        && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
+    {
+        sessions.0.invalidate_thread(thread_id);
+    }
     let settings_open = cx.global::<SettingsOpen>().0;
     let current_route = !settings_open && window.owns_stream_request(stream, thread_id, cx);
     if current_route {
@@ -560,7 +569,16 @@ impl VegaWindow {
     /// config mutation. The worker rereads the file and re-applies the
     /// pricing/uniqueness projection; it never changes the current thread's
     /// durable model or emits an R1 acknowledgement.
-    pub(crate) fn on_settings_saved(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn on_settings_saved(
+        &mut self,
+        replay_identity_changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if replay_identity_changed
+            && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
+        {
+            sessions.0.invalidate_all();
+        }
         self.load_running_message_default(cx);
         if self.reasoning_save_pending.is_some() {
             // The reasoning worker owns the independent authority until its
@@ -695,7 +713,7 @@ impl VegaWindow {
                                             .map(ReasoningProfileProjection::from_store)
                                     });
                                     let profile = match profile {
-                                        Some(Ok(profile)) => profile,
+                                        Some(Ok(profile)) => Some(profile),
                                         Some(Err(_)) => {
                                             reasoning_error =
                                                 Some(ReasoningSettingsErrorCode::Invalid);
@@ -707,15 +725,32 @@ impl VegaWindow {
                                             // could silently fall back to the
                                             // provider default.
                                             reasoning_authority = None;
+                                            Some(ReasoningProfileProjection::unknown(
+                                                provider.name.clone(),
+                                                model.clone(),
+                                            ))
+                                        }
+                                        None => None,
+                                    };
+                                    let profile =
+                                        crate::reasoning_capabilities::resolve_reasoning_profile(
+                                            &provider.name,
+                                            provider.api,
+                                            &provider.base_url,
+                                            model,
+                                            profile,
+                                        );
+                                    let profile = match profile {
+                                        Ok(profile) => profile,
+                                        Err(_) => {
+                                            reasoning_error =
+                                                Some(ReasoningSettingsErrorCode::Invalid);
+                                            reasoning_authority = None;
                                             ReasoningProfileProjection::unknown(
                                                 provider.name.clone(),
                                                 model.clone(),
                                             )
                                         }
-                                        None => ReasoningProfileProjection::unknown(
-                                            provider.name.clone(),
-                                            model.clone(),
-                                        ),
                                     };
                                     reasoning_profiles.push(profile);
                                 }
@@ -730,6 +765,7 @@ impl VegaWindow {
                                 model: config.defaults.model.clone(),
                                 permission_mode: config.defaults.permission_mode.clone(),
                             },
+                            Some(config),
                         )
                     })
                     .map_err(|_| ());
@@ -772,20 +808,38 @@ impl VegaWindow {
             return;
         }
         self.model_catalog_loading = false;
-        let (models, reasoning_profiles, reasoning_error, reasoning_authority, defaults) =
-            match result {
-                Ok(result) => result,
-                Err(()) => (
-                    Vec::new(),
-                    Vec::new(),
-                    Some(ReasoningSettingsErrorCode::Io),
-                    None,
-                    // A malformed/unreadable config keeps the missing-config
-                    // template values, which is exactly what `create_task`'s
-                    // error path would have produced.
-                    NewTaskDefaults::default(),
-                ),
-            };
+        let (
+            models,
+            reasoning_profiles,
+            reasoning_error,
+            reasoning_authority,
+            defaults,
+            loaded_config,
+        ) = match result {
+            Ok(result) => result,
+            Err(()) => (
+                Vec::new(),
+                Vec::new(),
+                Some(ReasoningSettingsErrorCode::Io),
+                None,
+                NewTaskDefaults::default(),
+                None,
+            ),
+        };
+        if let Some(config) = &loaded_config
+            && self.loaded_replay_config.as_ref().is_some_and(|previous| {
+                previous.providers != config.providers
+                    || previous.credential_bindings != config.credential_bindings
+                    || previous.agent != config.agent
+                    || previous.defaults != config.defaults
+            })
+            && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
+        {
+            sessions.0.invalidate_all();
+        }
+        if loaded_config.is_some() {
+            self.loaded_replay_config = loaded_config;
+        }
         self.configured_models = Some(models);
         // R69 R3: the draft's defaults follow the same config source as the
         // eager create path. Only a route that has not started yet takes the

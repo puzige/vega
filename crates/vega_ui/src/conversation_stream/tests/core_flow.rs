@@ -1031,8 +1031,8 @@ async fn task_summary_card_appends_once_and_ignores_duplicates(cx: &mut TestAppC
         usage: Some(vega_conversation::types::TokenUsage {
             input: 150_000,
             output: 15_000,
-            cache_read: 50_000,
-            cache_write: 0,
+            cache_read: Some(50_000),
+            cache_write: Some(0),
         }),
         cost: vega_conversation::types::SummaryCost::Priced(vega_conversation::types::Microcents(
             135_000,

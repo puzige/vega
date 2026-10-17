@@ -822,9 +822,26 @@ mod tests {
         let mut legacy = event(DiagnosticState::Failed, "legacy");
         legacy.failure_code = Some(DiagnosticFailureCode::ReasoningLimit);
         insert(store.conn(), &legacy).unwrap();
+        let mut replay = event(DiagnosticState::Started, "replay");
+        insert(store.conn(), &replay).unwrap();
+        replay.state = DiagnosticState::Failed;
+        replay.duration_ms = Some(4);
+        replay.failure_code = Some(DiagnosticFailureCode::ProviderProtocol);
+        replay.metrics.failure_source = Some("runtime".into());
+        replay.metrics.failure_kind = Some("protocol".into());
+        replay.metrics.failure_scope = Some("response".into());
+        insert(store.conn(), &replay).unwrap();
         let loaded = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
         assert_eq!(loaded[1].event.metrics, failed.metrics);
         assert_eq!(loaded[3].event.metrics, DiagnosticMetrics::default());
+        assert_eq!(
+            loaded[5].event.failure_code,
+            Some(DiagnosticFailureCode::ProviderProtocol)
+        );
+        assert_eq!(
+            loaded[5].event.metrics.failure_kind.as_deref(),
+            Some("protocol")
+        );
         let export = export_run(store.conn(), "thread-171", "run-171").unwrap();
         assert!(export.contains("262145"));
         assert!(export.contains("\"failure_scope\":null"));

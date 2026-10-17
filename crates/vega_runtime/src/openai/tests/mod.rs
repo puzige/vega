@@ -1,7 +1,7 @@
 use super::*;
 use crate::provider::{
     ChatMessage, ChatRole, ChatToolCall, FrozenReasoning, ReasoningChoice, ReasoningDisabledWire,
-    ReasoningProtocol, ToolDefinition,
+    ReasoningProtocol, ReasoningReplayPolicy, ToolDefinition,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -132,6 +132,135 @@ fn historical_observations_use_user_json_in_both_openai_wires() {
 }
 
 #[test]
+fn automatic_replay_cold_frame_is_idempotent_across_chat_and_responses_serialization() {
+    let build_messages = |policy| {
+        let mut system = ChatMessage::new(ChatRole::System, "system");
+        system.attach_replay_frame(crate::ReplayFrame::new(5, policy));
+        let mut reasoning_only = ChatMessage::new(ChatRole::Assistant, "");
+        reasoning_only.reasoning_content = Some("PRIVATE_CHAT_REASONING".into());
+        let mut opaque_only = ChatMessage::new(ChatRole::Assistant, "");
+        opaque_only
+            .response_reasoning
+            .push(serde_json::json!({"type":"reasoning","encrypted_content":"PRIVATE_OPAQUE"}));
+        vec![
+            system,
+            reasoning_only,
+            opaque_only,
+            ChatMessage::new(ChatRole::Assistant, "prior visible answer"),
+            ChatMessage::new(ChatRole::User, "current request"),
+        ]
+    };
+    let chat_messages = {
+        let mut messages = build_messages(crate::ReasoningReplayPolicy::DeepSeekTools);
+        let mut live = ChatMessage::new(ChatRole::Assistant, "live final");
+        live.reasoning_content = Some("LIVE_REASONING".into());
+        messages.push(live);
+        messages
+    };
+    let chat_projected = crate::project_model_messages(&chat_messages).unwrap();
+    assert_eq!(
+        chat_projected[0].replay_frame().unwrap().cold_prefix_len(),
+        3
+    );
+    assert_eq!(
+        crate::project_model_messages(&chat_projected).unwrap(),
+        chat_projected
+    );
+    let chat_request = ChatRequest {
+        model: MODEL.into(),
+        messages: chat_projected.clone(),
+        ..Default::default()
+    };
+    let chat = build_request_body(&chat_request);
+    assert_eq!(chat["messages"][1]["role"], "user");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(chat["messages"][1]["content"].as_str().unwrap())
+            .unwrap()["vega_history_observation"]["text"],
+        "prior visible answer"
+    );
+    assert_eq!(chat["messages"][2]["content"], "current request");
+    assert_eq!(chat["messages"][3]["reasoning_content"], "LIVE_REASONING");
+    assert!(!chat.to_string().contains("PRIVATE_CHAT_REASONING"));
+    assert!(!chat.to_string().contains("PRIVATE_OPAQUE"));
+    let chat_wire_estimate = crate::estimate_wire_context(&chat_projected, &[]).unwrap();
+    assert_eq!(
+        crate::estimate_chat_context("system", &chat_projected[1..], &[]).unwrap(),
+        chat_wire_estimate
+    );
+
+    let response_messages = {
+        let mut messages = build_messages(crate::ReasoningReplayPolicy::ResponsesItems);
+        let reasoning_item = serde_json::json!({
+            "type":"reasoning",
+            "id":"rs_1",
+            "phase":"analysis",
+            "summary":[],
+            "encrypted_content":"LIVE_OPAQUE"
+        });
+        let message_item = serde_json::json!({
+            "type":"message",
+            "id":"msg_1",
+            "role":"assistant",
+            "status":"completed",
+            "phase":"final",
+            "content":[{"type":"output_text","text":"live final"}]
+        });
+        let mut live = ChatMessage::new(ChatRole::Assistant, "live final");
+        live.response_reasoning = vec![reasoning_item.clone()];
+        live.response_replay_layout = Some(crate::ResponseReplayLayout {
+            response_id: Some("resp_1".into()),
+            slots: vec![
+                crate::ResponseReplaySlot::Reasoning(reasoning_item),
+                crate::ResponseReplaySlot::Message(message_item),
+            ],
+        });
+        messages.push(live);
+        messages
+    };
+    let response_projected = crate::project_model_messages(&response_messages).unwrap();
+    assert_eq!(
+        response_projected[0]
+            .replay_frame()
+            .unwrap()
+            .cold_prefix_len(),
+        3
+    );
+    assert_eq!(
+        crate::project_model_messages(&response_projected).unwrap(),
+        response_projected
+    );
+    let response_request = ChatRequest {
+        model: MODEL.into(),
+        messages: response_projected.clone(),
+        reasoning: Some(FrozenReasoning {
+            provider: "openai".into(),
+            model: MODEL.into(),
+            protocol: ReasoningProtocol::ResponsesApi,
+            replay_policy: ReasoningReplayPolicy::ResponsesItems,
+            choice: ReasoningChoice::ProviderDefault,
+            supports_disabled: false,
+            disabled_wire: None,
+            declared_efforts: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    let responses = responses::build_body(&response_request).unwrap();
+    let input = responses["input"].as_array().unwrap();
+    assert_eq!(input[1]["role"], "user");
+    assert_eq!(input[2]["content"][0]["text"], "current request");
+    assert_eq!(input[3]["phase"], "analysis");
+    assert_eq!(input[4]["phase"], "final");
+    assert_eq!(input[3]["encrypted_content"], "LIVE_OPAQUE");
+    assert!(!responses.to_string().contains("PRIVATE_CHAT_REASONING"));
+    assert!(!responses.to_string().contains("PRIVATE_OPAQUE"));
+    let response_wire_estimate = crate::estimate_wire_context(&response_projected, &[]).unwrap();
+    assert_eq!(
+        crate::estimate_chat_context("system", &response_projected[1..], &[]).unwrap(),
+        response_wire_estimate
+    );
+}
+
+#[test]
 fn issue85_vega_tools_emit_strict_chat_completions_wire() {
     let request = ChatRequest {
         model: MODEL.into(),
@@ -167,25 +296,83 @@ fn issue85_non_strict_tools_do_not_claim_strict_wire() {
 }
 
 #[test]
-fn zhipu_enabled_effort_omits_cross_round_clear_switch() {
+fn glm_preserved_effort_keeps_the_cross_round_clear_switch() {
     let request = ChatRequest {
         model: "glm-5.3".into(),
         reasoning: Some(FrozenReasoning {
             provider: "zhipu".into(),
             model: "glm-5.3".into(),
             protocol: ReasoningProtocol::ZhipuChatCompletions,
+            replay_policy: ReasoningReplayPolicy::GlmPreserved,
             choice: ReasoningChoice::Effort("max".into()),
             supports_disabled: false,
-            preserve_reasoning_content: true,
             disabled_wire: None,
             declared_efforts: vec!["low".into(), "high".into(), "max".into()],
         }),
         ..Default::default()
     };
     let wire = build_request_body(&request);
-    assert_eq!(wire["thinking"], serde_json::json!({"type": "enabled"}));
+    assert_eq!(
+        wire["thinking"],
+        serde_json::json!({"type": "enabled", "clear_thinking": false})
+    );
     assert_eq!(wire["reasoning_effort"], "max");
-    assert!(wire.get("clear_thinking").is_none());
+    assert_eq!(wire["thinking"]["clear_thinking"], false);
+}
+
+#[test]
+fn glm_preserved_controls_keep_clear_switch_and_interleaved_omits_it() {
+    let profiles = [
+        FrozenReasoning {
+            provider: "zhipu".into(),
+            model: "glm-4.7".into(),
+            protocol: ReasoningProtocol::ZhipuChatCompletions,
+            replay_policy: ReasoningReplayPolicy::GlmPreserved,
+            choice: ReasoningChoice::ProviderDefault,
+            supports_disabled: true,
+            disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
+            declared_efforts: vec!["low".into(), "high".into(), "max".into()],
+        },
+        FrozenReasoning {
+            provider: "zhipu".into(),
+            model: "glm-4.7".into(),
+            protocol: ReasoningProtocol::ZhipuChatCompletions,
+            replay_policy: ReasoningReplayPolicy::GlmPreserved,
+            choice: ReasoningChoice::Disabled,
+            supports_disabled: true,
+            disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
+            declared_efforts: vec!["low".into(), "high".into(), "max".into()],
+        },
+        FrozenReasoning {
+            provider: "zhipu".into(),
+            model: "glm-4.7".into(),
+            protocol: ReasoningProtocol::ZhipuChatCompletions,
+            replay_policy: ReasoningReplayPolicy::GlmInterleaved,
+            choice: ReasoningChoice::Effort("high".into()),
+            supports_disabled: true,
+            disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
+            declared_efforts: vec!["low".into(), "high".into(), "max".into()],
+        },
+    ];
+    let bodies = profiles.map(|reasoning| {
+        build_request_body(&ChatRequest {
+            model: reasoning.model.clone(),
+            reasoning: Some(reasoning),
+            ..Default::default()
+        })
+    });
+    assert_eq!(
+        bodies[0]["thinking"],
+        serde_json::json!({"clear_thinking": false})
+    );
+    assert_eq!(
+        bodies[1]["thinking"],
+        serde_json::json!({"type": "disabled", "clear_thinking": false})
+    );
+    assert_eq!(
+        bodies[2]["thinking"],
+        serde_json::json!({"type": "enabled"})
+    );
 }
 
 #[test]
@@ -195,9 +382,9 @@ fn false_and_unknown_profiles_omit_reasoning_content_on_follow_up_messages() {
             provider: "openai".into(),
             model: MODEL.into(),
             protocol: ReasoningProtocol::OpenAiChatCompletions,
+            replay_policy: ReasoningReplayPolicy::StandardChat,
             choice: ReasoningChoice::Effort("low".into()),
             supports_disabled: false,
-            preserve_reasoning_content: false,
             disabled_wire: None,
             declared_efforts: vec!["low".into()],
         },
@@ -230,9 +417,9 @@ fn explicit_disabled_wire_is_only_emitted_for_declared_protocol() {
             provider: "openai".into(),
             model: MODEL.into(),
             protocol: ReasoningProtocol::OpenAiChatCompletions,
+            replay_policy: ReasoningReplayPolicy::StandardChat,
             choice: ReasoningChoice::Disabled,
             supports_disabled: true,
-            preserve_reasoning_content: false,
             disabled_wire: Some(ReasoningDisabledWire::ReasoningEffortNone),
             declared_efforts: vec!["low".into()],
         }),
@@ -249,9 +436,9 @@ fn standard_glm_profile_cannot_claim_disabled_thinking() {
         provider: "zhipu".into(),
         model: "glm-5.3-flash".into(),
         protocol: ReasoningProtocol::ZhipuChatCompletions,
+        replay_policy: ReasoningReplayPolicy::GlmPreserved,
         choice: ReasoningChoice::ProviderDefault,
         supports_disabled: true,
-        preserve_reasoning_content: true,
         disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
         declared_efforts: vec!["low".into(), "high".into(), "max".into()],
     };
@@ -291,9 +478,12 @@ fn text_deltas_with_unknown_fields_ignored() {
     );
     assert_eq!(
         assembler.finalize().expect("explicit finish reason"),
-        vec![ProviderEvent::Done {
-            stop_reason: StopReason::End
-        }]
+        vec![
+            ProviderEvent::ChatReasoningContent(crate::ChatReasoningPresence::Absent),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End
+            }
+        ]
     );
 }
 
@@ -307,6 +497,383 @@ fn reasoning_content_becomes_thinking_delta() {
     assert_eq!(
         events,
         vec![ProviderEvent::ThinkingDelta("pondering".into())]
+    );
+}
+
+#[test]
+fn chat_reasoning_raw_presence_preserves_absent_empty_and_nonempty_without_debug_leaks() {
+    for (chunks, expected) in [
+        (
+            vec![r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#],
+            crate::ChatReasoningPresence::Absent,
+        ),
+        (
+            vec![r#"{"choices":[{"delta":{"reasoning_content":""},"finish_reason":"stop"}]}"#],
+            crate::ChatReasoningPresence::Empty,
+        ),
+        (
+            vec![
+                r#"{"choices":[{"delta":{"reasoning_content":"PRIVATE_"}}]}"#,
+                r#"{"choices":[{"delta":{"reasoning_content":"REPLAY"},"finish_reason":"tool_calls"}]}"#,
+            ],
+            crate::ChatReasoningPresence::NonEmpty("PRIVATE_REPLAY".into()),
+        ),
+    ] {
+        let mut assembler = SseAssembler::default();
+        for chunk in chunks {
+            assembler.absorb(chunk).unwrap();
+        }
+        let events = assembler.finalize().unwrap();
+        assert!(
+            matches!(events.first(), Some(ProviderEvent::ChatReasoningContent(actual)) if *actual == expected)
+        );
+        assert!(matches!(events.last(), Some(ProviderEvent::Done { .. })));
+        assert!(!format!("{events:?}").contains("PRIVATE_REPLAY"));
+    }
+}
+
+#[test]
+fn automatic_replay_completed_binding_loss_becomes_observation_on_both_wires() {
+    let image = || {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        crate::ImageAttachment::from_bytes(bytes.into_inner()).unwrap()
+    };
+    let calls = [
+        ("observe-1", "ComputerObserve", r#"{"action":"observe"}"#),
+        ("observe-2", "ComputerObserve", r#"{"action":"observe"}"#),
+    ];
+    let tool_calls = calls
+        .iter()
+        .map(|(id, name, _)| ChatToolCall {
+            id: (*id).into(),
+            name: (*name).into(),
+            input_json: crate::computer_use::ComputerUseAudit::for_tool(name, "{}"),
+        })
+        .collect::<Vec<_>>();
+    let mut assistant = ChatMessage::assistant_with_tools_and_reasoning(
+        "I inspected the current screen.",
+        Some("PRIVATE_CHAT_REASONING".into()),
+        tool_calls,
+    );
+    let response_reasoning = serde_json::json!({
+        "type":"reasoning",
+        "id":"reasoning-1",
+        "phase":"analysis",
+        "encrypted_content":"PRIVATE_RESPONSE_REASONING"
+    });
+    assistant.response_reasoning = vec![response_reasoning.clone()];
+    assistant.response_replay_layout = Some(crate::ResponseReplayLayout {
+        response_id: Some("response-1".into()),
+        slots: vec![
+            crate::ResponseReplaySlot::Reasoning(response_reasoning),
+            crate::ResponseReplaySlot::Message(serde_json::json!({
+                "type":"message",
+                "id":"message-1",
+                "role":"assistant",
+                "status":"completed",
+                "phase":"commentary",
+                "content":[{"type":"output_text","text":"I inspected the current screen."}]
+            })),
+            crate::ResponseReplaySlot::FunctionCall {
+                item: serde_json::json!({
+                    "type":"function_call",
+                    "call_id":"observe-1",
+                    "name":"ComputerObserve",
+                    "arguments":"{\"action\":\"observe\"}",
+                    "phase":"commentary"
+                }),
+                call_id: "observe-1".into(),
+                name: "ComputerObserve".into(),
+                arguments: calls[0].2.into(),
+            },
+            crate::ResponseReplaySlot::FunctionCall {
+                item: serde_json::json!({
+                    "type":"function_call",
+                    "call_id":"observe-2",
+                    "name":"ComputerObserve",
+                    "arguments":"{\"action\":\"observe\"}",
+                    "phase":"commentary"
+                }),
+                call_id: "observe-2".into(),
+                name: "ComputerObserve".into(),
+                arguments: calls[1].2.into(),
+            },
+        ],
+    });
+    assistant
+        .bind_live_tool_calls(
+            calls
+                .iter()
+                .map(|(id, name, arguments)| {
+                    Some(ChatToolCall {
+                        id: (*id).into(),
+                        name: (*name).into(),
+                        input_json: (*arguments).into(),
+                    })
+                })
+                .collect(),
+        )
+        .unwrap();
+    assistant.discard_computer_use_arguments();
+    let mut first_result = ChatMessage::tool_result("observe-1", "first screen result");
+    first_result.images.push(image());
+    let mut second_result = ChatMessage::tool_result("observe-2", "second screen result");
+    second_result.images.push(image());
+    let messages = vec![
+        assistant,
+        first_result,
+        second_result,
+        ChatMessage::new(ChatRole::User, "continue from the observation"),
+    ];
+
+    let mut chat = ChatRequest {
+        model: MODEL.into(),
+        messages: messages.clone(),
+        ..Default::default()
+    };
+    chat.messages = crate::project_model_messages(&chat.messages).unwrap();
+    assert_eq!(chat.messages[0].content, "I inspected the current screen.");
+    assert!(chat.messages[0].tool_calls.is_empty());
+    assert!(chat.messages[0].reasoning_content.is_none());
+    assert!(chat.messages[0].response_reasoning.is_empty());
+    assert!(chat.messages[0].response_replay_layout.is_none());
+    assert_eq!(chat.messages[1].role, ChatRole::User);
+    assert_eq!(chat.messages[2].images.len(), 1);
+    assert_eq!(chat.messages[3].images.len(), 1);
+    let chat_wire = build_request_body(&chat);
+    assert_eq!(
+        chat_wire["messages"][0]["content"],
+        "I inspected the current screen."
+    );
+    assert!(chat_wire["messages"][0].get("reasoning_content").is_none());
+    assert_eq!(chat_wire["messages"][1]["role"], "user");
+    let activity = serde_json::from_str::<serde_json::Value>(
+        chat_wire["messages"][1]["content"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        activity["vega_history_observation"]["calls"],
+        serde_json::json!([
+            {"tool":"ComputerObserve","call_id":"observe-1","arguments_available":false,"status":null},
+            {"tool":"ComputerObserve","call_id":"observe-2","arguments_available":false,"status":null}
+        ])
+    );
+    for (index, expected) in [(2, "first screen result"), (3, "second screen result")] {
+        let observation = serde_json::from_str::<serde_json::Value>(
+            chat_wire["messages"][index]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(observation["vega_history_observation"]["output"], expected);
+        assert_eq!(
+            chat_wire["messages"][index]["content"][1]["type"],
+            "image_url"
+        );
+    }
+    assert!(!chat_wire.to_string().contains("PRIVATE_CHAT_REASONING"));
+    assert!(!chat_wire.to_string().contains("PRIVATE_RESPONSE_REASONING"));
+
+    let mut responses = ChatRequest {
+        model: MODEL.into(),
+        messages,
+        reasoning: Some(FrozenReasoning {
+            provider: "custom".into(),
+            model: MODEL.into(),
+            protocol: ReasoningProtocol::ResponsesApi,
+            replay_policy: ReasoningReplayPolicy::ResponsesItems,
+            choice: ReasoningChoice::ProviderDefault,
+            supports_disabled: false,
+            disabled_wire: None,
+            declared_efforts: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    responses.messages = crate::project_model_messages(&responses.messages).unwrap();
+    assert!(responses.messages[0].response_replay_layout.is_none());
+    let responses_wire = responses::build_body(&responses).unwrap();
+    let response_input = responses_wire["input"].as_array().unwrap();
+    assert_eq!(response_input[0]["role"], "assistant");
+    assert_eq!(
+        response_input[0]["content"][0]["text"],
+        "I inspected the current screen."
+    );
+    assert_eq!(response_input[1]["role"], "user");
+    for (index, expected) in [(2, "first screen result"), (3, "second screen result")] {
+        let observation = serde_json::from_str::<serde_json::Value>(
+            response_input[index]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(observation["vega_history_observation"]["output"], expected);
+        assert_eq!(response_input[index]["content"][1]["type"], "input_image");
+    }
+    assert!(
+        !responses_wire
+            .to_string()
+            .contains("PRIVATE_CHAT_REASONING")
+    );
+    assert!(
+        !responses_wire
+            .to_string()
+            .contains("PRIVATE_RESPONSE_REASONING")
+    );
+}
+
+#[test]
+fn automatic_replay_pending_binding_loss_is_rejected_before_either_serializer() {
+    let calls = [
+        ("pending-1", "ComputerObserve", r#"{"action":"observe"}"#),
+        ("pending-2", "ComputerObserve", r#"{"action":"observe"}"#),
+    ];
+    let tool_calls = calls
+        .iter()
+        .map(|(id, name, _)| ChatToolCall {
+            id: (*id).into(),
+            name: (*name).into(),
+            input_json: crate::computer_use::ComputerUseAudit::for_tool(name, "{}"),
+        })
+        .collect::<Vec<_>>();
+    let mut assistant = ChatMessage::assistant_with_tools_and_reasoning(
+        "pending observation",
+        Some("PRIVATE_PENDING_REASONING".into()),
+        tool_calls,
+    );
+    assistant.response_replay_layout = Some(crate::ResponseReplayLayout {
+        response_id: Some("pending-response".into()),
+        slots: Vec::new(),
+    });
+    assistant.bind_live_tool_calls(vec![None, None]).unwrap();
+    let messages = vec![
+        assistant,
+        ChatMessage::tool_result("pending-1", "only one result"),
+    ];
+    let invalid = |messages: &[ChatMessage]| {
+        matches!(
+            crate::project_model_messages(messages),
+            Err(VegaError::Context(
+                crate::ContextRuntimeError::InvalidProjection
+            ))
+        )
+    };
+    assert!(invalid(&messages));
+    let chat = ChatRequest {
+        model: MODEL.into(),
+        messages: messages.clone(),
+        ..Default::default()
+    };
+    assert!(invalid(&chat.messages));
+    let responses = ChatRequest {
+        model: MODEL.into(),
+        messages,
+        reasoning: Some(FrozenReasoning {
+            provider: "custom".into(),
+            model: MODEL.into(),
+            protocol: ReasoningProtocol::ResponsesApi,
+            replay_policy: ReasoningReplayPolicy::ResponsesItems,
+            choice: ReasoningChoice::ProviderDefault,
+            supports_disabled: false,
+            disabled_wire: None,
+            declared_efforts: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    assert!(invalid(&responses.messages));
+}
+
+#[test]
+fn responses_replay_layout_keeps_reasoning_message_and_calls_in_wire_order() {
+    let mut parser = responses::Assembler::default();
+    let output = vec![
+        serde_json::json!({"id":"reasoning-1","type":"reasoning","encrypted_content":"opaque-one","phase":"analysis"}),
+        serde_json::json!({"id":"message-1","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"checking"}]}),
+        serde_json::json!({"id":"call-item","type":"function_call","call_id":"call-1","name":"read","arguments":"{\"path\":\"README.md\"}","phase":"commentary"}),
+        serde_json::json!({"id":"reasoning-2","type":"reasoning","encrypted_content":"opaque-two","phase":"analysis"}),
+    ];
+    let response = serde_json::json!({
+        "type":"response.completed",
+        "response":{"id":"resp-1","status":"completed","output":output}
+    });
+    let events = parser.absorb(&response.to_string()).unwrap();
+    let layout = events
+        .iter()
+        .find_map(|event| match event {
+            ProviderEvent::ResponseReplay(layout) => Some(layout.clone()),
+            _ => None,
+        })
+        .expect("validated response layout");
+    assert_eq!(layout.response_id.as_deref(), Some("resp-1"));
+    assert_eq!(layout.slots.len(), 4);
+    assert!(
+        matches!(&layout.slots[0], crate::ResponseReplaySlot::Reasoning(item) if item["phase"] == "analysis")
+    );
+    assert!(
+        matches!(&layout.slots[1], crate::ResponseReplaySlot::Message(item) if item["phase"] == "commentary")
+    );
+    assert!(
+        matches!(&layout.slots[2], crate::ResponseReplaySlot::FunctionCall { call_id, name, arguments, item } if call_id == "call-1" && name == "read" && arguments == r#"{"path":"README.md"}"# && item["phase"] == "commentary")
+    );
+    assert!(
+        matches!(&layout.slots[3], crate::ResponseReplaySlot::Reasoning(item) if item["encrypted_content"] == "opaque-two")
+    );
+    assert!(!format!("{layout:?}").contains("opaque-one"));
+
+    let mut request = ChatRequest {
+        reasoning: Some(FrozenReasoning {
+            provider: "custom".into(),
+            model: MODEL.into(),
+            protocol: ReasoningProtocol::ResponsesApi,
+            replay_policy: crate::ReasoningReplayPolicy::ResponsesItems,
+            choice: ReasoningChoice::ProviderDefault,
+            supports_disabled: false,
+            disabled_wire: None,
+            declared_efforts: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    let mut message = ChatMessage::assistant_with_tools(
+        "checking",
+        vec![ChatToolCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"README.md"}"#.into(),
+        }],
+    );
+    message.response_reasoning = layout
+        .slots
+        .iter()
+        .filter_map(|slot| match slot {
+            crate::ResponseReplaySlot::Reasoning(item) => Some(item.clone()),
+            _ => None,
+        })
+        .collect();
+    message.response_replay_layout = Some(layout);
+    message
+        .bind_live_tool_calls(vec![Some(message.tool_calls[0].clone())])
+        .unwrap();
+    request.messages.push(message);
+    request
+        .messages
+        .push(ChatMessage::tool_result("call-1", "observed"));
+    let body = responses::build_body(&request).unwrap();
+    let items = body["input"].as_array().unwrap();
+    assert_eq!(items[0]["type"], "reasoning");
+    assert_eq!(items[0]["phase"], "analysis");
+    assert_eq!(items[1]["type"], "message");
+    assert_eq!(items[1]["phase"], "commentary");
+    assert_eq!(items[2]["type"], "function_call");
+    assert_eq!(items[2]["phase"], "commentary");
+    assert_eq!(items[3]["type"], "reasoning");
+    assert_eq!(items[3]["encrypted_content"], "opaque-two");
+    assert_eq!(items[4]["type"], "function_call_output");
+    assert_eq!(body["store"], false);
+    assert_eq!(
+        body["include"],
+        serde_json::json!(["reasoning.encrypted_content"])
     );
 }
 
@@ -338,9 +905,12 @@ fn tool_call_fragments_aggregate_into_single_tool_use() {
     );
     assert_eq!(
         assembler.finalize().expect("explicit finish reason"),
-        vec![ProviderEvent::Done {
-            stop_reason: StopReason::ToolUse
-        }]
+        vec![
+            ProviderEvent::ChatReasoningContent(crate::ChatReasoningPresence::Absent),
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse
+            }
+        ]
     );
 }
 
@@ -430,9 +1000,144 @@ fn usage_chunk_maps_to_usage_event() {
         vec![ProviderEvent::Usage {
             input: 100,
             output: 21,
-            cache_read: 80,
-            cache_write: 0,
+            cache_read: Some(80),
+            cache_write: None,
         }]
+    );
+}
+
+#[test]
+fn usage_cache_absence_stays_distinct_from_explicit_zero() {
+    let mut assembler = SseAssembler::default();
+    let missing = absorb_all(
+        &mut assembler,
+        &[r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":21}}"#],
+    );
+    assert_eq!(
+        missing,
+        vec![ProviderEvent::Usage {
+            input: 100,
+            output: 21,
+            cache_read: None,
+            cache_write: None,
+        }]
+    );
+    let mut assembler = SseAssembler::default();
+    let explicit_zero = absorb_all(
+        &mut assembler,
+        &[
+            r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":21,"prompt_tokens_details":{"cached_tokens":0}}}"#,
+        ],
+    );
+    assert_eq!(
+        explicit_zero,
+        vec![ProviderEvent::Usage {
+            input: 100,
+            output: 21,
+            cache_read: Some(0),
+            cache_write: None,
+        }]
+    );
+}
+
+#[test]
+fn deepseek_usage_keeps_hit_and_checks_reported_miss() {
+    let mut assembler = SseAssembler::default();
+    let events = absorb_all(
+        &mut assembler,
+        &[
+            r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":21,"prompt_tokens_details":{"cached_tokens":60},"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":40}}"#,
+        ],
+    );
+    assert_eq!(
+        events,
+        vec![ProviderEvent::Usage {
+            input: 100,
+            output: 21,
+            cache_read: Some(60),
+            cache_write: None,
+        }]
+    );
+    let mut assembler = SseAssembler::default();
+    assert!(assembler
+        .absorb(r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":21,"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":39}}"#)
+        .is_err());
+    let mut assembler = SseAssembler::default();
+    assert!(assembler
+        .absorb(r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":21,"prompt_cache_hit_tokens":101}}"#)
+        .is_err());
+}
+
+#[test]
+fn responses_usage_preserves_missing_and_explicit_zero_cache_counts() {
+    let mut parser = responses::Assembler::default();
+    let missing = parser
+        .absorb(
+            &serde_json::json!({
+                "type":"response.completed",
+                "response":{
+                    "status":"completed",
+                    "output":[],
+                    "usage":{"input_tokens":100,"output_tokens":21}
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    assert!(missing.contains(&ProviderEvent::Usage {
+        input: 100,
+        output: 21,
+        cache_read: None,
+        cache_write: None,
+    }));
+
+    let mut parser = responses::Assembler::default();
+    let explicit_zero = parser
+        .absorb(
+            &serde_json::json!({
+                "type":"response.completed",
+                "response":{
+                    "status":"completed",
+                    "output":[],
+                    "usage":{
+                        "input_tokens":100,
+                        "output_tokens":21,
+                        "input_tokens_details":{"cached_tokens":0}
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    assert!(explicit_zero.contains(&ProviderEvent::Usage {
+        input: 100,
+        output: 21,
+        cache_read: Some(0),
+        cache_write: None,
+    }));
+}
+
+#[test]
+fn responses_usage_rejects_cache_read_above_input() {
+    let mut parser = responses::Assembler::default();
+    assert!(
+        parser
+            .absorb(
+                &serde_json::json!({
+                    "type":"response.completed",
+                    "response":{
+                        "status":"completed",
+                        "output":[],
+                        "usage":{
+                            "input_tokens":100,
+                            "output_tokens":21,
+                            "input_tokens_details":{"cached_tokens":101}
+                        }
+                    }
+                })
+                .to_string(),
+            )
+            .is_err()
     );
 }
 
@@ -473,9 +1178,12 @@ fn finish_reason_maps_to_minimal_stop_reasons() {
             .unwrap();
         assert_eq!(
             assembler.finalize().expect("explicit finish reason"),
-            vec![ProviderEvent::Done {
-                stop_reason: expected
-            }]
+            vec![
+                ProviderEvent::ChatReasoningContent(crate::ChatReasoningPresence::Absent),
+                ProviderEvent::Done {
+                    stop_reason: expected
+                }
+            ]
         );
     }
 }
@@ -570,6 +1278,7 @@ async fn sse_events_reassemble_across_chunk_boundaries() {
         vec![
             ProviderEvent::TextDelta("Hello".into()),
             ProviderEvent::TextDelta(" world".into()),
+            ProviderEvent::ChatReasoningContent(crate::ChatReasoningPresence::Absent),
             ProviderEvent::Done {
                 stop_reason: StopReason::End
             },
@@ -864,6 +1573,10 @@ fn i71_responses_summary_parts_snapshots_and_refusal() {
             ProviderEvent::SummaryDelta("\n\n".into()),
             ProviderEvent::SummaryDelta("Second".into()),
             ProviderEvent::TextDelta("Cannot do that.".into()),
+            ProviderEvent::ResponseReplay(crate::ResponseReplayLayout {
+                response_id: None,
+                slots: Vec::new()
+            }),
             ProviderEvent::Done {
                 stop_reason: StopReason::End
             }
@@ -902,6 +1615,7 @@ async fn issue296_responses_completed_snapshot_remains_a_trusted_final() {
             tool_config: Default::default(),
             pricing_catalog: None,
             reasoning: None,
+            replay_frame: None,
             context_budget: None,
             context_source_version: None,
             context_source_fingerprint: None,
@@ -921,6 +1635,94 @@ async fn issue296_responses_completed_snapshot_remains_a_trusted_final() {
 }
 
 #[tokio::test]
+async fn automatic_replay_empty_response_accepts_only_consistent_completed_output() {
+    for streamed_text in [None, Some("not in the completed snapshot")] {
+        let mut parser = responses::Assembler::default();
+        let mut events = Vec::new();
+        if let Some(text) = streamed_text {
+            events.extend(
+                parser
+                    .absorb(
+                        &serde_json::json!({
+                            "type":"response.output_text.delta", "item_id":"m", "content_index":0,
+                            "delta":text
+                        })
+                        .to_string(),
+                    )
+                    .unwrap(),
+            );
+        }
+        events.extend(
+            parser
+                .absorb(
+                    &serde_json::json!({
+                        "type":"response.completed", "response":{"status":"completed","output":[]}
+                    })
+                    .to_string(),
+                )
+                .unwrap(),
+        );
+        let provider = crate::MockProvider::new(vec![crate::ScriptStep::events(events)]);
+        let directory = tempfile::tempdir().unwrap();
+        let tools = vega_tools::Tools::new(directory.path()).unwrap();
+        let result = crate::run_agent(
+            &provider,
+            &tools,
+            crate::AgentRequest {
+                model: MODEL.into(),
+                system_prompt: "Be precise.".into(),
+                history: vec![ChatMessage::new(ChatRole::User, "Finish the task.")],
+                max_tokens: None,
+                completed_tool_results: Default::default(),
+                tool_config: Default::default(),
+                pricing_catalog: None,
+                reasoning: Some(crate::FrozenReasoning {
+                    provider: "fixture".into(),
+                    model: MODEL.into(),
+                    protocol: crate::ReasoningProtocol::ResponsesApi,
+                    replay_policy: crate::ReasoningReplayPolicy::ResponsesItems,
+                    choice: crate::ReasoningChoice::ProviderDefault,
+                    supports_disabled: false,
+                    disabled_wire: None,
+                    declared_efforts: Vec::new(),
+                }),
+                replay_frame: None,
+                context_budget: None,
+                context_source_version: None,
+                context_source_fingerprint: None,
+                context_operation_id: None,
+                context_compaction_hook: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.failed, streamed_text.is_some());
+        assert_eq!(result.executed_tool_call_count, 0);
+        assert!(!result.events.iter().any(|event| matches!(
+            event,
+            crate::RuntimeEvent::AssistantResponseCompleted {
+                kind: crate::RuntimeAssistantResponseKind::Final,
+                ..
+            }
+        )));
+        if streamed_text.is_none() {
+            assert!(result.final_text.is_empty());
+            assert!(
+                result
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == ChatRole::Assistant)
+                    .all(|message| message.content.is_empty()
+                        && message.reasoning_content.is_none()
+                        && message.tool_calls.is_empty())
+            );
+            assert!(result.messages[0].replay_frame().unwrap().seal_eligible());
+        }
+    }
+}
+
+#[tokio::test]
 async fn i71_responses_rejects_incompatible_profile_before_network() {
     let provider = OpenAiProvider::new("http://127.0.0.1:1", KEY)
         .unwrap()
@@ -930,9 +1732,9 @@ async fn i71_responses_rejects_incompatible_profile_before_network() {
         provider: "owned".into(),
         model: MODEL.into(),
         protocol: ReasoningProtocol::OpenAiChatCompletions,
+        replay_policy: ReasoningReplayPolicy::StandardChat,
         choice: ReasoningChoice::ProviderDefault,
         supports_disabled: false,
-        preserve_reasoning_content: true,
         disabled_wire: None,
         declared_efforts: vec![],
     });
@@ -1012,10 +1814,10 @@ fn i71_responses_request_effort_off_tools_and_chat_compatibility() {
     req.reasoning = Some(FrozenReasoning {
         provider: "owned".into(),
         model: MODEL.into(),
-        protocol: ReasoningProtocol::OpenAiChatCompletions,
+        protocol: ReasoningProtocol::ResponsesApi,
+        replay_policy: ReasoningReplayPolicy::ResponsesItems,
         choice: ReasoningChoice::Effort("low".into()),
         supports_disabled: true,
-        preserve_reasoning_content: false,
         disabled_wire: Some(ReasoningDisabledWire::ReasoningEffortNone),
         declared_efforts: vec!["low".into()],
     });
@@ -1051,7 +1853,10 @@ fn i71_responses_request_effort_off_tools_and_chat_compatibility() {
         responses::build_body(&req).unwrap()["reasoning"]["effort"],
         "none"
     );
-    let chat = build_request_body(&req);
+    let mut chat_request = req.clone();
+    chat_request.reasoning.as_mut().unwrap().protocol = ReasoningProtocol::OpenAiChatCompletions;
+    chat_request.reasoning.as_mut().unwrap().replay_policy = ReasoningReplayPolicy::StandardChat;
+    let chat = build_request_body(&chat_request);
     assert_eq!(chat["reasoning_effort"], "none");
     assert!(chat.get("reasoning").is_none());
     assert!(chat.get("input").is_none());
@@ -1080,6 +1885,99 @@ fn i71_responses_item_and_terminal_snapshots_recover_missing_deltas_once() {
         1
     );
     assert!(matches!(out.last(), Some(ProviderEvent::Done { .. })));
+}
+
+#[tokio::test]
+async fn automatic_replay_rejects_non_assistant_responses_message_before_tools_or_resend() {
+    let bad_message = serde_json::json!({
+        "type":"message",
+        "id":"untrusted-message",
+        "role":"user",
+        "status":"completed",
+        "phase":"commentary",
+        "content":[{"type":"output_text","text":"untrusted"}]
+    });
+    let mut parser = responses::Assembler::default();
+    assert!(
+        parser
+            .absorb(
+                &serde_json::json!({
+                    "type":"response.completed",
+                    "response":{"status":"completed","output":[bad_message.clone()]}
+                })
+                .to_string()
+            )
+            .is_err()
+    );
+
+    let layout = crate::ResponseReplayLayout {
+        response_id: Some("untrusted-response".into()),
+        slots: vec![crate::ResponseReplaySlot::Message(bad_message)],
+    };
+    let provider = crate::MockProvider::new(vec![crate::ScriptStep::events(vec![
+        ProviderEvent::ResponseReplay(layout.clone()),
+        ProviderEvent::ToolUse {
+            id: "must-not-run".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"lib.rs"}"#.into(),
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
+    ])]);
+    let directory = tempfile::tempdir().unwrap();
+    let tools = vega_tools::Tools::new(directory.path()).unwrap();
+    let outcome = crate::run_agent(
+        &provider,
+        &tools,
+        crate::AgentRequest {
+            model: MODEL.into(),
+            system_prompt: "Be precise.".into(),
+            history: Vec::new(),
+            max_tokens: None,
+            completed_tool_results: Default::default(),
+            tool_config: Default::default(),
+            pricing_catalog: None,
+            reasoning: Some(FrozenReasoning {
+                provider: "custom".into(),
+                model: MODEL.into(),
+                protocol: ReasoningProtocol::ResponsesApi,
+                replay_policy: ReasoningReplayPolicy::ResponsesItems,
+                choice: ReasoningChoice::ProviderDefault,
+                supports_disabled: false,
+                disabled_wire: None,
+                declared_efforts: Vec::new(),
+            }),
+            replay_frame: None,
+            context_budget: None,
+            context_source_version: None,
+            context_source_fingerprint: None,
+            context_operation_id: None,
+            context_compaction_hook: None,
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(outcome.failed);
+    assert_eq!(outcome.executed_tool_call_count, 0);
+    assert_eq!(provider.requests().len(), 1);
+
+    let mut next = request();
+    next.reasoning = Some(FrozenReasoning {
+        provider: "custom".into(),
+        model: MODEL.into(),
+        protocol: ReasoningProtocol::ResponsesApi,
+        replay_policy: ReasoningReplayPolicy::ResponsesItems,
+        choice: ReasoningChoice::ProviderDefault,
+        supports_disabled: false,
+        disabled_wire: None,
+        declared_efforts: Vec::new(),
+    });
+    let mut assistant = ChatMessage::new(ChatRole::Assistant, "untrusted");
+    assistant.response_replay_layout = Some(layout);
+    next.messages.push(assistant);
+    assert!(responses::build_body(&next).is_err());
 }
 
 #[test]

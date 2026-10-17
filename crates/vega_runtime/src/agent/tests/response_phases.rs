@@ -54,6 +54,11 @@ async fn issue296_real_sse_finish_reason_controls_final_without_losing_text() {
             )
         });
         assert_eq!(is_final, reason == "stop", "finish_reason={reason}");
+        assert_eq!(
+            result.messages[0].replay_frame().unwrap().seal_eligible(),
+            reason == "stop",
+            "finish_reason={reason}"
+        );
     }
 }
 
@@ -99,6 +104,11 @@ async fn issue296_real_sse_unknown_finish_cannot_anchor_next_tool_round() {
         assert_eq!(
             decisions[1].provider_input_baseline,
             (reason == "tool_calls").then_some(500)
+        );
+        assert_eq!(
+            result.messages[0].replay_frame().unwrap().seal_eligible(),
+            reason == "tool_calls",
+            "finish_reason={reason}"
         );
     }
 }

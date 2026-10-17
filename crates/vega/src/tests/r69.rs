@@ -124,8 +124,8 @@ fn streaming_observation_fixture() -> (Arc<StreamingObservationProvider>, Stream
             vega_runtime::ProviderEvent::Usage {
                 input: 11,
                 output: 7,
-                cache_read: 2,
-                cache_write: 1,
+                cache_read: Some(2),
+                cache_write: Some(1),
             },
             vega_runtime::ProviderEvent::Done {
                 stop_reason: vega_runtime::StopReason::End,
@@ -172,8 +172,8 @@ fn issue60_streaming_gate_release_guard_drop_unblocks_stream() {
             vega_runtime::ProviderEvent::Usage {
                 input: 11,
                 output: 7,
-                cache_read: 2,
-                cache_write: 1,
+                cache_read: Some(2),
+                cache_write: Some(1),
             }
         );
         assert_eq!(
@@ -305,8 +305,8 @@ async fn issue60_unpriced_first_submit_reaches_provider(cx: &mut gpui_kit::TestA
             vega_runtime::ProviderEvent::Usage {
                 input: 11,
                 output: 7,
-                cache_read: 2,
-                cache_write: 1,
+                cache_read: Some(2),
+                cache_write: Some(1),
             },
             vega_runtime::ProviderEvent::Done {
                 stop_reason: vega_runtime::StopReason::End,
@@ -378,9 +378,9 @@ async fn issue60_unpriced_first_submit_reaches_provider(cx: &mut gpui_kit::TestA
     let meter = f
         .stream(cx)
         .read_with(cx, |stream, _| stream.meter_snapshot());
-    assert_eq!(meter.tokens, 21);
+    assert_eq!(meter.tokens, 18);
     assert_eq!(meter.cost, None);
-    assert_eq!(meter.display(), "21 tok · —");
+    assert_eq!(meter.display(), "18 tok · —");
     let reopened = Store::open(&f.database_path).expect("reopen usage");
     assert_eq!(
         vega_store::token_usage::aggregate_by_thread(reopened.conn(), &draft.id)
@@ -2955,8 +2955,8 @@ async fn a7_unpriced_first_submit_then_optional_pricing_preserves_task_identity(
             vega_runtime::ProviderEvent::Usage {
                 input: 10,
                 output: 5,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             vega_runtime::ProviderEvent::Done {
                 stop_reason: vega_runtime::StopReason::End,

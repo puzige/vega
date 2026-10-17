@@ -138,6 +138,111 @@ fn builtins_exhaustively_match_every_base_and_peak_source_rate() {
 }
 
 #[test]
+fn optional_cache_quotes_require_rate_level_independence() {
+    let catalog = PricingCatalog::from_specs(vec![
+        static_spec("cache-free-write", "1", "2", "0.5", "0"),
+        static_spec("uniform-input-cache", "1", "2", "1", "0"),
+        static_spec("cache-dependent", "1", "2", "0.5", "0.25"),
+        static_spec("rounded-cache-dependent", "1", "2", "0.5", "0"),
+    ])
+    .unwrap();
+    let timestamp = 1_800_000_000;
+    let write_free = catalog
+        .quote_with_optional_caches(
+            "cache-free-write",
+            10_000,
+            2_000,
+            Some(3_000),
+            None,
+            timestamp,
+        )
+        .unwrap()
+        .expect("zero cache-write rate makes the missing count irrelevant");
+    let write_free_exact = catalog
+        .quote(
+            "cache-free-write",
+            UsageCounts {
+                input: 10_000,
+                output: 2_000,
+                cache_read: 3_000,
+                cache_write: 10_000,
+            },
+            timestamp,
+        )
+        .unwrap();
+    assert_eq!(write_free, write_free_exact);
+
+    let read_uniform = catalog
+        .quote_with_optional_caches(
+            "uniform-input-cache",
+            10_000,
+            2_000,
+            None,
+            Some(0),
+            timestamp,
+        )
+        .unwrap()
+        .expect("equal input and cache-read rates make the missing count irrelevant");
+    let read_uniform_exact = catalog
+        .quote(
+            "uniform-input-cache",
+            UsageCounts {
+                input: 10_000,
+                output: 2_000,
+                cache_read: 10_000,
+                cache_write: 0,
+            },
+            timestamp,
+        )
+        .unwrap();
+    assert_eq!(read_uniform, read_uniform_exact);
+
+    assert_eq!(
+        catalog
+            .quote_with_optional_caches("cache-dependent", 10_000, 2_000, None, Some(0), timestamp,)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        catalog
+            .quote_with_optional_caches("cache-dependent", 10_000, 2_000, Some(1), None, timestamp,)
+            .unwrap(),
+        None
+    );
+    let uncached_round = catalog
+        .quote(
+            "rounded-cache-dependent",
+            UsageCounts {
+                input: 1,
+                output: 0,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            timestamp,
+        )
+        .unwrap();
+    let cached_round = catalog
+        .quote(
+            "rounded-cache-dependent",
+            UsageCounts {
+                input: 1,
+                output: 0,
+                cache_read: 1,
+                cache_write: 0,
+            },
+            timestamp,
+        )
+        .unwrap();
+    assert_eq!(uncached_round, cached_round);
+    assert_eq!(
+        catalog
+            .quote_with_optional_caches("rounded-cache-dependent", 1, 0, None, Some(0), timestamp,)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
 fn missing_file_seeds_and_reopens_without_touching_global_data() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("pricing.json");

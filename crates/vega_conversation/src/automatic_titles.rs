@@ -86,17 +86,16 @@ impl AutomaticTitleRequest {
                 if let Some((input, output, cache_read, cache_write)) = usage {
                     let quote = pricing.as_ref().and_then(|catalog| {
                         catalog
-                            .quote(
+                            .quote_with_optional_caches(
                                 &model,
-                                vega_token::UsageCounts {
-                                    input,
-                                    output,
-                                    cache_read,
-                                    cache_write,
-                                },
+                                input,
+                                output,
+                                cache_read,
+                                cache_write,
                                 started,
                             )
                             .ok()
+                            .flatten()
                     });
                     let profile = quote.as_ref().map(|q| match q.profile {
                         vega_token::PricingProfile::Base => "base",
@@ -111,8 +110,8 @@ impl AutomaticTitleRequest {
                             model: &model,
                             input_tokens: input,
                             output_tokens: output,
-                            cache_read_tokens: cache_read,
-                            cache_write_tokens: cache_write,
+                            cache_read_tokens: cache_read.unwrap_or(0),
+                            cache_write_tokens: cache_write.unwrap_or(0),
                             cost_microcents: quote.as_ref().map_or(0, |q| q.cost_microcents),
                             created_at: started.saturating_mul(1000),
                             pricing_version: quote.as_ref().map(|q| q.pricing_version),
@@ -150,7 +149,10 @@ impl AutomaticTitleRequest {
         }
     }
 
-    async fn collect(&self, model: &str) -> (Option<String>, Option<(u64, u64, u64, u64)>) {
+    async fn collect(
+        &self,
+        model: &str,
+    ) -> (Option<String>, Option<(u64, u64, Option<u64>, Option<u64>)>) {
         let cancel = self.cancel.child_token();
         let request = ChatRequest {
             model: model.into(),
@@ -323,8 +325,8 @@ mod tests {
                 ProviderEvent::Usage {
                     input: 1,
                     output: 2,
-                    cache_read: 0,
-                    cache_write: 0,
+                    cache_read: Some(0),
+                    cache_write: Some(0),
                 },
             ]),
             ScriptStep::Error {
@@ -335,7 +337,26 @@ mod tests {
         ]);
         let (title, usage) = req.collect("model").await;
         assert!(title.is_none());
-        assert_eq!(usage, Some((1, 2, 0, 0)));
+        assert_eq!(usage, Some((1, 2, Some(0), Some(0))));
+    }
+
+    #[tokio::test]
+    async fn automatic_title_usage_preserves_missing_cache_counts() {
+        let (req, _) = request(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("Task title".into()),
+            ProviderEvent::Usage {
+                input: 11,
+                output: 3,
+                cache_read: None,
+                cache_write: None,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]);
+        let (title, usage) = req.collect("model").await;
+        assert_eq!(title.as_deref(), Some("Task title"));
+        assert_eq!(usage, Some((11, 3, None, None)));
     }
 
     #[tokio::test(start_paused = true)]

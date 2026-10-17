@@ -14,6 +14,8 @@ pub struct PersistenceActorConfig {
     pub turn_limit: u32,
     pub(crate) credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     pub(crate) owner_credential_reader: Option<vega_runtime::CredentialReader>,
+    pub(crate) replay_registry: Option<super::ReplaySessionRegistry>,
+    pub(crate) replay_route_fingerprint: Option<[u8; 32]>,
     #[cfg(test)]
     pub(crate) snapshot_writes: Option<Arc<AtomicUsize>>,
     #[cfg(test)]
@@ -42,6 +44,16 @@ pub(crate) enum InjectedPersistenceFailure {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_replay_session_registry(
+        mut self,
+        registry: super::ReplaySessionRegistry,
+        route_fingerprint: [u8; 32],
+    ) -> Self {
+        self.replay_registry = Some(registry);
+        self.replay_route_fingerprint = Some(route_fingerprint);
+        self
+    }
+
     pub fn with_pending_input(
         mut self,
         id: Option<String>,
@@ -341,6 +353,7 @@ pub(crate) struct PreparedRun {
     pub(crate) assistant_seq: i64,
     pub(crate) request: AgentRequest,
     pub(crate) next_tool_seq: i64,
+    pub(crate) replay_lease: Option<super::ReplaySessionLease>,
 }
 
 pub(crate) fn persistence_actor_error(message: impl Into<String>) -> VegaError {

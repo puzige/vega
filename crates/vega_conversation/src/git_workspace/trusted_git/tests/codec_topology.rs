@@ -80,6 +80,7 @@ fn commit_redaction_all_public_provider_carriers_hide_sentinels() {
         ),
         pricing_catalog: None,
         reasoning: None,
+        replay_frame: None,
         context_budget: None,
         context_source_version: None,
         context_source_fingerprint: None,

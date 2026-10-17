@@ -20,7 +20,8 @@ use gpui_kit::{
 use vega_conversation::types::{
     PricingDraftReason, PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice,
     PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection, ReasoningChoice,
-    ReasoningDisabledWire, ReasoningProfileProjection, ReasoningProtocol, ReasoningSupport,
+    ReasoningDisabledWire, ReasoningProfileProjection, ReasoningProtocol, ReasoningReplaySetting,
+    ReasoningSupport,
 };
 use vega_store::config::{self, AppConfig, ProviderConfig};
 use vega_store::context_compaction::ModelContextPolicy;
@@ -67,9 +68,9 @@ pub struct PricingDiscardRequested {
 }
 
 /// Emitted after a Settings config mutation has been written successfully.
-/// The app uses this as the boundary to refresh its model catalog; it never
-/// carries a credential or requests an in-session model change.
-pub struct SettingsSaved;
+pub struct SettingsSaved {
+    pub replay_identity_changed: bool,
+}
 
 /// Settings never opens SQLite itself. The app worker resolves this exact
 /// provider/model policy and sends it back to the active editor.
@@ -145,6 +146,10 @@ pub struct ReasoningReloadRequested;
 pub enum ReasoningTemplate {
     OpenAi,
     Zhipu,
+    DeepSeek,
+    GlmPreserved,
+    GlmInterleaved,
+    Responses,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +184,7 @@ pub(crate) enum PricingFocusTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReasoningFocusTarget {
     Reload,
+    Advanced(usize),
     Template {
         index: usize,
         template: ReasoningTemplate,
@@ -191,7 +197,6 @@ pub(crate) enum ReasoningFocusTarget {
     },
     Preference(usize),
     Disabled(usize),
-    Replay(usize),
 }
 
 /// Whether the settings view currently replaces the session placeholder.

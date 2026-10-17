@@ -206,14 +206,14 @@ async fn provider_draft_grammar_table_is_closed_and_usage_star_is_accepted() {
             ProviderEvent::Usage {
                 input: 1,
                 output: 2,
-                cache_read: 3,
-                cache_write: 4,
+                cache_read: Some(3),
+                cache_write: Some(4),
             },
             ProviderEvent::Usage {
                 input: 5,
                 output: 6,
-                cache_read: 7,
-                cache_write: 8,
+                cache_read: Some(7),
+                cache_write: Some(8),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
@@ -257,8 +257,8 @@ async fn provider_draft_grammar_table_is_closed_and_usage_star_is_accepted() {
             ProviderEvent::Usage {
                 input: 1,
                 output: 1,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
         ])],
         vec![ScriptStep::events(vec![
@@ -272,8 +272,8 @@ async fn provider_draft_grammar_table_is_closed_and_usage_star_is_accepted() {
             ProviderEvent::Usage {
                 input: 1,
                 output: 1,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::TextDelta("late".into()),
         ])],
@@ -672,8 +672,8 @@ async fn failed_draft_keeps_prepared_authority_usable() {
             ProviderEvent::Usage {
                 input: 1,
                 output: 1,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: Some(0),
+                cache_write: Some(0),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::End,

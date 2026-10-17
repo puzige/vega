@@ -310,6 +310,8 @@ pub struct ContextCompactionResult {
     pub source_version: u64,
     /// Fingerprint of the source projection used for this result.
     pub source_fingerprint: Option<String>,
+    pub replay_cold_prefix_messages: Option<usize>,
+    pub replay_interleaved_user_boundary: Option<usize>,
     /// Actual usage from each completed summary stage, in request order.
     pub usages: Vec<ContextCompactionUsage>,
     /// False when any stage omitted Usage; known stages still remain billable.
@@ -325,6 +327,14 @@ impl fmt::Debug for ContextCompactionResult {
             .field(
                 "source_fingerprint_bytes",
                 &self.source_fingerprint.as_ref().map(String::len),
+            )
+            .field(
+                "replay_cold_prefix_messages",
+                &self.replay_cold_prefix_messages,
+            )
+            .field(
+                "replay_interleaved_user_boundary",
+                &self.replay_interleaved_user_boundary,
             )
             .field("usage_count", &self.usages.len())
             .field("usage_complete", &self.usage_complete)
@@ -563,6 +573,10 @@ pub fn estimate_chat_context(
         crate::project_model_messages(messages).map_err(|_| ContextEstimateError::InputTooLarge)?;
     for message in &projected {
         input_tokens = checked_add(input_tokens, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?;
+        if message.response_replay_layout.is_some() {
+            input_tokens = checked_add(input_tokens, estimate_response_replay_layout(message)?)?;
+            continue;
+        }
         input_tokens = checked_add(input_tokens, estimate_text(&message.content)?)?;
         if let Some(reasoning) = &message.reasoning_content {
             input_tokens = checked_add(input_tokens, estimate_text(reasoning)?)?;
@@ -635,6 +649,10 @@ pub fn estimate_wire_context(
         if !(index == 0 && message.role == crate::ChatRole::System) {
             input_tokens = checked_add(input_tokens, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?;
         }
+        if message.response_replay_layout.is_some() {
+            input_tokens = checked_add(input_tokens, estimate_response_replay_layout(message)?)?;
+            continue;
+        }
         input_tokens = checked_add(input_tokens, estimate_text(&message.content)?)?;
         if let Some(reasoning) = &message.reasoning_content {
             input_tokens = checked_add(input_tokens, estimate_text(reasoning)?)?;
@@ -700,6 +718,20 @@ fn estimate_text(value: &str) -> Result<u64, ContextEstimateError> {
 
 fn estimate_json(value: &str) -> Result<u64, ContextEstimateError> {
     estimate_bytes(value, 2)
+}
+
+fn estimate_response_replay_layout(message: &ChatMessage) -> Result<u64, ContextEstimateError> {
+    let items = crate::openai::responses::response_layout_items(message)
+        .map_err(|_| ContextEstimateError::InputTooLarge)?
+        .ok_or(ContextEstimateError::InputTooLarge)?;
+    items.into_iter().try_fold(0u64, |total, item| {
+        let serialized =
+            serde_json::to_string(&item).map_err(|_| ContextEstimateError::InputTooLarge)?;
+        checked_add(
+            checked_add(total, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?,
+            estimate_json(&serialized)?,
+        )
+    })
 }
 
 fn estimate_bytes(value: &str, divisor: u64) -> Result<u64, ContextEstimateError> {

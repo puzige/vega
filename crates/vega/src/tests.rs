@@ -66,6 +66,7 @@ mod computer_use;
 mod project_context;
 mod title_fixture;
 use title_fixture::with_auxiliary_title_fixture;
+mod automatic_reasoning_replay_app;
 mod branch;
 mod commit_controller;
 mod commit_panel;

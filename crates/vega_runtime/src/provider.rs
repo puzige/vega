@@ -10,6 +10,7 @@
 //! expand to — so the crate gains dyn-compatibility with zero proc-macro
 //! dependencies.
 
+use std::fmt;
 use std::pin::Pin;
 
 use futures::Stream;
@@ -29,9 +30,241 @@ pub enum ReasoningProtocol {
     OpenAiChatCompletions,
     /// Zhipu/GLM Chat Completions using `thinking` and `reasoning_effort`.
     ZhipuChatCompletions,
+    DeepSeekChatCompletions,
+    ResponsesApi,
     /// No declared protocol or an endpoint whose capability is unknown.
     #[default]
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReasoningReplayPolicy {
+    StandardChat,
+    DeepSeekTools,
+    GlmPreserved,
+    GlmInterleaved,
+    ResponsesItems,
+    LegacyTextTools,
+    #[default]
+    Unknown,
+}
+
+impl ReasoningReplayPolicy {
+    pub fn preserves_chat_response(self, tools_requested: bool) -> bool {
+        match self {
+            Self::DeepSeekTools | Self::LegacyTextTools => tools_requested,
+            Self::GlmPreserved | Self::GlmInterleaved | Self::ResponsesItems => true,
+            Self::StandardChat | Self::Unknown => false,
+        }
+    }
+
+    pub fn requires_chat_replay_for_tools(self) -> bool {
+        matches!(
+            self,
+            Self::DeepSeekTools | Self::LegacyTextTools | Self::GlmPreserved
+        )
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ReplayFrame {
+    cold_prefix_len: usize,
+    interleaved_user_boundary: Option<usize>,
+    policy: ReasoningReplayPolicy,
+    seal_eligible: bool,
+    route_fingerprint: Option<[u8; 32]>,
+    environment_fingerprint: Option<[u8; 32]>,
+    candidate: Option<Box<ReplayCandidate>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ReplayCandidate {
+    pub(crate) messages: Vec<ChatMessage>,
+    pub(crate) environment_fingerprint: [u8; 32],
+}
+
+impl ReplayFrame {
+    pub fn new(cold_prefix_len: usize, policy: ReasoningReplayPolicy) -> Self {
+        Self {
+            cold_prefix_len,
+            interleaved_user_boundary: (policy == ReasoningReplayPolicy::GlmInterleaved)
+                .then_some(cold_prefix_len),
+            policy,
+            seal_eligible: true,
+            route_fingerprint: None,
+            environment_fingerprint: None,
+            candidate: None,
+        }
+    }
+
+    pub fn cold_prefix_len(&self) -> usize {
+        self.cold_prefix_len
+    }
+
+    #[cfg(test)]
+    pub(crate) fn interleaved_user_boundary(&self) -> Option<usize> {
+        self.interleaved_user_boundary
+    }
+
+    pub fn policy(&self) -> ReasoningReplayPolicy {
+        self.policy
+    }
+
+    pub fn seal_eligible(&self) -> bool {
+        self.seal_eligible
+    }
+
+    #[doc(hidden)]
+    pub fn environment_fingerprint(&self) -> Option<[u8; 32]> {
+        self.environment_fingerprint
+    }
+
+    #[doc(hidden)]
+    pub fn attach_route_fingerprint(&mut self, fingerprint: [u8; 32]) {
+        self.route_fingerprint = Some(fingerprint);
+    }
+
+    #[doc(hidden)]
+    pub fn attach_candidate(
+        &mut self,
+        mut messages: Vec<ChatMessage>,
+        environment_fingerprint: [u8; 32],
+    ) {
+        if let Some(system) = messages
+            .first_mut()
+            .filter(|message| message.role == ChatRole::System)
+            && let Some(mut frame) = system.replay_frame().cloned()
+        {
+            frame.take_runtime_fence();
+            system.attach_replay_frame(frame);
+        }
+        self.candidate = Some(Box::new(ReplayCandidate {
+            messages,
+            environment_fingerprint,
+        }));
+    }
+
+    pub(crate) fn take_runtime_fence(&mut self) -> (Option<[u8; 32]>, Option<ReplayCandidate>) {
+        (
+            self.route_fingerprint.take(),
+            self.candidate.take().map(|value| *value),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn bind_environment(&mut self, fingerprint: [u8; 32]) {
+        self.environment_fingerprint = Some(fingerprint);
+    }
+
+    fn resident_size_bytes(&self) -> usize {
+        let candidate_bytes = self.candidate.as_ref().map_or(0, |candidate| {
+            candidate
+                .messages
+                .iter()
+                .fold(std::mem::size_of::<ReplayCandidate>(), |total, message| {
+                    total.saturating_add(message.replay_resident_size_bytes())
+                })
+                .saturating_add(
+                    candidate
+                        .messages
+                        .capacity()
+                        .saturating_sub(candidate.messages.len())
+                        .saturating_mul(std::mem::size_of::<ChatMessage>()),
+                )
+        });
+        std::mem::size_of::<Self>().saturating_add(candidate_bytes)
+    }
+
+    fn set_cold_prefix_len(&mut self, cold_prefix_len: usize) {
+        self.cold_prefix_len = cold_prefix_len;
+        if self.policy == ReasoningReplayPolicy::GlmInterleaved {
+            self.interleaved_user_boundary = Some(cold_prefix_len);
+        }
+    }
+
+    fn set_interleaved_user_boundary(&mut self, boundary: usize) {
+        if self.policy == ReasoningReplayPolicy::GlmInterleaved {
+            self.interleaved_user_boundary = Some(boundary);
+        }
+    }
+
+    fn set_projected_boundaries(&mut self, cold_prefix_len: usize, user_boundary: Option<usize>) {
+        self.cold_prefix_len = cold_prefix_len;
+        if self.policy == ReasoningReplayPolicy::GlmInterleaved {
+            self.interleaved_user_boundary = user_boundary;
+        }
+    }
+
+    fn disable_seal(&mut self) {
+        self.seal_eligible = false;
+    }
+}
+
+impl std::fmt::Debug for ReplayFrame {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReplayFrame")
+            .field("cold_prefix_len", &self.cold_prefix_len)
+            .field("interleaved_user_boundary", &self.interleaved_user_boundary)
+            .field("policy", &self.policy)
+            .field("seal_eligible", &self.seal_eligible)
+            .field("has_route_fingerprint", &self.route_fingerprint.is_some())
+            .field(
+                "has_environment_fingerprint",
+                &self.environment_fingerprint.is_some(),
+            )
+            .field("has_candidate", &self.candidate.is_some())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Default)]
+pub enum ChatReasoningPresence {
+    #[default]
+    Absent,
+    Empty,
+    NonEmpty(String),
+}
+
+impl std::fmt::Debug for ChatReasoningPresence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absent => formatter.write_str("Absent"),
+            Self::Empty => formatter.write_str("Empty"),
+            Self::NonEmpty(text) => formatter
+                .debug_tuple("NonEmpty")
+                .field(&format_args!("[redacted; {} bytes]", text.len()))
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ResponseReplaySlot {
+    Reasoning(serde_json::Value),
+    Message(serde_json::Value),
+    FunctionCall {
+        item: serde_json::Value,
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+}
+
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct ResponseReplayLayout {
+    pub response_id: Option<String>,
+    pub slots: Vec<ResponseReplaySlot>,
+}
+
+impl std::fmt::Debug for ResponseReplayLayout {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResponseReplayLayout")
+            .field("has_response_id", &self.response_id.is_some())
+            .field("slot_count", &self.slots.len())
+            .finish()
+    }
 }
 
 /// Explicit wire operation used to disable thinking. `none` is only legal
@@ -56,14 +289,12 @@ pub struct FrozenReasoning {
     pub model: String,
     /// Explicit protocol capability declaration.
     pub protocol: ReasoningProtocol,
+    pub replay_policy: ReasoningReplayPolicy,
     /// User choice: provider default, a true disabled operation, or a declared
     /// effort value.
     pub choice: ReasoningChoice,
     /// Whether the profile explicitly permits the disabled operation.
     pub supports_disabled: bool,
-    /// Whether the provider requires original reasoning content to be kept for
-    /// the next tool round.
-    pub preserve_reasoning_content: bool,
     /// Exact disabled wire operation, when one is declared.
     pub disabled_wire: Option<ReasoningDisabledWire>,
     /// Declared effort values accepted by this exact provider/model profile.
@@ -77,12 +308,9 @@ impl std::fmt::Debug for FrozenReasoning {
             .field("provider_bytes", &self.provider.len())
             .field("model_bytes", &self.model.len())
             .field("protocol", &self.protocol)
+            .field("replay_policy", &self.replay_policy)
             .field("choice", &self.choice)
             .field("supports_disabled", &self.supports_disabled)
-            .field(
-                "preserve_reasoning_content",
-                &self.preserve_reasoning_content,
-            )
             .field("disabled_wire", &self.disabled_wire)
             .field("declared_effort_count", &self.declared_efforts.len())
             .finish()
@@ -97,9 +325,9 @@ impl FrozenReasoning {
             provider: provider.into(),
             model: model.into(),
             protocol: ReasoningProtocol::Unknown,
+            replay_policy: ReasoningReplayPolicy::Unknown,
             choice: ReasoningChoice::ProviderDefault,
             supports_disabled: false,
-            preserve_reasoning_content: false,
             disabled_wire: None,
             declared_efforts: Vec::new(),
         }
@@ -134,7 +362,11 @@ impl FrozenReasoning {
             });
         }
         if matches!(self.protocol, ReasoningProtocol::Unknown)
-            && (self.preserve_reasoning_content
+            && (self.replay_policy != ReasoningReplayPolicy::Unknown
+                && !(self.replay_policy == ReasoningReplayPolicy::LegacyTextTools
+                    && !self.supports_disabled
+                    && self.disabled_wire.is_none()
+                    && self.declared_efforts.is_empty())
                 || self.supports_disabled
                 || self.disabled_wire.is_some()
                 || !self.declared_efforts.is_empty())
@@ -154,6 +386,12 @@ impl FrozenReasoning {
                 ) | (
                     ReasoningProtocol::ZhipuChatCompletions,
                     Some(ReasoningDisabledWire::ThinkingTypeDisabled)
+                ) | (
+                    ReasoningProtocol::DeepSeekChatCompletions,
+                    Some(ReasoningDisabledWire::ThinkingTypeDisabled)
+                ) | (
+                    ReasoningProtocol::ResponsesApi,
+                    Some(ReasoningDisabledWire::ReasoningEffortNone)
                 )
             )
         {
@@ -182,6 +420,39 @@ impl FrozenReasoning {
                         .to_string(),
             });
         }
+        if matches!(self.protocol, ReasoningProtocol::DeepSeekChatCompletions)
+            && self.declared_efforts.iter().any(|effort| {
+                !matches!(
+                    effort.as_str(),
+                    "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                )
+            })
+        {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message: "DeepSeek profiles support only low/high/max".to_string(),
+            });
+        }
+        let policy_protocol_matches = match self.replay_policy {
+            ReasoningReplayPolicy::Unknown => true,
+            ReasoningReplayPolicy::StandardChat => {
+                !matches!(self.protocol, ReasoningProtocol::Unknown)
+            }
+            ReasoningReplayPolicy::LegacyTextTools => true,
+            ReasoningReplayPolicy::DeepSeekTools => {
+                matches!(self.protocol, ReasoningProtocol::DeepSeekChatCompletions)
+            }
+            ReasoningReplayPolicy::GlmPreserved | ReasoningReplayPolicy::GlmInterleaved => {
+                matches!(self.protocol, ReasoningProtocol::ZhipuChatCompletions)
+            }
+            ReasoningReplayPolicy::ResponsesItems => {
+                matches!(self.protocol, ReasoningProtocol::ResponsesApi)
+            }
+        };
+        if !policy_protocol_matches {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message: "reasoning replay policy conflicts with the declared protocol".to_string(),
+            });
+        }
         match &self.choice {
             ReasoningChoice::ProviderDefault => Ok(()),
             ReasoningChoice::Effort(effort)
@@ -205,6 +476,12 @@ impl FrozenReasoning {
                         ) | (
                             ReasoningProtocol::ZhipuChatCompletions,
                             Some(ReasoningDisabledWire::ThinkingTypeDisabled)
+                        ) | (
+                            ReasoningProtocol::DeepSeekChatCompletions,
+                            Some(ReasoningDisabledWire::ThinkingTypeDisabled)
+                        ) | (
+                            ReasoningProtocol::ResponsesApi,
+                            Some(ReasoningDisabledWire::ReasoningEffortNone)
                         )
                     ) =>
             {
@@ -331,9 +608,12 @@ pub struct ChatMessage {
     /// `vega_conversation`, rendered as visible text, or printed by `Debug`.
     pub reasoning_content: Option<String>,
     pub response_reasoning: Vec<serde_json::Value>,
+    pub response_replay_layout: Option<ResponseReplayLayout>,
+    replay_frame: Option<ReplayFrame>,
     live_tool_calls: Option<Vec<Option<LiveToolCall>>>,
     historical_tool_statuses: Option<Vec<HistoricalToolStatus>>,
     model_projection: bool,
+    replay_cold: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -386,7 +666,10 @@ impl PartialEq for ChatMessage {
             && self.tool_calls == other.tool_calls
             && self.reasoning_content == other.reasoning_content
             && self.response_reasoning == other.response_reasoning
+            && self.response_replay_layout == other.response_replay_layout
+            && self.replay_frame == other.replay_frame
             && self.live_tool_calls == other.live_tool_calls
+            && self.replay_cold == other.replay_cold
     }
 }
 
@@ -409,6 +692,12 @@ impl std::fmt::Debug for ChatMessage {
             )
             .field("tool_call_count", &self.tool_calls.len())
             .field(
+                "has_response_replay_layout",
+                &self.response_replay_layout.is_some(),
+            )
+            .field("has_replay_frame", &self.replay_frame.is_some())
+            .field("replay_cold", &self.replay_cold)
+            .field(
                 "reasoning_content_bytes",
                 &self.reasoning_content.as_ref().map(String::len),
             )
@@ -417,6 +706,197 @@ impl std::fmt::Debug for ChatMessage {
 }
 
 impl ChatMessage {
+    #[doc(hidden)]
+    pub fn replay_resident_size_bytes(&self) -> usize {
+        fn string_size(value: &String) -> usize {
+            value.capacity()
+        }
+
+        fn call_size(call: &ChatToolCall) -> usize {
+            std::mem::size_of::<ChatToolCall>()
+                .saturating_add(string_size(&call.id))
+                .saturating_add(string_size(&call.name))
+                .saturating_add(string_size(&call.input_json))
+        }
+
+        fn value_heap_size(value: &serde_json::Value) -> usize {
+            const JSON_OBJECT_NODE_RESIDENT_OVERHEAD: usize = 1024;
+
+            match value {
+                serde_json::Value::Null
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_) => 0,
+                serde_json::Value::String(value) => value.capacity(),
+                serde_json::Value::Array(values) => values
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<serde_json::Value>())
+                    .saturating_add(values.iter().fold(0usize, |total, value| {
+                        total.saturating_add(value_heap_size(value))
+                    })),
+                serde_json::Value::Object(values) => {
+                    let entry_overhead = std::mem::size_of::<(String, serde_json::Value)>()
+                        .saturating_mul(2)
+                        .saturating_add(4usize.saturating_mul(std::mem::size_of::<usize>()));
+                    let node_overhead = if values.is_empty() {
+                        0
+                    } else {
+                        JSON_OBJECT_NODE_RESIDENT_OVERHEAD
+                    };
+                    node_overhead
+                        .saturating_add(values.len().saturating_mul(entry_overhead))
+                        .saturating_add(values.iter().fold(0usize, |total, (key, value)| {
+                            total
+                                .saturating_add(key.capacity())
+                                .saturating_add(value_heap_size(value))
+                        }))
+                }
+            }
+        }
+
+        fn value_size(value: &serde_json::Value) -> usize {
+            std::mem::size_of::<serde_json::Value>().saturating_add(value_heap_size(value))
+        }
+
+        let mut size = std::mem::size_of::<Self>()
+            .saturating_add(string_size(&self.content))
+            .saturating_add(self.tool_call_id.as_ref().map_or(0, string_size))
+            .saturating_add(self.reasoning_content.as_ref().map_or(0, string_size))
+            .saturating_add(
+                self.tool_calls
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<ChatToolCall>()),
+            )
+            .saturating_add(
+                self.tool_calls
+                    .iter()
+                    .fold(0usize, |total, call| total.saturating_add(call_size(call))),
+            )
+            .saturating_add(
+                self.response_reasoning
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<serde_json::Value>()),
+            )
+            .saturating_add(
+                self.response_reasoning
+                    .iter()
+                    .fold(0usize, |total, item| total.saturating_add(value_size(item))),
+            )
+            .saturating_add(
+                self.images
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<crate::ImageAttachment>()),
+            );
+        for image in &self.images {
+            size = size
+                .saturating_add(image.bytes().len())
+                .saturating_add(image.mime_type().len())
+                .saturating_add(std::mem::size_of::<(u32, u32)>());
+        }
+        if let Some(layout) = &self.response_replay_layout {
+            size = size
+                .saturating_add(std::mem::size_of::<ResponseReplayLayout>())
+                .saturating_add(layout.response_id.as_ref().map_or(0, string_size))
+                .saturating_add(
+                    layout
+                        .slots
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<ResponseReplaySlot>()),
+                );
+            for slot in &layout.slots {
+                size = size.saturating_add(match slot {
+                    ResponseReplaySlot::Reasoning(item) | ResponseReplaySlot::Message(item) => {
+                        value_size(item)
+                    }
+                    ResponseReplaySlot::FunctionCall {
+                        item,
+                        call_id,
+                        name,
+                        arguments,
+                    } => value_size(item)
+                        .saturating_add(string_size(call_id))
+                        .saturating_add(string_size(name))
+                        .saturating_add(string_size(arguments)),
+                });
+            }
+        }
+        if let Some(calls) = &self.live_tool_calls {
+            size = size.saturating_add(
+                calls
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Option<LiveToolCall>>()),
+            );
+            for call in calls.iter().flatten() {
+                size = size
+                    .saturating_add(call_size(&call.identity))
+                    .saturating_add(call_size(&call.model));
+            }
+        }
+        if let Some(statuses) = &self.historical_tool_statuses {
+            size = size.saturating_add(
+                statuses
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<HistoricalToolStatus>()),
+            );
+            for status in statuses {
+                size = size
+                    .saturating_add(string_size(&status.id))
+                    .saturating_add(string_size(&status.name));
+            }
+        }
+        size.saturating_add(
+            self.replay_frame
+                .as_ref()
+                .map_or(0, ReplayFrame::resident_size_bytes),
+        )
+    }
+
+    pub fn attach_replay_frame(&mut self, frame: ReplayFrame) {
+        if self.role == ChatRole::System {
+            self.replay_cold = frame.cold_prefix_len > 0;
+            self.replay_frame = Some(frame);
+        }
+    }
+
+    pub fn replay_frame(&self) -> Option<&ReplayFrame> {
+        self.replay_frame.as_ref()
+    }
+
+    pub fn update_replay_cold_prefix(&mut self, cold_prefix_len: usize) {
+        if self.role == ChatRole::System
+            && let Some(frame) = &mut self.replay_frame
+        {
+            frame.set_cold_prefix_len(cold_prefix_len);
+        }
+    }
+
+    pub(crate) fn begin_interleaved_user_round(&mut self, boundary: usize) {
+        if self.role == ChatRole::System
+            && let Some(frame) = &mut self.replay_frame
+        {
+            frame.set_interleaved_user_boundary(boundary);
+        }
+    }
+
+    pub(crate) fn update_replay_projection_boundaries(
+        &mut self,
+        cold_prefix_len: usize,
+        user_boundary: Option<usize>,
+    ) {
+        if self.role == ChatRole::System
+            && let Some(frame) = &mut self.replay_frame
+        {
+            frame.set_projected_boundaries(cold_prefix_len, user_boundary);
+        }
+    }
+
+    pub fn mark_replay_unsealable(&mut self) {
+        if self.role == ChatRole::System
+            && let Some(frame) = &mut self.replay_frame
+        {
+            frame.disable_seal();
+        }
+    }
+
     pub(crate) fn bind_live_tool_calls(
         &mut self,
         calls: Vec<Option<ChatToolCall>>,
@@ -525,9 +1005,12 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             reasoning_content: None,
             response_reasoning: Vec::new(),
+            response_replay_layout: None,
+            replay_frame: None,
             live_tool_calls: None,
             historical_tool_statuses: None,
             model_projection: false,
+            replay_cold: false,
         }
     }
 
@@ -541,9 +1024,12 @@ impl ChatMessage {
             tool_calls,
             reasoning_content: None,
             response_reasoning: Vec::new(),
+            response_replay_layout: None,
+            replay_frame: None,
             live_tool_calls: None,
             historical_tool_statuses: None,
             model_projection: false,
+            replay_cold: false,
         }
     }
 
@@ -561,9 +1047,12 @@ impl ChatMessage {
             tool_calls,
             reasoning_content,
             response_reasoning: Vec::new(),
+            response_replay_layout: None,
+            replay_frame: None,
             live_tool_calls: None,
             historical_tool_statuses: None,
             model_projection: false,
+            replay_cold: false,
             images: Vec::new(),
         }
     }
@@ -604,21 +1093,91 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             reasoning_content: None,
             response_reasoning: Vec::new(),
+            response_replay_layout: None,
+            replay_frame: None,
             live_tool_calls: None,
             historical_tool_statuses: None,
             model_projection: false,
+            replay_cold: false,
         }
     }
 }
 
 pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessage>, VegaError> {
     let invalid = || VegaError::Context(crate::ContextRuntimeError::InvalidProjection);
+    let mut cold_projected = Vec::with_capacity(messages.len());
+    let mut cold_boundary = None;
+    let mut interleaved_user_boundary = None;
+    if let Some(system) = messages.first()
+        && system.role == ChatRole::System
+        && let Some(frame) = &system.replay_frame
+    {
+        if frame.cold_prefix_len == 0 || frame.cold_prefix_len > messages.len() {
+            return Err(invalid());
+        }
+        cold_boundary = Some(frame.cold_prefix_len);
+        if frame.policy == ReasoningReplayPolicy::GlmInterleaved {
+            let boundary = frame.interleaved_user_boundary.ok_or_else(invalid)?;
+            if boundary < frame.cold_prefix_len || boundary > messages.len() {
+                return Err(invalid());
+            }
+            interleaved_user_boundary = Some(boundary);
+        }
+        for (index, message) in messages.iter().enumerate() {
+            let mut current = message.clone();
+            if interleaved_user_boundary.is_some_and(|boundary| {
+                index >= frame.cold_prefix_len
+                    && index < boundary
+                    && message.role == ChatRole::Assistant
+            }) {
+                current.reasoning_content = None;
+            }
+            if index >= frame.cold_prefix_len {
+                cold_projected.push(current);
+                continue;
+            }
+            let mut cold = current;
+            cold.replay_cold = true;
+            if message.role != ChatRole::Assistant || message.model_projection {
+                cold_projected.push(cold);
+                continue;
+            }
+            if !message.content.is_empty() {
+                let content = serde_json::to_string(&serde_json::json!({
+                    "vega_history_observation": {
+                        "version": 1,
+                        "authority": "none",
+                        "kind": "assistant_text",
+                        "text": message.content,
+                    }
+                }))
+                .map_err(|_| invalid())?;
+                let mut observation = ChatMessage::new(ChatRole::User, content);
+                observation.model_projection = true;
+                observation.replay_cold = true;
+                cold_projected.push(observation);
+            }
+            if !message.tool_calls.is_empty() {
+                let mut assistant = cold;
+                assistant.content.clear();
+                assistant.images.clear();
+                assistant.reasoning_content = None;
+                assistant.response_reasoning.clear();
+                assistant.response_replay_layout = None;
+                assistant.live_tool_calls = Some(vec![None; assistant.tool_calls.len()]);
+                assistant.model_projection = false;
+                cold_projected.push(assistant);
+            }
+        }
+    } else {
+        cold_projected.extend(messages.iter().cloned());
+    }
     let mut historical = std::collections::HashMap::<
         String,
         std::collections::VecDeque<PendingHistoricalTool>,
     >::new();
-    let mut projected = Vec::with_capacity(messages.len());
-    for message in messages {
+    let mut projected = Vec::with_capacity(cold_projected.len());
+    for (message_index, message) in cold_projected.iter().enumerate() {
         let historical_result = message.role == ChatRole::Tool
             && message.tool_call_id.as_ref().is_some_and(|id| {
                 historical
@@ -671,12 +1230,26 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
                 next.historical_tool_statuses = None;
                 historical.clear();
             } else {
+                let lost_live_binding =
+                    message.live_tool_calls.is_some() && message.historical_tool_statuses.is_none();
+                if lost_live_binding
+                    && !completed_live_tool_group(&cold_projected, message_index, message)
+                {
+                    return Err(invalid());
+                }
                 next.tool_calls.clear();
                 next.historical_tool_statuses = None;
-                if !message.content.is_empty()
-                    || message.reasoning_content.is_some()
-                    || !message.response_reasoning.is_empty()
-                    || !message.images.is_empty()
+                if lost_live_binding {
+                    next.reasoning_content = None;
+                    next.response_reasoning.clear();
+                    next.response_replay_layout = None;
+                }
+                if !next.content.is_empty()
+                    || !next.images.is_empty()
+                    || (!lost_live_binding
+                        && (next.reasoning_content.is_some()
+                            || !next.response_reasoning.is_empty()
+                            || next.response_replay_layout.is_some()))
                 {
                     projected.push(next);
                 }
@@ -709,6 +1282,7 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
                 .map_err(|_| invalid())?;
                 let mut activity = ChatMessage::new(ChatRole::User, content);
                 activity.model_projection = true;
+                activity.replay_cold = message.replay_cold;
                 projected.push(activity);
                 for (index, call) in message.tool_calls.iter().enumerate() {
                     let status = message
@@ -747,12 +1321,73 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
             next.content = content;
             next.reasoning_content = None;
             next.response_reasoning.clear();
+            next.response_replay_layout = None;
             next.historical_tool_statuses = None;
         }
         projected.push(next);
     }
+    if let Some(original_cold_boundary) = cold_boundary {
+        let projected_boundary = projected
+            .iter()
+            .take_while(|message| message.replay_cold)
+            .count();
+        if projected_boundary == 0 {
+            return Err(invalid());
+        }
+        if let Some(system) = projected.first_mut()
+            && system.role == ChatRole::System
+        {
+            let rebased_user_boundary = interleaved_user_boundary
+                .map(|boundary| {
+                    boundary
+                        .checked_sub(original_cold_boundary)
+                        .and_then(|offset| projected_boundary.checked_add(offset))
+                        .ok_or_else(invalid)
+                })
+                .transpose()?;
+            system.update_replay_projection_boundaries(projected_boundary, rebased_user_boundary);
+        }
+    }
     Ok(projected)
 }
+
+fn completed_live_tool_group(
+    messages: &[ChatMessage],
+    assistant_index: usize,
+    assistant: &ChatMessage,
+) -> bool {
+    if assistant.tool_calls.is_empty() {
+        return false;
+    }
+    let mut pending = std::collections::HashSet::with_capacity(assistant.tool_calls.len());
+    for call in &assistant.tool_calls {
+        if !pending.insert(call.id.as_str()) {
+            return false;
+        }
+    }
+    for result in messages.iter().skip(assistant_index.saturating_add(1)) {
+        if pending.is_empty() {
+            return true;
+        }
+        if result.role != ChatRole::Tool
+            || !result.tool_calls.is_empty()
+            || result.reasoning_content.is_some()
+            || !result.response_reasoning.is_empty()
+            || result.response_replay_layout.is_some()
+            || result.tool_call_id.is_none()
+        {
+            return false;
+        }
+        let Some(call_id) = result.tool_call_id.as_deref() else {
+            return false;
+        };
+        if !pending.remove(call_id) {
+            return false;
+        }
+    }
+    pending.is_empty()
+}
+
 fn is_audit_call(call: &ChatToolCall) -> bool {
     if crate::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
         return crate::computer_use::ComputerUseAudit::valid(&call.input_json);
@@ -873,6 +1508,8 @@ pub enum ProviderEvent {
     ThinkingDelta(String),
     SummaryDelta(String),
     ReasoningReplay(Vec<serde_json::Value>),
+    ChatReasoningContent(ChatReasoningPresence),
+    ResponseReplay(ResponseReplayLayout),
     /// A complete tool call: id / name / raw JSON input string.
     ToolUse {
         /// Provider-side tool call id (aligns with `tool_calls.id`, §2).
@@ -889,9 +1526,9 @@ pub enum ProviderEvent {
         /// Completion tokens.
         output: u64,
         /// Prompt tokens served from cache.
-        cache_read: u64,
+        cache_read: Option<u64>,
         /// Prompt tokens written to cache (when the API reports it).
-        cache_write: u64,
+        cache_write: Option<u64>,
     },
     /// Terminal event carrying the mapped stop reason.
     Done {
@@ -922,6 +1559,14 @@ impl std::fmt::Debug for ProviderEvent {
             Self::ReasoningReplay(items) => formatter
                 .debug_tuple("ReasoningReplay")
                 .field(&items.len())
+                .finish(),
+            Self::ChatReasoningContent(presence) => formatter
+                .debug_tuple("ChatReasoningContent")
+                .field(presence)
+                .finish(),
+            Self::ResponseReplay(layout) => formatter
+                .debug_tuple("ResponseReplay")
+                .field(layout)
                 .finish(),
             Self::SummaryDelta(text) => formatter
                 .debug_tuple("SummaryDelta")
@@ -1040,6 +1685,16 @@ mod tests {
             })])
             .unwrap();
         message
+    }
+
+    #[test]
+    fn automatic_replay_resident_size_includes_live_arguments_beyond_audit_projection() {
+        let compact = bound_call("call", "write", "{}", "{}");
+        let large_arguments = format!("{{\"content\":\"{}\"}}", "x".repeat(1_048_576));
+        let large = bound_call("call", "write", "{}", &large_arguments);
+        assert!(
+            large.replay_resident_size_bytes() > compact.replay_resident_size_bytes() + 1_000_000
+        );
     }
 
     #[test]
@@ -1336,6 +1991,119 @@ mod tests {
             "cancelled"
         );
         assert!(!format!("{:?}", projected[0]).contains("cancelled"));
+    }
+
+    #[test]
+    fn replay_frame_marks_its_system_owner_as_cold() {
+        let mut system = ChatMessage::new(ChatRole::System, "system");
+        assert!(!system.replay_cold);
+        system.attach_replay_frame(ReplayFrame::new(1, ReasoningReplayPolicy::Unknown));
+        assert!(system.replay_cold);
+        let projected = project_model_messages(&[system]).unwrap();
+        assert_eq!(projected[0].replay_frame().unwrap().cold_prefix_len(), 1);
+    }
+
+    #[test]
+    fn cold_replay_projection_rebases_private_boundary_after_opaque_turns() {
+        let mut system = ChatMessage::new(ChatRole::System, "system");
+        system.attach_replay_frame(ReplayFrame::new(6, ReasoningReplayPolicy::DeepSeekTools));
+        let mut reasoning_only = ChatMessage::new(ChatRole::Assistant, "");
+        reasoning_only.reasoning_content = Some("PRIVATE_CHAT_REASONING".into());
+        let mut opaque_only = ChatMessage::new(ChatRole::Assistant, "");
+        opaque_only
+            .response_reasoning
+            .push(serde_json::json!({"type":"reasoning","encrypted_content":"PRIVATE_OPAQUE"}));
+        let mut live = ChatMessage::new(ChatRole::Assistant, "live final");
+        live.reasoning_content = Some("LIVE_TOOL_TURN_REASONING".into());
+        let messages = vec![
+            system,
+            ChatMessage::new(ChatRole::User, "previous user"),
+            reasoning_only,
+            opaque_only,
+            ChatMessage::new(ChatRole::Assistant, "completed visible answer"),
+            ChatMessage::new(ChatRole::User, "current user"),
+            live,
+        ];
+        let projected = project_model_messages(&messages).unwrap();
+        assert_eq!(projected.len(), 5);
+        assert_eq!(projected[0].replay_frame().unwrap().cold_prefix_len(), 4);
+        assert_eq!(projected[1].content, "previous user");
+        assert_eq!(projected[2].role, ChatRole::User);
+        assert_eq!(projected[3].content, "current user");
+        assert_eq!(projected[4].content, "live final");
+        assert_eq!(
+            projected[4].reasoning_content.as_deref(),
+            Some("LIVE_TOOL_TURN_REASONING")
+        );
+        assert!(projected.iter().all(|message| {
+            !message.content.contains("PRIVATE_CHAT_REASONING")
+                && !message.content.contains("PRIVATE_OPAQUE")
+                && message.reasoning_content.as_deref() != Some("PRIVATE_CHAT_REASONING")
+        }));
+        assert_eq!(project_model_messages(&projected).unwrap(), projected);
+    }
+
+    #[test]
+    fn interleaved_replay_rebases_user_range_after_cold_projection() {
+        let mut system = ChatMessage::new(ChatRole::System, "system");
+        let mut frame = ReplayFrame::new(6, ReasoningReplayPolicy::GlmInterleaved);
+        frame.set_interleaved_user_boundary(8);
+        system.attach_replay_frame(frame);
+        let mut reasoning_only = ChatMessage::new(ChatRole::Assistant, "");
+        reasoning_only.reasoning_content = Some("PRIVATE_COLD_REASONING".into());
+        let mut opaque_only = ChatMessage::new(ChatRole::Assistant, "");
+        opaque_only.response_reasoning.push(serde_json::json!({
+            "type": "reasoning",
+            "encrypted_content": "PRIVATE_COLD_OPAQUE"
+        }));
+        let mut warm_tool = ChatMessage::assistant_with_tools(
+            "visible old-round work",
+            vec![ChatToolCall {
+                id: "warm-call".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"source.txt"}"#.into(),
+            }],
+        );
+        warm_tool.reasoning_content = Some("PRIVATE_OLD_ROUND_REASONING".into());
+        let mut live = ChatMessage::new(ChatRole::Assistant, "new-round work");
+        live.reasoning_content = Some("CURRENT_ROUND_REASONING".into());
+        let projected = project_model_messages(&[
+            system,
+            ChatMessage::new(ChatRole::User, "cold user"),
+            reasoning_only,
+            opaque_only,
+            ChatMessage::new(ChatRole::Assistant, "cold visible answer"),
+            ChatMessage::new(ChatRole::User, "cold latest user"),
+            warm_tool,
+            ChatMessage::tool_result("warm-call", "visible tool result"),
+            ChatMessage::new(ChatRole::User, "interleaved current user"),
+            live,
+        ])
+        .unwrap();
+        assert_eq!(projected[0].replay_frame().unwrap().cold_prefix_len(), 4);
+        assert_eq!(
+            projected[0]
+                .replay_frame()
+                .unwrap()
+                .interleaved_user_boundary(),
+            Some(6)
+        );
+        assert!(projected.iter().all(|message| {
+            !message.content.contains("PRIVATE_COLD_REASONING")
+                && !message.content.contains("PRIVATE_COLD_OPAQUE")
+                && !message.content.contains("PRIVATE_OLD_ROUND_REASONING")
+        }));
+        assert_eq!(projected[4].content, "visible old-round work");
+        assert_eq!(projected[4].reasoning_content, None);
+        assert_eq!(projected[4].tool_calls[0].id, "warm-call");
+        assert_eq!(projected[5].tool_call_id.as_deref(), Some("warm-call"));
+        assert_eq!(projected[5].content, "visible tool result");
+        assert_eq!(projected[6].content, "interleaved current user");
+        assert_eq!(
+            projected[7].reasoning_content.as_deref(),
+            Some("CURRENT_ROUND_REASONING")
+        );
+        assert_eq!(project_model_messages(&projected).unwrap(), projected);
     }
 
     #[test]

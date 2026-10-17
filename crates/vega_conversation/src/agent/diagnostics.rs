@@ -248,9 +248,26 @@ impl DiagnosticsWriter {
             duration_ms: attempt.duration_ms,
             metrics: DiagnosticMetrics {
                 failure_tool_index: attempt.metrics.failure_tool_index,
-                failure_source: attempt.metrics.failure_source.map(str::to_owned),
-                failure_kind: attempt.metrics.failure_kind.map(str::to_owned),
-                failure_scope: attempt.metrics.failure_scope.map(str::to_owned),
+                failure_source: attempt
+                    .metrics
+                    .failure_source
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        (attempt.failure == Some(RuntimeDiagnosticFailure::ReasoningReplay))
+                            .then(|| "runtime".to_owned())
+                    }),
+                failure_kind: attempt.metrics.failure_kind.map(str::to_owned).or_else(|| {
+                    (attempt.failure == Some(RuntimeDiagnosticFailure::ReasoningReplay))
+                        .then(|| "protocol".to_owned())
+                }),
+                failure_scope: attempt
+                    .metrics
+                    .failure_scope
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        (attempt.failure == Some(RuntimeDiagnosticFailure::ReasoningReplay))
+                            .then(|| "response".to_owned())
+                    }),
                 failure_observed: attempt.metrics.failure_observed,
                 failure_limit: attempt.metrics.failure_limit,
                 failure_units: attempt.metrics.failure_units.map(str::to_owned),
@@ -308,6 +325,9 @@ pub(crate) fn failure_code(error: &vega_runtime::VegaError) -> Option<Diagnostic
         VegaError::ReasoningBudgetExceeded { .. }
         | VegaError::ReasoningReplayBudgetExceeded { .. } => {
             Some(DiagnosticFailureCode::ReasoningLimit)
+        }
+        VegaError::ReasoningReplayUnsupported | VegaError::ReasoningReplayIncomplete => {
+            Some(DiagnosticFailureCode::ProviderProtocol)
         }
         VegaError::ProviderDiagnostic { kind, .. } => Some(match kind {
             ProviderFailureKind::Http => DiagnosticFailureCode::ProviderHttp,
@@ -394,6 +414,7 @@ pub(crate) fn failure_metrics(error: &vega_runtime::VegaError) -> DiagnosticMetr
             crate::types::RunFailureKind::ProviderAuthorization => "authorization",
             crate::types::RunFailureKind::ProviderRateLimited => "rate_limited",
             crate::types::RunFailureKind::ContextOverLimit => "context_over_limit",
+            crate::types::RunFailureKind::ReasoningReplay => "protocol",
             _ => return metrics,
         }
         .into(),
@@ -425,6 +446,7 @@ fn runtime_failure(value: RuntimeDiagnosticFailure) -> DiagnosticFailureCode {
     match value {
         RuntimeDiagnosticFailure::ContextOverLimit => DiagnosticFailureCode::ContextOverLimit,
         RuntimeDiagnosticFailure::ReasoningLimit => DiagnosticFailureCode::ReasoningLimit,
+        RuntimeDiagnosticFailure::ReasoningReplay => DiagnosticFailureCode::ProviderProtocol,
         RuntimeDiagnosticFailure::ProviderHttp => DiagnosticFailureCode::ProviderHttp,
         RuntimeDiagnosticFailure::ProviderTransportOrStream => {
             DiagnosticFailureCode::ProviderTransportOrStream
@@ -657,6 +679,20 @@ mod tests {
                 Some(DiagnosticFailureCode::ReasoningLimit)
             );
             assert_eq!(run_failure(&error), DiagnosticFailureCode::ReasoningLimit);
+        }
+        for error in [
+            VegaError::ReasoningReplayUnsupported,
+            VegaError::ReasoningReplayIncomplete,
+        ] {
+            assert_eq!(
+                failure_code(&error),
+                Some(DiagnosticFailureCode::ProviderProtocol)
+            );
+            assert_eq!(run_failure(&error), DiagnosticFailureCode::ProviderProtocol);
+            assert_eq!(
+                failure_metrics(&error).failure_kind.as_deref(),
+                Some("protocol")
+            );
         }
         assert_eq!(
             failure_code(&VegaError::Cancelled),

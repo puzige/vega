@@ -60,6 +60,14 @@ pub enum VegaError {
     CredentialContinuationUnavailable,
     #[error("credential projection requires tool configuration repair ({tool_index})")]
     CredentialProjectionInvalid { tool_index: usize },
+    #[error(
+        "this model returned reasoning state that cannot be replayed; choose a matching advanced protocol template and retry"
+    )]
+    ReasoningReplayUnsupported,
+    #[error(
+        "the model response omitted required reasoning replay state; retry after checking the advanced protocol template"
+    )]
+    ReasoningReplayIncomplete,
     /// A frozen provider/model thinking selection violated its explicit
     /// capability declaration before any request was sent.
     #[error("reasoning selection is invalid")]
@@ -154,6 +162,8 @@ impl fmt::Debug for VegaError {
                 .debug_struct("CredentialProjectionInvalid")
                 .field("tool_index", tool_index)
                 .finish(),
+            Self::ReasoningReplayUnsupported => formatter.write_str("ReasoningReplayUnsupported"),
+            Self::ReasoningReplayIncomplete => formatter.write_str("ReasoningReplayIncomplete"),
             Self::ReasoningSelectionInvalid { message } => formatter
                 .debug_struct("ReasoningSelectionInvalid")
                 .field("message_bytes", &message.len())
@@ -312,6 +322,9 @@ impl VegaError {
             Self::CredentialProjectionInvalid { tool_index } => {
                 metrics.failure_tool_index = u64::try_from(*tool_index).ok();
                 ("runtime", "credential_projection", None)
+            }
+            Self::ReasoningReplayUnsupported | Self::ReasoningReplayIncomplete => {
+                ("runtime", "protocol", Some("response"))
             }
             Self::Cancelled => ("runtime", "cancelled", None),
             _ => ("runtime", "unknown", None),

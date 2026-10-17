@@ -5,6 +5,7 @@ use std::sync::*;
 use std::time::*;
 
 use gpui_kit::*;
+use sha2::{Digest, Sha256};
 use vega_conversation::types::*;
 use vega_conversation::*;
 use vega_store::Store;
@@ -16,6 +17,7 @@ type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
 pub(crate) const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
 pub(crate) const AGENT_EVENT_CAPACITY: usize = 256;
 pub(crate) const AGENT_EVENT_BATCH: usize = 128;
+static PROVIDER_CREDENTIAL_ROUTE_DOMAIN: OnceLock<[u8; 32]> = OnceLock::new();
 
 /// One app-owned revocation domain shared by Settings and every run worker.
 /// A Settings view must clone this service, never construct an independent
@@ -24,10 +26,20 @@ pub(crate) struct AppMcpSettings(pub(crate) Option<vega_conversation::McpServerS
 
 impl Global for AppMcpSettings {}
 
+#[derive(Clone, Default)]
+pub(crate) struct AppReplaySessions(pub(crate) vega_conversation::agent::ReplaySessionRegistry);
+
+impl Global for AppReplaySessions {}
+
+#[cfg(test)]
+type TestSseResponder = Arc<dyn Fn(&reqwest::Request) -> String + Send + Sync>;
+
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct AgentWorkerStartProbe {
+    pub(crate) sse_responder: Option<TestSseResponder>,
     starts: AtomicUsize,
+    tool_starts: Mutex<HashMap<String, usize>>,
     bash_executor: Option<vega_tools::BashTestExecutor>,
     /// Test-only handshake at the existing MockProvider construction boundary.
     /// The sender releases the worker explicitly; dropping it also unblocks cleanup.
@@ -38,6 +50,13 @@ pub(crate) struct AgentWorkerStartProbe {
 
 #[cfg(test)]
 impl AgentWorkerStartProbe {
+    pub(crate) fn with_sse_responder(responder: TestSseResponder) -> Self {
+        Self {
+            sse_responder: Some(responder),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn with_bash_executor(executor: vega_tools::BashTestExecutor) -> Self {
         Self {
             bash_executor: Some(executor),
@@ -47,6 +66,18 @@ impl AgentWorkerStartProbe {
 
     pub(crate) fn load(&self) -> usize {
         self.starts.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn tool_start_counts(&self) -> HashMap<String, usize> {
+        self.tool_starts
+            .lock()
+            .map_or_else(|_| HashMap::new(), |counts| counts.clone())
+    }
+
+    fn record_tool_start(&self, call_id: &str) {
+        if let Ok(mut counts) = self.tool_starts.lock() {
+            *counts.entry(call_id.to_owned()).or_default() += 1;
+        }
     }
 
     fn record(&self) {
@@ -595,6 +626,62 @@ pub(crate) fn unique_provider_for_model(
     Some(provider)
 }
 
+fn provider_replay_route_fingerprint(
+    provider: &vega_store::config::ProviderConfig,
+    credential_root: &std::path::Path,
+    credential: &str,
+    database_path: &std::path::Path,
+    project_id: &str,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    let api = format!("{:?}", provider.api);
+    for (tag, value) in [
+        (1, provider.name.as_bytes()),
+        (2, api.as_bytes()),
+        (3, provider.base_url.as_bytes()),
+        (4, provider.key_ref.as_bytes()),
+    ] {
+        hasher.update([tag]);
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+    hasher.update([5]);
+    let process_domain = PROVIDER_CREDENTIAL_ROUTE_DOMAIN.get_or_init(|| {
+        let mut domain = Sha256::new();
+        domain.update(ulid::Ulid::generate().to_string().as_bytes());
+        domain.update(ulid::Ulid::generate().to_string().as_bytes());
+        domain.finalize().into()
+    });
+    hasher.update(process_domain);
+    hasher.update([6]);
+    hasher.update((credential.len() as u64).to_le_bytes());
+    hasher.update(credential.as_bytes());
+    hasher.update([7]);
+    let root = credential_root.to_string_lossy();
+    hasher.update((root.len() as u64).to_le_bytes());
+    hasher.update(root.as_bytes());
+    hasher.update([8]);
+    let database = database_path.to_string_lossy();
+    hasher.update((database.len() as u64).to_le_bytes());
+    hasher.update(database.as_bytes());
+    hasher.update([9]);
+    hasher.update((project_id.len() as u64).to_le_bytes());
+    hasher.update(project_id.as_bytes());
+    hasher.finalize().into()
+}
+
+fn replay_persistence_config(
+    registry: Option<&vega_conversation::agent::ReplaySessionRegistry>,
+    route_fingerprint: Option<[u8; 32]>,
+) -> vega_conversation::agent::PersistenceActorConfig {
+    let config = vega_conversation::agent::PersistenceActorConfig::default();
+    if let (Some(registry), Some(route_fingerprint)) = (registry, route_fingerprint) {
+        config.with_replay_session_registry(registry.clone(), route_fingerprint)
+    } else {
+        config
+    }
+}
+
 /// Performs the content-free provider and owner-only credential readiness
 /// check used before a composer submission can materialize a draft.
 ///
@@ -655,18 +742,68 @@ pub(crate) fn preflight_provider(
 /// an invalid Settings edit cannot silently become a different request.
 pub(crate) fn reasoning_for_provider_model(
     provider: &str,
+    api: vega_store::config::ProviderApi,
+    base_url: &str,
     model: &str,
     reasoning_path: Option<&std::path::Path>,
 ) -> Result<vega_runtime::FrozenReasoning, ()> {
-    let Some(reasoning_path) = reasoning_path else {
-        return Ok(vega_runtime::FrozenReasoning::unknown(provider, model));
+    let configured = match reasoning_path {
+        Some(reasoning_path) => {
+            let config = vega_store::reasoning::read_from(reasoning_path).map_err(|_| ())?;
+            config
+                .profile(provider, model)
+                .map(ReasoningProfileProjection::from_store)
+                .transpose()
+                .map_err(|_| ())?
+        }
+        None => None,
     };
-    let config = vega_store::reasoning::read_from(reasoning_path).map_err(|_| ())?;
-    let Some(profile) = config.profile(provider, model) else {
-        return Ok(vega_runtime::FrozenReasoning::unknown(provider, model));
+    let resolved = crate::reasoning_capabilities::resolve_reasoning_profile(
+        provider, api, base_url, model, configured,
+    )
+    .map_err(|_| ())?;
+    crate::reasoning_capabilities::freeze_reasoning_profile(resolved).map_err(|_| ())
+}
+
+fn reasoning_projection_from_frozen(
+    frozen: &vega_runtime::FrozenReasoning,
+) -> ReasoningProfileProjection {
+    use vega_conversation::types::{ReasoningReplaySetting, ReasoningSupport};
+    let replay_profile = match frozen.replay_policy {
+        vega_runtime::ReasoningReplayPolicy::StandardChat => ReasoningReplaySetting::StandardChat,
+        vega_runtime::ReasoningReplayPolicy::DeepSeekTools => ReasoningReplaySetting::DeepSeekTools,
+        vega_runtime::ReasoningReplayPolicy::GlmPreserved => ReasoningReplaySetting::GlmPreserved,
+        vega_runtime::ReasoningReplayPolicy::GlmInterleaved => {
+            ReasoningReplaySetting::GlmInterleaved
+        }
+        vega_runtime::ReasoningReplayPolicy::ResponsesItems => {
+            ReasoningReplaySetting::ResponsesItems
+        }
+        vega_runtime::ReasoningReplayPolicy::LegacyTextTools => {
+            ReasoningReplaySetting::LegacyTextTools
+        }
+        vega_runtime::ReasoningReplayPolicy::Unknown => ReasoningReplaySetting::Auto,
     };
-    let projection = ReasoningProfileProjection::from_store(profile).map_err(|_| ())?;
-    projection.freeze().map_err(|_| ())
+    ReasoningProfileProjection {
+        provider: frozen.provider.clone(),
+        model: frozen.model.clone(),
+        protocol: frozen.protocol,
+        support: if frozen.supports_disabled || !frozen.declared_efforts.is_empty() {
+            ReasoningSupport::Optional
+        } else if matches!(
+            frozen.protocol,
+            vega_runtime::ReasoningProtocol::ZhipuChatCompletions
+        ) {
+            ReasoningSupport::Required
+        } else {
+            ReasoningSupport::Unknown
+        },
+        efforts: frozen.declared_efforts.clone(),
+        supports_disabled: frozen.supports_disabled,
+        disabled_wire: frozen.disabled_wire,
+        replay_profile,
+        preference: frozen.choice.clone(),
+    }
 }
 
 pub(crate) fn commit_provider(
@@ -759,6 +896,7 @@ pub(crate) fn run_agent_worker(
         vega_tools::ReadState::default(),
         None,
         provider_override,
+        Some(vega_conversation::agent::ReplaySessionRegistry::new()),
         worker_start_probe,
     );
 }
@@ -787,6 +925,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     file_read_state: vega_tools::ReadState,
     queue_context: Option<PendingRunContext>,
     #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
+    replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
     #[cfg(test)] worker_start_probe: Arc<AgentWorkerStartProbe>,
 ) {
     #[cfg(test)]
@@ -827,6 +966,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
+        let mut replay_route_fingerprint = None;
         // Issue #114: agentic turn guardrail from `[agent] turn_limit`
         // (0 = unlimited). Absent config (legacy callers/tests) stays unlimited.
         let turn_limit = config.as_ref().map_or(0, |config| config.agent.turn_limit);
@@ -879,30 +1019,40 @@ pub(crate) fn run_agent_worker_with_mcp(
         let provider_name = configured_provider
             .as_ref()
             .map_or("unknown", |provider| provider.name.as_str());
-        let reasoning = match reasoning {
-            Some(reasoning) => {
+        let reasoning_path = config_path
+            .as_deref()
+            .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
+        let reasoning = match (reasoning, configured_provider.as_ref()) {
+            (Some(reasoning), Some(provider)) => {
+                if reasoning.model != thread.model || reasoning.provider != provider.name {
+                    return Err(());
+                }
+                let projection = reasoning_projection_from_frozen(&reasoning);
+                let resolved = crate::reasoning_capabilities::resolve_reasoning_profile(
+                    &provider.name,
+                    provider.api,
+                    &provider.base_url,
+                    &thread.model,
+                    Some(projection),
+                )
+                .map_err(|_| ())?;
+                crate::reasoning_capabilities::freeze_reasoning_profile(resolved).map_err(|_| ())?
+            }
+            (Some(reasoning), None) => {
                 reasoning.validate().map_err(|_| ())?;
                 if reasoning.model != thread.model {
                     return Err(());
                 }
-                if configured_provider
-                    .as_ref()
-                    .is_none_or(|provider| reasoning.provider != provider.name)
-                {
-                    return Err(());
-                }
                 reasoning
             }
-            None => {
-                let reasoning_path = config_path
-                    .as_deref()
-                    .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
-                reasoning_for_provider_model(
-                    provider_name,
-                    &thread.model,
-                    reasoning_path.as_deref(),
-                )?
-            }
+            (None, Some(provider)) => reasoning_for_provider_model(
+                &provider.name,
+                provider.api,
+                &provider.base_url,
+                &thread.model,
+                reasoning_path.as_deref(),
+            )?,
+            (None, None) => vega_runtime::FrozenReasoning::unknown(provider_name, &thread.model),
         };
         // Provider construction stays below the reference resolver so an
         // unresolved @file can terminate with zero provider requests or
@@ -1009,6 +1159,13 @@ pub(crate) fn run_agent_worker_with_mcp(
             let key = vega_store::keystore::get_key(root, &provider.key_ref).map_err(|_| {
                 credential_failure = true;
             })?;
+            replay_route_fingerprint = Some(provider_replay_route_fingerprint(
+                &provider,
+                root,
+                &key,
+                &database_path,
+                &thread.project_id,
+            ));
             provider_known_credential = Some(key.clone());
             let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
                 .map(|transport| {
@@ -1023,6 +1180,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                         credential_exceptions.clone(),
                     ),
                 );
+            #[cfg(test)]
+            let provider = if let Some(responder) = worker_start_probe.sse_responder.clone() {
+                provider.with_test_sse_responder(move |request| responder(request))
+            } else {
+                provider
+            };
             Ok(Arc::new(provider) as Arc<dyn vega_runtime::Provider>)
         };
         let guard_provider = |provider: Arc<dyn vega_runtime::Provider>| {
@@ -1036,7 +1199,14 @@ pub(crate) fn run_agent_worker_with_mcp(
             .build()
             .map_err(|_| ())?;
         let event_sender = sender.clone();
+        #[cfg(test)]
+        let event_probe = worker_start_probe.clone();
         let event_sink = move |event: &vega_conversation::types::ConversationEvent| {
+            #[cfg(test)]
+            if let vega_conversation::types::ConversationEvent::ToolCallRunning { call_id } = event
+            {
+                event_probe.record_tool_start(call_id);
+            }
             event_sender
                 .send(AgentUpdate::Event(event.clone()))
                 .map_err(|_| {
@@ -1153,7 +1323,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        vega_conversation::agent::PersistenceActorConfig::default()
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
                             .with_automatic_title(automatic_title)
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1230,7 +1400,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         pricing_catalog,
                         Some(reasoning),
                         mcp_servers,
-                        vega_conversation::agent::PersistenceActorConfig::default()
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
@@ -1296,7 +1466,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        vega_conversation::agent::PersistenceActorConfig::default()
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
@@ -1326,4 +1496,86 @@ pub(crate) fn run_agent_worker_with_mcp(
         reference_failure,
         credential_failure,
     });
+}
+
+#[cfg(test)]
+mod reasoning_replay_tests {
+    use super::provider_replay_route_fingerprint;
+
+    #[test]
+    fn automatic_replay_provider_route_fence_hashes_exact_url_and_owner_key() {
+        let root = tempfile::tempdir().unwrap();
+        vega_store::keystore::set_key(root.path(), "owned", "credential-one").unwrap();
+        let database = root.path().join("database.sqlite");
+        let mut provider = vega_store::config::ProviderConfig {
+            api: vega_store::config::ProviderApi::ChatCompletions,
+            enabled: true,
+            name: "owned".into(),
+            base_url: "https://user:password@example.test/v1?token=query-secret".into(),
+            models: vec!["fixture-model".into()],
+            key_ref: "owned".into(),
+        };
+        let first_credential = vega_store::keystore::get_key(root.path(), "owned").unwrap();
+        let first = provider_replay_route_fingerprint(
+            &provider,
+            root.path(),
+            &first_credential,
+            &database,
+            "project-one",
+        );
+        provider.base_url = "https://user:password@example.test/v1?token=other".into();
+        assert_ne!(
+            first,
+            provider_replay_route_fingerprint(
+                &provider,
+                root.path(),
+                &first_credential,
+                &database,
+                "project-one",
+            )
+        );
+        provider.base_url = "https://user:password@example.test/v1?token=query-secret".into();
+        let revision = vega_store::keystore::revision(root.path());
+        std::fs::write(
+            root.path().join("credentials/credentials.toml"),
+            "[keys]\nowned = 'credential-two'\n",
+        )
+        .unwrap();
+        let second_credential = vega_store::keystore::get_key(root.path(), "owned").unwrap();
+        assert_eq!(vega_store::keystore::revision(root.path()), revision);
+        assert_ne!(
+            first,
+            provider_replay_route_fingerprint(
+                &provider,
+                root.path(),
+                &second_credential,
+                &database,
+                "project-one",
+            )
+        );
+        assert_ne!(
+            first,
+            provider_replay_route_fingerprint(
+                &provider,
+                root.path(),
+                &first_credential,
+                &root.path().join("other-database.sqlite"),
+                "project-one",
+            )
+        );
+        assert_ne!(
+            first,
+            provider_replay_route_fingerprint(
+                &provider,
+                root.path(),
+                &first_credential,
+                &database,
+                "project-two",
+            )
+        );
+        let rendered = format!("{first:?}");
+        for secret in ["user", "password", "query-secret", "credential-one"] {
+            assert!(!rendered.contains(secret));
+        }
+    }
 }

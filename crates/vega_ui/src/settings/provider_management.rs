@@ -304,6 +304,7 @@ impl SettingsView {
         section: usize,
         cx: &mut Context<Self>,
     ) {
+        self.reasoning_advanced = false;
         if self.config.providers.iter().any(|candidate| {
             candidate.name == provider
                 && candidate.models.iter().any(|candidate| candidate == model)
@@ -896,24 +897,40 @@ impl SettingsView {
             self.key_input.clone(),
         ]
         .map(|input| input.read(cx).text().to_string());
+        let config_before_save = self.config.clone();
         let worker = cx.background_executor().spawn(async move {
+            let credential_changed = key.as_ref().is_some_and(|new_key| {
+                let old_key = base.as_ref().and_then(|provider| {
+                    path.parent()
+                        .and_then(|root| keystore::get_key(root, &provider.key_ref).ok())
+                });
+                old_key.as_deref() != Some(new_key.as_str())
+            });
             let config =
                 ProviderSettingsService::new(path.clone()).save_provider(base, provider, key)?;
+            let replay_identity_changed =
+                credential_changed || config.providers != config_before_save.providers;
             let refs = path
                 .parent()
                 .and_then(|root| keystore::available_refs(root).ok())
                 .unwrap_or_default();
-            Ok::<_, vega_conversation::types::ProviderSettingsError>((config, refs))
+            Ok::<_, vega_conversation::types::ProviderSettingsError>((
+                config,
+                refs,
+                replay_identity_changed,
+            ))
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| {
                 this.provider_management.saving = false;
                 match result {
-                    Ok((config, refs)) => {
+                    Ok((config, refs, replay_identity_changed)) => {
                         this.config = config;
                         this.available_key_refs = refs;
-                        cx.emit(SettingsSaved);
+                        cx.emit(SettingsSaved {
+                            replay_identity_changed,
+                        });
                         if generation != this.provider_management.generation {
                             cx.notify();
                             return;
@@ -1010,17 +1027,25 @@ impl SettingsView {
         }
         self.provider_management.saving = true;
         let generation = self.provider_management.generation;
+        let config_before_save = self.config.clone();
         let worker = cx.background_executor().spawn(async move {
-            ProviderSettingsService::new(path).patch(ProviderPatchRequest { provider, action })
+            ProviderSettingsService::new(path)
+                .patch(ProviderPatchRequest { provider, action })
+                .map(|config| {
+                    let replay_identity_changed = config.providers != config_before_save.providers;
+                    (config, replay_identity_changed)
+                })
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| {
                 this.provider_management.saving = false;
                 match result {
-                    Ok(config) => {
+                    Ok((config, replay_identity_changed)) => {
                         this.config = config;
-                        cx.emit(SettingsSaved);
+                        cx.emit(SettingsSaved {
+                            replay_identity_changed,
+                        });
                         if generation != this.provider_management.generation {
                             cx.notify();
                             return;

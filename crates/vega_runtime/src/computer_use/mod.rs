@@ -278,6 +278,10 @@ impl ComputerUseRun {
         }
     }
 
+    pub(crate) fn replay_snapshot_fingerprint(&self) -> [u8; 32] {
+        self.control.replay_snapshot_fingerprint()
+    }
+
     pub fn definitions(&self) -> Vec<crate::ToolDefinition> {
         let mut definitions = Vec::new();
         for (capability, observe, act) in [

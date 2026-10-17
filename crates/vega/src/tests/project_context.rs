@@ -683,6 +683,7 @@ fn composed_policy_survives_runtime_steering_without_duplication() {
         tool_config: vega_runtime::RuntimeToolConfig::default().with_steering_source(steering),
         pricing_catalog: None,
         reasoning: None,
+        replay_frame: None,
         context_budget: None,
         context_source_version: None,
         context_source_fingerprint: None,

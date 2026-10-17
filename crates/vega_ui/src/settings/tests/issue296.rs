@@ -186,6 +186,7 @@ async fn issue296_h3a_routes_keep_independent_scroll_positions(cx: &mut TestAppC
     for _ in 0..2 {
         let (view, window) = mount_settings(cx, false, 960., 600.);
         view.update(cx, |view, cx| {
+            view.reasoning_advanced = true;
             view.config.providers = vec![provider("owned", &["model-0", "model-1", "model-2"])];
             view.apply_reasoning_projection(
                 ReasoningSettingsProjection::Ready {
@@ -866,6 +867,7 @@ async fn issue296_v2_populated_pricing_reasoning_and_usage_keep_complete_fields(
             cache_write_usd_per_million: "0.2".into(),
         };
         view.update(cx, |view, cx| {
+            view.reasoning_advanced = true;
             view.section = 3;
             view.apply_pricing_projection(
                 PricingSettingsProjection::Ready {
@@ -913,6 +915,7 @@ async fn issue296_v2_populated_pricing_reasoning_and_usage_keep_complete_fields(
             assert!(input.right() <= column.right());
         }
         view.update(cx, |view, cx| {
+            view.reasoning_advanced = true;
             view.section = 2;
             view.pricing_editor = None;
             view.model_settings = Some(("owned".into(), long_model.clone()));
@@ -933,7 +936,6 @@ async fn issue296_v2_populated_pricing_reasoning_and_usage_keep_complete_fields(
             "reasoning-efforts-0",
             "reasoning-preference-0",
             "reasoning-disabled-0",
-            "reasoning-replay-0",
         ] {
             let label = visual
                 .debug_bounds(Box::leak(format!("{id}-label").into_boxed_str()))
@@ -963,6 +965,7 @@ async fn issue296_v2_populated_pricing_reasoning_and_usage_keep_complete_fields(
             })
             .collect();
         view.update(cx, |view, cx| {
+            view.reasoning_advanced = true;
             view.section = 4;
             view.apply_usage_dashboard(
                 Ok(UsageDashboard {
@@ -1224,6 +1227,9 @@ async fn issue296_v3_reasoning_legacy_entry_selects_exact_model(cx: &mut TestApp
         view.read_with(cx, |view, _| view.model_settings.clone()),
         Some(("b".into(), "two".into()))
     );
+    view.update(cx, |view, cx| view.toggle_reasoning_advanced(1, cx));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("reasoning-protocol-0").is_none());
     assert!(visual.debug_bounds("reasoning-protocol-1").is_some());
     let choose = reveal_settings_control(window, "reasoning-support-1-option-0", cx);
@@ -1281,7 +1287,7 @@ async fn issue296_v3_selected_reasoning_options_never_reset_custom_fields(cx: &m
     let mut profile = explicit_openai_profile("owned", "custom");
     profile.efforts = vec!["high".into()];
     profile.preference = ReasoningChoice::Effort("high".into());
-    profile.preserve_reasoning_content = true;
+    profile.replay_profile = vega_conversation::types::ReasoningReplaySetting::StandardChat;
     let expected = profile.clone();
     let saves = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     cx.update(|cx| {
@@ -1295,6 +1301,7 @@ async fn issue296_v3_selected_reasoning_options_never_reset_custom_fields(cx: &m
         .detach();
     });
     view.update(cx, |view, cx| {
+        view.reasoning_advanced = true;
         view.section = 2;
         view.model_settings = Some(("owned".into(), "custom".into()));
         view.apply_reasoning_projection(

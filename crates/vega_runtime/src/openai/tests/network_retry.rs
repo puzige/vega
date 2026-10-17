@@ -190,6 +190,7 @@ fn recovery_agent_request() -> crate::AgentRequest {
         tool_config: Default::default(),
         pricing_catalog: None,
         reasoning: None,
+        replay_frame: None,
         context_budget: None,
         context_source_version: None,
         context_source_fingerprint: None,

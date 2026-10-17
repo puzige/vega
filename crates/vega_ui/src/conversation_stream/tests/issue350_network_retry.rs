@@ -210,8 +210,8 @@ async fn issue350_retry_replaces_partial_text_and_thinking_and_keeps_stop_availa
                 usage: vega_conversation::types::TokenUsage {
                     input: 100,
                     output: 10,
-                    cache_read: 0,
-                    cache_write: 0,
+                    cache_read: Some(0),
+                    cache_write: Some(0),
                 },
                 cost: Microcents(120),
                 pricing: Some(vega_conversation::types::UsagePricing {

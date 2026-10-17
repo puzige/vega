@@ -370,6 +370,115 @@ impl RuntimeToolConfig {
             })
     }
 
+    pub fn replay_capability_digest(&self) -> Result<[u8; 32], VegaError> {
+        let mut hasher = Sha256::new();
+        {
+            let mut add = |tag: u8, value: &[u8]| {
+                hasher.update([tag]);
+                hasher.update((value.len() as u64).to_le_bytes());
+                hasher.update(value);
+            };
+            add(1, format!("{:?}", self.run_mode).as_bytes());
+            add(2, format!("{:?}", self.permission_mode).as_bytes());
+            add(3, self.project_id.as_bytes());
+            add(4, self.thread_id.as_bytes());
+            add(
+                5,
+                self.checkpoint_root
+                    .as_os_str()
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+            add(6, &(self.turn_limit as u64).to_le_bytes());
+            add(7, &[u8::from(self.legacy_credential_cleanup_detected)]);
+            let mut rules = self.exact_rules.iter().collect::<Vec<_>>();
+            rules.sort_by(|left, right| {
+                format!("{:?}:{}", left.tool, left.pattern)
+                    .cmp(&format!("{:?}:{}", right.tool, right.pattern))
+            });
+            add(8, &(rules.len() as u64).to_le_bytes());
+            for rule in rules {
+                add(9, format!("{:?}", rule.tool).as_bytes());
+                add(10, rule.pattern.as_bytes());
+            }
+            let mut candidates = self.mcp_candidates.iter().collect::<Vec<_>>();
+            candidates.sort_by(|left, right| {
+                left.server_id
+                    .cmp(&right.server_id)
+                    .then_with(|| left.config_revision.cmp(&right.config_revision))
+                    .then_with(|| left.exact_tool_name.cmp(&right.exact_tool_name))
+            });
+            add(11, &(candidates.len() as u64).to_le_bytes());
+            for candidate in candidates {
+                add(12, candidate.server_id.as_bytes());
+                add(13, &candidate.config_revision.to_le_bytes());
+                add(14, candidate.exact_tool_name.as_bytes());
+            }
+            let (skills_configured, load_skill, catalog) = if let Some(skills) = &self.skills {
+                add(15, &[1]);
+                let run = skills.run.lock().map_err(|_| VegaError::Tool {
+                    tool: "skill".into(),
+                    message: "Skill run state unavailable or invalid".into(),
+                })?;
+                let catalog = run.model_catalog().to_owned();
+                add(16, catalog.as_bytes());
+                for selection in &skills.explicit {
+                    add(17, selection.name().as_bytes());
+                    add(18, selection.sha256().as_bytes());
+                    add(19, format!("{:?}", selection.source()).as_bytes());
+                }
+                add(20, &(skills.explicit.len() as u64).to_le_bytes());
+                drop(run);
+                (true, !catalog.is_empty(), catalog)
+            } else {
+                add(15, &[0]);
+                (false, false, String::new())
+            };
+            for (tag, capability) in [
+                (21, crate::computer_use::Capability::Desktop),
+                (22, crate::computer_use::Capability::Browser),
+            ] {
+                add(
+                    tag,
+                    &[u8::from(
+                        self.computer_use
+                            .as_ref()
+                            .is_some_and(|run| run.enabled(capability)),
+                    )],
+                );
+            }
+            if let Some(run) = &self.computer_use {
+                add(28, &run.replay_snapshot_fingerprint());
+            } else {
+                add(28, &[]);
+            }
+            let definitions = RunCapabilitySnapshot::freeze(
+                self.run_mode,
+                self.permission_mode,
+                self.mcp_candidates.clone(),
+            )?
+            .with_skills(load_skill, skills_configured)?
+            .with_computer_use(self.computer_use.as_ref())
+            .definitions()
+            .to_vec();
+            add(29, catalog.as_bytes());
+            add(23, &(definitions.len() as u64).to_le_bytes());
+            for definition in definitions {
+                add(24, definition.name.as_bytes());
+                add(25, definition.description.as_bytes());
+                add(
+                    26,
+                    &serde_json::to_vec(&definition.input_schema).map_err(|_| VegaError::Tool {
+                        tool: "mcp".into(),
+                        message: "Tool capability unavailable or invalid".into(),
+                    })?,
+                );
+                add(27, &[u8::from(definition.strict)]);
+            }
+        }
+        Ok(hasher.finalize().into())
+    }
+
     fn readonly() -> Self {
         Self::new(
             RuntimeRunMode::Ask,
@@ -484,6 +593,7 @@ pub struct AgentRequest {
     /// Immutable provider/model thinking selection. `None` keeps the legacy
     /// provider-default request for callers that have no profile declaration.
     pub reasoning: Option<FrozenReasoning>,
+    pub replay_frame: Option<crate::ReplayFrame>,
     /// Optional total-context budget frozen for this run.  `None` preserves
     /// the legacy request path and does not trigger compaction or override
     /// `max_tokens`.
@@ -503,6 +613,74 @@ pub struct AgentRequest {
     pub context_compaction_hook: Option<crate::SharedContextCompactionHook>,
 }
 
+pub(crate) fn replay_environment_fingerprint(
+    model_selection: (&str, Option<&FrozenReasoning>, Option<u32>),
+    tool_config: &RuntimeToolConfig,
+    context_budget: Option<crate::ContextBudget>,
+    route_fingerprint: &[u8; 32],
+    system_prompt: &str,
+    definitions: &[ToolDefinition],
+) -> Result<[u8; 32], VegaError> {
+    let (model, reasoning, max_tokens) = model_selection;
+    let mut hasher = Sha256::new();
+    let mut add = |tag: u8, value: &[u8]| {
+        hasher.update([tag]);
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    };
+    add(1, route_fingerprint);
+    add(2, model.as_bytes());
+    add(3, system_prompt.as_bytes());
+    add(4, &tool_config.replay_capability_digest()?);
+    add(5, &(definitions.len() as u64).to_le_bytes());
+    for definition in definitions {
+        add(6, definition.name.as_bytes());
+        add(7, definition.description.as_bytes());
+        add(
+            8,
+            &serde_json::to_vec(&definition.input_schema).map_err(|_| VegaError::Tool {
+                tool: "mcp".into(),
+                message: "Tool capability unavailable or invalid".into(),
+            })?,
+        );
+        add(9, &[u8::from(definition.strict)]);
+    }
+    if let Some(reasoning) = reasoning {
+        add(10, reasoning.provider.as_bytes());
+        add(11, reasoning.model.as_bytes());
+        add(12, format!("{:?}", reasoning.protocol).as_bytes());
+        add(13, format!("{:?}", reasoning.replay_policy).as_bytes());
+        add(14, format!("{:?}", reasoning.choice).as_bytes());
+        add(15, &[u8::from(reasoning.supports_disabled)]);
+        add(16, format!("{:?}", reasoning.disabled_wire).as_bytes());
+        for effort in &reasoning.declared_efforts {
+            add(17, effort.as_bytes());
+        }
+    } else {
+        add(10, &[]);
+    }
+    if let Some(budget) = context_budget {
+        add(18, &budget.input_budget().to_le_bytes());
+        add(19, &budget.output_reserve().to_le_bytes());
+        add(20, &[u8::from(budget.automatic_compaction())]);
+        let trigger_tokens = budget
+            .trigger_tokens()
+            .map_err(|error| VegaError::Context(error.into()))?;
+        let target_tokens = budget
+            .target_tokens()
+            .map_err(|error| VegaError::Context(error.into()))?;
+        add(22, &trigger_tokens.to_le_bytes());
+        add(23, &target_tokens.to_le_bytes());
+    } else {
+        add(18, &[]);
+    }
+    match max_tokens {
+        Some(max_tokens) => add(21, &max_tokens.to_le_bytes()),
+        None => add(21, &[]),
+    }
+    Ok(hasher.finalize().into())
+}
+
 impl fmt::Debug for AgentRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -517,6 +695,7 @@ impl fmt::Debug for AgentRequest {
             )
             .field("tool_config", &self.tool_config)
             .field("reasoning", &self.reasoning)
+            .field("has_replay_frame", &self.replay_frame.is_some())
             .field("context_budget", &self.context_budget)
             .field("context_source_version", &self.context_source_version)
             .field(
@@ -596,9 +775,9 @@ pub struct RuntimeTokenUsage {
     /// Completion tokens.
     pub output: u64,
     /// Cache-read tokens.
-    pub cache_read: u64,
+    pub cache_read: Option<u64>,
     /// Cache-write tokens.
-    pub cache_write: u64,
+    pub cache_write: Option<u64>,
 }
 
 /// Origin of a run-local primary input budget decision.
@@ -714,6 +893,7 @@ pub enum RuntimeDiagnosticState {
 pub enum RuntimeDiagnosticFailure {
     ContextOverLimit,
     ReasoningLimit,
+    ReasoningReplay,
     ProviderHttp,
     ProviderTransportOrStream,
     ProviderProtocol,

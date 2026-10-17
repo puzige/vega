@@ -320,8 +320,8 @@ mod tests {
                 ProviderEvent::Usage {
                     input: 12,
                     output: 3,
-                    cache_read: 4,
-                    cache_write: 0,
+                    cache_read: Some(4),
+                    cache_write: Some(0),
                 },
                 ProviderEvent::Done {
                     stop_reason: StopReason::End,
@@ -342,8 +342,8 @@ mod tests {
                 Ok(ProviderEvent::Usage {
                     input: 12,
                     output: 3,
-                    cache_read: 4,
-                    cache_write: 0,
+                    cache_read: Some(4),
+                    cache_write: Some(0),
                 }),
                 Ok(ProviderEvent::Done {
                     stop_reason: StopReason::End,

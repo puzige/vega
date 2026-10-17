@@ -35,7 +35,7 @@
 //! let provider = MockProvider::new(vec![
 //!     ScriptStep::text("Hel"),
 //!     ScriptStep::events(vec![
-//!         ProviderEvent::Usage { input: 10, output: 2, cache_read: 0, cache_write: 0 },
+//!         ProviderEvent::Usage { input: 10, output: 2, cache_read: Some(0), cache_write: Some(0) },
 //!         ProviderEvent::Done { stop_reason: StopReason::End },
 //!     ]),
 //! ]);
@@ -111,10 +111,11 @@ pub use permission::{
     RuntimeToolClass, RuntimeUserDecision, decide_capability, decide_execute_permission,
 };
 pub use provider::{
-    ChatMessage, ChatRequest, ChatRole, ChatToolCall, EventStream, FrozenReasoning, Provider,
-    ProviderEvent, ProviderFailureKind, ProviderResponseMetadata, ProviderStream,
-    ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, StopReason,
-    ToolDefinition, project_model_messages,
+    ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall, EventStream,
+    FrozenReasoning, Provider, ProviderEvent, ProviderFailureKind, ProviderResponseMetadata,
+    ProviderStream, ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire,
+    ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame, ResponseReplayLayout,
+    ResponseReplaySlot, StopReason, ToolDefinition, project_model_messages,
 };
 pub use retry::RetryPolicy;
 
