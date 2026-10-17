@@ -276,7 +276,6 @@ impl ComposerActions {
                     .map(ComposerActionRow::Permission),
             );
             rows.push(ComposerActionRow::AddImages);
-            rows.extend([ComposerActionRow::Goal, ComposerActionRow::Loop]);
         }
         rows
     }
@@ -433,6 +432,9 @@ impl ConversationStream {
                 self.actions
                     .menu_rows
                     .push(ComposerActionRow::CredentialReview);
+                self.actions
+                    .menu_rows
+                    .extend([ComposerActionRow::Goal, ComposerActionRow::Loop]);
             }
         }
         self.actions.highlight = 0;

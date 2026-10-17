@@ -1089,6 +1089,14 @@ pub(crate) fn required_tool_state(
 pub(crate) fn validate_runtime_proposal(
     call: &vega_runtime::RuntimeToolCall,
 ) -> Result<(), VegaError> {
+    if matches!(
+        call.name.as_str(),
+        "get_goal" | "update_goal" | "schedule_wakeup"
+    ) {
+        return valid_automation_call_projection(&call.name, &call.input_json)
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if vega_runtime::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
         return vega_runtime::computer_use::ComputerUseAudit::valid(&call.input_json)
             .then_some(())
@@ -1252,6 +1260,17 @@ pub(crate) fn validate_runtime_approval_event(
     shared
         .to_json()
         .map_err(|_| safe_audit_error(&state.tool))?;
+    if matches!(
+        state.tool.as_str(),
+        "get_goal" | "update_goal" | "schedule_wakeup"
+    ) && (shared.decision != Approval::Once
+        || shared.source != ApprovalSource::ReadonlyTool
+        || shared.note.is_some()
+        || shared.danger.is_some()
+        || remember.is_some())
+    {
+        return Err(safe_audit_error(&state.tool));
+    }
     if state.tool.starts_with("mcp_")
         && (shared.decision != Approval::Once
             || shared.source != ApprovalSource::User

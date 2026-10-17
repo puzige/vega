@@ -343,6 +343,8 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
         [
             "assistant_responses",
             "assistant_run_durations",
+            "automation_runs",
+            "automation_tasks",
             "builtin_skill_activations",
             "codex_session_creations",
             "codex_task_snapshots",

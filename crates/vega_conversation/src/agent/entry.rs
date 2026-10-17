@@ -588,7 +588,7 @@ where
     actor_config.automation_claim = binding.as_ref().map(|binding| binding.claim.clone());
     actor_config.automation_hook = binding
         .clone()
-        .map(|hook| hook as Arc<dyn vega_runtime::agent::automation::RuntimeAutomationHook>);
+        .map(|hook| hook as Arc<dyn vega_runtime::RuntimeAutomationHook>);
     let started = std::time::Instant::now();
     let result = run_thread_task_with_automation_inner(
         store,

@@ -1,6 +1,6 @@
 use super::*;
 use crate::interaction::InteractionExt;
-use gpui_kit::{Div, Role, Stateful};
+use gpui_kit::Role;
 use vega_conversation::types::{
     AutomationCommand, AutomationControl, AutomationKind, AutomationProjection, AutomationStatus,
 };
@@ -20,6 +20,15 @@ pub(crate) struct AutomationUi {
     pub wakeup_labels: HashMap<String, String>,
 }
 impl ConversationStream {
+    pub fn apply_automation_thread_status(&mut self, thread: &Thread, cx: &mut Context<Self>) {
+        if thread.id == self.thread.id
+            && thread.project_id == self.thread.project_id
+            && thread.status != self.thread.status
+        {
+            self.thread.status = thread.status;
+            cx.notify();
+        }
+    }
     pub fn automation_projection(&self) -> &AutomationProjection {
         &self.automation.projection
     }
@@ -76,6 +85,7 @@ impl ConversationStream {
             && !self.pending_queue.busy
             && self.pending_queue.messages.is_empty()
             && !self.permission_queue.has_pending()
+            && !self.has_pending_user_question()
             && !self.approved_not_started
             && !self.trusted_action_busy
             && !self.context_operation_busy()
@@ -126,7 +136,7 @@ impl ConversationStream {
         enabled: bool,
         cx: &mut Context<Self>,
         activate: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         let selector = id.clone();
         let activate = std::rc::Rc::new(activate);
@@ -146,19 +156,22 @@ impl ConversationStream {
             .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, enabled)
             .focus_visible(move |style| style.border_1().border_color(colors.accent))
             .when(enabled, |button| button.cursor_pointer())
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _: &gpui_kit::ClickEvent, _, cx| {
                 if enabled {
                     cx.stop_propagation();
                     activate(this, cx);
                 }
             }))
-            .on_key_down(cx.listener(move |this, event, _, cx| {
-                if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    keyboard(this, cx);
-                }
-            }))
+            .on_key_down(
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                    if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        keyboard(this, cx);
+                    }
+                }),
+            )
             .child(label)
+            .into_any_element()
     }
     pub(crate) fn render_automation(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;

@@ -4,6 +4,10 @@ use vega_conversation::types::{
     AutomationCommand, AutomationControl, AutomationKind, AutomationProjection, AutomationStatus,
     AutomationTask,
 };
+use vega_runtime::{
+    RuntimeUserQuestionHook, RuntimeUserQuestionRequest, RuntimeUserQuestionResponse,
+    UserQuestionInput,
+};
 
 fn visible(
     window: WindowHandle<StreamHarness>,
@@ -70,11 +74,37 @@ async fn automation_menu_preserves_draft_keyboard_selection_and_escape(cx: &mut 
             .update(cx, |input, cx| input.set_text("check", cx))
     });
     click_composer_add(window, cx);
-    cx.simulate_keystrokes(window.into(), "up up enter");
+    assert!(visible(window, "composer-action-loop", cx));
+    let selectors = [
+        "composer-action-file",
+        "composer-action-mode-ask",
+        "composer-action-mode-plan",
+        "composer-action-mode-execute",
+        "composer-action-permission-readonly",
+        "composer-action-permission-confirm",
+        "composer-action-permission-auto",
+        "composer-action-permission-full_access",
+        "composer-action-images",
+        "composer-action-credentials",
+        "composer-action-goal",
+        "composer-action-loop",
+    ];
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let bounds = selectors.map(|selector| visual.debug_bounds(selector).unwrap());
+    assert!(bounds.windows(2).all(|pair| pair[0].top() < pair[1].top()));
+    let loop_index = selectors
+        .iter()
+        .position(|selector| *selector == "composer-action-loop")
+        .unwrap();
+    for _ in 0..loop_index {
+        cx.simulate_keystrokes(window.into(), "down");
+    }
+    cx.simulate_keystrokes(window.into(), "enter");
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_owned()),
         "/loop check"
     );
+    assert!(!visible(window, "composer-action-loop", cx));
     click_composer_add(window, cx);
     cx.simulate_keystrokes(window.into(), "escape");
     assert!(!visible(window, "composer-action-loop", cx));
@@ -238,6 +268,77 @@ async fn codex_has_no_automation_menu_but_explicit_command_error_is_visible(
 #[gpui_kit::test]
 async fn automation_eligibility_observes_drafts_preflight_and_busy_state(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "automation-ui");
+    assert!(stream.read_with(cx, |stream, cx| stream.automation_can_run(cx)));
+    let question = RuntimeUserQuestionRequest {
+        call_id: "automation-question".into(),
+        input: UserQuestionInput::from_json(r#"{"questions":[{"id":"approach","header":"Approach","question":"Which approach?","options":[{"label":"A","description":"Keep it"},{"label":"B","description":"Change it"}]}]}"#).unwrap(),
+    };
+    let queue = stream.read_with(cx, |stream, _| stream.user_question_queue());
+    let answer = queue.request(question.clone(), CancellationToken::new());
+    assert!(!stream.read_with(cx, |stream, cx| stream.automation_can_run(cx)));
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: ToolCall {
+                    id: question.call_id.clone(),
+                    tool: vega_runtime::USER_QUESTION_TOOL.into(),
+                    input_json: question.input.to_json().unwrap(),
+                },
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallApproved {
+                call_id: question.call_id.clone(),
+                approval: Approval::Once,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallRunning {
+                call_id: question.call_id.clone(),
+            },
+            cx,
+        );
+    });
+    click(window, "question-option-0", cx);
+    cx.simulate_keystrokes(window.into(), "enter");
+    let RuntimeUserQuestionResponse::Answered(answers) = answer.await else {
+        panic!("selected question answer");
+    };
+    assert!(!queue.has_pending());
+    assert!(!stream.read_with(cx, |stream, cx| stream.automation_can_run(cx)));
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: question.call_id.clone(),
+                result: ToolResult {
+                    status: ToolCallStatus::Success,
+                    output: answers.to_json(&question.input).unwrap(),
+                    reused: false,
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        )
+    });
+    assert!(stream.read_with(cx, |stream, cx| stream.automation_can_run(cx)));
+    let interrupted = queue.request(
+        RuntimeUserQuestionRequest {
+            call_id: "next-question".into(),
+            ..question
+        },
+        CancellationToken::new(),
+    );
+    assert!(!stream.read_with(cx, |stream, cx| stream.automation_can_run(cx)));
+    stream.update(cx, |stream, cx| stream.cancel_user_questions(cx));
+    assert!(matches!(
+        interrupted.await,
+        RuntimeUserQuestionResponse::Cancelled
+    ));
     assert!(stream.read_with(cx, |stream, cx| stream.automation_can_run(cx)));
     stream.update(cx, |stream, cx| {
         stream

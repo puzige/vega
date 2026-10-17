@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use vega_runtime::{VegaError, agent::automation::RuntimeAutomationHook};
+use vega_runtime::{RuntimeAutomationHook, VegaError};
 
 pub(crate) struct AutomationBinding {
     path: PathBuf,

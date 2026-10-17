@@ -20,6 +20,8 @@ pub fn save_task(
     revision: u64,
     data: &str,
 ) -> rusqlite::Result<()> {
+    let revision = i64::try_from(revision)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     conn.execute(
         "INSERT INTO automation_tasks(thread_id,kind,identity,revision,data) VALUES (?1,?2,?3,?4,?5) \
          ON CONFLICT(thread_id,kind) DO UPDATE SET identity=excluded.identity,revision=excluded.revision,data=excluded.data",
@@ -82,4 +84,53 @@ pub fn active_runs(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     conn.prepare("SELECT data FROM automation_runs WHERE finished=0")?
         .query_map([], |row| row.get(0))?
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revision_preserves_sqlite_maximum_and_rejects_invalid_values_without_writes() {
+        let store = crate::Store::open(":memory:").unwrap();
+        store.migrate().unwrap();
+        store.conn().execute_batch("INSERT INTO threads(id,model,created_at,updated_at) VALUES ('thread','model',1,1);").unwrap();
+        let maximum = u64::try_from(i64::MAX).unwrap();
+        save_task(
+            store.conn(),
+            "thread",
+            "goal",
+            "kept",
+            maximum,
+            r#"{"value":"kept"}"#,
+        )
+        .unwrap();
+        let snapshot: (String, i64, String) = store.conn().query_row(
+            "SELECT identity,revision,data FROM automation_tasks WHERE thread_id='thread' AND kind='goal'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(
+            snapshot,
+            ("kept".into(), i64::MAX, r#"{"value":"kept"}"#.into())
+        );
+        for revision in [0, maximum + 1, u64::MAX] {
+            for kind in ["goal", "loop"] {
+                let error = save_task(store.conn(), "thread", kind, "rejected", revision, "{}")
+                    .unwrap_err();
+                if revision == 0 {
+                    assert!(matches!(error, rusqlite::Error::SqliteFailure(_, _)));
+                } else {
+                    assert!(matches!(error, rusqlite::Error::ToSqlConversionFailure(_)));
+                }
+                let actual: (String, i64, String) = store.conn().query_row(
+                    "SELECT identity,revision,data FROM automation_tasks WHERE thread_id='thread' AND kind='goal'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                ).unwrap();
+                assert_eq!(actual, snapshot);
+                assert_eq!(tasks(store.conn(), "thread").unwrap().len(), 1);
+            }
+        }
+    }
 }

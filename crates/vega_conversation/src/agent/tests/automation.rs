@@ -2,6 +2,443 @@ use super::*;
 use crate::automation;
 use crate::types::{AutomationCommand, AutomationControl, AutomationKind, AutomationStatus};
 use serde_json::json;
+use vega_runtime::{
+    RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeToolCall,
+    RuntimeToolResult,
+};
+
+#[test]
+fn automation_tool_audit_persists_only_valid_proposals_approvals_and_terminals() {
+    let (store, _dir, project) = setup();
+    store
+        .conn()
+        .execute_batch(
+            "INSERT INTO messages (id,thread_id,seq,role,content,status,created_at)
+         VALUES ('audit-assistant','thread-1',1,'assistant','','streaming',0);",
+        )
+        .unwrap();
+    let mut seq = 1;
+    let mut persist = |event: RuntimeEvent| {
+        persist_runtime_event(
+            &store,
+            &project,
+            "thread-1",
+            "audit-assistant",
+            "mock",
+            false,
+            "",
+            &mut seq,
+            &event,
+            None,
+        )
+    };
+    let approval = RuntimeApprovalAudit {
+        decision: RuntimeApprovalDecision::Once,
+        note: None,
+        source: RuntimeApprovalSource::ReadonlyTool,
+        danger: None,
+    };
+    for (name, input) in [
+        ("get_goal", json!({})),
+        (
+            "update_goal",
+            json!({"status":"complete","reason":"Verified outputs"}),
+        ),
+        ("schedule_wakeup", json!({"delay_seconds":60})),
+    ] {
+        for input_json in [
+            "{".into(),
+            "[]".into(),
+            "null".into(),
+            json!({"reason":"x".repeat(32 * 1024)}).to_string(),
+        ] {
+            assert!(
+                persist(RuntimeEvent::ToolCallProposed(RuntimeToolCall {
+                    id: "invalid-proposal".into(),
+                    name: name.into(),
+                    input_json,
+                }))
+                .is_err()
+            );
+            assert!(
+                tool_calls::find_state(store.conn(), "invalid-proposal")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        persist(RuntimeEvent::ToolCallProposed(RuntimeToolCall {
+            id: name.into(),
+            name: name.into(),
+            input_json: input.to_string(),
+        }))
+        .unwrap();
+        assert!(
+            persist(RuntimeEvent::ToolCallRunning {
+                call_id: name.into()
+            })
+            .is_err()
+        );
+        for forged in [
+            RuntimeApprovalAudit {
+                source: RuntimeApprovalSource::User,
+                ..approval.clone()
+            },
+            RuntimeApprovalAudit {
+                source: RuntimeApprovalSource::Auto,
+                ..approval.clone()
+            },
+            RuntimeApprovalAudit {
+                decision: RuntimeApprovalDecision::Always,
+                ..approval.clone()
+            },
+            RuntimeApprovalAudit {
+                decision: RuntimeApprovalDecision::Deny,
+                ..approval.clone()
+            },
+            RuntimeApprovalAudit {
+                note: Some("unbound note".into()),
+                ..approval.clone()
+            },
+        ] {
+            assert!(
+                persist(RuntimeEvent::ToolCallApproved {
+                    call_id: name.into(),
+                    audit: forged,
+                    remember_rule: None,
+                })
+                .is_err()
+            );
+            assert_eq!(
+                tool_calls::find_state(store.conn(), name)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "pending_approval"
+            );
+        }
+        persist(RuntimeEvent::ToolCallApproved {
+            call_id: name.into(),
+            audit: approval.clone(),
+            remember_rule: None,
+        })
+        .unwrap();
+        let result = RuntimeToolResult {
+            call_id: name.into(),
+            output: "{\"recorded\":true}".into(),
+            status: RuntimeToolStatus::Success,
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: Some(false),
+            approval: Some(approval.clone()),
+            remember_rule: None,
+        };
+        assert!(persist(RuntimeEvent::ToolCallFinished(result.clone())).is_err());
+        persist(RuntimeEvent::ToolCallRunning {
+            call_id: name.into(),
+        })
+        .unwrap();
+        for forged in [
+            RuntimeToolResult {
+                truncated: None,
+                ..result.clone()
+            },
+            RuntimeToolResult {
+                output: "not JSON".into(),
+                ..result.clone()
+            },
+            RuntimeToolResult {
+                exit_code: Some(0),
+                ..result.clone()
+            },
+            RuntimeToolResult {
+                duration_ms: Some(1),
+                ..result.clone()
+            },
+            RuntimeToolResult {
+                approval: Some(RuntimeApprovalAudit {
+                    source: RuntimeApprovalSource::User,
+                    ..approval.clone()
+                }),
+                ..result.clone()
+            },
+        ] {
+            assert!(persist(RuntimeEvent::ToolCallFinished(forged)).is_err());
+            assert_eq!(
+                tool_calls::find_state(store.conn(), name)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "running"
+            );
+        }
+        persist(RuntimeEvent::ToolCallFinished(result.clone())).unwrap();
+        persist(RuntimeEvent::ToolCallFinished(RuntimeToolResult {
+            reused: true,
+            truncated: None,
+            ..result
+        }))
+        .unwrap();
+        let stored = tool_calls::find_state(store.conn(), name).unwrap().unwrap();
+        assert_eq!(stored.status, "success");
+        assert_eq!(stored.output_text.as_deref(), Some("{\"recorded\":true}"));
+        assert_eq!(
+            ApprovalAudit::from_json(stored.approval.as_deref().unwrap()).unwrap(),
+            approval_audit_from_runtime(&approval)
+        );
+        let cancelled_id = format!("cancelled-{name}");
+        persist(RuntimeEvent::ToolCallProposed(RuntimeToolCall {
+            id: cancelled_id.clone(),
+            name: name.into(),
+            input_json: input.to_string(),
+        }))
+        .unwrap();
+        let denied = RuntimeToolResult {
+            call_id: cancelled_id.clone(),
+            output: "Tool error: permission denied".into(),
+            status: RuntimeToolStatus::Rejected,
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            approval: Some(RuntimeApprovalAudit {
+                decision: RuntimeApprovalDecision::Deny,
+                source: RuntimeApprovalSource::Timeout,
+                note: None,
+                danger: None,
+            }),
+            remember_rule: None,
+        };
+        for forged in [
+            RuntimeToolResult {
+                approval: Some(approval.clone()),
+                ..denied.clone()
+            },
+            RuntimeToolResult {
+                approval: Some(RuntimeApprovalAudit {
+                    decision: RuntimeApprovalDecision::Deny,
+                    source: RuntimeApprovalSource::User,
+                    note: None,
+                    danger: None,
+                }),
+                ..denied.clone()
+            },
+            RuntimeToolResult {
+                output: "unexpected denial".into(),
+                ..denied.clone()
+            },
+        ] {
+            assert!(persist(RuntimeEvent::ToolCallFinished(forged)).is_err());
+            assert_eq!(
+                tool_calls::find_state(store.conn(), &cancelled_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "pending_approval"
+            );
+        }
+        persist(RuntimeEvent::ToolCallFinished(denied)).unwrap();
+        assert_eq!(
+            tool_calls::find_state(store.conn(), &cancelled_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "rejected"
+        );
+    }
+    for name in ["get_goal", "unknown_automation_tool"] {
+        assert!(
+            persist(RuntimeEvent::ToolCallProposed(RuntimeToolCall {
+                id: "invalid-proposal".into(),
+                name: name.into(),
+                input_json: "{\"extra\":true}".into(),
+            }))
+            .is_err()
+        );
+    }
+    assert!(
+        tool_calls::find_state(store.conn(), "invalid-proposal")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn malformed_automation_inputs_are_redacted_rejected_and_reopen_without_authority() {
+    let (store, dir, _) = setup();
+    command(&store, "/goal inspect safely");
+    command(&store, "/loop inspect safely");
+    let claim = automation::claim(
+        &store,
+        "thread-1",
+        Some(AutomationKind::Loop),
+        automation::now_ms(),
+    )
+    .unwrap()
+    .unwrap();
+    let mut calls = Vec::new();
+    for name in ["get_goal", "update_goal", "schedule_wakeup"] {
+        for input_json in [
+            "{".into(),
+            "[]".into(),
+            "null".into(),
+            json!({"reason":"x".repeat(32*1024)}).to_string(),
+        ] {
+            calls.push((name, input_json));
+        }
+    }
+    calls.push(("get_goal", "{\"unexpected\":true}".into()));
+    calls.push(("unknown_automation_tool", "{\"unexpected\":true}".into()));
+    let mut events = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (name, input))| ProviderEvent::ToolUse {
+            id: format!("invalid-{index}"),
+            name: (*name).into(),
+            input_json: input.clone(),
+        })
+        .collect::<Vec<_>>();
+    events.push(ProviderEvent::Usage {
+        input: 10,
+        output: 2,
+        cache_read: None,
+        cache_write: None,
+    });
+    events.push(ProviderEvent::Done {
+        stop_reason: StopReason::ToolUse,
+    });
+    let provider =
+        MockProvider::new_rounds(vec![vec![ScriptStep::events(events)], round(None, true)]);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let run = run_thread_task_with_images_and_reasoning(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Inspect safely",
+        "System",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        PersistenceActorConfig::default().with_automation_claim(Some(claim)),
+        None,
+        None,
+        None,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!run.failed);
+    assert!(!run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ToolCallApproved { .. } | ConversationEvent::ToolCallRunning { .. }
+    )));
+    for index in 0..calls.len() {
+        let id = format!("invalid-{index}");
+        assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ToolCallProposed {call} if call.id==id && call.input_json=="{}")));
+        assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ToolCallFinished {call_id,result} if call_id==&id && result.status==ToolCallStatus::Rejected)));
+        let state = tool_calls::find_state(store.conn(), &id).unwrap().unwrap();
+        assert_eq!(state.status, "rejected");
+        assert_eq!(state.input_json, "{}");
+        assert_eq!(
+            state.output_text.as_deref(),
+            Some("Tool error: denied: unavailable tool")
+        );
+        let approval = ApprovalAudit::from_json(state.approval.as_deref().unwrap()).unwrap();
+        assert_eq!(approval.source, ApprovalSource::RunMode);
+        assert_eq!(approval.decision, Approval::Deny);
+    }
+    let reopened = Store::open(store.database_path().unwrap()).unwrap();
+    let next = MockProvider::new_rounds(vec![round(None, true)]);
+    let run = run_thread_task(
+        &reopened,
+        &next,
+        &tools,
+        "thread-1",
+        "Review rejection",
+        "System",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!run.failed);
+    assert_eq!(next.requests().len(), 1);
+    assert_eq!(
+        store
+            .conn()
+            .query_row("SELECT count(*) FROM tool_calls", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        i64::try_from(calls.len()).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn question_batch_rejects_automation_report_before_execution_and_replays() {
+    let (store, dir, _) = setup();
+    command(&store, "/goal finish only after user choice");
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id:"mixed-goal-report".into(), name:"update_goal".into(),
+                input_json:json!({"status":"complete","reason":"Premature completion"}).to_string(),
+            },
+            ProviderEvent::ToolUse {
+                id:"mixed-question".into(), name:vega_runtime::USER_QUESTION_TOOL.into(),
+                input_json:r#"{"questions":[{"id":"approach","header":"Approach","question":"Which approach?","options":[{"label":"A","description":"Keep it"},{"label":"B","description":"Change it"}]}]}"#.into(),
+            },
+            ProviderEvent::Usage {input:10,output:2,cache_read:None,cache_write:None},
+            ProviderEvent::Done {stop_reason:StopReason::ToolUse},
+        ])],
+        round(None,true),
+    ]);
+    let run = run_thread_task(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Choose before completing",
+        "System",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!run.failed);
+    assert!(!run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ToolCallApproved { .. } | ConversationEvent::ToolCallRunning { .. }
+    )));
+    for id in ["mixed-goal-report", "mixed-question"] {
+        let state = tool_calls::find_state(store.conn(), id).unwrap().unwrap();
+        assert_eq!(state.status, "rejected");
+        assert_eq!(
+            state.output_text.as_deref(),
+            Some(vega_runtime::USER_QUESTION_BATCH_REJECTED)
+        );
+        let approval = ApprovalAudit::from_json(state.approval.as_deref().unwrap()).unwrap();
+        assert_eq!(approval.source, ApprovalSource::Validation);
+        assert_eq!(approval.decision, Approval::Deny);
+    }
+    let task = automation::load(&store, "thread-1").unwrap().remove(0);
+    assert_eq!(task.status, AutomationStatus::Active);
+    assert_eq!(task.used_tokens, 24);
+    let reopened = Store::open(store.database_path().unwrap()).unwrap();
+    let next = MockProvider::new_rounds(vec![round(None, true)]);
+    let run = run_thread_task(
+        &reopened,
+        &next,
+        &tools,
+        "thread-1",
+        "Review prior rejection",
+        "System",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!run.failed);
+    assert_eq!(next.requests().len(), 1);
+}
 
 fn command(store: &Store, text: &str) {
     automation::command(
@@ -137,6 +574,25 @@ async fn goal_tools_use_normal_lifecycle_and_meter_only_owned_provider_rows() {
         vega_store::automation::active_run(store.conn(), "thread-1")
             .unwrap()
             .is_none()
+    );
+    let reopened = Store::open(store.database_path().unwrap()).unwrap();
+    let review = MockProvider::new_rounds(vec![round(None, true)]);
+    let run = run_thread_task(
+        &reopened,
+        &review,
+        &tools,
+        "thread-1",
+        "Review the verified result",
+        "System",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!run.failed);
+    assert_eq!(review.requests().len(), 1);
+    assert_eq!(
+        automation::load(&reopened, "thread-1").unwrap()[0].used_tokens,
+        36
     );
 }
 

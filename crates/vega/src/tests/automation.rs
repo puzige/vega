@@ -1,7 +1,10 @@
 use super::*;
 use crate::automation_controller::AutomationGlobal;
 use vega_conversation::automation;
-use vega_runtime::{MockProvider, ProviderEvent, ScriptStep, StopReason};
+use vega_runtime::{
+    MockProvider, ProviderEvent, RuntimeUserQuestionHook, RuntimeUserQuestionRequest,
+    RuntimeUserQuestionResponse, ScriptStep, StopReason, UserQuestionInput,
+};
 use vega_ui::conversation_stream::AutomationRequested;
 
 fn final_round() -> Vec<ScriptStep> {
@@ -31,6 +34,29 @@ fn report_round(id: &str, complete: bool) -> Vec<ScriptStep> {
         },
         ProviderEvent::Usage { input: 10, output: 2, cache_read: None, cache_write: None },
         ProviderEvent::Done { stop_reason: StopReason::ToolUse },
+    ])]
+}
+
+fn question_input() -> UserQuestionInput {
+    UserQuestionInput::from_json(r#"{"questions":[{"id":"approach","header":"Approach","question":"Which approach?","options":[{"label":"A","description":"Keep it"},{"label":"B","description":"Change it"}]}]}"#).unwrap()
+}
+
+fn question_round() -> Vec<ScriptStep> {
+    vec![ScriptStep::events(vec![
+        ProviderEvent::ToolUse {
+            id: "loop-question".into(),
+            name: vega_runtime::USER_QUESTION_TOOL.into(),
+            input_json: question_input().to_json().unwrap(),
+        },
+        ProviderEvent::Usage {
+            input: 10,
+            output: 2,
+            cache_read: None,
+            cache_write: None,
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
     ])]
 }
 
@@ -93,17 +119,46 @@ async fn composer_goal_persists_runs_continues_and_completes_through_native_work
     f.root.update(cx, |root, _| {
         root.automation_controller.now_override = Some(automation::now_ms() + 2000)
     });
-    pump_test_app(cx, |cx| {
-        refresh(&f, cx);
-        automation::load(&f.store, &f.thread.id)
-            .unwrap()
-            .first()
-            .is_some_and(|task| task.status == AutomationStatus::Complete)
-            && idle(&f, cx)
-    });
+    refresh(&f, cx);
+    pump_test_app_with_diagnostics(
+        cx,
+        |cx| {
+            automation::load(&f.store, &f.thread.id)
+                .unwrap()
+                .first()
+                .is_some_and(|task| task.status == AutomationStatus::Complete)
+                && idle(&f, cx)
+        },
+        |cx| {
+            let tasks = automation::load(&f.store, &f.thread.id).map(|tasks| {
+                tasks
+                    .into_iter()
+                    .map(|task| (task.status, task.used_tokens, task.next_due_ms))
+                    .collect::<Vec<_>>()
+            });
+            let (active, polling) = f.root.read_with(cx, |root, _| {
+                (
+                    root.agent_controller.active.contains_key(&f.thread.id),
+                    root.automation_controller.pending.contains(&f.thread.id),
+                )
+            });
+            let mutation = cx.update(|cx| {
+                cx.global::<AutomationGlobal>()
+                    .mutations
+                    .contains_key(&f.thread.id)
+            });
+            let claim = vega_store::automation::active_run(f.store.conn(), &f.thread.id)
+                .map(|run| run.is_some());
+            format!(
+                "requests={}, tasks={tasks:?}, active={active}, polling={polling}, mutation={mutation}, claim={claim:?}",
+                provider.requests().len()
+            )
+        },
+    );
     assert_eq!(provider.requests().len(), 4);
     assert!(draft(&f, cx).is_empty());
     let task = automation::load(&f.store, &f.thread.id).unwrap().remove(0);
+    assert_eq!(task.status, AutomationStatus::Complete);
     assert_eq!(task.used_tokens, 48);
     assert!(task.usage_complete);
     assert!(
@@ -145,8 +200,11 @@ async fn invalid_commands_preserve_draft_without_provider_or_storage(
 
 #[gpui_kit::test]
 async fn stop_revokes_running_loop_and_resume_is_explicit(cx: &mut gpui_kit::TestAppContext) {
+    cx.executor().allow_parking();
     let provider = Arc::new(MockProvider::new_rounds(vec![
         vec![ScriptStep::delay(Duration::from_secs(30))],
+        final_round(),
+        question_round(),
         final_round(),
     ]));
     let f = fixture(cx, provider.clone());
@@ -183,6 +241,53 @@ async fn stop_revokes_running_loop_and_resume_is_explicit(cx: &mut gpui_kit::Tes
     pump_test_app(cx, |cx| {
         idle(&f, cx) && automation::load(&f.store, &f.thread.id).unwrap().is_empty()
     });
+    submit(&f, "/loop 1m ask before continuing", cx);
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 3
+            && f.stream
+                .read_with(cx, |stream, _| stream.has_pending_user_question())
+    });
+    refresh(&f, cx);
+    cx.run_until_parked();
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(
+        automation::load(&f.store, &f.thread.id).unwrap()[0].status,
+        AutomationStatus::Active
+    );
+    f.root.update(cx, |root, cx| {
+        root.stop_composer(
+            f.stream.clone(),
+            &vega_ui::conversation_stream::ComposerStopRequested {
+                thread_id: f.thread.id.clone(),
+            },
+            cx,
+        )
+    });
+    pump_test_app(cx, |cx| {
+        idle(&f, cx)
+            && !f
+                .stream
+                .read_with(cx, |stream, _| stream.has_pending_user_question())
+            && automation::load(&f.store, &f.thread.id).unwrap()[0].status
+                == AutomationStatus::Paused
+    });
+    let question_status: String = f
+        .store
+        .conn()
+        .query_row(
+            "SELECT status FROM tool_calls WHERE id='loop-question'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(question_status, "cancelled");
+    assert_eq!(provider.requests().len(), 3);
+    control(&f, AutomationKind::Loop, AutomationControl::Resume, cx);
+    pump_test_app(cx, |cx| provider.requests().len() == 4 && idle(&f, cx));
+    control(&f, AutomationKind::Loop, AutomationControl::Clear, cx);
+    pump_test_app(cx, |cx| {
+        idle(&f, cx) && automation::load(&f.store, &f.thread.id).unwrap().is_empty()
+    });
 }
 
 #[gpui_kit::test]
@@ -209,8 +314,48 @@ async fn archive_and_delete_cancel_the_active_automatic_worker(cx: &mut gpui_kit
         automation::load(&f.store, &f.thread.id).unwrap()[0].status,
         AutomationStatus::Paused
     );
+    assert!(
+        !f.stream
+            .read_with(cx, |stream, cx| stream.automation_can_run(cx))
+    );
+    let archived = vega_conversation::threads::open_thread(&f.store, &f.thread.id).unwrap();
+    assert_eq!(archived.status, ThreadStatus::Archived);
+    let other_root = cx.new(VegaWindow::new);
+    let other_stream = cx.new(|cx| ConversationStream::new(archived, cx));
+    other_root.update(cx, |root, cx| {
+        root.bind_automation(other_stream.clone(), f.thread.id.clone(), cx)
+    });
+    assert!(!other_stream.read_with(cx, |stream, cx| stream.automation_can_run(cx)));
     vega_conversation::threads::set_thread_status(&f.store, &f.thread.id, ThreadStatus::Active)
         .unwrap();
+    let reopened = vega_conversation::threads::visit_thread(&f.store, &f.thread.id).unwrap();
+    assert_eq!(reopened.status, ThreadStatus::Active);
+    cx.update(|cx| {
+        cx.set_global(vega_ui::sidebar::SelectedProject(
+            reopened.project_binding().map(str::to_owned),
+        ));
+        cx.set_global(OpenedThread(Some(reopened)));
+        cx.refresh_windows();
+    });
+    pump_test_app(cx, |cx| {
+        f.stream
+            .read_with(cx, |stream, cx| stream.automation_can_run(cx))
+            && other_stream.read_with(cx, |stream, cx| stream.automation_can_run(cx))
+    });
+    assert!(cx.update(|cx| {
+        cx.global::<AutomationGlobal>()
+            .streams_ready(&f.thread.id, cx)
+    }));
+    assert!(f.root.read_with(cx, |root, _| {
+        root.stream_view
+            .as_ref()
+            .is_some_and(|(id, stream)| id == &f.thread.id && stream == &f.stream)
+    }));
+    assert_eq!(
+        automation::load(&f.store, &f.thread.id).unwrap()[0].status,
+        AutomationStatus::Paused
+    );
+    assert_eq!(provider.requests().len(), 1);
     control(&f, AutomationKind::Loop, AutomationControl::Resume, cx);
     pump_test_app(cx, |_| provider.requests().len() == 2);
     let cancel = cx.update(|cx| {
@@ -318,6 +463,23 @@ async fn shared_stream_guard_yields_to_other_window_draft_and_preflight(
     pump_test_app(cx, |cx| idle(&f, cx));
     assert!(provider.requests().is_empty());
     other.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+    let question_queue = other.read_with(cx, |stream, _| stream.user_question_queue());
+    let response = question_queue.request(
+        RuntimeUserQuestionRequest {
+            call_id: "peer-question".into(),
+            input: question_input(),
+        },
+        tokio_util::sync::CancellationToken::new(),
+    );
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| idle(&f, cx));
+    assert!(provider.requests().is_empty());
+    assert!(other.read_with(cx, |stream, _| stream.has_pending_user_question()));
+    other.update(cx, |stream, cx| stream.cancel_user_questions(cx));
+    assert!(matches!(
+        response.await,
+        RuntimeUserQuestionResponse::Cancelled
+    ));
     refresh(&f, cx);
     pump_test_app(cx, |cx| provider.requests().len() == 1 && idle(&f, cx));
     control(&f, AutomationKind::Loop, AutomationControl::Clear, cx);

@@ -95,7 +95,7 @@ impl AgentWorkerStartProbe {
 pub(crate) use crate::agent_context::SYSTEM_PROMPT;
 
 pub(crate) enum PendingAgentRun {
-    Automation(AutomationRunClaim),
+    Automation(Box<AutomationRunClaim>),
     UserMessage(UserSubmission),
     ApprovedPlan(String),
     CredentialContinuation(String),
@@ -936,7 +936,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     #[cfg(test)]
     worker_start_probe.record();
     let automation_claim = match &run {
-        PendingAgentRun::Automation(claim) => Some(claim.clone()),
+        PendingAgentRun::Automation(claim) => Some(claim.as_ref().clone()),
         _ => None,
     };
     let automation_path = database_path.clone();
@@ -1542,6 +1542,14 @@ pub(crate) fn run_agent_worker_with_mcp(
     });
 }
 
+pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
+    if claim.source == Some(AutomationKind::Loop) {
+        "执行已设置的循环任务。"
+    } else {
+        "继续推进已设置的持续目标。"
+    }
+}
+
 #[cfg(test)]
 mod reasoning_replay_tests {
     use super::provider_replay_route_fingerprint;
@@ -1621,13 +1629,5 @@ mod reasoning_replay_tests {
         for secret in ["user", "password", "query-secret", "credential-one"] {
             assert!(!rendered.contains(secret));
         }
-    }
-}
-
-pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
-    if claim.source == Some(AutomationKind::Loop) {
-        "执行已设置的循环任务。"
-    } else {
-        "继续推进已设置的持续目标。"
     }
 }

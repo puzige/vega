@@ -284,6 +284,11 @@ impl VegaWindow {
                 // fences id/project and leaves R1 model/pending state intact.
                 stream.update(cx, |stream, cx| stream.apply_thread_title(&thread, cx));
             }
+            if let Some(stream) = this.automation_controller.streams.get(&thread.id) {
+                stream.update(cx, |stream, cx| {
+                    stream.apply_automation_thread_status(&thread, cx)
+                });
+            }
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {

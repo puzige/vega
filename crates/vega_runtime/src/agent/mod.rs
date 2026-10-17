@@ -1286,4 +1286,5 @@ pub use loop_::{
 pub(crate) use tools_exec::*;
 pub use tools_exec::{tool_definitions, tool_names_equivalent};
 
-pub mod automation;
+mod automation;
+pub use automation::RuntimeAutomationHook;

@@ -27,6 +27,24 @@ fn run(store: &Store, kind: AutomationKind, now: i64) -> AutomationRunClaim {
 }
 
 #[test]
+fn revision_storage_limit_rejects_pause_without_changing_the_task() {
+    let store = fixture();
+    let mut task = create(&store, "/goal verify bounds").remove(0);
+    task.revision = u64::try_from(i64::MAX).unwrap();
+    save(store.conn(), &task).unwrap();
+    assert!(
+        command(
+            &store,
+            "thread",
+            &AutomationCommand::Control(AutomationKind::Goal, AutomationControl::Pause),
+            2000,
+        )
+        .is_err()
+    );
+    assert_eq!(load(&store, "thread").unwrap(), vec![task]);
+}
+
+#[test]
 fn explicit_creation_and_claims_are_atomic_and_single_flight() {
     let store = fixture();
     assert!(load(&store, "thread").unwrap().is_empty());
@@ -451,7 +469,7 @@ fn pending_automatic_claim_yields_to_user_but_started_claim_does_not() {
 
 #[test]
 fn activation_removes_revoked_secondary_task_from_context_tools_and_metering() {
-    use vega_runtime::agent::automation::RuntimeAutomationHook;
+    use vega_runtime::RuntimeAutomationHook;
 
     let store = fixture();
     create(&store, "/goal --budget 100 old objective");

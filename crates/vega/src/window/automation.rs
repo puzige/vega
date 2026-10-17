@@ -554,29 +554,30 @@ impl VegaWindow {
                                 )
                             });
                         }
-                        if let Some(claim) = claim {
-                            if current && this.automation_ready(&thread, &stream, cx) {
-                                this.automation_controller
-                                    .dispatch
-                                    .insert(thread.clone(), claim.clone());
-                                this.start_agent_run(
-                                    stream.clone(),
-                                    &thread,
-                                    PendingAgentRun::Automation(claim.clone()),
-                                    cx,
-                                );
-                                this.automation_controller.dispatch.remove(&thread);
-                                if this.agent_controller.active.contains_key(&thread) {
-                                    accepted = true;
-                                    return;
-                                }
-                                failed_start = true;
-                                this.automation_error(
-                                    &stream,
-                                    "自动任务未能开始，请检查模型和会话状态后恢复".into(),
-                                    cx,
-                                );
+                        if let Some(claim) = claim
+                            && current
+                            && this.automation_ready(&thread, &stream, cx)
+                        {
+                            this.automation_controller
+                                .dispatch
+                                .insert(thread.clone(), claim.clone());
+                            this.start_agent_run(
+                                stream.clone(),
+                                &thread,
+                                PendingAgentRun::Automation(Box::new(claim.clone())),
+                                cx,
+                            );
+                            this.automation_controller.dispatch.remove(&thread);
+                            if this.agent_controller.active.contains_key(&thread) {
+                                accepted = true;
+                                return;
                             }
+                            failed_start = true;
+                            this.automation_error(
+                                &stream,
+                                "自动任务未能开始，请检查模型和会话状态后恢复".into(),
+                                cx,
+                            );
                         }
                         if tasks.is_empty() {
                             this.automation_controller.streams.remove(&thread);

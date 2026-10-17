@@ -4,8 +4,7 @@ use super::*;
 pub struct PersistenceActorConfig {
     pub(crate) user_questions: Option<Arc<dyn vega_runtime::RuntimeUserQuestionHook>>,
     pub(crate) automation_claim: Option<crate::types::AutomationRunClaim>,
-    pub(crate) automation_hook:
-        Option<Arc<dyn vega_runtime::agent::automation::RuntimeAutomationHook>>,
+    pub(crate) automation_hook: Option<Arc<dyn vega_runtime::RuntimeAutomationHook>>,
     pub(crate) credential_continuation_id: Option<String>,
     pub(crate) steering_cancel: Option<CancellationToken>,
     pub(crate) pending_message_id: Option<String>,

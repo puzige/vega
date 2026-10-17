@@ -802,7 +802,7 @@ impl VegaWindow {
         };
         crate::automation_controller::ensure_global(cx);
         let claim = match &run {
-            PendingAgentRun::Automation(claim) => Some(claim.clone()),
+            PendingAgentRun::Automation(claim) => Some(claim.as_ref().clone()),
             _ => None,
         };
         cx.update_global::<crate::automation_controller::AutomationGlobal, _>(|global, _| {

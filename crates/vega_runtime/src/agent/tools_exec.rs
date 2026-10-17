@@ -318,7 +318,9 @@ pub(crate) fn prepare_runtime_call(
             && raw_call.input_json.len() <= 32 * 1024
             && config.redact_tool_output(&raw_call.input_json)? == raw_call.input_json
             && let Ok(arguments) = serde_json::from_str::<Value>(&raw_call.input_json)
-            && arguments.is_object()
+            && arguments
+                .as_object()
+                .is_some_and(|object| raw_call.name != "get_goal" || object.is_empty())
         {
             return Ok(PreparedRuntimeCall::Automation {
                 call: raw_call,
@@ -1347,10 +1349,14 @@ pub(crate) async fn execute_prepared_waiting(
             }
         },
         PreparedRuntimeCall::Automation {call,arguments,hook} => {
-            if cancel.is_cancelled() { return (terminal_result(&call,CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),false); }
+            if cancel.is_cancelled() { return (terminal_result(&call,CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),true); }
             let result = hook.call(call.name.clone(),arguments,cancel.clone()).await;
             match result {
-                Ok(value) => (terminal_result(&call,value.to_string(),RuntimeToolStatus::Success,None),true),
+                Ok(value) => {
+                    let mut result = terminal_result(&call,value.to_string(),RuntimeToolStatus::Success,None);
+                    result.truncated = Some(false);
+                    (result, false)
+                }
                 Err(error) => (failed_tool_result(&call,error.to_string()),false),
             }
         }
