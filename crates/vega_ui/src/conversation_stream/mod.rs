@@ -287,6 +287,7 @@ mod autolinks;
 mod inline_code;
 mod links;
 mod selection;
+mod selection_menu;
 mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;

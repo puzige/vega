@@ -768,27 +768,22 @@ pub(super) fn selection_context_menu(
     copy: &MessageCopy,
     copy_original: bool,
 ) -> AnyElement {
-    use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+    use gpui_kit::component::menu::PopupMenuItem;
 
     let copy_for_menu = copy.clone();
-    div()
-        .id(("message-selection-context-menu", copy.id))
-        .child(body)
-        .context_menu(move |menu, _, _| {
-            let selected = copy_for_menu.clone();
-            let original = copy_for_menu.clone();
-            menu.when(copy_original, |menu| {
-                menu.item(
-                    PopupMenuItem::new("复制原文").on_click(move |_, _, cx| original.copy(cx)),
-                )
-            })
-            .item(
-                PopupMenuItem::new("复制")
-                    .disabled(!copy_for_menu.has_selected_text())
-                    .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
-            )
+    super::selection_menu::SelectionMenu::new(copy.id, body, move |menu, _, _| {
+        let selected = copy_for_menu.clone();
+        let original = copy_for_menu.clone();
+        menu.when(copy_original, |menu| {
+            menu.item(PopupMenuItem::new("复制原文").on_click(move |_, _, cx| original.copy(cx)))
         })
-        .into_any_element()
+        .item(
+            PopupMenuItem::new("复制")
+                .disabled(!copy_for_menu.has_selected_text())
+                .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
+        )
+    })
+    .into_any_element()
 }
 
 fn render_line_selectable(
