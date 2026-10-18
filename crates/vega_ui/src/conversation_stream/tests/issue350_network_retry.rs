@@ -62,10 +62,10 @@ async fn retry_phase_changes_only_after_valid_checkpoint_rollback(cx: &mut TestA
         );
         let group = stream.run_activity_groups["retry"].clone();
         let started_at = group.read(cx).test_clock().0;
-        assert_eq!(
+        assert!(matches!(
             group.read(cx).test_clock().2,
             run_activity::RunPhase::Requesting
-        );
+        ));
         assert_eq!(group.read(cx).test_label(), "Working for 22s");
         stream.apply_event(
             ConversationEvent::ThinkingDelta {
@@ -74,10 +74,10 @@ async fn retry_phase_changes_only_after_valid_checkpoint_rollback(cx: &mut TestA
             },
             cx,
         );
-        assert_eq!(
+        assert!(matches!(
             group.read(cx).test_clock().2,
             run_activity::RunPhase::Thinking
-        );
+        ));
         assert_eq!(group.read(cx).test_label(), "Working for 22s");
         stream.apply_event(
             ConversationEvent::TextDelta {
@@ -86,17 +86,17 @@ async fn retry_phase_changes_only_after_valid_checkpoint_rollback(cx: &mut TestA
             },
             cx,
         );
-        assert_eq!(
+        assert!(matches!(
             group.read(cx).test_clock().2,
             run_activity::RunPhase::Responding
-        );
+        ));
         assert_eq!(group.read(cx).test_label(), "Working for 22s");
         for (offset, attempt) in [(1, 1), (0, 0), (0, 6)] {
             retry(stream, offset, attempt, cx);
-            assert_eq!(
+            assert!(matches!(
                 group.read(cx).test_clock().2,
                 run_activity::RunPhase::Responding
-            );
+            ));
             assert_eq!(group.read(cx).test_label(), "Working for 22s");
             assert_eq!(text(stream), "Partial response");
             assert!(stream.network_retry.is_none());
@@ -104,10 +104,10 @@ async fn retry_phase_changes_only_after_valid_checkpoint_rollback(cx: &mut TestA
         retry(stream, 0, 1, cx);
         assert!(text(stream).is_empty());
         assert_eq!(group.read(cx).test_clock().0, started_at);
-        assert_eq!(
+        assert!(matches!(
             group.read(cx).test_clock().2,
             run_activity::RunPhase::Requesting
-        );
+        ));
         assert_eq!(group.read(cx).test_label(), "Working for 22s");
         stream.apply_event(
             ConversationEvent::TextDelta {
@@ -126,10 +126,10 @@ async fn retry_phase_changes_only_after_valid_checkpoint_rollback(cx: &mut TestA
             cx,
         );
         assert_eq!(text(stream), "Retained response");
-        assert_eq!(
+        assert!(matches!(
             group.read(cx).test_clock().2,
             run_activity::RunPhase::Responding
-        );
+        ));
         assert_eq!(group.read(cx).test_label(), "Working for 22s");
         assert!(stream.network_retry.is_none());
     });
