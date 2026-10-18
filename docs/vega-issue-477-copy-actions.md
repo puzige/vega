@@ -1,6 +1,6 @@
 # 消息与代码块复制
 
-版本：v1.1，2026-10-19；行为验收沿用冻结 v1。Issue：[复制功能增强 #477](https://github.com/puzige/vega/issues/477)。
+版本：v1.2，2026-10-19；行为验收沿用冻结 v1。Issue：[复制功能增强 #477](https://github.com/puzige/vega/issues/477)。
 
 ## 范围与基线
 
@@ -108,3 +108,12 @@ PR 保留基线、测试补丁/提交、有效 RED 的 run/job 与原始失败�
 3. 用独立提交删除本卡Rust测试、`cfg(test)`模块及几何观察、仅测试使用的debug selector和dev依赖/锁包。逐项审查无生产/benchmark消费者；保留真实控件ID、可访问名称、焦点/事件/布局/滚动、Python测试及fixture、benchmark和通用CI。
 4. 删测后不夹带生产行为变化，运行最终head完整云端门禁。fmt、全目标Clippy、Python以及Rust发现/构建成功；Rust报告 **0发现/0执行，`no Rust tests`**，不是“Rust测试通过”。出现基线整合导致实现变化时，先恢复同一冻结测试重新GREEN再删测。
 5. 带测试GREEN与最终空集门禁均可核实后才转正式PR，并按原看板流程合并、保留资源与开放Issue等待用户手测。按用户要求保留真实开发历史和独立删测提交，不重排提交追认TDD。
+
+
+## v1.2 等价平台激活接线修正
+
+带测试 head `f1668bf61b6b3d2c9b56c8e174cfaa8c5d7a1e17` 的 [Actions 39157501853](https://github.com/puzige/vega/actions/runs/39157501853/job/117763655839) 实际执行13项，12通过、1失败、0跳过；fmt/Clippy成功。C9已通过三类按钮的键盘复制和选字/右键，最后URL断言失败。GPUI测试平台的open_window不激活窗口，active初始false，模拟输入也不会激活；原fixture缺少平台激活，因此被生产链接的前台窗口保护阻止。
+
+主控先在Issue留存源码证据并批准接线例外，再由专职子agent在C9创建visual后仅增加activate_window和park两行，提交 `84db9971f137451d1501d35f919bb99b8b08050f`。生产保护、原操作/计时、测试数据、目标与全部断言不变，测试仍为13项；不增删测试，不直接聚焦按钮，不重排历史或事后补测。
+
+当前重新冻结SHA-256为 `c1d8db023323402c7d19d87b1667eec45215e14c2c37b217d018c64d751162cf`。[原始完整源码](https://github.com/puzige/vega/pull/479#issuecomment-6253908078)与[完整等价修正补丁](https://github.com/puzige/vega/pull/479#issuecomment-6254089023)已固定在PR，组合可复原当前文件且校验哈希一致。既有有效先行RED照原始时序保留，本次平台接线失败不作为行为RED。当前13项仍待真正GREEN，取得并固定证据前不删除；后续严格执行v1.1的独立删测与最终空集门禁顺序。
