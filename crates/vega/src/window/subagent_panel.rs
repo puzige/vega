@@ -536,7 +536,7 @@ impl VegaWindow {
             )
             .detach();
             cx.subscribe(&stream, |this, stream, _: &ImagePreviewRequested, cx| {
-                this.open_panel_stream_conversation(stream, cx);
+                this.open_panel_stream_conversation(&stream, cx);
             })
             .detach();
             stream

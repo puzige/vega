@@ -542,7 +542,7 @@ mod tests {
         let workspace = Arc::new(vega_conversation::GitWorkspaceService::new(root.path()).unwrap());
         let service =
             vega_conversation::ArtifactService::new(workspace, "p".into(), "t".into(), 1).unwrap();
-        let call = ToolCall { id: "read-pane-write".into(), tool: "write".into(), input_json: serde_json::json!({"audit_version":"write_edit_v1","tool":"write","path":"synthetic.txt","content_bytes":1,"fingerprint_v1":"a".repeat(64)}).to_string() };
+        let call = ToolCall { id: "c".into(), tool: "write".into(), input_json: serde_json::json!({"audit_version":"write_edit_v1","tool":"write","path":"synthetic.txt","content_bytes":1,"fingerprint_v1":"a".repeat(64)}).to_string() };
         let projection = service.capture(&call, &ToolResult { status: ToolCallStatus::Success, output: serde_json::json!({"path":"synthetic.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}).to_string(), reused:false, exit_code:None, duration_ms:None, truncated:Some(false), invalid:None }, tokio_util::sync::CancellationToken::new()).await.unwrap().unwrap();
         cx.update(|cx| {
             cx.set_global(vega_theme::Theme::light());
@@ -572,7 +572,7 @@ mod tests {
         stream.update(cx, |stream, cx| {
             stream.set_reading_preview(true, cx);
             stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
-            assert!(stream.apply_artifact_card("read-pane-write", card.clone(), cx));
+            assert!(stream.apply_artifact_card("c", card.clone(), cx));
         });
         assert!(card.read_with(cx, |card, _| card.reading_preview));
         stream.update(cx, |stream, cx| stream.set_reading_preview(false, cx));

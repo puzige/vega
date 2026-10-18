@@ -3,8 +3,9 @@
 Status: SPEC FROZEN v1.2 · 2026-10-18 (Asia/Shanghai).
 Feature: A3-14. Baseline: `6e9a69c7` (#460).
 Branch: `feat/448-subagent-panels`.
-Integration baseline: `76906235` (#462, Working/Worked labels); acceptance and
-scope remain v1.2. CI must validate the integrated implementation head.
+Integration baseline: `9555d9e8` (#462 Working/Worked labels and #464 Composer
+primary action); acceptance and scope remain v1.2. CI must validate the integrated
+implementation head.
 
 ## User feedback and scope
 

@@ -1,13 +1,18 @@
-use super::*;
+use super::{PanelHistoryRead, VegaWindow};
 use crate::tests::install_diff_window_globals;
 use crate::window::workspace::TabKey;
+use gpui_kit::prelude::*;
 use gpui_kit::{
-    Bounds, Modifiers, TestAppContext, VisualTestContext, WindowBounds, WindowHandle,
-    WindowOptions, point, size,
+    Bounds, Entity, Modifiers, TestAppContext, VisualTestContext, WindowBounds, WindowHandle,
+    WindowOptions, point, px, size,
 };
 use vega_conversation::history::{AssistantStatus, HistoryEntry, HistoryPage};
+use vega_conversation::types::{
+    AutomationKind, ConversationEvent, SubagentOpenRequested, SubagentState, Thread,
+};
 use vega_store::Store;
-use vega_ui::sidebar::SelectedProject;
+use vega_ui::conversation_stream::{ConversationStream, PrivacyAction, PrivacyRequested};
+use vega_ui::sidebar::{OpenedThread, SelectedProject, VegaStore};
 
 struct Fixture {
     _data: tempfile::TempDir,
@@ -153,11 +158,7 @@ fn assert_parent(f: &Fixture, cx: &mut TestAppContext) {
             f.parent.id
         );
         assert_eq!(root.stream_view.as_ref().unwrap().1, f.stream);
-        assert_eq!(
-            root.agent_worker_start_probe
-                .load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
+        assert_eq!(root.agent_worker_start_probe.load(), 0);
     });
 }
 
@@ -237,11 +238,7 @@ fn panel_summary_list_inline_detail_and_full_route_preserve_parent(cx: &mut Test
             f.children[1].id
         );
         assert!(root.subagent_panel.detail.is_none());
-        assert_eq!(
-            root.agent_worker_start_probe
-                .load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
+        assert_eq!(root.agent_worker_start_probe.load(), 0);
     });
     assert!(visible(&f, "composer-shell", cx));
     let store = Store::open(&f.database).unwrap();
@@ -374,7 +371,7 @@ fn panel_live_run_stop_keeps_sibling_parent_and_later_generation_safe(cx: &mut T
             f.children[0].id
         );
         assert_eq!(root.stream_view.as_ref().unwrap().1, first);
-        assert_eq!(root.agent_worker_start_probe.load(Ordering::SeqCst), 0);
+        assert_eq!(root.agent_worker_start_probe.load(), 0);
     });
     assert!(visible(&f, "composer-shell", cx));
     assert!(!later_cancel.is_cancelled());
