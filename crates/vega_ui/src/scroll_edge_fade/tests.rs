@@ -248,7 +248,7 @@ fn scroll_edge_ordinary_bounds_programmatic_scroll_resize_and_theme(cx: &mut Tes
             }
         })
         .expect("direction and theme colors");
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(80.), px(48.)));
     visual.run_until_parked();
     drop(visual);

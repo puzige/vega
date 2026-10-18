@@ -1,6 +1,6 @@
 # Issue #449：全局滚动边缘渐隐
 
-版本 v1.2 · 2026-10-18 · 来源 [#449](https://github.com/puzige/vega/issues/449)。用户先批准方案，再明确要求按本规格实施。初始基线 `75da678a69fa809159f922615e1137bb48b528ba`，集成基线更新到 master 的 `abd5dc67`（包含历史来源编号清理及侧栏排序）；任务分支 `feat/449-scroll-edge-fade`。关联 A2-04 / A2-11。
+版本 v1.3 · 2026-10-18 · 来源 [#449](https://github.com/puzige/vega/issues/449)。用户先批准方案，再明确要求按本规格实施。初始基线 `75da678a69fa809159f922615e1137bb48b528ba`，集成基线更新到 master 的 `abd5dc67`（包含历史来源编号清理及侧栏排序）；任务分支 `feat/449-scroll-edge-fade`。关联 A2-04 / A2-11。
 
 沿用 [设计守则](vega-design-guidelines.md)、[执行总纲](vega-exec-guide.md)、[角色工作流](vega-issue-workflow.md) 和 [#403 Composer 前景契约](vega-issue-403-conversation-underlay.md)。本卡明确覆盖“正文默认不加渐变”的默认视觉规则，仅增加滚动视口边缘的装饰；源文、消息状态与业务契约不变。
 
@@ -53,6 +53,8 @@ strength = clamp((D - 1) / F, 0, 1)
 
 `F <= 0` 或未完成测量时不绘。每条边的边界为所属表面色乘 strength，向内部在 F 内线性过渡到透明。不以计时动画平滑状态。特殊编辑视口可关闭受保护行所在边；不更改用户滚动或选择来腾出渐隐空间。
 
+存在父容器底部重叠高度 E 时，完整父高度 H 的底渐变坐标为 `start=E/H`、`stop=(E+F)/H`，裁剪仍限于真实子视口。先在同一逻辑像素坐标中相加，再归一化，避免分别归一化后累加造成额外浮点舍入；例如 E=8、F=16、H=120，stop 为24/120。
+
 | 输入 | 验算 | 结果 |
 |---|---|---|
 | token=16，V>=64，D=0/1/9/17 | clamp((D-1)/16) | 0 / 0 / 0.5 / 1；上下左右同式 |
@@ -89,6 +91,7 @@ TerminalSnapshot 目前仅有当前 `scrollback`，新增实际最大历史的�
 - 新增 `crates/vega_ui/src/scroll_edge_fade.rs`（可配独立 tests 模块），并在 `lib.rs` 注册；共享 token 放 `crates/vega_theme/src/lib.rs`。
 - 使用锁定 `gpui-kit=0.6.1` 的 `base::ScrollbarHandle` 只读方法适配 `ScrollHandle / UniformListScrollHandle / ListState`，自绘视口提供小型内部只读度量。不升级或补丁上游依赖，不新增运行时配置/持久化。
 - 局部 Element/装饰器透传原树的布局与 prepaint；完成子树测量后读取状态，paint 内容后绘边缘，滚动条/固定控件按既有层级保持清楚。保留原 id、句柄、列表状态和 min/max/flex 布局约束，不给每个页面另造滚动容器。
+- 原本隐式滚动的 Div 必须在 `base.request_layout` 前初始化并接入同一持久句柄；GPUI 在 request-layout 阶段绑定滚轮使用的 offset。不得到 prepaint 才更换句柄，使滚轮写入与渐隐读取分离；当帧度量仍在子树完成 prepaint 后读取。
 - 每个可见视口最多常数条渐变；状态获取不遍历所有消息、不引入每 token 全量渲染/parse、离屏图像、模糊、持续计时器或循环重绘。
 
 ### 全局接入清单
@@ -112,6 +115,8 @@ TerminalSnapshot 目前仅有当前 `scrollback`，新增实际最大历史的�
 v1.1 额外允许 `conversation_stream/sticky_disclosure.rs` 仅为 §3.5 增加只读 pinned Cell accessor；`run_activity.rs` 和主列表的局部 guard 接线属于上述已列范围。原标题布局、局部绘制、裁剪及交互保持不变。
 
 v1.2 集成 master 的历史来源编号清理，保留其删除与语义命名，不恢复已删除的历史测试。新增回归使用语义模块、函数名与 fixture；本卡新增吸顶断言及必要最小 fixture 迁入 `conversation_stream/tests/scroll_edges.rs`，其余新增断言保留在所属生产模块。按 master 最新生产符号适配自动合并与冲突，A1–A10 行为与覆盖要求不变。验收矩阵中的历史测试名称仅用于说明既有行为；已由 master 删除的用例不再作为门禁前提，本卡对应要求由新增语义回归验证。
+
+v1.3 明确云端暴露的句柄接入时序和偏移渐变归一化实现。GPUI 测试没有平台自动帧循环；A7 在输入 shaping 完成后显式交付一次生产已请求的下一帧（`window.simulate_next_frame(cx)`）再读取 Composer 几何，保留原高度恢复、锚点、条数及安全余量断言，不循环尝试到成功。设置页真实入口 fixture 明确选择 provider section；终端以窗口更新回调已借用的 root 操作焦点，避免再次读取同一 Entity。两者仅修正本卡测试的入口/借用方式。
 
 ### 顺序与交付
 
@@ -141,4 +146,4 @@ delivery 路径 `docs/vega-issue-449-scroll-edge-fade-delivery.md`，记录真�
 3. Native/Codex/子 Agent 长会话中滚过真实运行/完成吸顶标题，打开 Composer 菜单和应用级遮罩；检查前景层级、多行输入动态高度、末条与回到底部。
 4. 长输入软换行、光标与中文输入法在首末可见行，确认输入与候选位置、选区不被淡化；终端有/无历史、滚上下端与输入回尾，核对光标和显示。
 
-变更记录：2026-10-18，v1 根据用户批准的方案建立实现前规格和 A1–A10；v1.1 在对应接线实施前明确固定吸顶标题的顶部退让方式与最小文件归属，保留原有固定标题可读性要求；v1.2 在基线适配前明确继承 master 历史测试清理、语义测试归属与替代覆盖，产品行为不变。自动验收结果待 Actions。
+变更记录：2026-10-18，v1 根据用户批准的方案建立实现前规格和 A1–A10；v1.1 在对应接线实施前明确固定吸顶标题的顶部退让方式与最小文件归属；v1.2 在基线适配前明确继承 master 历史测试清理、语义测试归属与替代覆盖；v1.3 在对应修复前明确隐式句柄接入、偏移渐变归一化与测试帧/入口的交付方式。产品行为与 A1–A10 验收要求不变，自动验收结果待 Actions。

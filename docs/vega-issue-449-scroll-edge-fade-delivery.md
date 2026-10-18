@@ -1,6 +1,6 @@
 # Issue #449：全局滚动边缘渐隐交付记录
 
-实现对应 [规格 v1.2](vega-issue-449-scroll-edge-fade.md)，关联 [#449](https://github.com/puzige/vega/issues/449)。代码与自动用例已写入；本地仅静态检查，所有行为、绘制断言与完整回归待 GitHub Actions，原生视觉及输入法待用户手测。
+实现对应 [规格 v1.3](vega-issue-449-scroll-edge-fade.md)，关联 [#449](https://github.com/puzige/vega/issues/449)。代码与自动用例已写入；本地仅静态检查，云端各轮原始结果如下，最新修复待 GitHub Actions 重验，原生视觉及输入法待用户手测。
 
 ## Freeze
 
@@ -13,7 +13,7 @@
 
 ## 实现
 
-共享 `scroll_edge_fade.rs` 直接透传原 Element 的 layout、id、a11y、prepaint 和 paint，不新建滚动容器或命中区域。既有句柄经 `ScrollbarHandle` 只读读取；原本隐式滚动的 Div 在同一 Element 持久状态中保存句柄，不在 render 中重置 offset。
+共享 `scroll_edge_fade.rs` 直接透传原 Element 的 layout、id、a11y、prepaint 和 paint，不新建滚动容器或命中区域。既有句柄经 `ScrollbarHandle` 只读读取；原本隐式滚动的 Div 在同一 Element 持久状态中保存句柄，并在原 Div 的 request_layout 绑定 offset 前接入，不在 render 中重置 offset。
 
 新增 Layout token：compact 16、reading 24、epsilon 1。横向使用 compact，阅读纵向使用 reading。原生视口按实际 overflow 可滚轴屏蔽隐藏/可见但不可滚的另一轴；变高 List 显式声明内置纵向轴。各边按真实隐藏距离计算强度，fade 长度最多占该轴四分之一；无溢出和零尺寸不绘制。四条边的裁剪区域不重叠。整视口大小的圆角渐变 quad 配合局部 content mask，stop 为 F/有效轴长；显式保留原 border inset、圆角及 scrollbar gutter。16px 窄条不会把 12px 表面半径错误钳成 8px。 工具详情与提交清单从实际父 Style 继承圆角及 border（包括 rem），避免只读到内层无圆角的 Style。待发送 rail 的父半径16、底部 overlap8 使用完整父高度的圆角 quad；底渐变起止坐标为 8/父高、(8+F)/父高，裁剪仍限于真实子视口，保留落在父底部圆弧内的透明角。
 
@@ -104,7 +104,7 @@ TerminalSnapshot 增加 `max_scrollback`。worker 在既有 generation 更新的
 
 静态入口对照另核实：生产装饰器39处，保留原 native/virtual 入口数量；新增代码注释0条。rebase 对照确认 master 删除的113个源码/测试文件恢复0个；本卡18个新测试的原断言全部保留，17项及1个进程内 helper 在语义改名、fixture 迁移与格式归一化后函数体一致；另1项仅扩展 A7 的真实 Composer 几何/滚动断言，断言未削弱；相对集成基线未删除现有测试断言。自动合并的生产接线继续使用当前符号，已删除的历史模块 import 无残留。上述对照为源码审查，不替代类型、行为或像素验收。
 
-云端现有 PR Check（尚未启动；由主 agent 接续）：
+云端现有 PR Check（首次交付时尚未启动；各轮结果见下方记录）：
 
 ```text
 cargo fmt --all -- --check
@@ -112,12 +112,69 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 ```
 
-如需在云端定位新用例，可使用 `cargo nextest run --workspace -E 'test(scroll_edge_)'`；这不替代完整 required check。此交付时无云端运行结果，不填造日志或 PASS。
+如需在云端定位新用例，可使用 `cargo nextest run --workspace -E 'test(scroll_edge_)'`；这不替代完整 required check。首次交付时无云端运行结果；现保留下方各轮失败，不以静态修复冒充 Actions 通过。
+
+## 首轮 CI 编译失败与修复
+
+PR [#470](https://github.com/puzige/vega/pull/470)，失败 head `ba6296e3`，[Actions run 39116067646](https://github.com/puzige/vega/actions/runs/39116067646)。Clippy 与 Nextest 均在编译阶段退出101，required check 退出1；行为测试未开始执行，不能记为通过。原始失败日志由主 agent 保留在任务临时目录，PR 评论同时保留失败记录。
+
+首轮错误及本次最小修改：
+
+- `render_model_basics` 的局部 `colors` 被误删，仍有7处使用，触发 E0425；恢复 `let colors = theme(cx).colors`，保留另一渲染函数为提前返回而前移的独立绑定。
+- 进程内终端回归对 `vt100::Parser` 调用不存在的 `set_size`，触发 E0599；改为锁定 API 的 `parser.screen_mut().set_size(6, 20)`，与生产 resize 路径一致。
+- 文件预览新增测试的 `use super::*` 从父模块 `use gpui_kit::*` 引入 `test` 宏，导致 `#[test]` 递归展开；新增测试改为明确导入所需类型/函数，不提高 crate recursion limit。
+
+其它新增 GPUI 测试的父模块（settings、TextInput、conversation_stream、scroll_edge_fade）均为明确 GPUI 导入，未引入 `test` 宏；TerminalView 新测试也已明确导入。本轮不改这些模块。18项回归及全部断言保留；三处 Rust 修复的断言源码行静态对照完全一致，没有删除、ignore、重试或放宽。
+
+修改前重新 `git fetch origin`、`git rebase origin/master` 均退出0；master 仍为 `abd5dc67`，任务分支0 behind。产品契约与 spec 不变，本轮作为第3个语义修复提交。首次时钟采样为 2026-10-18 09:44:03 UTC / 17:44:03 Asia/Shanghai，静态检查采样为 09:44:58 UTC / 17:44:58，已采样55秒，不含采样前的仓规/日志读取。
+
+| 本轮本地静态检查 | exit code | 输出 |
+|---|---:|---|
+| `cargo fmt --all -- --check` | 0 | 空 stdout/stderr |
+| `git diff --check` | 0 | 空 stdout/stderr |
+| `git diff --cached --check` | 0 | 空 stdout/stderr |
+| 三处 Rust 修复的断言源码行对照 | 0 | 全部一致 |
+
+本地未运行 Vega、编译、Clippy 或任何行为测试。修复提交仍待主 agent 推送后重新执行完整 PR Check；此处不预填新一轮结果。
+
+## 第二轮 CI 测试编译失败与修复
+
+失败 head `380ea1b3`，[Actions run 39116637279](https://github.com/puzige/vega/actions/runs/39116637279)。生产库检查已继续到 vega/xtask；新增测试编译仍失败，Clippy 与 Nextest 均退出101，required check 退出1，行为测试仍未开始。首轮失败记录继续保留；两轮原始日志均由主 agent 保存在任务临时目录。
+
+本次仅修复新增测试：
+
+- pinned 回归的 `VisualTestContext::update_window` 需要 `AnyWindowHandle`，补 `window.into()`，消除 E0308。
+- 两处 TextInput 与一处 TerminalView 回归在 `entity.read(cx)` 的不可变借用仍存续时调用需要可变 cx 的 `focus`，触发 E0502；先 clone FocusHandle 到局部，结束 read 借用后再 focus。
+- resize 用例只调用不可变方法，移除该处多余的 `mut visual`；不加 allow 或提高限制。
+
+静态复查本卡新增测试的其它焦点调用、`update_window` 和 mutable visual：没有同表达式 read/focus 或漏转换的窗口调用；共享测试另外两个 mutable visual 分别用于点击/焦点及 `simulate_event`，保留所需可变借用。全部断言源码行保持一致，不删测试、不 ignore、不弱化、不重试。
+
+修改前 `git fetch origin`、`git rebase origin/master` 均退出0，master 仍为 `abd5dc67`，任务分支0 behind。spec 与产品实现不变，修复 amend 到第3个 fix 提交，任务总数仍为3个提交。2026-10-18 09:52:08–09:52:57 UTC / 17:52:08–17:52:57 Asia/Shanghai 为本轮已采样区间，共49秒，不含采样前的初始读取。
+
+本地 `cargo fmt --all -- --check`、`git diff --check`、`git diff --cached --check` 均退出0，stdout/stderr 为空；断言及同类调用的静态对照退出0。未在本地运行 Vega、编译、Clippy 或任何测试。新 head 的完整类型、Clippy、行为与绘制断言仍待主 agent 推送后交 Actions 验证。
+
+## 第三轮 CI 行为失败与 v1.3 修复
+
+失败 head `b6a79df7`，[Actions run 39117133057](https://github.com/puzige/vega/actions/runs/39117133057)。Clippy 与 fmt 通过；Nextest 实际运行1610项，1605通过、5失败、3个既有跳过，退出100，required check 退出1。本卡没有新增跳过。以下保留5项首次实际行为失败及其根因；不将其它1605项通过扩展为本卡全部验收通过。
+
+| 失败用例 | 根因与 v1.3 对应修复 |
+|---|---|
+| `implicit_handle_survives_rerender_and_wheel_reaches_viewport` | wheel 后实际只有1条而预期2条渐变。GPUI Div 在 request_layout 已将事件 offset 绑定到隐式状态，但旧接线到 prepaint 才追踪另一句柄，导致事件写入与渐隐读取分离。将同一个持久 keyed handle 的初始化、prepare 与跟踪整体前移到 base.request_layout 前；子树测量及渐隐读取时序不改，保留2条渐变与重绘保位断言。 |
+| `production_conversation_only_adds_top_fade_and_preserves_composer` | 输入变短时前景仍290px、原短态170px。TextInput paint 已把视觉行数改回1并请求下一帧，但测试无平台帧循环，park 不交付该回调。每次 draft shaping 后固定交付一次 `simulate_next_frame` 再 park，保留短→8行→短等式、回看锚点、条数与末尾安全余量；不循环重试，不改生产输入收缩。 |
+| `nested_parent_rounding_and_overlapping_rail_keep_real_corner_geometry` | 精确 Background 相等失败：先做8/120+16/120产生额外浮点舍入。按 v1.3 先在 Pixels 中合并 E+F，再做一次归一化 `(E+F)/H`，保留原24/120背景、圆角与content mask精确断言。 |
+| `settings_provider_list_uses_its_real_viewport_and_surface` | fixture 默认 section=1，没有进入 provider 页。mount 前明确 section=0 并 notify，保留 detail_open/form 默认false与真实窄窗口列表路径，不使用打开详情的导航动作；原selector、paint与缩短列表断言不改。 |
+| `terminal_production_paint_tracks_real_history_and_protects_cursor` | WindowHandle 的 update 已持有 TerminalView root 可变借用，回调再次 view.read 导致运行时重入。改用回调直接提供的 root.focus.clone，再操作焦点；保留历史端点、光标保护与无真实session断言。 |
+
+上述用例名均带 `scroll_edge_` 前缀。v1.3 由主 agent 在修改前写入并暂存，随第3个修复提交 amend；规格范围与 A1–A10 预期不变，不改前两轮失败记录。修改前再次 fetch 确认 master 仍为 `abd5dc67`、任务分支0 behind，没有为暂存 spec 强制重置或改写基线。
+
+本轮采样区间为 2026-10-18 10:08:56–10:10:14 UTC / 18:08:56–18:10:14 Asia/Shanghai，共1分18秒，不含此前根因分析。`cargo fmt --all -- --check`、`git diff --check`、`git diff --cached --check` 均退出0，stdout/stderr为空；四个修复 Rust 文件的断言源码行静态对照全部一致，新增comments/allow/ignore为0。18项测试全部保留，不改预期、不加容差或重试、不动全局 CI。
+
+本地未运行 Vega、编译、Clippy、测试或 benchmark。最新修复尚未推送，完整门禁需由主 agent 推送后在新 head 重验，不沿用本轮旧 head 的 Clippy/fmt通过结论。
 
 ## Residuals
 
-- 规格偏离：无；吸顶处理按实施前 v1.1 澄清，历史清理适配按实施前 v1.2 澄清。
-- CI NOT RUN：类型检查、Clippy、全部自动行为/绘制用例尚待 Actions。
+- 规格偏离：无；吸顶处理按实施前 v1.1、历史清理适配按实施前 v1.2，句柄接入/归一化/测试帧与入口修正按实施前 v1.3。
+- CI FAIL：前两轮编译失败及第三轮5项行为失败均已保留；第三轮Clippy/fmt通过，最新修复的完整门禁待新一轮 Actions。
 - 手测 NOT RUN：原生浅深主题像素、系统始终显示滚动条、真实 IME/菜单/复制/嵌套滚动、终端 PTY 系统集成及用户完整 A1–A10 走查待合并后进行。
 - 未改依赖、配置/持久化或用户运行数据；不需要数据迁移。回滚为回退本卡集成提交。
-- 尚未 push、开 PR、合并、安装应用、关闭 Issue 或清理分支/worktree；后续由主 agent 按 Vega 流程完成。
+- PR #470 已由主 agent 建立；本修复未 push，未合并、安装应用、关闭 Issue 或清理分支/worktree，后续由主 agent 按 Vega 流程完成。

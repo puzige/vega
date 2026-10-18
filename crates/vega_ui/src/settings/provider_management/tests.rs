@@ -57,6 +57,10 @@ fn scroll_edge_settings_provider_list_uses_its_real_viewport_and_surface(cx: &mu
             cx,
         )
     });
+    view.update(cx, |view, cx| {
+        view.section = 0;
+        cx.notify();
+    });
     let entity = view.clone();
     let window = cx.open_window(size(px(700.), px(400.)), |_, _| Harness(entity));
     cx.run_until_parked();

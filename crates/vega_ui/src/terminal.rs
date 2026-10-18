@@ -605,8 +605,9 @@ mod tests {
                 cx.notify();
             });
             window
-                .update(cx, |_, window, cx| {
-                    view.read(cx).focus.focus(window, cx);
+                .update(cx, |root, window, cx| {
+                    let focus = root.focus.clone();
+                    focus.focus(window, cx);
                 })
                 .expect("focus terminal");
             cx.run_until_parked();

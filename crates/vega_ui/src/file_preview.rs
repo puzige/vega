@@ -139,7 +139,9 @@ impl Render for FilePreview {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::FilePreview;
+    use gpui_kit::{TestAppContext, px, size};
+    use vega_conversation::types::PaletteFilePreview;
 
     #[gpui_kit::test]
     fn scroll_edge_file_preview_keeps_header_outside_fade_and_clears_after_shrink(

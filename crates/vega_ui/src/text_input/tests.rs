@@ -67,7 +67,8 @@ async fn scroll_edge_input_uses_visual_rows_and_protects_cursor_selection_and_ma
     assert!(first > 0 && total > visible && !draft.contains('\n'));
     window
         .update(cx, |_, window, cx| {
-            input.read(cx).focus_handle.focus(window, cx);
+            let focus = input.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
         })
         .expect("focus input");
     cx.run_until_parked();
@@ -124,7 +125,8 @@ async fn scroll_edge_single_line_hidden_extent_uses_shaped_advance_and_protects_
     });
     window
         .update(cx, |_, window, cx| {
-            input.read(cx).focus_handle.focus(window, cx)
+            let focus = input.read(cx).focus_handle.clone();
+            focus.focus(window, cx)
         })
         .expect("focus single line");
     cx.run_until_parked();

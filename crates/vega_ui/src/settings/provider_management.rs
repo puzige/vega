@@ -1402,6 +1402,7 @@ impl SettingsView {
     }
 
     pub(crate) fn render_model_basics(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
         let busy = self.provider_management.saving;
         let mut detail = settings_section();
         if let Some(editor) = &self.provider_management.model_editor {

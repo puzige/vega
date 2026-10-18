@@ -136,6 +136,10 @@ fn assert_composer_resize_preserves_reading_and_tail(
         ] {
             input.update(cx, |input, cx| input.set_text(draft, cx));
             cx.run_until_parked();
+            window
+                .update(cx, |_, window, cx| window.simulate_next_frame(cx))
+                .expect("deliver the input row layout frame");
+            cx.run_until_parked();
             let foreground = bounds(window, "conversation-foreground", cx);
             let fade = bounds(window, "conversation-bottom-fade", cx);
             let surface = bounds(window, "conversation-foreground-surface", cx);
@@ -305,7 +309,7 @@ async fn scroll_edge_top_fade_yields_to_real_pinned_headers_and_recovers_on_reus
              header: Option<gpui_kit::Bounds<gpui_kit::Pixels>>| {
                 let viewport = stream.read_with(visual, |stream, _| stream.list.viewport_bounds());
                 visual
-                    .update_window(window, |_, window, _| {
+                    .update_window(window.into(), |_, window, _| {
                         let color = vega_theme::LIGHT.bg_base;
                         let expected_gradient = gpui_kit::linear_gradient(
                             180.,

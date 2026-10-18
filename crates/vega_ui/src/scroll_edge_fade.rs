@@ -253,17 +253,18 @@ impl ScrollFadeMetrics {
             (outer.size.height - style.inset * 2. - style.horizontal_gutter).max(px(0.));
         outer.size.height += style.bottom_extension;
         for region in self.regions(style) {
-            let start = if region.angle == 0. {
-                f32::from(style.bottom_extension) / f32::from(outer.size.height)
+            let extension = if region.angle == 0. {
+                style.bottom_extension
             } else {
-                0.
+                px(0.)
             };
-            let stop = start
-                + if region.angle == 0. || region.angle == 180. {
-                    f32::from(region.bounds.size.height) / f32::from(outer.size.height)
-                } else {
-                    f32::from(region.bounds.size.width) / f32::from(outer.size.width)
-                };
+            let (length, viewport_length) = if region.angle == 0. || region.angle == 180. {
+                (region.bounds.size.height, outer.size.height)
+            } else {
+                (region.bounds.size.width, outer.size.width)
+            };
+            let start = f32::from(extension) / f32::from(viewport_length);
+            let stop = f32::from(extension + length) / f32::from(viewport_length);
             let mut quad = fill(
                 outer,
                 linear_gradient(
@@ -448,6 +449,13 @@ impl<E: Element> Element for ScrollEdgeFade<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        if let Some(prepare) = self.prepare {
+            let state =
+                window.use_keyed_state("scroll-edge-fade-handle", cx, |_, _| ScrollHandle::new());
+            let handle = state.read(cx).clone();
+            prepare(&mut self.base, &handle);
+            self.handle = Some(Box::new(handle));
+        }
         self.base.request_layout(id, inspector, window, cx)
     }
 
@@ -460,13 +468,6 @@ impl<E: Element> Element for ScrollEdgeFade<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        if let Some(prepare) = self.prepare {
-            let state =
-                window.use_keyed_state("scroll-edge-fade-handle", cx, |_, _| ScrollHandle::new());
-            let handle = state.read(cx).clone();
-            prepare(&mut self.base, &handle);
-            self.handle = Some(Box::new(handle));
-        }
         if let Some(guards) = &self.top_guards {
             guards.clear();
         }

@@ -448,7 +448,9 @@ mod tests {
             receiver.try_recv(),
             Err(mpsc::TryRecvError::Empty)
         ));
-        update(&session.state, |state| state.parser.set_size(6, 20));
+        update(&session.state, |state| {
+            state.parser.screen_mut().set_size(6, 20)
+        });
         let resized = session.snapshot(None).unwrap();
         assert!(resized.scrollback <= resized.max_scrollback);
         assert!(resized.max_scrollback <= 5);
