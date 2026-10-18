@@ -130,19 +130,6 @@ impl ToolDetail {
             + self.output.len()
             + usize::from(self.footer.is_some())
     }
-
-    fn append_visible_text(&self, text: &mut String) {
-        for row in self
-            .title
-            .iter()
-            .chain(self.command.iter())
-            .chain(self.output.iter())
-            .chain(self.footer.iter().map(|(text, _)| text))
-        {
-            text.push('\n');
-            text.push_str(row);
-        }
-    }
 }
 
 /// UI-only audited tool call. It never retains a provider call id, raw
@@ -567,16 +554,6 @@ impl ToolCard {
 
     pub(crate) fn leading_icon_color(&self, colors: &ThemeColors) -> gpui_kit::Rgba {
         colors.conversation_tool
-    }
-
-    pub fn visible_text(&self) -> String {
-        let mut text = self.compact_row_text();
-        if self.expanded
-            && let Some(detail) = self.detail()
-        {
-            detail.append_visible_text(&mut text);
-        }
-        text
     }
 
     pub(crate) fn is_expanded(&self) -> bool {

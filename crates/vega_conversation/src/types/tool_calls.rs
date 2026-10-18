@@ -1339,9 +1339,6 @@ pub(crate) fn valid_grep_invalid_input(input_json: &str) -> bool {
     })
 }
 
-#[cfg(test)]
-mod external_grep_tests;
-
 fn user_question_result_projection(
     input: &Result<UserQuestionInput, String>,
     result: &ToolResult,

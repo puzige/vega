@@ -73,10 +73,6 @@ impl ConversationStream {
         self.input.clone()
     }
 
-    pub fn controller_error_message(&self) -> Option<String> {
-        self.controller_error.clone()
-    }
-
     pub(crate) fn close_file_selector_and_cancel(&mut self, cx: &mut Context<Self>) {
         let should_cancel = self.file_index_loading;
         self.file_selector_wanted = false;

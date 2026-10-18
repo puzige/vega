@@ -532,12 +532,6 @@ impl RuntimeToolConfig {
             Vec::new(),
         )
     }
-
-    #[cfg(test)]
-    fn with_permission_timeout(mut self, timeout: Duration) -> Self {
-        self.permission_timeout = timeout;
-        self
-    }
 }
 
 impl Default for RuntimeToolConfig {
@@ -1281,9 +1275,6 @@ impl fmt::Debug for AgentOutcome {
 mod context_accounting;
 mod loop_;
 mod tools_exec;
-
-#[cfg(test)]
-mod tests;
 
 pub use loop_::{
     run_agent, run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,

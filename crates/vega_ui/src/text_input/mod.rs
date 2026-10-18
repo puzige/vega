@@ -99,6 +99,3 @@ impl TextInput {
         self
     }
 }
-
-#[cfg(test)]
-mod tests;

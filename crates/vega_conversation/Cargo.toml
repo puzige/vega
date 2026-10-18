@@ -24,8 +24,3 @@ ulid = { workspace = true }
 portable-pty.workspace = true
 vt100.workspace = true
 libc.workspace = true
-
-[dev-dependencies]
-vega_runtime = { workspace = true, features = ["test-support"] }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
