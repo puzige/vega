@@ -199,6 +199,10 @@ async fn active_run_phases_follow_tools_and_owned_compaction_without_resetting_c
                 },
                 cx,
             );
+            assert!(matches!(
+                group.read(cx).test_clock().2,
+                run_activity::RunPhase::Working
+            ));
             assert_eq!(group.read(cx).test_label(), "Working for 22s");
             stream.apply_event(
                 ConversationEvent::ToolCallRunning {
@@ -206,7 +210,11 @@ async fn active_run_phases_follow_tools_and_owned_compaction_without_resetting_c
                 },
                 cx,
             );
-            assert_eq!(group.read(cx).test_label(), "Running tools · 22s");
+            assert!(matches!(
+                group.read(cx).test_clock().2,
+                run_activity::RunPhase::Tool
+            ));
+            assert_eq!(group.read(cx).test_label(), "Working for 22s");
             stream.apply_event(
                 ConversationEvent::ToolCallFinished {
                     call_id: "phase-tool".into(),
@@ -222,12 +230,20 @@ async fn active_run_phases_follow_tools_and_owned_compaction_without_resetting_c
                 },
                 cx,
             );
+            assert!(matches!(
+                group.read(cx).test_clock().2,
+                run_activity::RunPhase::Working
+            ));
             assert_eq!(group.read(cx).test_label(), "Working for 22s");
             assert!(!stream.apply_context_status(
                 "other-thread",
                 "mock",
                 status(1, Status::Compacting),
                 cx
+            ));
+            assert!(matches!(
+                group.read(cx).test_clock().2,
+                run_activity::RunPhase::Working
             ));
             assert_eq!(group.read(cx).test_label(), "Working for 22s");
             assert!(stream.apply_context_status(
@@ -236,7 +252,11 @@ async fn active_run_phases_follow_tools_and_owned_compaction_without_resetting_c
                 status(1, Status::Compacting),
                 cx
             ));
-            assert_eq!(group.read(cx).test_label(), "Compacting context · 22s");
+            assert!(matches!(
+                group.read(cx).test_clock().2,
+                run_activity::RunPhase::Compacting
+            ));
+            assert_eq!(group.read(cx).test_label(), "Working for 22s");
             group.update(cx, |group, cx| group.set_waiting(true, cx));
             assert_eq!(group.read(cx).test_label(), "Awaiting confirmation for 22s");
             assert!(stream.apply_context_status(
@@ -247,6 +267,10 @@ async fn active_run_phases_follow_tools_and_owned_compaction_without_resetting_c
             ));
             assert_eq!(group.read(cx).test_label(), "Awaiting confirmation for 22s");
             group.update(cx, |group, cx| group.set_waiting(false, cx));
+            assert!(matches!(
+                group.read(cx).test_clock().2,
+                run_activity::RunPhase::Working
+            ));
             assert_eq!(group.read(cx).test_label(), "Working for 22s");
             stream.apply_event(
                 ConversationEvent::AssistantResponseStarted {
@@ -255,14 +279,22 @@ async fn active_run_phases_follow_tools_and_owned_compaction_without_resetting_c
                 },
                 cx,
             );
-            assert_eq!(group.read(cx).test_label(), "Waiting for response · 22s");
+            assert!(matches!(
+                group.read(cx).test_clock().2,
+                run_activity::RunPhase::Requesting
+            ));
+            assert_eq!(group.read(cx).test_label(), "Working for 22s");
             assert!(!stream.apply_context_status(
                 "context-thread",
                 "mock",
                 status(1, Status::Compacting),
                 cx
             ));
-            assert_eq!(group.read(cx).test_label(), "Waiting for response · 22s");
+            assert!(matches!(
+                group.read(cx).test_clock().2,
+                run_activity::RunPhase::Requesting
+            ));
+            assert_eq!(group.read(cx).test_label(), "Working for 22s");
             assert_eq!(group.read(cx).test_clock().0, started_at);
             stream.apply_event(
                 ConversationEvent::MessageFinished {

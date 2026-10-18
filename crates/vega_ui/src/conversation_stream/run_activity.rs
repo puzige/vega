@@ -1254,24 +1254,6 @@ impl RunActivityGroup {
                 .filter(|_| !self.terminal)
                 .map(|start| start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
         });
-        if self.status == RunActivityStatus::Running && !self.waiting_for_user {
-            let phase = match self.phase {
-                RunPhase::Requesting => Some("Waiting for response"),
-                RunPhase::Thinking => Some("Thinking"),
-                RunPhase::Responding => Some("Responding"),
-                RunPhase::Tool => Some("Running tools"),
-                RunPhase::Compacting => Some("Compacting context"),
-                RunPhase::Working => None,
-                #[cfg(test)]
-                RunPhase::Waiting => None,
-            };
-            if let Some(phase) = phase {
-                return duration.map_or_else(
-                    || phase.to_string(),
-                    |value| format!("{phase} · {}", format_run_clock(value)),
-                );
-            }
-        }
         let status = match self.status {
             RunActivityStatus::Running if self.waiting_for_user => "Awaiting confirmation for",
             RunActivityStatus::Running => "Working for",
