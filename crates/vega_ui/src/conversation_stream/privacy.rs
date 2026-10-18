@@ -225,8 +225,10 @@ impl PrivacyButton {
         let colors = self.colors;
         let activate = std::rc::Rc::new(activate);
         let keyboard = activate.clone();
+        let selector = self.id.clone();
         div()
             .id(self.id)
+            .debug_selector(move || selector.to_string())
             .aria_label(self.label)
             .focusable()
             .tab_stop(enabled)

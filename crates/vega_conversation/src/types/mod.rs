@@ -28,6 +28,11 @@ mod usage;
 mod usage_dashboard;
 mod workspace;
 
+#[cfg(test)]
+mod tests_audit_wire;
+#[cfg(test)]
+mod tests_conversion;
+
 pub use artifact::*;
 pub use codex_task::*;
 pub use context::*;

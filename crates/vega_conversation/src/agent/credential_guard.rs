@@ -153,6 +153,14 @@ fn project_json(
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) fn project_owner_secrets(
+    request: ChatRequest,
+    reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
+) -> Result<ChatRequest, VegaError> {
+    project_owner_secrets_with_policy(request, reader, None)
+}
+
 pub(crate) fn project_owner_secrets_with_policy(
     mut request: ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
@@ -396,5 +404,189 @@ impl Provider for OwnerCredentialProvider {
             let stream = provider.chat_stream(request, cancel).await?;
             Ok(protected_stream(stream, credentials, exceptions))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vega_runtime::{ChatMessage, MockProvider};
+
+    #[test]
+    fn projection_preserves_json_structure_and_refuses_schema_semantic_changes() {
+        let secret = "synthetic-quoted-\"secret";
+        let reader = || Ok(vec![secret.to_string()]);
+        let mut request = ChatRequest::default();
+        request.messages.push(ChatMessage::assistant_with_tools(
+            "safe",
+            vec![vega_runtime::ChatToolCall {
+                id: "call-1".into(),
+                name: "bash".into(),
+                input_json: serde_json::json!({"command": format!("echo {secret}"), "count": 7})
+                    .to_string(),
+            }],
+        ));
+        request
+            .messages
+            .push(ChatMessage::tool_result("call-1", secret));
+        let projected = project_owner_secrets(request.clone(), &reader).unwrap();
+        assert_eq!(
+            projected.messages[1].tool_call_id.as_deref(),
+            Some("call-1")
+        );
+        let arguments: serde_json::Value =
+            serde_json::from_str(&projected.messages[0].tool_calls[0].input_json).unwrap();
+        assert_eq!(arguments["count"], 7);
+        assert!(!arguments["command"].as_str().unwrap().contains(secret));
+        assert!(request.messages[1].content.contains(secret));
+        assert!(
+            project_json(
+                &mut serde_json::json!({(secret): "value"}),
+                &[secret.into()],
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_authority_never_dispatches_or_becomes_transport_failure() {
+        let inner = Arc::new(MockProvider::new(vec![]));
+        let guarded = OwnerCredentialProvider::new(inner.clone(), Arc::new(|| Err(())));
+        assert!(matches!(
+            guarded
+                .chat_stream(ChatRequest::default(), CancellationToken::new())
+                .await,
+            Err(VegaError::CredentialCheckUnavailable)
+        ));
+        assert!(inner.requests().is_empty());
+    }
+    #[test]
+    fn schema_enum_const_required_and_property_keys_are_never_rewritten() {
+        let secret = "synthetic-schema-secret";
+        let reader = || Ok(vec![secret.to_string()]);
+        for schema in [
+            serde_json::json!({"enum": [secret]}),
+            serde_json::json!({"const": secret}),
+            serde_json::json!({"required": [secret]}),
+            serde_json::json!({"properties": {(secret): {"type": "string"}}}),
+        ] {
+            let request = ChatRequest {
+                tools: vec![vega_runtime::ToolDefinition {
+                    name: "fixture".into(),
+                    description: "safe".into(),
+                    input_schema: schema.clone(),
+                    strict: false,
+                }],
+                ..Default::default()
+            };
+            assert!(matches!(
+                project_owner_secrets(request.clone(), &reader),
+                Err(VegaError::CredentialProjectionInvalid { tool_index: 0 })
+            ));
+            assert_eq!(request.tools[0].input_schema, schema);
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_boundary_tests {
+    use super::*;
+    use vega_runtime::ProviderEvent;
+    #[tokio::test]
+    async fn ordinary_delta_is_delivered_before_waiting_for_the_next_chunk() {
+        let source = futures::stream::once(async {
+            Ok(ProviderEvent::TextDelta("ordinary first chunk ".into()))
+        })
+        .chain(futures::stream::pending());
+        let mut stream = protected_stream(
+            Box::pin(source),
+            vec!["synthetic-unrelated-owner-secret".into()],
+            None,
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, ProviderEvent::TextDelta(text) if text == "ordinary first chunk "));
+    }
+    #[tokio::test]
+    async fn split_unknown_token_is_filtered_without_buffering_ordinary_prose() {
+        let token = "sk-proj-synthetic0123456789abcdef";
+        let source = [
+            ProviderEvent::TextDelta("ordinary text ".into()),
+            ProviderEvent::TextDelta("sk-pr".into()),
+            ProviderEvent::TextDelta("oj-synthetic0123456789abcdef".into()),
+            ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ];
+        let stream = Box::pin(futures::stream::iter(source.into_iter().map(Ok)));
+        let events = protected_stream(stream, Vec::new(), None)
+            .collect::<Vec<_>>()
+            .await;
+        let output = events
+            .into_iter()
+            .filter_map(|event| match event.unwrap() {
+                ProviderEvent::TextDelta(text) => Some(text),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(output.starts_with("ordinary text "));
+        assert!(!output.contains(token));
+        assert!(output.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER));
+    }
+    #[tokio::test]
+    async fn response_metadata_preserves_status_without_exposing_owner_value() {
+        let secret = "synthetic-request-identifier-secret".to_string();
+        let source = [ProviderEvent::ResponseMetadata(
+            vega_runtime::ProviderResponseMetadata {
+                http_status: Some(200),
+                request_id: Some(format!("request-{secret}")),
+                retry_count: Some(2),
+            },
+        )];
+        let stream: EventStream = Box::pin(futures::stream::iter(source.into_iter().map(Ok)));
+        let events = protected_stream(stream, vec![secret.clone()], None)
+            .collect::<Vec<_>>()
+            .await;
+        let ProviderEvent::ResponseMetadata(metadata) = events.into_iter().next().unwrap().unwrap()
+        else {
+            panic!("expected response metadata");
+        };
+        assert_eq!(metadata.http_status, Some(200));
+        assert_eq!(metadata.retry_count, Some(2));
+        let request_id = metadata.request_id.unwrap();
+        assert!(!request_id.contains(&secret));
+        assert!(request_id.starts_with("request-"));
+    }
+    #[tokio::test]
+    async fn split_owner_value_never_reaches_visible_events() {
+        let secret = "known-stream-value-with-quotation\"and-slash\\".to_string();
+        let source = [
+            ProviderEvent::TextDelta("先说 ".into()),
+            ProviderEvent::TextDelta(secret[..10].into()),
+            ProviderEvent::ThinkingDelta(secret.clone()),
+            ProviderEvent::TextDelta(secret[10..].into()),
+            ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ];
+        let stream: EventStream = Box::pin(futures::stream::iter(source.into_iter().map(Ok)));
+        let events = protected_stream(stream, vec![secret.clone()], None)
+            .collect::<Vec<_>>()
+            .await;
+        let mut visible = String::new();
+        for event in events {
+            match event.unwrap() {
+                ProviderEvent::TextDelta(text) | ProviderEvent::ThinkingDelta(text) => {
+                    visible.push_str(&text)
+                }
+                _ => {}
+            }
+        }
+        assert!(!visible.contains(&secret));
+        assert!(visible.contains("先说"));
     }
 }

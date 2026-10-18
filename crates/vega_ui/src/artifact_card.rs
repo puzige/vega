@@ -118,6 +118,11 @@ impl ArtifactCard {
         &self.projection
     }
 
+    #[doc(hidden)]
+    pub fn inline_error_code(&self) -> Option<GitWorkspaceErrorCode> {
+        self.inline_error
+    }
+
     pub fn row_count(&self) -> usize {
         2 + self.preview_lines.len() + usize::from(self.inline_error.is_some())
     }
@@ -467,4 +472,110 @@ fn preview_rows(text: &str) -> Vec<String> {
     text.split_inclusive('\n')
         .map(|line| line.strip_suffix('\n').unwrap_or(line).to_owned())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_open_targets_are_exact_and_ordered() {
+        assert_eq!(
+            OPEN_TARGETS,
+            [
+                (OpenInTarget::VisualStudioCode, "VS Code"),
+                (OpenInTarget::Cursor, "Cursor"),
+                (OpenInTarget::Zed, "Zed"),
+                (OpenInTarget::Terminal, "Terminal"),
+                (OpenInTarget::DefaultApplication, "Default"),
+                (OpenInTarget::RevealInFinder, "Finder"),
+            ]
+        );
+    }
+
+    #[test]
+    fn source_labels_are_authoritative_and_closed() {
+        assert_eq!(
+            source_label(ArtifactSource::AgentArtifact),
+            "agent artifact"
+        );
+        assert_eq!(
+            source_label(ArtifactSource::WorkspaceChange),
+            "workspace change"
+        );
+    }
+
+    #[test]
+    fn errors_are_typed_and_content_free() {
+        let label = error_label(Some(GitWorkspaceErrorCode::MetadataOnly));
+        assert_eq!(label, "Artifact unavailable (metadata_only)");
+        assert!(!label.contains('/'));
+    }
+
+    #[test]
+    fn preview_rows_match_headless_line_semantics() {
+        assert!(preview_rows("").is_empty());
+        assert_eq!(preview_rows("x\n"), ["x"]);
+        assert_eq!(preview_rows("x\ny"), ["x", "y"]);
+        assert_eq!(preview_rows(&"x\n".repeat(10_000)).len(), 10_000);
+    }
+    #[gpui_kit::test]
+    async fn stream_artifacts_arriving_during_reading_inherit_and_release_the_mode(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::conversation_stream::ConversationStream;
+        use std::sync::Arc;
+        use vega_conversation::types::{
+            ConversationEvent, PermissionMode, TaskBackend, Thread, ThreadMode, ThreadStatus,
+            ToolCall, ToolCallStatus, ToolResult,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let _git = vega_conversation::register_git_test_executor(
+            root.path(),
+            Arc::new(|_, _, _| {
+                Err(vega_conversation::types::GitWorkspaceError::for_test(
+                    GitWorkspaceErrorCode::NotRepository,
+                ))
+            }),
+        )
+        .unwrap();
+        let workspace = Arc::new(vega_conversation::GitWorkspaceService::new(root.path()).unwrap());
+        let service =
+            vega_conversation::ArtifactService::new(workspace, "p".into(), "t".into(), 1).unwrap();
+        let call = ToolCall { id: "c".into(), tool: "write".into(), input_json: serde_json::json!({"audit_version":"write_edit_v1","tool":"write","path":"synthetic.txt","content_bytes":1,"fingerprint_v1":"a".repeat(64)}).to_string() };
+        let projection = service.capture(&call, &ToolResult { status: ToolCallStatus::Success, output: serde_json::json!({"path":"synthetic.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}).to_string(), reused:false, exit_code:None, duration_ms:None, truncated:Some(false), invalid:None }, tokio_util::sync::CancellationToken::new()).await.unwrap().unwrap();
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            crate::init(cx);
+        });
+        let stream = cx.new(|cx| {
+            ConversationStream::new(
+                Thread {
+                    id: "t".into(),
+                    parent_thread_id: Some("parent".into()),
+                    backend: TaskBackend::Native,
+                    project_id: "p".into(),
+                    title: "Child".into(),
+                    mode: ThreadMode::Execute,
+                    permission_mode: PermissionMode::Confirm,
+                    model: "mock".into(),
+                    status: ThreadStatus::Active,
+                    pinned: false,
+                    unread: false,
+                    created_at: 1,
+                    updated_at: 1,
+                },
+                cx,
+            )
+        });
+        let card = cx.new(|cx| ArtifactCard::new("t".into(), "p".into(), projection, cx));
+        stream.update(cx, |stream, cx| {
+            stream.set_reading_preview(true, cx);
+            stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
+            assert!(stream.apply_artifact_card("c", card.clone(), cx));
+        });
+        assert!(card.read_with(cx, |card, _| card.reading_preview));
+        stream.update(cx, |stream, cx| stream.set_reading_preview(false, cx));
+        assert!(!card.read_with(cx, |card, _| card.reading_preview));
+    }
 }

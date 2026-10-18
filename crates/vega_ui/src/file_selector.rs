@@ -128,3 +128,54 @@ impl FileSelectorModel {
 // actions scoped to the `FileSelect` key context, so the model above stays
 // the single source of truth and the selector adds no extra focus stops to
 // the composer chain. (Tests for the model live below.)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(entries: &[&str]) -> FileIndexSnapshot {
+        FileIndexSnapshot {
+            entries: entries.iter().map(|entry| (*entry).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn open_filters_first_wins_and_bounded() {
+        let snapshot = snapshot(&[
+            "src/lib.rs",
+            "src/main.rs",
+            "docs/readme.md",
+            "tests/e2e.rs",
+        ]);
+        let mut model = FileSelectorModel::default();
+        assert!(model.open_for(&snapshot, "src"));
+        assert_eq!(model.candidates().len(), 2, "contains-filter is bounded");
+        assert_eq!(model.highlighted(), 0, "first candidate starts highlighted");
+        // First-wins Enter without moving.
+        assert_eq!(model.accept().as_deref(), Some("src/lib.rs"));
+        assert!(!model.is_open());
+
+        // Empty query lists at most FILE_SUGGESTION_LIMIT candidates.
+        assert!(model.open_for(&snapshot, ""));
+        assert_eq!(model.candidates().len(), FILE_SUGGESTION_LIMIT.min(4));
+
+        // No match stays closed.
+        assert!(!model.open_for(&snapshot, "zzz"));
+        assert!(!model.is_open());
+    }
+
+    #[test]
+    fn keyboard_moves_clamp_and_esc_closes_without_inserting() {
+        let snapshot = snapshot(&["a.rs", "b.rs"]);
+        let mut model = FileSelectorModel::default();
+        assert!(model.open_for(&snapshot, ""));
+        assert!(model.move_highlight(5), "down clamps to last row");
+        assert_eq!(model.highlighted(), 1);
+        assert!(model.move_highlight(-5), "up clamps to first row");
+        assert_eq!(model.highlighted(), 0);
+        assert!(model.close());
+        assert!(!model.is_open());
+        assert_eq!(model.selected(), None, "closed selector inserts nothing");
+        assert!(!model.close(), "double close is a no-op");
+    }
+}

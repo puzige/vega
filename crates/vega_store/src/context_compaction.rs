@@ -1608,3 +1608,937 @@ fn path_fingerprint(path: Option<String>) -> String {
     feed_optional_str(&mut hash, b"output-full-path", path.as_deref());
     format!("{:x}", hash.finalize())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Store, messages, threads};
+    use tempfile::tempdir;
+
+    fn store() -> (Store, tempfile::TempDir) {
+        let directory = tempdir().unwrap();
+        let store = Store::open(directory.path().join("vega.db")).unwrap();
+        store.migrate().unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO projects (id, path, name, created_at, last_opened_at) \
+                 VALUES ('p', '/tmp/context-compaction', 'p', 0, 0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO threads (id, project_id, model, created_at, updated_at) \
+                 VALUES ('t', 'p', 'model-a', 0, 0)",
+                [],
+            )
+            .unwrap();
+        (store, directory)
+    }
+
+    fn add_message(store: &Store, id: &str, seq: i64, role: &str, content: &str) {
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: id.into(),
+                thread_id: "t".into(),
+                seq,
+                role: role.into(),
+                kind: "text".into(),
+                content: content.into(),
+                status: "done".into(),
+                created_at: seq,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn checkpoint(store: &Store, previous: Option<i64>) -> NewContextCheckpoint {
+        let source = load_source(store.conn(), "t").unwrap();
+        NewContextCheckpoint {
+            thread_id: "t".into(),
+            model: "model-a".into(),
+            source_version: source.source_version,
+            covered_through_seq: source.source_version,
+            covered_assistant_id: None,
+            covered_assistant_text_bytes: 0,
+            covered_assistant_tool_seq: 0,
+            source_fingerprint: source.fingerprint,
+            summary: "[historical context] keep the user's goal".into(),
+            estimator_version: "test-estimator-v1".into(),
+            expected_previous_id: previous,
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn missing_model_policy_has_editable_assumed_defaults_without_writing_a_row() {
+        let (store, _directory) = store();
+        assert!(
+            load_model_policy(store.conn(), "provider-a", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        let policy = load_model_policy(store.conn(), "provider-a", "model-a")
+            .unwrap()
+            .unwrap_or_else(|| ModelContextPolicy::assumed_default("provider-a", "model-a"));
+        assert!(policy.automatic_compaction);
+        assert_eq!(policy.input_limit, Some(300_000));
+        assert_eq!(policy.output_reserve, Some(128_000));
+        assert!(
+            load_model_policy(store.conn(), "provider-a", "model-a")
+                .unwrap()
+                .is_none(),
+            "opening the model must not silently persist assumed defaults"
+        );
+    }
+
+    #[test]
+    fn explicit_unknown_capacity_is_distinct_from_missing_policy() {
+        let (store, _directory) = store();
+        let unknown = ModelContextPolicy::unconfigured("provider-a", "model-a");
+        save_model_policy(store.conn(), &unknown).unwrap();
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-a").unwrap(),
+            Some(unknown)
+        );
+    }
+
+    #[test]
+    fn model_policy_is_shared_across_threads_but_isolated_by_provider_and_model() {
+        let (store, directory) = store();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO threads (id, project_id, model, created_at, updated_at) \
+                 VALUES ('other-thread', 'p', 'model-a', 0, 0)",
+                [],
+            )
+            .unwrap();
+        let policy = ModelContextPolicy {
+            provider: "provider-a".into(),
+            model: "model-a".into(),
+            input_limit: Some(8_000),
+            output_reserve: Some(2_000),
+            automatic_compaction: false,
+            updated_at: 10,
+        };
+        save_model_policy(store.conn(), &policy).unwrap();
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-a").unwrap(),
+            Some(policy.clone())
+        );
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-b", "model-a").unwrap(),
+            None
+        );
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-b").unwrap(),
+            None
+        );
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        assert_eq!(
+            load_model_policy(reopened.conn(), "provider-a", "model-a").unwrap(),
+            Some(policy)
+        );
+        let count: i64 = reopened
+            .conn()
+            .query_row("SELECT COUNT(*) FROM model_context_policies", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1, "policy does not duplicate per thread");
+    }
+
+    #[test]
+    fn model_policy_rejects_partial_or_inconsistent_numeric_values() {
+        let (store, _directory) = store();
+        let base = ModelContextPolicy {
+            provider: "provider-a".into(),
+            model: "model-a".into(),
+            input_limit: Some(8),
+            output_reserve: Some(2),
+            automatic_compaction: true,
+            updated_at: 1,
+        };
+        for invalid in [
+            ModelContextPolicy {
+                provider: String::new(),
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                model: String::new(),
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                input_limit: Some(0),
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                output_reserve: None,
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                output_reserve: Some(MAX_CONTEXT_VALUE),
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                input_limit: None,
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                input_limit: Some(MAX_CONTEXT_VALUE),
+                ..base.clone()
+            },
+        ] {
+            assert!(matches!(
+                save_model_policy(store.conn(), &invalid),
+                Err(ContextSettingsError::Invalid)
+            ));
+        }
+        assert!(
+            load_model_policy(store.conn(), "provider-a", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        let largest_valid = ModelContextPolicy {
+            input_limit: Some(MAX_CONTEXT_VALUE - 1),
+            output_reserve: Some(1),
+            ..base
+        };
+        save_model_policy(store.conn(), &largest_valid).unwrap();
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-a").unwrap(),
+            Some(largest_valid)
+        );
+    }
+
+    #[test]
+    fn model_policy_does_not_delete_or_import_conflicting_legacy_thread_settings() {
+        let (store, directory) = store();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO threads (id, project_id, model, created_at, updated_at) \
+                 VALUES ('other-thread', 'p', 'model-a', 0, 0)",
+                [],
+            )
+            .unwrap();
+        for (thread_id, limit) in [("t", 10_000), ("other-thread", 20_000)] {
+            save_settings(
+                store.conn(),
+                &ContextSettings {
+                    thread_id: thread_id.into(),
+                    model: "model-a".into(),
+                    context_limit: Some(limit),
+                    output_reserve: 1_000,
+                    automatic_compaction: true,
+                    updated_at: 5,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-a").unwrap(),
+            None,
+            "legacy rows cannot identify a provider or choose between conflicting limits"
+        );
+        assert!(has_legacy_model_settings(store.conn(), "model-a").unwrap());
+        assert!(!has_legacy_model_settings(store.conn(), "model-b").unwrap());
+        let policy = ModelContextPolicy {
+            provider: "provider-a".into(),
+            model: "model-a".into(),
+            input_limit: Some(28_000),
+            output_reserve: Some(2_000),
+            automatic_compaction: true,
+            updated_at: 6,
+        };
+        save_model_policy(store.conn(), &policy).unwrap();
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        assert_eq!(
+            load_model_policy(reopened.conn(), "provider-a", "model-a").unwrap(),
+            Some(policy)
+        );
+        assert!(has_legacy_model_settings(reopened.conn(), "model-a").unwrap());
+        assert_eq!(
+            load_settings(reopened.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .context_limit,
+            Some(10_000)
+        );
+        assert_eq!(
+            load_settings(reopened.conn(), "other-thread", "model-a")
+                .unwrap()
+                .unwrap()
+                .context_limit,
+            Some(20_000)
+        );
+    }
+
+    #[test]
+    fn settings_are_isolated_by_exact_thread_and_model_and_reopen() {
+        let (store, directory) = store();
+        save_settings(
+            store.conn(),
+            &ContextSettings {
+                thread_id: "t".into(),
+                model: "model-a".into(),
+                context_limit: Some(10_000),
+                output_reserve: 2_000,
+                automatic_compaction: true,
+                updated_at: 5,
+            },
+        )
+        .unwrap();
+        save_settings(
+            store.conn(),
+            &ContextSettings {
+                thread_id: "t".into(),
+                model: "model-b".into(),
+                context_limit: None,
+                output_reserve: 1,
+                automatic_compaction: false,
+                updated_at: 6,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            load_settings(store.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .context_limit,
+            Some(10_000)
+        );
+        assert_eq!(
+            load_settings(store.conn(), "t", "model-b")
+                .unwrap()
+                .unwrap()
+                .context_limit,
+            None
+        );
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        assert_eq!(
+            load_settings(reopened.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .output_reserve,
+            2_000
+        );
+    }
+
+    #[test]
+    fn settings_reject_zero_or_inconsistent_numeric_values() {
+        let (store, _directory) = store();
+        let base = ContextSettings {
+            thread_id: "t".into(),
+            model: "model-a".into(),
+            context_limit: Some(10),
+            output_reserve: 2,
+            automatic_compaction: true,
+            updated_at: 1,
+        };
+        for invalid in [
+            ContextSettings {
+                output_reserve: 0,
+                ..base.clone()
+            },
+            ContextSettings {
+                context_limit: Some(0),
+                ..base.clone()
+            },
+            ContextSettings {
+                context_limit: Some(2),
+                output_reserve: 2,
+                ..base.clone()
+            },
+            ContextSettings {
+                context_limit: Some(1),
+                output_reserve: 2,
+                ..base.clone()
+            },
+            ContextSettings {
+                thread_id: String::new(),
+                ..base.clone()
+            },
+        ] {
+            assert!(matches!(
+                save_settings(store.conn(), &invalid),
+                Err(ContextSettingsError::Invalid)
+            ));
+        }
+        assert!(
+            load_settings(store.conn(), "t", "model-a")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn status_usage_unknown_is_operation_scoped_and_survives_reopen() {
+        let (store, directory) = store();
+        let started = NewContextCompactionStatus {
+            thread_id: "t",
+            model: "model-a",
+            operation_key: "source-a",
+            generation: 1,
+            phase: "started",
+            usage_state: "pending",
+            failure: None,
+            source_version: 2,
+            estimated_tokens: 8_000,
+            input_budget: 8_000,
+            target_tokens: 6_000,
+            created_at: 1,
+        };
+        insert_status(store.conn(), started).unwrap();
+        // Until a terminal status arrives, accounting is conservatively
+        // unknown (this is also the safe restart projection).
+        assert!(has_unknown_usage(store.conn(), "t", "model-a").unwrap());
+        insert_status(
+            store.conn(),
+            NewContextCompactionStatus {
+                phase: "succeeded",
+                usage_state: "known_priced",
+                ..started
+            },
+        )
+        .unwrap();
+        assert!(!has_unknown_usage(store.conn(), "t", "model-a").unwrap());
+        insert_status(
+            store.conn(),
+            NewContextCompactionStatus {
+                operation_key: "source-b",
+                generation: 1,
+                phase: "started",
+                usage_state: "pending",
+                ..started
+            },
+        )
+        .unwrap();
+        assert!(has_unknown_usage(store.conn(), "t", "model-a").unwrap());
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        assert!(has_unknown_usage(reopened.conn(), "t", "model-a").unwrap());
+        assert_eq!(
+            latest_status(reopened.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .operation_key,
+            "source-b"
+        );
+        insert_status(
+            reopened.conn(),
+            NewContextCompactionStatus {
+                operation_key: "source-b",
+                phase: "succeeded",
+                usage_state: "known_priced",
+                ..started
+            },
+        )
+        .unwrap();
+        assert!(!has_unknown_usage(reopened.conn(), "t", "model-a").unwrap());
+        insert_status(
+            reopened.conn(),
+            NewContextCompactionStatus {
+                operation_key: "source-c",
+                phase: "succeeded",
+                usage_state: "unknown",
+                ..started
+            },
+        )
+        .unwrap();
+        assert!(has_unknown_usage(reopened.conn(), "t", "model-a").unwrap());
+    }
+
+    #[test]
+    fn unknown_summary_usage_is_thread_scoped_across_models_and_reopen() {
+        let (store, directory) = store();
+        let unknown_model_a = NewContextCompactionStatus {
+            thread_id: "t",
+            model: "model-a",
+            operation_key: "manual-a",
+            generation: 1,
+            phase: "failed",
+            usage_state: "unknown",
+            failure: Some("unavailable"),
+            source_version: 2,
+            estimated_tokens: 8_000,
+            input_budget: 8_000,
+            target_tokens: 6_000,
+            created_at: 1,
+        };
+        insert_status(store.conn(), unknown_model_a).unwrap();
+        insert_status(
+            store.conn(),
+            NewContextCompactionStatus {
+                model: "model-b",
+                operation_key: "manual-b",
+                phase: "succeeded",
+                usage_state: "known_priced",
+                failure: None,
+                ..unknown_model_a
+            },
+        )
+        .unwrap();
+
+        assert!(has_unknown_usage(store.conn(), "t", "model-a").unwrap());
+        assert!(!has_unknown_usage(store.conn(), "t", "model-b").unwrap());
+        assert!(has_unknown_usage_for_thread(store.conn(), "t").unwrap());
+
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        assert!(!has_unknown_usage(reopened.conn(), "t", "model-b").unwrap());
+        assert!(has_unknown_usage_for_thread(reopened.conn(), "t").unwrap());
+    }
+
+    #[test]
+    fn cancelled_checkpoint_guard_after_writer_wait_rolls_back_before_commit() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+        use std::time::Duration;
+
+        let (store, directory) = store();
+        add_message(&store, "u", 1, "user", "goal");
+        let proposed = checkpoint(&store, None);
+        let database_path = directory.path().join("vega.db");
+        let lock_store = Store::open(&database_path).unwrap();
+        let writer_lock = lock_store.immediate_transaction().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_entered = Arc::clone(&entered);
+        let worker_path = database_path.clone();
+        let worker = thread::spawn(move || {
+            let worker_store = Store::open(worker_path).unwrap();
+            worker_entered.store(true, Ordering::Release);
+            install_checkpoint_with_guard(worker_store.conn(), &proposed, || {
+                worker_cancel.load(Ordering::Acquire)
+            })
+        });
+        while !entered.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        thread::sleep(Duration::from_millis(50));
+        cancel.store(true, Ordering::Release);
+        drop(writer_lock);
+        let result = worker.join().unwrap();
+        assert!(matches!(result, Err(ContextCheckpointError::Cancelled)));
+        assert!(
+            latest_checkpoint(store.conn(), "t", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        let raw_messages: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE thread_id = 't'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw_messages, 1);
+    }
+
+    #[test]
+    fn source_is_chronological_and_same_seq_mutation_changes_fingerprint() {
+        let (store, _directory) = store();
+        add_message(&store, "u", 1, "user", "goal");
+        add_message(&store, "a", 2, "assistant", "answer");
+        crate::image_attachments::insert(store.conn(), "u", 0, &[1, 2, 3]).unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, created_at) \
+                 VALUES ('call', 't', 'a', 3, 'read', '{\"path\":\"src\"}', 'result', 'success', 3)",
+                [],
+            )
+            .unwrap();
+        let before = load_source(store.conn(), "t").unwrap();
+        assert_eq!(
+            before
+                .messages
+                .iter()
+                .map(|row| row.seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(before.tool_calls[0].id, "call");
+        assert_eq!(before.images.len(), 1);
+        let fence_only = load_source_version(store.conn(), "t").unwrap();
+        assert_eq!(fence_only.source_version, before.source_version);
+        assert_eq!(fence_only.fingerprint, before.fingerprint);
+        store
+            .conn()
+            .execute(
+                "UPDATE tool_calls SET text_offset_bytes = 7 WHERE id = 'call'",
+                [],
+            )
+            .unwrap();
+        let offset_changed = load_source(store.conn(), "t").unwrap();
+        assert_ne!(before.fingerprint, offset_changed.fingerprint);
+        store
+            .conn()
+            .execute("UPDATE messages SET content = 'changed' WHERE id = 'a'", [])
+            .unwrap();
+        let after = load_source(store.conn(), "t").unwrap();
+        assert_eq!(before.source_version, after.source_version);
+        assert_ne!(offset_changed.fingerprint, after.fingerprint);
+    }
+
+    #[test]
+    fn context_debug_redacts_transcript_tool_payload_and_summary() {
+        const SECRET: &str = "CONTEXT_COMPACTION_DEBUG_SENTINEL";
+        let (store, _directory) = store();
+        add_message(&store, "u", 1, "user", SECRET);
+        add_message(&store, "a", 2, "assistant", "answer");
+        store
+            .conn()
+            .execute(
+                "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, created_at) \
+                 VALUES ('call', 't', 'a', 3, 'read', ?1, ?1, 'success', 3)",
+                [SECRET],
+            )
+            .unwrap();
+        let source = load_source(store.conn(), "t").unwrap();
+        let new_checkpoint = NewContextCheckpoint {
+            thread_id: "t".into(),
+            model: "model-a".into(),
+            source_version: source.source_version,
+            covered_through_seq: source.source_version,
+            covered_assistant_id: None,
+            covered_assistant_text_bytes: 0,
+            covered_assistant_tool_seq: 0,
+            source_fingerprint: source.fingerprint.clone(),
+            summary: SECRET.into(),
+            estimator_version: "test-estimator-v1".into(),
+            expected_previous_id: None,
+            created_at: 1,
+        };
+        for rendered in [
+            format!("{source:?}"),
+            format!("{:?}", source.tool_calls[0]),
+            format!("{new_checkpoint:?}"),
+        ] {
+            assert!(!rendered.contains(SECRET), "debug leaked source payload");
+        }
+        let installed = install_checkpoint(store.conn(), &new_checkpoint).unwrap();
+        let row = match installed {
+            ContextCheckpointInstall::Applied(row) => row,
+            other => panic!("unexpected install result: {other:?}"),
+        };
+        assert!(!format!("{row:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn stale_same_seq_checkpoint_is_rejected_and_raw_rows_remain() {
+        let (store, _directory) = store();
+        add_message(&store, "u", 1, "user", "goal");
+        add_message(&store, "a", 2, "assistant", "answer");
+        let first = checkpoint(&store, None);
+        store
+            .conn()
+            .execute("UPDATE messages SET content = 'changed' WHERE id = 'a'", [])
+            .unwrap();
+        assert_eq!(
+            install_checkpoint(store.conn(), &first).unwrap(),
+            ContextCheckpointInstall::Stale
+        );
+        assert_eq!(
+            store
+                .conn()
+                .query_row::<String, _, _>(
+                    "SELECT content FROM messages WHERE id = 'a'",
+                    [],
+                    |row| row.get(0)
+                )
+                .unwrap(),
+            "changed"
+        );
+        assert!(
+            latest_checkpoint(store.conn(), "t", "model-a")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn checkpoint_coverage_uses_owner_message_order_not_independent_tool_seq() {
+        let (store, directory) = store();
+        add_message(&store, "u", 1, "user", "goal");
+        add_message(&store, "a", 2, "assistant", "read result");
+        store
+            .conn()
+            .execute(
+                "INSERT INTO tool_calls \
+                 (id, thread_id, message_id, seq, tool, input_json, output_text, status, created_at) \
+                 VALUES ('early-call', 't', 'a', 100, 'read', '{}', 'ok', 'success', 1)",
+                [],
+            )
+            .unwrap();
+        let first_source = load_source(store.conn(), "t").unwrap();
+        let first = NewContextCheckpoint {
+            thread_id: "t".into(),
+            model: "model-a".into(),
+            source_version: first_source.source_version,
+            covered_through_seq: 2,
+            covered_assistant_id: None,
+            covered_assistant_text_bytes: 0,
+            covered_assistant_tool_seq: 0,
+            source_fingerprint: first_source.fingerprint,
+            summary: "complete early group".into(),
+            estimator_version: "test-estimator-v1".into(),
+            expected_previous_id: None,
+            created_at: 1,
+        };
+        let first_id = match install_checkpoint(store.conn(), &first).unwrap() {
+            ContextCheckpointInstall::Applied(row) => row.id,
+            other => panic!("unexpected first checkpoint result: {other:?}"),
+        };
+
+        add_message(&store, "late", 100, "assistant", "pending late work");
+        store
+            .conn()
+            .execute(
+                "INSERT INTO tool_calls \
+                 (id, thread_id, message_id, seq, tool, input_json, status, created_at) \
+                 VALUES ('late-call', 't', 'late', 2, 'read', '{}', 'pending_approval', 2)",
+                [],
+            )
+            .unwrap();
+        let second_source = load_source(store.conn(), "t").unwrap();
+        let second = NewContextCheckpoint {
+            thread_id: "t".into(),
+            model: "model-a".into(),
+            source_version: second_source.source_version,
+            covered_through_seq: 2,
+            covered_assistant_id: None,
+            covered_assistant_text_bytes: 0,
+            covered_assistant_tool_seq: 0,
+            source_fingerprint: second_source.fingerprint,
+            summary: "early group remains complete".into(),
+            estimator_version: "test-estimator-v1".into(),
+            expected_previous_id: Some(first_id),
+            created_at: 2,
+        };
+        assert_eq!(first.source_version, second.source_version);
+        assert_ne!(first.source_fingerprint, second.source_fingerprint);
+        assert_eq!(second.expected_previous_id, Some(first_id));
+        let current_fence = load_source_version(store.conn(), "t").unwrap();
+        assert_eq!(current_fence.source_version, second.source_version);
+        assert_eq!(current_fence.fingerprint, second.source_fingerprint);
+        let second_id = match install_checkpoint(store.conn(), &second).unwrap() {
+            ContextCheckpointInstall::Applied(row) => row.id,
+            other => panic!("unexpected second checkpoint result: {other:?}"),
+        };
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        assert_eq!(
+            latest_checkpoint(reopened.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .id,
+            second_id
+        );
+        // The request's predecessor remains the first row; exact request
+        // identity makes this retry idempotent after the second append.
+        assert!(matches!(
+            install_checkpoint(reopened.conn(), &second).unwrap(),
+            ContextCheckpointInstall::AlreadyCommitted(row) if row.id == second_id
+        ));
+    }
+
+    #[test]
+    fn model_switch_checkpoint_lookup_and_predecessor_are_thread_scoped() {
+        let (store, directory) = store();
+        add_message(&store, "goal", 1, "user", "task goal and progress");
+        let first = checkpoint(&store, None);
+        let ContextCheckpointInstall::Applied(first_row) =
+            install_checkpoint(store.conn(), &first).unwrap()
+        else {
+            panic!("first checkpoint");
+        };
+        assert_eq!(
+            latest_checkpoint(store.conn(), "t", "model-b")
+                .unwrap()
+                .unwrap()
+                .id,
+            first_row.id
+        );
+        store
+            .conn()
+            .execute("UPDATE threads SET model = 'model-b' WHERE id = 't'", [])
+            .unwrap();
+        let second = NewContextCheckpoint {
+            model: "model-b".into(),
+            summary: "goal and progress adapted to smaller budget".into(),
+            expected_previous_id: Some(first_row.id),
+            ..first.clone()
+        };
+        let stale = NewContextCheckpoint {
+            expected_previous_id: None,
+            ..second.clone()
+        };
+        assert_eq!(
+            install_checkpoint(store.conn(), &stale).unwrap(),
+            ContextCheckpointInstall::Stale
+        );
+        let ContextCheckpointInstall::Applied(second_row) =
+            install_checkpoint(store.conn(), &second).unwrap()
+        else {
+            panic!("cross-model checkpoint");
+        };
+        store
+            .conn()
+            .execute("UPDATE threads SET model = 'model-a' WHERE id = 't'", [])
+            .unwrap();
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        assert_eq!(
+            load_checkpoint(reopened.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .id,
+            second_row.id
+        );
+        assert!(
+            load_checkpoint(reopened.conn(), "other-thread", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        let transaction = reopened.conn().unchecked_transaction().unwrap();
+        assert_eq!(
+            latest_checkpoint_in_transaction(&transaction, "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .id,
+            second_row.id
+        );
+    }
+
+    #[test]
+    fn checkpoint_install_reloads_and_preserves_previous_on_insert_failure() {
+        let (store, directory) = store();
+        add_message(&store, "u", 1, "user", "goal");
+        let first = checkpoint(&store, None);
+        let installed = install_checkpoint(store.conn(), &first).unwrap();
+        let first_row = match installed {
+            ContextCheckpointInstall::Applied(row) => row,
+            other => panic!("unexpected install result: {other:?}"),
+        };
+        assert!(matches!(
+            install_checkpoint(store.conn(), &first).unwrap(),
+            ContextCheckpointInstall::AlreadyCommitted(row) if row.id == first_row.id
+        ));
+        let different_summary = NewContextCheckpoint {
+            summary: "different projection".into(),
+            ..first.clone()
+        };
+        assert_eq!(
+            install_checkpoint(store.conn(), &different_summary).unwrap(),
+            ContextCheckpointInstall::Stale
+        );
+        let wrong_prior = NewContextCheckpoint {
+            expected_previous_id: Some(first_row.id + 1),
+            ..first.clone()
+        };
+        assert_eq!(
+            install_checkpoint(store.conn(), &wrong_prior).unwrap(),
+            ContextCheckpointInstall::Stale
+        );
+        let duplicate_request = NewContextCheckpoint {
+            expected_previous_id: Some(first_row.id),
+            ..first.clone()
+        };
+        let duplicate = install_checkpoint(store.conn(), &duplicate_request).unwrap();
+        assert_eq!(duplicate, ContextCheckpointInstall::Stale);
+        add_message(&store, "next", 2, "user", "new source turn");
+        let source = load_source(store.conn(), "t").unwrap();
+        store
+            .conn()
+            .execute_batch(
+                "CREATE TRIGGER force_context_checkpoint_failure BEFORE INSERT ON context_checkpoints BEGIN SELECT RAISE(ABORT, 'forced'); END;",
+            )
+            .unwrap();
+        let failed = NewContextCheckpoint {
+            source_version: source.source_version,
+            source_fingerprint: source.fingerprint,
+            expected_previous_id: Some(first_row.id),
+            summary: "new projection".into(),
+            ..first.clone()
+        };
+        assert!(matches!(
+            install_checkpoint(store.conn(), &failed),
+            Err(ContextCheckpointError::Store(_))
+        ));
+        let current = latest_checkpoint(store.conn(), "t", "model-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.id, first_row.id);
+        assert_eq!(current.summary, first_row.summary);
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        assert_eq!(
+            latest_checkpoint(reopened.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .id,
+            first_row.id
+        );
+    }
+
+    #[test]
+    fn thread_delete_cascades_settings_and_checkpoints_without_deleting_other_raw_tables() {
+        let (store, _directory) = store();
+        add_message(&store, "u", 1, "user", "goal");
+        save_settings(
+            store.conn(),
+            &ContextSettings {
+                thread_id: "t".into(),
+                model: "model-a".into(),
+                context_limit: Some(1_000),
+                output_reserve: 1,
+                automatic_compaction: true,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let row = checkpoint(&store, None);
+        assert!(matches!(
+            install_checkpoint(store.conn(), &row).unwrap(),
+            ContextCheckpointInstall::Applied(_)
+        ));
+        threads::delete_thread(store.conn(), "t").unwrap();
+        assert!(
+            latest_checkpoint(store.conn(), "t", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            load_settings(store.conn(), "t", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .conn()
+                .query_row::<i64, _, _>(
+                    "SELECT COUNT(*) FROM messages WHERE thread_id = 't'",
+                    [],
+                    |row| row.get(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+}

@@ -309,6 +309,7 @@ impl Render for UserQuestionPanel {
             options = options.child(
                 div()
                     .id(("question-option", index))
+                    .debug_selector(move || format!("question-option-{index}"))
                     .role(Role::Button)
                     .aria_label(if selected {
                         format!("Selected: {source_label}")
@@ -432,6 +433,7 @@ impl Render for UserQuestionPanel {
             );
         div()
             .id("user-question-panel")
+            .debug_selector(|| "user-question-panel".into())
             .w_full()
             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
             .mx_auto()
@@ -498,5 +500,275 @@ impl Render for UserQuestionPanel {
                             .child(self.button(primary, PanelAction::Advance, 2, can_advance, cx)),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{EntityInputHandler, TestAppContext, WindowHandle};
+    use std::future::Future;
+    use std::pin::Pin;
+    use tokio_util::sync::CancellationToken;
+    use vega_conversation::agent::{UserQuestionListener, UserQuestionQueue};
+    use vega_runtime::{
+        RuntimeUserQuestionHook, RuntimeUserQuestionRequest, RuntimeUserQuestionResponse,
+    };
+
+    type QuestionFuture = Pin<Box<dyn Future<Output = RuntimeUserQuestionResponse> + Send>>;
+
+    struct QuestionHarness {
+        panel: Option<Entity<UserQuestionPanel>>,
+        composer: Entity<TextInput>,
+    }
+
+    impl Render for QuestionHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .key_context("ConversationStream")
+                .on_action(|_: &crate::conversation_stream::CopySelectedText, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                        "Message selection".into(),
+                    ));
+                })
+                .children(self.panel.clone())
+                .child(div().key_context("Composer").child(self.composer.clone()))
+        }
+    }
+
+    fn open_panel(
+        cx: &mut TestAppContext,
+    ) -> (
+        WindowHandle<QuestionHarness>,
+        Entity<UserQuestionPanel>,
+        Entity<TextInput>,
+        UserQuestionListener,
+        QuestionFuture,
+    ) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(vega_theme::Theme::light());
+            crate::init(cx);
+        });
+        let input = UserQuestionInput::from_json(
+            &serde_json::json!({"questions": (0..3).map(|index| serde_json::json!({
+                "id": format!("choice_{index}"), "header": "Choice",
+                "question": format!("Which approach for {index}?"),
+                "options": [{"label":"A (Recommended)","description":"First"},
+                    {"label":"B","description":"Second"}]
+            })).collect::<Vec<_>>()})
+            .to_string(),
+        )
+        .unwrap();
+        let queue = UserQuestionQueue::new();
+        let listener = queue.subscribe();
+        let future = queue.request(
+            RuntimeUserQuestionRequest {
+                call_id: "question-panel".into(),
+                input,
+            },
+            CancellationToken::new(),
+        );
+        let pending = queue.take_pending().unwrap();
+        let composer = cx.new(|cx| TextInput::new_multiline(cx, "Composer", 2));
+        let root_composer = composer.clone();
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), move |_, cx| {
+                    cx.new(|_| QuestionHarness {
+                        panel: None,
+                        composer: root_composer,
+                    })
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let panel = window
+            .update(cx, |root, window, cx| {
+                let focus = composer.read(cx).focus_handle(cx);
+                focus.focus(window, cx);
+                let panel = cx.new(|cx| UserQuestionPanel::new(pending, focus.clone(), cx));
+                root.panel = Some(panel.clone());
+                assert!(focus.is_focused(window));
+                cx.notify();
+                panel
+            })
+            .unwrap();
+        cx.run_until_parked();
+        (window, panel, composer, listener, future)
+    }
+
+    #[gpui_kit::test]
+    async fn question_panel_keyboard_preserves_drafts_and_skips_only_explicitly(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, panel, composer, _listener, future) = open_panel(cx);
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    assert!(panel.answer(0, cx).is_none());
+                    assert!(panel.composer_focus.is_focused(window));
+                    panel.option_focus[0][0].focus(window, cx);
+                });
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "cmd-2");
+        assert!(panel.read_with(cx, |panel, _| panel.drafts[0].selected.is_none()));
+        cx.simulate_keystrokes(window.into(), "1");
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.act(PanelAction::Note, window, cx);
+                    panel.drafts[0]
+                        .note
+                        .update(cx, |note, cx| note.set_text("Keep the layout", cx));
+                });
+            })
+            .unwrap();
+        cx.update(|cx| {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("sentinel".into()))
+        });
+        cx.simulate_keystrokes(window.into(), "cmd-a cmd-c right");
+        assert_eq!(
+            cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("Keep the layout".into())
+        );
+        cx.simulate_keystrokes(window.into(), "enter k shift-enter s");
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    assert_eq!(panel.page, 0);
+                    assert!(!panel.submitted);
+                    assert!(!panel.pending.is_resolved());
+                    assert_eq!(
+                        panel.drafts[0].note.read(cx).text(),
+                        "Keep the layout\nk\ns"
+                    );
+                    panel.drafts[0].note.update(cx, |note, cx| {
+                        note.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+                    });
+                });
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "enter escape");
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    assert_eq!(panel.page, 0);
+                    assert!(!panel.submitted);
+                    panel.drafts[0].note.update(cx, |note, cx| {
+                        assert!(note.is_composing());
+                        assert!(note.focus_handle(cx).is_focused(window));
+                        assert_eq!(note.text(), "Keep the layout\nk\nsni");
+                        note.replace_text_in_range(None, "", window, cx);
+                    });
+                    panel.focus_current_option(window, cx);
+                });
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "enter");
+        window
+            .update(cx, |_, window, cx| {
+                panel.read_with(cx, |panel, _| {
+                    assert_eq!(panel.page, 1);
+                    assert!(panel.option_focus[1][0].is_focused(window));
+                    assert!(panel.drafts[1].selected.is_none());
+                });
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "right space");
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.drafts[1].selected),
+            Some(1)
+        );
+        cx.simulate_keystrokes(window.into(), "3 enter");
+        assert_eq!(panel.read_with(cx, |panel, _| panel.page), 1);
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.drafts[1]
+                        .note
+                        .update(cx, |note, cx| note.set_text("Custom approach", cx));
+                    panel.act(PanelAction::Skip, window, cx);
+                    panel.act(PanelAction::Back, window, cx);
+                    assert!(panel.drafts[1].skipped);
+                    assert!(!panel.drafts[1].note_visible);
+                    assert!(panel.answer(1, cx).unwrap().answers.is_empty());
+                    panel.select(2, cx);
+                    assert_eq!(panel.drafts[1].note.read(cx).text(), "Custom approach");
+                    panel.focus_current_option(window, cx);
+                });
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "enter");
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    assert_eq!(panel.page, 2);
+                    assert!(panel.option_focus[2][0].is_focused(window));
+                    panel.act(PanelAction::Skip, window, cx);
+                    assert!(panel.submitted);
+                    assert!(panel.composer_focus.is_focused(window));
+                    panel.select(1, cx);
+                    panel.advance(window, cx);
+                    assert!(panel.drafts[2].selected.is_none());
+                });
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "z");
+        assert_eq!(
+            composer.read_with(cx, |input, _| input.text().to_owned()),
+            "z"
+        );
+        let RuntimeUserQuestionResponse::Answered(answers) = future.await else {
+            panic!("explicit submission must answer");
+        };
+        assert_eq!(
+            answers.answers["choice_0"].answers,
+            ["A (Recommended)", "user_note: Keep the layout\nk\ns"]
+        );
+        assert_eq!(
+            answers.answers["choice_1"].answers,
+            ["user_note: Custom approach"]
+        );
+        assert!(answers.answers["choice_2"].answers.is_empty());
+    }
+
+    #[gpui_kit::test]
+    async fn question_panel_invalid_submission_remains_editable_and_all_skip_is_empty(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, panel, _, _listener, future) = open_panel(cx);
+        window
+            .update(cx, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.act(PanelAction::Skip, window, cx);
+                    panel.act(PanelAction::Skip, window, cx);
+                    panel.select(2, cx);
+                    panel.drafts[2]
+                        .note
+                        .update(cx, |note, cx| note.set_text(&"x".repeat(65_536), cx));
+                    panel.advance(window, cx);
+                    assert!(!panel.submitted);
+                    assert!(!panel.pending.is_resolved());
+                    assert!(panel.error.is_some());
+                    panel.act(PanelAction::Skip, window, cx);
+                    assert!(panel.submitted);
+                });
+            })
+            .unwrap();
+        let RuntimeUserQuestionResponse::Answered(answers) = future.await else {
+            panic!("explicit skips must complete");
+        };
+        assert_eq!(answers.answers.len(), 3);
+        assert!(
+            answers
+                .answers
+                .values()
+                .all(|answer| answer.answers.is_empty())
+        );
     }
 }

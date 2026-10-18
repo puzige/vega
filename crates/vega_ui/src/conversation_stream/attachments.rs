@@ -282,6 +282,7 @@ impl ConversationStream {
     pub(crate) fn render_attachments(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         div()
+            .debug_selector(|| "composer-attachments".into())
             .flex()
             .flex_col()
             .gap_2()
@@ -302,6 +303,7 @@ impl ConversationStream {
                             .absolute()
                             .top_0()
                             .right_0()
+                            .debug_selector(move || format!("remove-image-{id}"))
                             .bg(colors.bg_elevated)
                             .rounded_full(),
                         )
@@ -323,6 +325,7 @@ impl ConversationStream {
 
 fn thumbnail(image: &ImagePreview, cx: &App) -> AnyElement {
     div()
+        .debug_selector(|| "attachment-thumbnail".into())
         .child(crate::image_preview::ImagePreview::thumbnail(
             &image.view,
             cx,
@@ -332,6 +335,7 @@ fn thumbnail(image: &ImagePreview, cx: &App) -> AnyElement {
 
 pub(crate) fn render_user_images(images: &[ImagePreview], cx: &App) -> AnyElement {
     div()
+        .debug_selector(|| "user-message-images".into())
         .w_full()
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
         .pb(px(Layout::MESSAGE_PADDING_BOTTOM))

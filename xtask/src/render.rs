@@ -222,3 +222,18 @@ fn unix_ms() -> u64 {
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn median_handles_even_and_odd_lengths() {
+        assert_eq!(median(&[]), 0);
+        assert_eq!(median(&[5]), 5);
+        assert_eq!(median(&[1, 2, 3]), 2);
+        // Even length: upper-middle element (deterministic, no float).
+        assert_eq!(median(&[1, 2, 3, 4]), 3);
+        assert_eq!(median(&[10, 20]), 20);
+    }
+}

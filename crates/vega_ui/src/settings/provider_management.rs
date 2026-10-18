@@ -15,6 +15,8 @@ const PROVIDER_TEST_HELP_COPY: &str = "测试会发送少量固定文本请求�
 
 #[derive(Default)]
 pub(crate) struct ProviderManagement {
+    #[cfg(test)]
+    transport: Option<vega_runtime::provider_check::mock::Transport>,
     pub(super) selected: Option<String>,
     generation: u64,
     operation: u64,
@@ -127,6 +129,7 @@ impl SettingsView {
         div()
             .id(selector.clone())
             .interactive(colors, true, false)
+            .debug_selector(move || selector.clone())
             .role(gpui_kit::Role::Button)
             .aria_label("测试请求说明")
             .aria_description(PROVIDER_TEST_HELP_COPY)
@@ -197,6 +200,7 @@ impl SettingsView {
         let body_selector = format!("{selector}-body");
         let body = div()
             .id(body_selector.clone())
+            .debug_selector(move || body_selector.clone())
             .w_full()
             .max_w_full()
             .min_w_0()
@@ -220,6 +224,7 @@ impl SettingsView {
                     .child(PROVIDER_TEST_HELP_COPY),
             );
         let popup = div()
+            .debug_selector(move || selector.clone())
             .absolute()
             .bottom(relative(1.0))
             .w(px(224.))
@@ -1098,6 +1103,8 @@ impl SettingsView {
         state.message = Some("正在连接…".into());
         let cancel = CancellationToken::new();
         state.cancel = Some(cancel.clone());
+        #[cfg(test)]
+        let transport = state.transport.clone();
         let worker = cx.background_executor().spawn(async move {
             match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1105,6 +1112,11 @@ impl SettingsView {
             {
                 Ok(runtime) => {
                     let service = ProviderSettingsService::new(path);
+                    #[cfg(test)]
+                    let service = match transport {
+                        Some(transport) => service.with_test_transport(transport),
+                        None => service,
+                    };
                     runtime.block_on(service.network(request, cancel))
                 }
                 Err(_) => vega_conversation::types::ProviderNetworkResult {
@@ -1153,6 +1165,7 @@ impl SettingsView {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let key_command = command.clone();
+        let selector = id.clone();
         let destructive = matches!(
             command,
             Command::DeleteModel(_, _) | Command::ConfirmDelete(_)
@@ -1183,6 +1196,7 @@ impl SettingsView {
             } else {
                 gpui_kit::transparent_black().into()
             })
+            .debug_selector(move || selector.clone())
             .key_context("ProviderControl")
             .focusable()
             .text_color(if enabled {
@@ -1240,6 +1254,7 @@ impl SettingsView {
         let keyboard_focus = focus.clone();
         div()
             .id(id.clone())
+            .debug_selector(move || id.clone())
             .aria_label(label)
             .track_focus(&focus)
             .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
@@ -1327,6 +1342,7 @@ impl SettingsView {
         let id = id.to_string();
         div()
             .id(id.clone())
+            .debug_selector(move || id.clone())
             .absolute()
             .top(relative(1.))
             .right_0()
@@ -1392,7 +1408,7 @@ impl SettingsView {
         if let Some(editor) = &self.provider_management.model_editor {
             let can_edit = !busy && !editor.saving;
             detail = detail
-                    .child(settings_field("模型 ID", None, editor.model_input.clone(), colors))
+                    .child(settings_field("provider-model-editor-name", "模型 ID", None, editor.model_input.clone(), colors))
                     .when(editor.original.is_some(), |detail| {
                         let source = match editor.source {
                             PolicySource::Loading => "正在读取模型上下文配置…".to_string(),
@@ -1405,13 +1421,15 @@ impl SettingsView {
                         detail
                             .child(
                                 div()
+                                    .debug_selector(|| "model-context-source".into())
                                     .text_size(px(Typography::METADATA))
                                     .text_color(colors.text_secondary)
-                                    .child(div().when(editor.source != PolicySource::Loading, |row| row).child(source)),
+                                    .child(div().when(editor.source != PolicySource::Loading, |row| row.debug_selector(|| "model-context-ready".into())).child(source)),
                             )
                             .when(editor.legacy_present, |detail| {
                                 detail.child(
                                     div()
+                                        .debug_selector(|| "model-context-legacy-notice".into())
                                         .text_size(px(Typography::METADATA))
                                         .text_color(colors.warning)
                                         .child("旧会话级上下文设置已保留，但不再生效；请在此配置模型容量。"),
@@ -1419,6 +1437,7 @@ impl SettingsView {
                             })
                             .children(editor.renamed_from.as_ref().map(|previous| {
                                 div()
+                                    .debug_selector(|| "model-context-rename-notice".into())
                                     .text_size(px(Typography::METADATA))
                                     .text_color(colors.warning)
                                     .child(format!(
@@ -1430,10 +1449,10 @@ impl SettingsView {
                                     .flex()
                                     .flex_col()
                                     .gap_2()
-                                    .child(settings_field("输入最大限制", Some("token".into()),
-                                        div().child(editor.input_limit.clone()), colors))
-                                    .child(settings_field("输出最大限制", Some("token".into()),
-                                        div().child(editor.output_limit.clone()), colors)),
+                                    .child(settings_field("provider-model-input-limit", "输入最大限制", Some("token".into()),
+                                        div().debug_selector(|| "model-context-input".into()).child(editor.input_limit.clone()), colors))
+                                    .child(settings_field("provider-model-output-limit", "输出最大限制", Some("token".into()),
+                                        div().debug_selector(|| "model-context-output".into()).child(editor.output_limit.clone()), colors)),
                             ))
                             .child(self.provider_button(
                                 "model-context-auto".into(),
@@ -1460,6 +1479,7 @@ impl SettingsView {
                     })
                     .children(editor.message.as_ref().map(|message| {
                         div()
+                            .debug_selector(|| "model-context-message".into())
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_secondary)
                             .child(message.clone())
@@ -1499,6 +1519,7 @@ impl SettingsView {
         if self.provider_management.model_editor.is_some() {
             return div()
                 .id("provider-model-configuration")
+                .debug_selector(|| "provider-model-configuration".into())
                 .on_action(cx.listener(Self::provider_escape))
                 .size_full()
                 .overflow_y_scroll()
@@ -1528,6 +1549,7 @@ impl SettingsView {
         let network_busy = self.provider_management.cancel.is_some();
         let mut list = div()
             .id("provider-list")
+            .debug_selector(|| "provider-list-viewport".into())
             .h_full()
             .track_scroll(&self.provider_management.list_scroll)
             .w(px(Layout::SETTINGS_PROVIDER_LIST_WIDTH))
@@ -1635,6 +1657,7 @@ impl SettingsView {
         // Keep the flow intrinsically sized; the outer viewport owns scrolling.
         // A height-constrained flex column can shrink truncated text rows to zero.
         let mut detail = div()
+            .debug_selector(|| "provider-detail-flow".into())
             .w_full()
             .min_w_0()
             .flex_shrink_0()
@@ -1754,21 +1777,49 @@ impl SettingsView {
                 .child(
                     settings_section()
                         .gap_2()
-                        .child(self.provider_connection_row(
-                            "地址",
-                            div().min_w_0().child(p.base_url.clone()),
-                            colors,
-                        ))
-                        .child(self.provider_connection_row("协议", div().child(api_label), colors))
-                        .child(self.provider_connection_row(
-                            "凭据",
-                            div().child(if self.available_key_refs.contains(&p.key_ref) {
-                                KEY_STORED_PLACEHOLDER
-                            } else {
-                                "需重新输入 API Key"
-                            }),
-                            colors,
-                        )),
+                        .child(
+                            self.provider_connection_row(
+                                "地址",
+                                div()
+                                    .debug_selector(|| "provider-base-url".into())
+                                    .min_w_0()
+                                    .child(p.base_url.clone()),
+                                colors,
+                            ),
+                        )
+                        .child(
+                            self.provider_connection_row(
+                                "协议",
+                                div()
+                                    .debug_selector(move || {
+                                        format!("provider-api-format:API 格式 · {api_label}")
+                                    })
+                                    .child(api_label),
+                                colors,
+                            ),
+                        )
+                        .child(
+                            self.provider_connection_row(
+                                "凭据",
+                                div()
+                                    .debug_selector({
+                                        let stored = self.available_key_refs.contains(&p.key_ref);
+                                        move || {
+                                            if stored {
+                                                "provider-key-stored".into()
+                                            } else {
+                                                "provider-key-missing".into()
+                                            }
+                                        }
+                                    })
+                                    .child(if self.available_key_refs.contains(&p.key_ref) {
+                                        KEY_STORED_PLACEHOLDER
+                                    } else {
+                                        "需重新输入 API Key"
+                                    }),
+                                colors,
+                            ),
+                        ),
                 )
                 .child(
                     settings_actions()
@@ -1855,7 +1906,14 @@ impl SettingsView {
                                     div()
                                         .min_w_0()
                                         .flex_1()
-                                        .child(div().min_w_0().child(model.clone()))
+                                        .child(
+                                            div()
+                                                .debug_selector(move || {
+                                                    format!("provider-model-name-{index}")
+                                                })
+                                                .min_w_0()
+                                                .child(model.clone()),
+                                        )
                                         .child(
                                             div()
                                                 .text_size(px(Typography::METADATA))
@@ -1950,7 +2008,15 @@ impl SettingsView {
                                 !existing && !busy,
                                 cx,
                             ))
-                            .child(div().min_w_0().flex_1().child(model)),
+                            .child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("provider-candidate-name-{index}")
+                                    })
+                                    .min_w_0()
+                                    .flex_1()
+                                    .child(model),
+                            ),
                     );
                 }
                 detail = detail.child(
@@ -1977,11 +2043,10 @@ impl SettingsView {
             }
         }
         if let Some(message) = &self.provider_management.message {
-            detail = detail.child(settings_status(
-                message.clone(),
-                colors.text_secondary,
-                colors,
-            ));
+            detail = detail.child(
+                settings_status(message.clone(), colors.text_secondary, colors)
+                    .debug_selector(|| "provider-network-message".into()),
+            );
         }
         div()
             .id("provider-management")
@@ -2027,6 +2092,7 @@ impl SettingsView {
                 root.child(
                     div()
                         .id("provider-detail")
+                        .debug_selector(|| "provider-detail-viewport".into())
                         .track_scroll(&self.provider_management.detail_scroll)
                         .h_full()
                         .min_h_0()
@@ -2044,3 +2110,6 @@ impl SettingsView {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests;

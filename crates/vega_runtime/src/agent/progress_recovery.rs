@@ -143,3 +143,130 @@ fn result_evidence(result: &RuntimeToolResult) -> Evidence {
             || result.exit_code.is_some_and(|code| code != 0),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(id: &str, input: &str) -> RuntimeToolCall {
+        RuntimeToolCall {
+            id: id.into(),
+            name: "read".into(),
+            input_json: input.into(),
+        }
+    }
+
+    fn result(output: &str) -> RuntimeToolResult {
+        super::super::tools_exec::terminal_result(
+            &call("ignored", "{}"),
+            output.into(),
+            RuntimeToolStatus::Success,
+            None,
+        )
+    }
+
+    #[test]
+    fn canonical_keys_ignore_ids_and_object_order_but_preserve_arrays_and_values() {
+        let original = call("one", r#"{"x":{"a":1,"b":2},"values":[true,null,"1"]}"#);
+        let mut reordered = call("two", r#"{"values":[true,null,"1"],"x":{"b":2,"a":1}}"#);
+        reordered.name = "Read".into();
+        assert_eq!(call_digest(&original), call_digest(&reordered));
+        for input in [
+            r#"{"x":{"a":2,"b":1},"values":[true,null,"1"]}"#,
+            r#"{"x":{"a":1,"b":2},"values":[null,true,"1"]}"#,
+            r#"{"x":{"a":1,"b":2},"values":[true,null,1]}"#,
+        ] {
+            assert_ne!(call_digest(&original), call_digest(&call("three", input)));
+        }
+    }
+
+    #[test]
+    fn result_change_resets_only_its_key_and_batch_duplicates_cannot_inflate_counts() {
+        for change in 0..4 {
+            let mut state = ProgressRecovery::default();
+            let repeated = call("same", r#"{"path":"source"}"#);
+            let mut evidence = result("same");
+            for _ in 0..2 {
+                for _ in 0..20 {
+                    state.observe(&repeated, &evidence);
+                }
+                assert_eq!(state.finish_batch(), None);
+            }
+            match change {
+                0 => evidence.output.push_str("changed"),
+                1 => evidence.status = RuntimeToolStatus::Failed,
+                2 => evidence.exit_code = Some(1),
+                3 => evidence.truncated = Some(true),
+                _ => unreachable!(),
+            }
+            for index in 0..3 {
+                state.observe(&repeated, &evidence);
+                let expected = (index == 2).then_some(if change == 1 || change == 2 {
+                    RecoveryGuidance::RepeatedFailure
+                } else {
+                    RecoveryGuidance::RepeatedResult
+                });
+                assert_eq!(state.finish_batch(), expected);
+            }
+            state.observe(&repeated, &evidence);
+            assert_eq!(state.finish_batch(), None);
+        }
+    }
+
+    #[test]
+    fn evidence_is_bounded_expires_and_repeats_once_per_unchanged_chain() {
+        let mut state = ProgressRecovery::default();
+        for index in 0..128 {
+            state.observe(
+                &call("id", &format!("{{\"index\":{index}}}")),
+                &result("observed"),
+            );
+            assert!(state.observations.len() <= MAX_KEYS);
+        }
+        assert_eq!(state.finish_batch(), None);
+        assert_eq!(state.observations.len(), MAX_KEYS);
+        for _ in 0..32 {
+            state.finish_batch();
+        }
+        assert!(state.observations.is_empty());
+        let repeated = call("same", "{}");
+        for index in 0..4 {
+            state.observe(&repeated, &result("one"));
+            assert_eq!(
+                state.finish_batch(),
+                (index == 2).then_some(RecoveryGuidance::RepeatedResult)
+            );
+        }
+        state.observe(&repeated, &result("two"));
+        state.observe(&repeated, &result("one"));
+        assert_eq!(state.finish_batch(), None);
+        state.observe(&repeated, &result("one"));
+        assert_eq!(state.finish_batch(), None);
+        state.observe(&repeated, &result("one"));
+        assert_eq!(state.finish_batch(), Some(RecoveryGuidance::RepeatedResult));
+    }
+
+    #[test]
+    fn failure_priority_consumes_due_review_without_losing_unrelated_failure_evidence() {
+        let mut state = ProgressRecovery::default();
+        let failed = call("failed", r#"{"path":"missing"}"#);
+        let mut failure = result("not found");
+        failure.status = RuntimeToolStatus::Failed;
+        for index in 0..16 {
+            if [0, 8, 15].contains(&index) {
+                state.observe(&failed, &failure);
+            }
+            state.observe(
+                &call("unrelated", &format!("{{\"path\":\"{index}\"}}")),
+                &result("success"),
+            );
+            assert_eq!(
+                state.finish_batch(),
+                (index == 15).then_some(RecoveryGuidance::RepeatedFailure)
+            );
+        }
+        assert_eq!(state.review_batches, 0);
+        state.observe(&failed, &failure);
+        assert_eq!(state.finish_batch(), None);
+    }
+}

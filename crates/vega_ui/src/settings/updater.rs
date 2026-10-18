@@ -94,6 +94,7 @@ impl SettingsView {
                 )
         });
         settings_group(colors)
+            .debug_selector(|| "settings-general-updater".into())
             .child(
                 settings_actions()
                     .justify_between()
@@ -106,6 +107,7 @@ impl SettingsView {
                     )),
             )
             .child(settings_field(
+                "updater-version",
                 "版本",
                 Some(checked),
                 div()
@@ -123,6 +125,7 @@ impl SettingsView {
                 colors,
             ))
             .child(settings_field(
+                "updater-auto",
                 "自动检查并下载",
                 None,
                 automatic_switch,
@@ -195,6 +198,7 @@ impl SettingsView {
                     div()
                         .id("updater-notes-toggle")
                         .interactive(colors, true, false)
+                        .debug_selector(|| "updater-notes-toggle".into())
                         .mt_3()
                         .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
                         .px_2()
@@ -242,6 +246,7 @@ impl SettingsView {
                     view.child(
                         div()
                             .id("updater-notes-body")
+                            .debug_selector(|| "updater-notes-body".into())
                             .min_w_0()
                             .max_h(px(Layout::SETTINGS_NOTES_MAX_HEIGHT))
                             .overflow_y_scroll()
@@ -296,6 +301,7 @@ impl SettingsView {
                 },
                 enabled,
             )
+            .debug_selector(move || id.into())
             .text_color(if enabled && id == "updater-install" {
                 colors.brand_on_accent
             } else if enabled {

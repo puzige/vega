@@ -397,6 +397,14 @@ impl Element for TextElement {
                 );
             }
 
+            #[cfg(test)]
+            self.input.update(cx, |input, _| {
+                input.painted_cursor_bounds = prepaint
+                    .cursor
+                    .as_ref()
+                    .filter(|_| focus_handle.is_focused(window))
+                    .map(|cursor| cursor.bounds);
+            });
             if focus_handle.is_focused(window)
                 && let Some(cursor) = prepaint.cursor.take()
             {
@@ -412,6 +420,10 @@ impl Element for TextElement {
         };
         window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
             prepaint.fade.paint(color, ScrollFade::compact(), window);
+        });
+        #[cfg(test)]
+        self.input.update(cx, |input, _| {
+            input.painted_fade_metrics = Some(prepaint.fade);
         });
 
         self.input.update(cx, |input, cx| {

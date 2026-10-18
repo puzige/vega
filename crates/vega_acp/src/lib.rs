@@ -3,6 +3,8 @@ mod error;
 mod framing;
 mod protocol;
 
+#[cfg(test)]
+pub(crate) use connection::ChildControl;
 pub use connection::{
     Connection, Event, InitializeResult, LaunchConfig, PermissionOption, PermissionOutcome,
     PermissionRequest, PromptHandle, PromptResult, SessionInfo,
@@ -20,3 +22,6 @@ pub const MAX_SEEN_INBOUND_REQUEST_ID_BYTES: usize = 1_048_576;
 pub const MAX_EVENT_COUNT: usize = 128;
 pub const MAX_EVENT_BYTES: usize = 4_194_304;
 pub const EVENT_WEIGHT_BYTES: usize = 4_096;
+
+#[cfg(test)]
+mod tests;

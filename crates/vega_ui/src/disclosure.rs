@@ -11,12 +11,15 @@ pub(crate) fn focus(id: SharedString, window: &mut Window, cx: &mut App) -> Focu
 
 pub(crate) fn chevron(
     group: SharedString,
+    selector: String,
     focus: &FocusHandle,
     expanded: bool,
     enabled: bool,
     colors: ThemeColors,
     window: &Window,
 ) -> AnyElement {
+    #[cfg(test)]
+    let probe_selector = format!("{selector}-paint");
     let glyph = div().relative().child(icon(
         if expanded {
             Icon::ChevronDown
@@ -25,7 +28,18 @@ pub(crate) fn chevron(
         },
         colors.text_tertiary,
     ));
+    #[cfg(test)]
+    let glyph = glyph.child(
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size(px(1.))
+            .bg(gpui_kit::rgba(0x12fe34ff))
+            .debug_selector(move || probe_selector.clone()),
+    );
     div()
+        .debug_selector(move || selector.clone())
         .w(px(Layout::DISCLOSURE_TRAILING_SLOT))
         .h(px(Layout::ICON_SIZE))
         .flex_shrink_0()
@@ -54,12 +68,15 @@ pub(crate) fn chevron(
 
 pub(crate) fn inline_chevron(
     group: SharedString,
+    selector: String,
     focus: &FocusHandle,
     expanded: bool,
     enabled: bool,
     colors: ThemeColors,
     window: &Window,
 ) -> AnyElement {
+    #[cfg(test)]
+    let probe_selector = format!("{selector}-paint");
     let glyph = div().relative().child(crate::icons::sized_icon(
         if expanded {
             Icon::ChevronDown
@@ -69,7 +86,18 @@ pub(crate) fn inline_chevron(
         colors.conversation_tool,
         Layout::CONVERSATION_CHEVRON_SIZE,
     ));
+    #[cfg(test)]
+    let glyph = glyph.child(
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size(px(1.))
+            .bg(gpui_kit::rgba(0x12fe34ff))
+            .debug_selector(move || probe_selector.clone()),
+    );
     div()
+        .debug_selector(move || selector.clone())
         .size(px(Layout::CONVERSATION_CHEVRON_SIZE))
         .flex_shrink_0()
         .child(

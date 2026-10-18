@@ -563,6 +563,10 @@ impl BranchSelector {
         self.model.owns_pending(operation, generation, id)
     }
 
+    pub fn focused_branch(&self) -> Option<BranchId> {
+        self.model.focused()
+    }
+
     pub fn visible_rows(&self, range: Range<usize>) -> Vec<(usize, BranchItem)> {
         self.model.visible_rows(range)
     }
@@ -810,6 +814,10 @@ impl Render for BranchSelector {
             .child(
                 div()
                     .id("branch-selector-trigger")
+                    .debug_selector({
+                        let label = label.clone();
+                        move || format!("branch-current-{label}")
+                    })
                     .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
                     .h(px(BRANCH_ROW_HEIGHT))
                     .max_w(px(180.0))
@@ -857,14 +865,19 @@ impl Render for BranchSelector {
                     })
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle))
                     .when(self.chip_chrome, |trigger| {
-                        trigger.child(div().flex_shrink_0().child(crate::icons::icon(
-                            crate::icons::Icon::GitBranch,
-                            if disabled {
-                                colors.text_tertiary
-                            } else {
-                                colors.text_secondary
-                            },
-                        )))
+                        trigger.child(
+                            div()
+                                .debug_selector(|| "composer-utility-branch-icon".into())
+                                .flex_shrink_0()
+                                .child(crate::icons::icon(
+                                    crate::icons::Icon::GitBranch,
+                                    if disabled {
+                                        colors.text_tertiary
+                                    } else {
+                                        colors.text_secondary
+                                    },
+                                )),
+                        )
                     })
                     .child(label),
             )
@@ -873,6 +886,7 @@ impl Render for BranchSelector {
                     .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         let _ = this.request_close(cx);
                     }))
+                    .debug_selector(|| "branch-selector-popup".into())
                     .w(popup_width)
                     .flex_shrink_0()
                     .h(popup_height)
@@ -884,7 +898,11 @@ impl Render for BranchSelector {
                     .bg(colors.bg_elevated)
                     .text_color(colors.text_primary)
                     .shadow_sm()
-                    .child(crate::menu_list::search_field(&self.search, colors))
+                    .child(crate::menu_list::search_field(
+                        &self.search,
+                        "branch-selector-search",
+                        colors,
+                    ))
                     .when_some(
                         match self.model.status {
                             SelectorStatus::Failed(code) if row_count > 0 => Some(code),
@@ -1005,6 +1023,7 @@ fn render_branch_row(
 ) -> impl IntoElement {
     let id = branch.id;
     let current = branch.current;
+    let check_selector = format!("branch-row-{index}-check");
     crate::menu_list::row_container(
         ("branch-row", index),
         current,
@@ -1013,6 +1032,7 @@ fn render_branch_row(
     )
     .w_full()
     .mx_0()
+    .debug_selector(move || format!("branch-row-{index}"))
     .text_color(if current || disabled {
         colors.text_tertiary
     } else {
@@ -1037,7 +1057,11 @@ fn render_branch_row(
             .overflow_hidden()
             .child(branch.label),
     )
-    .child(crate::menu_list::selection_marker(current, colors))
+    .child(crate::menu_list::selection_marker(
+        current,
+        move || check_selector.clone(),
+        colors,
+    ))
 }
 
 fn branch_error_label(code: GitWorkspaceErrorCode) -> &'static str {
@@ -1067,5 +1091,79 @@ fn branch_error_label(code: GitWorkspaceErrorCode) -> &'static str {
             "Branch data exceeded a safety limit; reduce repository size or retry"
         }
         _ => "Branches unavailable",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branch_selector_fixed_geometry_and_limit_are_exact() {
+        assert_eq!(BRANCH_ROW_HEIGHT, 32.0);
+        assert_eq!(BRANCH_LIMIT, 10_000);
+        assert!(branch_count_allowed(10_000));
+        assert!(!branch_count_allowed(10_001));
+    }
+
+    #[test]
+    fn branch_selector_open_and_close_are_single_shot() {
+        let mut model = BranchSelectorModel::default();
+        assert!(model.open());
+        assert!(!model.open());
+        assert!(model.is_open());
+        assert!(model.close());
+        assert!(!model.close());
+        assert!(!model.is_open());
+    }
+
+    #[test]
+    fn branch_selector_error_is_typed_and_clears_partial_state() {
+        let mut model = BranchSelectorModel::default();
+        assert!(model.open());
+        model.apply_error(GitWorkspaceErrorCode::BranchUnsafeFilter);
+        assert_eq!(model.snapshot_generation(), None);
+        assert_eq!(model.focused(), None);
+        assert!(!model.is_pending());
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::BranchUnsafeFilter),
+            "Branch contains filtered files"
+        );
+    }
+
+    #[test]
+    fn branch_selector_limit_errors_name_the_limited_resource() {
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::BranchPathLimit),
+            "Branch listing supports at most 25,000 tracked files; reduce tracked files and retry"
+        );
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::BranchCountLimit),
+            "Too many local branches to display (10,000 limit); remove branches and retry"
+        );
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::OutputTooLarge),
+            "Branch data exceeded a safety limit; reduce repository size or retry"
+        );
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::ArtifactLimit),
+            "Branch data exceeded a safety limit; reduce repository size or retry"
+        );
+        assert!(
+            !branch_error_label(GitWorkspaceErrorCode::OutputTooLarge)
+                .contains("Too many branches")
+        );
+    }
+
+    #[test]
+    fn branch_selector_safe_events_redact_branch_content() {
+        let request = BranchListRequested {
+            thread_id: "thread-a".into(),
+            project_id: "project-a".into(),
+        };
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("refs/"));
+        assert!(!debug.contains("oid"));
+        assert!(!debug.contains("path"));
     }
 }

@@ -1071,3 +1071,235 @@ pub(crate) fn invalid_tool_code(code: vega_tools::MutationErrorCode) -> Option<I
         | Code::PreparedScopeMismatch => return None,
     })
 }
+
+#[cfg(test)]
+mod run_failure_tests {
+    use super::{ContextCompactionFailureCode as Failure, RunFailureKind};
+    use vega_runtime::VegaError;
+    use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
+
+    fn provider(status: Option<u16>, message: &str) -> VegaError {
+        VegaError::Provider {
+            status,
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    #[test]
+    fn compaction_failure_runtime_variants_keep_typed_conversation_causes() {
+        use vega_runtime::{ContextEstimateError, ContextRuntimeError as ContextError};
+
+        let cases = [
+            (
+                ContextError::SourceChanged,
+                RunFailureKind::Compaction(Failure::SourceChanged),
+            ),
+            (
+                ContextError::SummaryTimedOut,
+                RunFailureKind::Compaction(Failure::TimedOut),
+            ),
+            (
+                ContextError::SummaryOutputTruncated {
+                    visible_bytes: 1,
+                    thinking_bytes: 2,
+                    output_tokens: Some(3),
+                },
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::SummaryEmpty,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::InvalidSummary,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::SummaryFormatInvalid,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::SummaryProjectionInvalid,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::InvalidProjection,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::SystemMessageInResult,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                ContextError::NoCompactablePrefix,
+                RunFailureKind::Compaction(Failure::NoCompactablePrefix),
+            ),
+            (
+                ContextError::SourceTooLarge,
+                RunFailureKind::Compaction(Failure::TooLarge),
+            ),
+            (
+                ContextError::AggregateTooLarge,
+                RunFailureKind::Compaction(Failure::TooLarge),
+            ),
+            (
+                ContextError::ImagesUnsupported,
+                RunFailureKind::Compaction(Failure::ImagesUnsupported),
+            ),
+            (
+                ContextError::AlreadyAttempted,
+                RunFailureKind::Compaction(Failure::Unavailable),
+            ),
+            (
+                ContextError::Estimate(ContextEstimateError::InputTooLarge),
+                RunFailureKind::ContextOverLimit,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let actual = RunFailureKind::from_runtime(&VegaError::Context(error));
+            assert_eq!(actual, expected);
+            assert!(!actual.message().contains("runtime environment"));
+        }
+        assert_eq!(
+            RunFailureKind::from_runtime(&VegaError::Context(ContextError::MissingHook)),
+            RunFailureKind::Runtime
+        );
+    }
+
+    #[test]
+    fn compaction_failure_diagnostic_codes_fold_to_safe_display_categories() {
+        let cases = [
+            (
+                Code::SummarySourceChanged,
+                RunFailureKind::Compaction(Failure::SourceChanged),
+            ),
+            (
+                Code::SummaryTimeout,
+                RunFailureKind::Compaction(Failure::TimedOut),
+            ),
+            (
+                Code::SummaryTruncated,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                Code::SummaryEmpty,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                Code::SummaryFormatInvalid,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                Code::SummaryProjectionInvalid,
+                RunFailureKind::Compaction(Failure::InvalidSummary),
+            ),
+            (
+                Code::SummaryNoCompactablePrefix,
+                RunFailureKind::Compaction(Failure::NoCompactablePrefix),
+            ),
+            (
+                Code::SummarySourceTooLarge,
+                RunFailureKind::Compaction(Failure::TooLarge),
+            ),
+            (
+                Code::SummaryAggregateTooLarge,
+                RunFailureKind::Compaction(Failure::TooLarge),
+            ),
+            (
+                Code::SummaryImagesUnsupported,
+                RunFailureKind::Compaction(Failure::ImagesUnsupported),
+            ),
+            (
+                Code::SummaryAlreadyAttempted,
+                RunFailureKind::Compaction(Failure::Unavailable),
+            ),
+            (Code::ContextOverLimit, RunFailureKind::ContextOverLimit),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(
+                RunFailureKind::from_compaction_diagnostic_code(code),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            RunFailureKind::from_compaction_diagnostic_code(Code::UnknownSafeFailure),
+            None
+        );
+    }
+
+    #[test]
+    fn quota_needs_exact_structured_code_and_never_projects_response_body() {
+        const SENTINEL: &str = "PRIVATE_RESPONSE_AND_KEY_SENTINEL";
+        let error = provider(
+            Some(400),
+            &format!(
+                "chat/completions request failed (HTTP 400): {{\"error\":{{\"code\":\"insufficient_user_quota\",\"message\":\"{SENTINEL}\"}}}}"
+            ),
+        );
+        let kind = RunFailureKind::from_runtime(&error);
+        assert_eq!(kind, RunFailureKind::ProviderQuota);
+        assert!(kind.message().contains("quota exhausted"));
+        assert!(!kind.message().contains(SENTINEL));
+
+        let spoofed = provider(
+            Some(400),
+            "chat/completions request failed (HTTP 400): insufficient_user_quota PRIVATE_RESPONSE_AND_KEY_SENTINEL",
+        );
+        assert_eq!(
+            RunFailureKind::from_runtime(&spoofed),
+            RunFailureKind::ProviderHttp(400)
+        );
+        assert!(
+            !RunFailureKind::from_runtime(&spoofed)
+                .message()
+                .contains(SENTINEL)
+        );
+    }
+
+    #[test]
+    fn quota_accepts_cpa_top_level_code_without_exposing_response_body() {
+        const SENTINEL: &str = "PRIVATE_CPA_RESPONSE_SENTINEL";
+        let response = format!(
+            "chat/completions request failed (HTTP 400): {{\"message\":\"credit insufficient {SENTINEL}\",\"type\":\"api_error\",\"param\":\"\",\"code\":\"insufficient_user_quota\"}}"
+        );
+        let error = provider(Some(400), &response);
+        let kind = RunFailureKind::from_runtime(&error);
+        assert_eq!(kind, RunFailureKind::ProviderQuota);
+        assert!(kind.message().contains("quota exhausted"));
+        assert!(!kind.message().contains(SENTINEL));
+
+        let wrong_status = provider(Some(503), &response);
+        assert_eq!(
+            RunFailureKind::from_runtime(&wrong_status),
+            RunFailureKind::ProviderHttp(503)
+        );
+    }
+
+    #[test]
+    fn provider_and_runtime_failure_categories_keep_only_safe_metadata() {
+        for (status, expected) in [
+            (Some(401), RunFailureKind::ProviderAuthorization),
+            (Some(403), RunFailureKind::ProviderAuthorization),
+            (Some(429), RunFailureKind::ProviderRateLimited),
+            (Some(503), RunFailureKind::ProviderHttp(503)),
+            (None, RunFailureKind::ProviderUnknown),
+        ] {
+            let kind = RunFailureKind::from_runtime(&provider(status, "SECRET_SENTINEL"));
+            assert_eq!(kind, expected);
+            assert!(!kind.message().contains("SECRET_SENTINEL"));
+        }
+        assert_eq!(
+            RunFailureKind::from_runtime(&VegaError::ReasoningSelectionInvalid {
+                message: "SECRET_SENTINEL".into(),
+            }),
+            RunFailureKind::Runtime
+        );
+        assert!(
+            !RunFailureKind::Runtime
+                .message()
+                .contains("SECRET_SENTINEL")
+        );
+    }
+}

@@ -34,6 +34,9 @@ mod trusted_action;
 mod updater;
 mod window;
 
+#[cfg(test)]
+mod tests;
+
 use window::VegaWindow;
 
 fn main() {

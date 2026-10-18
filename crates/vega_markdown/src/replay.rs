@@ -84,3 +84,94 @@ impl MockReplay {
         self.cursor >= self.deltas.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MarkdownStream;
+    use std::time::Duration;
+
+    #[test]
+    fn split_deltas_round_trips_without_splitting_codepoints() {
+        let doc = "# 标题\n\n正文 **加粗** 与 English 混排。\n\n```rust\nlet x = 1;\n```\n";
+        let deltas = split_deltas(doc, 0x5EED);
+        assert!(deltas.len() > 10);
+        assert_eq!(deltas.concat(), doc);
+        assert!(deltas.iter().all(|delta| delta.chars().count() >= 3));
+    }
+
+    #[test]
+    fn take_due_follows_rate_times_elapsed_and_drains_in_order() {
+        // ~1040 δ（3..8 字符/δ），大于 1s 目标 500 δ。
+        let doc = "a".repeat(5000);
+        let mut replay = MockReplay::new(&doc, 500, 0x5EED);
+        let started = Instant::now();
+        // 1s → 目标 500 δ（payload 1000+ δ，未耗尽）。
+        let first = replay.take_due_at(started + Duration::from_secs(1));
+        assert_eq!(first.len(), 500);
+        assert_eq!(replay.injected(), 500);
+        assert!(!replay.is_finished());
+        // 重复同一时刻：目标数不变 → 空批（自校正不重复注入）。
+        assert!(
+            replay
+                .take_due_at(started + Duration::from_secs(1))
+                .is_empty()
+        );
+        // 3s → 目标 1500 ≥ 总量 → 一次排空，拼接为原文前缀续段。
+        let rest = replay.take_due_at(started + Duration::from_secs(3));
+        assert_eq!(
+            first
+                .iter()
+                .chain(rest.iter())
+                .map(String::as_str)
+                .collect::<String>(),
+            doc
+        );
+        assert!(replay.is_finished());
+        assert_eq!(replay.injected(), replay.total());
+    }
+
+    #[test]
+    fn from_path_reads_a_local_markdown_file() {
+        let path = std::env::temp_dir().join(format!("vega-replay-test-{}.md", std::process::id()));
+        std::fs::write(&path, "# replay source\n").expect("write test fixture");
+        let replay = MockReplay::from_path(&path, 100, 1).expect("fixture file must read back");
+        assert!(replay.total() > 0);
+        let _ = std::fs::remove_file(&path);
+        assert!(MockReplay::from_path(&path, 100, 1).is_err());
+    }
+
+    #[test]
+    fn replay_into_stream_then_finish_discards_the_pending_completion_guess() {
+        // tech-spec §5.4：回放结束时 finish() —— terminator 对 `**bo` 的补全
+        // 猜测被最终语义重解析覆盖（UI 上不残留补全态）。
+        let mut replay = MockReplay::new("stub **bo", 500, 0x5EED);
+        let mut stream = MarkdownStream::new();
+        while !replay.is_finished() {
+            for delta in replay.take_due() {
+                stream.append(&delta);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let pending_id = {
+            let mid = stream.snapshot();
+            let pending = mid.pending.expect("trailing `**bo` must stay pending");
+            assert!(matches!(
+                pending.nodes,
+                [crate::RenderNode::Paragraph { .. }]
+            ));
+            pending.block_id
+        };
+        stream.finish();
+        let snapshot = stream.snapshot();
+        assert!(snapshot.pending.is_none());
+        assert_eq!(snapshot.blocks.len(), 1);
+        assert_eq!(snapshot.blocks[0].block_id, pending_id);
+        assert_eq!(
+            snapshot.blocks[0].nodes,
+            &[crate::RenderNode::Paragraph {
+                spans: vec![crate::Inline::Text("stub **bo".into())]
+            }][..]
+        );
+    }
+}

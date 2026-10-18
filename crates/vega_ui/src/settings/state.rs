@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(test)]
+type ProviderKeyWriter = std::sync::Arc<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+type ProviderConfigSaver = std::sync::Arc<dyn Fn(&AppConfig) -> Result<(), String> + Send + Sync>;
+
 /// the config — each time settings is opened).
 pub struct SettingsView {
     pub(crate) catalog: super::model_catalog::CatalogUi,
@@ -43,6 +48,10 @@ pub struct SettingsView {
     /// Inline error message (ui-spec §4.6: no modals); empty until an IO or
     /// local credential failure occurs.
     pub(crate) error: Option<String>,
+    #[cfg(test)]
+    pub(crate) key_writer: Option<ProviderKeyWriter>,
+    #[cfg(test)]
+    pub(crate) config_saver: Option<ProviderConfigSaver>,
     pub(crate) pricing: PricingSettingsProjection,
     pub(crate) pricing_editor: Option<PricingEditor>,
     pub(crate) pricing_model_input: Entity<TextInput>,
@@ -224,6 +233,10 @@ impl SettingsView {
             mode_open: false,
             model_open: false,
             error,
+            #[cfg(test)]
+            key_writer: None,
+            #[cfg(test)]
+            config_saver: None,
             pricing: PricingSettingsProjection::Loading,
             pricing_editor: None,
             pricing_model_input,
@@ -235,6 +248,11 @@ impl SettingsView {
             reasoning_draft: None,
             next_reasoning_operation: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(cx: &mut Context<Self>) -> Self {
+        Self::from_config(AppConfig::default(), None, cx)
     }
 
     /// Keeps edit-row focus handles stable while the provider list changes.
@@ -412,6 +430,34 @@ impl SettingsView {
         self.move_provider_focus(true, window, cx);
     }
 
+    #[cfg(test)]
+    fn write_provider_key(&self, name: &str, key: &str) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(writer) = &self.key_writer {
+            return writer(name, key);
+        }
+        keystore::set_key(
+            self.config_path
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .ok_or("配置路径不可用")?,
+            name,
+            key,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn persist_config(&self, config: &AppConfig) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(saver) = &self.config_saver {
+            return saver(config);
+        }
+        config
+            .save_to(self.config_path.as_deref().ok_or("配置路径不可用")?)
+            .map_err(|error| error.to_string())
+    }
+
     /// Validates and persists the Provider form. The candidate config is
     /// cloned so a failed config write cannot replace the in-memory authority.
     pub(crate) fn submit_provider(&mut self, cx: &mut Context<Self>) {
@@ -439,19 +485,72 @@ impl SettingsView {
                 return;
             }
         };
-        self.save_provider_background(
-            existing.clone(),
-            ProviderConfig {
-                api: self.provider_management.form_api,
-                name: name.clone(),
-                base_url,
-                models,
-                enabled: existing.as_ref().is_none_or(|provider| provider.enabled),
-                key_ref: provider_key_ref(existing.as_ref(), &name, &key),
-            },
-            (!key.is_empty()).then_some(key),
-            cx,
-        );
+        #[cfg(test)]
+        let use_worker = self.config_saver.is_none() && self.key_writer.is_none();
+        #[cfg(not(test))]
+        let use_worker = true;
+        if use_worker {
+            self.save_provider_background(
+                existing.clone(),
+                ProviderConfig {
+                    api: self.provider_management.form_api,
+                    name: name.clone(),
+                    base_url,
+                    models,
+                    enabled: existing.as_ref().is_none_or(|provider| provider.enabled),
+                    key_ref: provider_key_ref(existing.as_ref(), &name, &key),
+                },
+                (!key.is_empty()).then_some(key),
+                cx,
+            );
+            #[cfg(test)]
+            return;
+        }
+        #[cfg(test)]
+        {
+            let key_ref = if key.is_empty() {
+                provider_key_ref(existing.as_ref(), &name, &key)
+            } else {
+                if let Err(error) = self.write_provider_key(&name, &key) {
+                    self.error = Some(format!("本地凭据写入失败：{error}"));
+                    cx.notify();
+                    return;
+                }
+                provider_key_ref(existing.as_ref(), &name, &key)
+            };
+            let mut candidate = self.config.clone();
+            upsert_provider(
+                &mut candidate.providers,
+                ProviderConfig {
+                    api: self.provider_management.form_api,
+                    name: name.clone(),
+                    enabled: existing.as_ref().is_none_or(|provider| provider.enabled),
+                    base_url,
+                    models,
+                    key_ref,
+                },
+            );
+            if let Err(error) = self.persist_config(&candidate) {
+                self.error = Some(format!("配置保存失败：{error}；当前输入仍未保存"));
+                cx.notify();
+                return;
+            }
+            let replay_identity_changed = candidate.providers != self.config.providers;
+            self.config = candidate;
+            self.provider_management.form = false;
+            self.provider_management.selected = Some(name);
+            self.refresh_key_refs();
+            self.sync_provider_edit_focuses(cx);
+            self.name_input.update(cx, TextInput::clear);
+            self.base_url_input.update(cx, TextInput::clear);
+            self.models_input.update(cx, TextInput::clear);
+            self.key_input.update(cx, TextInput::clear);
+            self.error = None;
+            cx.emit(SettingsSaved {
+                replay_identity_changed: replay_identity_changed || !key.is_empty(),
+            });
+            cx.notify();
+        }
     }
 
     /// Applies the latest safe projection from the app-owned pricing controller.
@@ -497,6 +596,12 @@ impl SettingsView {
                 ..
             } if *current_generation == generation && *current_operation == operation_id
         )
+    }
+
+    /// Read-only projection used by app-level acceptance tests and route
+    /// adapters; edits still go through the typed actions below.
+    pub fn reasoning_projection(&self) -> &ReasoningSettingsProjection {
+        &self.reasoning
     }
 
     pub(crate) fn emit_reasoning_save(

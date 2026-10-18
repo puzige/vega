@@ -754,3 +754,320 @@ fn parse_failure(value: &str) -> Result<DiagnosticFailureCode, DiagnosticError> 
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Store,
+        threads::{self, NewThread},
+    };
+
+    fn store() -> Store {
+        let store = Store::open(":memory:").unwrap();
+        store.migrate().unwrap();
+        threads::create_standalone(
+            store.conn(),
+            NewThread {
+                id: "thread-171",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        store
+    }
+
+    fn event(state: DiagnosticState, attempt_id: &str) -> NewDiagnosticEvent {
+        NewDiagnosticEvent {
+            thread_id: "thread-171".into(),
+            run_id: "run-171".into(),
+            attempt_id: attempt_id.into(),
+            parent_attempt_id: Some("root-171".into()),
+            tool_call_id: None,
+            phase: DiagnosticPhase::PrimaryModel,
+            state,
+            failure_code: (state == DiagnosticState::Failed)
+                .then_some(DiagnosticFailureCode::ProviderHttp),
+            occurred_at: 10,
+            duration_ms: (state != DiagnosticState::Started).then_some(4),
+            metrics: DiagnosticMetrics::default(),
+        }
+    }
+
+    #[test]
+    fn failure_details_round_trip_with_legacy_unknowns_and_closed_vocabulary() {
+        let store = store();
+        insert(store.conn(), &event(DiagnosticState::Started, "details")).unwrap();
+        let mut failed = event(DiagnosticState::Failed, "details");
+        failed.failure_code = Some(DiagnosticFailureCode::ReasoningLimit);
+        failed.metrics.failure_source = Some("runtime".into());
+        failed.metrics.failure_kind = Some("reasoning_limit".into());
+        failed.metrics.failure_scope = Some("response".into());
+        failed.metrics.failure_observed = Some(262145);
+        failed.metrics.failure_limit = Some(262144);
+        failed.metrics.failure_units = Some("bytes".into());
+        failed.metrics.failure_observed_items = Some(257);
+        failed.metrics.failure_limit_items = Some(256);
+        insert(store.conn(), &failed).unwrap();
+        insert(store.conn(), &event(DiagnosticState::Started, "legacy")).unwrap();
+        let mut legacy = event(DiagnosticState::Failed, "legacy");
+        legacy.failure_code = Some(DiagnosticFailureCode::ReasoningLimit);
+        insert(store.conn(), &legacy).unwrap();
+        let mut replay = event(DiagnosticState::Started, "replay");
+        insert(store.conn(), &replay).unwrap();
+        replay.state = DiagnosticState::Failed;
+        replay.duration_ms = Some(4);
+        replay.failure_code = Some(DiagnosticFailureCode::ProviderProtocol);
+        replay.metrics.failure_source = Some("runtime".into());
+        replay.metrics.failure_kind = Some("protocol".into());
+        replay.metrics.failure_scope = Some("response".into());
+        insert(store.conn(), &replay).unwrap();
+        let loaded = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
+        assert_eq!(loaded[1].event.metrics, failed.metrics);
+        assert_eq!(loaded[3].event.metrics, DiagnosticMetrics::default());
+        assert_eq!(
+            loaded[5].event.failure_code,
+            Some(DiagnosticFailureCode::ProviderProtocol)
+        );
+        assert_eq!(
+            loaded[5].event.metrics.failure_kind.as_deref(),
+            Some("protocol")
+        );
+        let export = export_run(store.conn(), "thread-171", "run-171").unwrap();
+        assert!(export.contains("262145"));
+        assert!(export.contains("\"failure_scope\":null"));
+        let mut unsafe_event = event(DiagnosticState::Started, "unsafe");
+        unsafe_event.metrics.failure_kind = Some("PRIVATE_PROVIDER_BODY".into());
+        assert!(matches!(
+            insert(store.conn(), &unsafe_event),
+            Err(DiagnosticError::InvalidField {
+                field: "failure_kind"
+            })
+        ));
+    }
+
+    #[test]
+    fn additive_failure_migration_leaves_existing_reasoning_detail_unknown() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE run_diagnostic_events (failure_code TEXT); INSERT INTO run_diagnostic_events VALUES ('reasoning_limit');").unwrap();
+        conn.execute_batch(include_str!("../migrations/0025_failure_details.sql"))
+            .unwrap();
+        let detail: (String, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT failure_code, failure_scope, failure_observed FROM run_diagnostic_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(detail, ("reasoning_limit".into(), None, None));
+    }
+
+    #[test]
+    fn migration_persists_ordered_events_and_reports_incomplete_after_reopen() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let store = Store::open(temp.path()).unwrap();
+            store.migrate().unwrap();
+            threads::create_standalone(
+                store.conn(),
+                NewThread {
+                    id: "thread-171",
+                    project_id: "",
+                    title: "fixture",
+                    mode: "execute",
+                    permission_mode: "readonly",
+                    model: "mock",
+                    status: "active",
+                    pinned: false,
+                    unread: false,
+                    created_at: 1,
+                    updated_at: 1,
+                },
+            )
+            .unwrap();
+            insert(
+                store.conn(),
+                &event(DiagnosticState::Started, "attempt-open"),
+            )
+            .unwrap();
+            insert(
+                store.conn(),
+                &event(DiagnosticState::Started, "attempt-closed"),
+            )
+            .unwrap();
+            insert(
+                store.conn(),
+                &event(DiagnosticState::Succeeded, "attempt-closed"),
+            )
+            .unwrap();
+        }
+        let store = Store::open(temp.path()).unwrap();
+        let events = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events[0].id < events[1].id);
+        assert!(events[1].id < events[2].id);
+        assert_eq!(incomplete_attempt_ids(&events), ["attempt-open"]);
+    }
+
+    #[test]
+    fn rejects_unsafe_ids_and_invalid_terminal_shapes() {
+        let store = store();
+        let mut unsafe_request = event(DiagnosticState::Succeeded, "attempt-1");
+        unsafe_request.metrics.request_id = Some("Bearer secret".into());
+        assert!(matches!(
+            insert(store.conn(), &unsafe_request),
+            Err(DiagnosticError::InvalidField {
+                field: "request_id"
+            })
+        ));
+        let mut invalid = event(DiagnosticState::Started, "attempt-2");
+        invalid.duration_ms = Some(0);
+        assert!(matches!(
+            insert(store.conn(), &invalid),
+            Err(DiagnosticError::InvalidField {
+                field: "duration_ms"
+            })
+        ));
+        assert!(matches!(
+            insert(
+                store.conn(),
+                &event(DiagnosticState::Succeeded, "missing-start")
+            ),
+            Err(DiagnosticError::InvalidField {
+                field: "attempt_id"
+            })
+        ));
+
+        insert(
+            store.conn(),
+            &event(DiagnosticState::Started, "unique-attempt"),
+        )
+        .unwrap();
+        assert!(matches!(
+            insert(
+                store.conn(),
+                &event(DiagnosticState::Started, "unique-attempt")
+            ),
+            Err(DiagnosticError::InvalidField {
+                field: "attempt_id"
+            })
+        ));
+        insert(
+            store.conn(),
+            &event(DiagnosticState::Succeeded, "unique-attempt"),
+        )
+        .unwrap();
+        assert!(matches!(
+            insert(
+                store.conn(),
+                &event(DiagnosticState::Succeeded, "unique-attempt")
+            ),
+            Err(DiagnosticError::InvalidField {
+                field: "attempt_id"
+            })
+        ));
+    }
+
+    #[test]
+    fn export_is_explicit_allowlist_and_thread_delete_cascades() {
+        let store = store();
+        insert(store.conn(), &event(DiagnosticState::Started, "attempt-1")).unwrap();
+        let json = export_run(store.conn(), "thread-171", "run-171").unwrap();
+        assert!(json.contains("incomplete_attempt_ids"));
+        assert!(!json.contains("prompt"));
+        store
+            .conn()
+            .execute("DELETE FROM threads WHERE id='thread-171'", [])
+            .unwrap();
+        let count: i64 = store
+            .conn()
+            .query_row("SELECT count(*) FROM run_diagnostic_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn summary_preflight_failure_codes_round_trip_as_closed_values() {
+        let store = store();
+        let codes = [
+            DiagnosticFailureCode::ContextOverLimit,
+            DiagnosticFailureCode::SummarySourceTooLarge,
+            DiagnosticFailureCode::SummaryAggregateTooLarge,
+            DiagnosticFailureCode::SummaryImagesUnsupported,
+            DiagnosticFailureCode::SummaryNoCompactablePrefix,
+            DiagnosticFailureCode::SummaryAlreadyAttempted,
+        ];
+        for (index, code) in codes.into_iter().enumerate() {
+            let attempt_id = format!("attempt-{index}");
+            insert(store.conn(), &event(DiagnosticState::Started, &attempt_id)).unwrap();
+            let mut failed = event(DiagnosticState::Failed, &attempt_id);
+            failed.failure_code = Some(code);
+            insert(store.conn(), &failed).unwrap();
+        }
+        let events = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
+        let persisted_codes = events
+            .into_iter()
+            .filter_map(|event| event.event.failure_code)
+            .collect::<Vec<_>>();
+        assert_eq!(persisted_codes, codes.into_iter().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn cancellation_states_require_their_matching_closed_failure_code() {
+        let store = store();
+        assert!(matches!(
+            insert(
+                store.conn(),
+                &event(DiagnosticState::Cancelled, "missing-cancel-code")
+            ),
+            Err(DiagnosticError::InvalidField {
+                field: "failure_code"
+            })
+        ));
+        let mut mismatched = event(DiagnosticState::Cancelled, "mismatched-cancel-code");
+        mismatched.failure_code = Some(DiagnosticFailureCode::Interrupted);
+        assert!(matches!(
+            insert(store.conn(), &mismatched),
+            Err(DiagnosticError::InvalidField {
+                field: "failure_code"
+            })
+        ));
+        for (attempt_id, state, code) in [
+            (
+                "cancelled-attempt",
+                DiagnosticState::Cancelled,
+                DiagnosticFailureCode::Cancelled,
+            ),
+            (
+                "interrupted-attempt",
+                DiagnosticState::Interrupted,
+                DiagnosticFailureCode::Interrupted,
+            ),
+        ] {
+            insert(store.conn(), &event(DiagnosticState::Started, attempt_id)).unwrap();
+            let mut terminal = event(state, attempt_id);
+            terminal.failure_code = Some(code);
+            insert(store.conn(), &terminal).unwrap();
+        }
+        let events = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
+        assert_eq!(
+            events[1].event.failure_code,
+            Some(DiagnosticFailureCode::Cancelled)
+        );
+        assert_eq!(
+            events[3].event.failure_code,
+            Some(DiagnosticFailureCode::Interrupted)
+        );
+    }
+}

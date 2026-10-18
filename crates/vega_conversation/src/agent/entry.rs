@@ -370,6 +370,39 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(crate) async fn run_thread_task_with_sink_config<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    event_sink: F,
+    actor_config: PersistenceActorConfig,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        &RejectPermissionHook,
+        event_sink,
+        actor_config,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_thread_task_with_permission_config<F>(
     store: &Store,
     provider: &dyn Provider,

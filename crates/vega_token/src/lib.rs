@@ -13,3 +13,6 @@ pub use persistence::{
     CatalogLoad, CatalogSnapshot, load_catalog, load_catalog_snapshot, load_or_seed_catalog,
     save_catalog_atomic,
 };
+
+#[cfg(test)]
+mod tests;

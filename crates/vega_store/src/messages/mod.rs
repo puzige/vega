@@ -760,3 +760,6 @@ fn corrupt_row_error(reason: &'static str) -> rusqlite::Error {
         )),
     )
 }
+
+#[cfg(test)]
+mod tests;

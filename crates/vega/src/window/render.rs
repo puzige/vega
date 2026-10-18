@@ -460,6 +460,7 @@ impl Render for VegaWindow {
             })
             .child(
                 div()
+                    .debug_selector(|| "main-content-panel".into())
                     .flex_1()
                     .min_w_0()
                     .bg(colors.bg_base)
@@ -500,6 +501,7 @@ impl VegaWindow {
     fn render_sidebar_resizer(&self, colors: ThemeColors, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("sidebar-resize-handle")
+            .debug_selector(|| "sidebar-resize-handle".into())
             .w(px(Layout::SIDEBAR_RESIZE_HIT_AREA))
             .h_full()
             .flex_shrink_0()
@@ -559,6 +561,7 @@ impl VegaWindow {
             self.environment_overlay_open
         };
         div()
+            .debug_selector(|| "main-header-shell-slots".into())
             .absolute()
             .top_0()
             .right_0()
@@ -568,39 +571,50 @@ impl VegaWindow {
             .items_center()
             .gap(px(6.))
             .occlude()
-            .child(shell_icon_button(
-                Icon::Summary,
-                "切换环境",
-                None,
-                environment_available
-                    && !right_visible
-                    && self.workspace_fullscreen_index().is_none()
-                    && environment_visible,
-                environment_available && !right_visible,
-                colors,
-                cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
-            ))
-            .child(shell_icon_button(
-                Icon::DockBottom,
-                "切换终端",
-                Some("⌘J".into()),
-                self.workspace_recent_terminal_is_rendered(window, cx),
-                project_route,
-                colors,
-                cx.listener(|this, _, window, cx| this.workspace_toggle_bottom(window, cx)),
-            ))
+            .child(
+                shell_icon_button(
+                    Icon::Summary,
+                    "切换环境",
+                    None,
+                    environment_available
+                        && !right_visible
+                        && self.workspace_fullscreen_index().is_none()
+                        && environment_visible,
+                    environment_available && !right_visible,
+                    colors,
+                    cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
+                )
+                .debug_selector(|| "main-header-environment".into()),
+            )
+            .child(
+                shell_icon_button(
+                    Icon::DockBottom,
+                    "切换终端",
+                    Some("⌘J".into()),
+                    self.workspace_recent_terminal_is_rendered(window, cx),
+                    project_route,
+                    colors,
+                    cx.listener(|this, _, window, cx| this.workspace_toggle_bottom(window, cx)),
+                )
+                .debug_selector(|| "main-header-terminal".into()),
+            )
             .child(
                 div()
                     .capture_any_mouse_down(|_, window, _| window.prevent_default())
-                    .child(shell_icon_button(
-                        Icon::DockRight,
-                        "切换右侧面板",
-                        None,
-                        self.right_workspace_rendered_non_terminal(window, cx),
-                        self.right_workspace_slot_available(window, cx),
-                        colors,
-                        cx.listener(|this, _, window, cx| this.workspace_toggle_right(window, cx)),
-                    )),
+                    .child(
+                        shell_icon_button(
+                            Icon::DockRight,
+                            "切换右侧面板",
+                            None,
+                            self.right_workspace_rendered_non_terminal(window, cx),
+                            self.right_workspace_slot_available(window, cx),
+                            colors,
+                            cx.listener(|this, _, window, cx| {
+                                this.workspace_toggle_right(window, cx)
+                            }),
+                        )
+                        .debug_selector(|| "main-header-workspace-right".into()),
+                    ),
             )
             .into_any_element()
     }
@@ -625,6 +639,7 @@ impl VegaWindow {
         let title = self.main_header_title(cx);
         div()
             .id("main-header")
+            .debug_selector(|| "main-header".into())
             .h(px(Layout::MAIN_HEADER_HEIGHT))
             .flex_shrink_0()
             .flex()
@@ -641,6 +656,7 @@ impl VegaWindow {
             .when(sidebar_visible, |header| header.pl_3())
             .child(
                 div()
+                    .debug_selector(|| "main-header-title".into())
                     .min_w_0()
                     .flex_1()
                     .truncate()

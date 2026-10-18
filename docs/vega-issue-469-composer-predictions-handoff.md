@@ -2,12 +2,12 @@
 
 Purpose: 在冻结规格内实现 #469，交回 Codex 审查并走云端 CI。
 Type: TASK
-Status: ACTIVE
+Status: DONE
 Handoff initiator: Codex
 Recipient: dedicated implementation subagent
 Primary owner: Codex
 Reviewer: Codex
-Decision entry: [v1 spec](vega-issue-469-composer-predictions.md)
+Decision entry: [current spec](vega-issue-469-composer-predictions.md)
 Date: 2026-10-18
 Time base: Asia/Shanghai
 
@@ -28,7 +28,9 @@ Time base: Asia/Shanghai
 
 - 2026-10-18：读取 Issue，无他人交接/占用；fetch 并核对基线后建分支。
 - 2026-10-18：用户确认默认开；Codex 冻结测试矩阵与 Native/ACP 范围。
-- 当前：等待子 agent 按规格实现，最终由 Codex 审查/集成。
+- 2026-10-18：基线同步至 `abd5dc67`；规格修订至 v1.3，修正真实 Enter 键位、引用块过滤与内部 UI 广播封装。
+- 2026-10-18：子 agent 提交 `30bc1dc6`，停止写入；Codex 完成静态 diff、边界和验收覆盖审查，下一步 PR CI。
+- 2026-10-18：PR #472 两轮云端编译分别发现测试宏通配导入和既有夹具缺失字段，按原断言修正；基线同步至 `a608ffa2`（#470/#449 滚动边界）。TextInput 与 Composer 交集自动合并后经静态审查，新 head 重验全部门禁。
 
 ## Scope
 
@@ -68,3 +70,12 @@ Time base: Asia/Shanghai
 - 失败与迟到结果不得改变主轮成功、投到错误线程或覆盖用户输入。
 - 不能为绕过辅助调用消费测试脚本而放宽已有测试断言。
 - 提供方、缓存与真实中文输入法集成由用户在合并后手测；本地未运行必须如实报告。
+
+## Result Writeback (2026-10-18)
+
+- Status: DONE（本次实现交接完成；Issue 仍 In progress，尚未云端验证或用户验收）。
+- Executor: `composer_predictions_impl`，Codex 专职子 agent。
+- Reviewer: Codex，已审查生产链路、生命周期、凭据边界、键位与对应断言；类型和运行行为待 CI。
+- Deliverable: 实现提交 `30bc1dc6`；[实现交付与静态证据](vega-issue-469-composer-predictions-delivery.md)。
+- Verification: `git diff --check origin/master...HEAD` exit 0；子 agent 最终格式检查 exit 0；未运行 Vega、编译、Clippy、测试或打包。
+- Next step（按用户 2026-10-18 最新要求更新）: Codex 准备 PR、修复 CI 并确认最新 head 的 required check；保持 PR 开放，不自动合并 master。Issue 仍 In progress，不关闭或清理任务资源。第三轮运行回归修复见[定向交接](vega-issue-469-composer-predictions-ci-repair.md)。

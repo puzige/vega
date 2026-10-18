@@ -361,7 +361,10 @@ impl ConversationStream {
         let user_question_listener_task = cx.spawn(async move |this, cx| {
             while question_listener.changed().await {
                 if this
-                    .update(cx, |this, cx| this.install_pending_user_question(cx))
+                    .update(cx, |this, cx| {
+                        this.reconcile_composer_prediction(cx);
+                        this.install_pending_user_question(cx);
+                    })
                     .is_err()
                 {
                     break;
@@ -372,7 +375,10 @@ impl ConversationStream {
         let permission_listener_task = cx.spawn(async move |this, cx| {
             while listener.changed().await {
                 let alive = this
-                    .update(cx, |this, cx| this.install_pending_permission(cx))
+                    .update(cx, |this, cx| {
+                        this.reconcile_composer_prediction(cx);
+                        this.install_pending_permission(cx);
+                    })
                     .is_ok();
                 if !alive {
                     break;
@@ -1609,6 +1615,11 @@ impl ConversationStream {
     pub fn restore_meter(&mut self, usage: RestoredUsage, cx: &mut Context<Self>) {
         self.meter.restore(usage);
         cx.notify();
+    }
+
+    /// Current counter projection (C4): the Composer renders exactly this.
+    pub fn meter_snapshot(&self) -> MeterSnapshot {
+        self.meter.snapshot()
     }
 
     pub(crate) fn feed_meter(&mut self, event: &ConversationEvent, cx: &mut Context<Self>) {

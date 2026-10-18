@@ -244,3 +244,95 @@ impl RuntimeUserQuestionHook for UserQuestionQueue {
         .boxed()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::UserQuestionInput;
+
+    fn request() -> RuntimeUserQuestionRequest {
+        RuntimeUserQuestionRequest { call_id: "call".into(), input: UserQuestionInput::from_json(r#"{"questions":[{"id":"choice","header":"Choice","question":"Which one?","options":[{"label":"A","description":"First"},{"label":"B","description":"Second"}]}]}"#).unwrap() }
+    }
+
+    fn answer() -> UserQuestionAnswers {
+        UserQuestionAnswers::from_json(
+            r#"{"answers":{"choice":{"answers":["A"]}}}"#,
+            &request().input,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn question_wait_has_no_permission_timeout_and_invalid_answer_keeps_latch() {
+        let queue = UserQuestionQueue::new();
+        let mut listener = queue.subscribe();
+        let wait = queue.request(request(), CancellationToken::new());
+        listener.changed().await;
+        let pending = queue.take_pending().unwrap();
+        tokio::pin!(wait);
+        assert!(futures::poll!(&mut wait).is_pending());
+        tokio::time::advance(std::time::Duration::from_secs(3600)).await;
+        assert!(futures::poll!(&mut wait).is_pending());
+        assert!(pending.respond(UserQuestionAnswers::default()).is_err());
+        assert!(queue.has_pending());
+        assert!(pending.respond(answer()).unwrap());
+        assert!(!pending.respond(answer()).unwrap());
+        assert_eq!(wait.await, Response::Answered(answer()));
+    }
+
+    #[tokio::test]
+    async fn question_submit_cancel_and_listener_replacement_are_first_wins() {
+        for answer_first in [true, false] {
+            let queue = UserQuestionQueue::new();
+            let _listener = queue.subscribe();
+            let cancel = CancellationToken::new();
+            let wait = queue.request(request(), cancel.clone());
+            let pending = queue.take_pending().unwrap();
+            if answer_first {
+                assert!(pending.respond(answer()).unwrap());
+            }
+            cancel.cancel();
+            if !answer_first {
+                assert!(!pending.respond(answer()).unwrap());
+            }
+            assert_eq!(
+                wait.await,
+                if answer_first {
+                    Response::Answered(answer())
+                } else {
+                    Response::Cancelled
+                }
+            );
+            assert!(!queue.has_pending());
+        }
+        let queue = UserQuestionQueue::new();
+        let first_listener = queue.subscribe();
+        let first = queue.request(request(), CancellationToken::new());
+        let first_pending = queue.take_pending().unwrap();
+        let _second_listener = queue.subscribe();
+        assert_eq!(first.await, Response::Cancelled);
+        assert!(!first_pending.respond(answer()).unwrap());
+        drop(first_listener);
+        let second = queue.request(request(), CancellationToken::new());
+        assert!(queue.take_pending().unwrap().respond(answer()).unwrap());
+        assert_eq!(second.await, Response::Answered(answer()));
+    }
+
+    #[tokio::test]
+    async fn missing_listener_and_destroyed_owner_release_question_wait() {
+        let queue = UserQuestionQueue::new();
+        assert_eq!(
+            queue.request(request(), CancellationToken::new()).await,
+            Response::Unavailable
+        );
+        let listener = queue.subscribe();
+        let wait = queue.request(request(), CancellationToken::new());
+        let pending = queue.take_pending().unwrap();
+        drop(pending);
+        assert_eq!(wait.await, Response::Cancelled);
+        let wait = queue.request(request(), CancellationToken::new());
+        drop(listener);
+        assert_eq!(wait.await, Response::Cancelled);
+        assert!(!queue.has_pending());
+    }
+}

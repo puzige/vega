@@ -216,3 +216,258 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
     }
     Some(hasher.finalize().into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ChatRole, ChatToolCall};
+
+    fn request() -> ChatRequest {
+        ChatRequest {
+            model: "mock".into(),
+            messages: vec![
+                ChatMessage::new(ChatRole::System, "system"),
+                ChatMessage::new(ChatRole::User, "user"),
+            ],
+            tools: vec![ToolDefinition {
+                name: "read".into(),
+                description: "read file".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": false
+                }),
+                strict: false,
+            }],
+            max_tokens: Some(100),
+            reasoning: Some(FrozenReasoning::unknown("mock", "mock")),
+        }
+    }
+
+    #[test]
+    fn tool_preview_and_reference_share_the_wire_usage_anchor_without_recharging_the_prefix() {
+        let pair = |id: &str| {
+            let call = crate::RuntimeToolCall {
+                id: id.into(),
+                name: "read".into(),
+                input_json: r#"{"path":"large.txt"}"#.into(),
+            };
+            let result = crate::RuntimeToolResult {
+                call_id: id.into(),
+                output: "complete evidence ".repeat(1_000),
+                status: crate::RuntimeToolStatus::Success,
+                reused: false,
+                exit_code: None,
+                duration_ms: None,
+                truncated: Some(false),
+                approval: None,
+                remember_rule: None,
+            };
+            [
+                ChatMessage::assistant_with_tools(
+                    "",
+                    vec![ChatToolCall {
+                        id: id.into(),
+                        name: "read".into(),
+                        input_json: call.input_json.clone(),
+                    }],
+                ),
+                ChatMessage::runtime_tool_result(&call, &result),
+            ]
+        };
+        let mut sent = request();
+        sent.messages.extend(pair("first"));
+        sent.messages.last_mut().unwrap().attach_progress_reminder();
+        let canonical = sent.messages.clone();
+        sent.messages = crate::project_model_messages(&canonical).unwrap();
+        let anchor = PendingInputAnchor::from_request(&sent)
+            .unwrap()
+            .unwrap()
+            .complete(123)
+            .unwrap();
+        let mut current = canonical.clone();
+        current.extend(pair("second"));
+        let projected = crate::project_model_messages(&current).unwrap();
+        assert_eq!(
+            crate::project_model_messages(&projected).unwrap(),
+            projected
+        );
+        assert_eq!(&projected[..sent.messages.len()], sent.messages.as_slice());
+        assert!(
+            projected
+                .last()
+                .unwrap()
+                .content
+                .contains("vega_tool_result_reference")
+        );
+        let canonical_decision = InputAnchor::decide(
+            Some(&anchor),
+            &current,
+            &sent.tools,
+            &sent.model,
+            sent.reasoning.as_ref(),
+            sent.max_tokens,
+            1,
+        )
+        .unwrap();
+        let projected_decision = InputAnchor::decide(
+            Some(&anchor),
+            &projected,
+            &sent.tools,
+            &sent.model,
+            sent.reasoning.as_ref(),
+            sent.max_tokens,
+            1,
+        )
+        .unwrap();
+        assert_eq!(canonical_decision, projected_decision);
+        assert_eq!(
+            canonical_decision.source,
+            super::super::ContextAccountingSource::UsageAnchored
+        );
+        assert_eq!(canonical_decision.baseline, Some(123));
+        let before = crate::estimate_wire_context(&canonical, &sent.tools)
+            .unwrap()
+            .input_tokens;
+        let after = crate::estimate_wire_context(&projected, &sent.tools)
+            .unwrap()
+            .input_tokens;
+        assert_eq!(canonical_decision.incremental, after - before);
+        assert_eq!(canonical_decision.predicted, 123 + after - before);
+        assert!(canonical_decision.incremental < 1_000);
+        let mut changed = current.clone();
+        changed[3].content.replace_range(8_000..8_001, "x");
+        assert_eq!(
+            InputAnchor::decide(
+                Some(&anchor),
+                &changed,
+                &sent.tools,
+                &sent.model,
+                sent.reasoning.as_ref(),
+                sent.max_tokens,
+                1
+            )
+            .unwrap()
+            .source,
+            super::super::ContextAccountingSource::Estimated
+        );
+        assert_eq!(
+            InputAnchor::decide(
+                Some(&anchor),
+                &current,
+                &sent.tools,
+                "changed-model",
+                sent.reasoning.as_ref(),
+                sent.max_tokens,
+                1
+            )
+            .unwrap()
+            .source,
+            super::super::ContextAccountingSource::Estimated
+        );
+        assert_eq!(canonical[3].content, "complete evidence ".repeat(1_000));
+    }
+
+    #[test]
+    fn automatic_replay_responses_layout_is_estimated_and_invalidates_anchor_on_phase_or_order() {
+        let reasoning_item = serde_json::json!({
+            "type":"reasoning",
+            "id":"rs_1",
+            "phase":"analysis",
+            "summary":[],
+            "encrypted_content":"opaque-replay-payload"
+        });
+        let message_item = serde_json::json!({
+            "type":"message",
+            "id":"msg_1",
+            "role":"assistant",
+            "status":"completed",
+            "phase":"final",
+            "content":[{"type":"output_text","text":"answer"}]
+        });
+        let mut assistant = ChatMessage::new(crate::ChatRole::Assistant, "answer");
+        assistant.response_reasoning = vec![reasoning_item.clone()];
+        assistant.response_replay_layout = Some(crate::ResponseReplayLayout {
+            response_id: Some("resp_1".into()),
+            slots: vec![
+                crate::ResponseReplaySlot::Reasoning(reasoning_item),
+                crate::ResponseReplaySlot::Message(message_item),
+            ],
+        });
+        let messages = vec![
+            ChatMessage::new(crate::ChatRole::System, "system"),
+            assistant.clone(),
+        ];
+        let wire = crate::estimate_wire_context(&messages, &[]).unwrap();
+        let standalone = crate::estimate_chat_context("system", &[assistant.clone()], &[]).unwrap();
+        assert_eq!(wire, standalone);
+        let mut without_layout = assistant.clone();
+        without_layout.response_reasoning.clear();
+        without_layout.response_replay_layout = None;
+        assert!(
+            wire.input_tokens
+                > crate::estimate_wire_context(
+                    &[
+                        ChatMessage::new(crate::ChatRole::System, "system"),
+                        without_layout,
+                    ],
+                    &[]
+                )
+                .unwrap()
+                .input_tokens
+        );
+
+        let mut sent = request();
+        sent.messages = messages;
+        let anchor = PendingInputAnchor::from_request(&sent)
+            .unwrap()
+            .unwrap()
+            .complete(wire.input_tokens)
+            .unwrap();
+        let mut changed_phase = sent.messages.clone();
+        let Some(crate::ResponseReplaySlot::Message(item)) = changed_phase[1]
+            .response_replay_layout
+            .as_mut()
+            .and_then(|layout| layout.slots.get_mut(1))
+        else {
+            panic!("message replay slot missing");
+        };
+        item["phase"] = serde_json::json!("commentary");
+        assert_eq!(
+            InputAnchor::decide(
+                Some(&anchor),
+                &changed_phase,
+                &sent.tools,
+                &sent.model,
+                sent.reasoning.as_ref(),
+                sent.max_tokens,
+                1,
+            )
+            .unwrap()
+            .source,
+            super::super::ContextAccountingSource::Estimated
+        );
+        let mut changed_order = sent.messages.clone();
+        changed_order[1]
+            .response_replay_layout
+            .as_mut()
+            .unwrap()
+            .slots
+            .swap(0, 1);
+        assert_eq!(
+            InputAnchor::decide(
+                Some(&anchor),
+                &changed_order,
+                &sent.tools,
+                &sent.model,
+                sent.reasoning.as_ref(),
+                sent.max_tokens,
+                1,
+            )
+            .unwrap()
+            .source,
+            super::super::ContextAccountingSource::Estimated
+        );
+    }
+}

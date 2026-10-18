@@ -328,7 +328,21 @@ fn load_block_state() -> (bool, bool) {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub struct SidebarConfigPath(pub std::path::PathBuf);
+#[cfg(any(test, feature = "test-support"))]
+impl Global for SidebarConfigPath {}
+
 fn persist_ui(mutate: impl FnOnce(&mut config::AppConfig), what: &'static str, cx: &mut App) {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(path) = cx.try_global::<SidebarConfigPath>() {
+        if let Err(error) = config::update_from(&path.0, mutate) {
+            tracing::error!(%error, "failed to persist {what} to config.toml");
+        }
+        cx.refresh_windows();
+        return;
+    }
+
     if let Err(error) = config::update(mutate) {
         tracing::error!(%error, "failed to persist {what} to config.toml");
     }
@@ -554,6 +568,7 @@ impl Sidebar {
             .child(
                 div()
                     .id("sidebar-new-task")
+                    .debug_selector(|| "sidebar-new-task".into())
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .flex()
                     .items_center()
@@ -572,10 +587,15 @@ impl Sidebar {
                         crate::icons::Icon::Plus,
                         colors.text_secondary,
                     ))
-                    .child(div().child("新建任务"))
+                    .child(
+                        div()
+                            .debug_selector(|| "sidebar-new-task-label".into())
+                            .child("新建任务"),
+                    )
                     .child(div().flex_1())
                     .child(
                         div()
+                            .debug_selector(|| "sidebar-new-task-shortcut".into())
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_tertiary)
                             .child("⌘N"),
@@ -595,12 +615,14 @@ impl Sidebar {
         div()
             .w_full()
             .flex_shrink_0()
+            .debug_selector(|| "sidebar-settings-footer".into())
             .px(px(Layout::SIDEBAR_PADDING))
             .pt(px(Layout::SIDEBAR_FOOTER_TOP))
             .pb(px(Layout::SIDEBAR_PADDING))
             .child(
                 div()
                     .id("sidebar-settings-surface")
+                    .debug_selector(|| "sidebar-settings-surface".into())
                     .w_full()
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .rounded_lg()
@@ -609,6 +631,7 @@ impl Sidebar {
                     .capture_native_button_press()
                     .child(
                         Button::new("sidebar-settings")
+                            .debug_selector(|| "sidebar-settings".into())
                             .custom(
                                 ButtonCustomVariant::new(cx).foreground(colors.text_primary.into()),
                             )
@@ -628,10 +651,15 @@ impl Sidebar {
                                 crate::icons::Icon::Settings,
                                 colors.text_secondary,
                             ))
-                            .child(div().child("设置"))
+                            .child(
+                                div()
+                                    .debug_selector(|| "sidebar-settings-label".into())
+                                    .child("设置"),
+                            )
                             .child(div().flex_1())
                             .child(
                                 div()
+                                    .debug_selector(|| "sidebar-settings-shortcut".into())
                                     .text_size(px(Typography::METADATA))
                                     .text_color(colors.text_tertiary)
                                     .child("⌘,"),
@@ -647,6 +675,7 @@ impl Render for Sidebar {
         let colors = theme(cx).colors;
         div()
             .id("sidebar")
+            .debug_selector(|| "sidebar".into())
             .flex()
             .flex_col()
             .w(px(width(cx)))
@@ -697,6 +726,7 @@ impl Render for Sidebar {
                                 }
                             })
                             .id("sidebar-scroll")
+                            .debug_selector(|| "sidebar-scroll".into())
                             // Organization content keeps an 8px application-edge inset;
                             // Pinned row surfaces extend 8px left of the title column.
                             .ml(px(-4.0))
@@ -728,3 +758,194 @@ mod threads_block;
 pub use projects_block::{ProjectsBlock, ProjectsBlockEvent};
 pub use row_helpers::*;
 pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};
+
+#[cfg(test)]
+mod tests {
+
+    use super::{
+        OpenedThread, PendingDeleteConfirm, RenameResolution, SelectedProject, Sidebar,
+        SidebarEvent, VegaStore, archive_section_visible, civil_from_days,
+        clear_opened_thread_of_project, relative_time_from, resolve_rename, row_shows_actions,
+        thread_title,
+    };
+    use gpui_kit::AppContext;
+    use std::sync::{Arc, Mutex};
+    use vega_conversation::types::Thread;
+
+    fn thread_with_title(title: &str) -> Thread {
+        Thread {
+            parent_thread_id: None,
+            id: "t1".to_string(),
+            backend: vega_conversation::types::TaskBackend::Native,
+            project_id: "p1".to_string(),
+            title: title.to_string(),
+            mode: vega_conversation::types::ThreadMode::Execute,
+            permission_mode: vega_conversation::types::PermissionMode::Confirm,
+            model: String::new(),
+            status: vega_conversation::types::ThreadStatus::Active,
+            pinned: false,
+            unread: false,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn empty_title_falls_back_to_unnamed() {
+        assert_eq!(thread_title(&thread_with_title("")), "未命名任务");
+        assert_eq!(thread_title(&thread_with_title("我的任务")), "我的任务");
+    }
+
+    #[gpui_kit::test]
+    async fn removing_opened_project_clears_opened_thread(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(OpenedThread(Some(thread_with_title("active"))));
+            clear_opened_thread_of_project("p1", cx);
+            assert!(cx.global::<OpenedThread>().0.is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn deleting_noncurrent_thread_emits_success_event_after_store_commit(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("vega.db");
+        let store = vega_store::Store::open(&database).unwrap();
+        store.migrate().unwrap();
+        let project = vega_store::projects::create(
+            store.conn(),
+            directory.path().to_str().unwrap(),
+            "delete-event",
+            None,
+        )
+        .unwrap();
+        let current =
+            vega_conversation::threads::create_thread(&store, &project.id, "model", "confirm")
+                .unwrap();
+        let deleted =
+            vega_conversation::threads::create_thread(&store, &project.id, "model", "confirm")
+                .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        cx.update(|cx| {
+            cx.set_global(VegaStore(Ok(vega_store::Store::open(&database).unwrap())));
+            cx.set_global(SelectedProject(Some(project.id.clone())));
+            cx.set_global(OpenedThread(Some(current.clone())));
+            cx.set_global(PendingDeleteConfirm(Some(deleted.clone())));
+        });
+        let sidebar = cx.new(Sidebar::new);
+        let observed = events.clone();
+        cx.update(|cx| {
+            cx.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                let SidebarEvent::ThreadDeleted(thread_id) = event;
+                observed.lock().unwrap().push(thread_id.clone());
+            })
+            .detach();
+        });
+        sidebar.update(cx, Sidebar::confirm_pending_delete);
+        cx.run_until_parked();
+        assert!(
+            vega_store::threads::find(store.conn(), &deleted.id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            std::slice::from_ref(&deleted.id)
+        );
+        assert_eq!(
+            cx.update(|cx| cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|thread| thread.id.clone())),
+            Some(current.id)
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn failed_thread_delete_emits_no_invalidation_event(cx: &mut gpui_kit::TestAppContext) {
+        let thread = thread_with_title("still here");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        cx.update(|cx| {
+            cx.set_global(VegaStore(Err("store unavailable".into())));
+            cx.set_global(SelectedProject(None));
+            cx.set_global(OpenedThread(Some(thread.clone())));
+            cx.set_global(PendingDeleteConfirm(Some(thread.clone())));
+        });
+        let sidebar = cx.new(Sidebar::new);
+        let observed = events.clone();
+        cx.update(|cx| {
+            cx.subscribe(&sidebar, move |_, event: &SidebarEvent, _| {
+                let SidebarEvent::ThreadDeleted(thread_id) = event;
+                observed.lock().unwrap().push(thread_id.clone());
+            })
+            .detach();
+        });
+        sidebar.update(cx, Sidebar::confirm_pending_delete);
+        cx.run_until_parked();
+        assert!(events.lock().unwrap().is_empty());
+        assert_eq!(
+            cx.update(|cx| cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|opened| opened.id.clone())),
+            Some(thread.id)
+        );
+    }
+
+    #[test]
+    fn rename_submission_trims_and_commits_non_blank() {
+        match resolve_rename("新标题") {
+            RenameResolution::Commit(title) => assert_eq!(title, "新标题"),
+            RenameResolution::Cancel => panic!("expected commit"),
+        }
+        match resolve_rename("  两端空白  ") {
+            RenameResolution::Commit(title) => assert_eq!(title, "两端空白"),
+            RenameResolution::Cancel => panic!("expected commit"),
+        }
+    }
+
+    #[test]
+    fn hover_action_group_visibility() {
+        // hover 才显示；行内编辑中的行永远不显示（裁决①）。
+        assert!(row_shows_actions(true, false));
+        assert!(!row_shows_actions(false, false));
+        assert!(!row_shows_actions(true, true));
+        assert!(!row_shows_actions(false, true));
+    }
+
+    #[test]
+    fn archive_section_requires_archived_threads() {
+        assert!(!archive_section_visible(0));
+        assert!(archive_section_visible(1));
+        assert!(archive_section_visible(3));
+    }
+
+    #[test]
+    fn relative_time_uses_compact_units() {
+        let now = 1_700_000_000_000;
+        assert_eq!(relative_time_from(now, now), "now");
+        // 60s 以内都算 "now"。
+        assert_eq!(relative_time_from(now - 59_999, now), "now");
+        assert_eq!(relative_time_from(now - 60_000, now), "1m");
+        assert_eq!(relative_time_from(now - 3_600_000, now), "1h");
+        assert_eq!(relative_time_from(now - 86_400_000, now), "1d");
+        assert_eq!(relative_time_from(now - 6 * 86_400_000, now), "6d");
+        // 恰好 7 天进入绝对日期分支（UTC）。
+        assert_eq!(relative_time_from(now - 7 * 86_400_000, now), "2023-11-07");
+        assert_eq!(relative_time_from(now - 30 * 86_400_000, now), "2023-10-15");
+        // 未来时间戳（时钟偏差）不 panic，读作 "now"。
+        assert_eq!(relative_time_from(now + 60_000, now), "now");
+    }
+
+    #[test]
+    fn civil_from_days_matches_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        // 2023-11-14 22:13:20 UTC 的日期部分。
+        assert_eq!(civil_from_days(19_675), (2023, 11, 14));
+        // 闰年边界：2024-02-29。
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+    }
+}

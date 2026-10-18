@@ -65,6 +65,7 @@ impl Render for ReorderDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         div()
+            .debug_selector(|| "sidebar-reorder-preview".into())
             .px_3()
             .py_2()
             .rounded_md()

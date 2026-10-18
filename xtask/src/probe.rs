@@ -585,3 +585,89 @@ fn stream_chunk(index: u64) -> String {
         index % 97
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn parse_args_c1() {
+        // parse_args receives the argv AFTER the program name (main skips
+        // argv[0] before dispatch).
+        match parse_args(&args(&["__probe", "c1", "--hold-ms", "17000"])) {
+            Some(ProbeMode::C1 { hold_ms }) => assert_eq!(hold_ms, 17_000),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_args_c1_defaults() {
+        match parse_args(&args(&["__probe", "c1"])) {
+            Some(ProbeMode::C1 { hold_ms }) => assert_eq!(hold_ms, C2_HOLD_MS),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_args_p2() {
+        match parse_args(&args(&[
+            "__probe",
+            "p2",
+            "--out",
+            "/tmp/p2.json",
+            "--seconds",
+            "5",
+            "--rate",
+            "500",
+        ])) {
+            Some(ProbeMode::P2 { out, seconds, rate }) => {
+                assert_eq!(out, PathBuf::from("/tmp/p2.json"));
+                assert_eq!(seconds, 5);
+                assert_eq!(rate, 500);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_args_rejects_non_probe() {
+        assert!(parse_args(&args(&["bench"])).is_none());
+        assert!(parse_args(&args(&["__probe", "wat"])).is_none());
+    }
+
+    #[test]
+    fn stream_chunks_are_bounded_and_varied() {
+        assert_eq!(stream_chunk(0), stream_chunk(0));
+        assert_ne!(stream_chunk(0), stream_chunk(1));
+        assert!(stream_chunk(0).len() < 32);
+    }
+
+    #[test]
+    fn attestation_matches_the_temp_home_environment() {
+        let attestation = attestation();
+        assert_eq!(attestation.provider, "none");
+        assert_eq!(attestation.network, "none");
+        assert_eq!(attestation.keychain, "not-exercised");
+        assert_eq!(attestation.first_frame_source, "gpui_next_frame_callback");
+    }
+
+    #[test]
+    fn batch_record_shape_stays_frozen() {
+        let record = BatchRecord {
+            first_seq: 1,
+            max_seq: 4,
+            len: 4,
+            latency_us: 8_123,
+            frame: 12,
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert_eq!(
+            json,
+            r#"{"first_seq":1,"max_seq":4,"len":4,"latency_us":8123,"frame":12}"#
+        );
+    }
+}

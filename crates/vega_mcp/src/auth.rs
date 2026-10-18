@@ -1443,3 +1443,220 @@ fn parse_tokens(
         requested_scopes: requested_scopes.to_vec(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_owner_only_envelope_rejects_cross_server_revision_issuer_and_scope_widening() {
+        let endpoint = Url::parse("https://mcp.example/mcp").expect("endpoint");
+        let metadata_url =
+            Url::parse("https://mcp.example/.well-known/oauth-protected-resource/mcp")
+                .expect("metadata");
+        let resource = ResourceAuthorization {
+            client: auth_client().expect("client"),
+            endpoint: endpoint.clone(),
+            metadata_url: metadata_url.clone(),
+            resource: endpoint.to_string(),
+            authorization_servers: vec!["https://issuer.example".into()],
+            requested_scopes: vec!["read".into()],
+            allow_loopback_http: false,
+        };
+        let server = AuthorizationServer {
+            endpoint: endpoint.clone(),
+            metadata_url,
+            resource: resource.resource.clone(),
+            issuer: "https://issuer.example".into(),
+            authorization_endpoint: Url::parse("https://issuer.example/authorize")
+                .expect("authorization endpoint"),
+            token_endpoint: Url::parse("https://issuer.example/token").expect("token endpoint"),
+            registration_endpoint: None,
+            cimd_advertised: false,
+            iss_required: true,
+            scopes: vec!["read".into()],
+        };
+        let client = server
+            .pre_registered(
+                "owned-client",
+                server.issuer(),
+                "http://127.0.0.1:48765/callback",
+            )
+            .expect("pre-registration");
+        let tokens = OAuthTokens {
+            endpoint,
+            metadata_url: resource.metadata_url.clone(),
+            resource: resource.resource.clone(),
+            issuer: server.issuer().into(),
+            client_id: client.client_id().into(),
+            access_token: "secret-access".into(),
+            refresh_token: Some("secret-refresh".into()),
+            expires_at: None,
+            scopes: vec!["read".into()],
+            requested_scopes: vec!["read".into()],
+        };
+        let server_a = "01J00000000000000000000000";
+        let server_b = "01J00000000000000000000001";
+        let envelope = tokens
+            .to_owner_only_envelope(server_a, 7)
+            .expect("owner-only envelope");
+        let restored = client
+            .restore_owner_only_tokens(&envelope, &resource, server_a, 7)
+            .expect("exact binding");
+        assert!(restored.bearer_credential(&resource).is_ok());
+        assert!(matches!(
+            client.restore_owner_only_tokens(&envelope, &resource, server_b, 7),
+            Err(McpError::CredentialBinding)
+        ));
+        assert!(matches!(
+            client.restore_owner_only_tokens(&envelope, &resource, server_a, 8),
+            Err(McpError::CredentialBinding)
+        ));
+        let mut widened: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+        widened["scopes"] = json!(["read", "write"]);
+        assert!(matches!(
+            client.restore_owner_only_tokens(&widened.to_string(), &resource, server_a, 7),
+            Err(McpError::ScopeEscalation)
+        ));
+        let mut changed_issuer: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+        changed_issuer["issuer"] = json!("https://other.example");
+        assert!(matches!(
+            client.restore_owner_only_tokens(&changed_issuer.to_string(), &resource, server_a, 7),
+            Err(McpError::CredentialBinding)
+        ));
+        for (field, replacement) in [
+            ("metadata_url", json!("https://other.example/prm")),
+            ("resource", json!("https://other.example/mcp")),
+            ("client_id", json!("other-client")),
+        ] {
+            let mut changed: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+            changed[field] = replacement;
+            assert!(matches!(
+                client.restore_owner_only_tokens(&changed.to_string(), &resource, server_a, 7),
+                Err(McpError::CredentialBinding)
+            ));
+        }
+        let mut duplicated: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+        duplicated["scopes"] = json!(["read", "read"]);
+        assert!(matches!(
+            client.restore_owner_only_tokens(&duplicated.to_string(), &resource, server_a, 7),
+            Err(McpError::CredentialBinding)
+        ));
+        let mut expired: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+        expired["expires_at_unix"] = json!(1);
+        let expired = client
+            .restore_owner_only_tokens(&expired.to_string(), &resource, server_a, 7)
+            .expect("expired token may only be refreshed");
+        assert!(expired.is_expired());
+        assert!(matches!(
+            expired.bearer_credential(&resource),
+            Err(McpError::AuthRequired)
+        ));
+        assert!(matches!(
+            client.restore_owner_only_tokens("{", &resource, server_a, 7),
+            Err(McpError::CredentialBinding)
+        ));
+        assert!(matches!(
+            client.restore_owner_only_tokens(&"x".repeat(32 * 1024 + 1), &resource, server_a, 7),
+            Err(McpError::CredentialBinding)
+        ));
+    }
+
+    #[test]
+    fn bearer_challenge_parser_is_bounded_and_does_not_panic_on_unicode() {
+        assert!(parse_bearer_challenge("💥invalid").is_ok());
+        assert!(matches!(
+            parse_bearer_challenge(
+                "Bearer resource_metadata=\"http://a\", resource_metadata=\"http://b\""
+            ),
+            Err(McpError::AuthSecurity)
+        ));
+        let parsed = parse_bearer_challenge(
+            "Bearer realm=\"owned, fixture\", resource_metadata=\"https://mcp.example/.well-known/oauth-protected-resource\", scope=\"tools:read\"",
+        )
+        .expect("valid syntax")
+        .expect("Bearer");
+        assert_eq!(parsed.scopes, ["tools:read"]);
+        assert_eq!(
+            parsed.resource_metadata.as_deref(),
+            Some("https://mcp.example/.well-known/oauth-protected-resource")
+        );
+        let mixed = parse_bearer_challenge(
+            "Basic realm=\"other\", Bearer resource_metadata=\"https://mcp.example/prm\", scope=\"tools:read\"",
+        )
+        .expect("mixed syntax")
+        .expect("Bearer in mixed header");
+        assert_eq!(
+            mixed.resource_metadata.as_deref(),
+            Some("https://mcp.example/prm")
+        );
+        assert!(matches!(
+            parse_bearer_challenge(
+                "Bearer error=\"insufficient_scope\", error=\"insufficient_scope\", scope=\"tools:write\""
+            ),
+            Err(McpError::AuthSecurity)
+        ));
+        assert!(matches!(
+            parse_bearer_challenge(
+                "Bearer error=\"insufficient_scope\", scope=\"tools:write\\bad\""
+            ),
+            Err(McpError::AuthSecurity)
+        ));
+    }
+
+    #[test]
+    fn resource_path_and_reserved_oauth_query_boundaries() {
+        assert!(resource_path_covers_endpoint("/", "/mcp"));
+        assert!(resource_path_covers_endpoint("/api", "/api/mcp"));
+        assert!(!resource_path_covers_endpoint("/api", "/apiv2/mcp"));
+        let endpoint = Url::parse("https://issuer.example/authorize?state=fixed").expect("URL");
+        assert!(matches!(
+            reject_reserved_query(&endpoint, &["state"]),
+            Err(McpError::AuthSecurity)
+        ));
+    }
+
+    #[test]
+    fn changed_issuer_cannot_mint_transport_credential() {
+        let endpoint = Url::parse("https://mcp.example/mcp").expect("endpoint");
+        let resource = ResourceAuthorization {
+            client: auth_client().expect("client"),
+            endpoint: endpoint.clone(),
+            metadata_url: Url::parse(
+                "https://mcp.example/.well-known/oauth-protected-resource/mcp",
+            )
+            .expect("metadata"),
+            resource: endpoint.to_string(),
+            authorization_servers: vec!["https://new-issuer.example".into()],
+            requested_scopes: Vec::new(),
+            allow_loopback_http: false,
+        };
+        let tokens = OAuthTokens {
+            endpoint,
+            metadata_url: resource.metadata_url.clone(),
+            resource: resource.resource.clone(),
+            issuer: "https://old-issuer.example".into(),
+            client_id: "old-client".into(),
+            access_token: "old-secret".into(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: Vec::new(),
+            requested_scopes: Vec::new(),
+        };
+        assert!(matches!(
+            tokens.bearer_credential(&resource),
+            Err(McpError::CredentialBinding)
+        ));
+    }
+
+    #[test]
+    fn malformed_as_capability_flags_fail_closed() {
+        assert!(matches!(
+            optional_bool(
+                &json!({"authorization_response_iss_parameter_supported":"true"}),
+                "authorization_response_iss_parameter_supported"
+            ),
+            Err(McpError::AuthDiscovery)
+        ));
+    }
+}

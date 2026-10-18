@@ -804,3 +804,251 @@ async fn persist_child_terminal(
     .await
     .map_err(|_| failure("storage unavailable"))?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use vega_runtime::RuntimeSubagentHook;
+
+    struct Host;
+    impl SubagentHost for Host {
+        fn admit(&self, _: SubagentAdmission) -> BoxFuture<'static, Result<(), VegaError>> {
+            async { Ok(()) }.boxed()
+        }
+        fn event(&self, _: &str, _: &str, _: &ConversationEvent) -> Result<(), VegaError> {
+            Ok(())
+        }
+        fn updated(&self, _: SubagentSnapshot) -> Result<(), VegaError> {
+            Ok(())
+        }
+        fn finished(&self, _: SubagentSnapshot, _: bool) -> Result<(), VegaError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn m06_m15_failed_and_interrupted_terminals_commit_with_recovery_or_rollback_together() {
+        for state in [SubagentState::Failed, SubagentState::Interrupted] {
+            for reject_recovery in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("terminal.db");
+                let store = Store::open(&path).unwrap();
+                store.migrate().unwrap();
+                store.conn().execute_batch("INSERT INTO threads(id,model,created_at,updated_at) VALUES('parent','mock',1,1),('child','mock',1,1); INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('parent-run','parent',1,'assistant','','done',1),('child-run','child',1,'assistant','partial','streaming',1); INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,status,approval,created_at) VALUES('child-tool','child','child-run',1,'bash','{}','running','{\"decision\":\"once\",\"note\":null,\"source\":\"auto\",\"danger\":null}',1);").unwrap();
+                vega_store::subagents::insert(
+                    store.conn(),
+                    &vega_store::subagents::DelegationRow {
+                        child_thread_id: "child".into(),
+                        parent_thread_id: "parent".into(),
+                        parent_message_id: "parent-run".into(),
+                        spawn_call_id: "spawn".into(),
+                        child_message_id: "child-run".into(),
+                        name: "Child".into(),
+                        task: "task".into(),
+                        state: "running".into(),
+                        result: String::new(),
+                        truncated: false,
+                        created_at: 1,
+                    },
+                )
+                .unwrap();
+                if reject_recovery {
+                    store.conn().execute_batch("CREATE TRIGGER reject_child_recovery BEFORE UPDATE ON tool_calls BEGIN SELECT RAISE(ABORT,'synthetic recovery failure'); END;").unwrap();
+                }
+                let snapshot = SubagentSnapshot {
+                    agent_id: "child".into(),
+                    parent_thread_id: "parent".into(),
+                    parent_message_id: "parent-run".into(),
+                    message_id: "child-run".into(),
+                    name: "Child".into(),
+                    state,
+                    result: format!("{} result preserved", state.as_str()),
+                    truncated: false,
+                };
+                let result = persist_child_terminal(path.clone(), snapshot.clone(), true).await;
+                assert_eq!(result.is_err(), reject_recovery);
+                drop(store);
+                let reopened = Store::open(path).unwrap();
+                let saved = vega_store::subagents::find(reopened.conn(), "child")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    saved.state,
+                    if reject_recovery {
+                        "running"
+                    } else {
+                        state.as_str()
+                    }
+                );
+                assert_eq!(
+                    saved.result,
+                    if reject_recovery {
+                        ""
+                    } else {
+                        snapshot.result.as_str()
+                    }
+                );
+                assert_eq!(
+                    vega_store::messages::find(reopened.conn(), "child-run")
+                        .unwrap()
+                        .unwrap()
+                        .status,
+                    if reject_recovery {
+                        "streaming"
+                    } else {
+                        "interrupted"
+                    }
+                );
+                assert_eq!(
+                    vega_store::tool_calls::find_state(reopened.conn(), "child-tool")
+                        .unwrap()
+                        .unwrap()
+                        .status,
+                    if reject_recovery {
+                        "running"
+                    } else {
+                        "cancelled"
+                    }
+                );
+                let complete: bool = reopened
+                    .conn()
+                    .query_row(
+                        "SELECT usage_complete FROM delegated_runs WHERE child_thread_id='child'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(complete, !reject_recovery);
+            }
+        }
+    }
+
+    fn launch<'a>(provider: &'a dyn Provider, tools: &'a vega_tools::Tools) -> ChildLaunch<'a> {
+        ChildLaunch {
+            provider,
+            tools,
+            database: PathBuf::new(),
+            parent_thread: "parent".into(),
+            parent_message: "run".into(),
+            settings: ChildSettings {
+                model: "mock".into(),
+                system_prompt: "System".into(),
+                authority: DelegatedAuthority {
+                    run_mode: RuntimeRunMode::Execute,
+                    permission_mode: RuntimePermissionMode::Confirm,
+                    exact_rules: Vec::new(),
+                },
+                pricing_catalog: None,
+                reasoning: None,
+                context_budget: None,
+                automation_claim: None,
+                automation_hook: None,
+                owner_credential_reader: None,
+                turn_limit: 0,
+            },
+            mcp_servers: Vec::new(),
+            host: Arc::new(Host),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn m03_m04_m05_capacity_names_scope_wait_timeout_and_wakeup() {
+        let temp = tempfile::tempdir().unwrap();
+        let tools = vega_tools::Tools::new(temp.path()).unwrap();
+        let provider = vega_runtime::MockProvider::new(Vec::new());
+        let launch = launch(&provider, &tools);
+        let supervisor = Supervisor::new();
+        let mut ids = Vec::new();
+        for index in 0..4 {
+            ids.push(
+                supervisor
+                    .reserve(
+                        &launch,
+                        format!("call-{index}"),
+                        format!("Agent {index}"),
+                        "task".into(),
+                    )
+                    .unwrap()
+                    .0
+                    .agent_id,
+            );
+        }
+        assert!(
+            supervisor
+                .reserve(&launch, "fifth".into(), "Fifth".into(), "task".into())
+                .is_err()
+        );
+        let hook = Hook {
+            sender: supervisor.sender.clone(),
+            registry: supervisor.registry.clone(),
+        };
+        assert!(
+            hook.call(
+                "x".into(),
+                "wait_agent".into(),
+                json!({"agent_ids":["foreign"]}),
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
+        );
+        let timeout = hook
+            .call(
+                "timeout".into(),
+                "wait_agent".into(),
+                json!({"agent_ids":[ids[0]],"timeout_ms":0}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(timeout["timed_out"], true);
+        let wait = hook.call(
+            "wait".into(),
+            "wait_agent".into(),
+            json!({"agent_ids":[ids[0]],"timeout_ms":60000}),
+            CancellationToken::new(),
+        );
+        let complete = async {
+            tokio::task::yield_now().await;
+            let mut snapshot = supervisor
+                .registry
+                .snapshots(Some(&ids[..1]))
+                .unwrap()
+                .remove(0);
+            snapshot.state = SubagentState::Completed;
+            snapshot.result = "done".into();
+            supervisor.registry.update(snapshot).unwrap();
+        };
+        let (result, ()) = tokio::join!(wait, complete);
+        assert_eq!(result.unwrap()["timed_out"], false);
+        assert!(
+            supervisor
+                .reserve(&launch, "duplicate".into(), "Agent 0".into(), "task".into())
+                .is_err()
+        );
+        assert!(
+            supervisor
+                .reserve(
+                    &launch,
+                    "replacement".into(),
+                    "Replacement".into(),
+                    "task".into()
+                )
+                .is_ok()
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(matches!(
+            hook.call(
+                "cancel".into(),
+                "wait_agent".into(),
+                json!({"agent_ids":[ids[1]]}),
+                cancelled
+            )
+            .await,
+            Err(VegaError::Cancelled)
+        ));
+    }
+}

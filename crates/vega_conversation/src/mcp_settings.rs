@@ -1,6 +1,14 @@
+//! MCP Settings authority: DB metadata, explicit credential references, and
+//! revocable ready handles. UI code never reads SQLite or launches MCP itself.
+#[cfg(any(test, feature = "test-support"))]
+use callback_fixture::Listener as StdTcpListener;
 use std::collections::{HashMap, HashSet};
+#[cfg(not(any(test, feature = "test-support")))]
 use std::net::TcpListener as StdTcpListener;
+#[cfg(not(any(test, feature = "test-support")))]
 type OAuthCallbackStream = tokio::net::TcpStream;
+#[cfg(any(test, feature = "test-support"))]
+type OAuthCallbackStream = tokio::io::DuplexStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -1314,6 +1322,7 @@ async fn receive_oauth_callback(
     listener: StdTcpListener,
     remaining: Duration,
 ) -> Result<(String, OAuthCallbackStream), McpSettingsError> {
+    #[cfg(not(any(test, feature = "test-support")))]
     let listener = tokio::net::TcpListener::from_std(listener)
         .map_err(|_| McpSettingsError::AuthorizationFailed)?;
     let port = listener
@@ -2011,5 +2020,85 @@ async fn connect_row(
                 refreshed_oauth,
             })
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl McpServerSettingsService {
+    pub fn test_oauth_callback_stream(redirect_uri: &str) -> tokio::io::DuplexStream {
+        callback_fixture::connect(redirect_uri)
+    }
+}
+#[cfg(any(test, feature = "test-support"))]
+mod callback_fixture {
+    use std::collections::HashMap;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::{Mutex, OnceLock};
+    use tokio::io::DuplexStream;
+    use tokio::sync::mpsc;
+    type Sender = mpsc::UnboundedSender<DuplexStream>;
+    static CALLBACKS: OnceLock<Mutex<HashMap<u16, Sender>>> = OnceLock::new();
+    static PORT: AtomicU16 = AtomicU16::new(40000);
+    fn registry() -> &'static Mutex<HashMap<u16, Sender>> {
+        CALLBACKS.get_or_init(Mutex::default)
+    }
+    pub(super) struct Listener {
+        port: u16,
+        receiver: tokio::sync::Mutex<mpsc::UnboundedReceiver<DuplexStream>>,
+    }
+    impl Listener {
+        pub(super) fn bind(_: (&str, u16)) -> std::io::Result<Self> {
+            let port = PORT.fetch_add(1, Ordering::Relaxed);
+            let (sender, receiver) = mpsc::unbounded_channel();
+            registry()
+                .lock()
+                .expect("callback registry")
+                .insert(port, sender);
+            Ok(Self {
+                port,
+                receiver: tokio::sync::Mutex::new(receiver),
+            })
+        }
+        pub(super) fn set_nonblocking(&self, _: bool) -> std::io::Result<()> {
+            Ok(())
+        }
+        pub(super) fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            Ok(SocketAddr::from((Ipv4Addr::LOCALHOST, self.port)))
+        }
+        pub(super) async fn accept(&self) -> std::io::Result<(DuplexStream, SocketAddr)> {
+            self.receiver
+                .lock()
+                .await
+                .recv()
+                .await
+                .map(|stream| (stream, SocketAddr::from((Ipv4Addr::LOCALHOST, 1))))
+                .ok_or_else(|| std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    impl Drop for Listener {
+        fn drop(&mut self) {
+            registry()
+                .lock()
+                .expect("callback registry")
+                .remove(&self.port);
+        }
+    }
+    pub(super) fn connect(uri: &str) -> DuplexStream {
+        let port: u16 = uri
+            .strip_prefix("http://127.0.0.1:")
+            .and_then(|suffix| suffix.split('/').next())
+            .expect("callback URI")
+            .parse()
+            .expect("callback port");
+        let (browser, server) = tokio::io::duplex(16384);
+        registry()
+            .lock()
+            .expect("callback registry")
+            .get(&port)
+            .expect("live callback")
+            .send(server)
+            .expect("callback receiver");
+        browser
     }
 }

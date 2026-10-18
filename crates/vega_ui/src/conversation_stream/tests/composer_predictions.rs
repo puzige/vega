@@ -120,6 +120,13 @@ async fn prediction_modifiers_keep_original_keys_and_escape_invalidates_result(
 #[gpui_kit::test]
 async fn prediction_ime_and_utf16_queries_never_expose_or_accept_ghost(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "prediction-ime");
+    let submissions = Arc::new(Mutex::new(Vec::new()));
+    let captured = submissions.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&stream, move |_, event: &ComposerSubmitted, _| {
+            captured.lock().unwrap().push(event.content.clone())
+        })
+    });
     focus_composer(window, &stream, cx);
     let (fence, cancel) = install_prediction(&stream, "ime", cx);
     cx.run_until_parked();
@@ -147,24 +154,64 @@ async fn prediction_ime_and_utf16_queries_never_expose_or_accept_ghost(cx: &mut 
         })
         .unwrap();
     cx.run_until_parked();
-    for key in ["enter", "tab"] {
+    for key in ["enter", "shift-enter", "tab", "cmd-enter", "shift-tab"] {
         cx.simulate_keystrokes(window.into(), key);
         cx.run_until_parked();
+        assert!(submissions.lock().unwrap().is_empty());
         assert!(stream.read_with(cx, |stream, _| !stream.composer_submit_pending));
         assert_eq!(
             stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_owned()),
             "中😀文"
         );
+        window
+            .update(cx, |_, window, cx| {
+                assert!(
+                    stream
+                        .read(cx)
+                        .input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
+                stream.read(cx).input.clone().update(cx, |input, cx| {
+                    assert!(input.is_composing());
+                    assert_eq!(input.marked_text_range(window, cx), Some(0..4));
+                    assert_eq!(
+                        input.selected_text_range(false, window, cx).unwrap().range,
+                        1..3
+                    );
+                });
+            })
+            .unwrap();
     }
     assert!(cancel.is_cancelled());
     window
         .update(cx, |_, window, cx| {
             let input = stream.read(cx).input.clone();
-            input.update(cx, |input, cx| input.unmark_text(window, cx));
+            input.update(cx, |input, cx| {
+                assert!(input.is_composing());
+                let committed = "中文😀已确认";
+                input.replace_text_in_range(None, committed, window, cx);
+                assert_eq!(input.text(), committed);
+                assert!(!input.is_composing());
+                assert_eq!(input.marked_text_range(window, cx), None);
+                let end = committed.encode_utf16().count();
+                assert_eq!(
+                    input.selected_text_range(false, window, cx).unwrap().range,
+                    end..end
+                );
+                input.unmark_text(window, cx);
+                assert_eq!(input.text(), committed);
+            });
         })
         .unwrap();
+    cx.run_until_parked();
+    assert!(submissions.lock().unwrap().is_empty());
     stream.update(cx, |stream, cx| {
-        assert!(!stream.apply_composer_prediction(&fence, "stale".into(), cx))
+        assert!(!stream.apply_composer_prediction(&fence, "stale".into(), cx));
+        assert!(stream.input.read(cx).prediction_text().is_none());
+        assert!(!stream.composer_submit_pending);
+        assert!(stream.can_submit_message(cx));
     });
 }
 
@@ -194,22 +241,26 @@ async fn prediction_revisions_preserve_whitespace_and_never_revive_after_delete(
 #[gpui_kit::test]
 async fn prediction_blockers_cancel_pending_and_visible_results(cx: &mut TestAppContext) {
     type Blocker = fn(&mut ConversationStream);
-    let blockers: &[Blocker] = &[
-        |stream| stream.attachment_import_pending = true,
-        |stream| stream.pending_queue.busy = true,
-        |stream| stream.composer_submit_pending = true,
-        |stream| stream.trusted_action_busy = true,
-        |stream| stream.model_selection_pending = Some((1, "other".into())),
-        |stream| stream.reading_preview = true,
-        |stream| stream.actions.running = true,
-        |stream| stream.thread.mode = ThreadMode::Plan,
-        |stream| stream.thread.id = "other-thread".into(),
-        |stream| stream.composer_defaults.model = "other-model".into(),
-        |stream| stream.thread.backend = TaskBackend::Codex,
-        |stream| stream.thread.parent_thread_id = Some("parent".into()),
-        |stream| stream.delegated_run_active = true,
-        |stream| stream.context_control.open = true,
-        |stream| {
+    let blockers: &[(&str, Blocker)] = &[
+        ("attachment-import", |stream| {
+            stream.attachment_import_pending = true
+        }),
+        ("queue-busy", |stream| stream.pending_queue.busy = true),
+        ("submission", |stream| stream.composer_submit_pending = true),
+        ("trusted-action", |stream| stream.trusted_action_busy = true),
+        ("model-selection", |stream| {
+            stream.model_selection_pending = Some((1, "other".into()))
+        }),
+        ("preview", |stream| stream.reading_preview = true),
+        ("running", |stream| stream.actions.running = true),
+        ("plan", |stream| stream.thread.mode = ThreadMode::Plan),
+        ("codex", |stream| stream.thread.backend = TaskBackend::Codex),
+        ("child-thread", |stream| {
+            stream.thread.parent_thread_id = Some("parent".into())
+        }),
+        ("delegated-run", |stream| stream.delegated_run_active = true),
+        ("context-panel", |stream| stream.context_control.open = true),
+        ("steer", |stream| {
             stream
                 .pending_queue
                 .messages
@@ -221,21 +272,63 @@ async fn prediction_blockers_cancel_pending_and_visible_results(cx: &mut TestApp
                     content: "steer".into(),
                     images: Vec::new(),
                 })
-        },
+        }),
     ];
-    for (index, blocker) in blockers.iter().enumerate() {
-        let (_window, stream, _) = open_controller_stream(cx, &format!("blocker-{index}"));
+    for (name, blocker) in blockers {
+        let (_window, stream, _) = open_controller_stream(cx, &format!("blocker-{name}"));
         let (fence, cancel) = install_prediction(&stream, "completed", cx);
         stream.update(cx, |stream, cx| {
             blocker(stream);
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(cancel.is_cancelled(), "blocker {index}");
+        assert!(cancel.is_cancelled(), "blocker {name}");
         stream.update(cx, |stream, cx| {
             assert!(!stream.apply_composer_prediction(&fence, "late".into(), cx));
             assert!(stream.input.read(cx).prediction_text().is_none());
             assert!(!stream.composer_prediction_eligible(cx));
+            assert!(
+                stream
+                    .begin_composer_prediction("next-completed", cx)
+                    .is_none()
+            );
+        });
+    }
+}
+
+#[gpui_kit::test]
+async fn prediction_identity_changes_reject_old_fence_and_allow_next_completed_round(
+    cx: &mut TestAppContext,
+) {
+    type IdentityChange = fn(&mut ConversationStream);
+    let changes: &[(&str, IdentityChange)] = &[
+        ("thread", |stream| stream.thread.id = "other-thread".into()),
+        ("model", |stream| {
+            stream.composer_defaults.model = "other-model".into()
+        }),
+    ];
+    for (name, change) in changes {
+        let (_window, stream, _) = open_controller_stream(cx, &format!("identity-{name}"));
+        let (old_fence, old_cancel) = install_prediction(&stream, "completed", cx);
+        stream.update(cx, |stream, cx| {
+            change(stream);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(old_cancel.is_cancelled(), "identity {name}");
+        stream.update(cx, |stream, cx| {
+            assert!(stream.input.read(cx).prediction_text().is_none());
+            assert!(!stream.apply_composer_prediction(&old_fence, "late".into(), cx));
+            assert!(stream.composer_prediction_eligible(cx));
+            let (new_fence, new_cancel) = stream
+                .begin_composer_prediction("next-completed", cx)
+                .unwrap();
+            assert_ne!(new_fence, old_fence);
+            assert!(!stream.apply_composer_prediction(&old_fence, "late".into(), cx));
+            assert!(stream.apply_composer_prediction(&new_fence, "新轮次建议".into(), cx));
+            assert!(!stream.apply_composer_prediction(&old_fence, "late again".into(), cx));
+            assert_eq!(stream.input.read(cx).prediction_text(), Some("新轮次建议"));
+            assert!(!new_cancel.is_cancelled());
         });
     }
 }
@@ -369,7 +462,7 @@ async fn permission_and_question_latches_revoke_predictions_before_their_cards_a
 ) {
     use vega_runtime::{RuntimeUserQuestionHook, RuntimeUserQuestionRequest, UserQuestionInput};
     let (_window, stream, _) = open_controller_stream(cx, "prediction-permission-latch");
-    let (_, permission_cancel) = install_prediction(&stream, "permission", cx);
+    let (permission_fence, permission_cancel) = install_prediction(&stream, "permission", cx);
     let queue = stream.read_with(cx, |stream, _| stream.permission_queue());
     let _permission = request_permission(&queue, "prediction-permission", "fixture target");
     cx.run_until_parked();
@@ -378,8 +471,28 @@ async fn permission_and_question_latches_revoke_predictions_before_their_cards_a
         stream.read_with(cx, |stream, cx| !stream.composer_prediction_eligible(cx)
             && stream.input.read(cx).prediction_text().is_none())
     );
+    stream.update(cx, |stream, cx| {
+        assert!(!stream.tool_cards.contains_key("prediction-permission"));
+        assert!(stream.active_permission.is_none());
+        assert!(stream.deferred_permission.is_some());
+        assert!(
+            stream
+                .begin_composer_prediction("blocked-permission", cx)
+                .is_none()
+        );
+        assert!(!stream.apply_composer_prediction(&permission_fence, "late".into(), cx));
+        stream.timeout_permission(cx);
+        assert!(!queue.has_pending());
+        assert!(stream.composer_prediction_eligible(cx));
+        assert!(!stream.apply_composer_prediction(
+            &permission_fence,
+            "late after timeout".into(),
+            cx
+        ));
+        assert!(stream.input.read(cx).prediction_text().is_none());
+    });
     let (_window, stream, _) = open_controller_stream(cx, "prediction-question-latch");
-    let (_, question_cancel) = install_prediction(&stream, "question", cx);
+    let (question_fence, question_cancel) = install_prediction(&stream, "question", cx);
     let queue = stream.read_with(cx, |stream, _| stream.user_question_queue());
     let _question = queue.request(RuntimeUserQuestionRequest {
         call_id:"prediction-question".into(),
@@ -391,6 +504,26 @@ async fn permission_and_question_latches_revoke_predictions_before_their_cards_a
         stream.read_with(cx, |stream, cx| !stream.composer_prediction_eligible(cx)
             && stream.input.read(cx).prediction_text().is_none())
     );
+    stream.update(cx, |stream, cx| {
+        assert!(!stream.tool_cards.contains_key("prediction-question"));
+        assert!(stream.active_user_question.is_none());
+        assert!(stream.deferred_user_question.is_some());
+        assert!(
+            stream
+                .begin_composer_prediction("blocked-question", cx)
+                .is_none()
+        );
+        assert!(!stream.apply_composer_prediction(&question_fence, "late".into(), cx));
+        stream.cancel_user_questions(cx);
+        assert!(!queue.has_pending());
+        assert!(stream.composer_prediction_eligible(cx));
+        assert!(!stream.apply_composer_prediction(
+            &question_fence,
+            "late after cancellation".into(),
+            cx
+        ));
+        assert!(stream.input.read(cx).prediction_text().is_none());
+    });
 }
 
 #[gpui_kit::test]

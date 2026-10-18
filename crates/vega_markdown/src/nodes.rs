@@ -427,3 +427,175 @@ fn heading_level(level: HeadingLevel) -> u8 {
         HeadingLevel::H6 => 6,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use pulldown_cmark::{Options, Parser};
+
+    use super::*;
+
+    const GFM: Options = Options::ENABLE_TABLES
+        .union(Options::ENABLE_STRIKETHROUGH)
+        .union(Options::ENABLE_TASKLISTS);
+
+    fn parse(md: &str) -> Vec<RenderNode> {
+        let events: Vec<Event<'_>> = Parser::new_ext(md, GFM).collect();
+        render_nodes_from_events(&events)
+    }
+
+    fn text(s: &str) -> Inline {
+        Inline::Text(s.to_string())
+    }
+
+    #[test]
+    fn heading_levels_map_to_one_through_six() {
+        let nodes = parse("# h1\n\n## h2\n\n###### h6\n");
+        assert_eq!(
+            nodes,
+            vec![
+                RenderNode::Heading {
+                    level: 1,
+                    spans: vec![text("h1")]
+                },
+                RenderNode::Heading {
+                    level: 2,
+                    spans: vec![text("h2")]
+                },
+                RenderNode::Heading {
+                    level: 6,
+                    spans: vec![text("h6")]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn table_alignments_map_from_delimiter_row() {
+        let nodes = parse("| a | b | c | d |\n|:--|:-:|--:|---|\n| 1 | 2 | 3 | 4 |\n");
+        let Some(RenderNode::Table(table)) = nodes.into_iter().next() else {
+            panic!("expected a table node");
+        };
+        assert_eq!(
+            table.alignments,
+            vec![
+                TableAlignment::Left,
+                TableAlignment::Center,
+                TableAlignment::Right,
+                TableAlignment::None,
+            ]
+        );
+        assert_eq!(table.header.len(), 4);
+        assert_eq!(
+            table.rows,
+            vec![vec![
+                TableCell {
+                    spans: vec![text("1")]
+                },
+                TableCell {
+                    spans: vec![text("2")]
+                },
+                TableCell {
+                    spans: vec![text("3")]
+                },
+                TableCell {
+                    spans: vec![text("4")]
+                },
+            ]]
+        );
+    }
+
+    #[test]
+    fn code_block_language_takes_first_info_word() {
+        let nodes = parse("```rust ignore\nlet x = 1;\n```\n\n```\nbare\n```\n\n    indented\n");
+        assert_eq!(
+            nodes,
+            vec![
+                RenderNode::CodeBlock {
+                    language: Some("rust".to_string()),
+                    code: "let x = 1;\n".to_string(),
+                },
+                RenderNode::CodeBlock {
+                    language: None,
+                    code: "bare\n".to_string(),
+                },
+                RenderNode::CodeBlock {
+                    language: None,
+                    code: "indented\n".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tasklist_markers_land_on_list_items() {
+        let nodes = parse("- [x] done\n- [ ] todo\n- plain\n");
+        let Some(RenderNode::List(list)) = nodes.into_iter().next() else {
+            panic!("expected a list node");
+        };
+        assert!(!list.ordered);
+        assert_eq!(list.start, 1);
+        assert_eq!(list.items.len(), 3);
+        assert_eq!(list.items[0].checked, Some(true));
+        assert_eq!(list.items[1].checked, Some(false));
+        assert_eq!(list.items[2].checked, None);
+        for item in &list.items {
+            // tight 列表：裸文本被包成隐式段落
+            assert_eq!(item.children.len(), 1);
+            assert!(matches!(&item.children[0], RenderNode::Paragraph { .. }));
+        }
+    }
+
+    #[test]
+    fn html_block_degrades_to_raw_text_paragraph() {
+        let nodes = parse("<div class=\"x\">\nraw\n</div>\n");
+        assert_eq!(
+            nodes,
+            vec![RenderNode::Paragraph {
+                spans: vec![text("<div class=\"x\">\nraw\n</div>\n")]
+            }]
+        );
+    }
+
+    #[test]
+    fn breaks_map_to_space_and_newline_text() {
+        let nodes = parse("line one\nline two  \nline three\n");
+        assert_eq!(
+            nodes,
+            vec![RenderNode::Paragraph {
+                spans: vec![text("line one line two\nline three")]
+            }]
+        );
+    }
+
+    #[test]
+    fn adjacent_text_events_coalesce_into_one_span() {
+        // "**bo" 在最终语义下是字面文本，且 pulldown 会拆成多个 Text 事件
+        let nodes = parse("**bo");
+        assert_eq!(
+            nodes,
+            vec![RenderNode::Paragraph {
+                spans: vec![text("**bo")]
+            }]
+        );
+    }
+
+    #[test]
+    fn thematic_break_and_blockquote_nest_blocks() {
+        let nodes = parse("> quoted **bold**\n> second\n\n---\n");
+        assert_eq!(
+            nodes,
+            vec![
+                RenderNode::BlockQuote {
+                    children: vec![RenderNode::Paragraph {
+                        spans: vec![
+                            text("quoted "),
+                            Inline::Strong(vec![text("bold")]),
+                            text(" second"),
+                        ]
+                    }]
+                },
+                RenderNode::ThematicBreak,
+            ]
+        );
+    }
+}

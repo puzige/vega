@@ -57,6 +57,35 @@ fn format_stage_tool_categories(categories: &[ToolActivityCategory]) -> String {
     title
 }
 
+#[cfg(test)]
+mod category_title_tests {
+    use super::*;
+
+    #[test]
+    fn stage_tool_category_title_elides_many_kinds_without_counts() {
+        let title = format_stage_tool_categories(&[
+            ToolActivityCategory::Read,
+            ToolActivityCategory::Shell,
+            ToolActivityCategory::Find,
+            ToolActivityCategory::Search,
+            ToolActivityCategory::Write,
+            ToolActivityCategory::Edit,
+            ToolActivityCategory::Mcp,
+            ToolActivityCategory::CodexAcp,
+            ToolActivityCategory::ComputerUse,
+            ToolActivityCategory::Skill,
+            ToolActivityCategory::Other,
+        ]);
+        assert!(title.starts_with("Read files, run commands"));
+        let long_title = format_stage_tool_categories(&[ToolActivityCategory::Read; 30]);
+        assert!(long_title.ends_with(", …"));
+        assert!(long_title.starts_with("Read files"));
+        assert!(long_title.chars().count() <= 96);
+        assert!(title.chars().count() <= 96);
+        assert!(!title.chars().any(|character| character.is_ascii_digit()));
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct RunActivityCheckpoint {
     segment_count: usize,
@@ -82,6 +111,8 @@ pub(crate) enum RunPhase {
     Responding,
     Tool,
     Compacting,
+    #[cfg(test)]
+    Waiting,
 }
 
 pub(crate) enum StickyCollapse {
@@ -439,6 +470,21 @@ impl RunActivityGroup {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_visible_segment_thinking_texts(
+        &self,
+        segment: usize,
+        cx: &App,
+    ) -> Vec<String> {
+        self.visible_segment_children(segment, cx)
+            .into_iter()
+            .filter_map(|child| match child {
+                RunActivityChild::Thinking(card) => Some(card.read(cx).source_text()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn segment_can_expand(&self, segment: usize, cx: &App) -> bool {
         if self.stage_is_aggregate(segment, cx) {
             return true;
@@ -489,6 +535,24 @@ impl RunActivityGroup {
             terminal: status != RunActivityStatus::Running,
             segments: Vec::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_label(&self) -> String {
+        self.label()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_clock(&self) -> (Option<Instant>, bool, RunPhase) {
+        (
+            self.started_at,
+            self.clock_task.is_some(),
+            if self.waiting_for_user {
+                RunPhase::Waiting
+            } else {
+                self.phase
+            },
+        )
     }
 
     pub(crate) fn children(&self) -> Vec<RunActivityChild> {
@@ -857,6 +921,25 @@ impl RunActivityGroup {
             .any(|child| matches!(child, RunActivityChild::Artifact(owned) if owned == card))
     }
 
+    pub(crate) fn artifact_follows_tool(
+        &self,
+        tool: &Entity<ToolCard>,
+        artifact: &Entity<ArtifactCard>,
+        cx: &App,
+    ) -> bool {
+        self.segments.iter().any(|segment| {
+            segment.children.windows(2).any(|children| {
+                let owns_tool = match &children[0] {
+                    RunActivityChild::Tool(card) => card == tool,
+                    RunActivityChild::ToolGroup(group) => group.read(cx).contains(tool),
+                    RunActivityChild::Thinking(_) | RunActivityChild::Artifact(_) => false,
+                };
+                owns_tool
+                    && matches!(&children[1], RunActivityChild::Artifact(card) if card == artifact)
+            })
+        })
+    }
+
     pub(crate) fn segment_row_count(&self, segment: usize, cx: &App) -> usize {
         let aggregate = self.stage_is_aggregate(segment, cx);
         let single_thinking = !aggregate
@@ -1162,6 +1245,7 @@ impl RunActivityGroup {
                 if expanded { "collapse" } else { "expand" }
             ))
             .focus_visible(move |row| row.bg(colors.bg_hover))
+            .debug_selector(|| "run-activity-toggle".to_string())
             .relative()
             .w_full()
             .h(px(Layout::CONVERSATION_CLOCK_HEIGHT))
@@ -1187,6 +1271,7 @@ impl RunActivityGroup {
             })
             .child(
                 div()
+                    .debug_selector(|| "run-activity-status".into())
                     .min_w_0()
                     .flex_shrink(1.)
                     .truncate()
@@ -1195,6 +1280,7 @@ impl RunActivityGroup {
             )
             .child(crate::disclosure::inline_chevron(
                 disclosure_group,
+                "run-activity-chevron".into(),
                 &header_focus,
                 expanded,
                 can_expand,
@@ -1217,6 +1303,7 @@ impl RunActivityGroup {
             );
         let mut sections = vec![StickySection::plain(
             div()
+                .debug_selector(|| "run-activity-divider".into())
                 .mt(px(Layout::CONVERSATION_DIVIDER_GAP))
                 .h(px(Layout::CONVERSATION_DIVIDER_HEIGHT))
                 .w_full()
@@ -1233,6 +1320,7 @@ impl RunActivityGroup {
                     .child(
                         div()
                             .id(("run-activity-content", group.entity_id()))
+                            .debug_selector(|| "run-activity-content".into())
                             .w_full()
                             .min_w_0()
                             .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
@@ -1279,6 +1367,7 @@ impl RunActivityGroup {
                 sticky,
                 expanded && can_expand,
             ))
+            .debug_selector(|| "run-activity-group".into())
             .into_any_element()
     }
 
@@ -1289,13 +1378,23 @@ impl RunActivityGroup {
     ) -> AnyElement {
         match child {
             RunActivityChild::Thinking(card) => {
-                div().w_full().min_w_0().child(card).into_any_element()
+                let id = card.entity_id();
+                div()
+                    .debug_selector(move || format!("run-stage-source-{id}"))
+                    .w_full()
+                    .min_w_0()
+                    .child(card)
+                    .into_any_element()
             }
-            RunActivityChild::Tool(card) => ToolCard::render(card, false, window, cx),
+            RunActivityChild::Tool(card) => {
+                ToolCard::render(card, "tool-activity-single-row".into(), false, window, cx)
+            }
             RunActivityChild::ToolGroup(group) => ToolActivityGroup::render(group, window, cx),
             RunActivityChild::Artifact(card) => {
                 let count = card.read(cx).row_count();
+                let id = card.entity_id();
                 div()
+                    .debug_selector(move || format!("run-artifact-{id}"))
                     .w_full()
                     .children(
                         (0..count)
@@ -1397,6 +1496,16 @@ impl RunActivityGroup {
             }
             .to_owned()
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn segment_expanded(&self, segment: usize) -> bool {
+        self.segments[segment].expanded
+    }
+
+    #[cfg(test)]
+    pub(crate) fn segment_header_focus(&self, segment: usize) -> FocusHandle {
+        self.segments[segment].header_focus.clone()
     }
 
     pub(crate) fn reveal_segment(&mut self, segment: usize, cx: &mut Context<Self>) -> bool {
@@ -1531,6 +1640,7 @@ impl RunActivityGroup {
             header = Some(
                 div()
                     .id(("run-stage-toggle", segment_index))
+                    .debug_selector(move || format!("run-stage-toggle-{segment_index}"))
                     .group(disclosure_group.clone())
                     .track_focus(&header_focus)
                     .tab_stop(can_expand)
@@ -1575,6 +1685,7 @@ impl RunActivityGroup {
                     .when_some(activity_icon, |row, icon| {
                         row.child(
                             div()
+                                .debug_selector(move || format!("run-stage-icon-{segment_index}"))
                                 .size(px(Layout::ICON_SIZE))
                                 .flex_shrink_0()
                                 .flex()
@@ -1583,10 +1694,18 @@ impl RunActivityGroup {
                                 .child(crate::icons::icon(icon, colors.conversation_stage)),
                         )
                     })
-                    .child(div().min_w_0().flex_shrink(1.).truncate().child(title_view))
+                    .child(
+                        div()
+                            .debug_selector(move || format!("run-stage-title-{segment_index}"))
+                            .min_w_0()
+                            .flex_shrink(1.)
+                            .truncate()
+                            .child(title_view),
+                    )
                     .when(can_expand, |row| {
                         row.child(crate::disclosure::inline_chevron(
                             disclosure_group,
+                            format!("run-stage-chevron-{segment_index}"),
                             &header_focus,
                             expanded,
                             true,
@@ -1597,6 +1716,7 @@ impl RunActivityGroup {
                     .into_any_element(),
             );
         }
+        let mut tool_index = 0;
         let mut operation_index = 0;
         let sections = if aggregate {
             if expanded {
@@ -1655,7 +1775,17 @@ impl RunActivityGroup {
             let details = section
                 .into_iter()
                 .map(|child| match child {
-                    RunActivityChild::Tool(card) => ToolCard::render(card, false, window, cx),
+                    RunActivityChild::Tool(card) => {
+                        let row = ToolCard::render(
+                            card,
+                            format!("run-stage-tool-{segment_index}-{tool_index}"),
+                            false,
+                            window,
+                            cx,
+                        );
+                        tool_index += 1;
+                        row
+                    }
                     child => Self::render_child(child, window, cx),
                 })
                 .collect::<Vec<_>>();
@@ -1670,6 +1800,13 @@ impl RunActivityGroup {
                             .id(gpui_kit::SharedString::from(format!(
                                 "run-stage-content-{segment_index}-{section_index}"
                             )))
+                            .debug_selector(move || {
+                                if section_index == 0 {
+                                    format!("run-stage-content-{segment_index}")
+                                } else {
+                                    format!("run-stage-content-{segment_index}-{section_index}")
+                                }
+                            })
                             .w_full()
                             .min_w_0()
                             .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
@@ -1717,6 +1854,7 @@ impl RunActivityGroup {
             .when(aggregate || single_thinking || tool_leads, |surface| {
                 surface.pt(px(top))
             })
+            .debug_selector(move || format!("run-timeline-segment-{segment_index}"))
             .track_focus(&focus)
             .child(content)
             .into_any_element()

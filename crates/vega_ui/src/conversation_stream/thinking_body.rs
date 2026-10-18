@@ -286,6 +286,7 @@ impl ThinkingBlock {
         let content = render_rows::selection_context_menu(
             div()
                 .id("thinking-content")
+                .debug_selector(|| "thinking-content".into())
                 .relative()
                 .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
                 .overflow_x_hidden()

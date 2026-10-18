@@ -65,6 +65,7 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         let mut notice = div()
             .id("conversation-computer-use-notice")
+            .debug_selector(|| "conversation-computer-use-notice".into())
             .w_full()
             .flex_shrink_0()
             .py_2()
@@ -74,13 +75,17 @@ impl ConversationStream {
             .text_size(px(Typography::BODY))
             .text_color(colors.text_secondary);
         if let Some(error) = status.error {
-            notice = notice.child(div().child(error.user_message()));
+            notice = notice.child(
+                div()
+                    .debug_selector(|| "conversation-computer-use-guidance".into())
+                    .child(error.user_message()),
+            );
             let (accessibility, screen_recording) = error.permission_settings();
             if accessibility || screen_recording {
                 notice = notice.child(div().flex().gap_2().children([
                     (accessibility, "辅助功能设置", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "conversation-accessibility-settings"),
                     (screen_recording, "屏幕录制设置", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", "conversation-screen-recording-settings"),
-                ].into_iter().filter(|(needed, _, _, _)| *needed).map(|(_, label, url, selector)| div().id(selector).tab_stop(true).focusable().cursor_pointer().px_2().py_1().interaction_surface(colors.bg_base,colors.bg_hover,colors.bg_active,true).focus_visible(move |style| style.border_1().border_color(colors.brand_primary)).on_key_down(move |event: &gpui_kit::KeyDownEvent, _, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { cx.open_url(url); cx.stop_propagation(); } }).on_click(move |_, _, cx| cx.open_url(url)).child(label))));
+                ].into_iter().filter(|(needed, _, _, _)| *needed).map(|(_, label, url, selector)| div().id(selector).debug_selector(move || selector.into()).tab_stop(true).focusable().cursor_pointer().px_2().py_1().interaction_surface(colors.bg_base,colors.bg_hover,colors.bg_active,true).focus_visible(move |style| style.border_1().border_color(colors.brand_primary)).on_key_down(move |event: &gpui_kit::KeyDownEvent, _, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { cx.open_url(url); cx.stop_propagation(); } }).on_click(move |_, _, cx| cx.open_url(url)).child(label))));
             }
             let key = (status.epoch, error.to_string());
             let expanded = self.computer_use_diagnostic.as_ref() == Some(&key);
@@ -89,6 +94,7 @@ impl ConversationStream {
             notice = notice.child(
                 div()
                     .id("conversation-computer-use-diagnostic-toggle")
+                    .debug_selector(|| "conversation-computer-use-diagnostic-toggle".into())
                     .track_focus(&self.computer_use_diagnostic_focus)
                     .tab_stop(true)
                     .cursor_pointer()
@@ -116,6 +122,7 @@ impl ConversationStream {
             if expanded {
                 notice = notice.child(
                     div()
+                        .debug_selector(|| "conversation-computer-use-diagnostic".into())
                         .text_color(colors.text_tertiary)
                         .child(error.to_string()),
                 );
@@ -132,6 +139,7 @@ impl ConversationStream {
                 .child(
                     div()
                         .id("conversation-browser-approve")
+                        .debug_selector(|| "conversation-browser-approve".into())
                         .tab_stop(true)
                         .focusable()
                         .cursor_pointer()
@@ -172,6 +180,7 @@ impl ConversationStream {
                 .child(
                     div()
                         .id("conversation-computer-resume")
+                        .debug_selector(|| "conversation-computer-resume".into())
                         .tab_stop(true)
                         .focusable()
                         .cursor_pointer()

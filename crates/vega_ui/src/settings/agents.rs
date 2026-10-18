@@ -94,21 +94,29 @@ impl SettingsView {
                             .child(profile_status),
                     )
                     .child(settings_field(
+                        "settings-agent-name",
                         "名称",
                         None,
-                        div().child(self.codex_name_input.clone()),
+                        div()
+                            .debug_selector(|| "settings-agent-name-input".into())
+                            .child(self.codex_name_input.clone()),
                         colors,
                     ))
                     .child(settings_field(
+                        "settings-agent-executable",
                         "可执行文件",
                         None,
-                        div().child(self.codex_executable_input.clone()),
+                        div()
+                            .debug_selector(|| "settings-agent-executable-input".into())
+                            .child(self.codex_executable_input.clone()),
                         colors,
                     ))
                     .child(settings_field(
+                        "settings-agent-args",
                         "参数",
                         Some("每行一个 argv".into()),
                         div()
+                            .debug_selector(|| "settings-agent-args-input".into())
                             .bg(colors.bg_elevated)
                             .border_1()
                             .border_color(colors.border_subtle)
@@ -132,6 +140,7 @@ impl SettingsView {
                                     colors.brand_primary_strong,
                                     !self.codex_profile_saving,
                                 )
+                                .debug_selector(|| "settings-codex-profile-save".into())
                                 .focusable()
                                 .tab_stop(true)
                                 .focus_visible(move |style| style.border_color(colors.accent))
@@ -245,6 +254,7 @@ impl SettingsView {
         let colors = theme(cx).colors;
         settings_action_chrome(colors)
             .id(id)
+            .debug_selector(move || id.into())
             .interaction_surface(
                 colors.bg_elevated,
                 colors.bg_hover,
@@ -285,9 +295,9 @@ impl SettingsView {
             .child(section_title("Native · 电脑与浏览器", colors.text_primary))
             .child(div().mt_2().text_size(px(Typography::METADATA)).text_color(colors.text_secondary)
                 .child("开启后用于新运行。电脑操控可发现并切换所有可访问窗口；浏览器仍需选择并授权标签页。可随时接管或停止。需要 macOS 14 或更新版本。"))
-            .child(settings_field("电脑操控", Some("所有可访问桌面窗口，后台输入受系统能力限制".into()),
+            .child(settings_field("settings-desktop-use", "电脑操控", Some("所有可访问桌面窗口，后台输入受系统能力限制".into()),
                 self.native_agent_button("settings-desktop-use-toggle", if self.config.agent.desktop_use_enabled { "已开启" } else { "已关闭" }, NativeAgentAction::Desktop, self.provider_management.saving, cx), colors))
-            .child(settings_field("浏览器操控", Some("使用已登录的 Chrome 标签页".into()),
+            .child(settings_field("settings-browser-use", "浏览器操控", Some("使用已登录的 Chrome 标签页".into()),
                 self.native_agent_button("settings-browser-use-toggle", if self.config.agent.browser_use_enabled { "已开启" } else { "已关闭" }, NativeAgentAction::Browser, self.provider_management.saving, cx), colors))
             .child(div().mt_3().flex().flex_wrap().gap_2()
                 .child(self.native_agent_button("settings-computer-use-check", if self.computer_use_check_pending { "检测中…" } else { "检测随包组件" }, NativeAgentAction::Check, self.computer_use_check_pending, cx))

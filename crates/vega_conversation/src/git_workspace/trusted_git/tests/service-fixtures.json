@@ -1,0 +1,100 @@
+{
+  "add-selected": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 .M N... 100644 100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 df967b96a579e45a18b8251732d16804b2e56a55 tracked.txt\u0000",
+      "paths": "tracked.txt\u0000",
+      "stage": "100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "",
+      "summary": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": ":100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 0000000000000000000000000000000000000000 M\u0000tracked.txt\u0000",
+      "unstaged_numstat": "1\t1\ttracked.txt\u0000"
+    },
+    "files": {
+      "tracked.txt": "selected\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "add-staged-after": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 M. N... 100644 100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 33fc42b968175ce25fcbf23290c6415cc52f751a tracked.txt\u0000",
+      "paths": "tracked.txt\u0000",
+      "stage": "100644 33fc42b968175ce25fcbf23290c6415cc52f751a 0\ttracked.txt\u0000",
+      "tree": "100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "",
+      "summary": "diff --git a/tracked.txt b/tracked.txt\nindex df967b96a579e45a18b8251732d16804b2e56a55..33fc42b968175ce25fcbf23290c6415cc52f751a 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-base\n+selected\n",
+      "attrs": "",
+      "staged_raw": ":100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 33fc42b968175ce25fcbf23290c6415cc52f751a M\u0000tracked.txt\u0000",
+      "staged_numstat": "1\t1\ttracked.txt\u0000",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "tracked.txt": "selected\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "commit-staged": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 19d9cc8584ac2c7dcf57d2680375e80f099dc481 staged.txt\u0000",
+      "paths": "staged.txt\u0000tracked.txt\u0000",
+      "stage": "100644 19d9cc8584ac2c7dcf57d2680375e80f099dc481 0\tstaged.txt\u0000100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "",
+      "summary": "diff --git a/staged.txt b/staged.txt\nnew file mode 100644\nindex 0000000000000000000000000000000000000000..19d9cc8584ac2c7dcf57d2680375e80f099dc481\n--- /dev/null\n+++ b/staged.txt\n@@ -0,0 +1 @@\n+staged\n",
+      "attrs": "",
+      "staged_raw": ":000000 100644 0000000000000000000000000000000000000000 19d9cc8584ac2c7dcf57d2680375e80f099dc481 A\u0000staged.txt\u0000",
+      "staged_numstat": "1\t0\tstaged.txt\u0000",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "tracked.txt": "base\n",
+      "staged.txt": "staged\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "commit-after": {
+    "raw": {
+      "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "status": "# branch.oid bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000# branch.head master\u0000",
+      "paths": "staged.txt\u0000tracked.txt\u0000",
+      "stage": "100644 19d9cc8584ac2c7dcf57d2680375e80f099dc481 0\tstaged.txt\u0000100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob 19d9cc8584ac2c7dcf57d2680375e80f099dc481\tstaged.txt\u0000100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/master\u0000\n",
+      "parents": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "summary": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "tracked.txt": "base\n",
+      "staged.txt": "staged\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  }
+}

@@ -97,6 +97,9 @@ impl ConversationStream {
             cx.notify();
         }
     }
+    pub fn automation_timing(&self, identity: &str) -> Option<AutomationTiming> {
+        self.automation.timings.get(identity).copied()
+    }
     pub fn automation_projection(&self) -> &AutomationProjection {
         &self.automation.projection
     }
@@ -208,11 +211,13 @@ impl ConversationStream {
     ) -> AnyElement {
         let (label, glyph) = action;
         let colors = theme(cx).colors;
+        let selector = id.clone();
         let hint = label.clone();
         let activate = std::rc::Rc::new(activate);
         let keyboard = activate.clone();
         div()
             .id(id)
+            .debug_selector(move || selector.clone())
             .role(Role::Button)
             .aria_label(label.clone())
             .track_focus(focus)
@@ -266,6 +271,7 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         let compact = self.automation_compact();
         let mut view = div()
+            .debug_selector(|| "automation-strips".into())
             .w_full()
             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
             .mx_auto()
@@ -277,6 +283,7 @@ impl ConversationStream {
         if let Some(error) = &self.automation.projection.error {
             view = view.child(
                 div()
+                    .debug_selector(|| "automation-error".into())
                     .mb_2()
                     .text_size(px(Typography::BODY))
                     .text_color(colors.danger)
@@ -336,6 +343,7 @@ impl ConversationStream {
             };
             let mut row = div()
                 .id(format!("automation-{}-strip", kind.key()))
+                .debug_selector(move || format!("automation-{}-strip", kind.key()))
                 .h(px(Layout::AUTOMATION_HEIGHT))
                 .role(Role::Group)
                 .aria_label(kind.label())
@@ -379,6 +387,7 @@ impl ConversationStream {
                 .child(
                     div()
                         .id(format!("automation-{}-summary", kind.key()))
+                        .debug_selector(move || format!("automation-{}-summary", kind.key()))
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
@@ -407,6 +416,7 @@ impl ConversationStream {
             {
                 row = row.child(
                     div()
+                        .debug_selector(|| "automation-loop-wakeup".into())
                         .min_w_0()
                         .overflow_hidden()
                         .text_ellipsis()

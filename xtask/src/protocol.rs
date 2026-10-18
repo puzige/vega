@@ -433,3 +433,236 @@ pub fn assert_round_count(rounds: &[Round], expected: usize) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::IsolationAttestation;
+
+    fn attestation(home: &str) -> IsolationAttestation {
+        IsolationAttestation {
+            home: home.into(),
+            data_root: format!("{home}/Library/Application Support/ai.vega"),
+            provider: "none".into(),
+            network: "none".into(),
+            keychain: "not-exercised".into(),
+            first_frame_source: "gpui_next_frame_callback".into(),
+        }
+    }
+
+    fn milestone(home: &str) -> Milestone {
+        Milestone {
+            schema: "vega-c1".into(),
+            metric: contract::PROCESS_START_TO_FIRST_RENDERED_INTERACTIVE.into(),
+            pid: 1,
+            elapsed_us: 9_000,
+            isolation: attestation(home),
+        }
+    }
+
+    #[test]
+    fn parse_accepts_exactly_the_milestone_line() {
+        let line = format!(
+            "{}{}",
+            MILESTONE_PREFIX,
+            serde_json::to_string(&milestone("/tmp/h")).unwrap()
+        );
+        assert!(parse_milestone(&line).is_ok());
+    }
+
+    #[test]
+    fn parse_rejects_malformed_shapes() {
+        // Not the prefix.
+        assert_eq!(
+            parse_milestone(&serde_json::to_string(&milestone("/tmp/h")).unwrap()).unwrap_err(),
+            C1Fail::MilestoneMalformed
+        );
+        // Prefix but not JSON.
+        assert_eq!(
+            parse_milestone("VEGA_C1_MILESTONE not json").unwrap_err(),
+            C1Fail::MilestoneMalformed
+        );
+        // Valid JSON but wrong schema tag.
+        let mut wrong = milestone("/tmp/h");
+        wrong.schema = "other".into();
+        let line = format!(
+            "{}{}",
+            MILESTONE_PREFIX,
+            serde_json::to_string(&wrong).unwrap()
+        );
+        assert_eq!(
+            parse_milestone(&line).unwrap_err(),
+            C1Fail::MilestoneMalformed
+        );
+        // Wrong metric name (schema drift guard).
+        let mut wrong = milestone("/tmp/h");
+        wrong.metric = "spawn_to_exit".into();
+        let line = format!(
+            "{}{}",
+            MILESTONE_PREFIX,
+            serde_json::to_string(&wrong).unwrap()
+        );
+        assert_eq!(
+            parse_milestone(&line).unwrap_err(),
+            C1Fail::MilestoneMalformed
+        );
+        // Zero elapsed (a milestone cannot fire at t=0).
+        let mut wrong = milestone("/tmp/h");
+        wrong.elapsed_us = 0;
+        let line = format!(
+            "{}{}",
+            MILESTONE_PREFIX,
+            serde_json::to_string(&wrong).unwrap()
+        );
+        assert_eq!(
+            parse_milestone(&line).unwrap_err(),
+            C1Fail::MilestoneMalformed
+        );
+    }
+
+    #[test]
+    fn attestation_rejects_real_profile_and_provider_and_sleep() {
+        let isolation = Isolation {
+            home: PathBuf::from("/tmp/h"),
+        };
+        // Happy path.
+        assert!(validate_attestation(&milestone("/tmp/h"), &isolation).is_ok());
+        // Data root outside the temp HOME = real profile access.
+        let mut escaped = milestone("/tmp/h");
+        escaped.isolation.data_root = "/Users/someone/Library/Application Support/ai.vega".into();
+        assert_eq!(
+            validate_attestation(&escaped, &isolation).unwrap_err(),
+            C1Fail::RealProfileAccess
+        );
+        // HOME mismatch = real profile access.
+        assert_eq!(
+            validate_attestation(&milestone("/home/other"), &isolation).unwrap_err(),
+            C1Fail::RealProfileAccess
+        );
+        // A provider was constructed = provider/network access.
+        let mut wired = milestone("/tmp/h");
+        wired.isolation.provider = "openai".into();
+        assert_eq!(
+            validate_attestation(&wired, &isolation).unwrap_err(),
+            C1Fail::ProviderNetworkAccess
+        );
+        // A fixed-sleep "first frame" = sleep-as-first-frame.
+        let mut sleeper = milestone("/tmp/h");
+        sleeper.isolation.first_frame_source = "thread_sleep".into();
+        assert_eq!(
+            validate_attestation(&sleeper, &isolation).unwrap_err(),
+            C1Fail::SleepAsFirstFrame
+        );
+    }
+
+    #[test]
+    fn round_pass_and_fail_classification() {
+        let mut round = Round {
+            round: 1,
+            parent_latency_us: Some(30_000),
+            child_elapsed_us: Some(29_000),
+            rss_bytes: [Some(1), Some(2), Some(3)],
+            exit_kind: ExitKind::CleanExit,
+            exit_code: Some(0),
+            fail: None,
+            stdout_lines: vec!["VEGA_C1_MILESTONE {}".into()],
+        };
+        assert!(round.passed());
+        assert_eq!(round.rss_median(), Some(2));
+        assert_eq!(round.rss_drift(), Some((1, 3)));
+        // A kill never passes (exit kind + explicit FAIL).
+        round.exit_kind = ExitKind::TimeoutKill;
+        round.fail = Some(C1Fail::Timeout);
+        assert!(!round.passed());
+        // A missing C2 sample never passes.
+        round.exit_kind = ExitKind::CleanExit;
+        round.fail = None;
+        round.rss_bytes[2] = None;
+        assert!(!round.passed());
+    }
+
+    #[test]
+    fn c1_gate_needs_all_rounds_and_p95_under_threshold() {
+        let passing = |us: u64| Round {
+            round: 0,
+            parent_latency_us: Some(us),
+            child_elapsed_us: Some(us),
+            rss_bytes: [Some(1); 3],
+            exit_kind: ExitKind::CleanExit,
+            exit_code: Some(0),
+            fail: None,
+            stdout_lines: vec![],
+        };
+        let rounds: Vec<Round> = (0..C1_ROUNDS).map(|i| passing(30_000 + i as u64)).collect();
+        let (samples, p95, gate) = c1_gate(&rounds);
+        assert_eq!(samples.len(), C1_ROUNDS);
+        assert!(gate, "p95 {p95} must pass under 50_000µs");
+        // One failed round voids the gate even with fast samples.
+        let mut one_failed = rounds;
+        one_failed[0].fail = Some(C1Fail::EarlyExit);
+        assert!(!c1_gate(&one_failed).2);
+        // p95 over the threshold fails.
+        let slow: Vec<Round> = (0..C1_ROUNDS).map(|_| passing(51_000)).collect();
+        assert!(!c1_gate(&slow).2);
+    }
+
+    #[test]
+    fn c2_gate_threshold_stability_and_drift() {
+        let round = |rss: [u64; 3]| Round {
+            round: 0,
+            parent_latency_us: Some(30_000),
+            child_elapsed_us: Some(29_000),
+            rss_bytes: rss.map(Some),
+            exit_kind: ExitKind::CleanExit,
+            exit_code: Some(0),
+            fail: None,
+            stdout_lines: vec![],
+        };
+        // 20 stable rounds well under the threshold pass.
+        let rounds: Vec<Round> = (0..C2_ROUNDS)
+            .map(|_| round([90_000_000, 90_100_000, 90_200_000]))
+            .collect();
+        let (p95, gate, drift) = c2_gate(&rounds);
+        assert!(gate, "p95 {p95} must pass under 100_000_000B");
+        assert_eq!(drift, 0);
+        // p95 over the threshold fails.
+        let hot: Vec<Round> = (0..C2_ROUNDS).map(|_| round([101_000_000; 3])).collect();
+        let (p95, gate, _) = c2_gate(&hot);
+        assert!(!gate);
+        assert!(p95 >= contract::P8_THRESHOLD_BYTES);
+        // Two drifting rounds → unstable gate even under threshold.
+        let mut unstable: Vec<Round> = (0..C2_ROUNDS)
+            .map(|_| round([90_000_000, 90_100_000, 90_200_000]))
+            .collect();
+        unstable[0] = round([90_000_000, 91_000_000, 92_200_000]);
+        unstable[1] = round([90_000_000, 91_000_000, 92_300_000]);
+        let (_, gate, drift) = c2_gate(&unstable);
+        assert!(!gate);
+        assert!(drift > contract::C2_STABILITY_MAX_DRIFTING_ROUNDS);
+        // Gray-zone extension: 40 merged rounds (C2_ROUNDS + extension) keep
+        // the gate judgeable — the frozen count is a floor, not an equality.
+        let extended: Vec<Round> = (0..C2_ROUNDS + crate::contract::C2_EXTENSION_ROUNDS)
+            .map(|_| round([90_000_000, 90_100_000, 90_200_000]))
+            .collect();
+        let (_, gate, _) = c2_gate(&extended);
+        assert!(gate, "40 merged rounds must still be able to pass");
+        // A failed round inside the merged set voids the gate.
+        let mut one_failed: Vec<Round> = (0..C2_ROUNDS + crate::contract::C2_EXTENSION_ROUNDS)
+            .map(|_| round([90_000_000, 90_100_000, 90_200_000]))
+            .collect();
+        one_failed[7].fail = Some(C1Fail::EarlyExit);
+        assert!(!c2_gate(&one_failed).1);
+        // Fewer than the frozen count can never pass.
+        let short: Vec<Round> = (0..C2_ROUNDS - 1)
+            .map(|_| round([90_000_000, 90_100_000, 90_200_000]))
+            .collect();
+        assert!(!c2_gate(&short).1);
+    }
+
+    #[test]
+    fn round_count_guard() {
+        let rounds: Vec<Round> = vec![];
+        assert!(assert_round_count(&rounds, 0).is_ok());
+        assert!(assert_round_count(&rounds, 20).is_err());
+    }
+}

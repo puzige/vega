@@ -22,6 +22,10 @@ impl ThreadsBlock {
             };
             let header = div()
                 .id(ElementId::Name(format!("group-header-{}", group.id).into()))
+                .debug_selector({
+                    let id = group.id.clone();
+                    move || format!("group-header-{id}")
+                })
                 .flex()
                 .items_center()
                 .drag_over::<OrganizationDrag>(move |s, _, _, _| s.bg(colors.bg_active))
@@ -208,6 +212,10 @@ impl ThreadsBlock {
                 .id(ElementId::Name(
                     format!("project-header-{}", project.id).into(),
                 ))
+                .debug_selector({
+                    let id = project.id.clone();
+                    move || format!("project-header-{id}")
+                })
                 .flex()
                 .items_center()
                 .on_mouse_up(
@@ -242,6 +250,10 @@ impl ThreadsBlock {
                         .id(ElementId::Name(
                             format!("organization-project-{}", project.id).into(),
                         ))
+                        .debug_selector({
+                            let id = project.id.clone();
+                            move || format!("organization-project-{id}")
+                        })
                         .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                         .px_2()
                         .rounded_lg()
@@ -429,6 +441,10 @@ impl ThreadsBlock {
         let colors = theme(cx).colors;
         div()
             .id(ElementId::Name(format!("group-empty-{group_id}").into()))
+            .debug_selector({
+                let id = group_id.clone();
+                move || format!("group-empty-{id}")
+            })
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .px_3()
             .text_size(px(Typography::SIDEBAR))
@@ -544,6 +560,10 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("project-thread-row-{thread_id}").into(),
             ))
+            .debug_selector({
+                let id = thread_id.clone();
+                move || format!("project-thread-row-{id}")
+            })
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex()
             .items_center()

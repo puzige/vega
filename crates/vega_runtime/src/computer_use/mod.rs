@@ -984,3 +984,19 @@ impl std::fmt::Debug for Target {
         }
     }
 }
+
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use super::{Capability, ComputerUseControl, ComputerUseError, Target};
+
+    pub fn connected_desktop() -> Result<ComputerUseControl, ComputerUseError> {
+        let control = ComputerUseControl::new();
+        let epoch = control.begin(Capability::Desktop)?;
+        control.connected(epoch, Capability::Desktop, Target::DesktopCatalog)?;
+        Ok(control)
+    }
+
+    pub fn finish_cleanup(control: &ComputerUseControl) {
+        control.finish_cleanup();
+    }
+}

@@ -67,3 +67,62 @@ fn build_matcher(root: &Path, pattern: &str) -> Result<ignore::overrides::Overri
         .build()
         .map_err(|error| ToolError::InvalidInput(format!("invalid glob pattern: {error}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use crate::{MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolError, Tools};
+
+    #[test]
+    fn matches_files_recursively_and_honors_gitignore() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src/nested")).unwrap();
+        fs::create_dir_all(dir.path().join("ignored")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn lib() {}\n").unwrap();
+        fs::write(dir.path().join("src/nested/mod.rs"), "pub mod nested;\n").unwrap();
+        fs::write(dir.path().join("src/readme.md"), "nope\n").unwrap();
+        fs::write(dir.path().join("ignored/secret.rs"), "secret\n").unwrap();
+        fs::write(dir.path().join(".gitignore"), "ignored/\n").unwrap();
+
+        let out = Tools::new(dir.path()).unwrap().glob("**/*.rs").unwrap();
+        assert_eq!(out.text, "src/lib.rs\nsrc/nested/mod.rs");
+        assert!(!out.truncated);
+    }
+
+    #[test]
+    fn rejects_invalid_and_escaping_patterns() {
+        let dir = tempdir().unwrap();
+        let tools = Tools::new(dir.path()).unwrap();
+        assert!(matches!(tools.glob(""), Err(ToolError::InvalidInput(_))));
+        assert!(matches!(
+            tools.glob("[unclosed"),
+            Err(ToolError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            tools.glob("../*.rs"),
+            Err(ToolError::PathEscape(_))
+        ));
+        assert!(matches!(
+            tools.glob("/tmp/*.rs"),
+            Err(ToolError::PathEscape(_))
+        ));
+    }
+
+    #[test]
+    fn caps_results_at_five_hundred_entries() {
+        let dir = tempdir().unwrap();
+        for index in 0..=MAX_RESULTS {
+            fs::write(dir.path().join(format!("file-{index:03}.txt")), "x").unwrap();
+        }
+
+        let out = Tools::new(dir.path()).unwrap().glob("*.txt").unwrap();
+        assert!(out.truncated);
+        let lines: Vec<_> = out.text.lines().collect();
+        assert_eq!(lines.len(), MAX_RESULTS + 1);
+        assert_eq!(lines.last().copied(), Some(RESULT_TRUNCATION_MARKER));
+        assert!(!out.text.contains("file-500.txt"));
+    }
+}

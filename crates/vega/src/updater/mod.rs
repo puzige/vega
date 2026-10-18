@@ -489,3 +489,70 @@ fn now() -> u64 {
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn preparation_fallback_finishes_before_quit_and_discards_failed_download() {
+        for (download_ok, preparation_ok) in [(true, true), (false, true), (true, false)] {
+            let steps = RefCell::new(Vec::new());
+            let mut delta = true;
+            let mut discard = false;
+            let result = prepare_installation(
+                &mut delta,
+                &mut discard,
+                |incremental| {
+                    steps.borrow_mut().push(if incremental {
+                        "prepare delta"
+                    } else {
+                        "prepare full"
+                    });
+                    if incremental || !preparation_ok {
+                        Err(failure("prepare failed"))
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    steps.borrow_mut().push("download full");
+                    if download_ok {
+                        Ok(())
+                    } else {
+                        Err(failure("download failed"))
+                    }
+                },
+            );
+            if result.is_ok() {
+                steps.borrow_mut().push("quit");
+            }
+            assert!(!delta);
+            assert_eq!(discard, !download_ok);
+            let expected = if !download_ok {
+                vec!["prepare delta", "download full"]
+            } else if !preparation_ok {
+                vec!["prepare delta", "download full", "prepare full"]
+            } else {
+                vec!["prepare delta", "download full", "prepare full", "quit"]
+            };
+            assert_eq!(*steps.borrow(), expected);
+        }
+    }
+
+    #[test]
+    fn full_preparation_failure_never_retries_or_quits() {
+        let mut delta = false;
+        let mut discard = false;
+        let error = prepare_installation(
+            &mut delta,
+            &mut discard,
+            |_| Err(failure("identity changed")),
+            || panic!("unexpected full retry"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "identity changed");
+        assert!(!discard);
+    }
+}

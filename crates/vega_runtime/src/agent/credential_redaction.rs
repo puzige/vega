@@ -506,3 +506,33 @@ fn starts_with_ascii_case_insensitive(haystack: &[u8], start: usize, needle: &[u
         .get(start..start.saturating_add(needle.len()))
         .is_some_and(|value| value.eq_ignore_ascii_case(needle))
 }
+
+#[cfg(test)]
+mod broker_policy_tests {
+    use super::*;
+    #[test]
+    fn low_assignment_does_not_hide_nested_high_token() {
+        let text = "password=prefix:sk-proj-abcdefghijklmnopqrstuvwx";
+        assert!(
+            !redact_sensitive_credential_text(text, &[])
+                .contains("sk-proj-abcdefghijklmnopqrstuvwx")
+        );
+    }
+    #[test]
+    fn exceptions_never_release_owner_values_and_ranges_are_utf8_boundaries() {
+        let known = vec!["秘密OwnerValue\"Backslash\\Canary".to_string()];
+        let encoded = serde_json::to_string(&known[0]).unwrap();
+        let text = format!("中文 password=普通说明 {} {}", known[0], encoded);
+        let filter: CredentialExceptionFilter = std::sync::Arc::new(|_, _| true);
+        let findings = inspect_credential_text(&text, &known);
+        assert!(
+            findings
+                .iter()
+                .all(|finding| text.is_char_boundary(finding.start)
+                    && text.is_char_boundary(finding.end))
+        );
+        let result = redact_sensitive_credential_text_with_policy(&text, &known, Some(&filter));
+        assert!(!result.contains(&known[0]));
+        assert!(!result.contains(&encoded[1..encoded.len() - 1]));
+    }
+}

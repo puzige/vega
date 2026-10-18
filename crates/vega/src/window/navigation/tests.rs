@@ -1,0 +1,696 @@
+use super::{DRAFT_BYTES, HISTORY_LIMIT};
+use crate::window::VegaWindow;
+use gpui_kit::prelude::*;
+use gpui_kit::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, size};
+use gpui_kit::{Entity, EntityInputHandler, Focusable, Modifiers, TestAppContext, px};
+use std::time::Duration;
+use vega_conversation::history;
+use vega_conversation::types::{Thread, ThreadScrollAnchor, ThreadStatus};
+use vega_store::Store;
+use vega_ui::navigation::NavigationState;
+use vega_ui::settings::{CloseSettings, SettingsOpen};
+use vega_ui::sidebar::{OpenedThread, SelectedProject, SidebarCollapsed};
+
+struct Fixture {
+    data: tempfile::TempDir,
+    store: Store,
+    first: Thread,
+    second: Thread,
+    root: Entity<VegaWindow>,
+    window: WindowHandle<VegaWindow>,
+}
+fn pump(cx: &mut TestAppContext, mut ready: impl FnMut(&mut TestAppContext) -> bool) {
+    for _ in 0..400 {
+        cx.executor().advance_clock(Duration::from_millis(25));
+        cx.run_until_parked();
+        if ready(cx) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("navigation did not settle");
+}
+fn fixture(cx: &mut TestAppContext) -> Fixture {
+    let data = tempfile::tempdir().unwrap();
+    let database = data.path().join("vega.db");
+    let config = data.path().join("config.toml");
+    std::fs::write(&config, "").unwrap();
+    let store = Store::open(&database).unwrap();
+    store.migrate().unwrap();
+    let project = vega_store::projects::create(
+        store.conn(),
+        data.path().to_str().unwrap(),
+        "owned navigation",
+        None,
+    )
+    .unwrap();
+    let first =
+        vega_conversation::threads::create_thread(&store, &project.id, "model", "confirm").unwrap();
+    let second =
+        vega_conversation::threads::create_thread(&store, &project.id, "model", "confirm").unwrap();
+    vega_conversation::threads::rename_thread(&store, &second.id, "Destination").unwrap();
+    cx.update(|cx| {
+        crate::tests::install_diff_window_globals(
+            Store::open(&database).unwrap(),
+            first.clone(),
+            cx,
+        )
+    });
+    let root = cx.new(VegaWindow::new);
+    root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(config)
+    });
+    let view = root.clone();
+    let window = cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1200.), px(900.)),
+                    cx,
+                ))),
+                ..Default::default()
+            },
+            move |_, _| view,
+        )
+        .unwrap()
+    });
+    cx.update(|cx| crate::app_palette::bind_shortcuts(window.into(), root.downgrade(), cx));
+    pump(cx, |cx| {
+        root.read_with(cx, |root, _| root.stream_view.is_some())
+    });
+    Fixture {
+        data,
+        store,
+        first,
+        second,
+        root,
+        window,
+    }
+}
+fn editor(f: &Fixture, cx: &mut TestAppContext) -> Entity<vega_ui::text_input::TextInput> {
+    f.root.read_with(cx, |root, cx| {
+        root.stream_view
+            .as_ref()
+            .unwrap()
+            .1
+            .read(cx)
+            .composer_input()
+    })
+}
+fn focus_editor(f: &Fixture, cx: &mut TestAppContext) {
+    let input = editor(f, cx);
+    f.window
+        .update(cx, |_, window, cx| {
+            window.focus(&input.read(cx).focus_handle(cx), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
+fn current(f: &Fixture, cx: &mut TestAppContext) -> Option<String> {
+    f.root.read_with(cx, |_, cx| {
+        cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone())
+    })
+}
+fn settled(f: &Fixture, id: &str, cx: &mut TestAppContext) {
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, cx| {
+            !root.navigation.pending
+                && super::task_mutation_state(cx).pending == 0
+                && cx
+                    .global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_some_and(|t| t.id == id)
+                && root
+                    .stream_view
+                    .as_ref()
+                    .is_some_and(|(task, _)| task == id)
+        })
+    });
+}
+
+#[gpui_kit::test]
+async fn route_rebuild_restores_thread_anchor_from_value_only_cache(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let message_id = "anchor-message-42";
+    for seq in 1..=260 {
+        vega_store::messages::insert(
+            f.store.conn(),
+            &vega_store::messages::MessageRow {
+                id: format!("anchor-message-{seq}"),
+                thread_id: f.first.id.clone(),
+                seq,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: format!("durable anchor content {seq} ").repeat(24),
+                status: "done".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+    }
+    let page = history::history_page_containing_message(
+        &f.store,
+        &f.first.id,
+        message_id,
+        vega_store::messages::PAGE_LIMIT,
+    )
+    .unwrap()
+    .unwrap();
+    let original = f
+        .root
+        .read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+    original.update(cx, |stream, cx| stream.apply_history_page(page, cx));
+    let kind = "assistant-text-0";
+    let identity = format!(
+        "route:{}:{}:message:{}:{}:kind:{}:{}",
+        f.first.id.len(),
+        f.first.id,
+        message_id.len(),
+        message_id,
+        kind.len(),
+        kind
+    );
+    let anchor = ThreadScrollAnchor {
+        identity: Some(identity.clone()),
+        message_id: Some(message_id.into()),
+        offset_in_item_px: 13.,
+        following_tail: false,
+    };
+    original.update(cx, |stream, cx| {
+        assert!(stream.restore_scroll_anchor(&anchor));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds("conversation-column").is_some());
+    let old_snapshot = original.read_with(cx, |stream, _| stream.scroll_anchor_snapshot());
+    assert_eq!(old_snapshot.identity.as_deref(), Some(identity.as_str()));
+    assert_eq!(old_snapshot.message_id.as_deref(), Some(message_id));
+    assert!((old_snapshot.offset_in_item_px - 13.).abs() < 1.0);
+    assert!(
+        !old_snapshot.following_tail,
+        "old snapshot: {old_snapshot:?}"
+    );
+
+    cx.update(|cx| {
+        cx.set_global(SelectedProject(Some(f.second.project_id.clone())));
+        cx.set_global(OpenedThread(Some(f.second.clone())));
+        cx.refresh_windows();
+    });
+    settled(&f, &f.second.id, cx);
+    let second_stream = f
+        .root
+        .read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+    assert_ne!(second_stream, original);
+    let cached_anchor = f
+        .root
+        .update(cx, |root, _| root.thread_scroll_states.get(&f.first.id))
+        .expect("departing thread anchor should be cached");
+    assert_eq!(cached_anchor.identity.as_deref(), Some(identity.as_str()));
+    assert_eq!(cached_anchor.message_id.as_deref(), Some(message_id));
+    assert!((cached_anchor.offset_in_item_px - 13.).abs() < 1.0);
+    assert!(!cached_anchor.following_tail);
+
+    cx.update(|cx| {
+        cx.set_global(SelectedProject(Some(f.first.project_id.clone())));
+        cx.set_global(OpenedThread(Some(f.first.clone())));
+        cx.refresh_windows();
+    });
+    settled(&f, &f.first.id, cx);
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .is_some_and(|(thread_id, stream)| {
+                    thread_id == &f.first.id
+                        && stream.read(cx).message_location_status()
+                            == Some(vega_ui::conversation_stream::MessageLocationStatus::Located)
+                })
+        })
+    });
+    assert!(visual.debug_bounds("conversation-column").is_some());
+    let rebuilt = f
+        .root
+        .read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+    assert_ne!(rebuilt, original);
+    let restored = rebuilt.read_with(cx, |stream, _| stream.scroll_anchor_snapshot());
+    assert_eq!(restored.identity.as_deref(), Some(identity.as_str()));
+    assert_eq!(restored.message_id.as_deref(), Some(message_id));
+    assert_eq!(
+        restored.following_tail, old_snapshot.following_tail,
+        "restored: {restored:?}"
+    );
+    assert!((restored.offset_in_item_px - 13.).abs() < 1.0);
+}
+
+fn palette_second(f: &Fixture, cx: &mut TestAppContext) {
+    focus_editor(f, cx);
+    cx.simulate_keystrokes(f.window.into(), "cmd-k d e s t i n a t i o n");
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, cx| {
+            !root.palette.search_busy
+                && root
+                    .palette
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.read(cx).query() == "destination")
+        })
+    });
+    cx.simulate_keystrokes(f.window.into(), "enter");
+    settled(f, &f.second.id, cx);
+}
+fn click(f: &Fixture, selector: &'static str, cx: &mut TestAppContext) {
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    let bounds = visual
+        .debug_bounds(selector)
+        .expect("visible navigation control");
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+}
+
+#[gpui_kit::test]
+async fn navigation_real_root_palette_mouse_shortcuts_and_settings_preserve_drafts(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    editor(&f, cx).update(cx, |input, cx| input.set_text("first unsent 中文", cx));
+    palette_second(&f, cx);
+    editor(&f, cx).update(cx, |input, cx| input.set_text("second unsent", cx));
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.navigation.entries.len()),
+        2
+    );
+    click(&f, "navigation-back", cx);
+    settled(&f, &f.first.id, cx);
+    assert_eq!(
+        editor(&f, cx).read_with(cx, |input, _| input.text().to_owned()),
+        "first unsent 中文"
+    );
+    focus_editor(&f, cx);
+    cx.simulate_keystrokes(f.window.into(), "cmd-]");
+    settled(&f, &f.second.id, cx);
+    assert_eq!(
+        editor(&f, cx).read_with(cx, |input, _| input.text().to_owned()),
+        "second unsent"
+    );
+    // Actual platform text-input composition must keep bracket shortcuts in the editor.
+    focus_editor(&f, cx);
+    let input = editor(&f, cx);
+    f.window
+        .update(cx, |_, window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "拼音", Some(0..2), window, cx);
+            })
+        })
+        .unwrap();
+    cx.simulate_keystrokes(f.window.into(), "cmd-[");
+    cx.run_until_parked();
+    assert_eq!(current(&f, cx), Some(f.second.id.clone()));
+    assert!(input.read_with(cx, |input, _| input.is_composing()));
+    input.update(cx, |input, cx| input.set_text("second unsent", cx));
+    // Collapsed layout still exposes the actual mouse control.
+    cx.update(|cx| {
+        cx.set_global(SidebarCollapsed(true));
+        cx.refresh_windows();
+    });
+    click(&f, "navigation-back", cx);
+    settled(&f, &f.first.id, cx);
+    // Settings global is an existing production route entry; close uses the real global handler.
+    cx.update(|cx| {
+        cx.set_global(SettingsOpen(true));
+        cx.refresh_windows();
+    });
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, _| root.settings_view.is_some())
+    });
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(CloseSettings), cx)
+        })
+        .unwrap();
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, cx| {
+            !root.navigation.pending && !cx.global::<SettingsOpen>().0
+        })
+    });
+    settled(&f, &f.first.id, cx);
+    assert_eq!(
+        editor(&f, cx).read_with(cx, |input, _| input.text().to_owned()),
+        "first unsent 中文"
+    );
+    assert!(
+        f.root
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
+    );
+    assert!(f.data.path().join("vega.db").is_file());
+}
+
+#[gpui_kit::test]
+async fn navigation_real_root_skips_archived_and_capacity_refusal_precedes_visit(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    palette_second(&f, cx);
+    // A nonempty oversized live draft must never be silently truncated or evicted.
+    let text = "one more unsent draft".to_string();
+    f.root.update(cx, |root, _| {
+        root.navigation
+            .drafts
+            .insert("retained-owned-task".into(), "x".repeat(DRAFT_BYTES));
+    });
+    let input = editor(&f, cx);
+    input.update(cx, |input, cx| input.set_text(&text, cx));
+    let before = vega_store::threads::find(f.store.conn(), &f.first.id)
+        .unwrap()
+        .unwrap();
+    focus_editor(&f, cx);
+    cx.simulate_keystrokes(f.window.into(), "cmd-[");
+    cx.run_until_parked();
+    assert_eq!(current(&f, cx), Some(f.second.id.clone()));
+    assert_eq!(
+        input.read_with(cx, |input, _| input.text().len()),
+        text.len()
+    );
+    let after = vega_store::threads::find(f.store.conn(), &f.first.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.updated_at, after.updated_at);
+    assert!(
+        f.root
+            .read_with(cx, |_, cx| cx.global::<NavigationState>().error.is_some())
+    );
+    input.update(cx, |input, cx| input.clear(cx));
+    // Archive the only back target through the real conversation service.
+    vega_conversation::threads::set_thread_status(&f.store, &f.first.id, ThreadStatus::Archived)
+        .unwrap();
+    click(&f, "navigation-back", cx);
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            !root.navigation.pending && root.navigation.entries.len() == 1
+        })
+    });
+    assert_eq!(current(&f, cx), Some(f.second.id.clone()));
+    assert_eq!(
+        vega_store::threads::find(f.store.conn(), &f.first.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "archived"
+    );
+    assert!(
+        !f.root
+            .read_with(cx, |_, cx| cx.global::<NavigationState>().back)
+    );
+}
+
+#[gpui_kit::test]
+async fn navigation_coalesces_attributes_bounds_history_and_rejects_stale_result(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    let third = vega_conversation::threads::create_thread(
+        &f.store,
+        &f.first.project_id,
+        "model",
+        "confirm",
+    )
+    .unwrap();
+    palette_second(&f, cx);
+    let count = f
+        .root
+        .read_with(cx, |root, _| root.navigation.entries.len());
+    cx.update(|cx| {
+        let mut thread = cx.global::<OpenedThread>().0.clone().unwrap();
+        thread.title = "attribute refresh".into();
+        cx.set_global(OpenedThread(Some(thread)));
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.navigation.entries.len()),
+        count
+    );
+    // Start the actual worker, then move before polling; its completion must not apply.
+    f.root.update(cx, |root, cx| root.navigate(false, cx));
+    cx.update(|cx| {
+        cx.set_global(SelectedProject(Some(third.project_id.clone())));
+        cx.set_global(OpenedThread(Some(third.clone())));
+        cx.refresh_windows();
+    });
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, _| !root.navigation.pending)
+    });
+    assert_eq!(current(&f, cx), Some(third.id.clone()));
+    // Bounds are a supplemental invariant; all entries come through production reconciliation.
+    for index in 0..105 {
+        cx.update(|cx| {
+            cx.set_global(OpenedThread(None));
+            cx.set_global(SelectedProject(Some(format!("owned-logical-{index}"))));
+        });
+        f.root.update(cx, |root, cx| root.sync_navigation(cx));
+    }
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.navigation.entries.len()),
+        HISTORY_LIMIT
+    );
+}
+
+#[gpui_kit::test]
+async fn automatic_replay_survives_new_task_navigation_roundtrip(cx: &mut TestAppContext) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let f = fixture(cx);
+    std::fs::write(f.data.path().join("replay.txt"), "replay target").unwrap();
+    let registry = vega_conversation::agent::ReplaySessionRegistry::new();
+    cx.update(|cx| cx.set_global(crate::app_agent::AppReplaySessions(registry.clone())));
+    let provider = vega_runtime::MockProvider::new_rounds(vec![
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("checking the file".into()),
+            vega_runtime::ProviderEvent::ChatReasoningContent(
+                vega_runtime::ChatReasoningPresence::NonEmpty("private tool reasoning".into()),
+            ),
+            vega_runtime::ProviderEvent::ToolUse {
+                id: "navigation-read".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"replay.txt"}"#.into(),
+            },
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::ToolUse,
+            },
+        ])],
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("first final answer".into()),
+            vega_runtime::ProviderEvent::ChatReasoningContent(
+                vega_runtime::ChatReasoningPresence::NonEmpty("private final reasoning".into()),
+            ),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ])],
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("second final answer".into()),
+            vega_runtime::ProviderEvent::ChatReasoningContent(
+                vega_runtime::ChatReasoningPresence::NonEmpty("private second reasoning".into()),
+            ),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ])],
+    ]);
+    let tools = vega_tools::Tools::new(f.data.path()).unwrap();
+    let reasoning = vega_runtime::FrozenReasoning {
+        provider: "deepseek".into(),
+        model: f.first.model.clone(),
+        protocol: vega_runtime::ReasoningProtocol::DeepSeekChatCompletions,
+        replay_policy: vega_runtime::ReasoningReplayPolicy::DeepSeekTools,
+        choice: vega_runtime::ReasoningChoice::ProviderDefault,
+        supports_disabled: false,
+        disabled_wire: None,
+        declared_efforts: Vec::new(),
+    };
+    let first = runtime
+        .block_on(
+            vega_conversation::agent::run_thread_task_with_images_reasoning_and_mcp(
+                &f.store,
+                &provider,
+                &tools,
+                &f.first.id,
+                "first request before navigation",
+                "system",
+                tokio_util::sync::CancellationToken::new(),
+                &vega_conversation::agent::RejectPermissionHook,
+                |_| Ok(()),
+                vega_conversation::agent::PersistenceActorConfig::default()
+                    .with_replay_session_registry(registry.clone(), [91; 32]),
+                None,
+                None,
+                Some(reasoning.clone()),
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+    assert!(!first.failed);
+
+    cx.update(|cx| {
+        cx.set_global(OpenedThread(None));
+        cx.set_global(SelectedProject(None));
+        cx.refresh_windows();
+    });
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, _| root.draft.is_some())
+    });
+    cx.update(|cx| {
+        cx.set_global(SelectedProject(Some(f.first.project_id.clone())));
+        cx.set_global(OpenedThread(Some(f.first.clone())));
+        cx.refresh_windows();
+    });
+    settled(&f, &f.first.id, cx);
+
+    let second = runtime
+        .block_on(
+            vega_conversation::agent::run_thread_task_with_images_reasoning_and_mcp(
+                &f.store,
+                &provider,
+                &tools,
+                &f.first.id,
+                "second request after navigation",
+                "system",
+                tokio_util::sync::CancellationToken::new(),
+                &vega_conversation::agent::RejectPermissionHook,
+                |_| Ok(()),
+                vega_conversation::agent::PersistenceActorConfig::default()
+                    .with_replay_session_registry(registry, [91; 32]),
+                None,
+                None,
+                Some(reasoning),
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+    assert!(!second.failed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    let replayed = &requests[2].messages;
+    assert!(replayed.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::Assistant
+            && message
+                .tool_calls
+                .iter()
+                .any(|call| call.id == "navigation-read")
+            && message.reasoning_content.as_deref() == Some("private tool reasoning")
+    }));
+}
+
+#[gpui_kit::test]
+async fn navigation_resolver_rejects_real_sidebar_delete_before_ack(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    palette_second(&f, cx);
+    f.root.update(cx, |root, cx| root.navigate(false, cx));
+    // The real Sidebar confirmation commits deletion before resolver acknowledgement.
+    cx.update(|cx| {
+        cx.set_global(vega_ui::sidebar::PendingDeleteConfirm(Some(
+            f.first.clone(),
+        )))
+    });
+    f.root.update(cx, |root, cx| {
+        root.sidebar
+            .update(cx, |sidebar, cx| sidebar.confirm_pending_delete(cx))
+    });
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, _| !root.navigation.pending)
+    });
+    assert_eq!(current(&f, cx), Some(f.second.id.clone()));
+    assert!(
+        vega_store::threads::find(f.store.conn(), &f.first.id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(f.root.read_with(cx, |root, _| root.navigation.cursor), 1);
+    click(&f, "navigation-back", cx);
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            !root.navigation.pending && root.navigation.entries.len() == 1
+        })
+    });
+    assert_eq!(current(&f, cx), Some(f.second.id.clone()));
+}
+
+#[gpui_kit::test]
+async fn navigation_draft_growth_during_read_only_resolution_does_not_record_visit(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    palette_second(&f, cx);
+    vega_conversation::threads::update_thread(
+        &f.store,
+        &f.first.id,
+        &vega_conversation::types::ThreadUpdate {
+            unread: Some(true),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = vega_store::threads::find(f.store.conn(), &f.first.id)
+        .unwrap()
+        .unwrap();
+    let input = editor(&f, cx);
+    input.update(cx, |input, cx| input.clear(cx));
+    f.root.update(cx, |root, cx| {
+        root.navigation
+            .drafts
+            .insert("retained-budget".into(), "x".repeat(DRAFT_BYTES));
+        root.navigate(false, cx);
+    });
+    input.update(cx, |input, cx| {
+        input.set_text("typed while resolver was pending", cx)
+    });
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, _| !root.navigation.pending)
+    });
+    assert_eq!(current(&f, cx), Some(f.second.id.clone()));
+    let after = vega_store::threads::find(f.store.conn(), &f.first.id)
+        .unwrap()
+        .unwrap();
+    assert!(after.unread);
+    assert_eq!(before.updated_at, after.updated_at);
+    assert_eq!(f.root.read_with(cx, |root, _| root.navigation.cursor), 1);
+    assert_eq!(
+        input.read_with(cx, |input, _| input.text().to_owned()),
+        "typed while resolver was pending"
+    );
+}
+
+#[gpui_kit::test]
+async fn navigation_consecutive_shortcuts_survive_dropped_composer_focus(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    editor(&f, cx).update(cx, |input, cx| input.set_text("Alpha draft", cx));
+    palette_second(&f, cx);
+    editor(&f, cx).update(cx, |input, cx| input.set_text("Beta draft", cx));
+    focus_editor(&f, cx);
+    cx.simulate_keystrokes(f.window.into(), "cmd-[");
+    settled(&f, &f.first.id, cx);
+    assert_eq!(
+        editor(&f, cx).read_with(cx, |input, _| input.text().to_owned()),
+        "Alpha draft"
+    );
+    // No focus call or mouse click between these real application keystrokes.
+    cx.simulate_keystrokes(f.window.into(), "cmd-]");
+    settled(&f, &f.second.id, cx);
+    assert_eq!(
+        editor(&f, cx).read_with(cx, |input, _| input.text().to_owned()),
+        "Beta draft"
+    );
+}

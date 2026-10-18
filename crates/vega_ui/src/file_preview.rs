@@ -85,6 +85,7 @@ impl Render for FilePreview {
         };
         div()
             .id("file-preview")
+            .debug_selector(|| "file-preview".into())
             .track_focus(&self.focus)
             .size_full()
             .flex()
@@ -133,5 +134,67 @@ impl Render for FilePreview {
                     .child(body)
                     .scroll_edge_fade(colors.bg_base, ScrollFade::reading()),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FilePreview;
+    use gpui_kit::{TestAppContext, px, size};
+    use vega_conversation::types::PaletteFilePreview;
+
+    #[gpui_kit::test]
+    fn scroll_edge_file_preview_keeps_header_outside_fade_and_clears_after_shrink(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
+        let window = cx.open_window(size(px(300.), px(240.)), |_, cx| {
+            FilePreview::new(
+                PaletteFilePreview {
+                    relative_path: "sample.txt".into(),
+                    content: (0..80).map(|_| "A bounded file line.\n").collect(),
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, _| {
+                let scale = window.scale_factor();
+                let quads = window.painted_quads();
+                let fade = quads
+                    .iter()
+                    .find(|quad| quad.background.as_solid().is_none())
+                    .expect("file content fade");
+                assert!(fade.bounds.top().as_f32() / scale >= 40.);
+                assert_eq!(fade.content_mask.bounds.size.height.as_f32() / scale, 24.);
+                let expected = gpui_kit::linear_gradient(
+                    0.,
+                    gpui_kit::linear_color_stop(vega_theme::LIGHT.bg_base, 0.),
+                    gpui_kit::linear_color_stop(
+                        vega_theme::LIGHT.bg_base.opacity(0.),
+                        24. / (fade.bounds.size.height.as_f32() / scale),
+                    ),
+                );
+                assert_eq!(fade.background, expected);
+            })
+            .expect("real file preview draw");
+        window
+            .update(cx, |view, _, cx| {
+                view.preview.content = "short".into();
+                cx.notify();
+            })
+            .expect("shorten file");
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, _| {
+                assert!(
+                    window
+                        .painted_quads()
+                        .iter()
+                        .all(|quad| quad.background.as_solid().is_some())
+                );
+            })
+            .expect("short file has no fade");
     }
 }

@@ -25,6 +25,13 @@ const DONE_SENTINEL: &str = "[DONE]";
 /// Base path appended to the configured base URL.
 const CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 
+#[cfg(any(test, feature = "test-support"))]
+type TestTransport = Arc<
+    dyn Fn(reqwest::Request) -> BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>
+        + Send
+        + Sync,
+>;
+
 type RequestAttemptGuard = Arc<dyn Fn(&ChatRequest) -> Result<(), VegaError> + Send + Sync>;
 
 /// OpenAI-compatible streaming chat provider.
@@ -34,6 +41,8 @@ type RequestAttemptGuard = Arc<dyn Fn(&ChatRequest) -> Result<(), VegaError> + S
 #[derive(Clone)]
 pub struct OpenAiProvider {
     http: reqwest::Client,
+    #[cfg(any(test, feature = "test-support"))]
+    test_transport: Option<TestTransport>,
     responses_api: bool,
     /// Endpoint root, e.g. `https://api.openai.com/v1` (trailing slash ok).
     base_url: String,
@@ -75,6 +84,8 @@ impl OpenAiProvider {
             })?;
         Ok(Self {
             http,
+            #[cfg(any(test, feature = "test-support"))]
+            test_transport: None,
             responses_api: false,
             base_url: base_url.into(),
             key: key.into(),
@@ -85,6 +96,22 @@ impl OpenAiProvider {
             },
             before_attempt: None,
         })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_test_sse_responder(
+        mut self,
+        respond: impl Fn(&reqwest::Request) -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.test_transport = Some(Arc::new(move |request| {
+            let mut response = ::http::Response::new(respond(&request).into_bytes());
+            response.headers_mut().insert(
+                ::http::header::CONTENT_TYPE,
+                ::http::HeaderValue::from_static("text/event-stream"),
+            );
+            Box::pin(async move { Ok(response.into()) })
+        }));
+        self
     }
 
     pub fn with_responses_api(mut self, enabled: bool) -> Self {
@@ -139,7 +166,18 @@ impl OpenAiProvider {
             )
             .json(body)
             .build()?;
-        self.http.execute(request).await
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let transport = self
+                .test_transport
+                .as_ref()
+                .expect("OpenAI test request requires a registered transport");
+            transport(request).await
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            self.http.execute(request).await
+        }
     }
 
     /// Sends the request (with retries) and returns the SSE event stream on
@@ -507,3 +545,6 @@ pub(crate) mod responses;
 mod sse;
 
 pub(crate) use sse::*;
+
+#[cfg(test)]
+mod tests;

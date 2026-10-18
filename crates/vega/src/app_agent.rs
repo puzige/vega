@@ -1692,7 +1692,7 @@ mod reasoning_replay_tests {
 
 #[cfg(test)]
 mod composer_prediction_authority_tests {
-    use super::*;
+    use super::composer_prediction_authority;
 
     #[test]
     fn prediction_authority_rejects_changed_ambiguous_disabled_or_revoked_provider() {
