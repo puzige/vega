@@ -1,6 +1,6 @@
 # 消息与代码块复制
 
-版本：v1.2，2026-10-19；行为验收沿用冻结 v1。Issue：[复制功能增强 #477](https://github.com/puzige/vega/issues/477)。
+版本：v1.3，2026-10-19；复制验收沿用冻结 v1，追加 C9 菜单资源修复记录。Issue：[复制功能增强 #477](https://github.com/puzige/vega/issues/477)。
 
 ## 范围与基线
 
@@ -117,3 +117,16 @@ PR 保留基线、测试补丁/提交、有效 RED 的 run/job 与原始失败�
 主控先在Issue留存源码证据并批准接线例外，再由专职子agent在C9创建visual后仅增加activate_window和park两行，提交 `84db9971f137451d1501d35f919bb99b8b08050f`。生产保护、原操作/计时、测试数据、目标与全部断言不变，测试仍为13项；不增删测试，不直接聚焦按钮，不重排历史或事后补测。
 
 当前重新冻结SHA-256为 `c1d8db023323402c7d19d87b1667eec45215e14c2c37b217d018c64d751162cf`。[原始完整源码](https://github.com/puzige/vega/pull/479#issuecomment-6253908078)与[完整等价修正补丁](https://github.com/puzige/vega/pull/479#issuecomment-6254089023)已固定在PR，组合可复原当前文件且校验哈希一致。既有有效先行RED照原始时序保留，本次平台接线失败不作为行为RED。当前13项仍待真正GREEN，取得并固定证据前不删除；后续严格执行v1.1的独立删测与最终空集门禁顺序。
+
+
+## v1.3 冻结 C9 暴露的菜单资源生命周期修复
+
+复制实现暂不继续变动，不删测。`dbc39a9973a3b49aace91a4f4afb63abd293b08b` 的 [Actions 39158417842](https://github.com/puzige/vega/actions/runs/39158417842/job/117766386812) 中，现有C9全部复制/草稿/选择/菜单/链接断言已通过，但退出时GPUI实体泄漏断言报告唯一残留 `gpui_component::menu::popup_menu::PopupMenu`。整体为13执行、12通过、1失败、0跳过，fmt/Clippy成功，不能作为GREEN。
+
+本节在修复前记录独立的资源修复切片：打开选区右键菜单并用键盘复制、关闭菜单后，原交互结果保持，窗口结束时释放该菜单及其独占订阅。复用原先已经冻结并实际失败的C9（其GPUI退出检查已涵盖该资源结果），不追加测试、不改变数据或断言；该缺陷的真实RED为上述带测试运行，不用最初“复制入口缺失”的RED冒充菜单资源证据。当前冻结源码SHA-256仍为 `c1d8db023323402c7d19d87b1667eec45215e14c2c37b217d018c64d751162cf`。
+
+只读根因：gpui-component 0.6.1 的ContextMenu在Dismiss回调强捕获shared_state，shared_state持有PopupMenu与Subscription，Subscription又持订阅表，形成强引用环。Dismiss只设open=false，未释放菜单/订阅；App正常清理窗口也无法解除该环。上游状态字段私有，不能从Vega公开接口直接修复内部状态；不通过测试清全局、忽略句柄、关闭泄漏检测或修改依赖缓存过关。
+
+允许的最小生产修复：仅替换 `render_rows::selection_context_menu` 的生命周期包装，可放入同目录私有 `selection_menu.rs`；继续复用现有PopupMenu内容/禁用状态、样式、键盘处理、定位、点击外部关闭和焦点恢复。菜单状态强持菜单实体，Dismiss订阅仅弱持状态，关闭时释放菜单与订阅，避免状态和实体互相强持。保留稳定控件身份、正文选择/链接、焦点、事件和布局；如函数签名必须补窗口参数，仅修改现有调用点（含thinking_body），不扩展到其他菜单。
+
+不改冻结测试、依赖/锁文件、上游源码、CI、Python或benchmark。先由专职子agent完成最小修复，主控审查引用所有权与差异；同一完整13项实际GREEN并留证后，才按v1.1独立删测、最终空集门禁和正式PR。原功能实现与该次资源修复的基线、RED和GREEN分别记录，保留真实提交顺序。
