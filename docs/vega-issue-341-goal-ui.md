@@ -39,7 +39,9 @@
 
 几何采用仓库 token，新增值集中在 Layout：条高 36、左右内收 16、水平内边距 12、图标 16、动作命中区 28、上角半径 12、元素间距 4，单位均为逻辑像素。避免负 margin 和遮挡命中区。边框下沿与 composer 上沿相接，可由 composer 自身圆角形成层次，不改既有 composer 半径 20 / 最小高度 100。
 
-数值验算：最大宽度 768 时条宽 `768 - 2×16 = 736`；内部宽 `736 - 2×12 = 712`；3 个动作宽 `3×28 + 2×4 = 92`；图标 16，垂直余量 `(36 - 28)/2 = 4`；半径 `12 <= min(736,36)/2 = 18` 不钳制。窄态使用 `条宽 = composer宽 - 32`，先压缩摘要与时间，必要时只保留短时间，不隐藏动作或状态；最窄支持窗口由既有 Workspace 适配，不硬凑整段元数据。对浅深主题、Goal/Loop、单项/双项、顶部两角和与 composer 的连接分别验收。
+数值验算：最大宽度 768 时条宽 `768 - 2×16 = 736`；扣左右 1px 边框后内容宽 `736 - 2×12 - 2 = 710`；3 个动作及其间距宽 `3×28 + 2×4 = 92`；图标 16，仅顶部 1px 边框时垂直内容余量 `(36 - 1 - 28)/2 = 3.5`；半径 `12 <= min(736,36)/2 = 18` 不钳制。
+
+窄态例外：使用现有 `workspace_width` 推导 composer 可用宽（减两侧 conversation padding）；composer 宽小于 360 时，条左右内收 8、内部水平 padding 6，时间移入详情，状态改为至多四字的「进行中/已暂停/受阻/已完成/预算用尽/已停止/已到期」，行的可访问名称与类型图标保留种类。动作仍为 28、图标仍为 16。Workspace 最小会话列约 295，此时 composer 为 `295 - 2×32 = 231`，条宽 `231 - 2×8 = 215`，扣边框后内容宽 `215 - 2×6 - 2 = 201`；固定占用 `图标16 + 状态最多48 + 三动作84 + 五间距20 = 168`，摘要至少留 `201 - 168 = 33`。不得隐藏动作或异常状态。自动回归需在真实 295 宽容器断言三个动作都在条边界内；面板更窄时沿用 Workspace 的展开适配。对浅深主题、Goal/Loop、单项/双项、顶部两角和与 composer 的连接分别验收。
 
 普通 `0 tokens` 不出现在条中。面板显示「已用」「预算」「执行时间」等必要值；不完整用量显示未知，不能伪装为零。预算耗尽或未知用量影响恢复时，原因必须在条组可见且恢复不可绕过。普通完成不额外 toast。
 
@@ -66,7 +68,7 @@ Edit 和 Create 一样通过 owner provider/MCP 凭据检查，使用现有安�
 1. `vega_conversation/src/types/automation.rs`、`automation/mod.rs` 及 tests：原子 Edit、身份/修订/状态/计量回归，不迁移 schema。
 2. `vega_ui/src/automation_editor.rs`（可拆同名目录）、lib 导出、原生 TextInput 必要的窄接口：独立编辑器、事件、草稿/冲突/保存状态与 GPUI 回归。
 3. `vega_ui/src/conversation_stream/automation.rs`、render 与 tests、icons、theme：贴合状态条、真实摘要、图标动作、编辑请求、编辑门禁；既有详情展开测试明确替换为打开编辑器断言，其余行为断言保留。
-4. `vega/src/window/automation.rs`、新增 `window/automation_editor.rs`、window mod/render/workspace、automation_controller、app_agent 的必要接缝：绑定现有 Workspace、异步保存、路由/多窗口/在途撤销、真实时钟投影。所有新 DB IO 在 worker，不放渲染或键盘路径。
+4. `vega/src/window/automation.rs`、新增 `window/automation_editor.rs`、window mod/render/workspace、automation_controller、app_agent 的必要接缝：绑定现有 Workspace、异步保存、路由/多窗口/在途撤销、真实时钟投影。允许在 `window/artifact.rs::apply_agent_batch_ingress` 捕获既有 RunStarted 事件的 Instant，按 generation 绑定共享 run owner；不新增事件体系。poll 对 task 与 run ledger 的读取保持一致，finished run 不再叠加在途时钟。所有新 DB IO 在 worker，不放渲染或键盘路径。
 5. `crates/vega/src/tests/automation.rs` 与必要测试模块/fixture：覆盖控制器保存及竞态。使用 controller git fixture 的新用例需登记精确测试名和 mock 命令；不可取消 strict fixture、放宽断言或依赖真实外部进程。
 6. `docs/vega-issue-341-goal-ui-delivery.md` 记录真实修改、静态检查、待 CI/手测和偏离；不得自行改 spec，遇到契约冲突先交回主 agent。
 
