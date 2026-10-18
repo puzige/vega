@@ -142,10 +142,26 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunCancellationReason {
+    User,
+    ReviewHandoff,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RunCompletionOutcome {
+    Completed,
+    Failed,
+    Interrupted,
+}
+
 pub(crate) struct ActiveAgentRun {
     pub(crate) composer_prediction_config_generation: u64,
     pub(crate) composer_prediction: Option<ComposerPredictionRequest>,
     pub(crate) root_message_id: Option<String>,
+    pub(crate) message_ids: Vec<String>,
+    pub(crate) cancellation_reason: Option<RunCancellationReason>,
+    pub(crate) completion_outcome: Option<RunCompletionOutcome>,
     pub(crate) delegated_message_id: Option<String>,
     pub(crate) delegated_parent_thread: Option<String>,
     pub(crate) queue_generation: String,
@@ -422,6 +438,9 @@ impl AppAgentController {
                 request: request.clone(),
             },
         );
+        if let Some(active) = self.active.get_mut(&request.thread_id) {
+            active.cancellation_reason = Some(RunCancellationReason::ReviewHandoff);
+        }
         self.request_active_cancel(&request.thread_id);
         true
     }
@@ -445,6 +464,9 @@ impl AppAgentController {
                 composer_prediction_config_generation: 0,
                 composer_prediction: None,
                 root_message_id: None,
+                message_ids: Vec::new(),
+                cancellation_reason: None,
+                completion_outcome: None,
                 delegated_message_id: None,
                 delegated_parent_thread: None,
                 queue_generation: ulid::Ulid::generate().to_string(),
@@ -508,13 +530,29 @@ impl AppAgentController {
                 active
                     .root_message_id
                     .get_or_insert_with(|| message_id.clone());
+                if !active.message_ids.contains(message_id) {
+                    active.message_ids.push(message_id.clone());
+                }
+                active.completion_outcome = None;
             }
             match event {
-                ConversationEvent::MessageStarted { .. }
-                | ConversationEvent::Interrupted { .. }
-                | ConversationEvent::Error { .. } => active.queue_ready = false,
+                ConversationEvent::MessageStarted { .. } => active.queue_ready = false,
+                ConversationEvent::Interrupted { .. } => {
+                    active.queue_ready = false;
+                    active.completion_outcome = Some(RunCompletionOutcome::Interrupted);
+                }
+                ConversationEvent::Error { .. } => {
+                    active.queue_ready = false;
+                    active.completion_outcome = Some(RunCompletionOutcome::Failed);
+                }
                 ConversationEvent::MessageFinished { stop_reason, .. } => {
-                    active.queue_ready = *stop_reason == ConversationStopReason::End
+                    active.queue_ready = *stop_reason == ConversationStopReason::End;
+                    active.completion_outcome = Some(match stop_reason {
+                        ConversationStopReason::End => RunCompletionOutcome::Completed,
+                        ConversationStopReason::Length | ConversationStopReason::TurnLimit => {
+                            RunCompletionOutcome::Interrupted
+                        }
+                    });
                 }
                 _ => {}
             }

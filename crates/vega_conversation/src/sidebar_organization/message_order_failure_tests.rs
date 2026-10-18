@@ -154,8 +154,10 @@ fn duplicate_and_invalid_message_inserts_never_change_order_or_revision() {
                 assert!(messages::find(store.conn(), &row.id).unwrap().is_none());
             }
             assert_eq!(
-                messages::recent(store.conn(), "project-c", 20).unwrap(),
-                [existing.clone()]
+                messages::recent(store.conn(), "project-c", 20)
+                    .unwrap()
+                    .as_slice(),
+                std::slice::from_ref(&existing)
             );
         }
     }

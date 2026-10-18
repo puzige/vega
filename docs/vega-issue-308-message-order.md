@@ -1,8 +1,8 @@
 # #308 — 新消息置前与手动拖动统一顺序
 
-版本：v2.5，2026-10-19。状态：Vega 先行测试已由 Codex 集成到 #479 新基线；静态审查完成，待建立 draft PR 取 Actions 有效 RED。测试尚未冻结。
+版本：v2.6，2026-10-19。状态：draft PR #484 首轮已执行；Codex 接回界面观察接线修正及 #483 基线同步，待现有 Actions 重验。测试尚未冻结。
 Issue：https://github.com/puzige/vega/issues/308
-RED 生产行为基线：`6c782a630ceb4c83f4f6b1e09bdc645ac8e87092`。
+RED 生产行为基线：`ae35310fe7e1ddac2b79d7ec7bc55bcca2d6af2a`（#483）；首轮 CI 的历史基线为 `6c782a630ceb4c83f4f6b1e09bdc645ac8e87092`。
 任务分支：`feat/308-new-thread-order`；复用本卡保留的 sidebar-reorder worktree，原 `feat/308-sidebar-reorder` 分支保留。
 
 本轮是原卡用户反馈后的独立验收修订。用户明确取消更新时间/创建时间/手动排序模式切换，改为“有一条新消息就移到顶部，同时允许手动拖动”。本文件取代 [v1.1](vega-issue-308-sidebar-reorder.md) 的时间排序及三种模式契约；旧报告仅作历史证据。先前讨论的“只把未登记会话改按创建时间排序”方案未实施，也不再是本轮方案。其余项目归属、置顶、归档、分页、导航和拖放安全契约沿用。
@@ -16,6 +16,8 @@ v2.3 处理 02:58 合入的 #482：该提交在 v2.2 基线核对后删除现存
 v2.4 处理 Vega 的[错误观察范围报告](https://github.com/puzige/vega/issues/308#issuecomment-6254375832)：M7 已要求断言 Plan 启动阻塞与重复 start 的既有错误，原只读字段清单却只列 entries/identity/text。明确批准 `ConversationStream::controller_error_message() -> Option<&str>`，实现仅为 `self.controller_error.as_deref()`；不改错误/事件语义，不读 DB、不注入状态，也不新增依赖或通用测试接口。该方法仅供本卡跨 crate 测试观察，带测试 GREEN 固证后的独立删测阶段删除。验收目标与预期不变；现存工作区补丁仍未冻结，无 RED/GREEN。
 
 v2.5 由 Codex 接回 [Vega 的 #479 基线漂移报告](https://github.com/puzige/vega/issues/308#issuecomment-6254640797)，保护全部测试进展后同步 `6c782a63`。完整保留上游复制入口、Final 缓存、代码块原文、Tab 遍历和选区菜单生命周期修复，不恢复该卡已删除的 13 项测试或独占支持。三个只读方法继续从实际 Assistant entries/identity、`copy.original_text()` 与 controller_error 读取；这些字段和原文接口在新基线未改，新增 Final 复制缓存独立维护。M7 正文、终态、健康流/错误/replay 的目标与预期不变，M6 的 Sidebar + TextInput/组件 Root 夹具不经过 ConversationStream 的 Composer Tab 遍历。Vega 已停写，剩余基线集成、两处格式修正与最终审查由 Codex 组织专职子任务完成，直接进入 draft PR / RED。当前 41 个源码测试定义（conversation 24、M6 7、snapshot 3、app 7）仅表示静态清点；发现、执行与通过计数待 Actions。
+
+v2.6 固定 [首轮 CI 与接线审查](https://github.com/puzige/vega/issues/308#issuecomment-6254877233)：[测试提交 f72d590c](https://github.com/puzige/vega/commit/f72d590cfcf2ad8eba654d62c8caadb62838a856) 的 [Actions 39163406130](https://github.com/puzige/vega/actions/runs/39163406130) 实际执行 41、通过 2、失败 39、跳过 0；其中 17 个界面用例受初始 bounds 接线问题阻断，Clippy 另报一个借用切片 lint，不能整体冻结为有效 RED。Codex 批准下表最小观察修正，保留全部测试定义及业务断言。同步新 master `ae35310f` 时保留 #483 的后台完成未读、系统通知和回执路径，不恢复上游测试；仅把完成后的期望快照明确包含该既有未读变化，完整顺序和其他字段仍逐项保持。已有 CI 来源通过保留祖先的合并提交继续可访问，不 rebase/force-push 丢弃。
 
 本轮执行切片明确交给 Vega：先写齐以下测试并交回 Codex；Codex 用测试先行 draft PR 确认有效 RED、冻结后，Vega 才修改生产实现。遵守 [执行总纲](vega-exec-guide.md)、[工作流](vega-issue-workflow.md) 和 [测试开发/交付生命周期](vega-rust-test-delivery-lifecycle.md)。本地不运行 Vega、不编译、打包或执行任何测试。
 
@@ -39,7 +41,7 @@ v2.5 由 Codex 接回 [Vega 的 #479 基线漂移报告](https://github.com/puzi
 
 ### 基线与最小接线
 
-- 原检查点 `1bdbc2e1bfb2d701ef66599c74fb33b6e674698e` 基于 `3a97f4d9`，v2.2 检查点 `7b163ad0f91f638ac0f7b770e19b0bf97f75eb2b` 基于 `b3c2ffaf`，均保留为此前评论的来源证据。本轮先同步 #482，再 rebase 到 `6c782a63`，保留 #476/#482 的删除结果和 #480/#479 实际生产变更。先读 [生命周期](vega-rust-test-delivery-lifecycle.md) 与[合并纠偏历史](vega-rust-reset-reconciliation.md)，不以解决冲突恢复已清除集合。
+- 原检查点 `1bdbc2e1bfb2d701ef66599c74fb33b6e674698e` 基于 `3a97f4d9`，v2.2 检查点 `7b163ad0f91f638ac0f7b770e19b0bf97f75eb2b` 基于 `b3c2ffaf`，均保留为此前评论的来源证据。本轮先同步 #482，再 rebase 到 `6c782a63`；首轮 CI 后以保留该来源的 merge 同步到 `ae35310f`，保留 #476/#482 的删除结果和 #480/#479/#483 实际生产变更。先读 [生命周期](vega-rust-test-delivery-lifecycle.md) 与[合并纠偏历史](vega-rust-reset-reconciliation.md)，不以解决冲突恢复已清除集合。
 - conversation 的 `message_order_tests.rs` 直接在 `sidebar_organization/mod.rs` 的 `cfg(test)` 下接线，内部只提取本卡实际需要的 `open/change/new_group/ordered_ids`；failure 子模块保留，legacy 4 案独立接线并重新静态审查真实 schema 27 fixture。
 - UI 使用 `organization/archive_controls_tests.rs` 中最小 mounted-sidebar fixture 承载 `tests/archive_controls.rs` 两个新用例；不重建已删除的历史 `organization/tests.rs`。原菜单/上移下移/Esc/分页边界如缺覆盖，Vega 按本矩阵补新的有区分度行为用例，不批量移回历史测试。
 - 应用历史 `tests.rs/diff.rs` 已在 #482 删除，rebase 冲突保留删除，不新建旧根模块或恢复其测试。将原全局初始化中本卡实际需要的少量注册移入 `artifact_message_order_tests.rs` 本地 fixture，仅用 owned DB/config 及进程内 GPUI。现有 `SidebarConfigPath` 导入不是可用公共 API（在 `b3c2ffaf` 也不存在），删除该错误导入/设置，不为此新增同名生产全局或读取用户配置。侧栏必要 globals 由 fixture 显式初始化。
@@ -58,6 +60,9 @@ v2.5 由 Codex 接回 [Vega 的 #479 基线漂移报告](https://github.com/puzi
 | `window/mod.rs`、`window/session.rs` | 仅恢复 `cfg(test)` 的 owned config path override 字段/初始化和对应读取分支；测试构造窗口时跳过 updater 启动 | 生产条件投影不变，避免接触用户配置或真实更新网络。pricing 路径仍来自 owned DB，其他外部服务保持未配置/阻塞 |
 | `artifact_message_order_tests.rs` | 本地最小 globals fixture，移除 `MockProvider`/`agent_provider_override` 设置及无用导入 | M7 手动驱动真实 ingress；Plan 在创建 worker 前由既有前置条件阻塞，不需要 provider mock。不得恢复 app_agent/provider 的测试绕过链路 |
 | `conversation_stream/content.rs` | 允许现有 entries 数量、assistant identity/text 投影和 `controller_error_message() -> Option<&str>` 的最小只读查询 | 错误 getter 精确读取 `self.controller_error.as_deref()`，仅两个既有错误场景及健康流无错误断言消费；不改变字段、映射或事件路径。跨 crate 方法与其余测试独占观察在 GREEN 固证后独立删除 |
+| `sidebar/mod.rs`、`threads_block.rs`、`organization/{render,menu}.rs` | 为本卡已查询的真实 sidebar-scroll、会话行/菜单/菜单项、通用控件、最近标题和项目分页元素增加与现有 ID 一致的 `debug_selector` | 锁定 GPUI 的 `debug_bounds` 不读 ElementId，只读该独立登记。只观察真实布局，非 test-support 构建中由 GPUI 自身 no-op；不改 ID、布局、焦点、事件、可访问性、排序或菜单，不新建 feature/API，GREEN 后独立删除 |
+
+首轮接线修正只允许把 failure fixture 的单元素 clone 比较等价改为借用切片，不放宽/删除断言或添加 lint 豁免。#483 的 `finish_completion_attention` 在后台完成时持久化源会话 `unread=true`，现有 `threads::update` 不修改时间或组织 revision；因此 M7 完成后整份快照比较应从完成前期望克隆、只将源会话的期望 unread 设为 true，再完整相等比较。不能从实际结果反推期望、只比较 rank 来丢弃 metadata 断言、预设所有会话已读/未读以掩盖变化，或禁用真实终态/通知路径。replay 在完成后取的快照、Plan 无 assistant start 和 duplicate 场景保持原断言。
 
 若发现未列出的编译依赖/支持缺口，给出消费者和最小差异后交 Codex，不能恢复整套旧支持。所有支撑只用于观察真实生产决策，不替代排序、fence、Plan 持久化或正文投影。
 
@@ -90,7 +95,7 @@ Codex 明确将名称证据分配给实现属性审查及用户手测，产品�
 
 ## 代码证据与根因
 
-基线 `6c782a63` 的静态链路如下，未运行本地应用复现；相较 v2.1，#476/#482 清理历史测试及支持，#480 修改输入模型选择器和空上下文用量，#479 修改消息/代码块复制、正文 Final 缓存与 Tab/选区菜单行为，没有实现以下排序/刷新行为：
+基线 `ae35310f` 的静态链路如下，未运行本地应用复现；相较 v2.1，#476/#482 清理历史测试及支持，#480 修改输入模型选择器和空上下文用量，#479 修改消息/代码块复制、正文 Final 缓存与 Tab/选区菜单行为，#483 增加后台完成未读/通知及其刷新，没有实现本轮消息 INSERT 置前或即时 MessageStarted/Plan 批准刷新契约：
 
 - `vega_ui::sidebar::ThreadsBlock::open_thread` → `vega_conversation::threads::visit_thread` → `vega_store::threads::visit_thread` 更新 `threads.updated_at` 后刷新。
 - `sidebar_organization/ordering.rs::sorted_threads` 对 Updated 及 Manual 的未登记 ID 仍按 updated_at 排序，导致点击移动；已登记 rank 则不随真正的新消息改变。
@@ -105,7 +110,7 @@ Codex 明确将名称证据分配给实现属性审查及用户手测，产品�
 
 ### 第一阶段：先行测试，不改生产
 
-1. Vega 写入本轮 M1–M7，Codex 按 v2.5 集成到最新基线并完成冻结前审查。测试直接使用公开消息/组织/存储边界；UI 用真实输入/渲染结果和 controller ingress，不查源码字符串、不仅数 mock 调用、不写镜像排序。M6 fixture 通过现有只读列表 API 获取新建对象和快照，检查本身不访问会话或改访问时间。
+1. Vega 写入本轮 M1–M7，Codex 按 v2.6 集成到最新基线并完成冻结前审查。测试直接使用公开消息/组织/存储边界；UI 用真实输入/渲染结果和 controller ingress，不查源码字符串、不仅数 mock 调用、不写镜像排序。M6 fixture 通过现有只读列表 API 获取新建对象和快照，检查本身不访问会话或改访问时间。
 2. 可使用新测试文件、最小 `cfg(test)` 接线及上节明确批准的 dev 支撑、completion 纯提取/只读投影观察；除这些支撑外，生产业务逻辑保持本版基线，不提前实现排序、迁移、入口替换或侧栏刷新。只恢复清单内已有锁版本的必要开发依赖；不得恢复整套历史测试支持、加入外部进程/网络 E2E、修改 CI 或升级依赖。旧 schema fixture 要与 schema 27 一致；若远端基线漂移，先向 Codex 报告，不能悄悄改验收。
 3. 提交测试补丁并交回同一 Issue，附基线、测试 commit、目标失败预期、静态检查及完整 diff，区分测试/接线、completion 纯提取、只读观察器和业务差异；列证业务行为仍为基线、没有提前实施第二阶段，然后停止写入，当前执行者待领取、下一执行者 Codex。
 4. Codex 审查后建立本轮 draft PR 触发现有 Actions。至少新消息不置前/点开重排或排序入口残留的目标行为断言构成有效 RED；无关编译、依赖、runner 失败不算 RED。失败原文、run/job 和 commit 均保留；未取得 RED 时不得进入下一阶段。
@@ -136,7 +141,9 @@ Codex 明确将名称证据分配给实现属性审查及用户手测，产品�
 
 当前仅授权先行测试与 RED。用户已连续授权本卡“修订方案 → Vega 补齐测试 → Codex 建 draft PR 跑 RED”；Vega 已因基线漂移停写，Codex 接回剩余基线集成、格式和最终审查后直接建立本轮 draft PR，不领取其他卡，也不重复交 Vega 做同一轮集成。RED 证据、测试补丁 commit 和冻结内容待 Codex 确认后在 Issue 发布下一次交接；不能依据本文件提前实施第二阶段。采用“方案 → 测试 → 实现”最多 3 个本轮提交，修订方案和未冻结测试分别整理进原方案/测试提交，原检查点链接保留；不改历史 RED 证据、不通过删除有效断言换绿。
 
-v2.4 已先独立提交文档，使观察范围裁决可访问并保持暂停工作区中的测试进展。Vega 续做的完整补丁已保护为检查点，Codex 在 draft PR / RED 前将 v2.5 文档及非证据性准备提交整理为“方案 → 测试”，保留授权和原检查点链接。当前没有实际 RED/GREEN，后续取得后不得通过此整理安排丢弃唯一测试证据。
+首轮 [Nextest job 117781274190](https://github.com/puzige/vega/actions/runs/39163406130/job/117781274190) 在 14 个 binaries 中执行 41 个测试（2 通过/39 失败/0 跳过），独立 JSON 清点数未从输出取得，Python 为 5+15+14 全部通过。conversation 的 22 个失败属于目标顺序/revision/初始化缺失，另 2 个约束/Plan 保底通过；app 7、M6 7、snapshot 3 尚受观察接线阻断。[Clippy job 117781273934](https://github.com/puzige/vega/actions/runs/39163406130/job/117781273934) 的 `cloned_ref_to_slice_refs` 不是行为 RED，fmt 已通过。v2.6 修正后须重新跑最新 head；不沿用首轮结果冻结，也不把 job 脚本打印的空集分支字符串当成实际 0 测试结果。自首轮起保留原提交及 run，后续仅追加有审查记录的兼容/接线修正提交。
+
+v2.4 已先独立提交文档，使观察范围裁决可访问并保持暂停工作区中的测试进展。Vega 续做的完整补丁已保护为检查点，Codex 在 draft PR / RED 前将 v2.5 文档及非证据性准备提交整理为“方案 → 测试”，保留授权和原检查点链接。该次整理时尚无实际 RED/GREEN，后续取得后不得通过此整理安排丢弃唯一测试证据。
 
 #482 新规则优先于上段旧的三阶段提交安排：开发期保留同一冻结测试，带测试 GREEN 的提交/源码及云端 run/job/准确计数先固定到 draft PR，再以独立提交删除 Rust 测试、可执行 doctest 和独占 fixture/mock/helper/feature/dev 接线。completion 提取中有生产消费者的处理器保留，纯测试观察器/config override/updater 测试开关等无生产消费者的部分删除。Python、真实业务/安全/无障碍/焦点/绘制行为、迁移、benchmark 和通用 CI 保留。不能为提交数把独立删测混进实现，后续由 Codex 整理非证据性准备提交；已取得 RED/GREEN 的唯一源码证据不得 rebase/force-push 丢弃。
 

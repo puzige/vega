@@ -264,6 +264,7 @@ impl ThreadsBlock {
         div()
             .id(ElementId::Name(id.clone().into()))
             .aria_label(label.clone())
+            .debug_selector(|| id.clone())
             .focusable()
             .tab_stop(true)
             .size(px(24.))
@@ -402,6 +403,7 @@ impl ThreadsBlock {
             });
         let header = div()
             .id("organization-recents-header")
+            .debug_selector(|| "organization-recents-header".into())
             .track_focus(&self.recents_header_focus)
             .flex()
             .items_center()
@@ -624,6 +626,7 @@ impl ThreadsBlock {
         let keyboard_project_id = project_id.to_owned();
         div()
             .id(ElementId::Name(id.clone().into()))
+            .debug_selector(|| id.clone())
             .focusable()
             .tab_stop(true)
             .role(gpui_kit::Role::Button)

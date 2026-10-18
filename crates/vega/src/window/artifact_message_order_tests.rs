@@ -150,6 +150,20 @@ fn snapshot(f: &Fixture) -> SidebarOrganizationSnapshot {
     organization::snapshot(&Store::open(&f.database).unwrap()).unwrap()
 }
 
+fn expected_after_background_completion(
+    f: &Fixture,
+    before: &SidebarOrganizationSnapshot,
+) -> SidebarOrganizationSnapshot {
+    let mut expected = before.clone();
+    expected
+        .threads
+        .iter_mut()
+        .find(|thread| thread.id == f.rows[2].id)
+        .unwrap()
+        .unread = true;
+    expected
+}
+
 fn project_order(f: &Fixture, state: &SidebarOrganizationSnapshot) -> Vec<String> {
     organization::sorted_threads(&state.threads, &state.preferences)
         .into_iter()
@@ -454,7 +468,10 @@ fn committed_background_message_refreshes_rows_before_poll_without_writing_order
     assert_navigation(&f, cx);
     finish(&f, generation, &mut row, cx);
     assert_projected_messages(&f, &[&row], cx);
-    assert_eq!(snapshot(&f), committed);
+    assert_eq!(
+        snapshot(&f),
+        expected_after_background_completion(&f, &committed)
+    );
     assert_rows(&f, [2, 0, 1], cx);
     assert_navigation(&f, cx);
 }
@@ -505,7 +522,10 @@ fn new_messages_interleaved_with_drag_keep_order_through_deltas_and_finish(
     assert_eq!(project_order(&f, &first_drag), expected_ids(&f, [0, 1, 2]));
     finish(&f, first_generation, &mut first, cx);
     assert_rows(&f, [0, 1, 2], cx);
-    assert_eq!(snapshot(&f), first_drag);
+    assert_eq!(
+        snapshot(&f),
+        expected_after_background_completion(&f, &first_drag)
+    );
     assert_navigation(&f, cx);
 
     let second_generation = begin(&f, cx);
@@ -1054,7 +1074,10 @@ fn sidebar_sort_failure_keeps_normal_receipt_order_and_draft_until_next_new_mess
     assert_eq!(snapshot(&f), original);
     finish(&f, generation, &mut row, cx);
     assert_rows(&f, [0, 1, 2], cx);
-    assert_eq!(snapshot(&f), original);
+    assert_eq!(
+        snapshot(&f),
+        expected_after_background_completion(&f, &original)
+    );
     assert_projected_messages(&f, &[&row], cx);
     assert_navigation(&f, cx);
 
