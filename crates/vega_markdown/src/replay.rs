@@ -1,45 +1,6 @@
-//! Mock delta replayer (S3-T18): turns static markdown content into a paced
-//! delta stream feeding [`MarkdownStream`](crate::MarkdownStream) — the shared
-//! infra behind the S3 acceptance demo and the S4 mock provider.
-//!
-//! The replayer is a **pure, UI-free state machine** (tech-spec §5 keeps this
-//! crate headless like `vega_runtime`): it holds the pre-split delta list and
-//! a rate, and hands out the deltas that are "due" since the last call. The
-//! driver loop — GPUI timer in S3 (`vega_ui::conversation_stream`), a tokio
-//! interval for the S4 mock provider — stays with the caller; the crate
-//! deliberately grows no new dependencies.
-//!
-//! Pacing uses the spike/T17 self-correcting scheme: the injected count
-//! follows `rate × elapsed` instead of trusting tick regularity, so main
-//! -thread jitter cannot accumulate drift.
-//!
-//! # Example
-//!
-//! ```
-//! use std::time::{Duration, Instant};
-//! use vega_markdown::{MarkdownStream, MockReplay};
-//!
-//! let mut replay = MockReplay::new("# Title\n\nBody", 500, 0x5EED);
-//! let started = Instant::now();
-//! let mut stream = MarkdownStream::new();
-//! while !replay.is_finished() {
-//!     // One driver tick (the real caller polls on a ~16ms timer):
-//!     for delta in replay.take_due_at(started + Duration::from_secs(10)) {
-//!         stream.append(&delta);
-//!     }
-//! }
-//! assert!(replay.is_finished());
-//! // 消息流结束时（tech-spec §5.4）终结：作废 pending 补全残留。
-//! stream.finish();
-//! assert!(stream.snapshot().pending.is_none());
-//! ```
-
 use std::path::Path;
 use std::time::Instant;
 
-/// Splits a document into 3..8-char deltas without splitting UTF-8 codepoints
-/// (T14 spike / T15 harness method; shared by the S3 demo injection, the
-/// render_frame bench and the future S4 mock provider).
 pub fn split_deltas(doc: &str, seed: u64) -> Vec<String> {
     let mut deltas = Vec::new();
     let mut chunk = String::new();

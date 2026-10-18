@@ -337,9 +337,6 @@ impl Element for TextElement {
         }
         let line_height = prepaint.line_height;
         for (row, layout) in prepaint.lines.iter().enumerate() {
-            // Nothing sensible can be done about a paint failure mid-frame,
-            // and this crate may not depend on a logger (T08 dependency
-            // ruling), so the result is intentionally discarded.
             let _ = layout.line.paint(
                 point(bounds.origin.x, bounds.origin.y + line_height * row as f32),
                 line_height,
@@ -432,9 +429,6 @@ impl Render for TextInput {
                 ))
             });
         if !self.multiline {
-            // R62 R10: a bare-chrome input draws no surface of its own; the
-            // menu row around it already supplies background, border, radius
-            // and padding, so a second box would read as a field inside a box.
             if !self.bare_chrome {
                 container = container
                     .bg(colors.bg_elevated)

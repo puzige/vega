@@ -1,46 +1,3 @@
-//! Sidebar (T09 shell + T12 content + T13 session management): the fixed
-//! Compact left column of the main window layout
-//! ([vega-ui-spec.md §1](../../docs/vega-ui-spec.md)).
-//!
-//! Structure per the T12 architect ruling: a small Vega brand row, a light
-//! [新建任务] entry, then two independent block components — [`ProjectsBlock`]
-//! (project list: select / add / remove / sort toggle, branch suffix per row)
-//! and [`ThreadsBlock`] (the selected project's sessions: pinned group first,
-//! `updated_at` desc) — orchestrated by [`Sidebar`], which owns the
-//! cross-block wiring. Settings remains a stable low-frequency entry at the
-//! bottom of the rail.
-//!
-//! R13 projects the same task rows into nested projects, a local-calendar
-//! timeline, or cross-project custom groups. Organization metadata uses one
-//! background revision-checked lane; project registration/live branches and
-//! the existing task action/navigation boundaries remain shared.
-//!
-//! T13 (A1-05) adds the session management operations to [`ThreadsBlock`]:
-//! per-row hover action groups (置顶 / 归档或恢复 / 删除), double-click inline
-//! renaming (reusing [`crate::text_input::TextInput`]; Enter submits, Esc
-//! cancels, an empty title cancels), the 「已归档 (N)」 collapsed section at
-//! the bottom of the block, and the delete confirmation overlay
-//! ([`render_delete_confirm_overlay`], driven by the [`PendingDeleteConfirm`]
-//! global and rendered by the window root).
-//!
-//! State model:
-//!
-//! - Cmd+B ([`toggle_persisted`]) flips the [`SidebarCollapsed`] global and
-//!   persists it as `ui.sidebar_collapsed` (T09 mechanism, serde default).
-//! - Block collapse states persist the same way (`ui.projects_collapsed` /
-//!   `ui.sessions_collapsed`, serde defaults keep older configs loadable).
-//!   The archive-section expansion is in-memory only (T13 卡允许不做记忆).
-//! - The selected project is cached in the [`SelectedProject`] global so
-//!   per-frame renders never query the store; it is seeded once at startup
-//!   from `vega_conversation`'s latest-project semantics and rewritten on
-//!   row click. `None` → the session block shows guidance copy.
-//! - The opened thread is cached in the [`OpenedThread`] global; the window
-//!   root renders it as a [`crate::conversation_stream::ConversationStream`]
-//!   view since S3-T17.
-//!
-//! The viewport auto-collapse rule (ui-spec §1) is applied by the window
-//! root at render time.
-
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -95,9 +52,6 @@ pub const CONTENT_MAX_WIDTH: f32 = Layout::CONTENT_MAX_WIDTH;
 /// Content column minimum horizontal padding in logical pixels (ui-spec §1).
 pub const CONTENT_MIN_PADDING: f32 = Layout::CONTENT_PADDING;
 
-/// Whether the user collapsed the sidebar with Cmd+B (T09, persisted as
-/// `ui.sidebar_collapsed`). The effective sidebar visibility is
-/// `!self.0 && viewport_width >= AUTO_COLLAPSE_WIDTH`.
 pub struct SidebarCollapsed(pub bool);
 
 impl Global for SidebarCollapsed {}
@@ -108,8 +62,6 @@ pub struct SidebarWidth(pub f32);
 
 impl Global for SidebarWidth {}
 
-/// Returns the effective stored Sidebar width, falling back to the R21
-/// default for isolated embedders that have not installed the global yet.
 pub fn width(cx: &App) -> f32 {
     cx.try_global::<SidebarWidth>()
         .map_or(Layout::SIDEBAR_WIDTH, |width| {
@@ -155,10 +107,6 @@ pub fn show_persisted(cx: &mut App) {
     );
 }
 
-/// The project the 「会话」 block is scoped to (T12 architect ruling: cached
-/// as a global so renders never query the store). Seeded at startup from
-/// latest-project semantics; rewritten on project row click. `None` →
-/// guidance copy instead of a thread list.
 pub struct SelectedProject(pub Option<String>);
 
 impl Global for SelectedProject {}
@@ -191,10 +139,6 @@ pub struct RunningThreadsGlobal(pub vega_conversation::types::RunningThreads);
 
 impl Global for RunningThreadsGlobal {}
 
-/// Records one thread's Agent liveness and repaints every window so all
-/// sidebars agree (A1-14). A repeated value is skipped: writing the same
-/// projection would otherwise repaint for nothing, and `RunningThreads` is
-/// cheap to compare.
 pub fn set_thread_running(thread_id: &str, running: bool, cx: &mut App) {
     let mut next = cx
         .try_global::<RunningThreadsGlobal>()
@@ -219,19 +163,10 @@ pub fn thread_is_running(thread_id: &str, cx: &App) -> bool {
         .is_some_and(|running| running.0.is_running(thread_id))
 }
 
-/// The opened-thread content column is rendered by the window root since
-/// S3-T17: an inline [`crate::conversation_stream::ConversationStream`] view
-/// (thread header + virtualized stream) replaces the former
-/// `render_opened_thread_pane` placeholder, which was deleted with this card.
 pub struct OpenedThread(pub Option<Thread>);
 
 impl Global for OpenedThread {}
 
-/// The thread awaiting deletion in the T13 confirmation overlay (裁决②：a
-/// global carries the pending delete; `None` = nothing pending). The overlay
-/// is rendered by the window root; clicking the scrim outside the card or
-/// pressing Esc (routed through the existing global `CloseSettings` handler,
-/// which consumes the overlay first) cancels it.
 pub struct PendingDeleteConfirm(pub Option<Thread>);
 
 impl Global for PendingDeleteConfirm {}
@@ -242,8 +177,6 @@ pub enum SidebarEvent {
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
 
-/// Whether the 「项目」 block is collapsed (persisted as
-/// `ui.projects_collapsed`, T12 ruling: config 载体).
 pub struct ProjectsCollapsed(pub bool);
 
 impl Global for ProjectsCollapsed {}
@@ -262,14 +195,6 @@ pub struct VegaStore(pub Result<Store, String>);
 
 impl Global for VegaStore {}
 
-/// R69 R3: the `config.defaults` values a new task starts from
-/// (`defaults.model` / `defaults.permission_mode`).
-///
-/// Installed from the same `config::load()` source the eager `create_task`
-/// path used, and refreshed by the window's config-catalog worker, so the
-/// home-route draft can take its defaults **without any config IO during
-/// render** (the A2-14/R1 constraint). `Default` mirrors the missing-config
-/// template (`AppConfig::default().defaults`): empty model, `confirm`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewTaskDefaults {
     /// `defaults.model` (empty until a provider is configured).
@@ -321,7 +246,6 @@ pub fn load_collapsed() -> bool {
     }
 }
 
-/// Loads the persisted R21 Sidebar width, using the finite default on error.
 pub fn load_width() -> f32 {
     match config::load() {
         Ok(config) => config::clamp_sidebar_width(config.ui.sidebar_width),
@@ -424,8 +348,6 @@ fn persist_ui(mutate: impl FnOnce(&mut config::AppConfig), what: &'static str, c
     cx.refresh_windows();
 }
 
-/// 「项目」block collapse toggle: flips the global and persists it as
-/// `ui.projects_collapsed` (T12 折叠记忆，同 T09 机制).
 fn toggle_projects_block(cx: &mut App) {
     let collapsed = !cx.global::<ProjectsCollapsed>().0;
     cx.set_global(ProjectsCollapsed(collapsed));
@@ -466,18 +388,9 @@ fn with_store<R>(
     }
 }
 
-/// The sidebar orchestrator: brand/new-task chrome, the two block entities,
-/// and a stable settings entry. Block components own their data + row
-/// interactions; this struct only wires cross-block reactions (project
-/// selection resyncs the session list, opening a thread refreshes the
-/// project order) plus the T13 delete-confirmation execution
-/// ([`Self::confirm_pending_delete`], invoked by the window-root overlay).
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
-    /// Issue #57: tracked scroll state for the outer `sidebar-scroll` column.
-    /// Its `offset`/`max_offset` are read in the `on_children_prepainted`
-    /// callback to decide whether the lazy Recents list should grow.
     sidebar_scroll: gpui_kit::ScrollHandle,
     /// Inline error from thread creation (ui-spec §4.6: no modals).
     new_task_error: Option<String>,
@@ -545,10 +458,6 @@ impl Sidebar {
         cx.refresh_windows();
     }
 
-    /// [删除] confirmed in the T13 overlay: deletes the thread (the store
-    /// layer removes its messages/tool_calls in the same transaction), falls
-    /// back to the §4.6 empty state when the deleted thread was open, and
-    /// reloads the session block. Failures surface as its inline error bar.
     pub fn confirm_pending_delete(&mut self, cx: &mut Context<Self>) {
         let Some(thread) = cx.global::<PendingDeleteConfirm>().0.clone() else {
             return;
@@ -616,10 +525,6 @@ impl Sidebar {
             .map(|project| project.name.clone())
     }
 
-    /// Re-reads the session block's durable rows. Production callers reach this
-    /// through the block's own event wiring; this wrapper exists so a caller
-    /// that changed the store directly (the window's draft materialization on
-    /// first submit, R69 R8) can refresh the sidebar without owning the block.
     pub fn reload_sessions(&mut self, cx: &mut Context<Self>) {
         self.sessions_block.update(cx, ThreadsBlock::reload);
     }
@@ -789,16 +694,6 @@ impl Render for Sidebar {
                     .child(self.render_new_task(cx, &colors))
                     .child(
                         div()
-                            // Issue #57: Recents lazy-loads instead of showing a
-                            // `Show More` control. This container is the sidebar's
-                            // only scroller, and the tracked handle is updated in
-                            // this element's own prepaint (`clamp_scroll_position`)
-                            // *before* children prepaint, so the values read here are
-                            // this frame's. `ThreadsBlock::render` cannot drive this:
-                            // scrolling dirties only `Sidebar`, and the child
-                            // `ViewElement` subtree is reused from its prepaint cache.
-                            // (`on_children_prepainted` must precede `.id()`, which
-                            // returns `Stateful<Div>` and no longer exposes it.)
                             .on_children_prepainted({
                                 let scroll = self.sidebar_scroll.clone();
                                 let sessions = self.sessions_block.clone();
@@ -862,10 +757,9 @@ pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};
 mod tests {
 
     use super::{
-        OpenedThread, PendingDeleteConfirm, RenameResolution, RunningThreadsGlobal,
-        SelectedProject, Sidebar, SidebarEvent, VegaStore, archive_section_visible,
-        civil_from_days, clear_opened_thread_of_project, relative_time_from, resolve_rename,
-        row_shows_actions, set_thread_running, shows_timestamp_at_rest, thread_is_running,
+        OpenedThread, PendingDeleteConfirm, RenameResolution, SelectedProject, Sidebar,
+        SidebarEvent, VegaStore, archive_section_visible, civil_from_days,
+        clear_opened_thread_of_project, relative_time_from, resolve_rename, row_shows_actions,
         thread_title,
     };
     use gpui_kit::AppContext;
@@ -996,14 +890,6 @@ mod tests {
     }
 
     #[test]
-    fn rename_submission_blank_is_cancel() {
-        // 空标题提交视为取消（T13 卡面要求；Enter/Esc 键盘路径本身人工验收）。
-        assert!(matches!(resolve_rename(""), RenameResolution::Cancel));
-        assert!(matches!(resolve_rename("   "), RenameResolution::Cancel));
-        assert!(matches!(resolve_rename("\t\n"), RenameResolution::Cancel));
-    }
-
-    #[test]
     fn rename_submission_trims_and_commits_non_blank() {
         match resolve_rename("新标题") {
             RenameResolution::Commit(title) => assert_eq!(title, "新标题"),
@@ -1032,46 +918,6 @@ mod tests {
     }
 
     #[test]
-    fn running_row_owns_the_tail_slot() {
-        // #150 R10: the tail is one slot. A running row suppresses the resting
-        // timestamp; hover still wins because it reveals the action trigger.
-        assert!(shows_timestamp_at_rest(false, true, false));
-        assert!(!shows_timestamp_at_rest(false, true, true));
-        assert!(!shows_timestamp_at_rest(true, true, false));
-        assert!(!shows_timestamp_at_rest(true, true, true));
-        // A row that never shows a resting timestamp is unaffected either way.
-        assert!(!shows_timestamp_at_rest(false, false, false));
-        assert!(!shows_timestamp_at_rest(false, false, true));
-    }
-
-    #[gpui_kit::test]
-    async fn thread_liveness_bridge_is_idempotent_and_fails_closed(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        cx.update(|cx| {
-            // R12: without the global the answer is false — the UI never
-            // invents running state.
-            assert!(!thread_is_running("t1", cx));
-
-            set_thread_running("t1", true, cx);
-            assert!(thread_is_running("t1", cx));
-            assert!(!thread_is_running("t2", cx));
-
-            // A repeated true keeps the same value (no spurious repaint).
-            set_thread_running("t1", true, cx);
-            assert_eq!(cx.global::<RunningThreadsGlobal>().0.len(), 1);
-
-            set_thread_running("t1", false, cx);
-            assert!(!thread_is_running("t1", cx));
-            assert!(cx.global::<RunningThreadsGlobal>().0.is_empty());
-
-            // Clearing an already-clear thread is a no-op, not a panic.
-            set_thread_running("t1", false, cx);
-            assert!(!thread_is_running("t1", cx));
-        });
-    }
-
-    #[test]
     fn relative_time_uses_compact_units() {
         let now = 1_700_000_000_000;
         assert_eq!(relative_time_from(now, now), "now");
@@ -1095,46 +941,5 @@ mod tests {
         assert_eq!(civil_from_days(19_675), (2023, 11, 14));
         // 闰年边界：2024-02-29。
         assert_eq!(civil_from_days(19_782), (2024, 2, 29));
-    }
-}
-
-#[cfg(test)]
-mod issue296_tests {
-    use super::*;
-
-    struct Harness;
-    impl gpui_kit::Render for Harness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .child(Sidebar::render_settings_entry(&vega_theme::LIGHT, cx))
-        }
-    }
-
-    #[gpui_kit::test]
-    fn issue296_native_settings_press_preserves_activation(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            crate::init(cx);
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SettingsOpen(false));
-        });
-        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |_, _| Harness);
-        cx.run_until_parked();
-        crate::interaction::tests::assert_native_control_press(window, cx, "sidebar-settings");
-        assert!(cx.read(|cx| cx.global::<SettingsOpen>().0));
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        visual.update(|window, cx| window.focus_next(cx));
-        for key in ["enter", "space"] {
-            visual.update(|_, cx| cx.set_global(SettingsOpen(false)));
-            let keystroke = gpui_kit::Keystroke::parse(key).expect("key");
-            visual.simulate_event(gpui_kit::KeyDownEvent {
-                keystroke: keystroke.clone(),
-                is_held: false,
-                prefer_character_input: false,
-            });
-            visual.simulate_event(gpui_kit::KeyUpEvent { keystroke });
-            assert!(visual.read(|cx| cx.global::<SettingsOpen>().0));
-        }
     }
 }

@@ -1,12 +1,3 @@
-//! S7-T39 (A10-02/A10-05) headless production journey: the bounded
-//! provisional estimate, in-place usage calibration, run/thread fencing, and
-//! restart recovery of the Composer counter, all driven by the real
-//! provider → runtime → conversation event chain against an owned temp data
-//! root with the frozen run-start pricing capability.
-//!
-//! Zero real keys, zero network, zero cost: the provider is the scripted
-//! `MockProvider` and the store lives in a `tempfile` directory.
-
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -172,8 +163,6 @@ fn assert_reading(
     assert_eq!(snapshot.provisional, provisional, "{context}: provisional");
     assert!(snapshot.available, "{context}: available");
 }
-
-// ─── estimate kernel boundaries (A10-02) ──────────────────────────────────
 
 #[test]
 fn ascii_cjk_and_emoji_estimate_by_unicode_scalars() {

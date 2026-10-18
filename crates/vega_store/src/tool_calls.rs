@@ -57,7 +57,6 @@ pub struct ToolCallState {
     pub exit_code: Option<i32>,
     /// Stored signed duration; conversation validates the non-negative range.
     pub duration_ms: Option<i64>,
-    /// Must remain absent in the S5 bounded-output contract.
     pub output_full_path: Option<String>,
 }
 
@@ -148,8 +147,6 @@ pub fn next_seq(conn: &Connection, thread_id: &str) -> Result<i64, rusqlite::Err
     )
 }
 
-/// Counts the persisted tool-call audit rows of one assistant message
-/// (S7-T40 per-task summary; read-only aggregate over the existing audit).
 pub fn count_by_message(
     conn: &Connection,
     thread_id: &str,

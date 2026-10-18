@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-//! R13 cached projections and one revision-checked background organization lane.
 use super::*;
 use std::collections::{HashMap, HashSet};
 use vega_conversation::sidebar_organization as service;
@@ -128,10 +127,6 @@ pub(crate) enum OrganizationSection {
     Projects,
     Recents,
 }
-/// Issue #57: one page of Recents rows. The section starts at this many rows
-/// (R29's compact limit) and appends one page each time the outer Sidebar
-/// scroller reaches the bottom, or immediately while the content still fits
-/// the viewport.
 pub(crate) const RECENTS_PAGE: usize = 10;
 pub(crate) const PROJECT_TASKS_PAGE: usize = 5;
 #[derive(Clone)]
@@ -517,9 +512,6 @@ impl ThreadsBlock {
         &self,
         thread_id: &str,
     ) -> Vec<(String, SidebarOrganizationAction)> {
-        // R15 has exactly two sidebar concepts: project folders and tasks.
-        // Legacy group memberships remain readable for migration compatibility,
-        // but no task action can expose or mutate that retired organization IA.
         let _ = thread_id;
         Vec::new()
     }

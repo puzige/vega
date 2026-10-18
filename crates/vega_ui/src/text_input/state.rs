@@ -33,8 +33,6 @@ impl TextInput {
         }
     }
 
-    /// Creates an empty fixed-`rows` multi-line input (S3-T18 Composer):
-    /// Enter inserts a newline, paste preserves line breaks.
     pub fn new_multiline(
         cx: &mut Context<Self>,
         placeholder: impl Into<SharedString>,
@@ -85,10 +83,6 @@ impl TextInput {
         self.last_bounds
     }
 
-    /// R62 R10: drops the single-line box chrome (background, border, radius,
-    /// padding) so the input can be the editable body of a menu row that draws
-    /// its own surface. Only the decoration changes: content, selection, IME
-    /// handling, editing keys and the placeholder are untouched.
     pub fn with_bare_chrome(mut self) -> Self {
         self.bare_chrome = true;
         self
@@ -112,8 +106,6 @@ impl TextInput {
         cx.notify();
     }
 
-    /// Replaces the whole content and collapses the selection to the end
-    /// (used to seed the T13 inline rename editor with the current title).
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = text.to_string().into();
@@ -161,10 +153,6 @@ impl TextInput {
         )
     }
 
-    /// Byte range + body of a trailing `@token` at the caret (A2-12): the
-    /// token starts after an `@` that sits at text start or right after
-    /// whitespace, extends to the caret, and contains no whitespace.
-    /// `None` when the caret is not completing an `@` token.
     pub fn trailing_at_query(&self) -> Option<(Range<usize>, String)> {
         let cursor = self.cursor_offset();
         let prefix = self.content.get(..cursor)?;
@@ -179,10 +167,6 @@ impl TextInput {
         Some((at + 1..cursor, query.to_string()))
     }
 
-    /// Completes the trailing `@token` with `path`: the token body is
-    /// replaced with `path ` (the existing `@` stays in place; the trailing
-    /// space terminates the token so the selector closes deterministically).
-    /// No-op without a trailing token (A2-12 completion seam).
     pub fn complete_at_query(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some((range, _)) = self.trailing_at_query() else {
             return;
@@ -652,10 +636,6 @@ impl TextInput {
         start..start.max(end)
     }
 
-    // Character boundaries instead of the example's grapheme boundaries: no
-    // unicode-segmentation dependency is allowed for this crate (T08 ruling).
-    // Both helpers tolerate out-of-range offsets (they are fed selection
-    // state that the platform may have written between our edits).
     pub(crate) fn previous_boundary(&self, offset: usize) -> usize {
         self.content
             .char_indices()

@@ -69,15 +69,9 @@ pub enum Icon {
     Keyboard,
     Globe,
     Summary,
-    /// Selection marker for menu rows (R62 R8/R10).
     Check,
-    /// R62 R8: the "ask for approval" permission row.
     Hand,
-    /// R62 R8: the "approve for me" permission row.
     Shield,
-    /// #117: context compaction. Lucide's `text-select` silhouette is the
-    /// reference product's own compaction marker; one glyph covers every
-    /// compaction state, so the row never swaps shape as the status changes.
     TextSelect,
 }
 
@@ -116,24 +110,10 @@ const TRASH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 
 const HELP_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>"#;
 
-/// Vega's pane-move glyph (R47 §2.2) is kept inline because the bundled icon
-/// set only offers the shell-slot dock shapes (panel + bottom/right bar), and
-/// reusing one of them for the pane-local "move dock" action read as the same
-/// control twice in one header. The glyph is a panel rectangle offset toward
-/// the trailing edge plus one arrow entering it from outside, on the same
-/// 24px viewBox, stroke-2, currentColor grammar as the other inline icons. At
-/// 16px it stays clearly distinct from `DockBottom` (rect + bottom bar) and
-/// `DockRight` (rect + right bar): neither carries an arrow.
 const DOCK_MOVE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="5" width="14" height="14" rx="2"/><path d="M2 12h9"/><path d="m8 9 3 3-3 3"/></svg>"#;
 
-/// R62 R8: Lucide's open hand, the reference implementation's "Ask for
-/// approval" glyph. gpui-kit 0.6.0 ships no hand asset, so the same 24px,
-/// stroke-2, round-join grammar is carried inline here (the file's existing
-/// convention for missing symbols).
 const HAND_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>"#;
 
-/// R62 R8: Lucide's shield, the reference implementation's "Approve for me"
-/// glyph. Inline for the same reason as [`HAND_SVG`].
 const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>"#;
 
 /// The Git branch outline is authored inline because gpui-kit 0.6.0 does not
@@ -141,10 +121,6 @@ const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 /// round-cap/round-join convention used by the other inline functional icons.
 const GIT_BRANCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="7" x2="6" y2="17"/><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M18 7v3a9 9 0 0 1-9 9H8"/></svg>"#;
 
-/// #117: Lucide's public `text-select` icon (ISC), carried inline because
-/// `gpui-kit-assets 0.6.0` does not ship it. Two bracket halves with three
-/// shortening rules read as "condensed text" at 16px, which is the reference
-/// product's own marker for a compacted context.
 const TEXT_SELECT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/><line x1="7" x2="15" y1="8" y2="8"/><line x1="7" x2="17" y1="12" y2="12"/><line x1="7" x2="13" y1="16" y2="16"/></svg>"#;
 
 fn icon_name(kind: Icon) -> IconName {
@@ -358,12 +334,6 @@ pub fn tooltip(
     cx.new(|_| IconTooltip(label, None)).into()
 }
 
-/// Permanent 28x28 shell control (R45 main-header slots): a 16px centered
-/// icon on the frozen titlebar hitbox with a persistent selected surface,
-/// hover only while unselected, a disabled presentation that keeps its
-/// geometry, and a tooltip that can carry a shortcut keycap. Selection wins
-/// over hover: the hover surface is only attached while unselected, so the
-/// two states can never be confused.
 pub fn shell_icon_button(
     kind: Icon,
     label: impl Into<gpui_kit::SharedString>,

@@ -1,5 +1,3 @@
-//! Conversation-layer orchestration for the headless runtime (S4-T20).
-
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs;
@@ -35,7 +33,6 @@ const PERSISTENCE_CHANNEL_CAPACITY: usize = 64;
 /// Authoritative production permission-card lifetime.
 pub const PERMISSION_TIMEOUT: Duration = vega_runtime::PERMISSION_TIMEOUT;
 
-/// Shared cancellable permission boundary implemented by the S5 UI.
 pub trait PermissionHook: Send + Sync {
     /// Requests one content-free permission decision.
     fn request(

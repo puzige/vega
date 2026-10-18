@@ -1,14 +1,3 @@
-//! Project registration CRUD (A1-03) against the `projects` table.
-//!
-//! Functions take a [`Connection`] (the single connection owned by
-//! [`Store`](crate::Store)) rather than `&Store`, so the module stays free of
-//! store-level concerns. IDs are ULIDs (tech-spec §2: `projects.id = ulid`);
-//! timestamps are unix milliseconds.
-//!
-//! The `path` column is `UNIQUE`: registering the same folder twice returns
-//! [`ProjectsError::PathAlreadyRegistered`] so callers (the projects UI) can
-//! render the inline danger bar instead of a generic failure.
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
@@ -158,13 +147,6 @@ pub fn find_by_path(conn: &Connection, path: &str) -> Result<Option<Project>, Pr
     .map_err(ProjectsError::from)
 }
 
-/// Unregisters a project and returns whether a row was deleted.
-///
-/// A8-02: existing tasks become standalone (`project_id IS NULL`) before the
-/// project row is removed. Both writes share one transaction, so a failed
-/// delete cannot leave tasks detached from a still-registered project. The
-/// sidebar project-order row follows its existing `ON DELETE CASCADE` foreign
-/// key. Files on disk are never touched (S2: no confirmation or file writes).
 pub fn remove(conn: &Connection, id: &str) -> Result<bool, ProjectsError> {
     let transaction = conn.unchecked_transaction()?;
     transaction.execute(
@@ -186,12 +168,6 @@ pub fn touch_last_opened(conn: &Connection, id: &str) -> Result<(), ProjectsErro
     Ok(())
 }
 
-/// Whether a `projects` row with this id exists.
-///
-/// Create-thread guard for `vega_conversation` so a missing project surfaces
-/// as a typed error instead of a bare foreign-key failure. T11 temporarily
-/// parked these two project-domain helpers next to the thread SQL; T12 moved
-/// them back into the projects module (architect ruling).
 pub fn project_exists(conn: &Connection, project_id: &str) -> Result<bool, rusqlite::Error> {
     let found: Option<i64> = conn
         .query_row(

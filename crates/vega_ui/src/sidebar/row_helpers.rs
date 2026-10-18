@@ -1,13 +1,5 @@
 use super::*;
 
-/// The full-window delete confirmation overlay (T13): a token-derived
-/// semi-transparent scrim over everything with a centered small card in the
-/// ui-spec §4.3 权限卡 style — no shadow, `border_subtle` border, buttons
-/// [删除] (danger) + [取消]. Clicking the scrim (any mouse down outside the
-/// card) or pressing Esc cancels — Esc routes through the global
-/// `CloseSettings` handler, which consumes the overlay first (裁决②). No
-/// system modal is used (ui-spec §4.6). Rendered by the window root while
-/// [`PendingDeleteConfirm`] is `Some`.
 pub fn render_delete_confirm_overlay(
     thread: &Thread,
     sidebar: Entity<Sidebar>,
@@ -147,7 +139,6 @@ pub(crate) fn error_bar(message: String, colors: &ThemeColors) -> AnyElement {
         .into_any_element()
 }
 
-/// Row/header label for a thread: 「未命名任务」 until T13 adds renaming.
 pub(crate) fn thread_title(thread: &Thread) -> String {
     if thread.title.is_empty() {
         "未命名任务".to_string()
@@ -189,12 +180,6 @@ pub(crate) fn archive_section_visible(archived_count: usize) -> bool {
     archived_count > 0
 }
 
-/// Whether the row tail shows the relative timestamp at rest (#150 R10).
-///
-/// The tail is one slot. A running row owns it with its indicator, so the
-/// timestamp is suppressed there: showing both would either push the action
-/// trigger sideways or crowd the 28px slot. Hover (which reveals the action
-/// trigger) keeps its existing precedence over the resting timestamp.
 pub(crate) fn shows_timestamp_at_rest(
     actions_visible: bool,
     show_timestamp_at_rest: bool,

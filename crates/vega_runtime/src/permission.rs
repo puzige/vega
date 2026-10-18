@@ -134,7 +134,6 @@ pub enum RuntimeApprovalSource {
     ReadonlyTool,
     /// Startup recovery.
     Recovery,
-    /// Exact S4 bare compatibility value loaded from persistence.
     Legacy,
 }
 

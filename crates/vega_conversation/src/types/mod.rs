@@ -1,11 +1,3 @@
-//! Core shared types (tech-spec §3): the T11 data-model subset only.
-//!
-//! This card deliberately ships the *Thread* structure plus the
-//! [`ThreadMode`]/[`ThreadStatus`] enums, aligned field-by-field with the
-//! `threads` DDL (`migrations/0001_init.sql`). The streaming/event payload
-//! types (runtime events, chat messages, tool calls) belong to S3/S4 and
-//! must not appear here yet.
-
 pub use crate::automatic_titles::AutomaticTitleRequest;
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;

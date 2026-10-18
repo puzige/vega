@@ -1,6 +1,5 @@
-use super::issue147_markdown_selection::{assistant_entry, drag, layout_for, text_point};
 use super::*;
-use gpui_kit::{VisualTestContext, size};
+use gpui_kit::{Modifiers, MouseButton, Pixels, Point, VisualTestContext, size};
 
 struct ReadingHarness {
     parent: Entity<ConversationStream>,
@@ -21,6 +20,49 @@ impl Render for ReadingHarness {
                     .map(|preview| div().w_1_2().h_full().child(preview)),
             )
     }
+}
+
+fn assistant_entry(document: &str) -> StreamEntry {
+    let mut stream = MarkdownStream::new();
+    stream.append(document);
+    stream.finish();
+    let mut model = StreamModel::default();
+    model.sync(&stream.snapshot(), &StreamCounters::default());
+    StreamEntry::Assistant {
+        copy: MessageCopy::new(document),
+        stream: Box::new(stream),
+        model,
+        failure: None,
+    }
+}
+
+fn layout_for(text: &str) -> gpui_kit::TextLayout {
+    selection::SELECTION_RUN_LAYOUTS.with_borrow(|runs| {
+        runs.iter()
+            .rev()
+            .find(|(run_text, _, _)| run_text == text)
+            .map(|(_, layout, _)| layout.clone())
+            .expect("production selection text layout")
+    })
+}
+
+fn drag(visual: &mut VisualTestContext, start: Point<Pixels>, end: Point<Pixels>) {
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+}
+
+fn text_point(layout: &gpui_kit::TextLayout, index: usize, edge: bool) -> Point<Pixels> {
+    let mut point = layout
+        .position_for_index(index)
+        .expect("text index geometry");
+    point.y += layout.line_height() / 2.;
+    if edge {
+        point.x += px(2.);
+    } else {
+        point.x += px(0.5);
+    }
+    point
 }
 
 #[gpui_kit::test]

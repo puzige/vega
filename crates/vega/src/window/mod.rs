@@ -95,10 +95,6 @@ impl ModelSelectionRefresh {
     }
 }
 
-/// Root view of the main window: the A1 layout shell — a persisted resizable
-/// sidebar next to a content column (max 768px, centered) that hosts
-/// either the settings view (Cmd+, / Esc), the opened session
-/// ([`ConversationStream`], S3-T17), or the ui-spec §4.6 empty state.
 pub(crate) struct VegaWindow {
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
@@ -119,8 +115,6 @@ pub(crate) struct VegaWindow {
     /// Narrow windows show Environment as a temporary card over the shell.
     /// Route changes and opening a persistent right workspace close it.
     environment_overlay_open: bool,
-    /// Pointer drag state for the R21 Sidebar separator. The accepted width
-    /// is persisted only when the drag completes.
     sidebar_resize_dragging: bool,
     appearance_subscription: Option<Subscription>,
     /// Cached settings view entity. Kept while settings is open so re-renders
@@ -131,22 +125,12 @@ pub(crate) struct VegaWindow {
     /// workers must never instantiate independent registries for this DB.
     pub(crate) mcp_settings: Option<vega_conversation::McpServerSettingsService>,
     pub(crate) pricing_controller: PricingController,
-    /// Cached conversation stream for the open thread (id, view). S3-T17:
-    /// built lazily on first render of an opened thread; rebuilt when another
-    /// thread is opened. The stream itself is memory-only (no persistence).
     pub(crate) stream_view: Option<(String, Entity<ConversationStream>)>,
     thread_scroll_states: scroll_state::ThreadScrollStateLru,
     pub(crate) message_location_route_thread_id: Option<String>,
     pub(crate) message_location_route_generation: u64,
     pub(crate) message_location_request_generation: u64,
     pub(crate) deferred_message_location: Option<DeferredMessageLocation>,
-    /// R69 R1/R4: the window's at-most-one unpersisted home-route draft.
-    ///
-    /// The draft is a real [`Thread`] carrying its final client-side ulid, so
-    /// materialization reuses the id verbatim and no alias layer exists. It
-    /// stays here — never on `Thread` — because R18 keeps `Thread` aligned
-    /// field-by-field with the `threads` DDL. `None` means the current route
-    /// is durable (or the draft was just materialized).
     pub(crate) draft: Option<Thread>,
     pub(crate) agent_controller: AppAgentController,
     pub(crate) automation_controller: crate::automation_controller::AutomationController,
@@ -175,14 +159,7 @@ pub(crate) struct VegaWindow {
     /// can close while the worker is running, so this gate lives above the
     /// Settings entity and still blocks a new run until the exact ack lands.
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
-    /// R57 P3: monotonic operation id for reasoning saves that originate from
-    /// the composer's tier slider rather than the Settings editor. The two
-    /// surfaces share one single-flight owner; only the id source differs.
     pub(crate) composer_reasoning_operation: u64,
-    /// R57 P3: newest composer tier intent that arrived while the reasoning
-    /// worker was busy. One drag across the track emits several intents and
-    /// only the final position matters, so a single slot is enough — the next
-    /// save started from it carries the user's last choice.
     pub(crate) pending_composer_thinking: Option<(String, String)>,
     /// Provider Settings saves request a model catalog reload. If a reasoning
     /// save owns the catalog authority, defer that reload until its ack so the
@@ -200,9 +177,6 @@ pub(crate) struct VegaWindow {
     /// The model-only result of a save that completed while Settings was
     /// visible. It is merged into the newest route projection after close.
     pub(crate) deferred_model_refresh: Option<ModelSelectionRefresh>,
-    /// E2E fixture seam (R1): owned temp config file for the model-selection
-    /// worker's provider-uniqueness validation. Mirrors the other cfg(test)
-    /// overrides; production always resolves the real config root.
     #[cfg(test)]
     pub(crate) model_selection_config_override: Option<std::path::PathBuf>,
     #[cfg(test)]
@@ -288,8 +262,6 @@ impl VegaWindow {
                 .filter(|(thread_id, _)| thread_id == &thread.id)
                 .map(|(_, stream)| stream.clone());
             if let Some(stream) = cached_stream {
-                // Sidebar rename owns only the title field. The stream method
-                // fences id/project and leaves R1 model/pending state intact.
                 stream.update(cx, |stream, cx| stream.apply_thread_title(&thread, cx));
             }
             if let Some(stream) = this.automation_controller.streams.get(&thread.id) {

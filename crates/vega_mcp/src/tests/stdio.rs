@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use std::io::Write;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
@@ -322,7 +323,6 @@ async fn run_stdio_fixture(
             return Err("missing modern request metadata".into());
         }
         if let Some(path) = trace.as_ref() {
-            use std::io::Write;
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)

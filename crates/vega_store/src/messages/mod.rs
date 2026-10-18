@@ -308,7 +308,6 @@ pub fn recent(
         .collect()
 }
 
-/// Hard page cap (S8-T45/C7): one history page carries at most 200 messages.
 pub const PAGE_LIMIT: usize = 200;
 
 /// Cursor/keyset page bound: the highest eligible `seq`. The initial (newest)
@@ -361,14 +360,11 @@ pub struct MessagePage {
     pub tool_calls: Vec<PageToolCall>,
 }
 
-/// Tool-call audit row as carried on a history page (bounded display fields;
-/// `output_full_path` stays absent per the S5 bounded-output contract).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageToolCall {
     pub id: String,
     pub message_id: String,
     pub seq: i64,
-    /// UTF-8 byte offset in the owning message; NULL for pre-R70 audits.
     pub text_offset_bytes: Option<i64>,
     pub tool: String,
     pub input_json: String,
@@ -649,8 +645,6 @@ pub fn find(conn: &Connection, id: &str) -> Result<Option<MessageRow>, rusqlite:
     .optional()
 }
 
-/// Returns the latest terminal assistant message of a thread, if any
-/// (S7-T40 per-task summary recovery scope; read-only projection).
 pub fn last_terminal_assistant(
     conn: &Connection,
     thread_id: &str,

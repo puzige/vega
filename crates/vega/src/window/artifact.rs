@@ -362,16 +362,10 @@ impl VegaWindow {
         let Some(run) = self.agent_controller.finish(generation, thread_id, stream) else {
             return AgentBatchIngress::Stale;
         };
-        // R8: the terminal ingress is the only successful release path; clear
-        // the row's running projection here so a finished run never leaves a
-        // stale indicator behind.
+
         vega_ui::sidebar::set_thread_running(thread_id, false, cx);
         self.finish_context_primary_owner(generation);
-        // S7-T40/C4: the run's durable terminal message becomes a read-only
-        // per-task cost summary card. The projection reads only the persisted
-        // audits (a non-terminal/corrupt row fails closed → no card); the
-        // duration is the live in-memory wall-clock measurement and degrades
-        // to `—` after a restart.
+
         if let Some(message_id) = &run.terminal_message_id {
             let duration_ms = u64::try_from(run.started.elapsed().as_millis()).ok();
             let projected = match &cx.global::<VegaStore>().0 {

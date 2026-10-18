@@ -1,10 +1,3 @@
-//! Retry policy for provider requests (tech-spec §4.1, S4-T19).
-//!
-//! Network errors and 5xx back off exponentially (1s / 2s / 4s, at most 3
-//! retries); a 429 honors the server-provided `Retry-After` when present and
-//! falls back to the exponential schedule otherwise. Retries only rebuild
-//! the request — they never re-run tools or replay consumed events.
-
 use std::time::Duration;
 
 /// Retry schedule applied while establishing a provider stream.

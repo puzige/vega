@@ -13,27 +13,6 @@ pub enum ThreadsBlockEvent {
 
 impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 
-/// Shared task rows/actions. The production organization projection renders
-/// pinned tasks, project folders, and recent standalone tasks exactly once;
-/// standalone legacy consumers retain the selected-project block below.
-///
-/// The 「会话」 block: the selected project's threads, pinned group first,
-/// then `updated_at` desc (store ordering, ui-spec §4.1 置顶组优先). Rows =
-/// truncated title; the selected row gets
-/// `bg_active`; unread rows render medium weight + a dot (the field stays 0
-/// until S3 produces unread state).
-///
-/// T13 (A1-05) session management: the main list reads `status = active`
-/// only; archived threads hide here and surface in the 「已归档 (N)」
-/// collapsed section at the bottom of the block (展开可查看，行上有「恢复」).
-/// Hovering a row reveals its compact action trigger (裁决①：置顶 /
-/// 归档或恢复 / 删除); the trigger is always keyboard reachable, while its
-/// low-frequency actions are collected in a focusable menu. Double-clicking a
-/// row enters inline renaming via the shared [`TextInput`] (Enter submits, Esc
-/// cancels, an empty title cancels — the keyboard path itself is
-/// manual-acceptance, see [`resolve_rename`]).
-/// No project selected → guidance copy. Collapse state persists in config
-/// (`ui.sessions_collapsed`); the archive expansion is in-memory only.
 pub struct ThreadsBlock {
     /// Cached active rows (all projects when organization is enabled).
     pub(crate) threads: Vec<Thread>,
@@ -57,19 +36,9 @@ pub struct ThreadsBlock {
     pub(crate) focused_project: Option<String>,
     pub(crate) focused_thread_action: Option<String>,
     pub(crate) focused_section: Option<OrganizationSection>,
-    /// In-memory progressive-list state. Projects keeps the R29
-    /// `Show More / Show Less` toggle; Recents no longer has a control — it
-    /// grows its render window as the outer Sidebar scroller reaches the
-    /// bottom (Issue #57).
     pub(crate) projects_expanded: bool,
     pub(crate) projects_progressive_focus: FocusHandle,
-    /// Issue #57: how many Recents rows the current render window contains.
-    /// Starts at [`organization::RECENTS_PAGE`] and only grows (never shrinks)
-    /// for the lifetime of this block.
     pub(crate) recents_visible: usize,
-    /// Issue #57: the number of eligible Recents rows observed by the last
-    /// render. Written during render; read by [`Self::has_lazy_list_growth`] so
-    /// the outer scroller never asks for more than exists.
     pub(crate) recents_total: usize,
     /// Thread id whose compact low-frequency action menu is open.
     pub(crate) actions_open: Option<String>,
@@ -79,8 +48,6 @@ pub struct ThreadsBlock {
     pub(crate) actions_scope_focus: FocusHandle,
     /// One focus-out subscription for the action-menu scope.
     pub(crate) actions_focus_subscription: Option<Subscription>,
-    /// Whether the 「已归档 (N)」 section is expanded (in-memory, T13 卡允许
-    /// 不做折叠记忆).
     pub(crate) archive_expanded: bool,
     /// Active inline rename session (`None` = not renaming).
     pub(crate) editing: Option<RenameSession>,
@@ -204,14 +171,6 @@ impl ThreadsBlock {
         cx.notify();
     }
 
-    /// R69 R14: navigates to the home draft route for the requested project
-    /// binding instead of eagerly INSERTing a row. `None` is a genuine
-    /// standalone task and is used by the SESSIONS plus button.
-    ///
-    /// The draft is materialized by the window on first submit (R8), which is
-    /// what stops this entry point from piling up empty `未命名任务` rows. The
-    /// store is still read here for the project's display name so the route
-    /// carries the same selection the eager path used to install.
     pub(crate) fn create_task(&mut self, project_id: Option<String>, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
             self.error = Some("任务正在保存，请稍后重试".into());
@@ -989,14 +948,6 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// One session row per ui-spec §4.1: [pin mark][title] [dot] plus a compact
-    /// action trigger. The selected row gets
-    /// `bg_active`; hovering a non-editing row gets `bg_hover` and reveals the
-    /// trigger for its action menu (置顶 / 归档或恢复 / 删除；行内编辑行除外).
-    ///
-    /// The clickable body and the right side are sibling nodes — clicks on
-    /// the action buttons must not re-trigger open (T10 经验：兄弟节点避免
-    /// 嵌套命中).
     fn render_row(
         &self,
         thread: &Thread,
@@ -1039,9 +990,6 @@ impl ThreadsBlock {
             true,
             false,
             0.0,
-            // R48: a project child row has no leading icon, so it uses the
-            // ladder's text column directly (base + SIDEBAR_ROW_INSET), landing
-            // on the same column as its project row's name.
             Layout::SIDEBAR_ROW_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
@@ -1304,8 +1252,7 @@ impl ThreadsBlock {
         let action_prefix = selector_prefix
             .strip_suffix("thread-row-")
             .unwrap_or(selector_prefix);
-        // R12: the indicator is driven only by the real liveness projection,
-        // never inferred from unread/updated_at/selection.
+
         let running = thread_is_running(&thread.id, cx);
         let menu_open = self.actions_open.as_deref() == Some(thread.id.as_str());
         let keyboard_focused = self.focused_thread_action.as_deref() == Some(thread.id.as_str());

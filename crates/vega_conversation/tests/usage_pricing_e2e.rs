@@ -1,8 +1,3 @@
-//! S7-T38 (A10-01/A10-04) headless production journey: two provider calls
-//! plus one real tool round run against an owned temp data root, with the
-//! frozen run-start pricing capability producing exact quotes and durable,
-//! restart-consistent usage rows.
-
 use std::error::Error;
 
 use tempfile::tempdir;

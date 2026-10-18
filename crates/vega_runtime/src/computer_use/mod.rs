@@ -377,24 +377,6 @@ impl ComputerUseRun {
         result
     }
 
-    #[cfg(test)]
-    pub(crate) async fn execute(
-        &self,
-        name: &str,
-        call_id: &str,
-        arguments: Value,
-        cancel: &CancellationToken,
-    ) -> Result<String, ComputerUseError> {
-        self.execute_at(
-            name,
-            call_id,
-            arguments,
-            self.control.status().epoch,
-            cancel,
-        )
-        .await
-    }
-
     pub(crate) async fn execute_at(
         &self,
         name: &str,
@@ -649,60 +631,6 @@ impl ComputerUseRun {
             });
             Ok(screenshot_receipt(&observation.call_id))
         })?
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) async fn install_desktop_fixture(
-        &self,
-        windows: Vec<DesktopTarget>,
-        results: Vec<vega_mcp::ManagedResult>,
-    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-        let actions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        self.backend
-            .lock()
-            .await
-            .install_fixture(backend::DesktopFixture {
-                windows,
-                results: results.into(),
-                actions: actions.clone(),
-                calls: Vec::new(),
-                permissions: vec![json!({"accessibility":true,"screen_recording":true})].into(),
-                #[cfg(test)]
-                permission_gate: None,
-            });
-        actions
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) async fn set_desktop_permissions_fixture(&self, permissions: Vec<Value>) {
-        if let Some(fixture) = &mut self.backend.lock().await.fixture {
-            fixture.permissions = permissions.into();
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn gate_desktop_permission_check(
-        &self,
-        after: usize,
-    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        if let Some(fixture) = &mut self.backend.lock().await.fixture {
-            fixture.permission_gate = Some((after, entered.clone(), release.clone()));
-        }
-        (entered, release)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn set_desktop_targets_fixture(&self, windows: Vec<DesktopTarget>) {
-        if let Some(fixture) = &mut self.backend.lock().await.fixture {
-            fixture.windows = windows;
-        }
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) async fn fixture_calls(&self) -> Vec<(String, Value)> {
-        self.backend.lock().await.fixture_calls()
     }
 
     fn record_failure(
@@ -975,9 +903,6 @@ fn screenshot_receipt_value(call_id: &str, unchanged: bool) -> Value {
     json!({"status":"delivered","artifact_id":format!("screenshot:{call_id}"),"delivery":"conversation_image_attachment","saved_in_history":true,"read_only":true,"unchanged":unchanged,"next_step":"continue_remaining_requested_work_or_finish"})
 }
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComputerUseAudit {
@@ -1064,74 +989,10 @@ impl std::fmt::Debug for Target {
 pub mod test_support {
     use super::{Capability, ComputerUseControl, ComputerUseError, Target};
 
-    pub async fn install_desktop(
-        run: &super::ComputerUseRun,
-        windows: Vec<super::DesktopTarget>,
-        results: Vec<vega_mcp::ManagedResult>,
-        permissions: Vec<serde_json::Value>,
-    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-        let actions = run.install_desktop_fixture(windows, results).await;
-        run.set_desktop_permissions_fixture(permissions).await;
-        actions
-    }
-
-    pub async fn desktop_calls(run: &super::ComputerUseRun) -> Vec<(String, serde_json::Value)> {
-        run.fixture_calls().await
-    }
-
     pub fn connected_desktop() -> Result<ComputerUseControl, ComputerUseError> {
         let control = ComputerUseControl::new();
         let epoch = control.begin(Capability::Desktop)?;
         control.connected(epoch, Capability::Desktop, Target::DesktopCatalog)?;
-        Ok(control)
-    }
-
-    pub fn pending_browser() -> Result<ComputerUseControl, ComputerUseError> {
-        let control = ComputerUseControl::new();
-        let epoch = control.begin(Capability::Browser)?;
-        control.offer_browser(
-            epoch,
-            Target::Browser {
-                connection: "fixture".into(),
-                index: 1,
-                title: "Owned fixture".into(),
-                url: "https://fixture.invalid".into(),
-            },
-        )?;
-        Ok(control)
-    }
-
-    pub fn permission_failure() -> Result<ComputerUseControl, ComputerUseError> {
-        let control = ComputerUseControl::new();
-        let epoch = control.begin(Capability::Desktop)?;
-        control.fail(epoch, ComputerUseError::Permissions);
-        control.stop();
-        control.finish_cleanup();
-        Ok(control)
-    }
-
-    pub fn permission_failure_for(
-        accessibility: bool,
-        screen_recording: bool,
-    ) -> Result<ComputerUseControl, ComputerUseError> {
-        let class = match (accessibility, screen_recording) {
-            (false, false) => super::diagnostics::Class::PermissionsMissing,
-            (false, true) => super::diagnostics::Class::AccessibilityPermissionMissing,
-            (true, false) => super::diagnostics::Class::ScreenRecordingPermissionMissing,
-            (true, true) => super::diagnostics::Class::Protocol,
-        };
-        let control = ComputerUseControl::new();
-        let epoch = control.begin(Capability::Desktop)?;
-        control.fail(
-            epoch,
-            super::diagnostics::failure(
-                Capability::Desktop,
-                super::diagnostics::Stage::Permissions,
-                class,
-            ),
-        );
-        control.stop();
-        control.finish_cleanup();
         Ok(control)
     }
 

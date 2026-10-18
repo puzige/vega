@@ -12,9 +12,7 @@ sha2 = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-# S8-T43 (A2-04) bench rework — references to EXISTING whitelisted workspace
 # dependencies only (no new third-party crate enters the graph; Cargo.lock
-# package set is unchanged). Required by the T43 card's normative E2E:
 # the C1 milestone must be flushed from a pinned GPUI next-frame callback
 # inside an isolated release subprocess (SDD §2/C1), which is impossible
 # without naming gpui; the real root view (Sidebar + routed

@@ -385,6 +385,7 @@ pub(crate) fn freeze_reasoning_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use futures::StreamExt;
     use vega_runtime::{ChatMessage, ChatRole, ChatToolCall, OpenAiProvider, Provider};
 

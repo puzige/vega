@@ -1,9 +1,3 @@
-//! Canonical two-stage commit assistance.
-//!
-//! This module is the only T34 boundary allowed to stage or commit. Raw Git
-//! paths, refs, object ids, status/tree bytes, patch summaries and messages
-//! never leave the service as debuggable values.
-
 use super::*;
 use crate::types::{
     CommitChecklist, CommitCompletion, CommitDraft, CommitErrorCode, CommitOutcome,

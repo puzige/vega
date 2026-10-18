@@ -1,32 +1,3 @@
-//! `cargo xtask package` — assemble a distributable macOS app bundle.
-//!
-//! S8 packaging card: `cargo build --release` (via the shared T43 rebuild
-//! helper), then bundle `target/release/vega` into `dist/Vega.app` with a
-//! real icon and metadata, ad-hoc codesign it, verify the signature and zip
-//! it up as `dist/Vega-macos-arm64.zip` for direct copy to other Macs.
-//!
-//! Zero new dependencies: every step shells out to macOS built-ins
-//! (`swift`/AppKit, `sips`, `iconutil`, `codesign`, `zip`).
-//!
-//! Version source (stamped into `CFBundleShortVersionString`/`CFBundleVersion`
-//! and INSTALL.txt), highest priority first:
-//! 1. `--version <x.y.z>` CLI flag (or `--version=x.y.z`);
-//! 2. `VEGA_RELEASE_VERSION` environment variable — the CI release path (the
-//!    tag-triggered workflow passes the pushed tag with the leading `v`
-//!    stripped);
-//! 3. the workspace version from Cargo.toml (unchanged default for local
-//!    `cargo xtask package` runs).
-//!
-//! Icon source decision (R17): the app icon is rendered from
-//! `assets/logo/vega-icon-r17-smile-light.svg`, the approved blue single-star
-//! smile mark. The source is a hand-maintained SVG with an explicit alpha
-//! canvas; its matching dark and mono variants retain the same geometry for
-//! appearance-specific and wordmark use. The historical F1/F3 vectors and
-//! exploration PNGs remain archived. `.icns` has no automatic light/dark
-//! appearance variants, so the light tile is the deterministic app source.
-//! The iconset intermediate files live in a temp directory and are never
-//! committed — the icns is reproducible from the committed SVG.
-
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -46,9 +17,7 @@ const BUNDLE_NAME: &str = "Vega";
 const EXECUTABLE_NAME: &str = "vega";
 /// `CFBundleIconFile` without the `.icns` extension.
 const ICON_FILE: &str = "Vega";
-/// Canonical R17 app icon source. Keep this in sync with `assets/logo/` and
-/// the source name recorded in `assets/logo/LOGO.md`.
-const ICON_SOURCE: &str = "assets/logo/vega-icon-r17-smile-light.svg";
+const ICON_SOURCE: &str = "assets/logo/vega-icon-smile-light.svg";
 /// arm64-only build; Apple Silicon starts at macOS 11 (GPUI/Metal needs more
 /// than the zed-rev floor of 10.15.7 anyway, so 11.0 is the honest floor).
 const MIN_MACOS: &str = "11.0";
@@ -205,8 +174,6 @@ pub fn run_icon(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Renders the R17 light SVG into the target `.icns` (see module docs for the
-/// source-choice rationale) and returns the icns path.
 fn render_icon(workspace: &Path, target: &Path) -> Result<std::path::PathBuf> {
     let svg = workspace.join(ICON_SOURCE);
     if !svg.exists() {

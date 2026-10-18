@@ -1,4 +1,3 @@
-//! Issue #65 R1–R6: optional, isolated first-turn naming, never a chat message.
 use std::{
     path::PathBuf,
     sync::{Arc, mpsc},
@@ -57,10 +56,8 @@ impl AutomaticTitleRequest {
         model: String,
         pricing: Option<vega_token::PricingCatalog>,
     ) {
-        // R1/R6: notify committed fallback independently of the primary stream.
         let _ = self.notifications.send(());
-        // R3: this OS worker owns its runtime; the main run's runtime may end first.
-        // A spawn failure leaves the durable claim/fallback, never retries.
+
         let worker = std::thread::Builder::new()
             .name("vega-auto-title".into())
             .spawn(move || {
@@ -82,7 +79,7 @@ impl AutomaticTitleRequest {
                     );
                     return;
                 };
-                // R3: no usage event means unknown usage, not a fabricated zero row.
+
                 if let Some((input, output, cache_read, cache_write)) = usage {
                     let quote = pricing.as_ref().and_then(|catalog| {
                         catalog

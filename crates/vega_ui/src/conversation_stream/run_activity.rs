@@ -130,8 +130,6 @@ impl gpui_kit::EventEmitter<RunActivityDisplayChanged> for RunActivityGroup {}
 pub(crate) struct RunActivityGroup {
     sticky: StickyState,
     collapsed_sticky: Option<StickyCollapse>,
-    #[cfg(test)]
-    clock_ticks: usize,
     started_at: Option<Instant>,
     animation_epoch: Instant,
     clock_task: Option<gpui_kit::Task<()>>,
@@ -280,10 +278,6 @@ impl RunActivityGroup {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             let _ = this.update(cx, |group, cx| {
                 group.clock_task = None;
-                #[cfg(test)]
-                {
-                    group.clock_ticks += 1;
-                }
                 if !group.terminal {
                     cx.emit(RunActivityDisplayChanged {
                         segment: None,
@@ -507,8 +501,6 @@ impl RunActivityGroup {
         Self {
             sticky: StickyState::default(),
             collapsed_sticky: None,
-            #[cfg(test)]
-            clock_ticks: 0,
             started_at: None,
             animation_epoch: Instant::now(),
             clock_task: None,
@@ -532,31 +524,8 @@ impl RunActivityGroup {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_projection(&self) -> (RunActivityStatus, Option<u64>, bool, bool) {
-        (
-            self.status,
-            self.execution_duration_ms,
-            self.expanded,
-            self.terminal,
-        )
-    }
-
-    #[cfg(test)]
     pub(crate) fn test_label(&self) -> String {
         self.label()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_activity_label(&self, cx: &App) -> String {
-        self.activity_presentation(cx).0
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_activity_presentation(
-        &self,
-        cx: &App,
-    ) -> (String, crate::icons::Icon, bool) {
-        self.activity_presentation(cx)
     }
 
     #[cfg(test)]
@@ -570,21 +539,6 @@ impl RunActivityGroup {
                 self.phase
             },
         )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_clock_ticks(&self) -> usize {
-        self.clock_ticks
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_focus(&self) -> Option<FocusHandle> {
-        Some(self.focus.clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_scroll_handle(&self) -> ScrollHandle {
-        self.scroll.clone()
     }
 
     pub(crate) fn children(&self) -> Vec<RunActivityChild> {
@@ -671,37 +625,10 @@ impl RunActivityGroup {
         categories
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_stage_tool_icon(
-        &self,
-        segment: usize,
-        cx: &App,
-    ) -> Option<crate::icons::Icon> {
-        self.stage_tool_title(segment, cx).map(|(_, icon)| icon)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_rendered_stage_title(&self, segment: usize, cx: &App) -> String {
-        self.segments[segment]
-            .title_view
-            .read(cx)
-            .test_title()
-            .to_owned()
-    }
-
     fn stage_tool_title(&self, segment: usize, cx: &App) -> Option<(String, crate::icons::Icon)> {
         let categories = self.stage_tool_categories(segment, cx);
         let icon = categories.first()?.icon();
         Some((format_stage_tool_categories(&categories), icon))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn compact_tool_groups(&self, segment: usize) -> Vec<Entity<ToolActivityGroup>> {
-        self.segments[segment]
-            .compact_tool_groups
-            .iter()
-            .map(|(_, group)| group.clone())
-            .collect()
     }
 
     pub(crate) fn start_segment(&mut self, cx: &mut Context<Self>) -> usize {
@@ -999,25 +926,6 @@ impl RunActivityGroup {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn row_count(&self, cx: &App) -> usize {
-        1 + self
-            .segments
-            .iter()
-            .map(|segment| {
-                if self.expanded {
-                    segment
-                        .children
-                        .iter()
-                        .map(|child| Self::child_row_count(child, cx))
-                        .sum()
-                } else {
-                    0
-                }
-            })
-            .sum::<usize>()
-    }
-
     pub(crate) fn segment_row_count(&self, segment: usize, cx: &App) -> usize {
         let aggregate = self.stage_is_aggregate(segment, cx);
         let single_thinking = !aggregate
@@ -1272,91 +1180,6 @@ impl RunActivityGroup {
                 RunActivityStatus::Failed => "Failed".into(),
                 RunActivityStatus::Interrupted => "Stopped".into(),
             })
-    }
-
-    #[cfg(test)]
-    fn activity_presentation(&self, cx: &App) -> (String, crate::icons::Icon, bool) {
-        use crate::icons::Icon;
-        use crate::tool_card::ToolActivityState;
-        use vega_conversation::types::ToolCallStatus;
-        if self.terminal {
-            return (
-                self.label(),
-                match self.status {
-                    RunActivityStatus::Completed => Icon::Check,
-                    RunActivityStatus::Failed => Icon::Warning,
-                    RunActivityStatus::Interrupted => Icon::Close,
-                    RunActivityStatus::Running => Icon::Bot,
-                },
-                false,
-            );
-        }
-        if self.waiting_for_user {
-            return ("Awaiting confirmation".into(), Icon::Hand, false);
-        }
-        let mut categories = Vec::new();
-        let mut pending = false;
-        let mut approved = false;
-        for child in self.children() {
-            let cards = match child {
-                RunActivityChild::Tool(card) => vec![card],
-                RunActivityChild::ToolGroup(group) => group.read(cx).children(),
-                _ => Vec::new(),
-            };
-            for card in cards {
-                let card = card.read(cx);
-                pending |= card.call_status() == ToolCallStatus::PendingApproval;
-                approved |= card.call_status() == ToolCallStatus::Approved;
-                if card.call_status() == ToolCallStatus::Running
-                    && card.activity_state() == ToolActivityState::Active
-                {
-                    let action = (card.activity_category(), card.activity_action_name());
-                    if !categories.contains(&action) {
-                        categories.push(action);
-                    }
-                }
-            }
-        }
-        if !categories.is_empty() {
-            let actions = categories
-                .iter()
-                .take(2)
-                .enumerate()
-                .map(|(index, (_, action))| {
-                    if index == 0 {
-                        sentence_initial(action)
-                    } else {
-                        action.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let suffix = if categories.len() > 2 {
-                format!(" and more ({} total)", categories.len())
-            } else {
-                String::new()
-            };
-            let icon = if categories.len() == 1 {
-                categories[0].0.icon()
-            } else {
-                Icon::Summary
-            };
-            return (format!("In progress: {actions}{suffix}"), icon, false);
-        }
-        if pending {
-            return ("Awaiting confirmation".into(), Icon::Hand, false);
-        }
-        if approved {
-            return ("Preparing tool call".into(), Icon::Summary, false);
-        }
-        let summary = (self.phase == RunPhase::Thinking)
-            .then(|| {
-                self.current_thinking
-                    .as_ref()
-                    .and_then(|card| card.read(cx).summary_title())
-            })
-            .flatten();
-        (summary.unwrap_or("Thinking").to_owned(), Icon::Bot, true)
     }
 
     pub(crate) fn render(group: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {

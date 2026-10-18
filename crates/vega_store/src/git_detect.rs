@@ -1,19 +1,3 @@
-//! Zero-dependency git repository detection (A1-03).
-//!
-//! [`detect_git`] inspects `<path>/.git` and resolves the currently checked
-//! out branch from its `HEAD` file without shelling out to git or linking any
-//! git crate:
-//!
-//! - `.git` **directory** (normal clone): read `<path>/.git/HEAD`.
-//! - `.git` **file** (linked worktree): the file holds a `gitdir: <path>`
-//!   pointer; that path (resolved relative to the worktree root when
-//!   relative) names the worktree's git dir whose `HEAD` decides.
-//! - `HEAD = "ref: refs/heads/X"` → `Some(X)`.
-//! - detached `HEAD` (a raw object id) or no `.git` at all → `None`.
-//!
-//! A non-git directory is still registrable as a project (tech-spec §2:
-//! `git_default_branch` is nullable); detection only decides what to store.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 

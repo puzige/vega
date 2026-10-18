@@ -18,37 +18,6 @@ use super::model::MessageCopy;
 thread_local! {
     pub(super) static SELECTION_TARGET_LAYOUT: RefCell<Option<(String, Option<TextLayout>)>> = const { RefCell::new(None) };
     pub(super) static SELECTION_RUN_LAYOUTS: RefCell<Vec<(String, TextLayout, Bounds<Pixels>)>> = const { RefCell::new(Vec::new()) };
-    pub(super) static CURSOR_REQUESTS: RefCell<Option<Vec<SelectionCursorRequest>>> = const { RefCell::new(None) };
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug)]
-pub(super) struct SelectionCursorRequest {
-    pub text: String,
-    pub hitbox: gpui_kit::HitboxId,
-    pub bounds: Bounds<Pixels>,
-    pub hovered: bool,
-    pub style: CursorStyle,
-}
-
-#[cfg(test)]
-pub(super) fn record_cursor_request(
-    text: &str,
-    hitbox: &Hitbox,
-    style: CursorStyle,
-    window: &Window,
-) {
-    CURSOR_REQUESTS.with_borrow_mut(|requests| {
-        if let Some(requests) = requests {
-            requests.push(SelectionCursorRequest {
-                text: text.to_owned(),
-                hitbox: hitbox.id,
-                bounds: hitbox.bounds,
-                hovered: hitbox.is_hovered(window),
-                style,
-            });
-        }
-    });
 }
 
 #[derive(Clone)]
@@ -382,8 +351,6 @@ impl Element for SelectableStyledText {
                 .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);
         }
         window.set_cursor_style(CursorStyle::IBeam, &prepaint.hitbox);
-        #[cfg(test)]
-        record_cursor_request(&self.content, &prepaint.hitbox, CursorStyle::IBeam, window);
         register_link_interactions(
             id,
             prepaint.hitbox.clone(),

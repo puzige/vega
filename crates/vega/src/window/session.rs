@@ -1,6 +1,5 @@
 use super::*;
 
-/// Poll interval for the model-selection persistence worker (R1).
 pub(crate) const MODEL_SELECTION_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
 type ReasoningAuthority = (
@@ -13,9 +12,6 @@ type ModelCatalogLoadResult = Result<
         Vec<ReasoningProfileProjection>,
         Option<ReasoningSettingsErrorCode>,
         Option<ReasoningAuthority>,
-        // R69 R3: the config's `defaults` travel with the catalog so the home
-        // draft takes its model/permission from the same `config::load()`
-        // source `create_task` used, without any config IO during render.
         NewTaskDefaults,
         Option<vega_store::config::AppConfig>,
     ),
@@ -92,8 +88,7 @@ fn finish_thread_model_selection(
                     return;
                 };
                 cx.set_global(OpenedThread(Some(current.clone())));
-                // R69 R5: the draft is the row materialization will INSERT, so
-                // an accepted in-memory model change must land there too.
+
                 window.mirror_draft(&current);
                 stream.update(cx, |stream, cx| {
                     stream.apply_thread_model_acknowledged(
@@ -177,11 +172,6 @@ impl VegaWindow {
         finish_thread_model_selection(self, &stream, &thread_id, lease, request_id, outcome, cx);
     }
 
-    /// R69 R5: mirrors an accepted in-memory thread projection onto the
-    /// window's draft. The draft is the value materialization INSERTs (R8), so
-    /// every draft-route field update must land here as well as on
-    /// `OpenedThread` — otherwise the model/mode/permission the user picked
-    /// would be lost at first submit. A durable route is a no-op.
     pub(crate) fn mirror_draft(&mut self, thread: &Thread) {
         if self
             .draft
@@ -203,9 +193,6 @@ impl VegaWindow {
                 .is_some_and(|v| v.0)
     }
 
-    /// Cmd+N entry point: navigates to the home draft route (R69 R14). The
-    /// sidebar [新建任务] button and the command palette share this handler.
-    /// No durable row is written here: the draft materializes on first submit.
     pub(crate) fn open_new_thread(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar.update(cx, Sidebar::create_thread);
     }
@@ -232,18 +219,6 @@ impl VegaWindow {
         cx.notify();
     }
 
-    /// R69 R1/R2/R4: resolves the thread the content column renders.
-    ///
-    /// A durable route resolves to itself. The home route (and the window's
-    /// own draft route) resolves to the single lazy draft, which is built on
-    /// first use, reused on every re-entry, and re-bound to the current
-    /// [`SelectedProject`] **without changing its id** — so the composer draft
-    /// text keyed by that id survives a project switch (R4).
-    ///
-    /// Defaults come from the already-loaded [`NewTaskDefaults`] global, so
-    /// this performs no config IO during render (R3 / A2-14). The
-    /// `OpenedThread` projection is written only when it actually changes, so
-    /// a steady draft route does not notify observers on every frame.
     pub(crate) fn resolve_route_thread(&mut self, cx: &mut Context<Self>) -> Thread {
         let opened = cx
             .try_global::<OpenedThread>()
@@ -301,23 +276,6 @@ impl VegaWindow {
             .is_some_and(|draft| draft.id == thread_id)
     }
 
-    /// R69 R8-R11: persists the draft under **its own id** exactly once.
-    ///
-    /// The route identity is untouched (`OpenedThread.0.id` and the
-    /// `stream_view` cache key are the same before and after), so the cached
-    /// `ConversationStream` — composer text and focus included — is never
-    /// rebuilt (R9). On failure the draft stays installed so the caller can
-    /// preserve the text and surface the error (R10); on success the draft is
-    /// released, which is what makes a second submit a no-op (R11).
-    ///
-    /// R69 M4: the row is stamped at the submit instant inside the conversation
-    /// layer. `OpenedThread` is deliberately **not** rewritten here: the only
-    /// reader of `created_at` is the sidebar's "Created" sort, which projects
-    /// durable rows, and the run's own completion re-reads the authoritative
-    /// thread anyway (`reload_thread_state`). Writing the global mid-submit
-    /// would fire the `OpenedThread` observer and flip the next render onto the
-    /// durable path (starting the branch/artifact controllers) while the run is
-    /// still starting — a side effect this route did not have before.
     pub(crate) fn materialize_draft(
         &mut self,
         thread: &Thread,
@@ -332,16 +290,6 @@ impl VegaWindow {
         Ok(())
     }
 
-    /// R1 (A2-14/S8-T47): the in-session model selection. The view emits the
-    /// intent only; this handler installs the existing trusted-action
-    /// single-flight gate first, then persists the durable `threads.model`
-    /// through the conversation service on a worker thread and acknowledges
-    /// with the re-read authoritative thread. The app-level
-    /// config.defaults.model (Settings 的"新任务默认模型") is NOT touched.
-    /// #60 R1: not-uniquely-configured models are rejected before any
-    /// write; an active run or another trusted action refuses the change.
-    /// Every outcome (ack/fail/worker-lost) releases exactly the owner token
-    /// echoed by the request.
     pub(crate) fn apply_thread_model_selection(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -369,10 +317,7 @@ impl VegaWindow {
             });
             return;
         }
-        // Existing fail-closed gates: an active run or any in-flight trusted
-        // action must not race a run-configuration change; the same applies
-        // while Settings route is open or an approved plan has not started
-        // (pending plan/review/permission per R1 constraint 5).
+
         if cx.global::<SettingsOpen>().0
             || stream.read(cx).model_selection_blocked(cx)
             || self
@@ -386,14 +331,7 @@ impl VegaWindow {
             });
             return;
         }
-        // #60 R1: optional price metadata does not decide model availability.
-        // Unique configured provider gate: the model must resolve to exactly
-        // one configured provider (same rule the real submit path applies).
-        // This is a file read, so it happens in the bounded worker below,
-        // AFTER the busy owner is held — never on the UI thread.
-        // Single-flight owner BEFORE any async work: submit, approved-plan
-        // starts and conflicting trusted actions are blocked until the
-        // exact owner token is released on every exit path.
+
         let Some(lease) =
             self.trusted_actions
                 .acquire(TrustedActionKind::ModelSelection, 0, request.request_id)
@@ -415,12 +353,7 @@ impl VegaWindow {
             });
             return;
         }
-        // R69 R5: on the draft route the same gates and the same worker run
-        // (provider uniqueness stays a worker-side config read), but the
-        // durable `threads.model` write is replaced by an in-memory
-        // projection. The draft carries the new model into the INSERT that
-        // first submit performs (R8), so nothing is lost and no row is
-        // written before the user sends anything.
+
         let draft = self.draft_for_route(&request.thread_id);
         let config_path = self.composer_config_path();
         let database_path = if draft.is_some() {
@@ -461,20 +394,14 @@ impl VegaWindow {
                 if let Some(gate) = worker_gate {
                     gate.wait();
                 }
-                // R1 constraints 3+7: provider uniqueness and the durable
-                // SQLite write both run in this bounded worker on owned
-                // profile paths (config file + store file); no Keychain or
-                // provider/network access ever happens on this path.
+
                 let outcome = (|| {
                     let config = vega_store::config::read_from(&config_path)
                         .map_err(|error| error.to_string())?;
                     if unique_provider_for_model(&config, &worker_request.model).is_none() {
                         return Err("model is not uniquely configured".to_string());
                     }
-                    // R69: the draft route stops after validation and returns
-                    // its own thread with the new model. The caller projects it
-                    // into `OpenedThread` and the window's draft; the row is
-                    // written by first submit.
+
                     if let Some(draft) = draft {
                         let mut next = draft;
                         next.model = worker_request.model;
@@ -552,11 +479,6 @@ impl VegaWindow {
         }
     }
 
-    /// The composer config file path from the current environment (R1): the
-    /// worker reads/validates the provider config from this owned file
-    /// instead of any synchronous global read on the UI thread. Production
-    /// uses the resolved config root; the E2E fixture hands its owned temp
-    /// config through the existing cfg(test) seam pattern (no env changes).
     pub(crate) fn composer_config_path(&self) -> Option<std::path::PathBuf> {
         #[cfg(test)]
         if let Some(path) = &self.model_selection_config_override {
@@ -565,10 +487,6 @@ impl VegaWindow {
         vega_store::paths::config_dir().map(|dir| dir.join("config.toml"))
     }
 
-    /// Refreshes the app model catalog after Settings has durably saved a
-    /// config mutation. The worker rereads the file and re-applies the
-    /// pricing/uniqueness projection; it never changes the current thread's
-    /// durable model or emits an R1 acknowledgement.
     pub(crate) fn on_settings_saved(
         &mut self,
         replay_identity_changed: bool,
@@ -647,9 +565,6 @@ impl VegaWindow {
         }
     }
 
-    /// #60 R1: configured, uniquely resolvable models remain available even
-    /// without accounting metadata. Config IO stays in the worker below.
-    /// The existing method name is retained for compatibility with callers.
     pub(crate) fn model_options_for_pricing(&self) -> Vec<String> {
         self.configured_models.clone().unwrap_or_default()
     }
@@ -841,10 +756,7 @@ impl VegaWindow {
             self.loaded_replay_config = loaded_config;
         }
         self.configured_models = Some(models);
-        // R69 R3: the draft's defaults follow the same config source as the
-        // eager create path. Only a route that has not started yet takes the
-        // new values; an existing draft keeps whatever the user already saw
-        // and can edit, so a catalog refresh never rewrites a live draft.
+
         let defaults_changed = cx.try_global::<NewTaskDefaults>() != Some(&defaults);
         if defaults_changed {
             cx.set_global(defaults.clone());

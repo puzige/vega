@@ -51,19 +51,6 @@ pub(super) struct LinkRegion {
     pub index: usize,
 }
 
-#[cfg(test)]
-#[derive(Clone)]
-pub(super) struct PaintedLinkText {
-    pub layout: TextLayout,
-    pub links: Vec<LinkRange>,
-    pub regions: Vec<LinkRegion>,
-}
-
-#[cfg(test)]
-thread_local! {
-    pub(super) static LINK_LAYOUTS: std::cell::RefCell<Option<Vec<PaintedLinkText>>> = const { std::cell::RefCell::new(None) };
-}
-
 pub(crate) fn link_ranges(spans: &[StreamSpan]) -> Vec<LinkRange> {
     let mut offset = 0;
     spans
@@ -106,28 +93,11 @@ pub(crate) fn register_link_interactions(
         return;
     }
     let regions = link_regions(&layout, &links, window.text_style().text_align);
-    #[cfg(test)]
-    LINK_LAYOUTS.with_borrow_mut(|layouts| {
-        if let Some(layouts) = layouts {
-            layouts.push(PaintedLinkText {
-                layout: layout.clone(),
-                links: links.clone(),
-                regions: regions.clone(),
-            });
-        }
-    });
     let hovered = link_index(&regions, window.mouse_position())
         .filter(|index| allowed_link(&links[*index].1))
         .filter(|_| hitbox.is_hovered(window));
     if hovered.is_some() {
         window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
-        #[cfg(test)]
-        super::selection::record_cursor_request(
-            &layout.text(),
-            &hitbox,
-            CursorStyle::PointingHand,
-            window,
-        );
     }
     let Some(id) = id.filter(|_| links.iter().any(|(_, target)| allowed_link(target))) else {
         return;

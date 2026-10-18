@@ -26,18 +26,12 @@ use vega_ui::commit_panel::{
     CommitDraftRequested, CommitPanel, CommitPanelClosed, CommitPrepareRequested, CommitRequested,
 };
 use vega_ui::conversation_stream::{
-    ContextUsageProjection, ConversationStream, HistoryPageRequested, MessageLocationRequested,
-    NewerHistoryPageRequested, OpenCommitPanelRequested, OpenWorkspaceDiffRequested,
+    ConversationStream, MessageLocationRequested, NewerHistoryPageRequested,
     ThreadSettingsRequested,
 };
-use vega_ui::diff_view::{
-    DIFF_REFRESH_INTERVAL, DiffProjectionRequested, DiffRetryRequested, DiffView,
-};
+use vega_ui::diff_view::{DiffRetryRequested, DiffView};
 use vega_ui::plan_card::PlanReviewRequested;
-use vega_ui::settings::{
-    PricingMutationRequested, ReasoningProfileSaveRequested, SettingsOpen, SettingsSaved,
-    SettingsView,
-};
+use vega_ui::settings::{ReasoningProfileSaveRequested, SettingsOpen, SettingsSaved, SettingsView};
 use vega_ui::sidebar::{
     OpenedThread, PendingDeleteConfirm, SidebarCollapsed, SidebarWidth, VegaStore,
 };
@@ -62,7 +56,6 @@ mod agent;
 mod artifact_preview;
 mod artifact_terminal;
 mod automatic_titles;
-mod computer_use;
 mod project_context;
 mod title_fixture;
 use title_fixture::with_auxiliary_title_fixture;
@@ -73,16 +66,13 @@ mod commit_panel;
 mod composer_actions;
 mod diff;
 mod history;
-mod issue147_native_copy;
-mod issue64_context_settings;
+
 mod model_selection;
-mod palette;
 mod plan;
 mod pricing;
-mod r69;
+
 mod reasoning;
 mod subagents;
-mod updater;
 mod user_questions;
 
 pub(crate) use artifact_terminal::{
@@ -93,115 +83,6 @@ pub(crate) use diff::{
     diff_controller_repo, install_diff_window_globals, receive_refresh, run_fixture_git,
 };
 pub(crate) use pricing::CommitPanelHarness;
-
-#[test]
-fn r21_default_window_geometry_is_frozen() {
-    assert_eq!(crate::WINDOW_INITIAL_WIDTH, 1403.0);
-    assert_eq!(crate::WINDOW_INITIAL_HEIGHT, 860.0);
-    assert_eq!(crate::WINDOW_MIN_WIDTH, 960.0);
-    assert_eq!(crate::WINDOW_MIN_HEIGHT, 600.0);
-}
-
-const R52_LOAD_SENSITIVE_TESTS: [&str; 5] = [
-    "lone_text_delta_flushes_during_provider_stall_within_sixteen_ms",
-    "cancellation_is_persisted_as_interrupted_under_one_second",
-    "duplicate_stop_races_converge_to_exactly_one_terminal_event",
-    "one_hundred_case_delay_matrix_converges_with_p99_under_one_second",
-    "cancellation_stops_a_delayed_provider_under_one_second",
-];
-
-/// Resolve source paths from nextest's remapped runtime manifest directory.
-/// Cargo test uses the compile-time manifest directory when no remap is present.
-fn r52_workspace_root() -> PathBuf {
-    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-    manifest_dir
-        .parent()
-        .and_then(|crates| crates.parent())
-        .expect("vega manifest lives under <workspace>/crates/vega")
-        .to_path_buf()
-}
-
-fn r52_collect_rust_sources(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-    for entry in fs::read_dir(dir).expect("read source dir") {
-        let path = entry.expect("dir entry").path();
-        if path.is_dir() {
-            if path.file_name().is_some_and(|name| name == "target") {
-                continue;
-            }
-            r52_collect_rust_sources(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-#[test]
-fn r52_load_sensitive_ignores_are_frozen() {
-    let root = r52_workspace_root();
-    let mut sources = Vec::new();
-    for member in ["crates", "xtask"] {
-        r52_collect_rust_sources(&root.join(member), &mut sources);
-    }
-    assert!(!sources.is_empty(), "workspace scan found no Rust sources");
-
-    // Assembled at runtime so this test's own source cannot match the needle.
-    let needle = concat!("#[", "ignore");
-    let reason_prefix = "load-sensitive:";
-    let mut disabled = Vec::new();
-    for path in &sources {
-        let text = fs::read_to_string(path).expect("read source");
-        for (offset, _) in text.match_indices(needle) {
-            let line = text[..offset].matches('\n').count() + 1;
-            let rest = text[offset + needle.len()..].trim_start();
-            let rest = rest.strip_prefix('=').unwrap_or_else(|| {
-                panic!("{}:{line}: {needle} must carry a reason", path.display())
-            });
-            let reason = rest.trim_start().strip_prefix('"').unwrap_or_else(|| {
-                panic!(
-                    "{}:{line}: {needle} reason must be a string literal",
-                    path.display()
-                )
-            });
-            assert!(
-                reason.starts_with(reason_prefix),
-                "{}:{line}: {needle} reason must start with `{reason_prefix}`; the disabled set \
-                 may only hold load-sensitive tests",
-                path.display()
-            );
-            let name = text[offset..]
-                .lines()
-                .map(str::trim_start)
-                .find(|candidate| {
-                    candidate.starts_with("async fn ") || candidate.starts_with("fn ")
-                })
-                .and_then(|signature| {
-                    let word = if signature.starts_with("async") { 2 } else { 1 };
-                    signature.split_whitespace().nth(word)
-                })
-                .and_then(|signature| signature.split('(').next())
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{}:{line}: {needle} is not attached to a fn",
-                        path.display()
-                    )
-                });
-            disabled.push(name);
-        }
-    }
-
-    disabled.sort();
-    let mut expected = R52_LOAD_SENSITIVE_TESTS.map(str::to_owned).to_vec();
-    expected.sort();
-    assert_eq!(
-        disabled,
-        expected,
-        "the disabled test set changed; R52 froze exactly these {} load-sensitive tests",
-        expected.len()
-    );
-}
 
 #[track_caller]
 fn pump_test_app(

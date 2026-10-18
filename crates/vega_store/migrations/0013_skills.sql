@@ -1,6 +1,4 @@
--- Issue #74: local Skills authority. No Skill file or reference bytes enter
 -- consent/audit rows. `skill_run_snapshots.bytes` is private thread data.
--- This migration is additive and independent of #73's 0012 tables.
 
 CREATE TABLE skill_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),

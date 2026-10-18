@@ -1,7 +1,7 @@
 target/
 .DS_Store
 *.log
-# xtask bench results are generated artifacts, not source (T04 / E4)
+# xtask bench results are generated artifacts, not source
 bench/results/
 # agent working data (sync reports etc.)
 .workbuddy/

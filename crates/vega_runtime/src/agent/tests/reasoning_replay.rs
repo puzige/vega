@@ -2,7 +2,6 @@ use super::*;
 use crate::{
     MockProvider, ProviderEvent, ReasoningReplayPolicy, ReplayFrame, ScriptStep, StopReason,
 };
-use futures::FutureExt;
 
 struct ReplaySteeringSource(Mutex<std::collections::VecDeque<Option<crate::RuntimeSteeringInput>>>);
 

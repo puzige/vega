@@ -97,8 +97,7 @@ impl VegaWindow {
             self.close_palette(window, cx);
         }
         cx.set_global(SettingsOpen(false));
-        // R45: ⌘J routes through the unified bottom-dock toggle so the
-        // shortcut and the shell slot share one deterministic priority.
+
         self.workspace_toggle_bottom(window, cx);
         cx.refresh_windows();
     }

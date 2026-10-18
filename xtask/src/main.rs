@@ -1,14 +1,3 @@
-//! Development tasks for the Vega workspace (bench, run, package).
-//!
-//! S8-T43 (A2-04): the S3-T17 measurement pipeline was rewritten to the
-//! frozen T42 contracts — C1 first-rendered-interactive (next-frame
-//! milestone subprocess), C2 release RSS (raw bytes, 20 processes,
-//! +5/+10/+15 s medians, gray-zone extension), C6 P2 streaming (production
-//! controller entry, 10 s @ 1,000 deltas/s) and real refresh-rate detection
-//! for the P1 margin verdict. The legacy `spawn_to_exit` / MiB-as-MB /
-//! hardcoded-60Hz / ~500δ/s measurements are gone (SDD §0 verified at
-//! `429cb2d`; historical S6 numbers are noncomparable).
-
 mod contract;
 mod package;
 mod probe;
@@ -77,8 +66,8 @@ fn bench() -> Result<()> {
     let prov = provenance::collect(&workspace, &build)?;
 
     println!(
-        "\nvega bench — S8-T43 frozen contracts (C1/C2/C6; SDD v1.0). \
-         Historical S6 numbers are noncomparable.\n"
+        "\nvega bench — startup latency, resident memory, stream latency and render margin \
+         (C1/C2/C6).\n"
     );
 
     let c1c2 = bench_c1_c2(&build, &prov, C2_ROUNDS)?;
@@ -236,7 +225,7 @@ fn bench_p2_with(build: &ReleaseBuild, prov: &Provenance) -> Result<report::P2Re
     preseed_profile(&isolation.home)?;
     println!(
         "C6 P2 stream: 10 s @ 1,000 deltas/s through ConversationStream::apply_event \
-         (daily-PR feedback; 5-minute soak is T48/T49)"
+         (daily-PR feedback; not the 5-minute terminal soak)"
     );
     let out = temp.root.join("p2-report.json");
     let seconds = contract::C6_STREAM_SECONDS.to_string();
@@ -333,7 +322,7 @@ struct Sandbox {
 /// Creates the isolated temp sandbox: fresh `HOME`, `/tmp` logs and reports,
 /// nothing inside the repo (C3 isolation MUSTs).
 fn make_sandbox() -> Result<Sandbox> {
-    let root = std::env::temp_dir().join(format!("vega-t43-{}", unix_ms()));
+    let root = std::env::temp_dir().join(format!("vega-benchmark-{}", unix_ms()));
     let home = root.join("home");
     std::fs::create_dir_all(&home)
         .with_context(|| format!("failed to create the sandbox HOME at {}", home.display()))?;

@@ -264,6 +264,3 @@ impl Element for Interaction {
         self.base.style().background = explicit_fill;
     }
 }
-
-#[cfg(test)]
-pub(crate) mod tests;

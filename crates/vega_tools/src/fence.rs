@@ -1,19 +1,3 @@
-//! Path fence: every tool path argument is resolved against the project
-//! root and must canonicalize back inside it (tech-spec §3 red line,
-//! risks #4). This is the agent-misoperation lifeline for all tools.
-//!
-//! Rejection order, cheapest and most deterministic first:
-//!
-//! 1. absolute-path injection — lexical check, no filesystem access;
-//! 2. `..` traversal — lexical check, so `../missing` is still a fence
-//!    rejection rather than a lookup miss;
-//! 3. symlink escape — the canonicalized target must still sit under the
-//!    canonicalized root.
-//!
-//! risks #4 acknowledges the user-space TOCTOU window that remains; the
-//! OS-level containment layer (Seatbelt, S5+) sits on top of this fence and
-//! is not this crate's job.
-
 use std::fs::{self, Metadata};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;

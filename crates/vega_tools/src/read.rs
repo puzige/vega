@@ -1,6 +1,3 @@
-//! read tool: numbered lines with per-line truncation (tech-spec §4.4,
-//! A3-06 部分 / S4-T21).
-
 use std::path::Path;
 
 use crate::Tools;

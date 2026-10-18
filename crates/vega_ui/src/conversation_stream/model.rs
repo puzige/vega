@@ -49,34 +49,12 @@ impl BoundedSamples {
             .map(|values| values.iter().copied().collect())
             .unwrap_or_default()
     }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.values
-            .lock()
-            .map(|values| values.len())
-            .unwrap_or_default()
-    }
 }
 
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以
 /// Menlo 承担，spike 探针同款).
 pub(crate) const MONOFONT: &str = "Menlo";
 
-// ─── top-level anchoring (P4, S8-T44) ────────────────────────────────────────
-//
-// The anchor semantics (贴底跟随 / 上翻 detach / 回底 resume) are carried by
-// the pinned GPUI variable-height list itself: `ListState::set_follow_mode
-// (FollowMode::Tail)` auto-scrolls to the end while following, any upward
-// scroll event detaches, and layout re-engages once the viewport returns to
-// within 1px of the bottom — the same epsilon the old pure state machine
-// used (`ANCHOR_EPSILON_PX`). `ConversationStream` only reads
-// `ListState::is_following_tail()` for the header indicator and re-engages
-// explicitly (Tail mode) when a permission prompt must be visible.
-
-/// Pure scroll-up hydration request gate (S8-T45/C7): a page may be requested
-/// only when the viewport is at the top edge, older history exists, no page
-/// is in flight, and no failure pause is armed.
 pub(crate) fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Option<i64> {
     if !at_top || hydration.loading || hydration.paused {
         return None;
@@ -84,11 +62,6 @@ pub(crate) fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Op
     hydration.older_cursor
 }
 
-// ─── render instructions: RenderNode → StreamLine mapping (§5.3) ─────────────
-
-/// Whether a block's code fences may be highlighted (S3-T18 高亮整合策略):
-/// committed blocks go through the T16 tree-sitter query; the pending tail
-/// (unclosed fence) degrades to plain monospace (tech-spec §5.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockOrigin {
     Committed,
@@ -105,8 +78,6 @@ pub(crate) enum SpanStyle {
     /// Inline code: monospace on `code_bg`.
     Code,
     Link,
-    /// Code token from the T16 highlighter (monospace row; the token →
-    /// theme mapping is [`code_token_style`]).
     Token(HighlightKind),
 }
 
@@ -117,9 +88,6 @@ pub(crate) struct TokenStyle {
     pub(crate) italic: bool,
 }
 
-/// S3-T18 高亮整合的**唯一映射表**：HighlightKind → 既有 ui-spec §2 色值
-/// token（无新色值）：Keyword/Type → text_primary 加粗，String → success，
-/// Comment → text_tertiary 斜体，Number → warning，其余 → text_primary。
 pub(crate) fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> TokenStyle {
     match kind {
         HighlightKind::Keyword | HighlightKind::Type => TokenStyle {
@@ -381,8 +349,6 @@ pub(crate) fn flatten_node(
             out.push(line);
         }
         RenderNode::CodeBlock { language, code } => {
-            // T18 高亮整合：committed 块按语言走 T16 tree-sitter 高亮；
-            // pending（未闭合 fence）/未支持语言降级纯文本等宽（§5.1）。
             let highlighted = match origin {
                 BlockOrigin::Committed => language
                     .as_deref()
@@ -745,10 +711,6 @@ impl StreamModel {
     }
 }
 
-// ─── message entries (T18 消息块结构) ────────────────────────────────────────
-
-/// UI-only original text and stable action identity. Handlers share the buffer
-/// so a click reads the newest delta without cloning the full body per frame.
 #[derive(Clone)]
 pub(crate) struct MessageCopy {
     pub(super) id: u64,
@@ -1005,11 +967,6 @@ impl Default for MessageCopy {
     }
 }
 
-/// One conversation entry: a local user echo or one assistant markdown turn.
-///
-/// 架构师裁决（T18 裁决①）：user 消息块用「独立渲染路径挂 StreamSnapshot
-/// 外侧」实现 —— 不进入 MarkdownStream，T15 管线零侵入；每段 assistant 流
-/// 拥有独立的 final 终结语义（回放结束 `finish()`，tech-spec §5.4）。
 pub(crate) enum StreamEntry {
     Subagents {
         group: Entity<super::subagents::SubagentGroup>,
@@ -1066,8 +1023,6 @@ pub(crate) enum StreamEntry {
     Plan {
         card: Entity<PlanCard>,
     },
-    /// One read-only per-task cost summary card (S7-T40), projected by
-    /// `vega_conversation::summary` and applied by the app layer.
     Summary {
         card: Entity<SummaryCard>,
     },

@@ -438,9 +438,6 @@ pub enum ToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
-    /// Result set exceeded a tool's hard limit. Reserved for callers that
-    /// prefer a hard failure; T21's glob/grep truncate into
-    /// [`ToolOutput::truncated`](crate::ToolOutput::truncated) instead.
     #[error("too many results (limit: {limit})")]
     TooManyResults { limit: usize },
 

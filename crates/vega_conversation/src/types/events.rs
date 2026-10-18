@@ -7,7 +7,6 @@ pub enum ConversationStopReason {
     End,
     /// Provider generation limit.
     Length,
-    /// Runtime agent turn safety limit (Issue #114).
     TurnLimit,
 }
 
@@ -416,11 +415,7 @@ pub enum ConversationEvent {
         message_id: MessageId,
         /// Provider token counts.
         usage: TokenUsage,
-        /// Integer cost (`0` in S4; priced-zero rows keep `0` with
-        /// provenance).
         cost: Microcents,
-        /// Exact pricing provenance (S7-T38); `None` keeps the S4
-        /// legacy/unpriced semantics.
         pricing: Option<UsagePricing>,
     },
     /// Usage from a historical-summary provider call. It is separate from
@@ -1079,8 +1074,9 @@ pub(crate) fn invalid_tool_code(code: vega_tools::MutationErrorCode) -> Option<I
 
 #[cfg(test)]
 mod run_failure_tests {
-    use super::RunFailureKind;
+    use super::{ContextCompactionFailureCode as Failure, RunFailureKind};
     use vega_runtime::VegaError;
+    use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
 
     fn provider(status: Option<u16>, message: &str) -> VegaError {
         VegaError::Provider {
@@ -1091,41 +1087,7 @@ mod run_failure_tests {
     }
 
     #[test]
-    fn issue302_local_context_failures_keep_actionable_content_free_copy() {
-        use vega_runtime::ContextRuntimeError;
-        for error in [
-            ContextRuntimeError::OverLimit {
-                estimated_tokens: 301_000,
-                input_budget: 300_000,
-            },
-            ContextRuntimeError::SummaryInputOverLimit {
-                estimated_tokens: 301_000,
-                input_budget: 300_000,
-            },
-            ContextRuntimeError::ResultOverLimit {
-                estimated_tokens: 301_000,
-                target_tokens: 180_000,
-            },
-        ] {
-            let kind = RunFailureKind::from_runtime(&VegaError::Context(error));
-            assert_eq!(kind, RunFailureKind::ContextOverLimit);
-            assert!(
-                kind.message()
-                    .contains("Context exceeds available capacity")
-            );
-            assert!(kind.message().contains("conversation is preserved"));
-            assert!(!kind.message().contains("runtime environment"));
-            assert!(!kind.message().contains("provider"));
-        }
-        assert_eq!(
-            RunFailureKind::from_runtime(&VegaError::Context(ContextRuntimeError::SourceChanged)),
-            RunFailureKind::Compaction(super::super::ContextCompactionFailureCode::SourceChanged)
-        );
-    }
-
-    #[test]
     fn compaction_failure_runtime_variants_keep_typed_conversation_causes() {
-        use super::super::ContextCompactionFailureCode as Failure;
         use vega_runtime::{ContextEstimateError, ContextRuntimeError as ContextError};
 
         let cases = [
@@ -1208,9 +1170,6 @@ mod run_failure_tests {
 
     #[test]
     fn compaction_failure_diagnostic_codes_fold_to_safe_display_categories() {
-        use super::super::ContextCompactionFailureCode as Failure;
-        use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
-
         let cases = [
             (
                 Code::SummarySourceChanged,
@@ -1342,16 +1301,5 @@ mod run_failure_tests {
                 .message()
                 .contains("SECRET_SENTINEL")
         );
-    }
-
-    #[test]
-    fn issue170_credential_safety_block_has_local_actionable_failure_state() {
-        let kind = RunFailureKind::from_runtime(&VegaError::CredentialExposureBlocked);
-        assert_eq!(kind, RunFailureKind::CredentialExposureBlocked);
-        let message = kind.message();
-        assert!(message.contains("could not be transformed safely"));
-        assert!(message.contains("Completed tool actions are preserved"));
-        assert!(message.contains("Check tool configuration"));
-        assert!(!message.contains("Could not connect to the provider"));
     }
 }

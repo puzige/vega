@@ -82,15 +82,8 @@ struct ReasoningSaveWorkerResult {
     error: Option<ReasoningSettingsErrorCode>,
 }
 
-/// Where one reasoning.toml save originated (R57 P3).
-///
-/// Both surfaces share one single-flight owner, one authority, and one
-/// reconciliation path; only the completion projection differs. The Settings
-/// editor owns a visible draft that must be told its save finished, while the
-/// composer owns a stream that must be re-projected from the new authority.
 enum ReasoningSaveOrigin {
     Settings(Entity<SettingsView>),
-    /// The composer's tier slider (R57 P3).
     Composer,
 }
 
@@ -344,24 +337,6 @@ impl VegaWindow {
         );
     }
 
-    /// R57 P3: persists one tier chosen in the composer's thinking slider.
-    ///
-    /// This is the existing `ComposerDefaultsRequested` path, not a new
-    /// persistence mechanism: the slider's `ThinkingTierSelected` becomes the
-    /// same `ReasoningProfilePatch { preference }` a Settings edit produces,
-    /// written through the same authority, single-flight owner, and
-    /// reconciliation.
-    ///
-    /// The intent is validated against the app's own authority, never against
-    /// the stream's copy: a tier the profile does not declare is refused with
-    /// the exact stream re-projected from that authority, so the slider cannot
-    /// display a value the next run would not send.
-    ///
-    /// R58: the request's `thinking` is a persisted *choice name*. The Off
-    /// position sends [`OFF_CHOICE_NAME`] (`"disabled"`), which becomes
-    /// `ReasoningChoice::Disabled` — the same value the wire encoder already
-    /// routes through `disabled_wire`. It is never written into `efforts` and
-    /// never becomes `Effort("off")`.
     pub(crate) fn persist_composer_thinking(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -407,11 +382,7 @@ impl VegaWindow {
             self.apply_reasoning_profile_to_stream(&stream, &model, cx);
             return;
         };
-        // R58: the Off position persists `"disabled"`, which is the store's
-        // own name for `ReasoningChoice::Disabled` — a *separate* state, never
-        // an effort. It is refused unless the profile declares the disabled
-        // operation, mirroring the store validator; otherwise the store would
-        // reject the write and surface it as a generic I/O error.
+
         let next = if choice == OFF_CHOICE_NAME {
             if !(profile.supports_disabled && profile.disabled_wire.is_some()) {
                 self.apply_reasoning_profile_to_stream(&stream, &model, cx);

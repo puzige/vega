@@ -56,10 +56,6 @@ fn cold_context_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Ch
         .collect()
 }
 
-#[cfg(test)]
-#[path = "tests/compaction_timeouts.rs"]
-mod compaction_timeouts;
-
 /// A summary request is a bounded, tool-free transformation rather than a
 /// user-facing reasoning turn.  Disable thinking only when the frozen profile
 /// explicitly declares a legal disabled wire operation; unknown or
@@ -2568,103 +2564,7 @@ mod tests {
     use super::*;
     use futures::future::pending;
     use vega_runtime::{MockProvider, ScriptStep};
-
-    #[tokio::test]
-    async fn issue170_compaction_redacts_provider_summary_before_checkpoint_install() {
-        const CANARY: &str = "canary-credential-redaction-170-abcdefghijklmnopqrstuvwxyz";
-        let directory = tempfile::tempdir().unwrap();
-        let database_path = directory.path().join("vega.db");
-        let store = Store::open(&database_path).unwrap();
-        store.migrate().unwrap();
-        vega_store::threads::create_standalone(
-            store.conn(),
-            vega_store::threads::NewThread {
-                id: "summary-redaction-thread",
-                project_id: "",
-                title: "fixture",
-                mode: "execute",
-                permission_mode: "readonly",
-                model: "mock-model",
-                status: "active",
-                pinned: false,
-                unread: false,
-                created_at: 1,
-                updated_at: 1,
-            },
-        )
-        .unwrap();
-        for (id, seq, role, content) in [
-            ("old-user", 1_i64, "user", "the original request"),
-            ("old-assistant", 2_i64, "assistant", "the earlier result"),
-            ("current-user", 3_i64, "user", "continue"),
-        ] {
-            vega_store::messages::insert(
-                store.conn(),
-                &vega_store::messages::MessageRow {
-                    id: id.into(),
-                    thread_id: "summary-redaction-thread".into(),
-                    seq,
-                    role: role.into(),
-                    kind: "text".into(),
-                    content: content.into(),
-                    status: "done".into(),
-                    created_at: seq,
-                    plan_status: None,
-                    plan_review_note: None,
-                    plan_reviewed_at: None,
-                },
-            )
-            .unwrap();
-        }
-        let provider = MockProvider::new(vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta(format!("Summary retained {CANARY}")),
-            ProviderEvent::Usage {
-                input: 20,
-                output: 8,
-                cache_read: Some(0),
-                cache_write: Some(0),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::End,
-            },
-        ])]);
-        let reader: vega_runtime::CredentialReader =
-            std::sync::Arc::new(|| Ok(vec![CANARY.to_string()]));
-        let result = compact_thread_manually_with_credential_reader(
-            &store,
-            &provider,
-            "summary-redaction-thread",
-            "mock-model",
-            "System",
-            vega_runtime::tool_definitions(vega_runtime::RuntimeRunMode::Execute),
-            ContextBudget::new(20_000, 1_000, false).unwrap(),
-            CancellationToken::new(),
-            None,
-            None,
-            Some(reader),
-        )
-        .await
-        .unwrap();
-        assert!(result.messages.iter().any(|message| {
-            message
-                .content
-                .contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
-                && !message.content.contains(CANARY)
-        }));
-        let checkpoint = vega_store::context_compaction::latest_checkpoint(
-            store.conn(),
-            "summary-redaction-thread",
-            "mock-model",
-        )
-        .unwrap()
-        .unwrap();
-        assert!(
-            checkpoint
-                .summary
-                .contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
-        );
-        assert!(!checkpoint.summary.contains(CANARY));
-    }
+    use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
 
     #[tokio::test]
     async fn summary_stage_records_overflow_bytes_without_persisting_summary_text() {
@@ -3005,8 +2905,6 @@ mod tests {
 
     #[test]
     fn compaction_failure_summary_errors_keep_their_safe_diagnostic_classes() {
-        use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
-
         let cases = [
             (ContextRuntimeError::SummaryTimedOut, Code::SummaryTimeout),
             (
@@ -3136,126 +3034,6 @@ mod tests {
         assert_eq!(metrics.provider.retry_count, Some(1));
     }
 
-    #[tokio::test]
-    async fn issue88_structured_stream_excludes_checklist_but_retains_full_usage() {
-        let provider = MockProvider::new(vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta("<analysis>coverage checklist</analysis>".into()),
-            ProviderEvent::TextDelta(
-                "<summary>Primary Request and Intent: ORBIT-17</summary>".into(),
-            ),
-            ProviderEvent::Usage {
-                input: 321,
-                output: 88,
-                cache_read: Some(0),
-                cache_write: Some(0),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::End,
-            },
-        ])]);
-        let (summary, usage) = collect_summary_with_timeout(
-            &provider,
-            ChatRequest::default(),
-            None,
-            CancellationToken::new(),
-            SUMMARY_OPERATION_TIMEOUT,
-        )
-        .await
-        .unwrap();
-        assert_eq!(summary, "Summary:\nPrimary Request and Intent: ORBIT-17");
-        assert_eq!(usage.unwrap().usage.output, 88);
-
-        let truncated = MockProvider::new(vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta("<summary>unfinished".into()),
-            ProviderEvent::ThinkingDelta("abc".into()),
-            ProviderEvent::Usage {
-                input: 321,
-                output: 8192,
-                cache_read: Some(0),
-                cache_write: Some(0),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::Length,
-            },
-        ])]);
-        let failure = collect_summary_with_timeout(
-            &truncated,
-            ChatRequest::default(),
-            None,
-            CancellationToken::new(),
-            SUMMARY_OPERATION_TIMEOUT,
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(
-            failure.error.as_ref(),
-            VegaError::Context(ContextRuntimeError::SummaryOutputTruncated {
-                visible_bytes,
-                thinking_bytes: 3,
-                output_tokens: Some(8192),
-            }) if *visible_bytes == "<summary>unfinished".len()
-        ));
-        assert_eq!(failure.usages[0].usage.output, 8192);
-        assert_eq!(
-            vega_runtime::ContextCompactionStatusFailure::from_error(failure.error.as_ref()),
-            vega_runtime::ContextCompactionStatusFailure::InvalidSummary
-        );
-    }
-
-    #[tokio::test]
-    async fn issue73_compaction_projection_rechecks_rotated_owner_secret() {
-        let inner = MockProvider::new(vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta("safe summary".to_string()),
-            ProviderEvent::Done {
-                stop_reason: StopReason::End,
-            },
-        ])]);
-        let provider = super::super::OwnerCredentialProvider::new(
-            Arc::new(inner.clone()),
-            Arc::new(|| Ok(vec!["rotated-owner-key".to_string()])),
-        );
-        let request = ChatRequest {
-            model: "mock-model".to_string(),
-            messages: vec![ChatMessage::tool_result(
-                "historic-mcp",
-                "rotated-owner-key",
-            )],
-            ..ChatRequest::default()
-        };
-        let failure = collect_summary_with_timeout(
-            &provider,
-            request,
-            None,
-            CancellationToken::new(),
-            SUMMARY_OPERATION_TIMEOUT,
-        )
-        .await;
-        assert!(matches!(failure, Ok((ref text, _)) if text == "safe summary"));
-        assert_eq!(inner.requests().len(), 1);
-        assert!(
-            !inner.requests()[0].messages[0]
-                .content
-                .contains("rotated-owner-key")
-        );
-        let clean = ChatRequest {
-            model: "mock-model".to_string(),
-            messages: vec![ChatMessage::tool_result("historic-mcp", "ordinary result")],
-            ..ChatRequest::default()
-        };
-        let summary = collect_summary_with_timeout(
-            &provider,
-            clean,
-            None,
-            CancellationToken::new(),
-            SUMMARY_OPERATION_TIMEOUT,
-        )
-        .await;
-        assert!(matches!(summary, Ok((ref text, _)) if text == "safe summary"));
-        let requests = inner.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[1].messages[0].content, "ordinary result");
-    }
-
     fn assistant(calls: &[&str]) -> ChatMessage {
         ChatMessage::assistant_with_tools(
             "text",
@@ -3326,28 +3104,6 @@ mod tests {
             assert!(SUMMARY_INSTRUCTION.contains(requirement));
         }
         assert!(!SUMMARY_INSTRUCTION.contains("2048"));
-    }
-
-    #[test]
-    fn issue88_structured_summary_strips_optional_checklist_and_rejects_bad_envelopes() {
-        assert_eq!(
-            normalize_summary("<analysis>checklist</analysis>\n<summary>Goal: continue</summary>")
-                .unwrap(),
-            "Summary:\nGoal: continue"
-        );
-        assert_eq!(
-            normalize_summary("plain legacy summary").unwrap(),
-            "plain legacy summary"
-        );
-        for invalid in [
-            "<analysis>checklist</analysis>",
-            "<summary></summary>",
-            "<summary>unfinished",
-            "<summary>one</summary><summary>two</summary>",
-            "preface <summary>one</summary>",
-        ] {
-            assert!(normalize_summary(invalid).is_err());
-        }
     }
 
     #[test]

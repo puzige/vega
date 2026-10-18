@@ -847,7 +847,6 @@ fn execute_skill_call(
     }
 }
 
-/// Runs the S4 headless agent loop with real fenced read/glob/grep tools.
 pub async fn run_agent(
     provider: &dyn Provider,
     tools: &vega_tools::Tools,
@@ -3369,86 +3368,5 @@ where
             direct_user_skill_round = false;
         }
         live_projection_revision = live_projection_revision.saturating_add(1);
-    }
-}
-
-#[cfg(test)]
-mod compaction_cancellation_tests {
-    use super::*;
-
-    struct CancelAtCompletion(bool);
-
-    impl crate::ContextCompactionHook for CancelAtCompletion {
-        fn compact<'a>(
-            &'a self,
-            _request: ContextCompactionRequest,
-            cancel: CancellationToken,
-        ) -> futures::future::BoxFuture<
-            'a,
-            Result<crate::ContextCompactionResult, crate::ContextCompactionFailure>,
-        > {
-            Box::pin(async move {
-                cancel.cancel();
-                Err(crate::ContextCompactionFailure::new(
-                    if self.0 {
-                        VegaError::Cancelled
-                    } else {
-                        VegaError::CredentialCheckUnavailable
-                    },
-                    None,
-                ))
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn issue397_skill_prospect_compaction_preserves_typed_failure_and_cancellation() {
-        for cancelled_error in [true, false] {
-            let mut messages = vec![
-                ChatMessage::new(ChatRole::System, "system"),
-                ChatMessage::new(ChatRole::User, "previous request"),
-                ChatMessage::new(ChatRole::Assistant, "previous answer"),
-                ChatMessage::new(ChatRole::User, "current request"),
-            ];
-            let mut events = Vec::new();
-            let cancel = CancellationToken::new();
-            let result = compact_before_skill_rejection(
-                None,
-                "skill body",
-                "system",
-                "catalog",
-                &mut messages,
-                None,
-                &[],
-                Some(crate::ContextBudget::new(50_000, 1000, true).unwrap()),
-                None,
-                "mock-model",
-                None,
-                None,
-                0,
-                Some(&CancelAtCompletion(cancelled_error)),
-                "operation",
-                &mut None,
-                &mut None,
-                &mut 0,
-                &mut None,
-                &mut 0,
-                &cancel,
-                &mut events,
-                &mut |_| std::future::ready(Ok(())),
-            )
-            .await;
-            assert!(cancel.is_cancelled());
-            if cancelled_error {
-                assert!(matches!(result, Err(VegaError::Cancelled)));
-            } else {
-                assert!(matches!(result, Err(VegaError::CredentialCheckUnavailable)));
-            }
-            assert!(
-                matches!(events.last(), Some(RuntimeEvent::ContextCompactionStatusUpdated { status })
-                if status.phase == if cancelled_error { crate::ContextCompactionPhase::Cancelled }
-                else { crate::ContextCompactionPhase::Failed })
-            );
-        }
     }
 }

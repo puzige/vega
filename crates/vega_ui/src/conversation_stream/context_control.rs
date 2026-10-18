@@ -1,4 +1,3 @@
-//! #76: IO-free, exact-owner compaction lifecycle projection.
 use super::*;
 use vega_conversation::types::{
     ContextAccountingRecord, ContextCompactionFailureCode as Failure,
@@ -83,8 +82,6 @@ impl ConversationStream {
     }
 
     pub(crate) fn reset_context_control(&mut self, cx: &mut Context<Self>) {
-        // R7: model change invalidates all old settings, status and ACK owners.
-        // Keep the counter monotonic so an ABA switch cannot accept an old ACK.
         let next = self.context_control.next_request;
         self.context_control = ContextControl::new(cx);
         self.context_control.next_request = next;
@@ -133,7 +130,6 @@ impl ConversationStream {
         true
     }
 
-    /// R7: app maps each auto operation into this same stream-local ID space.
     pub fn reserve_context_operation_id(&mut self, _cx: &mut Context<Self>) -> Option<u64> {
         let id = self.context_control.next_request.checked_add(1)?;
         self.context_control.next_request = id;
@@ -209,7 +205,7 @@ impl ConversationStream {
                 });
         if let Some(settings) = saved {
             self.context_control.settings = Some(settings);
-            // R7: late save ACK must not erase edits made while storage was busy.
+
             if unchanged {
                 self.sync_context_inputs(cx);
             }
@@ -256,7 +252,7 @@ impl ConversationStream {
                 group.set_compacting(record.status == Status::Compacting, cx)
             });
         }
-        // R5: a failed/unpriced summary must remain visible in the cost meter.
+
         if self
             .meter
             .apply(&ConversationEvent::ContextCompactionStatus {

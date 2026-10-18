@@ -1,5 +1,3 @@
-//! Per-task cost summary projection (S7-T40/A10-06, C4 contract).
-//!
 use vega_store::{Store, messages, token_usage, tool_calls};
 
 use crate::types::{
@@ -192,12 +190,6 @@ fn token_usage_rows(
         .collect()
 }
 
-/// Projects the summary of the thread's latest terminal assistant task, or
-/// `None` when the thread has none (S7-T40 restart recovery scope).
-///
-/// Durable `token`/`cost`/`cache`/`tool-count` fields recover from the audit
-/// rows; the caller must pass `duration_ms = None` on restart because the
-/// wall-clock measurement only exists in the live run's memory (C4).
 pub fn latest_task_summary(
     store: &Store,
     thread_id: &str,

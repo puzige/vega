@@ -1,17 +1,3 @@
-//! Settings view (A1-10 UI skeleton): provider list, add-provider form, and
-//! default model / permission mode pickers.
-//!
-//! The view is opened with Cmd+, ([`OpenSettings`]) and closed with Esc or
-//! the back button ([`CloseSettings`]); whether it replaces the session
-//! placeholder is tracked by the [`SettingsOpen`] global, following the
-//! global pattern proven in T07. It loads the config from the config root
-//! (`vega_store::paths`, tech-spec §6) when constructed and saves it back on
-//! every mutation, so configuration survives a restart.
-//!
-//! Credentials never appear in the UI: the key form field is masked while
-//! typing; cached actual local references decide the stored/re-entry badge.
-//! Values persist only in the owner-only plaintext local credential store.
-
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Div, Entity, EventEmitter, FocusHandle, Focusable, Global, MouseButton,

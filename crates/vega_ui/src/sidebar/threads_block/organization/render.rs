@@ -214,11 +214,6 @@ impl ThreadsBlock {
             .debug_selector(|| "sidebar-organization".into())
             .flex()
             .flex_col()
-            // R50: one explicit section pitch for every section boundary.
-            // This replaces the shared `gap_2()` (8px) that, combined with the
-            // Pinned section's extra `mb_1()` (4px), gave Pinned→Projects 12px
-            // and Projects→Recents 8px — the same relationship rendered at two
-            // different values.
             .gap(px(Layout::SIDEBAR_SECTION_GAP));
         body = body.children(self.render_pinned_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
@@ -324,10 +319,6 @@ impl ThreadsBlock {
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
-                // R50: Pinned is not a special section. Its former `mb_1()`
-                // added 4px on top of the shared body gap, so Pinned→Projects
-                // measured 12px while Projects→Recents measured 8px. Section
-                // pitch now comes from `Layout::SIDEBAR_SECTION_GAP` alone.
                 .child(
                     div()
                         .debug_selector(|| "organization-header-pinned".into())
@@ -341,9 +332,6 @@ impl ThreadsBlock {
                                 .debug_selector(move || {
                                     format!("organization-section-label-{label}")
                                 })
-                                // R48: the label column is an explicit ladder
-                                // step (base + SIDEBAR_LABEL_INSET) instead of
-                                // an implicit inheritance from the container.
                                 .pl(px(Layout::SIDEBAR_LABEL_INSET))
                                 .child(label),
                         ),
@@ -415,7 +403,6 @@ impl ThreadsBlock {
                     .debug_selector(move || format!("organization-section-label-{label}"))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
-                    // R48: explicit label ladder step (base + LABEL_INSET).
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
             )
@@ -460,11 +447,7 @@ impl ThreadsBlock {
             .as_ref()
             .map(|thread| thread.id.clone());
         let empty = standalone.is_empty();
-        // Issue #57: Recents is a lazy list, not a Show More list. Record the
-        // total so the outer scroller can grow the render window one page at a
-        // time; the rows are always the first `recents_visible` of the stable
-        // sort, so growing only appends and never reorders what is already
-        // painted.
+
         self.recents_total = standalone.len();
         let rows = standalone
             .into_iter()
@@ -533,7 +516,6 @@ impl ThreadsBlock {
                     .debug_selector(move || format!("organization-section-label-{label}"))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
-                    // R48: explicit label ladder step (base + LABEL_INSET).
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
             )
@@ -597,9 +579,6 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// Issue #57: the `Show More / Show Less` row is **Projects-only**. Recents
-    /// is now a lazy list (viewport fill + scroll-to-bottom growth), so it has
-    /// no progressive control and no `organization-recents-show-*` selector.
     fn render_progressive_control(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let state_name = if expanded { "less" } else { "more" };
@@ -616,7 +595,6 @@ impl ThreadsBlock {
             .role(gpui_kit::Role::Button)
             .aria_label(label)
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            // R48: Show More / Show Less shares the child text column.
             .pl(px(Layout::SIDEBAR_ROW_INSET))
             .rounded_lg()
             .flex()
@@ -749,10 +727,6 @@ impl ThreadsBlock {
             .flex()
             .items_center()
             .gap_2()
-            // R48: the row surface starts at the navigation content origin, so
-            // the folder icon shares the section label column (base + LABEL
-            // INSET). Only the trailing padding remains; the text column is
-            // reached by icon (16) + gap_2 (8) = SIDEBAR_ROW_INSET.
             .pr_2()
             .rounded_lg()
             .focusable()

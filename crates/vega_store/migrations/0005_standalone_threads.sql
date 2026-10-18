@@ -1,4 +1,3 @@
--- R15: a task may be standalone. Rebuild only tables whose foreign keys
 -- point at threads so existing rows and child records remain intact.
 -- The migration runner temporarily disables foreign-key enforcement while
 -- the old tables are replaced; it restores enforcement before committing.

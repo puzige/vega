@@ -1,5 +1,3 @@
-//! Strict, content-free wire codecs for S5 write/edit boundaries.
-
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

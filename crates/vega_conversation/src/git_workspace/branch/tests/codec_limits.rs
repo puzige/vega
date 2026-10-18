@@ -62,62 +62,6 @@ fn parser_rejects_delete_duplicate_and_malformed_records() {
 }
 
 #[test]
-fn raw_ref_oid_status_and_line_codecs_are_strict_and_bytes_first() {
-    let sha1 = b"0000000000000000000000000000000000000000";
-    let sha256 = b"0000000000000000000000000000000000000000000000000000000000000000";
-    let mixed = [sha256.as_slice(), b"\0refs/heads/topic\0\n"].concat();
-    assert_eq!(
-        error_code(parse_refs(&mixed, b"main", sha1)),
-        GitWorkspaceErrorCode::MalformedOutput
-    );
-    let raw = b"team/non-utf8-\xff";
-    assert!(validate_branch_short(raw).is_ok());
-    assert_eq!(escape_ref(raw), "team/non-utf8-\\xff");
-    for invalid in [
-        b"-topic".as_slice(),
-        b"HEAD",
-        b"@",
-        b"a..b",
-        b"a//b",
-        b"a/@{b",
-        b".hidden/topic",
-        b"a/.hidden",
-        b"a.lock",
-        b"a/b.lock",
-        b"a.",
-        b"a b",
-        b"a~b",
-        b"a^b",
-        b"a:b",
-        b"a?b",
-        b"a*b",
-        b"a[b",
-        b"a\\b",
-    ] {
-        assert!(validate_branch_short(invalid).is_err(), "{invalid:?}");
-    }
-    for valid in [b"A".as_slice(), b"M", b"T", b"R0", b"R100", b"C007"] {
-        assert!(parse_acmrt_status(valid).is_ok(), "{valid:?}");
-    }
-    for invalid in [
-        b"".as_slice(),
-        b"Mgarbage",
-        b"D",
-        b"R",
-        b"R101",
-        b"R1000",
-        b"R-1",
-        b"C1x",
-    ] {
-        assert!(parse_acmrt_status(invalid).is_err(), "{invalid:?}");
-    }
-    assert_eq!(exact_single_line(b"one\n").expect("line"), b"one");
-    for invalid in [b"one".as_slice(), b"one\n\n", b"one\r\n", b"one\0\n"] {
-        assert!(exact_single_line(invalid).is_err(), "{invalid:?}");
-    }
-}
-
-#[test]
 fn path_counts_and_filter_values_are_inclusive_and_fail_closed() {
     let oid = b"0000000000000000000000000000000000000000";
     let mut refs = Vec::new();

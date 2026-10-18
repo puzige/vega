@@ -1,11 +1,3 @@
-//! Mock provider: scripted replay of provider events (tech-spec §8, S4-T19).
-//!
-//! This is the shared test infrastructure for the S4-S8 agentic-loop tests:
-//! callers hand in a script ([`ScriptStep`] sequence) and
-//! [`MockProvider::chat_stream`] replays it step by step, honouring the
-//! [`CancellationToken`] like a real provider would (fail fast when already
-//! cancelled, stop mid-stream without further events otherwise).
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -226,7 +218,7 @@ impl Provider for MockProvider {
 mod tests {
     use super::*;
     use crate::provider::{ChatMessage, ChatRole, StopReason};
-    use futures::Stream;
+    use futures::{Stream, StreamExt};
 
     fn request() -> ChatRequest {
         ChatRequest {
@@ -241,7 +233,6 @@ mod tests {
         stream: &mut (impl Stream<Item = Result<ProviderEvent, VegaError>> + Unpin),
         limit: usize,
     ) -> Vec<Result<ProviderEvent, VegaError>> {
-        use futures::StreamExt;
         let mut out = Vec::new();
         for _ in 0..limit {
             match stream.next().await {

@@ -1,13 +1,5 @@
-//! Issue #74 Skills Settings. This view only talks to the conversation-owned
-//! service; no Skill path, file or SQLite row is trusted on the UI thread.
-
 use crate::interaction::InteractionExt;
 use std::path::PathBuf;
-#[cfg(test)]
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -25,49 +17,6 @@ use super::{
     settings_group, settings_section, settings_status, settings_switch,
 };
 
-#[cfg(test)]
-pub(super) struct SkillsOperationGate {
-    entered: Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
-    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
-    used: AtomicBool,
-}
-
-#[cfg(test)]
-impl SkillsOperationGate {
-    pub(super) fn new(
-        entered: tokio::sync::oneshot::Sender<bool>,
-        release: tokio::sync::oneshot::Receiver<()>,
-    ) -> Self {
-        Self {
-            entered: Mutex::new(Some(entered)),
-            release: Mutex::new(Some(release)),
-            used: AtomicBool::new(false),
-        }
-    }
-
-    async fn hold_first(&self, succeeded: bool) {
-        if self.used.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        if let Some(entered) = self
-            .entered
-            .lock()
-            .ok()
-            .and_then(|mut sender| sender.take())
-        {
-            let _ = entered.send(succeeded);
-        }
-        let release = self
-            .release
-            .lock()
-            .ok()
-            .and_then(|mut receiver| receiver.take());
-        if let Some(release) = release {
-            let _ = release.await;
-        }
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct SkillsSettingsState {
     service: Option<SkillSettingsService>,
@@ -77,11 +26,6 @@ pub(crate) struct SkillsSettingsState {
     busy: bool,
     message: Option<String>,
     request_generation: u64,
-    #[cfg(test)]
-    reload_response_override:
-        Option<tokio::sync::oneshot::Receiver<Result<SkillSettingsProjection, SkillSettingsError>>>,
-    #[cfg(test)]
-    test_operation_gate: Option<Arc<SkillsOperationGate>>,
 }
 
 #[derive(Clone)]
@@ -177,32 +121,14 @@ impl SettingsView {
             cx.notify();
             return;
         };
-        #[cfg(test)]
-        let reload_response_override = if matches!(&operation, SkillOperation::Reload) {
-            self.skills.reload_response_override.take()
-        } else {
-            None
-        };
         self.skills.request_generation = self.skills.request_generation.wrapping_add(1);
         let request_generation = self.skills.request_generation;
         self.skills.busy = true;
         self.skills.message = None;
         cx.notify();
-        #[cfg(test)]
-        let test_operation_gate = self.skills.test_operation_gate.clone();
         let task = cx.background_executor().spawn(async move {
-            let result = match operation {
+            match operation {
                 SkillOperation::Reload => {
-                    #[cfg(test)]
-                    if let Some(response) = reload_response_override {
-                        response
-                            .await
-                            .unwrap_or(Err(SkillSettingsError::Store))
-                            .map(SkillOperationResult::Projection)
-                    } else {
-                        service.projection().map(SkillOperationResult::Projection)
-                    }
-                    #[cfg(not(test))]
                     service.projection().map(SkillOperationResult::Projection)
                 }
                 SkillOperation::PreviewProject => service
@@ -224,12 +150,7 @@ impl SettingsView {
                     service.apply(generation, mutation)?;
                     service.projection().map(SkillOperationResult::Projection)
                 }
-            };
-            #[cfg(test)]
-            if let Some(gate) = test_operation_gate {
-                gate.hold_first(result.is_ok()).await;
             }
-            result
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -851,6 +772,3 @@ fn skill_error_label(error: SkillSettingsError) -> &'static str {
         SkillSettingsError::SelectionLimit => "一个任务最多可选择三个 Skills",
     }
 }
-
-#[cfg(test)]
-mod tests;

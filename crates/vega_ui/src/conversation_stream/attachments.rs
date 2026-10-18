@@ -1,4 +1,3 @@
-//! Issue 63 R1–R4: explicit, bounded attachment intents owned by this stream.
 use super::*;
 use gpui_kit::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, PathPromptOptions};
 use std::path::PathBuf;
@@ -123,7 +122,6 @@ impl ConversationStream {
     pub(crate) fn paste_images(&mut self, item: Arc<ClipboardItem>, cx: &mut Context<Self>) {
         self.import_images(
             move || {
-                // R3: reject aggregate cardinality/bytes before any decoder work.
                 let mut count = 0usize;
                 let mut bytes = 0usize;
                 for entry in item.entries() {
@@ -269,7 +267,6 @@ impl ConversationStream {
     }
 
     fn remove_image(&mut self, id: u64, cx: &mut Context<Self>) {
-        // R4: retire pending work before editing the batch; ACK clears IDs only.
         self.attachment_generation = self.attachment_generation.wrapping_add(1);
         self.attachment_import_pending = false;
         self.attachments.retain(|(owned, _)| *owned != id);

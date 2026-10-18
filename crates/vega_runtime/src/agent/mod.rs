@@ -1,5 +1,3 @@
-//! Headless agentic loop (tech-spec §4.2, A3-03 / S4-T20).
-
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
@@ -352,12 +350,6 @@ impl RuntimeToolConfig {
         ))
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_mcp_candidates(mut self, candidates: Vec<McpCandidate>) -> Self {
-        self.mcp_candidates = candidates;
-        self
-    }
-
     /// Freeze the currently ready, explicitly enabled MCP servers at run
     /// start. Settings owns enablement and must not pass disabled servers.
     pub fn with_mcp_servers(mut self, servers: Vec<McpReadyServer>) -> Self {
@@ -636,10 +628,6 @@ pub struct AgentRequest {
     pub completed_tool_results: HashMap<String, CompletedToolCall>,
     /// Tool capability, permission, checkpoint, and exact-rule facts.
     pub tool_config: RuntimeToolConfig,
-    /// Immutable pricing capability frozen at run preflight (S7-T38/C3).
-    ///
-    /// `None` keeps the S4 legacy/unpriced semantics: usage rows persist with
-    /// `cost_microcents = 0` and NULL pricing columns.
     pub pricing_catalog: Option<PricingCatalog>,
     /// Immutable provider/model thinking selection. `None` keeps the legacy
     /// provider-default request for callers that have no profile declaration.
@@ -798,8 +786,6 @@ pub enum RuntimeFinishReason {
     TurnLimit,
 }
 
-/// Exact pricing provenance stamped by the runtime for one provider call
-/// (S7-T38/C3). Conversation persists these onto the `token_usage` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeUsagePricing {
     /// Exact engine version that produced the quote (e.g. `pricing_v1`).
@@ -891,7 +877,6 @@ impl fmt::Debug for RuntimeToolCall {
 /// Terminal status of a runtime tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeToolStatus {
-    /// The S4 read-only placeholder gate denied an unknown/write tool.
     Rejected,
     /// The tool completed successfully.
     Success,
@@ -1043,7 +1028,6 @@ pub enum RuntimeEvent {
     /// Reasoning delta.
     ThinkingDelta(String),
     SummaryDelta(String),
-    /// Complete tool call before the S4 placeholder permission decision.
     ToolCallProposed(RuntimeToolCall),
     /// Invalid write/edit projection atomically reaches a terminal rejection.
     ToolCallValidationRejected {
@@ -1059,7 +1043,6 @@ pub enum RuntimeEvent {
         /// Stable failed result; persistence must remain unchanged.
         result: RuntimeToolResult,
     },
-    /// Read-only tool auto-approved by the S4 placeholder gate.
     ToolCallApproved {
         /// Provider call id.
         call_id: String,
@@ -1094,14 +1077,10 @@ pub enum RuntimeEvent {
         binding: RunBinding,
         snapshot: SkillRunSnapshot,
     },
-    /// Provider usage priced by the frozen run-start catalog (S7-T38).
     UsageUpdated {
         /// Token counts from the provider.
         usage: RuntimeTokenUsage,
-        /// Checked integer cost from the frozen catalog quote (0 for priced
-        /// zero; 0 with no pricing provenance keeps the S4 legacy placeholder).
         cost_microcents: i64,
-        /// Exact pricing provenance; `None` keeps S4 legacy/unpriced rows.
         pricing: Option<RuntimeUsagePricing>,
     },
     /// Usage received from a summary request.  Conversation persists this

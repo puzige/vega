@@ -1,12 +1,5 @@
 use super::*;
 
-/// Run mode of a thread (tech-spec §3 `RunMode`, A2-09): ask | plan | execute.
-///
-/// Stored as the lowercase DDL string in `threads.mode`
-/// Run mode of a thread (tech-spec §3 `RunMode`, A2-09): ask | plan | execute.
-///
-/// Stored as the lowercase DDL string in `threads.mode`
-/// (`TEXT NOT NULL DEFAULT 'execute'`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadMode {
     /// Ask mode: read-only question answering.
@@ -50,7 +43,6 @@ impl ThreadMode {
 pub enum ThreadStatus {
     /// Live in the sidebar list (DDL default).
     Active,
-    /// Hidden from the main list (T13 manages the archive).
     Archived,
 }
 
@@ -88,19 +80,15 @@ pub struct Thread {
     /// Owning project id (`projects.id`, nullable in storage). An empty value
     /// is the in-memory projection of a standalone task with no binding.
     pub project_id: String,
-    /// Display title; empty until the user renames (T13).
     pub title: String,
     /// Run mode (`ask|plan|execute`).
     pub mode: ThreadMode,
     /// Permission mode (`readonly|confirm|auto|full_access`).
     pub permission_mode: PermissionMode,
-    /// Model id; empty string until a provider is configured (S4).
     pub model: String,
     /// Lifecycle status (`active|archived`).
     pub status: ThreadStatus,
-    /// Pinned to the top of its group (ordering is T12/T13).
     pub pinned: bool,
-    /// Unread marker; stays 0 until streaming lands (S3).
     pub unread: bool,
     /// Creation timestamp, unix milliseconds.
     pub created_at: i64,
@@ -130,10 +118,6 @@ pub struct ThreadModelSelectionRequested {
     pub request_id: u64,
 }
 
-/// Minimal projection of the project a thread attaches to.
-///
-/// T11 resolves the "current project" for thread creation; the full
-/// project model belongs to T10/S3 and is not pre-defined here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurrentProject {
     /// Owning project id (`projects.id`).

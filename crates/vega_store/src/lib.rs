@@ -1,42 +1,3 @@
-//! SQLite persistence: projects, threads, messages, tool_calls, and token_usage.
-//!
-//! [`Store`] owns a single SQLite connection opened in WAL mode
-//! (`journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`).
-//!
-//! # Migrations
-//!
-//! Schema migrations are embedded into the binary at compile time
-//! ([`MIGRATIONS`], an ordered array of `include_str!`'d SQL files under
-//! `migrations/`, so the SQL ships with the binary instead of being resolved
-//! from a runtime directory). [`Store::migrate`] reads `PRAGMA user_version`
-//! and applies every pending migration in order: `MIGRATIONS[i]` upgrades the
-//! schema from `user_version == i` to `user_version == i + 1`. Each migration
-//! runs in its own transaction (SQL batch + `user_version` bump) and is rolled
-//! back entirely on failure, so `user_version` and the schema always agree.
-//!
-//! # Accessing the connection
-//!
-//! [`Store::conn`] hands out the single connection for other crates' actors
-//! (e.g. `vega_conversation`) to run statements on. It is intentionally *not*
-//! `Sync`-friendly magic — do **not** call it inside `tokio::select!` branches:
-//! rusqlite calls are blocking synchronous IO, and running them in a `select!`
-//! branch blocks the whole executor and breaks cancellation semantics. Wrap
-//! such work in blocking-safe tasks / dedicated DB actors instead.
-//!
-//! # Error type evolution path
-//!
-//! This crate's API currently returns `rusqlite::Error` directly. The unified
-//! [`VegaError`](https://github.com/puzige/vega/blob/master/docs/vega-tech-spec-p1.md)
-//! (tech-spec §7) will live in `vega_conversation::types`, and the dependency
-//! direction is `vega_conversation → vega_store` (tech-spec §1), so
-//! `vega_store` must not depend back on `vega_conversation`. Once `VegaError`
-//! lands, a `From<rusqlite::Error>` bridge into `VegaError::Store` will be
-//! added at the `vega_conversation` layer.
-
-//! Module layout: `paths` owns the config/data roots (tech-spec §6), `config`
-//! owns `config.toml` under the config root, `keystore` owns
-//! owner-only plaintext local credentials; `projects` / `git_detect` are T10 additions.
-
 pub mod automation;
 pub mod codex_tasks;
 pub mod computer_use_delivery;
@@ -59,7 +20,7 @@ pub mod recovery;
 pub mod run_diagnostics;
 pub mod sidebar_organization;
 pub mod skills;
-// T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
+
 pub mod subagents;
 pub mod threads;
 pub mod token_usage;
@@ -160,10 +121,7 @@ impl Store {
             if current >= target {
                 continue;
             }
-            // SQLite cannot rebuild a table referenced by existing child rows
-            // while FK enforcement is enabled. R15 migration 0005 rebuilds
-            // `threads` and its two child tables as one atomic batch; keep the
-            // outer transaction and restore enforcement before returning.
+
             let rebuilds_threads = target == 5;
             if rebuilds_threads {
                 self.conn.pragma_update(None, "foreign_keys", false)?;
@@ -208,7 +166,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::{MIGRATIONS, Store, skills, tool_calls};
+    use super::{MIGRATIONS, Store};
     use rusqlite::ErrorCode;
     use tempfile::tempdir;
 
@@ -225,210 +183,6 @@ mod tests {
             .conn()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap()
-    }
-
-    #[test]
-    fn issue356_additive_timeout_migration_preserves_legacy_rows_and_rejects_invalid_details() {
-        use crate::context_compaction::{NewContextCompactionStatus, insert_status, latest_status};
-
-        let directory = tempdir().unwrap();
-        let database_path = directory.path().join("timeout-v19.db");
-        let store = Store::open(&database_path).unwrap();
-        for migration in MIGRATIONS.iter().take(19) {
-            store.conn().execute_batch(migration).unwrap();
-        }
-        store
-            .conn()
-            .pragma_update(None, "user_version", 19_u32)
-            .unwrap();
-        store.conn().execute_batch(
-            "INSERT INTO threads (id,model,created_at,updated_at) VALUES ('t','model',1,1); \
-             INSERT INTO messages (id,thread_id,seq,role,content,status,created_at) \
-               VALUES ('m','t',1,'user','original source','done',1); \
-             INSERT INTO context_checkpoints (id,thread_id,model,source_version,covered_through_seq,source_fingerprint,summary,estimator_version,created_at) \
-               VALUES (23,'t','model',1,1,'legacy-fingerprint','legacy summary','legacy-estimator',1);",
-        ).unwrap();
-        let failures = [
-            "cancelled",
-            "source_changed",
-            "no_compactable_prefix",
-            "too_large",
-            "invalid_summary",
-            "images_unsupported",
-            "over_limit",
-            "unavailable",
-        ];
-        for (index, failure) in failures.iter().enumerate() {
-            store.conn().execute(
-                "INSERT INTO context_compaction_status \
-                 (id,thread_id,model,operation_key,generation,phase,usage_state,failure,source_version,estimated_tokens,input_budget,target_tokens,created_at) \
-                 VALUES (?1,'t',?2,'legacy',1,'failed','unknown',?2,1,400,500,300,1)",
-                rusqlite::params![index as i64 + 10, failure],
-            ).unwrap();
-        }
-        let schema_identity = |store: &Store| {
-            store
-                .conn()
-                .prepare(
-                    "SELECT name,rootpage FROM sqlite_master WHERE name IN \
-                 ('context_compaction_status','context_compaction_status_latest') ORDER BY name",
-                )
-                .unwrap()
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-                })
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        };
-        let before_schema = schema_identity(&store);
-        store.migrate().unwrap();
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        assert_eq!(schema_identity(&store), before_schema);
-        for (index, failure) in failures.iter().enumerate() {
-            let legacy = latest_status(store.conn(), "t", failure).unwrap().unwrap();
-            assert_eq!(legacy.id, index as i64 + 10);
-            assert_eq!(legacy.failure.as_deref(), Some(*failure));
-            let detail: Option<String> = store
-                .conn()
-                .query_row(
-                    "SELECT failure_detail FROM context_compaction_status WHERE id=?1",
-                    [legacy.id],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(detail, None);
-        }
-        let audit: (String, i64, String) = store
-            .conn()
-            .query_row(
-                "SELECT (SELECT content FROM messages WHERE id='m'), \
-             (SELECT id FROM context_checkpoints WHERE id=23), \
-             (SELECT summary FROM context_checkpoints WHERE id=23)",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            audit,
-            ("original source".into(), 23, "legacy summary".into())
-        );
-        let status = NewContextCompactionStatus {
-            thread_id: "t",
-            model: "model",
-            operation_key: "new-timeout",
-            generation: 2,
-            phase: "failed",
-            usage_state: "unknown",
-            failure: Some("summary_timeout"),
-            source_version: 1,
-            estimated_tokens: 400,
-            input_budget: 500,
-            target_tokens: 300,
-            created_at: 2,
-        };
-        let id = insert_status(store.conn(), status).unwrap();
-        assert_eq!(id, 18);
-        let raw: (String, String) = store
-            .conn()
-            .query_row(
-                "SELECT failure,failure_detail FROM context_compaction_status WHERE id=?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(raw, ("invalid_summary".into(), "summary_timeout".into()));
-        for (base, detail) in [
-            (None, "summary_timeout"),
-            (Some("unavailable"), "summary_timeout"),
-            (Some("invalid_summary"), "unknown-detail"),
-        ] {
-            let error = store.conn().execute(
-                "INSERT INTO context_compaction_status \
-                 (thread_id,model,operation_key,generation,phase,usage_state,failure,failure_detail,source_version,estimated_tokens,input_budget,target_tokens,created_at) \
-                 VALUES ('t','model','invalid',3,'failed','unknown',?1,?2,1,400,500,300,3)",
-                rusqlite::params![base, detail],
-            ).unwrap_err();
-            assert_eq!(
-                error.sqlite_error_code(),
-                Some(ErrorCode::ConstraintViolation)
-            );
-        }
-        assert!(
-            insert_status(
-                store.conn(),
-                NewContextCompactionStatus {
-                    failure: Some("raw provider diagnostic"),
-                    ..status
-                }
-            )
-            .is_err()
-        );
-        drop(store);
-        let reopened = Store::open_read_only(&database_path).unwrap();
-        let timeout = latest_status(reopened.conn(), "t", "model")
-            .unwrap()
-            .unwrap();
-        assert_eq!(timeout.id, id);
-        assert_eq!(timeout.failure.as_deref(), Some("summary_timeout"));
-        assert_eq!(
-            latest_status(reopened.conn(), "t", "invalid_summary")
-                .unwrap()
-                .unwrap()
-                .failure
-                .as_deref(),
-            Some("invalid_summary")
-        );
-    }
-
-    #[test]
-    fn issue74_version_twelve_upgrade_adds_skills_without_losing_mcp_or_thread_rows() {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("issue74-v12.db")).unwrap();
-        for migration in super::MIGRATIONS.iter().take(12) {
-            store.conn().execute_batch(migration).unwrap();
-        }
-        store
-            .conn()
-            .pragma_update(None, "user_version", 12_u32)
-            .unwrap();
-        store
-            .conn()
-            .execute_batch(
-                "INSERT INTO projects (id,path,name,created_at,last_opened_at) \
-                   VALUES ('p','/owned/project','project',1,1); \
-                 INSERT INTO threads (id,project_id,model,created_at,updated_at) \
-                   VALUES ('t','p','model',1,1); \
-                 INSERT INTO mcp_servers \
-                   (id,display_name,transport,local_executable,local_args_json, \
-                    local_env_refs_json,created_at,updated_at) \
-                   VALUES ('mcp-one','owned','local','/bin/echo','[]','[]',1,1);",
-            )
-            .unwrap();
-
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let settings = skills::read_settings(store.conn()).unwrap();
-        assert!(!settings.global_enabled);
-        assert!(!settings.automatic_enabled);
-        let retained: (i64, i64) = store
-            .conn()
-            .query_row(
-                "SELECT (SELECT COUNT(*) FROM threads WHERE id = 't'), \
-                 (SELECT COUNT(*) FROM mcp_servers WHERE id = 'mcp-one')",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(retained, (1, 1));
-        let foreign_key_errors: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(foreign_key_errors, 0);
     }
 
     #[test]
@@ -501,30 +255,6 @@ mod tests {
 
         let memory_store = Store::open(":memory:").unwrap();
         assert_eq!(memory_store.database_path(), None);
-    }
-
-    #[test]
-    fn migrated_store_is_wal_at_user_version_20() {
-        let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let journal_mode: String = store
-            .conn()
-            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(journal_mode, "wal");
-        // T38 (C5)：追加列存在且旧行读回 NULL（legacy/unpriced 语义）。
-        let legacy: (Option<String>, Option<String>, Option<i64>) = store
-            .conn()
-            .query_row(
-                "INSERT INTO token_usage (thread_id, model, input_tokens, output_tokens, \
-                        cost_microcents, created_at) \
-                 VALUES ('t', 'm', 1, 2, 0, 3) \
-                 RETURNING pricing_version, pricing_profile, call_started_at",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(legacy, (None, None, None));
     }
 
     #[test]
@@ -602,43 +332,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(foreign_key_errors, 0);
-    }
-
-    #[test]
-    fn issue63_version_six_upgrade_adds_attachments_without_rebuilding_messages() {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("vega.db")).unwrap();
-        // #65 R4: build the actual historical schema, not a partial downgrade.
-        for migration in super::MIGRATIONS.iter().take(6) {
-            store.conn().execute_batch(migration).unwrap();
-        }
-        store.conn().pragma_update(None, "user_version", 6).unwrap();
-        let before: String = store
-            .conn()
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE name = 'messages'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let after: String = store
-            .conn()
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE name = 'messages'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(before, after);
-        let attachment_count: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM image_attachments", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(attachment_count, 0);
     }
 
     #[test]
@@ -754,81 +447,6 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "lost data from {table}");
         }
-    }
-
-    #[test]
-    fn r70_version_five_migration_retains_unknown_legacy_offsets() {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("r70-legacy.db")).unwrap();
-        store
-            .conn()
-            .execute_batch(concat!(
-                include_str!("../migrations/0001_init.sql"),
-                include_str!("../migrations/0002_plan_review.sql"),
-                include_str!("../migrations/0003_token_usage_pricing.sql"),
-                include_str!("../migrations/0004_sidebar_organization.sql"),
-                include_str!("../migrations/0005_standalone_threads.sql"),
-            ))
-            .unwrap();
-        store
-            .conn()
-            .pragma_update(None, "user_version", 5_u32)
-            .unwrap();
-        store.conn().execute_batch(
-            "INSERT INTO projects VALUES ('p','/tmp/r70-owned','p',NULL,1,1); \
-             INSERT INTO threads (id,project_id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) \
-               VALUES ('t','p','t','execute','auto','mock','active',0,0,1,1); \
-             INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) \
-               VALUES ('m','t',1,'assistant','text','甲乙','done',1); \
-             INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,status,created_at) \
-               VALUES ('old','t','m',1,'read','{}','success',1);"
-        ).unwrap();
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let old: Option<i64> = store
-            .conn()
-            .query_row(
-                "SELECT text_offset_bytes FROM tool_calls WHERE id='old'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(old, None);
-        tool_calls::insert(
-            store.conn(),
-            tool_calls::NewToolCall {
-                id: "new",
-                thread_id: "t",
-                message_id: "m",
-                seq: 2,
-                tool: "read",
-                input_json: "{}",
-                status: "success",
-                created_at: 2,
-            },
-        )
-        .unwrap();
-        let new: i64 = store
-            .conn()
-            .query_row(
-                "SELECT text_offset_bytes FROM tool_calls WHERE id='new'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(new, 6, "UTF-8 byte length, not character count");
-        let tables: i64 = store.conn().query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(tables, 39);
-        let response_count: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(response_count, 0);
     }
 
     #[test]

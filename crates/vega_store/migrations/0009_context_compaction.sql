@@ -1,4 +1,3 @@
--- Issue #76: settings are scoped by the exact (thread, model) identity.
 -- Checkpoints are append-only projections; the original messages and tool
 -- audit remain the source of truth and are never rewritten by this migration.
 CREATE TABLE context_settings (

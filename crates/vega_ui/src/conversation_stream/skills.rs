@@ -53,10 +53,6 @@ impl ConversationStream {
         self.skill_mutation_pending
     }
 
-    /// The exact reviewed candidates the (now Settings-owned) picker would
-    /// present, for the app integration harness. Issue #96 removed the
-    /// Composer entry, so this read-only projection is the harness seam that
-    /// still exercises the real `choose_skill_candidate` intent path.
     #[doc(hidden)]
     pub fn composer_skill_candidates(&self) -> Vec<SkillComposerCandidate> {
         self.skill_projection

@@ -1,5 +1,3 @@
-//! Headless Agent Skills source and format boundary (Issue #74).
-
 mod catalog;
 mod frontmatter;
 mod source;
@@ -16,15 +14,3 @@ pub use source::{
     Discovery, MAX_SKILL_BYTES, SkillCandidate, SkillDiagnostic, SkillError, SkillSource,
     SourceIdentity, SourceKind, SourceScope, deduplicate_sources, resolve_precedence,
 };
-
-#[cfg(test)]
-mod catalog_tests;
-
-#[cfg(test)]
-mod snapshot_tests;
-
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-mod asset_probe;

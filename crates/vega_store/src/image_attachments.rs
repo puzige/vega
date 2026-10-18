@@ -1,4 +1,3 @@
-//! Issue 63 R5: ordered blobs with bounded batch reads inside caller snapshot.
 use rusqlite::{Connection, params};
 
 /// Store transport, deliberately redacted in Debug.
@@ -51,7 +50,7 @@ pub fn for_messages(
     let values: Vec<&str> = std::iter::once(thread_id)
         .chain(messages.iter().map(|message| message.id.as_str()))
         .collect();
-    // R5: SQLite length(BLOB) reads metadata; reject before any blob allocation.
+
     let size: i64 = conn.query_row(
         &format!("SELECT COALESCE(SUM(length(a.encoded)), 0) {scope}"),
         rusqlite::params_from_iter(values.iter()),
