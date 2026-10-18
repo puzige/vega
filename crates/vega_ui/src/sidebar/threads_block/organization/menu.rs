@@ -1,4 +1,5 @@
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 impl ThreadsBlock {
     pub(super) fn organization_menu_items(&self) -> Vec<(String, MenuCommand)> {
         let Some(org) = &self.organization else {
@@ -206,6 +207,11 @@ impl ThreadsBlock {
                     }
                     cx.notify();
                 }),
+            )
+            .tracked_scroll_edge_fade(
+                org.menu_scroll.clone(),
+                colors.bg_elevated,
+                ScrollFade::compact(),
             )
             // VegaWindow binds Escape to CloseSettings before raw key_down.
             // Handle the action in this focused menu so it cannot reach the route.

@@ -1,6 +1,7 @@
 use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollFadeTopGuards};
 use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, anchored, canvas, point};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
@@ -1329,7 +1330,12 @@ impl ConversationStream {
                                     ),
                                 )
                                 .child(label)
-                        })),
+                        }))
+                        .tracked_scroll_edge_fade(
+                            self.model_menu_scroll.clone(),
+                            colors.bg_elevated,
+                            ScrollFade::compact(),
+                        ),
                 ),
         )
         .with_priority(2)
@@ -1470,6 +1476,8 @@ impl Render for ConversationStream {
                 .children(self.message_location_status_element(cx))
                 .into_any_element()
         } else {
+            let top_fade_guards = ScrollFadeTopGuards::default();
+            let rendered_top_fade_guards = top_fade_guards.clone();
             let (message_anchor_rail, preview, preview_in_lane) =
                 self.render_message_anchor_rail(window, cx);
             message_anchor_rail_overlay = Some(message_anchor_rail);
@@ -1510,6 +1518,7 @@ impl Render for ConversationStream {
                                                   cx| {
                                                 let row_t0 = Instant::now();
                                                 let entry = this.entries.get(index);
+                                                let mut pinned = None;
                                                 let item = if this.reading_preview && let Some(StreamEntry::Permission { card }) = entry {
                                                     let card = card.read(cx);
                                                     let (tool, target) = card.identity();
@@ -1523,12 +1532,14 @@ impl Render for ConversationStream {
                                                     match entry {
                                                         Some(StreamEntry::RunActivity {
                                                             group,
-                                                        }) => this.render_run_details(
-                                                            group.clone(),
-                                                            window,
-                                                            cx,
-                                                        ),
-                                                        Some(StreamEntry::RunActivitySegment { group, segment }) => RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx),
+                                                        }) => {
+                                                            pinned = group.read(cx).scroll_fade_pinned_indicator(None);
+                                                            this.render_run_details(group.clone(), window, cx)
+                                                        },
+                                                        Some(StreamEntry::RunActivitySegment { group, segment }) => {
+                                                            pinned = group.read(cx).scroll_fade_pinned_indicator(Some(*segment));
+                                                            RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx)
+                                                        },
                                                         Some(entry) => render_stream_entry(
                                                             entry,
                                                             index,
@@ -1567,13 +1578,19 @@ impl Render for ConversationStream {
                                                 this.counters.record_row_callback(
                                                     row_t0.elapsed().as_nanos(),
                                                 );
-                                                item
+                                                if let Some(pinned) = pinned {
+                                                    rendered_top_fade_guards.observe(item, pinned)
+                                                } else {
+                                                    item
+                                                }
                                             },
                                         ),
                                     )
                                     .h_full()
                                     .w_full()
-                                    .pb(self.foreground_height),
+                                    .pb(self.foreground_height)
+                                    .tracked_scroll_edge_fade(self.list.clone(), colors.bg_base, ScrollFade::reading().top_only().vertical_list())
+                                    .preserve_pinned_headers(top_fade_guards),
                                 ),
                         ),
                 )

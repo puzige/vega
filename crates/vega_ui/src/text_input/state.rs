@@ -27,6 +27,9 @@ impl TextInput {
             bare_chrome: false,
             editor_scroll: None,
             scrollable_editor: false,
+            scroll_fade_on_base: false,
+            #[cfg(test)]
+            painted_fade_metrics: None,
             total_visual_rows: 1,
             #[cfg(test)]
             painted_cursor_bounds: None,
@@ -68,8 +71,14 @@ impl TextInput {
 
     pub fn with_editor_viewport(mut self) -> Self {
         self.scrollable_editor = true;
+        self.scroll_fade_on_base = true;
         self.min_rows = 1;
         self.max_rows = 24;
+        self
+    }
+
+    pub(crate) fn with_scroll_fade_on_base(mut self) -> Self {
+        self.scroll_fade_on_base = true;
         self
     }
 

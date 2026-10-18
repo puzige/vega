@@ -25,6 +25,7 @@ mod hydration;
 mod model_markdown;
 mod permissions_cards;
 
+mod scroll_edges;
 mod scroll_follow;
 mod subagent_reading;
 mod thinking;

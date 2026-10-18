@@ -1,4 +1,5 @@
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use std::path::PathBuf;
 
 use gpui_kit::prelude::*;
@@ -635,7 +636,7 @@ impl SettingsView {
                     .rounded_md()
                     .bg(colors.code_bg)
                     .text_size(px(Typography::CODE))
-                    .child(preview.body.clone()),
+                    .child(preview.body.clone()).scroll_edge_fade(colors.code_bg, ScrollFade::compact()),
             )
             .child(skill_button(
                 "批准当前 SHA".into(),

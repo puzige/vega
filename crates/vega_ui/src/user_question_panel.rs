@@ -1,3 +1,4 @@
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, Render,
@@ -424,7 +425,12 @@ impl Render for UserQuestionPanel {
             })
             .when(!note_visible && draft.selected.is_some(), |content| {
                 content.child(self.button("Add note", PanelAction::Note, 3, enabled, cx))
-            });
+            })
+            .tracked_scroll_edge_fade(
+                self.scroll.clone(),
+                colors.bg_elevated,
+                ScrollFade::compact().vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
+            );
         div()
             .id("user-question-panel")
             .debug_selector(|| "user-question-panel".into())

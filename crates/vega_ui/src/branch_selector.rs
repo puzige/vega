@@ -1,5 +1,6 @@
 //! IO-free local branch selector backed only by safe, bounded projections.
 
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use std::ops::Range;
 mod current_head;
 use current_head::CurrentHead;
@@ -947,7 +948,12 @@ impl Render for BranchSelector {
                             .flex_1()
                             .min_h_0()
                             .px_1()
-                            .w_full(),
+                            .w_full()
+                            .tracked_scroll_edge_fade(
+                                self.scroll.clone(),
+                                colors.bg_elevated,
+                                ScrollFade::compact(),
+                            ),
                         )
                     })
                     .when(filtered_count == 0, |body| {

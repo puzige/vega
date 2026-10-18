@@ -1,4 +1,5 @@
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
 pub struct CommitPanel {
     pub(crate) thread_id: String,
@@ -33,6 +34,7 @@ impl CommitPanel {
     pub fn new(thread_id: String, project_id: String, cx: &mut Context<Self>) -> Self {
         let message = cx.new(|cx| {
             TextInput::new_multiline(cx, "Commit message… (Enter newline · Cmd+Enter commit)", 4)
+                .with_scroll_fade_on_base()
         });
         cx.observe(&message, |this, _, cx| {
             match this.editor_revision.checked_add(1) {
@@ -470,68 +472,82 @@ impl Render for CommitPanel {
                     .border_color(colors.border_subtle)
                     .rounded_md()
                     .overflow_hidden()
-                    .child(
-                        uniform_list(
-                            "commit-checklist",
-                            rows,
-                            cx.processor(move |this: &mut CommitPanel, range, _, _cx| {
-                                this.model
-                                    .rows(range)
-                                    .into_iter()
-                                    .map(|(index, row, selected)| {
-                                        let row_id = row.file_id;
-                                        let view = view.clone();
-                                        let key =
-                                            commit_row_key(workspace_generation, index, staged_len);
-                                        div()
-                                            .id(key)
-                                            .h(px(COMMIT_ROW_HEIGHT))
-                                            .px_2()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .text_size(px(Typography::CODE))
-                                            .text_color(if row.forced {
-                                                colors.text_tertiary
-                                            } else {
-                                                colors.text_primary
-                                            })
-                                            .when(
-                                                this.model.focus
-                                                    == CommitPanelFocus::Optional(
-                                                        index.saturating_sub(staged_len),
-                                                    )
-                                                    && !row.forced,
-                                                |element| element.bg(colors.bg_hover),
-                                            )
-                                            .when(commit_row_is_focusable(row.forced), |element| {
-                                                element.cursor_pointer().on_mouse_up(
-                                                    MouseButton::Left,
-                                                    move |_, _, cx| {
-                                                        view.update(cx, |this, cx| {
-                                                            this.toggle_row(row_id, cx)
-                                                        });
+                    .map(|mut frame| {
+                        let fade = ScrollFade::reading().rounded_parent(frame.style());
+                        frame.child(
+                            uniform_list(
+                                "commit-checklist",
+                                rows,
+                                cx.processor(move |this: &mut CommitPanel, range, _, _cx| {
+                                    this.model
+                                        .rows(range)
+                                        .into_iter()
+                                        .map(|(index, row, selected)| {
+                                            let row_id = row.file_id;
+                                            let view = view.clone();
+                                            let key = commit_row_key(
+                                                workspace_generation,
+                                                index,
+                                                staged_len,
+                                            );
+                                            div()
+                                                .id(key)
+                                                .h(px(COMMIT_ROW_HEIGHT))
+                                                .px_2()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .text_size(px(Typography::CODE))
+                                                .text_color(if row.forced {
+                                                    colors.text_tertiary
+                                                } else {
+                                                    colors.text_primary
+                                                })
+                                                .when(
+                                                    this.model.focus
+                                                        == CommitPanelFocus::Optional(
+                                                            index.saturating_sub(staged_len),
+                                                        )
+                                                        && !row.forced,
+                                                    |element| element.bg(colors.bg_hover),
+                                                )
+                                                .when(
+                                                    commit_row_is_focusable(row.forced),
+                                                    |element| {
+                                                        element.cursor_pointer().on_mouse_up(
+                                                            MouseButton::Left,
+                                                            move |_, _, cx| {
+                                                                view.update(cx, |this, cx| {
+                                                                    this.toggle_row(row_id, cx)
+                                                                });
+                                                            },
+                                                        )
                                                     },
                                                 )
-                                            })
-                                            .child(if row.forced || selected {
-                                                "●"
-                                            } else {
-                                                "○"
-                                            })
-                                            .child(
-                                                div()
-                                                    .text_color(colors.text_tertiary)
-                                                    .child(commit_row_status(row.forced, selected)),
-                                            )
-                                            .child(div().min_w_0().truncate().child(row.label))
-                                    })
-                                    .collect::<Vec<_>>()
-                            }),
+                                                .child(if row.forced || selected {
+                                                    "●"
+                                                } else {
+                                                    "○"
+                                                })
+                                                .child(
+                                                    div().text_color(colors.text_tertiary).child(
+                                                        commit_row_status(row.forced, selected),
+                                                    ),
+                                                )
+                                                .child(div().min_w_0().truncate().child(row.label))
+                                        })
+                                        .collect::<Vec<_>>()
+                                }),
+                            )
+                            .track_scroll(&self.scroll)
+                            .h_full()
+                            .tracked_scroll_edge_fade(
+                                self.scroll.clone(),
+                                colors.bg_base,
+                                fade,
+                            ),
                         )
-                        .track_scroll(&self.scroll)
-                        .h_full(),
-                    ),
+                    }),
             )
             .when(ready, |panel| {
                 panel

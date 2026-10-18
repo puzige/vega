@@ -1,4 +1,5 @@
 use super::*;
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 
 #[derive(Clone)]
 pub(super) enum Control {
@@ -377,7 +378,8 @@ impl ThreadsBlock {
                                 "pinned-thread-row-",
                                 cx,
                             )
-                        })),
+                        }))
+                        .scroll_edge_fade(colors.bg_sidebar, ScrollFade::compact()),
                 )
                 .into_any_element(),
         )

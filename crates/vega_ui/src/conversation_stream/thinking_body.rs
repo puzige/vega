@@ -4,6 +4,7 @@ use super::super::{
     selection::SelectionDocumentBuilder,
 };
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::{
     AvailableSpace, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId,
     Pixels, Point, Size, TextAlign, TextStyleRefinement, WindowTextSystem, point, size,
@@ -300,6 +301,11 @@ impl ThinkingBlock {
                 .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
                 .text_color(colors.text_secondary)
                 .child(body)
+                .tracked_scroll_edge_fade(
+                    scroll.clone(),
+                    colors.bg_base,
+                    ScrollFade::compact().vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
+                )
                 .into_any_element(),
             &self.source_copy,
             true,
@@ -991,18 +997,17 @@ impl Element for BodyElement {
                 document: self.document.clone(),
             };
             let mut element = if block.horizontal {
+                let scroll = self
+                    .horizontal_scrolls
+                    .borrow_mut()
+                    .entry(index)
+                    .or_default()
+                    .clone();
                 div()
                     .id(("thinking-horizontal", index))
                     .w(self.prepared.width - block.origin.x)
                     .h(block.size.height)
-                    .track_scroll(
-                        &self
-                            .horizontal_scrolls
-                            .borrow_mut()
-                            .entry(index)
-                            .or_default()
-                            .clone(),
-                    )
+                    .track_scroll(&scroll)
                     .overflow_x_scroll()
                     .overflow_y_hidden()
                     .when(block.code, |row| {
@@ -1010,6 +1015,15 @@ impl Element for BodyElement {
                             .rounded(px(Layout::TOOL_DETAIL_RADIUS))
                     })
                     .child(content)
+                    .tracked_scroll_edge_fade(
+                        scroll,
+                        if block.code {
+                            self.prepared.colors.code_bg
+                        } else {
+                            self.prepared.colors.bg_base
+                        },
+                        ScrollFade::compact(),
+                    )
                     .into_any_element()
             } else {
                 content.into_any_element()

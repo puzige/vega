@@ -1,6 +1,7 @@
 use super::*;
 use vega_ui::artifact_card::ArtifactCard;
 use vega_ui::icons::{Icon, icon_button};
+use vega_ui::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollableFadeExt};
 
 const MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH: f32 = 610.;
 const MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT: f32 = 480.;
@@ -42,6 +43,7 @@ pub(super) struct Workspace {
     selected: [Option<TabKey>; 2],
     automation_previous_maximized: Option<[bool; 2]>,
     tab_scroll: [ScrollHandle; 2],
+    artifact_scrolls: std::collections::HashMap<ArtifactCardId, gpui_kit::UniformListScrollHandle>,
     reveal_tabs: [bool; 2],
     window_size: Option<Size<Pixels>>,
     hidden: [bool; 2],
@@ -159,6 +161,9 @@ impl Workspace {
             .count();
         self.tabs.remove(position);
         self.tab_focuses.remove(key);
+        if let TabKey::Artifact(id) = key {
+            self.artifact_scrolls.remove(id);
+        }
         if self.selected[pane].as_ref() == Some(key) {
             self.reveal_tabs[pane] = true;
             let mut siblings = self
@@ -1199,7 +1204,12 @@ impl VegaWindow {
             .min_w_0()
             .overflow_x_scroll()
             .track_scroll(&self.workspace.tab_scroll[index])
-            .gap_1();
+            .gap_1()
+            .tracked_scroll_edge_fade(
+                self.workspace.tab_scroll[index].clone(),
+                colors.bg_base,
+                ScrollFade::compact(),
+            );
         for (key, _) in tabs {
             let label = self.workspace_label(&key, cx);
             let close_key = key.clone();
@@ -1432,12 +1442,20 @@ impl VegaWindow {
                 .cloned()
                 .map(|card| {
                     let count = card.read(cx).row_count();
+                    let scroll = self
+                        .workspace
+                        .artifact_scrolls
+                        .entry(id)
+                        .or_default()
+                        .clone();
                     uniform_list("workspace-preview", count, move |range, window, cx| {
                         range
                             .map(|row| ArtifactCard::render_row(card.clone(), row, window, cx))
                             .collect()
                     })
                     .size_full()
+                    .track_scroll(&scroll)
+                    .tracked_scroll_edge_fade(scroll, colors.bg_base, ScrollFade::reading())
                     .into_any_element()
                 }),
             None => None,
@@ -1716,7 +1734,8 @@ impl VegaWindow {
                 .shadow_sm()
                 .flex()
                 .flex_col()
-                .gap_1();
+                .gap_1()
+                .scroll_edge_fade(colors.bg_elevated, ScrollFade::compact());
             for action in creation_actions {
                 menu = match action {
                     WorkspaceCreateAction::Subagents => menu.child(workspace_button(

@@ -1,6 +1,7 @@
 //! Provider selection and explicit, cancellable background operations.
 use super::*;
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollableFadeExt};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_util::sync::CancellationToken;
 use vega_conversation::ProviderSettingsService;
@@ -1514,6 +1515,7 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.sync_provider_edit_focuses(cx);
+        let colors = theme(cx).colors;
         if self.provider_management.model_editor.is_some() {
             return div()
                 .id("provider-model-configuration")
@@ -1522,6 +1524,7 @@ impl SettingsView {
                 .size_full()
                 .overflow_y_scroll()
                 .child(self.render_model_basics(cx))
+                .scroll_edge_fade(colors.bg_base, ScrollFade::reading())
                 .into_any_element();
         }
         if self.provider_management.selected.is_none() {
@@ -1529,7 +1532,6 @@ impl SettingsView {
                 self.config.providers.first().map(|p| p.name.clone());
             self.provider_management.form = self.config.providers.is_empty();
         }
-        let colors = theme(cx).colors;
         let busy = self.provider_management.saving;
         let content_width = (f32::from(window.viewport_size().width)
             - Layout::SETTINGS_NAV_WIDTH
@@ -1547,6 +1549,7 @@ impl SettingsView {
         let network_busy = self.provider_management.cancel.is_some();
         let mut list = div()
             .id("provider-list")
+            .debug_selector(|| "provider-list-viewport".into())
             .h_full()
             .track_scroll(&self.provider_management.list_scroll)
             .w(px(Layout::SETTINGS_PROVIDER_LIST_WIDTH))
@@ -1573,6 +1576,11 @@ impl SettingsView {
                         !busy,
                         cx,
                     )),
+            )
+            .tracked_scroll_edge_fade(
+                self.provider_management.list_scroll.clone(),
+                colors.bg_base,
+                ScrollFade::compact(),
             );
         for (index, p) in self.config.providers.clone().into_iter().enumerate() {
             let selected = self.provider_management.selected.as_ref() == Some(&p.name);
@@ -2091,7 +2099,12 @@ impl SettingsView {
                         .min_w_0()
                         .flex_1()
                         .overflow_y_scroll()
-                        .child(detail),
+                        .child(detail)
+                        .tracked_scroll_edge_fade(
+                            self.provider_management.detail_scroll.clone(),
+                            colors.bg_base,
+                            ScrollFade::reading(),
+                        ),
                 )
             })
             .into_any_element()

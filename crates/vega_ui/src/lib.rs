@@ -13,6 +13,7 @@ pub mod interaction;
 pub mod menu_list;
 pub mod permission_card;
 pub mod plan_card;
+pub mod scroll_edge_fade;
 pub mod settings;
 pub mod sidebar;
 pub mod summary_card;

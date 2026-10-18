@@ -1,5 +1,6 @@
 use super::*;
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use vega_conversation::types::{UpdatePhase, UpdateProjection, UpdateRequest};
 
 impl EventEmitter<UpdateRequest> for SettingsView {}
@@ -259,7 +260,12 @@ impl SettingsView {
                                 None,
                                 &colors,
                                 &format!("updater-notes-{}", cx.entity_id()),
-                            )),
+                            ))
+                            .tracked_scroll_edge_fade(
+                                self.updater_notes_scroll.clone(),
+                                colors.bg_base,
+                                ScrollFade::reading(),
+                            ),
                     )
                 })
             })

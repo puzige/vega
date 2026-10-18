@@ -2,6 +2,7 @@ use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];
@@ -714,7 +715,8 @@ fn markdown_blocks(
                             .flex_col()
                             .items_start()
                             .children(content),
-                    ),
+                    )
+                    .scroll_edge_fade(colors.code_bg, ScrollFade::compact()),
             )
         } else {
             body.children(content)
@@ -1022,6 +1024,7 @@ fn render_table_selectable(
         .flex_shrink_0()
         .overflow_x_scroll()
         .child(body)
+        .scroll_edge_fade(colors.bg_base, ScrollFade::compact())
         .into_any_element()
 }
 
@@ -1355,6 +1358,7 @@ fn render_table(
         .flex_shrink_0()
         .overflow_x_scroll()
         .child(body)
+        .scroll_edge_fade(colors.bg_base, ScrollFade::compact())
         .into_any_element()
 }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::scroll_edge_fade::{ScrollFade, ScrollFadeMetrics};
 
 /// The raw text element: shapes and paints the (possibly masked) line, the
 /// selection, and the cursor, and registers the platform input handler.
@@ -14,6 +15,7 @@ struct PrepaintState {
     visible_rows: usize,
     first_visible_row: usize,
     total_visual_rows: usize,
+    fade: ScrollFadeMetrics,
 }
 
 impl IntoElement for TextElement {
@@ -305,6 +307,46 @@ impl Element for TextElement {
             None
         };
 
+        let mut fade_bounds = bounds;
+        fade_bounds.size.height = bounds.size.height.min(line_height * visible_rows as f32);
+        let horizontal_end = if input.multiline {
+            px(0.)
+        } else {
+            lines.first().map_or(px(0.), |line| {
+                (line.line.width() - bounds.size.width).max(px(0.))
+            })
+        };
+        let mut fade = ScrollFadeMetrics::new(
+            fade_bounds,
+            point(px(0.), line_height * first_visible_row as f32),
+            point(
+                horizontal_end,
+                line_height
+                    * total_visual_rows.saturating_sub(first_visible_row + visible_rows) as f32,
+            ),
+        );
+        if input.focus_handle.is_focused(window) {
+            if let Some(cursor) = cursor.as_ref() {
+                fade = fade.protect(cursor.bounds, ScrollFade::compact());
+            }
+            for selection in &selections {
+                fade = fade.protect(selection.bounds, ScrollFade::compact());
+            }
+        }
+        if let Some(marked) = input.marked_range.as_ref() {
+            for (row, layout) in lines.iter().enumerate() {
+                if marked.start <= layout.start + layout.len && marked.end >= layout.start {
+                    fade = fade.protect(
+                        Bounds::new(
+                            point(bounds.left(), bounds.top() + line_height * row as f32),
+                            size(bounds.size.width, line_height),
+                        ),
+                        ScrollFade::compact(),
+                    );
+                }
+            }
+        }
+
         PrepaintState {
             total_visual_rows,
             lines,
@@ -313,6 +355,7 @@ impl Element for TextElement {
             selections,
             visible_rows,
             first_visible_row,
+            fade,
         }
     }
 
@@ -332,34 +375,50 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        for selection in prepaint.selections.drain(..) {
-            window.paint_quad(selection);
-        }
-        let line_height = prepaint.line_height;
-        for (row, layout) in prepaint.lines.iter().enumerate() {
-            let _ = layout.line.paint(
-                point(bounds.origin.x, bounds.origin.y + line_height * row as f32),
-                line_height,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
-        }
+        window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
+            for selection in prepaint.selections.drain(..) {
+                window.paint_quad(selection);
+            }
+            let line_height = prepaint.line_height;
+            for (row, layout) in prepaint.lines.iter().enumerate() {
+                let _ = layout.line.paint(
+                    point(bounds.origin.x, bounds.origin.y + line_height * row as f32),
+                    line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
 
+            #[cfg(test)]
+            self.input.update(cx, |input, _| {
+                input.painted_cursor_bounds = prepaint
+                    .cursor
+                    .as_ref()
+                    .filter(|_| focus_handle.is_focused(window))
+                    .map(|cursor| cursor.bounds);
+            });
+            if focus_handle.is_focused(window)
+                && let Some(cursor) = prepaint.cursor.take()
+            {
+                window.paint_quad(cursor);
+            }
+        });
+        let line_height = prepaint.line_height;
+        let colors = theme(cx).colors;
+        let color = if self.input.read(cx).scroll_fade_on_base {
+            colors.bg_base
+        } else {
+            colors.bg_elevated
+        };
+        window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
+            prepaint.fade.paint(color, ScrollFade::compact(), window);
+        });
         #[cfg(test)]
         self.input.update(cx, |input, _| {
-            input.painted_cursor_bounds = prepaint
-                .cursor
-                .as_ref()
-                .filter(|_| focus_handle.is_focused(window))
-                .map(|cursor| cursor.bounds);
+            input.painted_fade_metrics = Some(prepaint.fade);
         });
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
 
         self.input.update(cx, |input, cx| {
             let layout_changed = input.rows != prepaint.visible_rows

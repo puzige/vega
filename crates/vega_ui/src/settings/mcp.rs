@@ -1,4 +1,5 @@
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -214,6 +215,7 @@ impl McpSettingsState {
                 .new(|cx| TextInput::new(cx, "可执行文件绝对路径", false).with_tab_stop(true)),
             args_input: cx.new(|cx| {
                 TextInput::new_multiline(cx, "每行一个参数（不经 shell）", 2)
+                    .with_scroll_fade_on_base()
                     .with_row_bounds(2, 4)
                     .with_tab_stop(true)
             }),
@@ -221,6 +223,7 @@ impl McpSettingsState {
                 .new(|cx| TextInput::new(cx, "可选：绝对工作目录", false).with_tab_stop(true)),
             environment_input: cx.new(|cx| {
                 TextInput::new_multiline(cx, "可选：每行一个环境变量名", 2)
+                    .with_scroll_fade_on_base()
                     .with_row_bounds(2, 4)
                     .with_tab_stop(true)
             }),
@@ -1728,7 +1731,7 @@ impl SettingsView {
             .child(div().id("mcp-confirmation-authority")
                 .debug_selector(|| "mcp-confirmation-authority".into())
                 .flex().flex_col().gap_2().max_h(px(160.)).overflow_y_scroll()
-                .children(authority.into_iter().map(|line| div().text_color(colors.text_secondary).child(line))))
+                .children(authority.into_iter().map(|line| div().text_color(colors.text_secondary).child(line))).scroll_edge_fade(colors.bg_base, ScrollFade::compact()))
             .when(matches!(action, McpConfirmation::Remove { .. }), |panel| panel.child(div().text_color(colors.warning).child("移除保留历史工具审计，仅清除本地凭据；远程服务授权可能仍有效，必要时请到该服务撤销。")))
             .when(matches!(action, McpConfirmation::DiscoverOAuth { .. }), |panel| panel.child(div().text_color(colors.warning).child("将连接端点以发现 OAuth 授权服务器和权限范围；现在不会注册客户端、打开浏览器或启用 MCP。")))
             .when(matches!(action, McpConfirmation::DisconnectOAuth { .. }), |panel| panel.child(div().text_color(colors.warning).child("仅清除 Vega 本地 OAuth 凭据并禁用该服务器，不保证撤销远端授权；请到授权服务器另行撤销 grant。")))
@@ -1851,7 +1854,8 @@ impl SettingsView {
                         mcp_oauth_preparation_lines(&preparation)
                             .into_iter()
                             .map(|line| div().text_color(colors.warning).child(line)),
-                    ),
+                    )
+                    .scroll_edge_fade(colors.bg_base, ScrollFade::compact()),
             )
             .child(div().text_color(colors.text_secondary).child(
                 "同意后才可能注册客户端并打开系统浏览器；回调成功只保存凭据，仍须单独启用服务器。",

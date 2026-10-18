@@ -1,3 +1,4 @@
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -737,7 +738,12 @@ impl Render for Sidebar {
                             .gap_3()
                             .overflow_y_scroll()
                             .track_scroll(&self.sidebar_scroll)
-                            .child(self.sessions_block.clone()),
+                            .child(self.sessions_block.clone())
+                            .tracked_scroll_edge_fade(
+                                self.sidebar_scroll.clone(),
+                                colors.bg_sidebar,
+                                ScrollFade::compact(),
+                            ),
                     ),
             )
             .child(Self::render_settings_entry(&colors, cx))

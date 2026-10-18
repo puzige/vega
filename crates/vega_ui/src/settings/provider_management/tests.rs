@@ -32,6 +32,79 @@ fn click(cx: &mut TestAppContext, window: WindowHandle<Harness>, selector: &'sta
 }
 
 #[gpui_kit::test]
+fn scroll_edge_settings_provider_list_uses_its_real_viewport_and_surface(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(|cx| {
+        SettingsView::from_config(
+            AppConfig {
+                providers: (0..32)
+                    .map(|index| ProviderConfig {
+                        api: Default::default(),
+                        name: format!("provider-{index}"),
+                        enabled: true,
+                        base_url: "https://provider.invalid/v1".into(),
+                        models: vec!["model".into()],
+                        key_ref: format!("provider-{index}"),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            None,
+            cx,
+        )
+    });
+    view.update(cx, |view, cx| {
+        view.section = 0;
+        cx.notify();
+    });
+    let entity = view.clone();
+    let window = cx.open_window(size(px(700.), px(400.)), |_, _| Harness(entity));
+    cx.run_until_parked();
+    let viewport = VisualTestContext::from_window(window.into(), cx)
+        .debug_bounds("provider-list-viewport")
+        .expect("provider viewport");
+    window
+        .update(cx, |_, window, _| {
+            let expected = gpui_kit::linear_gradient(
+                0.,
+                gpui_kit::linear_color_stop(vega_theme::LIGHT.bg_base, 0.),
+                gpui_kit::linear_color_stop(
+                    vega_theme::LIGHT.bg_base.opacity(0.),
+                    16. / f32::from(viewport.size.height),
+                ),
+            );
+            assert!(
+                window
+                    .painted_quads()
+                    .iter()
+                    .any(|quad| quad.background == expected
+                        && quad.bounds == viewport.scale(window.scale_factor()))
+            );
+        })
+        .expect("production settings surface fade");
+    view.update(cx, |view, cx| {
+        view.config.providers.truncate(1);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    window
+        .update(cx, |_, window, _| {
+            assert!(
+                !window
+                    .painted_quads()
+                    .iter()
+                    .any(|quad| quad.background.as_solid().is_none()
+                        && quad.bounds == viewport.scale(window.scale_factor()))
+            );
+        })
+        .expect("filtered short provider list clears fade");
+}
+
+#[gpui_kit::test]
 async fn model_context_editor_projects_assumed_unknown_and_saved_states(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());

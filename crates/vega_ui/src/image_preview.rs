@@ -1,3 +1,4 @@
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::sync::{Arc, OnceLock};
@@ -337,6 +338,7 @@ impl Render for ImagePreview {
                             }
                         }))
                 }))
+                .scroll_edge_fade(colors.bg_elevated, ScrollFade::compact())
                 .into_any_element()
         });
         div()

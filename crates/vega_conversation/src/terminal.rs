@@ -28,6 +28,7 @@ struct State {
     parser: vt100::Parser,
     status: TerminalStatus,
     generation: u64,
+    max_scrollback: usize,
 }
 
 /// Owns a persistent shell. Dropping it closes and reaps the shell.
@@ -51,6 +52,7 @@ impl TerminalSession {
             parser: vt100::Parser::new(24, 80, SCROLLBACK),
             status: TerminalStatus::Starting,
             generation: 0,
+            max_scrollback: 0,
         }));
         let control = Arc::new(Control {
             stop: AtomicBool::new(false),
@@ -158,6 +160,7 @@ impl TerminalSession {
             application_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
             scrollback: screen.scrollback(),
+            max_scrollback: state.max_scrollback,
         })
     }
 
@@ -225,6 +228,12 @@ fn color(color: vt100::Color) -> TerminalColor {
 fn update(state: &Mutex<State>, f: impl FnOnce(&mut State)) {
     if let Ok(mut state) = state.lock() {
         f(&mut state);
+        let screen = state.parser.screen_mut();
+        let offset = screen.scrollback();
+        screen.set_scrollback(usize::MAX);
+        let max_scrollback = screen.scrollback();
+        screen.set_scrollback(offset);
+        state.max_scrollback = max_scrollback;
         state.generation = state.generation.wrapping_add(1);
     }
 }
@@ -394,6 +403,66 @@ fn run(
 
 #[cfg(all(test, unix))]
 mod tests {
+    use super::*;
+
+    fn scroll_edge_memory_session() -> (TerminalSession, mpsc::Receiver<Command>) {
+        let (commands, receiver) = mpsc::sync_channel(32);
+        let session = TerminalSession {
+            commands,
+            state: Arc::new(Mutex::new(State {
+                parser: vt100::Parser::new(4, 12, 5),
+                status: TerminalStatus::Running,
+                generation: 0,
+                max_scrollback: 0,
+            })),
+            control: Arc::new(Control {
+                stop: AtomicBool::new(false),
+                done: AtomicBool::new(true),
+            }),
+        };
+        (session, receiver)
+    }
+
+    #[test]
+    fn scroll_edge_terminal_range_is_actual_bounded_and_snapshot_is_read_only() {
+        let (session, receiver) = scroll_edge_memory_session();
+        assert_eq!(session.snapshot(None).unwrap().max_scrollback, 0);
+        update(&session.state, |state| state.parser.process(b"short"));
+        assert_eq!(session.snapshot(None).unwrap().max_scrollback, 0);
+        update(&session.state, |state| {
+            for _ in 0..100 {
+                state.parser.process(b"row\r\n");
+            }
+            state.parser.screen_mut().set_scrollback(3);
+        });
+        let snapshot = session.snapshot(None).unwrap();
+        assert_eq!(snapshot.max_scrollback, 5);
+        assert_eq!(snapshot.scrollback, 3);
+        assert_eq!(snapshot.generation, 2);
+        let again = session.snapshot(None).unwrap();
+        assert_eq!(again.scrollback, 3);
+        assert_eq!(again.max_scrollback, 5);
+        assert_eq!(again.generation, snapshot.generation);
+        assert!(session.snapshot(Some(snapshot.generation)).is_none());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        update(&session.state, |state| {
+            state.parser.screen_mut().set_size(6, 20)
+        });
+        let resized = session.snapshot(None).unwrap();
+        assert!(resized.scrollback <= resized.max_scrollback);
+        assert!(resized.max_scrollback <= 5);
+        update(&session.state, |state| state.parser.process(b"\x1b[?1049h"));
+        let alternate = session.snapshot(None).unwrap();
+        assert_eq!((alternate.scrollback, alternate.max_scrollback), (0, 0));
+        update(&session.state, |state| state.parser.process(b"\x1b[?1049l"));
+        assert!(session.snapshot(None).unwrap().max_scrollback > 0);
+        update(&session.state, |state| state.parser.process(b"\x1bc"));
+        let cleared = session.snapshot(None).unwrap();
+        assert_eq!((cleared.scrollback, cleared.max_scrollback), (0, 0));
+    }
 
     #[test]
     fn parser_bounds_and_control_sequences_are_not_plain_text() {
