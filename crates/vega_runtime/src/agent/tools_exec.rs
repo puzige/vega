@@ -1276,16 +1276,17 @@ pub(crate) fn conflict_result(call: &RuntimeToolCall) -> RuntimeToolResult {
     )
 }
 
-pub fn tool_names_equivalent(left: &str, right: &str) -> bool {
-    fn canonical(name: &str) -> &str {
-        match name {
-            "Read" => "read",
-            "Write" => "write",
-            "Edit" => "edit",
-            other => other,
-        }
+pub(crate) fn canonical_tool_name(name: &str) -> &str {
+    match name {
+        "Read" => "read",
+        "Write" => "write",
+        "Edit" => "edit",
+        other => other,
     }
-    canonical(left) == canonical(right)
+}
+
+pub fn tool_names_equivalent(left: &str, right: &str) -> bool {
+    canonical_tool_name(left) == canonical_tool_name(right)
 }
 
 pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &str) -> bool {
