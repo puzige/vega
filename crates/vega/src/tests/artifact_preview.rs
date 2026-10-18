@@ -75,6 +75,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
             &thread.id,
             &stream,
             AgentBatch {
+                subagents: Vec::new(),
                 events: vec![ConversationEvent::ToolCallProposed {
                     call: artifact_write_call("stale-generation", "artifact.txt", 6),
                 }],
@@ -135,6 +136,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
             &thread.id,
             &stream,
             AgentBatch {
+                subagents: Vec::new(),
                 events: Vec::new(),
                 codex_mode_confirmed: false,
                 computer_use_ready: None,
@@ -162,6 +164,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                 &thread.id,
                 &stream,
                 AgentBatch {
+                    subagents: Vec::new(),
                     events: vec![ConversationEvent::ToolCallProposed {
                         call: artifact_write_call("cancelled-id", "artifact.txt", 6),
                     }],
@@ -189,6 +192,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                 &thread.id,
                 &stream,
                 AgentBatch {
+                    subagents: Vec::new(),
                     events: Vec::new(),
                     codex_mode_confirmed: false,
                     computer_use_ready: None,
@@ -217,6 +221,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                 &thread.id,
                 &stream,
                 AgentBatch {
+                    subagents: Vec::new(),
                     events: vec![ConversationEvent::ToolCallFinished {
                         call_id: "cancelled-id".into(),
                         result: artifact_write_result(

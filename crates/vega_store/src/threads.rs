@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 /// The `SELECT` column list shared by the row-loading queries.
 const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, backend, \
-                       status, pinned, unread, created_at, updated_at";
+                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id";
 
 /// A raw `threads` row, field-for-field with the DDL.
 ///
@@ -19,6 +19,8 @@ const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, back
 /// one layer up in `vega_conversation`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadRow {
+    pub parent_thread_id: Option<String>,
+    pub workspace_owner_thread_id: Option<String>,
     /// Primary key (ulid).
     pub id: String,
     /// Owning project id (`projects.id`). An empty value represents a
@@ -118,7 +120,9 @@ pub fn list_standalone(
     conn: &Connection,
     status: Option<&str>,
 ) -> Result<Vec<ThreadRow>, rusqlite::Error> {
-    let mut sql = format!("SELECT {COLUMNS} FROM threads WHERE project_id IS NULL");
+    let mut sql = format!(
+        "SELECT {COLUMNS} FROM threads WHERE project_id IS NULL AND (parent_thread_id IS NULL OR pinned=1)"
+    );
     if status.is_some() {
         sql.push_str(" AND status = ?1");
     }
@@ -150,7 +154,7 @@ pub fn list_by_project(
     let rows = match status {
         Some(status) => {
             let mut stmt = conn.prepare(&format!(
-                "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 AND status = ?2 \
+                "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 AND status = ?2 AND (parent_thread_id IS NULL OR pinned=1) \
                  ORDER BY pinned DESC, updated_at DESC"
             ))?;
             stmt.query_map(params![project_id, status], thread_from_row)?
@@ -158,7 +162,7 @@ pub fn list_by_project(
         }
         None => {
             let mut stmt = conn.prepare(&format!(
-                "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 \
+                "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 AND (parent_thread_id IS NULL OR pinned=1) \
                  ORDER BY pinned DESC, updated_at DESC"
             ))?;
             stmt.query_map([project_id], thread_from_row)?
@@ -529,6 +533,8 @@ pub fn visit_thread(
 /// Maps one `threads` row into [`ThreadRow`].
 fn thread_from_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadRow> {
     Ok(ThreadRow {
+        parent_thread_id: row.get(12)?,
+        workspace_owner_thread_id: row.get(13)?,
         id: row.get(0)?,
         project_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
         title: row.get(2)?,
@@ -572,6 +578,8 @@ mod tests {
 
     fn sample_row(id: &str, project_id: &str, updated_at: i64) -> ThreadRow {
         ThreadRow {
+            parent_thread_id: None,
+            workspace_owner_thread_id: None,
             id: id.to_string(),
             project_id: project_id.to_string(),
             title: String::new(),

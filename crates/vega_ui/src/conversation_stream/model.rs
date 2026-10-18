@@ -1011,6 +1011,9 @@ impl Default for MessageCopy {
 /// 外侧」实现 —— 不进入 MarkdownStream，T15 管线零侵入；每段 assistant 流
 /// 拥有独立的 final 终结语义（回放结束 `finish()`，tech-spec §5.4）。
 pub(crate) enum StreamEntry {
+    Subagents {
+        group: Entity<super::subagents::SubagentGroup>,
+    },
     Screenshot {
         card: Entity<screenshots::ScreenshotCard>,
     },
@@ -1077,6 +1080,7 @@ pub(crate) enum StreamEntry {
 impl StreamEntry {
     pub(crate) fn row_count(&self, cx: &App) -> usize {
         match self {
+            StreamEntry::Subagents { group } => group.read(cx).row_count(),
             StreamEntry::RunActivity { .. } => 1,
             StreamEntry::RunActivitySegment { group, segment } => {
                 group.read(cx).segment_row_count(*segment, cx)

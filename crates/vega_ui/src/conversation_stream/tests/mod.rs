@@ -94,6 +94,7 @@ impl Render for StreamHarness {
 
 fn permission_thread() -> Thread {
     Thread {
+        parent_thread_id: None,
         id: "thread-safe-id".into(),
         backend: TaskBackend::Native,
         project_id: "project-safe-id".into(),
@@ -284,6 +285,7 @@ fn hydration_summary(message_id: &str) -> HistoryEntry {
 
 fn hydration_page(entries: Vec<HistoryEntry>, older_cursor: Option<i64>) -> HistoryPage {
     HistoryPage {
+        subagents: Vec::new(),
         entries,
         older_cursor,
         newer_cursor: None,
@@ -310,6 +312,7 @@ fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
             StreamEntry::ContextCompaction { .. } => "compaction",
             StreamEntry::SkillActivation { .. } => "skill-activation",
             StreamEntry::Screenshot { .. } => "screenshot",
+            StreamEntry::Subagents { .. } => "subagents",
         })
         .collect()
 }

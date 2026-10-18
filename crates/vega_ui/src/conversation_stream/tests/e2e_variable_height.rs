@@ -26,6 +26,7 @@ fn entry_kinds_at(stream: &ConversationStream, indices: &[usize]) -> Vec<&'stati
                 StreamEntry::ContextCompaction { .. } => "compaction",
                 StreamEntry::SkillActivation { .. } => "skill-activation",
                 StreamEntry::Screenshot { .. } => "screenshot",
+                StreamEntry::Subagents { .. } => "subagents",
             })
         })
         .collect()

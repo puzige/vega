@@ -600,3 +600,34 @@ pub(crate) fn record_usage(
     }
     Ok(())
 }
+
+pub(crate) fn check_subagent_budget(
+    conn: &Connection,
+    claim: &AutomationRunClaim,
+) -> Result<(), String> {
+    let Some((finished, data)) = db::run(conn, &claim.thread_id, &claim.id).map_err(storage)?
+    else {
+        return Err("parent task is no longer active".into());
+    };
+    if finished {
+        return Err("parent task is no longer active".into());
+    }
+    let run: AutomationRunClaim = decode(&data)?;
+    for expected in &claim.tasks {
+        let task = load_from(conn, &claim.thread_id)?
+            .into_iter()
+            .find(|task| {
+                task.identity == expected.identity
+                    && task.revision == expected.revision
+                    && task.status == AutomationStatus::Active
+            })
+            .ok_or("parent task has changed")?;
+        if task
+            .token_budget
+            .is_some_and(|budget| task.used_tokens.saturating_add(run.tokens) >= budget)
+        {
+            return Err("parent token budget is exhausted".into());
+        }
+    }
+    Ok(())
+}

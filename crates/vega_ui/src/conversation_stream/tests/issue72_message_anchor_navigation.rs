@@ -19,6 +19,7 @@ fn issue72_page_with_sensitive_preview(target_index: usize, secret: &str) -> His
 
 fn issue72_page_range(start_index: usize, count: usize, content_repetitions: usize) -> HistoryPage {
     HistoryPage {
+        subagents: Vec::new(),
         entries: (0..count)
             .map(|offset| {
                 let index = start_index + offset;
@@ -47,6 +48,7 @@ async fn anchors_use_unique_durable_message_ids_and_safe_text_projections(cx: &m
     stream.update(cx, |stream, cx| {
         stream.apply_history_page(
             HistoryPage {
+                subagents: Vec::new(),
                 entries: vec![
                     HistoryEntry::UserText {
                         seq: 1,
@@ -117,6 +119,7 @@ async fn run_activity_entries_contribute_geometry_without_duplicating_message_an
     stream.update(cx, |stream, cx| {
         stream.apply_history_page(
             HistoryPage {
+                subagents: Vec::new(),
                 entries: vec![
                     HistoryEntry::AssistantText {
                         seq: 1,

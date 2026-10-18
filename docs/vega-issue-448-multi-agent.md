@@ -69,6 +69,13 @@ spawn call is idempotent. Completed and failed children release capacity. The
 parent and siblings cannot address unrelated conversations. Startup recovery
 must distinguish dead work from children still owned by the live controller.
 Opening or restoring history never starts a model or reads provider credentials.
+The ordinary delete-parent action preserves child conversations: detach their
+parent link so they become reachable root tasks, and remove only the deleted
+parent's delegation metadata. Do not add an implicit delete-subtree operation.
+Existing deletion guards must also respect active delegated children.
+For standalone tasks, persist the inherited scratch-workspace identity
+independently of the parent link: detaching/deleting the parent must not switch
+the child's next continuation to a different empty scratch directory.
 
 ### Native tool surface
 

@@ -15,6 +15,11 @@ pub(crate) enum PreparedRuntimeCall {
         call: RuntimeToolCall,
         code: String,
     },
+    Subagent {
+        call: RuntimeToolCall,
+        arguments: Value,
+        hook: Arc<dyn RuntimeSubagentHook>,
+    },
     Automation {
         call: RuntimeToolCall,
         arguments: Value,
@@ -93,6 +98,7 @@ impl PreparedRuntimeCall {
         match self {
             Self::UserQuestion { call, .. }
             | Self::InvalidUserQuestion { call, .. }
+            | Self::Subagent { call, .. }
             | Self::Automation { call, .. }
             | Self::ComputerUse { call, .. }
             | Self::Readonly(call)
@@ -145,7 +151,7 @@ impl PreparedRuntimeCall {
         let call = self.call();
         let input_json = match self {
             Self::UserQuestion { input, .. } => input.to_json().ok()?,
-            Self::Automation { arguments, .. } | Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
+            Self::Subagent { arguments, .. } | Self::Automation { arguments, .. } | Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
             Self::Write { prepared, .. } => prepared.model_input_json(),
             Self::Edit { prepared, .. } => prepared.model_input_json()?,
             Self::Bash { prepared, .. } if prepared.timeout_ms() % 1000 == 0 => serde_json::json!({"command":prepared.command(),"timeout":prepared.timeout_ms()/1000}).to_string(),
@@ -308,6 +314,28 @@ pub(crate) fn prepare_runtime_call(
                 code: code.into(),
             },
         });
+    }
+    if is_subagent_tool(&raw_call.name) {
+        if let Some(hook) = config.subagents.clone()
+            && capabilities
+                .definitions()
+                .iter()
+                .any(|definition| definition.name == raw_call.name)
+            && valid_subagent_input(&raw_call.name, &raw_call.input_json)
+            && config.redact_tool_output(&raw_call.input_json)? == raw_call.input_json
+            && let Ok(arguments) = serde_json::from_str::<Value>(&raw_call.input_json)
+            && config.redact_tool_output(&arguments.to_string())? == arguments.to_string()
+        {
+            return Ok(PreparedRuntimeCall::Subagent {
+                call: raw_call,
+                arguments,
+                hook,
+            });
+        }
+        return Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
+            input_json: "{}".into(),
+            ..raw_call
+        }));
     }
     if automation::is_tool(&raw_call.name) {
         if let Some(hook) = config.automation.clone()
@@ -1012,7 +1040,8 @@ pub(crate) async fn authorize_call(
                 })
             }
         }
-        PreparedRuntimeCall::Automation { .. }
+        PreparedRuntimeCall::Subagent { .. }
+        | PreparedRuntimeCall::Automation { .. }
         | PreparedRuntimeCall::Readonly(_)
         | PreparedRuntimeCall::InvalidRead(_)
         | PreparedRuntimeCall::PinnedRead { .. } => {
@@ -1349,6 +1378,14 @@ pub(crate) async fn execute_prepared_waiting(
                 (result, cancelled)
             }
         },
+        PreparedRuntimeCall::Subagent {call,arguments,hook} => {
+            if cancel.is_cancelled() { return (terminal_result(&call,CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),true); }
+            match hook.call(call.id.clone(), call.name.clone(), arguments, cancel.clone()).await {
+                Ok(value) => { let mut result = terminal_result(&call,value.to_string(),RuntimeToolStatus::Success,None); result.truncated = Some(false); (result,false) }
+                Err(VegaError::Cancelled) => (terminal_result(&call,SUBAGENT_CANCELLED_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),true),
+                Err(error) => (failed_tool_result(&call,error.to_string()),false),
+            }
+        }
         PreparedRuntimeCall::Automation {call,arguments,hook} => {
             if cancel.is_cancelled() { return (terminal_result(&call,CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),true); }
             let result = hook.call(call.name.clone(),arguments,cancel.clone()).await;

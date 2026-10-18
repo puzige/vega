@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use vega_runtime::{RuntimeAutomationHook, VegaError};
@@ -12,7 +12,7 @@ pub(crate) struct AutomationBinding {
     path: PathBuf,
     pub(crate) claim: AutomationRunClaim,
     complete: Arc<AtomicBool>,
-    pending_usage: Arc<AtomicBool>,
+    pending_usage: Arc<AtomicUsize>,
 }
 
 impl AutomationBinding {
@@ -21,11 +21,11 @@ impl AutomationBinding {
             path,
             claim,
             complete: Arc::new(AtomicBool::new(true)),
-            pending_usage: Arc::new(AtomicBool::new(false)),
+            pending_usage: Arc::new(AtomicUsize::new(0)),
         }
     }
     pub(crate) fn usage_complete(&self) -> bool {
-        self.complete.load(Ordering::SeqCst) && !self.pending_usage.load(Ordering::SeqCst)
+        self.complete.load(Ordering::SeqCst) && self.pending_usage.load(Ordering::SeqCst) == 0
     }
 }
 
@@ -49,12 +49,14 @@ impl RuntimeAutomationHook for AutomationBinding {
         serde_json::json!({"goal":goal,"loop":loop_task,"trigger":self.claim.source})
     }
     fn provider_started(&self) {
-        if self.pending_usage.swap(true, Ordering::SeqCst) {
-            self.complete.store(false, Ordering::SeqCst);
-        }
+        self.pending_usage.fetch_add(1, Ordering::SeqCst);
     }
     fn provider_usage(&self) {
-        self.pending_usage.store(false, Ordering::SeqCst);
+        let _ = self
+            .pending_usage
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |pending| {
+                pending.checked_sub(1)
+            });
     }
     fn missing_usage(&self) {
         self.complete.store(false, Ordering::SeqCst);

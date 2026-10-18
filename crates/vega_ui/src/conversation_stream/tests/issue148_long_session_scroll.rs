@@ -404,6 +404,7 @@ async fn target_window_replacement_drops_old_cards_and_preserves_thread_state(
     let input = stream.read_with(cx, |stream, _| stream.input.clone());
     let meter = stream.read_with(cx, |stream, _| stream.meter_snapshot());
     let old_page = HistoryPage {
+        subagents: Vec::new(),
         entries: vec![
             hydration_user(1, "old user"),
             hydration_assistant(2, "old assistant"),
@@ -452,6 +453,7 @@ async fn target_window_replacement_drops_old_cards_and_preserves_thread_state(
     });
     assert_eq!(old_cards, (1, 1, 1));
     let target_page = HistoryPage {
+        subagents: Vec::new(),
         entries: vec![
             hydration_user(900, "target question"),
             hydration_assistant(901, "target answer"),
@@ -500,6 +502,7 @@ async fn newer_page_appends_and_preserves_the_existing_anchor(cx: &mut TestAppCo
     stream.update(cx, |stream, cx| {
         stream.apply_history_page(
             HistoryPage {
+                subagents: Vec::new(),
                 entries: (1..=40)
                     .map(|seq| hydration_assistant(seq, &format!("message {seq} ").repeat(5)))
                     .collect(),
@@ -530,6 +533,7 @@ async fn newer_page_appends_and_preserves_the_existing_anchor(cx: &mut TestAppCo
     stream.update(&mut visual, |stream, cx| {
         stream.apply_newer_history_page(
             HistoryPage {
+                subagents: Vec::new(),
                 entries: (41..=55)
                     .map(|seq| hydration_assistant(seq, &format!("message {seq} ").repeat(5)))
                     .collect(),
@@ -580,6 +584,7 @@ async fn newer_page_request_waits_until_the_list_reaches_the_bottom(cx: &mut Tes
     stream.update(cx, |stream, cx| {
         stream.apply_history_page(
             HistoryPage {
+                subagents: Vec::new(),
                 entries: (1..=40)
                     .map(|seq| hydration_assistant(seq, &format!("message {seq} ").repeat(5)))
                     .collect(),

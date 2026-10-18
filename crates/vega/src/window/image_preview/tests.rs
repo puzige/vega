@@ -74,6 +74,7 @@ fn page(
     entries: Vec<vega_conversation::history::HistoryEntry>,
 ) -> vega_conversation::history::HistoryPage {
     vega_conversation::history::HistoryPage {
+        subagents: Vec::new(),
         entries,
         older_cursor: None,
         newer_cursor: None,

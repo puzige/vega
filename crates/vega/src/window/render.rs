@@ -230,6 +230,20 @@ impl Render for VegaWindow {
                                 }
                                 self.load_running_message_default(cx);
                             }
+                            if self.agent_controller.delegated_unbound.remove(&thread.id) {
+                                let models = self.model_options_for_pricing();
+                                let label = self
+                                    .sidebar
+                                    .read(cx)
+                                    .project_label(&thread.project_id, cx)
+                                    .unwrap_or_default();
+                                view.update(cx, |stream, cx| {
+                                    stream.apply_model_options(models, cx);
+                                    stream.set_project_label(label, cx);
+                                });
+                                self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
+                                self.bind_conversation_stream(&view, window, cx);
+                            }
                             // A8-01: the same draft id intentionally keeps
                             // the same stream (and Composer input/focus), but
                             // project selection may have changed around it.
@@ -289,222 +303,8 @@ impl Render for VegaWindow {
                                 stream.apply_model_options(model_options, cx);
                             });
                             self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
-                            cx.subscribe_in(
-                                &view,
-                                window,
-                                |this, stream, request: &ImagePreviewRequested, window, cx| {
-                                    this.handle_image_preview(stream.clone(), request, window, cx);
-                                },
-                            )
-                            .detach();
-                            cx.observe_in(&view, window, |this, _, window, cx| {
-                                this.sync_image_preview(window, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.apply_thread_model_selection(stream.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &TaskBackendSelectionRequested, cx| {
-                                    this.select_draft_task_backend(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.persist_composer_thinking(stream.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this,
-                                 stream,
-                                 request: &vega_ui::conversation_stream::PrivacyRequested,
-                                 cx| {
-                                    this.request_privacy(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request: &vega_ui::conversation_stream::CredentialContinuationRequested, cx| {
-                                this.resume_credential_continuation(stream.clone(), request, cx);
-                            }).detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.persist_thread_settings(stream.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &ContextSettingsRequested, cx| {
-                                    this.persist_context_settings(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &ContextCompactionRequested, cx| {
-                                    this.start_context_compaction(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &ContextCompactionCancelRequested, cx| {
-                                    this.cancel_context_operation(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.review_plan(stream.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.submit_composer(stream.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe_in(
-                                &view,
-                                window,
-                                |this, stream, request: &AutomationEditorRequested, window, cx| {
-                                    this.open_automation_editor(
-                                        stream.clone(),
-                                        request,
-                                        window,
-                                        cx,
-                                    );
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &AutomationRequested, cx| {
-                                    this.automation_requested(stream.clone(), request, cx)
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &PendingQueueRequested, cx| {
-                                    this.pending_queue_requested(stream.clone(), request, cx)
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &SkillComposerProjectionRequested, cx| {
-                                    this.request_skill_composer_projection(
-                                        stream.clone(),
-                                        request,
-                                        cx,
-                                    );
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &SkillComposerMutationRequested, cx| {
-                                    this.request_skill_composer_mutation(
-                                        stream.clone(),
-                                        request,
-                                        cx,
-                                    );
-                                },
-                            )
-                            .detach();
-                            view.update(cx, ConversationStream::request_skill_projection);
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &ComposerStopRequested, cx| {
-                                    this.stop_composer(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &FileIndexRequested, cx| {
-                                    this.request_file_index(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &FileIndexCancelled, cx| {
-                                    this.cancel_file_index(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &FileIndexRetryRequested, cx| {
-                                    this.retry_file_index(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.open_workspace_diff(
-                                    stream.clone(),
-                                    request,
-                                    DiffFocusIntent::PreserveCurrent,
-                                    cx,
-                                );
-                            })
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.open_commit_panel(stream.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.workspace_tool_terminal(stream.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&view, |this, stream, request, cx| {
-                                this.request_history_page(stream.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &NewerHistoryPageRequested, cx| {
-                                    this.request_newer_history_page(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            cx.subscribe(
-                                &view,
-                                |this, stream, request: &MessageLocationRequested, cx| {
-                                    this.request_message_location(stream.clone(), request, cx);
-                                },
-                            )
-                            .detach();
-                            let branch_selector = view.read(cx).branch_selector();
-                            cx.subscribe(&branch_selector, |this, selector, request, cx| {
-                                this.request_branch_list(selector.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&branch_selector, |this, selector, request, cx| {
-                                this.request_branch_switch(selector.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&branch_selector, |this, selector, request, cx| {
-                                this.branch_selector_closed(selector.clone(), request, cx);
-                            })
-                            .detach();
-                            let commit_panel = view.read(cx).commit_panel();
-                            cx.subscribe(&commit_panel, |this, panel, request, cx| {
-                                this.request_commit_prepare(panel.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&commit_panel, |this, panel, request, cx| {
-                                this.request_commit_draft(panel.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&commit_panel, |this, panel, request, cx| {
-                                this.request_commit_execute(panel.clone(), request, cx);
-                            })
-                            .detach();
-                            cx.subscribe(&commit_panel, |this, panel, request, cx| {
-                                this.commit_panel_closed(panel.clone(), request, cx);
-                            })
-                            .detach();
+                            self.agent_controller.delegated_unbound.remove(&thread.id);
+                            self.bind_conversation_stream(&view, window, cx);
                             // R69 R7: a draft has no durable history by
                             // definition, so the whole hydration block is
                             // skipped. Running it would surface a visible

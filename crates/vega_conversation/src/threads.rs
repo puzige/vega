@@ -55,7 +55,7 @@ pub fn thread_usage_seed(
     thread_id: &str,
 ) -> Result<RestoredUsage, ConversationError> {
     let aggregate =
-        token_usage::aggregate_by_thread(store.conn(), thread_id).map_err(store_error)?;
+        token_usage::aggregate_task_by_thread(store.conn(), thread_id).map_err(store_error)?;
     let tokens = aggregate
         .input_tokens
         .checked_add(aggregate.output_tokens)
@@ -67,9 +67,11 @@ pub fn thread_usage_seed(
         .transpose()
         .map_err(store_error)?
         .unwrap_or(false);
+    let unknown_delegated_usage =
+        vega_store::subagents::has_unknown_usage(store.conn(), thread_id).map_err(store_error)?;
     Ok(RestoredUsage {
         tokens,
-        cost: if unknown_summary_usage {
+        cost: if unknown_summary_usage || unknown_delegated_usage {
             None
         } else {
             match aggregate.cost {
@@ -179,6 +181,7 @@ fn assemble_thread(
 ) -> Thread {
     let now = now_ms();
     Thread {
+        parent_thread_id: None,
         id: new_thread_id(),
         backend: TaskBackend::Native,
         project_id: project_id.unwrap_or_default().to_string(),
@@ -423,6 +426,17 @@ pub fn set_thread_model(
 /// with its `messages`/`tool_calls` rows in one transaction (no orphan rows;
 /// `token_usage` is kept for cost auditing).
 pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationError> {
+    if crate::subagents::is_live(store, thread_id)
+        || vega_store::subagents::list(store.conn(), thread_id, None)
+            .map_err(store_error)?
+            .iter()
+            .any(|child| crate::subagents::is_live(store, &child.child_thread_id))
+    {
+        return Err(ConversationError::CorruptRow(
+            "Stop the task and its running agents before deleting".into(),
+        ));
+    }
+
     let deleted = store::delete_thread(store.conn(), thread_id).map_err(store_error)?;
     if deleted == 0 {
         return Err(ConversationError::NotFound(thread_id.to_string()));
@@ -537,8 +551,28 @@ fn task_workspace_root_at(
     data_root: &std::path::Path,
 ) -> Result<std::path::PathBuf, ConversationError> {
     let thread = get_thread(store, thread_id)?;
+    if let Some(parent) = &thread.parent_thread_id {
+        let parent = get_thread(store, parent)?;
+        if parent.parent_thread_id.is_some() {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        return task_workspace_root_at(store, &parent.id, data_root);
+    }
     if thread.project_id.is_empty() {
-        let root = data_root.join("scratch").join(&thread.id);
+        let row = store::find(store.conn(), thread_id)
+            .map_err(store_error)?
+            .ok_or(ConversationError::InvalidTaskIdentity)?;
+        let owner = row
+            .workspace_owner_thread_id
+            .as_deref()
+            .unwrap_or(&thread.id);
+        let mut components = std::path::Path::new(owner).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        let root = data_root.join("scratch").join(owner);
         std::fs::create_dir_all(&root).map_err(store_error)?;
         return Ok(root);
     }
@@ -556,6 +590,7 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
         ConversationError::CorruptRow(format!("permission_mode: {}", row.permission_mode))
     })?;
     Ok(Thread {
+        parent_thread_id: row.parent_thread_id.clone(),
         id: row.id.clone(),
         backend: TaskBackend::parse(&row.backend)
             .ok_or_else(|| ConversationError::CorruptRow("backend".to_string()))?,

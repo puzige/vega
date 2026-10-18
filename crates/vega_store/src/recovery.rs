@@ -30,6 +30,16 @@ pub fn recover_thread(
     now_ms: i64,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let counts = recover_thread_in_transaction(&tx, thread_id, now_ms)?;
+    tx.commit()?;
+    Ok(counts)
+}
+
+pub fn recover_thread_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    now_ms: i64,
+) -> Result<RecoveryCounts, rusqlite::Error> {
     let continuations = {
         let mut query = tx.prepare("SELECT c.continuation_message_id, c.reason, c.source_version, c.source_fingerprint, c.user_message_id, c.raw_user_fingerprint FROM credential_continuations c JOIN messages m ON m.id = c.continuation_message_id WHERE c.thread_id = ?1 AND c.state = 'claimed' AND m.status = 'streaming' AND c.user_message_id = (SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' ORDER BY seq DESC LIMIT 1)")?;
         query
@@ -57,7 +67,7 @@ pub fn recover_thread(
                 raw_fingerprint,
             )| {
                 let current = crate::context_compaction::source_version_without_continuation(
-                    &tx,
+                    tx,
                     thread_id,
                     &message_id,
                 )?;
@@ -68,12 +78,13 @@ pub fn recover_thread(
                 })?;
                 let unchanged = current.source_version == source_version
                     && current.fingerprint == fingerprint
-                    && crate::credential_continuation::raw_user_fingerprint(&tx, &user_message_id)?
+                    && crate::credential_continuation::raw_user_fingerprint(tx, &user_message_id)?
                         == raw_fingerprint;
                 Ok((message_id, reason, unchanged))
             },
         )
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    crate::subagents::recover(tx, thread_id)?;
     let messages_interrupted = tx.execute(
         "UPDATE messages SET status = 'interrupted' \
          WHERE thread_id = ?1 AND status = 'streaming'",
@@ -96,13 +107,12 @@ pub fn recover_thread(
         params![RECOVERY_CANCELLED_OUTPUT, now_ms, thread_id],
     )?;
     for (message_id, reason, unchanged) in continuations {
-        crate::credential_continuation::suspend(&tx, thread_id, &message_id, &reason, now_ms)?;
+        crate::credential_continuation::suspend(tx, thread_id, &message_id, &reason, now_ms)?;
         if !unchanged {
             tx.execute("UPDATE credential_continuations SET state = 'unknown', reason = 'source_changed' WHERE id = ?1", [&message_id])?;
         }
-        crate::credential_continuation::complete(&tx, &message_id)?;
+        crate::credential_continuation::complete(tx, &message_id)?;
     }
-    tx.commit()?;
     Ok(RecoveryCounts {
         messages_interrupted,
         tools_rejected,

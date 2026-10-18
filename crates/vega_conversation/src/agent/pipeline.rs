@@ -70,6 +70,9 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
         }
+        "spawn_agent" | "list_agents" | "wait_agent" | "cancel_agent" => {
+            input_json == "{}" || vega_runtime::valid_subagent_input(tool, input_json)
+        }
         "get_goal" | "update_goal" | "schedule_wakeup" => {
             valid_automation_call_projection(tool, input_json)
         }
@@ -515,7 +518,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .execute_batch("PRAGMA query_only = ON")
             .map_err(runtime_store_error)?;
     }
-    if !uses_existing_user && config.credential_continuation_id.is_none() {
+    if !uses_existing_user && config.credential_continuation_id.is_none() && !config.delegated {
         vega_store::recovery::recover_thread(store.conn(), &thread_id, now_ms())
             .map_err(runtime_store_error)?;
     }
@@ -1019,7 +1022,12 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     runtime_config
                 };
                 runtime_config
-                    .with_automation(config.automation_hook.clone())
+                    .with_automation(if config.delegated {
+                        None
+                    } else {
+                        config.automation_hook.clone()
+                    })
+                    .with_usage_observer(config.automation_hook.clone())
                     .with_foreign_call_ids(foreign_call_ids)
                     .with_turn_limit(config.turn_limit as usize)
             },
@@ -1142,8 +1150,18 @@ pub(crate) fn validate_recovered_projection(
         return Ok(input_json.to_owned());
     }
     match tool {
-        "get_goal" | "update_goal" | "schedule_wakeup" => {
-            let valid_json = valid_automation_call_projection(tool, input_json);
+        "spawn_agent" | "list_agents" | "wait_agent" | "cancel_agent" | "get_goal"
+        | "update_goal" | "schedule_wakeup" => {
+            let valid_json = if vega_runtime::is_subagent_tool(tool) {
+                vega_runtime::valid_subagent_input(tool, input_json)
+                    || (input_json == "{}"
+                        && matches!(
+                            status,
+                            RuntimeToolStatus::Cancelled | RuntimeToolStatus::Rejected
+                        ))
+            } else {
+                valid_automation_call_projection(tool, input_json)
+            };
             let valid_output = match status {
                 RuntimeToolStatus::Success => {
                     approval.source == ApprovalSource::ReadonlyTool
@@ -1154,7 +1172,11 @@ pub(crate) fn validate_recovered_projection(
                 RuntimeToolStatus::Failed => {
                     approval.source == ApprovalSource::ReadonlyTool
                         && approval.decision == Approval::Once
-                        && output.starts_with("Tool error: tool 'automation' failed:")
+                        && if vega_runtime::is_subagent_tool(tool) {
+                            output.starts_with("Tool error: tool 'subagent' failed:")
+                        } else {
+                            output.starts_with("Tool error: tool 'automation' failed:")
+                        }
                 }
                 RuntimeToolStatus::Cancelled => {
                     approval.decision == Approval::Once
@@ -1164,11 +1186,12 @@ pub(crate) fn validate_recovered_projection(
                                 | ApprovalSource::Recovery
                                 | ApprovalSource::Timeout
                         )
-                        && matches!(
+                        && (matches!(
                             output,
                             vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
                                 | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
-                        )
+                        ) || (vega_runtime::is_subagent_tool(tool)
+                            && output == vega_runtime::SUBAGENT_CANCELLED_OUTPUT))
                 }
                 RuntimeToolStatus::Rejected => {
                     approval.decision == Approval::Deny
@@ -1685,7 +1708,8 @@ pub(crate) fn approval_source_matches(
         };
     }
     match tool {
-        "get_goal" | "update_goal" | "schedule_wakeup" => match status {
+        "spawn_agent" | "list_agents" | "wait_agent" | "cancel_agent" | "get_goal"
+        | "update_goal" | "schedule_wakeup" => match status {
             RuntimeToolStatus::Rejected => matches!(
                 source,
                 ApprovalSource::RunMode | ApprovalSource::Recovery | ApprovalSource::Timeout

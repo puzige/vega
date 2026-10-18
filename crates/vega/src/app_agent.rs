@@ -122,6 +122,7 @@ impl From<&str> for UserSubmission {
 }
 
 pub(crate) enum AgentUpdate {
+    Subagent(crate::native_subagents::NativeSubagentUpdate),
     Event(vega_conversation::types::ConversationEvent),
     CodexModeConfirmed,
     ComputerUseReady {
@@ -140,6 +141,7 @@ pub(crate) enum AgentUpdate {
 }
 
 pub(crate) struct AgentBatch {
+    pub(crate) subagents: Vec<crate::native_subagents::NativeSubagentUpdate>,
     pub(crate) events: Vec<vega_conversation::types::ConversationEvent>,
     pub(crate) codex_mode_confirmed: bool,
     pub(crate) computer_use_ready: Option<(ComputerUseControl, String)>,
@@ -151,6 +153,7 @@ pub(crate) struct AgentBatch {
 
 pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> AgentBatch {
     let mut events = Vec::new();
+    let mut subagents = Vec::new();
     let mut codex_mode_confirmed = false;
     let mut computer_use_ready = None;
     let mut mcp_unavailable = Vec::new();
@@ -159,6 +162,7 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
     let mut finished = None;
     for _ in 0..AGENT_EVENT_BATCH {
         match receiver.try_recv() {
+            Ok(AgentUpdate::Subagent(update)) => subagents.push(update),
             Ok(AgentUpdate::Event(event)) => events.push(event),
             Ok(AgentUpdate::CodexModeConfirmed) => codex_mode_confirmed = true,
             Ok(AgentUpdate::ComputerUseReady { control, owner }) => {
@@ -185,6 +189,7 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
         }
     }
     AgentBatch {
+        subagents,
         events,
         codex_mode_confirmed,
         computer_use_ready,
@@ -196,6 +201,9 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
 }
 
 pub(crate) struct ActiveAgentRun {
+    pub(crate) root_message_id: Option<String>,
+    pub(crate) delegated_message_id: Option<String>,
+    pub(crate) delegated_parent_thread: Option<String>,
     pub(crate) queue_generation: String,
     pub(crate) queue_delivery: Option<PendingMessage>,
     pub(crate) queue_ready: bool,
@@ -405,6 +413,7 @@ pub(crate) enum PricingWorkerKind {
 
 #[derive(Default)]
 pub(crate) struct AppAgentController {
+    pub(crate) delegated_unbound: HashSet<String>,
     pub(crate) queue_streams: HashMap<String, Entity<ConversationStream>>,
     pub(crate) queue_dispatches: HashMap<String, String>,
     pub(crate) queue_continue: HashMap<String, bool>,
@@ -497,6 +506,9 @@ impl AppAgentController {
         self.active.insert(
             thread_id.clone(),
             ActiveAgentRun {
+                root_message_id: None,
+                delegated_message_id: None,
+                delegated_parent_thread: None,
                 queue_generation: ulid::Ulid::generate().to_string(),
                 queue_delivery: None,
                 queue_ready: false,
@@ -557,6 +569,11 @@ impl AppAgentController {
         if self.matches(generation, thread_id, stream)
             && let Some(active) = self.active.get_mut(thread_id)
         {
+            if let ConversationEvent::MessageStarted { message_id, .. } = event {
+                active
+                    .root_message_id
+                    .get_or_insert_with(|| message_id.clone());
+            }
             match event {
                 ConversationEvent::MessageStarted { .. }
                 | ConversationEvent::Interrupted { .. }
@@ -1250,6 +1267,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             ) as Arc<dyn vega_runtime::RuntimeSteeringSource>
         });
         let pending_message_id = queue_context.and_then(|context| context.message_id);
+        let subagent_host = crate::native_subagents::NativeSubagentHost::new(sender.clone());
         let result = match run {
             PendingAgentRun::Automation(_) => return Err(()),
             PendingAgentRun::UserMessage(submission) => {
@@ -1347,6 +1365,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         &permission_queue,
                         event_sink,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_subagent_host(subagent_host.clone())
                             .with_automation_claim(automation_claim.clone())
                             .with_automatic_title(automatic_title)
                             .with_turn_limit(turn_limit)
@@ -1426,6 +1445,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         Some(reasoning),
                         mcp_servers,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
@@ -1493,6 +1513,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         &permission_queue,
                         event_sink,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())

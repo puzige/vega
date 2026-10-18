@@ -60,6 +60,7 @@ pub mod run_diagnostics;
 pub mod sidebar_organization;
 pub mod skills;
 // T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
+pub mod subagents;
 pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
@@ -100,6 +101,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0024_credential_privacy.sql"),
     include_str!("../migrations/0025_failure_details.sql"),
     include_str!("../migrations/0026_automation.sql"),
+    include_str!("../migrations/0027_subagents.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

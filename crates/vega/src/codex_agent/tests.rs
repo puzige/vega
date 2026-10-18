@@ -407,6 +407,7 @@ fn issue287_store() -> (Store, tempfile::TempDir, Thread, CodexExecutionSnapshot
     )
     .unwrap();
     let mut draft = Thread {
+        parent_thread_id: None,
         id: ulid::Ulid::generate().to_string(),
         backend: TaskBackend::Codex,
         project_id: project.id.clone(),

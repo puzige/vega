@@ -31,6 +31,7 @@ mod file_index;
 mod image_preview;
 mod model_catalog;
 mod model_context;
+mod native_subagents;
 pub(crate) mod navigation;
 mod pending_messages;
 mod pricing;

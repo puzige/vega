@@ -2548,6 +2548,7 @@ mod tests {
         stream.update(cx, |stream, cx| {
             stream.apply_history_page(
                 HistoryPage {
+                    subagents: Vec::new(),
                     entries: (1..=40)
                         .map(|seq| HistoryEntry::UserText {
                             seq,
@@ -4053,6 +4054,7 @@ mod tests {
         stream.update(cx, |stream, cx| {
             stream.apply_history_page(
                 vega_conversation::history::HistoryPage {
+                    subagents: Vec::new(),
                     entries: vec![vega_conversation::history::HistoryEntry::UserText {
                         seq: 1,
                         message_id: "first-message".into(),

@@ -129,6 +129,7 @@ fn setup(cx: &mut TestAppContext) -> WindowHandle<ConversationStream> {
             cx.new(|cx| {
                 ConversationStream::new(
                     Thread {
+                        parent_thread_id: None,
                         id: "context-thread".into(),
                         backend: TaskBackend::Native,
                         project_id: "project".into(),
@@ -815,6 +816,7 @@ async fn issue117_restore_is_historical_idempotent_and_rejects_late_results(
             // prepends before the explicitly historical row, never after it.
             stream.apply_history_page(
                 HistoryPage {
+                    subagents: Vec::new(),
                     entries: vec![HistoryEntry::UserText {
                         seq: 1,
                         message_id: "history-1".into(),
@@ -1225,6 +1227,7 @@ async fn compaction_failure_hydration_drops_resolved_cause_and_keeps_provider_er
         .update(cx, |stream, _, cx| {
             stream.apply_history_page(
                 HistoryPage {
+                    subagents: Vec::new(),
                     entries: vec![HistoryEntry::AssistantText {
                         seq: 1,
                         message_id: "owned-run".into(),
@@ -1492,6 +1495,7 @@ async fn issue365_reopened_context_error_uses_owned_shared_notice(cx: &mut TestA
             use vega_conversation::history::{AssistantStatus, HistoryEntry, HistoryPage};
             stream.apply_history_page(
                 HistoryPage {
+                    subagents: Vec::new(),
                     entries: vec![
                         HistoryEntry::AssistantText {
                             seq: 1,
@@ -1647,6 +1651,7 @@ async fn issue372_reopened_steered_reasoning_error_keeps_one_card_and_independen
         .update(cx, |stream, _, cx| {
             stream.apply_history_page(
                 HistoryPage {
+                    subagents: Vec::new(),
                     entries: vec![
                         HistoryEntry::AssistantText {
                             seq: 2,
@@ -1749,6 +1754,7 @@ async fn restored_provider_failures_keep_the_specific_notice(cx: &mut TestAppCon
         use vega_conversation::history::{AssistantStatus, HistoryEntry, HistoryPage};
         let kinds = [RunFailureKind::ProviderOutputLimit, RunFailureKind::ProviderProtocol, RunFailureKind::ProviderTransport, RunFailureKind::ProviderRejected, RunFailureKind::ProviderUnknown];
         stream.apply_history_page(HistoryPage {
+            subagents: Vec::new(),
             entries: kinds.iter().enumerate().map(|(index, _)| HistoryEntry::AssistantText {
                 seq: index as i64 + 1,
                 message_id: format!("failure-{index}"),

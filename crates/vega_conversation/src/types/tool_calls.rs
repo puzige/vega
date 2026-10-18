@@ -324,6 +324,10 @@ impl ReadOnlyToolKind {
 /// Strict, content-free tool input prepared for UI cards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardInputProjection {
+    Subagent {
+        tool: String,
+        title: String,
+    },
     UserQuestion {
         input: Result<UserQuestionInput, String>,
     },
@@ -379,6 +383,7 @@ impl ToolCardInputProjection {
     /// Stable known tool name, absent for corrupt input.
     pub fn tool(&self) -> Option<&str> {
         match self {
+            Self::Subagent { tool, .. } => Some(tool),
             Self::UserQuestion { .. } => Some(USER_QUESTION_TOOL),
             Self::ComputerUse { tool, .. } => Some(tool),
             Self::ReadOnly { tool, .. } => Some(tool.as_str()),
@@ -406,7 +411,8 @@ impl ToolCardInputProjection {
             Self::ReadOnly {
                 permission_path, ..
             } => permission_path.as_deref(),
-            Self::UserQuestion { .. }
+            Self::Subagent { .. }
+            | Self::UserQuestion { .. }
             | Self::ComputerUse { .. }
             | Self::Skill { .. }
             | Self::Corrupt => None,
@@ -490,6 +496,30 @@ pub enum ToolCardResultProjection {
 
 /// Strictly reduces a shared safe proposal to the fields T27 may retain.
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
+    if vega_runtime::is_subagent_tool(&call.tool) {
+        if call.input_json != "{}"
+            && !vega_runtime::valid_subagent_input(&call.tool, &call.input_json)
+        {
+            return ToolCardInputProjection::Corrupt;
+        }
+        let input = serde_json::from_str::<serde_json::Value>(&call.input_json).unwrap_or_default();
+        let title = match call.tool.as_str() {
+            "spawn_agent" => format!(
+                "Delegate {}",
+                input
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("task")
+            ),
+            "list_agents" => "List agents".into(),
+            "wait_agent" => "Wait for agents".into(),
+            _ => "Stop agent".into(),
+        };
+        return ToolCardInputProjection::Subagent {
+            tool: call.tool.clone(),
+            title,
+        };
+    }
     if call.tool == USER_QUESTION_TOOL {
         return if let Ok(input) = UserQuestionInput::from_json(&call.input_json) {
             ToolCardInputProjection::UserQuestion { input: Ok(input) }
@@ -734,6 +764,21 @@ pub fn tool_card_result_projection(
         return ToolCardResultProjection::Corrupt;
     };
     match input {
+        ToolCardInputProjection::Subagent { .. } => {
+            if !is_terminal(result.status)
+                || result.exit_code.is_some()
+                || result.duration_ms.is_some()
+                || result.output.len() > 128 * 1024
+                || (result.status == ToolCallStatus::Success && !success_truncation_valid(result))
+            {
+                return ToolCardResultProjection::Corrupt;
+            }
+            ToolCardResultProjection::ReadOnly {
+                status: result.status,
+                output: result.output.clone(),
+                reused: result.reused,
+            }
+        }
         ToolCardInputProjection::UserQuestion { input } => {
             user_question_result_projection(input, result)
         }

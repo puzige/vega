@@ -71,7 +71,7 @@
 | A3-11 | 上下文管理 v1 | system prompt 模板、滑动窗口、超限朴素截断 | P0 | 全员 |
 | A3-12 | Trace 全量落库 | 每事件（思考/工具/结果/usage）写 SQLite，Harness 数据基础 | P0 | ✦ |
 | A3-13 | 上下文压缩 v2 | 摘要压缩长会话 | P1 (Ph2) | CD |
-| A3-14 | 子 agent 派发 | 主 agent 可 spawn 子任务并行，结果汇总 | P1 (Ph2) | 全员 |
+| A3-14 | 子 agent 派发 | Native 父任务通过 spawn/list/wait/cancel 管理最多四个并行子会话；独立历史、打开/停止/续聊；[规格](vega-issue-448-multi-agent.md) | P1 (Ph2) | 全员 |
 | A3-15 | 多 Provider | Anthropic 原生、DeepSeek、Ollama | P1 (Ph2) | AG/ZC |
 | A3-16 | web_fetch 工具 | 抓取网页转 markdown 注入 | P1 (Ph2) | 全员 |
 | A3-17 | 闲时执行接口 | 任务可标记「闲时跑」，由 A7 调度低价模型 | P2 (Ph3) | ZC |

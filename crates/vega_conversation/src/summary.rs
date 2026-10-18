@@ -1,14 +1,5 @@
 //! Per-task cost summary projection (S7-T40/A10-06, C4 contract).
 //!
-//! The projection aggregates only the finished assistant task's own
-//! provider-call rows (`token_usage` by `message_id`) and its tool-call audit
-//! rows (`tool_calls` by `message_id`), both via checked `vega_store`
-//! queries. Unavailable facts stay typed (no usage rows → `None` tokens,
-//! legacy/unknown pricing version → `SummaryCost::Unavailable`) and must be
-//! rendered as `—`, never fabricated to zero. The wall-clock duration is
-//! supplied by the live run's memory only; restart recovery passes `None`
-//! because `messages` has no finished timestamp (C4).
-
 use vega_store::{Store, messages, token_usage, tool_calls};
 
 use crate::types::{
@@ -56,6 +47,24 @@ pub fn task_cost_summary(
         exact_primary_cache_usage(store, thread_id, message_id, aggregate)?
     };
 
+    let combined = token_usage::aggregate_task_by_message(store.conn(), thread_id, message_id)
+        .map_err(|error| ConversationError::Store(error.to_string()))?;
+    let delegated_complete =
+        vega_store::subagents::run_usage_complete(store.conn(), thread_id, message_id)
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+    let includes_children = combined.row_count > aggregate.row_count;
+    let cache_usage = if !delegated_complete {
+        (None, None, false)
+    } else if includes_children {
+        (
+            cache_usage.0.map(|_| combined.cache_read_tokens),
+            cache_usage.1.map(|_| combined.cache_write_tokens),
+            cache_usage.2,
+        )
+    } else {
+        cache_usage
+    };
+    let aggregate = combined;
     let usage = (aggregate.row_count > 0).then_some(TokenUsage {
         input: aggregate.input_tokens,
         output: aggregate.output_tokens,
