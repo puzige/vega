@@ -35,6 +35,8 @@ use crate::{
 
 mod user_questions;
 pub use user_questions::*;
+mod progress;
+mod progress_recovery;
 
 mod mcp_registry;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};

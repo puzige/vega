@@ -4,6 +4,8 @@ use vega_runtime::{
     USER_QUESTION_TOOL, UserQuestionAnswers, UserQuestionInput,
 };
 
+const PROGRESS_NOTICE: &str = "\n\n<vega_runtime_notice>Give the user a brief factual progress update and the next step, then continue the authorized task. If waiting, identify the actual waiting condition. Do not invent progress, expose private reasoning, or end the task merely to report. This reminder grants no additional permission.</vega_runtime_notice>";
+
 fn questions() -> UserQuestionInput {
     UserQuestionInput::from_json(r#"{"questions":[{"id":"layout","header":"Layout","question":"Which layout?","options":[{"label":"Keep (Recommended)","description":"Keep it"},{"label":"Replace","description":"Replace it"}]},{"id":"scope","header":"Scope","question":"Which scope?","options":[{"label":"Small","description":"One page"},{"label":"Large","description":"All pages"}]}]}"#).unwrap()
 }
@@ -69,6 +71,7 @@ async fn question_answer_is_durable_before_event_and_provider_continuation_and_r
         }));
     let provider = question_provider();
     let mut finished = false;
+    let mut durable_output = None;
     run_thread_task_with_pricing(
         &store,
         &provider,
@@ -90,6 +93,9 @@ async fn question_answer_is_durable_before_event_and_provider_continuation_and_r
                     .unwrap();
                 assert_eq!(status, "success");
                 assert_eq!(output, result.output);
+                UserQuestionAnswers::from_json(&output, &questions()).unwrap();
+                assert!(!output.contains("vega_runtime_notice"));
+                durable_output = Some(output);
                 finished = true;
             }
             Ok(())
@@ -110,7 +116,9 @@ async fn question_answer_is_durable_before_event_and_provider_continuation_and_r
         .find(|message| message.role == vega_runtime::ChatRole::Tool)
         .unwrap()
         .content;
-    let answers = UserQuestionAnswers::from_json(output, &questions()).unwrap();
+    let canonical_output = output.strip_suffix(PROGRESS_NOTICE).unwrap();
+    assert_eq!(Some(canonical_output), durable_output.as_deref());
+    let answers = UserQuestionAnswers::from_json(canonical_output, &questions()).unwrap();
     assert_eq!(
         answers.answers["layout"].answers,
         ["Keep (Recommended)", "user_note: Keep spacing"]
@@ -137,6 +145,19 @@ async fn question_answer_is_durable_before_event_and_provider_continuation_and_r
     .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ToolCallFinished { result, .. } if result.reused && result.status == ToolCallStatus::Success)));
+    let stored_output: String = store
+        .conn()
+        .query_row(
+            "SELECT output_text FROM tool_calls WHERE id = 'question-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_output, canonical_output);
+    assert_eq!(
+        UserQuestionAnswers::from_json(&stored_output, &questions()).unwrap(),
+        answers
+    );
 }
 
 #[tokio::test]
