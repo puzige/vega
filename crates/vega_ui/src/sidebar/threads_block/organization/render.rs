@@ -94,7 +94,8 @@ impl ThreadsBlock {
                     let mut preferences = snapshot.preferences.clone();
                     preferences.sort = match preferences.sort {
                         SidebarTaskSort::Updated => SidebarTaskSort::Created,
-                        SidebarTaskSort::Created => SidebarTaskSort::Updated,
+                        SidebarTaskSort::Created => SidebarTaskSort::Manual,
+                        SidebarTaskSort::Manual => SidebarTaskSort::Updated,
                     };
                     self.submit_organization(
                         SidebarOrganizationAction::SetPreferences(preferences),
@@ -209,9 +210,29 @@ impl ThreadsBlock {
                 .child(self.section_label("正在载入", cx))
                 .into_any_element();
         };
+        self.prepare_reorder();
         let mut body = div()
             .id("sidebar-organization")
             .debug_selector(|| "sidebar-organization".into())
+            .when_some(
+                self.organization.as_ref().filter(|org| org.reorder.gesture),
+                |body, org| body.track_focus(&org.reorder.focus),
+            )
+            .capture_any_mouse_up(cx.listener(Self::release_reorder))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::release_reorder))
+            .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                this.reset_reorder(window, cx);
+            }))
+            .capture_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                this.cancel_reorder(window, cx);
+            }))
+            .capture_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.cancel_reorder(window, cx);
+                    }
+                }),
+            )
             .flex()
             .flex_col()
             .gap(px(Layout::SIDEBAR_SECTION_GAP));
@@ -282,7 +303,7 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    fn eligible_threads(&self, show_archived: bool) -> Vec<Thread> {
+    pub(super) fn eligible_threads(&self, show_archived: bool) -> Vec<Thread> {
         let mut threads = self.threads.clone();
         if show_archived {
             threads.extend(self.archived.iter().cloned());
@@ -303,7 +324,7 @@ impl ThreadsBlock {
             .into_iter()
             .filter(|thread| thread.pinned)
             .collect();
-        pinned = super::projections::sorted_threads(&pinned, snapshot.preferences.sort);
+        pinned = super::projections::sorted_threads(&pinned, &snapshot.preferences);
         if pinned.is_empty() {
             return None;
         }
@@ -384,7 +405,7 @@ impl ThreadsBlock {
                     .cloned(),
             );
         }
-        standalone = super::projections::sorted_threads(&standalone, snapshot.preferences.sort);
+        standalone = super::projections::sorted_threads(&standalone, &snapshot.preferences);
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Recents)
             || self.focused_section == Some(OrganizationSection::Recents)
             || self.organization.as_ref().is_some_and(|organization| {
@@ -871,7 +892,12 @@ impl ThreadsBlock {
             })
             .flex()
             .flex_col()
-            .child(row);
+            .child(self.render_reorder_row(
+                ReorderItem::Project(project.id.clone()),
+                project.name.clone(),
+                row,
+                cx,
+            ));
         if !collapsed {
             let mut tasks: Vec<_> = self
                 .threads
@@ -889,7 +915,7 @@ impl ThreadsBlock {
                         .cloned(),
                 );
             }
-            tasks = super::projections::sorted_threads(&tasks, snapshot.preferences.sort);
+            tasks = super::projections::sorted_threads(&tasks, &snapshot.preferences);
             let (visible_count, has_hidden) = if let Some(organization) = self.organization.as_mut()
             {
                 organization

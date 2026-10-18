@@ -216,6 +216,7 @@ fn sidebar_organization_owned_file_groups_cross_project_order_and_restart() {
             view: SidebarView::Projects,
             project_view: SidebarProjectView::Timeline,
             sort: SidebarTaskSort::Updated,
+            ..Default::default()
         }),
     );
     let collapsed_timeline = change(&store, Action::CollapseAll);
@@ -243,6 +244,7 @@ fn sidebar_organization_owned_file_groups_cross_project_order_and_restart() {
             view: SidebarView::Groups,
             project_view: SidebarProjectView::Timeline,
             sort: SidebarTaskSort::Created,
+            ..Default::default()
         }),
     );
     change(&store, Action::CollapseAll);
@@ -626,4 +628,259 @@ fn sidebar_organization_owned_file_two_writers_conflict_instead_of_overwriting()
     let winner = outcomes.into_iter().find_map(Result::ok).unwrap();
     assert!(winner.created_thread.is_none());
     assert_eq!(snapshot(&store).unwrap(), winner.snapshot);
+}
+
+fn ordered_ids(
+    state: &SidebarOrganizationSnapshot,
+    project: Option<&str>,
+    pinned: bool,
+) -> Vec<String> {
+    sorted_threads(&state.threads, &state.preferences)
+        .into_iter()
+        .filter(|thread| thread.pinned == pinned && (pinned || thread.project_binding() == project))
+        .map(|thread| thread.id)
+        .collect()
+}
+
+fn ordered_fixture(store: &Store) -> Vec<Thread> {
+    let mut tasks = Vec::new();
+    for project in [Some("p1"), Some("p2"), None] {
+        for i in 0..3 {
+            let thread = if let Some(project) = project {
+                threads::create_thread(store, project, "mock", "confirm").unwrap()
+            } else {
+                threads::create_standalone_thread(store, "mock", "confirm").unwrap()
+            };
+            store
+                .conn()
+                .execute(
+                    "UPDATE threads SET updated_at=?1, created_at=?2 WHERE id=?3",
+                    (300 - i, 100 + i, &thread.id),
+                )
+                .unwrap();
+            tasks.push(thread);
+        }
+    }
+    tasks
+}
+
+#[test]
+fn reorder_threads_persists_each_scope_and_preserves_metadata() {
+    let (dir, store) = open();
+    let tasks = ordered_fixture(&store);
+    for task in &tasks[3..6] {
+        threads::set_thread_pinned(&store, &task.id, true).unwrap();
+    }
+    let group = new_group(&store, "Keep group");
+    change(
+        &store,
+        Action::MoveThread {
+            thread_id: tasks[0].id.clone(),
+            group_id: Some(group),
+            before_id: None,
+        },
+    );
+    let original = snapshot(&store).unwrap();
+    for (start, project, pinned) in [(0, Some("p1"), false), (3, None, true), (6, None, false)] {
+        let before = snapshot(&store).unwrap();
+        let old = ordered_ids(&before, project, pinned);
+        assert_eq!(
+            old,
+            tasks[start..start + 3]
+                .iter()
+                .map(|task| task.id.clone())
+                .collect::<Vec<_>>()
+        );
+        let moved = change(
+            &store,
+            Action::ReorderThread {
+                thread_id: old[2].clone(),
+                before_id: Some(old[0].clone()),
+            },
+        );
+        assert_eq!(
+            ordered_ids(&moved, project, pinned),
+            [old[2].clone(), old[0].clone(), old[1].clone()]
+        );
+        assert_eq!(moved.preferences.sort, SidebarTaskSort::Manual);
+        let moved = change(
+            &store,
+            Action::ReorderThread {
+                thread_id: old[2].clone(),
+                before_id: None,
+            },
+        );
+        assert_eq!(ordered_ids(&moved, project, pinned), old);
+        assert_eq!(moved.threads, original.threads);
+        assert_eq!(moved.memberships, original.memberships);
+        assert_eq!(moved.project_order, original.project_order);
+    }
+    let saved = snapshot(&store).unwrap();
+    drop(store);
+    let reopened = Store::open(dir.path().join("owned.sqlite")).unwrap();
+    assert_eq!(snapshot(&reopened).unwrap(), saved);
+}
+
+#[test]
+fn manual_order_survives_time_updates_modes_and_thread_lifecycle() {
+    let (_dir, store) = open();
+    let tasks = ordered_fixture(&store);
+    let original = snapshot(&store).unwrap();
+    let legacy: SidebarPreferences =
+        serde_json::from_str(r#"{"view":"Projects","project_view":"ByProject","sort":"Created"}"#)
+            .unwrap();
+    assert!(legacy.manual_thread_order.is_empty());
+    let manual = change(
+        &store,
+        Action::ReorderThread {
+            thread_id: tasks[2].id.clone(),
+            before_id: Some(tasks[0].id.clone()),
+        },
+    );
+    let expected = ordered_ids(&manual, Some("p1"), false);
+    assert_eq!(
+        ordered_ids(&manual, Some("p2"), false),
+        ordered_ids(&original, Some("p2"), false)
+    );
+    assert_eq!(
+        ordered_ids(&manual, None, false),
+        ordered_ids(&original, None, false)
+    );
+    store
+        .conn()
+        .execute(
+            "UPDATE threads SET updated_at=10000 WHERE id=?1",
+            [&tasks[1].id],
+        )
+        .unwrap();
+    assert_eq!(
+        ordered_ids(&snapshot(&store).unwrap(), Some("p1"), false),
+        expected
+    );
+    let created = change(&store, Action::SetPreferences(legacy));
+    assert_eq!(
+        ordered_ids(&created, Some("p1"), false),
+        [
+            tasks[2].id.clone(),
+            tasks[1].id.clone(),
+            tasks[0].id.clone()
+        ]
+    );
+    assert_eq!(
+        created.preferences.manual_thread_order,
+        manual.preferences.manual_thread_order
+    );
+    let updated = change(
+        &store,
+        Action::SetPreferences(SidebarPreferences::default()),
+    );
+    assert_eq!(ordered_ids(&updated, Some("p1"), false)[0], tasks[1].id);
+    let restored = change(
+        &store,
+        Action::SetPreferences(SidebarPreferences {
+            sort: SidebarTaskSort::Manual,
+            manual_thread_order: vec!["stale".into()],
+            ..Default::default()
+        }),
+    );
+    assert_eq!(ordered_ids(&restored, Some("p1"), false), expected);
+    assert_eq!(
+        restored.preferences.manual_thread_order,
+        manual.preferences.manual_thread_order
+    );
+    let new = threads::create_thread(&store, "p1", "mock", "confirm").unwrap();
+    let with_new = ordered_ids(&snapshot(&store).unwrap(), Some("p1"), false);
+    assert_eq!(with_new[0], new.id);
+    assert_eq!(with_new[1..], expected);
+    threads::set_thread_status(&store, &tasks[2].id, ThreadStatus::Archived).unwrap();
+    threads::set_thread_status(&store, &tasks[2].id, ThreadStatus::Active).unwrap();
+    threads::set_thread_pinned(&store, &tasks[2].id, true).unwrap();
+    assert_eq!(
+        ordered_ids(&snapshot(&store).unwrap(), None, true),
+        [tasks[2].id.clone()]
+    );
+    threads::set_thread_pinned(&store, &tasks[2].id, false).unwrap();
+    assert_eq!(
+        ordered_ids(&snapshot(&store).unwrap(), Some("p1"), false),
+        with_new
+    );
+    threads::delete_thread(&store, &tasks[0].id).unwrap();
+    let cleaned = change(
+        &store,
+        Action::SetPreferences(SidebarPreferences {
+            sort: SidebarTaskSort::Manual,
+            ..Default::default()
+        }),
+    );
+    assert!(
+        !cleaned
+            .preferences
+            .manual_thread_order
+            .contains(&tasks[0].id)
+    );
+    assert_eq!(
+        ordered_ids(&cleaned, Some("p1"), false),
+        [new.id, tasks[2].id.clone(), tasks[1].id.clone()]
+    );
+    change(
+        &store,
+        Action::SetPreferences(SidebarPreferences {
+            sort: SidebarTaskSort::Created,
+            ..Default::default()
+        }),
+    );
+    let reset = change(
+        &store,
+        Action::ReorderThread {
+            thread_id: tasks[7].id.clone(),
+            before_id: Some(tasks[8].id.clone()),
+        },
+    );
+    assert_eq!(
+        ordered_ids(&reset, Some("p2"), false),
+        [
+            tasks[5].id.clone(),
+            tasks[4].id.clone(),
+            tasks[3].id.clone()
+        ]
+    );
+}
+
+#[test]
+fn reorder_rejects_invalid_regions_conflicts_and_storage_failure_atomically() {
+    let (_dir, store) = open();
+    let tasks = ordered_fixture(&store);
+    threads::set_thread_pinned(&store, &tasks[2].id, true).unwrap();
+    for (source, anchor) in [
+        ("missing", None),
+        (tasks[0].id.as_str(), Some("missing")),
+        (tasks[0].id.as_str(), Some(tasks[0].id.as_str())),
+        (tasks[0].id.as_str(), Some(tasks[2].id.as_str())),
+        (tasks[0].id.as_str(), Some(tasks[3].id.as_str())),
+        (tasks[0].id.as_str(), Some(tasks[6].id.as_str())),
+    ] {
+        rejected_unchanged(
+            &store,
+            Action::ReorderThread {
+                thread_id: source.into(),
+                before_id: anchor.map(str::to_owned),
+            },
+        );
+    }
+    let before = snapshot(&store).unwrap();
+    let action = Action::ReorderThread {
+        thread_id: tasks[0].id.clone(),
+        before_id: None,
+    };
+    assert!(matches!(
+        apply(&store, before.revision + 1, action.clone()),
+        Err(SidebarOrganizationError::Conflict { .. })
+    ));
+    assert_eq!(snapshot(&store).unwrap(), before);
+    store.conn().execute_batch("PRAGMA query_only=ON").unwrap();
+    assert!(matches!(
+        apply(&store, before.revision, action),
+        Err(SidebarOrganizationError::Store(_))
+    ));
+    assert_eq!(snapshot(&store).unwrap(), before);
 }

@@ -1235,7 +1235,16 @@ impl ThreadsBlock {
                 )
             };
         }
-        row.into_any_element()
+        if self.organization.is_some() && !editing_this_row {
+            self.render_reorder_row(
+                organization::ReorderItem::Thread(thread.id.clone()),
+                thread_title(thread),
+                row,
+                cx,
+            )
+        } else {
+            row.into_any_element()
+        }
     }
 
     fn render_row_actions(

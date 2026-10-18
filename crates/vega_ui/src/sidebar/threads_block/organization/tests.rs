@@ -187,14 +187,16 @@ async fn a8_project_menu_detaches_tasks_into_one_standalone_projection(
     );
     click(&f, cx, "project-more-p");
     let menu_items = sessions(&f, cx).read_with(cx, |block, _| block.organization_menu_items());
-    assert_eq!(menu_items.len(), 1, "project menu has one action");
+    assert_eq!(menu_items.len(), 2, "first project can move down");
+    assert_eq!(menu_items[1].0, "下移");
     assert_eq!(menu_items[0].0, "移除项目");
     assert!(matches!(
         &menu_items[0].1,
         MenuCommand::RemoveProject(id) if id == "p"
     ));
     assert!(!absent(&f, cx, "organization-menu-0"));
-    assert!(absent(&f, cx, "organization-menu-1"));
+    assert!(!absent(&f, cx, "organization-menu-1"));
+    assert!(absent(&f, cx, "organization-menu-2"));
     click(&f, cx, "organization-menu-0");
     cx.run_until_parked();
 
@@ -404,7 +406,7 @@ async fn project_tasks_grow_lazily_and_independently(cx: &mut gpui_kit::TestAppC
                 })
                 .cloned()
                 .collect::<Vec<_>>(),
-            preferences.sort,
+            &preferences,
         )
         .into_iter()
         .map(|thread| thread.id)
@@ -572,4 +574,517 @@ async fn project_task_page_growth_stops_when_all_rows_are_loaded(
     let _ = sessions.update(cx, |block, cx| block.grow_lazy_lists(cx));
     assert!(!sessions.read_with(cx, |block, _| block.has_lazy_list_growth()));
     assert!(absent(&f, cx, "project-p-show-more"));
+}
+
+fn create_reorder_threads(
+    store: &Store,
+    project: Option<&str>,
+    count: usize,
+    pinned: bool,
+) -> Vec<String> {
+    (0..count)
+        .map(|index| {
+            let thread = match project {
+                Some(project) => conversation::create_thread(store, project, "model", "confirm"),
+                None => conversation::create_standalone_thread(store, "model", "confirm"),
+            }
+            .unwrap();
+            conversation::set_thread_pinned(store, &thread.id, pinned).unwrap();
+            store
+                .conn()
+                .execute(
+                    "UPDATE threads SET updated_at=?1,created_at=?2 WHERE id=?3",
+                    (9000 - index as i64, 1000 + index as i64, &thread.id),
+                )
+                .unwrap();
+            thread.id
+        })
+        .collect()
+}
+
+fn scope_order(
+    state: &SidebarOrganizationSnapshot,
+    project: Option<&str>,
+    pinned: bool,
+) -> Vec<String> {
+    service::sorted_threads(&state.threads, &state.preferences)
+        .into_iter()
+        .filter(|thread| thread.pinned == pinned && (pinned || thread.project_binding() == project))
+        .map(|thread| thread.id)
+        .collect()
+}
+
+fn start_row_drag(f: &Fixture, cx: &mut gpui_kit::TestAppContext, selector: impl Into<String>) {
+    let row = bounds(f, cx, selector);
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(row.center(), None, Default::default());
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Default::default());
+    visual.simulate_mouse_move(
+        row.center() + point(px(12.), px(0.)),
+        Some(MouseButton::Left),
+        Default::default(),
+    );
+    cx.run_until_parked();
+    assert!(cx.update(|cx| cx.has_active_drag()));
+    assert!(!absent(f, cx, "sidebar-reorder-preview"));
+}
+
+fn move_drag(
+    f: &Fixture,
+    cx: &mut gpui_kit::TestAppContext,
+    position: gpui_kit::Point<gpui_kit::Pixels>,
+) {
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(position, Some(MouseButton::Left), Default::default());
+    cx.run_until_parked();
+}
+
+fn release_drag(
+    f: &Fixture,
+    cx: &mut gpui_kit::TestAppContext,
+    position: gpui_kit::Point<gpui_kit::Pixels>,
+) {
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_up(position, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+    assert!(!cx.update(|cx| cx.has_active_drag()));
+    assert!(sessions(f, cx).read_with(cx, |block, _| {
+        !block.organization.as_ref().unwrap().reorder.gesture
+    }));
+}
+
+fn drop_row(
+    f: &Fixture,
+    cx: &mut gpui_kit::TestAppContext,
+    source: impl Into<String>,
+    target: impl Into<String>,
+    after: bool,
+) {
+    start_row_drag(f, cx, source);
+    let target = bounds(f, cx, target);
+    let position = point(
+        target.center().x,
+        target.top() + target.size.height * if after { 0.75 } else { 0.25 },
+    );
+    move_drag(f, cx, position);
+    release_drag(f, cx, position);
+}
+
+fn assert_reorder_navigation_unchanged(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
+    cx.update(|cx| {
+        assert_eq!(
+            cx.global::<OpenedThread>().0.as_ref().unwrap().id,
+            f.first.id
+        );
+        assert_eq!(cx.global::<SelectedProject>().0.as_deref(), Some("p"));
+        assert!(cx.global::<PendingDeleteConfirm>().0.is_none());
+    });
+    assert_eq!(
+        f.draft.read_with(cx, |draft, _| draft.text().to_string()),
+        "owned unsent draft"
+    );
+    assert!(
+        sessions(f, cx).read_with(cx, |block, _| block.editing.is_none()
+            && block.actions_open.is_none())
+    );
+}
+
+#[gpui_kit::test]
+async fn sidebar_reorder_pointer_moves_projects_and_all_thread_scopes(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture_with_size(cx, 1200., 1400.);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    store.conn().execute("INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES('r','owned-r','r',0,0)", []).unwrap();
+    let pinned = create_reorder_threads(&store, None, 3, true);
+    let recent = create_reorder_threads(&store, None, 3, false);
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    let original = snapshot(&f);
+    let project_tasks = scope_order(&original, Some("p"), false);
+
+    drop_row(&f, cx, "project-header-r", "project-header-p", false);
+    assert_eq!(snapshot(&f).project_order, ["r", "p", "q"]);
+    assert!(bounds(&f, cx, "project-header-r").top() < bounds(&f, cx, "project-header-p").top());
+    drop_row(&f, cx, "project-header-r", "project-header-q", true);
+    assert_eq!(snapshot(&f).project_order, ["p", "q", "r"]);
+
+    for (ids, prefix, project, pinned_scope) in [
+        (project_tasks, "project-thread-row-", Some("p"), false),
+        (pinned, "pinned-thread-row-", None, true),
+        (recent, "standalone-thread-row-", None, false),
+    ] {
+        drop_row(
+            &f,
+            cx,
+            format!("{prefix}{}", ids[2]),
+            format!("{prefix}{}", ids[0]),
+            false,
+        );
+        let mut expected = ids.clone();
+        expected.remove(2);
+        expected.insert(0, ids[2].clone());
+        assert_eq!(scope_order(&snapshot(&f), project, pinned_scope), expected);
+        assert!(
+            bounds(&f, cx, format!("{prefix}{}", ids[2])).top()
+                < bounds(&f, cx, format!("{prefix}{}", ids[0])).top()
+        );
+        drop_row(
+            &f,
+            cx,
+            format!("{prefix}{}", ids[2]),
+            format!(
+                "{prefix}{}",
+                ids.iter().rev().find(|id| **id != ids[2]).unwrap()
+            ),
+            true,
+        );
+        expected.remove(0);
+        expected.push(ids[2].clone());
+        assert_eq!(scope_order(&snapshot(&f), project, pinned_scope), expected);
+        assert_reorder_navigation_unchanged(&f, cx);
+    }
+    let saved = snapshot(&f);
+    let mut saved_threads = saved.threads.clone();
+    let mut original_threads = original.threads.clone();
+    saved_threads.sort_by(|a, b| a.id.cmp(&b.id));
+    original_threads.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(saved_threads, original_threads);
+    assert_eq!(saved.collapsed, original.collapsed);
+    assert_eq!(saved.memberships, original.memberships);
+    assert_eq!(saved.preferences.sort, SidebarTaskSort::Manual);
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    assert_eq!(snapshot(&f), saved);
+}
+
+#[gpui_kit::test]
+async fn sidebar_reorder_rejects_cross_scope_blank_and_cancel_without_clicks(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture_with_size(cx, 1200., 1400.);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let pinned = create_reorder_threads(&store, None, 7, true);
+    let recent = create_reorder_threads(&store, None, 2, false);
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    let before = snapshot(&f);
+    let source = format!("project-thread-row-{}", f.first.id);
+    for target in [
+        source.clone(),
+        format!("project-thread-row-{}", f.other.id),
+        format!("pinned-thread-row-{}", pinned[0]),
+        format!("standalone-thread-row-{}", recent[0]),
+        "project-header-q".into(),
+        "organization-header-projects".into(),
+    ] {
+        drop_row(&f, cx, source.clone(), target, false);
+        assert_eq!(snapshot(&f), before);
+        assert_reorder_navigation_unchanged(&f, cx);
+    }
+    start_row_drag(&f, cx, &source);
+    move_drag(&f, cx, point(px(1000.), px(20.)));
+    release_drag(&f, cx, point(px(1000.), px(20.)));
+    assert_eq!(snapshot(&f), before);
+
+    start_row_drag(&f, cx, &source);
+    let target = bounds(&f, cx, format!("project-thread-row-{}", f.other.id)).center();
+    move_drag(&f, cx, target);
+    cx.update(|cx| cx.set_global(SettingsOpen(true)));
+    cx.simulate_keystrokes(f.window.into(), "escape");
+    cx.run_until_parked();
+    assert!(!cx.update(|cx| cx.has_active_drag()));
+    release_drag(&f, cx, target);
+    assert!(cx.update(|cx| cx.global::<SettingsOpen>().0));
+    assert_eq!(snapshot(&f), before);
+    assert_reorder_navigation_unchanged(&f, cx);
+
+    start_row_drag(&f, cx, format!("pinned-thread-row-{}", pinned[0]));
+    let project_row = bounds(&f, cx, "project-header-p");
+    let hidden_row = bounds(&f, cx, format!("pinned-thread-row-{}", pinned[6]));
+    assert!(hidden_row.bottom() > bounds(&f, cx, "organization-pinned-scroll").bottom());
+    move_drag(&f, cx, project_row.center());
+    release_drag(&f, cx, project_row.center());
+    assert_eq!(
+        snapshot(&f),
+        before,
+        "clipped pinned rows cannot receive a drop over projects"
+    );
+    assert_reorder_navigation_unchanged(&f, cx);
+    cx.update(|cx| cx.set_global(SettingsOpen(false)));
+    click(&f, cx, format!("project-thread-row-{}", f.other.id));
+    assert_eq!(
+        cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone()),
+        f.other.id
+    );
+}
+
+#[gpui_kit::test]
+async fn sidebar_reorder_keyboard_menus_restore_manual_order_and_keep_endpoints_valid(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let original = snapshot(&f);
+    let ids = scope_order(&original, Some("p"), false);
+    let source = ids.last().unwrap().clone();
+    let actions = sessions(&f, cx).read_with(cx, |block, _| block.organization_actions(&source));
+    assert_eq!(
+        actions
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>(),
+        ["上移"]
+    );
+    let focus =
+        sessions(&f, cx).read_with(cx, |block, _| block.thread_action_focuses[&source].clone());
+    f.window
+        .update(cx, |_, window, cx| focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_keystrokes(f.window.into(), "enter up enter");
+    cx.run_until_parked();
+    let mut expected = ids.clone();
+    let end = expected.len() - 1;
+    expected.swap(end - 1, end);
+    assert_eq!(scope_order(&snapshot(&f), Some("p"), false), expected);
+    let manual = snapshot(&f).preferences.manual_thread_order;
+    for (keys, sort) in [
+        ("enter", SidebarTaskSort::Updated),
+        ("down enter", SidebarTaskSort::Created),
+        ("down down enter", SidebarTaskSort::Manual),
+    ] {
+        click(&f, cx, "organization-session-sort");
+        cx.simulate_keystrokes(f.window.into(), keys);
+        cx.run_until_parked();
+        assert_eq!(snapshot(&f).preferences.sort, sort);
+        assert_eq!(snapshot(&f).preferences.manual_thread_order, manual);
+    }
+    assert_eq!(scope_order(&snapshot(&f), Some("p"), false), expected);
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.organization_actions(&expected[0]))[0].0,
+        "下移"
+    );
+    click(&f, cx, "project-more-q");
+    cx.simulate_keystrokes(f.window.into(), "down enter");
+    cx.run_until_parked();
+    assert_eq!(snapshot(&f).project_order, ["q", "p"]);
+    click(&f, cx, "project-more-q");
+    cx.simulate_keystrokes(f.window.into(), "escape");
+    cx.run_until_parked();
+    assert!(absent(&f, cx, "organization-menu"));
+    assert_reorder_navigation_unchanged(&f, cx);
+}
+
+#[gpui_kit::test]
+async fn sidebar_reorder_after_visible_boundary_preserves_unrendered_tasks(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let extra = create_reorder_threads(&store, Some("p"), 8, false);
+    conversation::set_thread_status(&store, &extra[0], ThreadStatus::Archived).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    let before = snapshot(&f);
+    let ids = scope_order(&before, Some("p"), false);
+    assert_eq!(ids.len(), 13);
+    assert!(absent(&f, cx, format!("project-thread-row-{}", ids[6])));
+    drop_row(
+        &f,
+        cx,
+        format!("project-thread-row-{}", ids[0]),
+        format!("project-thread-row-{}", ids[4]),
+        true,
+    );
+    let mut expected = ids.clone();
+    expected.remove(0);
+    expected.insert(4, ids[0].clone());
+    let after = snapshot(&f);
+    assert_eq!(scope_order(&after, Some("p"), false), expected);
+    assert_eq!(after.threads, before.threads);
+    assert_eq!(
+        after.preferences.manual_thread_order.len(),
+        after.threads.len()
+    );
+    assert!(absent(&f, cx, format!("project-thread-row-{}", ids[6])));
+    click(&f, cx, "project-p-show-more");
+    assert!(!absent(&f, cx, format!("project-thread-row-{}", ids[6])));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block
+            .organization
+            .as_ref()
+            .unwrap()
+            .project_threads_visible["p"]),
+        10
+    );
+    assert!(
+        bounds(&f, cx, format!("project-thread-row-{}", ids[0])).top()
+            < bounds(&f, cx, format!("project-thread-row-{}", ids[6])).top()
+    );
+    assert_reorder_navigation_unchanged(&f, cx);
+}
+
+fn has_reorder_line(
+    f: &Fixture,
+    cx: &mut gpui_kit::TestAppContext,
+    target: gpui_kit::Bounds<gpui_kit::Pixels>,
+    after: bool,
+) -> bool {
+    f.window
+        .update(cx, |_, window, cx| {
+            let scale = window.scale_factor();
+            let color: gpui_kit::Hsla = theme(cx).colors.accent.into();
+            let top = if after {
+                target.bottom() - px(Layout::SIDEBAR_REORDER_LINE_HEIGHT)
+            } else {
+                target.top()
+            };
+            window.painted_quads().iter().any(|quad| {
+                (quad.bounds.top().as_f32() / scale - f32::from(top)).abs() < 0.2
+                    && (quad.bounds.size.height.as_f32() / scale
+                        - Layout::SIDEBAR_REORDER_LINE_HEIGHT)
+                        .abs()
+                        < 0.2
+                    && (quad.bounds.size.width.as_f32() / scale - f32::from(target.size.width))
+                        .abs()
+                        < 0.2
+                    && quad.background.as_solid() == Some(color)
+            })
+        })
+        .unwrap()
+}
+
+#[gpui_kit::test]
+async fn sidebar_reorder_feedback_and_trailing_buttons_preserve_row_geometry(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture_with_size(cx, 960., 900.);
+    for dark in [false, true] {
+        cx.update(|cx| {
+            cx.set_global(if dark {
+                vega_theme::Theme::dark()
+            } else {
+                vega_theme::Theme::light()
+            })
+        });
+        cx.run_until_parked();
+        let before = snapshot(&f);
+        let ids = scope_order(&before, Some("p"), false);
+        let source = ids.last().unwrap();
+        let target_id = &ids[0];
+        let selector = format!("project-thread-row-{target_id}");
+        let original_geometry = bounds(&f, cx, &selector);
+        start_row_drag(&f, cx, format!("project-thread-row-{source}"));
+        let target = bounds(&f, cx, &selector);
+        move_drag(
+            &f,
+            cx,
+            point(target.center().x, target.top() + target.size.height * 0.25),
+        );
+        assert!(has_reorder_line(&f, cx, target, false));
+        assert_eq!(bounds(&f, cx, &selector), original_geometry);
+        let invalid_target = bounds(&f, cx, format!("project-thread-row-{}", f.other.id));
+        move_drag(
+            &f,
+            cx,
+            point(
+                invalid_target.center().x,
+                invalid_target.top() + invalid_target.size.height * 0.25,
+            ),
+        );
+        assert!(!has_reorder_line(&f, cx, invalid_target, false));
+        assert!(!has_reorder_line(&f, cx, target, false));
+        move_drag(
+            &f,
+            cx,
+            point(target.center().x, target.top() + target.size.height * 0.75),
+        );
+        assert!(has_reorder_line(&f, cx, target, true));
+        assert!(!has_reorder_line(&f, cx, target, false));
+        let button = bounds(
+            &f,
+            cx,
+            format!(
+                "project-thread-{}-{target_id}",
+                if dark { "archive" } else { "pin" }
+            ),
+        );
+        move_drag(&f, cx, button.center());
+        release_drag(&f, cx, button.center());
+        let mut expected = ids.clone();
+        expected.pop();
+        expected.insert(1, source.clone());
+        let after = snapshot(&f);
+        assert_eq!(scope_order(&after, Some("p"), false), expected);
+        assert_eq!(after.threads, before.threads);
+        assert_eq!(
+            bounds(&f, cx, &selector).size.height,
+            original_geometry.size.height
+        );
+        let settled_geometry = bounds(&f, cx, &selector);
+        assert!(!has_reorder_line(&f, cx, settled_geometry, true));
+        assert_reorder_navigation_unchanged(&f, cx);
+    }
+}
+
+#[gpui_kit::test]
+async fn sidebar_reorder_save_failures_preserve_committed_order_and_allow_retry(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let original = snapshot(&f);
+    let ids = scope_order(&original, Some("p"), false);
+    let source = format!("project-thread-row-{}", ids.last().unwrap());
+    let target = format!("project-thread-row-{}", ids[0]);
+    sessions(&f, cx).update(cx, |block, cx| {
+        block.organization.as_mut().unwrap().pending = true;
+        cx.notify();
+    });
+    drop_row(&f, cx, &source, &target, false);
+    assert_eq!(snapshot(&f), original);
+    assert!(sessions(&f, cx).read_with(cx, |block, _| {
+        block.error.as_ref().unwrap().contains("正在保存")
+    }));
+    sessions(&f, cx).update(cx, |block, cx| {
+        let org = block.organization.as_mut().unwrap();
+        org.pending = false;
+        org.refresh_queued = false;
+        cx.notify();
+    });
+    store
+        .conn()
+        .execute(
+            "UPDATE sidebar_organization SET revision=revision+1 WHERE singleton=1",
+            [],
+        )
+        .unwrap();
+    let conflict = snapshot(&f);
+    drop_row(&f, cx, &source, &target, false);
+    assert_eq!(snapshot(&f), conflict);
+    assert!(sessions(&f, cx).read_with(cx, |block, _| {
+        block
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("organization changed")
+    }));
+    store.conn().execute_batch("CREATE TRIGGER owned_reorder_failure BEFORE UPDATE ON sidebar_organization BEGIN SELECT RAISE(FAIL, 'owned save failure'); END;").unwrap();
+    drop_row(&f, cx, &source, &target, false);
+    assert_eq!(snapshot(&f), conflict);
+    assert!(sessions(&f, cx).read_with(cx, |block, _| {
+        block.error.as_ref().unwrap().contains("owned save failure")
+    }));
+    assert!(bounds(&f, cx, &target).top() < bounds(&f, cx, &source).top());
+    store
+        .conn()
+        .execute_batch("DROP TRIGGER owned_reorder_failure;")
+        .unwrap();
+    drop_row(&f, cx, &source, &target, false);
+    let mut expected = ids.clone();
+    expected.pop();
+    expected.insert(0, ids.last().unwrap().clone());
+    assert_eq!(scope_order(&snapshot(&f), Some("p"), false), expected);
+    assert!(sessions(&f, cx).read_with(cx, |block, _| block.error.is_none()));
+    assert_reorder_navigation_unchanged(&f, cx);
 }

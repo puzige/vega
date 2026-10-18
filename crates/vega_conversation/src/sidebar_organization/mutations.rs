@@ -27,6 +27,13 @@ pub(super) fn apply_in_transaction(
         });
     }
     let created_thread = mutate(store, &mut state, action)?;
+    let existing: std::collections::HashSet<_> =
+        state.threads.iter().map(|t| t.id.as_str()).collect();
+    let mut seen = std::collections::HashSet::new();
+    state
+        .preferences
+        .manual_thread_order
+        .retain(|id| existing.contains(id.as_str()) && seen.insert(id.clone()));
     state.revision = state
         .revision
         .checked_add(1)
@@ -177,6 +184,12 @@ fn mutate(
             move_before(&mut ids, &project_id, before_id.as_deref())?;
             state.project_order = ids;
         }
+        ReorderThread {
+            thread_id,
+            before_id,
+        } => {
+            reorder_thread(state, &thread_id, before_id.as_deref())?;
+        }
         MoveThread {
             thread_id,
             group_id,
@@ -190,7 +203,10 @@ fn mutate(
                 .collapsed
                 .retain(|target| *target != SidebarCollapseTarget::Project(project_id.clone()));
         }
-        SetPreferences(preferences) => state.preferences = preferences,
+        SetPreferences(mut preferences) => {
+            preferences.manual_thread_order = state.preferences.manual_thread_order.clone();
+            state.preferences = preferences;
+        }
         SetCollapsed { target, collapsed } => {
             validate_collapse(state, &target)?;
             state.collapsed.retain(|t| *t != target);
@@ -304,5 +320,37 @@ fn move_thread(
             );
         }
     }
+    Ok(())
+}
+
+fn reorder_thread(
+    state: &mut SidebarOrganizationSnapshot,
+    thread_id: &str,
+    before_id: Option<&str>,
+) -> Result<(), SidebarOrganizationError> {
+    let source = state
+        .threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .ok_or_else(|| invalid("会话已不存在，请刷新后重试"))?;
+    if let Some(before_id) = before_id {
+        let anchor = state
+            .threads
+            .iter()
+            .find(|thread| thread.id == before_id)
+            .ok_or_else(|| invalid("目标会话已不存在，请刷新后重试"))?;
+        if source.pinned != anchor.pinned
+            || (!source.pinned && source.project_binding() != anchor.project_binding())
+        {
+            return Err(invalid("只能在同一区域内调整顺序"));
+        }
+    }
+    let mut order = sorted_threads(&state.threads, &state.preferences)
+        .into_iter()
+        .map(|thread| thread.id)
+        .collect();
+    move_before(&mut order, thread_id, before_id)?;
+    state.preferences.manual_thread_order = order;
+    state.preferences.sort = SidebarTaskSort::Manual;
     Ok(())
 }

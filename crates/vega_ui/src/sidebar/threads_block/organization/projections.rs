@@ -140,7 +140,7 @@ impl ThreadsBlock {
             cx,
         ));
         if !snapshot.collapsed.contains(&target) {
-            for thread in sorted_threads(&self.threads, preferences.sort)
+            for thread in sorted_threads(&self.threads, &preferences)
                 .into_iter()
                 .filter(|t| !snapshot.memberships.iter().any(|m| m.thread_id == t.id))
             {
@@ -352,7 +352,7 @@ impl ThreadsBlock {
                 ));
             body = body.child(header);
             if !collapsed {
-                let rows: Vec<_> = sorted_threads(&self.threads, preferences.sort)
+                let rows: Vec<_> = sorted_threads(&self.threads, &preferences)
                     .into_iter()
                     .filter(|t| t.project_id == project.id)
                     .collect();
@@ -379,7 +379,7 @@ impl ThreadsBlock {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let rows = sorted_threads(&self.threads, preferences.sort);
+        let rows = sorted_threads(&self.threads, &preferences);
         if rows.is_empty() {
             body = body.child(self.section_label("暂无活跃任务", cx));
         }
@@ -628,19 +628,15 @@ impl ThreadsBlock {
 }
 fn task_time(thread: &Thread, sort: SidebarTaskSort) -> i64 {
     match sort {
-        SidebarTaskSort::Updated => thread.updated_at,
+        SidebarTaskSort::Updated | SidebarTaskSort::Manual => thread.updated_at,
         SidebarTaskSort::Created => thread.created_at,
     }
 }
-pub(super) fn sorted_threads(threads: &[Thread], sort: SidebarTaskSort) -> Vec<Thread> {
-    let mut threads = threads.to_vec();
-    threads.sort_by(|a, b| {
-        b.pinned
-            .cmp(&a.pinned)
-            .then_with(|| task_time(b, sort).cmp(&task_time(a, sort)))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    threads
+pub(super) fn sorted_threads(
+    threads: &[Thread],
+    preferences: &vega_conversation::types::SidebarPreferences,
+) -> Vec<Thread> {
+    service::sorted_threads(threads, preferences)
 }
 fn group_color(color: SidebarGroupColor, colors: &ThemeColors) -> gpui_kit::Rgba {
     colors.sidebar_group_colors[match color {

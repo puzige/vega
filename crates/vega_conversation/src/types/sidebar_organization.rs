@@ -22,6 +22,7 @@ pub enum SidebarTaskSort {
     #[default]
     Updated,
     Created,
+    Manual,
 }
 /// Semantic group color; UI maps these to theme tokens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,8 @@ pub struct SidebarPreferences {
     pub view: SidebarView,
     pub project_view: SidebarProjectView,
     pub sort: SidebarTaskSort,
+    #[serde(default)]
+    pub manual_thread_order: Vec<String>,
 }
 /// Local-calendar timeline section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +122,10 @@ pub enum SidebarOrganizationAction {
     },
     MoveProject {
         project_id: String,
+        before_id: Option<String>,
+    },
+    ReorderThread {
+        thread_id: String,
         before_id: Option<String>,
     },
     MoveThread {

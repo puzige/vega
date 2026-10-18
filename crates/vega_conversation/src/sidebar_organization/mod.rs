@@ -76,6 +76,8 @@ fn read_snapshot(store: &Store) -> Result<SidebarOrganizationSnapshot, SidebarOr
     })
 }
 
+mod ordering;
+pub use ordering::sorted_threads;
 mod mutations;
 pub use mutations::apply;
 mod calendar;
