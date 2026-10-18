@@ -4,6 +4,29 @@ pub const SUBAGENT_CANCELLED_OUTPUT: &str = "Subagent operation cancelled.";
 
 pub const SUBAGENT_RESULT_BYTES: usize = 16 * 1024;
 
+const SUBAGENT_UNSAFE_RESULT: &str =
+    "Tool error: tool 'subagent' failed: result could not be safely retained";
+
+pub(super) fn validate_redacted_subagent_result(
+    call: &RuntimeToolCall,
+    result: &mut RuntimeToolResult,
+) {
+    if is_subagent_tool(&call.name)
+        && ((result.status == RuntimeToolStatus::Failed
+            && result.output == "Tool error: credential safety check unavailable")
+            || (result.status == RuntimeToolStatus::Success
+                && (result.output.len() > 128 * 1024
+                    || !serde_json::from_str::<Value>(&result.output)
+                        .is_ok_and(|value| value.is_object()))))
+    {
+        result.status = RuntimeToolStatus::Failed;
+        result.output = SUBAGENT_UNSAFE_RESULT.into();
+        result.truncated = None;
+        result.exit_code = None;
+        result.duration_ms = None;
+    }
+}
+
 pub trait RuntimeSubagentHook: Send + Sync {
     fn call(
         &self,
@@ -92,6 +115,87 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m19_redacted_results_fail_closed_only_for_unsafe_subagent_terminals() {
+        let call = RuntimeToolCall {
+            id: "result-call".into(),
+            name: "list_agents".into(),
+            input_json: "{}".into(),
+        };
+        let source = r#"{"evidence":"synthetic-private"}"#;
+        let known = r#""evidence":"synthetic-private""#.to_string();
+        let config = RuntimeToolConfig::default()
+            .with_credential_reader(Arc::new(move || Ok(vec![known.clone()])));
+        let broken = config.redact_tool_output(source).unwrap();
+        assert!(!broken.contains("synthetic-private"));
+        assert!(serde_json::from_str::<Value>(&broken).is_err());
+        for (status, output) in [
+            (RuntimeToolStatus::Success, broken),
+            (RuntimeToolStatus::Success, "[]".into()),
+            (
+                RuntimeToolStatus::Success,
+                serde_json::json!({"agents":"x".repeat(128 * 1024)}).to_string(),
+            ),
+            (
+                RuntimeToolStatus::Failed,
+                "Tool error: credential safety check unavailable".into(),
+            ),
+        ] {
+            let mut result = terminal_result(&call, output, status, Some(validation_audit()));
+            result.reused = true;
+            result.truncated = Some(false);
+            result.exit_code = Some(0);
+            result.duration_ms = Some(1);
+            let approval = result.approval.clone();
+            validate_redacted_subagent_result(&call, &mut result);
+            assert_eq!(result.call_id, call.id);
+            assert!(result.reused);
+            assert_eq!(result.approval, approval);
+            assert!(result.remember_rule.is_none());
+            assert_eq!(result.status, RuntimeToolStatus::Failed);
+            assert_eq!(result.output, SUBAGENT_UNSAFE_RESULT);
+            assert!(result.truncated.is_none());
+            assert!(result.exit_code.is_none());
+            assert!(result.duration_ms.is_none());
+        }
+        for (name, status, output) in [
+            (
+                "read",
+                RuntimeToolStatus::Failed,
+                "Tool error: credential safety check unavailable",
+            ),
+            (
+                "list_agents",
+                RuntimeToolStatus::Cancelled,
+                SUBAGENT_CANCELLED_OUTPUT,
+            ),
+            (
+                "list_agents",
+                RuntimeToolStatus::Rejected,
+                "Tool error: denied: unavailable tool",
+            ),
+            ("list_agents", RuntimeToolStatus::Success, "{\"agents\":[]}"),
+            (
+                "list_agents",
+                RuntimeToolStatus::Failed,
+                "Tool error: tool 'subagent' failed: synthetic failure",
+            ),
+        ] {
+            let call = RuntimeToolCall {
+                name: name.into(),
+                ..call.clone()
+            };
+            let mut result = terminal_result(&call, output.into(), status, None);
+            result.reused = true;
+            result.truncated = Some(false);
+            validate_redacted_subagent_result(&call, &mut result);
+            assert_eq!(result.status, status);
+            assert_eq!(result.output, output);
+            assert!(result.reused);
+            assert_eq!(result.truncated, Some(false));
+        }
+    }
 
     struct NoopHook;
     impl RuntimeSubagentHook for NoopHook {

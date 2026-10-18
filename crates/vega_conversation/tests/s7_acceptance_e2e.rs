@@ -568,8 +568,8 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
     assert_eq!(
-        user_version, 26,
-        "all twenty-six ordered migrations including automation are applied"
+        user_version, 27,
+        "all twenty-seven ordered migrations including delegation are applied"
     );
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
@@ -595,6 +595,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "credential_continuations",
             "credential_privacy_epoch",
             "credential_privacy_exceptions",
+            "delegated_runs",
             "image_attachments",
             "mcp_secret_cleanup",
             "mcp_servers",
@@ -620,7 +621,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "tool_call_rounds",
             "tool_calls",
         ],
-        "exactly the thirty-two authorized tables"
+        "exactly the thirty-nine authorized tables"
     );
     Ok(())
 }

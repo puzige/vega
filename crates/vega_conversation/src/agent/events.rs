@@ -1089,6 +1089,12 @@ pub(crate) fn required_tool_state(
 pub(crate) fn validate_runtime_proposal(
     call: &vega_runtime::RuntimeToolCall,
 ) -> Result<(), VegaError> {
+    if vega_runtime::is_subagent_tool(&call.name) {
+        return (call.input_json == "{}"
+            || vega_runtime::valid_subagent_input(&call.name, &call.input_json))
+        .then_some(())
+        .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if matches!(
         call.name.as_str(),
         "get_goal" | "update_goal" | "schedule_wakeup"
@@ -1260,6 +1266,16 @@ pub(crate) fn validate_runtime_approval_event(
     shared
         .to_json()
         .map_err(|_| safe_audit_error(&state.tool))?;
+    if vega_runtime::is_subagent_tool(&state.tool)
+        && (!vega_runtime::valid_subagent_input(&state.tool, &state.input_json)
+            || shared.decision != Approval::Once
+            || shared.source != ApprovalSource::ReadonlyTool
+            || shared.note.is_some()
+            || shared.danger.is_some()
+            || remember.is_some())
+    {
+        return Err(safe_audit_error(&state.tool));
+    }
     if matches!(
         state.tool.as_str(),
         "get_goal" | "update_goal" | "schedule_wakeup"

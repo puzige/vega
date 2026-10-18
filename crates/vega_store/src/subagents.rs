@@ -51,8 +51,17 @@ pub fn find(conn: &Connection, child: &str) -> rusqlite::Result<Option<Delegatio
     .optional()
 }
 
+pub(crate) fn privacy_scope(
+    conn: &Connection,
+    thread: &str,
+) -> rusqlite::Result<Vec<DelegationRow>> {
+    let mut query = conn.prepare(&format!("SELECT {COLUMNS} FROM delegated_runs WHERE parent_thread_id=?1 OR child_thread_id=?1 ORDER BY child_thread_id"))?;
+    query.query_map([thread], row)?.collect()
+}
+
 pub fn active_count(conn: &Connection, parent: &str, run: &str) -> rusqlite::Result<usize> {
-    conn.query_row("SELECT COUNT(*) FROM delegated_runs WHERE parent_thread_id=?1 AND parent_message_id=?2 AND state IN ('running','cancelling')", params![parent,run], |row| row.get(0))
+    let count:i64 = conn.query_row("SELECT COUNT(*) FROM delegated_runs WHERE parent_thread_id=?1 AND parent_message_id=?2 AND state IN ('running','cancelling')", params![parent,run], |row| row.get(0))?;
+    usize::try_from(count).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, count))
 }
 
 pub fn insert(conn: &Connection, record: &DelegationRow) -> rusqlite::Result<()> {

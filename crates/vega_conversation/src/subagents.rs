@@ -23,12 +23,12 @@ impl LiveDelegation {
 
 impl Drop for LiveDelegation {
     fn drop(&mut self) {
-        if let Ok(mut live) = LIVE.get_or_init(Default::default).lock() {
-            if let Some(count) = live.get_mut(&self.0) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    live.remove(&self.0);
-                }
+        if let Ok(mut live) = LIVE.get_or_init(Default::default).lock()
+            && let Some(count) = live.get_mut(&self.0)
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                live.remove(&self.0);
             }
         }
     }
@@ -191,6 +191,7 @@ mod tests {
     fn m14_m15_deleting_parent_preserves_children_and_guard_covers_later_child_run() {
         let (store, _temp) = fixture();
         let live = LiveDelegation::new(store.database_path().unwrap(), "a").unwrap();
+        assert!(crate::threads::delete_thread(&store, "a").is_err());
         assert!(crate::threads::delete_thread(&store, "p").is_err());
         drop(live);
         crate::threads::delete_thread(&store, "p").unwrap();
@@ -216,6 +217,22 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|thread| thread.id == "a")
+        );
+    }
+
+    #[test]
+    fn m19_running_root_without_children_retains_existing_delete_semantics() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("root-delete.db")).unwrap();
+        store.migrate().unwrap();
+        let root = crate::threads::create_standalone_thread(&store, "mock", "confirm").unwrap();
+        let _live = LiveDelegation::new(store.database_path().unwrap(), &root.id).unwrap();
+        assert!(is_live(&store, &root.id));
+        crate::threads::delete_thread(&store, &root.id).unwrap();
+        assert!(
+            vega_store::threads::find(store.conn(), &root.id)
+                .unwrap()
+                .is_none()
         );
     }
 

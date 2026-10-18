@@ -1,6 +1,6 @@
 # Issue 448 · Native parallel subagents
 
-Status: SPEC FROZEN v1 · 2026-10-18 (Asia/Shanghai).
+Status: SPEC FROZEN v1.1 · 2026-10-18 (Asia/Shanghai).
 Feature: A3-14. Baseline: `6382c908`. Branch: `feat/448-multi-agent`.
 
 ## User decisions and scope
@@ -47,7 +47,7 @@ window/controller paths, not only label helpers.
 | M16 | Provider repeats a completed spawn call / storage or worker admission fails | No duplicate child/provider work; reservation rolled back or durable truthful failed state retained | Idempotency + fault injection |
 | M17 | Parent and children report distinct usage/cost; goal budget exists | Child usage charged once, participates in root goal budget; parent context ring/replay accounting uses parent input only; missing usage stays unknown | Accounting |
 | M18 | Open parent with child rows in light/dark and narrow layout | Compact real names/statuses, working open/stop controls, readable failure/result; keyboard paths and stable scroll/selection | GPUI |
-| M19 | Existing Native single task, parallel root conversations, pending messages and goal/loop | Behavior and safety regressions remain intact; ACP implementation unchanged | Existing CI suites |
+| M19 | Existing Native single task, parallel roots, pending messages, goal/loop and privacy cleanup | Existing behavior remains intact; delegation metadata joins privacy review, stale-preview fencing and atomic cleanup; ACP implementation unchanged | Store + existing CI suites |
 | M20 | User installs merged build and delegates two independent tasks | Full real parent/child navigation, approvals, follow-up, stop and final aggregation | User manual, pending |
 
 ## Behavioral contract
@@ -126,6 +126,17 @@ capability admission. Parent credential-continuation exceptions and completed
 approval receipts are not transferable to children; ordinary credential
 redaction still applies at each child provider/tool/persistence boundary.
 
+Delegation metadata participates in the existing privacy review, source
+fingerprint and explicit cleanup. Reviewing either its parent or child includes
+the stored name, task and result. Cleanup removes matching sensitive text
+atomically without changing identities, run state or unrelated threads. A
+changed delegation invalidates a stale cleanup preview. Metadata bounds and name
+uniqueness remain valid after redaction, including expanded replacements and
+colliding redacted names. User-requested privacy redaction is the content-cleanup
+exception to preserving an original delegated result; it starts no provider work
+and transfers no ancestor exception. Full transcripts retain their existing
+per-thread cleanup scope.
+
 Route child approvals and user questions through the existing parent-visible
 queues, with the child's actual name and a unique request/run binding. Responses
 must resolve only the exact child. Requests cannot disappear into a collapsed
@@ -195,3 +206,10 @@ user configuration/data or installed applications.
 
 Material implementation conflicts require main-agent spec revision before code.
 No local tests, added dependencies, code comments or production unwrap/expect.
+
+## Review clarification · v1.1
+
+2026-10-18: include the new delegation text copies in existing privacy review and
+permanent cleanup so cleaning a conversation cannot leave its delegation
+metadata copy behind. This preserves existing privacy behavior for the Native
+feature; backend scope and dispatch/continuation behavior are unchanged.

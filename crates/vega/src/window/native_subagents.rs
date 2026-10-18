@@ -1,6 +1,8 @@
 use super::*;
 use crate::native_subagents::NativeSubagentUpdate;
-use vega_conversation::types::{SubagentOpenRequested, SubagentState, SubagentStopRequested};
+use vega_conversation::types::{
+    SubagentAdmission, SubagentOpenRequested, SubagentState, SubagentStopRequested,
+};
 
 impl VegaWindow {
     pub(crate) fn apply_subagent_update(
@@ -35,30 +37,37 @@ impl VegaWindow {
                     let _ = reply.send(Err(vega_runtime::VegaError::Cancelled));
                     return;
                 }
-                let thread_id = admission.thread.id.clone();
-                let view = cx.new(|cx| {
+                let SubagentAdmission {
+                    thread,
+                    snapshot,
+                    cancel,
+                    permission_queue,
+                    user_questions,
+                    task,
+                    queue_generation,
+                } = *admission;
+                let thread_id = thread.id.clone();
+                let view = cx.new(move |cx| {
                     ConversationStream::new_with_request_queues(
-                        admission.thread,
-                        admission.permission_queue,
-                        admission.user_questions,
+                        thread,
+                        permission_queue,
+                        user_questions,
                         cx,
                     )
                 });
-                let Some((generation, _)) = self.agent_controller.begin(
-                    thread_id.clone(),
-                    view.clone(),
-                    Some(admission.task),
-                    None,
-                ) else {
-                    admission.cancel.cancel();
+                let Some((generation, _)) =
+                    self.agent_controller
+                        .begin(thread_id.clone(), view.clone(), Some(task), None)
+                else {
+                    cancel.cancel();
                     let _ = reply.send(Err(vega_runtime::VegaError::Cancelled));
                     return;
                 };
                 if let Some(active) = self.agent_controller.active.get_mut(&thread_id) {
-                    active.cancel = admission.cancel.clone();
-                    active.delegated_message_id = Some(admission.snapshot.message_id.clone());
+                    active.cancel = cancel.clone();
+                    active.delegated_message_id = Some(snapshot.message_id.clone());
                     active.delegated_parent_thread = Some(parent_id.into());
-                    active.queue_generation = admission.queue_generation;
+                    active.queue_generation = queue_generation;
                 }
                 self.agent_controller
                     .delegated_unbound
@@ -73,26 +82,22 @@ impl VegaWindow {
                         global.runs.insert(
                             thread_id.clone(),
                             crate::automation_controller::AutomationRunOwner {
+                                started_at: None,
                                 generation,
                                 owner: Arc::downgrade(&self.window_alive),
                                 claim: None,
-                                cancel: admission.cancel.clone(),
+                                cancel: cancel.clone(),
                             },
                         );
                     },
                 );
                 view.update(cx, ConversationStream::begin_composer_run);
                 parent_stream.update(cx, |parent, cx| {
-                    parent.apply_subagent(admission.snapshot.clone(), cx);
-                    parent.bind_subagent_stream(
-                        &admission.snapshot.parent_message_id,
-                        &thread_id,
-                        view,
-                        cx,
-                    );
+                    parent.apply_subagent(snapshot.clone(), cx);
+                    parent.bind_subagent_stream(&snapshot.parent_message_id, &thread_id, view, cx);
                 });
                 if reply.send(Ok(())).is_err() {
-                    admission.cancel.cancel();
+                    cancel.cancel();
                 }
             }
             NativeSubagentUpdate::Event {

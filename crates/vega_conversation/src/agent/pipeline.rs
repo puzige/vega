@@ -509,6 +509,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     if let Some(delay) = config.preparation_delay {
         std::thread::sleep(delay);
     }
+    if config.delegated && (!uses_existing_user || config.credential_continuation_id.is_some()) {
+        return Err(ConversationError::CorruptRow(
+            "delegated instruction identity mismatch".into(),
+        ));
+    }
 
     let store = Store::open(&database_path).map_err(runtime_store_error)?;
     #[cfg(test)]
@@ -725,7 +730,50 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         .transpose()?;
     let now = now_ms();
     let title_eligible_payload = !user_content.trim().is_empty() || !images.is_empty();
-    if uses_existing_user {
+    if config.delegated {
+        let mismatch =
+            || ConversationError::CorruptRow("delegated instruction identity mismatch".into());
+        let delegation = vega_store::subagents::find(&transaction, &thread_id)
+            .map_err(runtime_store_error)?
+            .ok_or_else(mismatch)?;
+        let existing = messages::find(&transaction, &user_message_id)
+            .map_err(runtime_store_error)?
+            .ok_or_else(mismatch)?;
+        let parent = messages::find(&transaction, &delegation.parent_message_id)
+            .map_err(runtime_store_error)?
+            .ok_or_else(mismatch)?;
+        if delegation.child_thread_id != thread_id
+            || delegation.child_message_id != assistant_message_id
+            || config.delegated_message_id.as_deref() != Some(assistant_message_id.as_str())
+            || config
+                .delegated_parent
+                .as_ref()
+                .is_none_or(|(thread, message)| {
+                    thread != &delegation.parent_thread_id
+                        || message != &delegation.parent_message_id
+                })
+            || thread.parent_thread_id.as_deref() != Some(delegation.parent_thread_id.as_str())
+            || parent.thread_id != delegation.parent_thread_id
+            || parent.role != "assistant"
+            || !matches!(delegation.state.as_str(), "running" | "cancelling")
+            || existing.thread_id != thread_id
+            || existing.role != "user"
+            || existing.kind != "text"
+            || existing.status != "done"
+            || existing.seq != 1
+            || existing.content != delegation.task
+            || user_content != delegation.task
+            || run_mode != ThreadMode::Execute
+        {
+            return Err(mismatch());
+        }
+        let next = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+        if existing.seq.checked_add(1) != Some(next) {
+            return Err(ConversationError::CorruptRow(
+                "delegated instruction was already consumed".into(),
+            ));
+        }
+    } else if uses_existing_user {
         let existing = messages::find(&transaction, &user_message_id)
             .map_err(runtime_store_error)?
             .ok_or_else(|| ConversationError::NotFound(user_message_id.clone()))?;

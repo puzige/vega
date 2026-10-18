@@ -324,13 +324,15 @@ pub(crate) fn prepare_runtime_call(
             && valid_subagent_input(&raw_call.name, &raw_call.input_json)
             && config.redact_tool_output(&raw_call.input_json)? == raw_call.input_json
             && let Ok(arguments) = serde_json::from_str::<Value>(&raw_call.input_json)
-            && config.redact_tool_output(&arguments.to_string())? == arguments.to_string()
         {
-            return Ok(PreparedRuntimeCall::Subagent {
-                call: raw_call,
-                arguments,
-                hook,
-            });
+            let canonical = arguments.to_string();
+            if config.redact_tool_output(&canonical)? == canonical {
+                return Ok(PreparedRuntimeCall::Subagent {
+                    call: raw_call,
+                    arguments,
+                    hook,
+                });
+            }
         }
         return Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
             input_json: "{}".into(),

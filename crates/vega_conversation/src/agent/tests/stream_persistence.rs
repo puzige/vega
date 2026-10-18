@@ -307,6 +307,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "credential_continuations",
             "credential_privacy_epoch",
             "credential_privacy_exceptions",
+            "delegated_runs",
             "image_attachments",
             "mcp_secret_cleanup",
             "mcp_servers",

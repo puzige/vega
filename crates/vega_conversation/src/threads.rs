@@ -426,7 +426,10 @@ pub fn set_thread_model(
 /// with its `messages`/`tool_calls` rows in one transaction (no orphan rows;
 /// `token_usage` is kept for cost auditing).
 pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationError> {
-    if crate::subagents::is_live(store, thread_id)
+    let is_child = store::find(store.conn(), thread_id)
+        .map_err(store_error)?
+        .is_some_and(|thread| thread.parent_thread_id.is_some());
+    if (is_child && crate::subagents::is_live(store, thread_id))
         || vega_store::subagents::list(store.conn(), thread_id, None)
             .map_err(store_error)?
             .iter()

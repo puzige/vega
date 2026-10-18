@@ -82,7 +82,7 @@ impl SubagentGroup {
         } = button;
         div()
             .id(id.clone())
-            .debug_selector(move || id.clone().into())
+            .debug_selector(move || id.clone())
             .role(Role::Button)
             .aria_label(accessible_name)
             .when_some(expanded, |button, expanded| button.aria_expanded(expanded))
@@ -381,19 +381,47 @@ impl ConversationStream {
     }
     pub(crate) fn render_subagent_parent(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let parent = self.thread.parent_thread_id.clone()?;
-        Some(self.automation_button(
-            "subagent-parent".into(),
-            "Back to parent".into(),
-            &self.subagent_parent_focus,
-            true,
-            cx,
-            move |this, cx| {
-                cx.emit(SubagentOpenRequested {
-                    source_thread_id: this.thread.id.clone(),
-                    thread_id: parent.clone(),
-                })
-            },
-        ))
+        let colors = theme(cx).colors;
+        let activate = std::rc::Rc::new(move |this: &mut Self, cx: &mut Context<Self>| {
+            cx.emit(SubagentOpenRequested {
+                source_thread_id: this.thread.id.clone(),
+                thread_id: parent.clone(),
+            })
+        });
+        let keyboard = activate.clone();
+        Some(
+            div()
+                .id("subagent-parent")
+                .debug_selector(|| "subagent-parent".into())
+                .role(Role::Button)
+                .aria_label("Back to parent")
+                .track_focus(&self.subagent_parent_focus)
+                .tab_stop(true)
+                .border_1()
+                .border_color(gpui_kit::transparent_black())
+                .px_2()
+                .py_1()
+                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                .text_size(px(Typography::BODY))
+                .text_color(colors.text_secondary)
+                .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, true)
+                .focus_visible(move |style| style.border_color(colors.accent))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    activate(this, cx);
+                }))
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            keyboard(this, cx);
+                        }
+                    }),
+                )
+                .child("Back to parent")
+                .into_any_element(),
+        )
     }
 }
 

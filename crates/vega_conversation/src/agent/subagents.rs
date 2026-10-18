@@ -3,7 +3,6 @@ use crate::types::{SubagentAdmission, SubagentHost, SubagentSnapshot, SubagentSt
 use futures::future::LocalBoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
-use std::future::Future;
 use tokio::sync::Notify;
 
 fn failure(message: &str) -> VegaError {
@@ -143,7 +142,12 @@ impl vega_runtime::RuntimeSubagentHook for Hook {
                     let (reply,receiver) = oneshot::channel();
                     let command = if tool == "spawn_agent" { Command::Spawn {call_id,name:input["name"].as_str().ok_or_else(|| failure("invalid input"))?.trim().into(),task:input["task"].as_str().ok_or_else(|| failure("invalid input"))?.into(),reply} } else { Command::Cancel {id:input["agent_id"].as_str().ok_or_else(|| failure("invalid input"))?.into(),reply} };
                     tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), result = sender.send(command) => result.map_err(|_| failure("parent run ended"))? }
-                    tokio::select! { biased; _ = cancel.cancelled() => Err(VegaError::Cancelled), result = receiver => result.map_err(|_| failure("parent run ended"))? }
+                    tokio::select! { biased; _ = cancel.cancelled() => Err(VegaError::Cancelled), result = receiver => {
+                        match result.map_err(|_| failure("parent run ended"))? {
+                            Err(VegaError::Cancelled) if tool == "spawn_agent" && !cancel.is_cancelled() => Err(failure("child admission interrupted")),
+                            result => result,
+                        }
+                    } }
                 }
             }
         }.boxed()
@@ -221,11 +225,11 @@ impl Supervisor {
             registry: self.registry.clone(),
         })
     }
-    pub(super) async fn run<'a, F, T>(&mut self, parent: F, launch: ChildLaunch<'a>) -> T
-    where
-        F: Future<Output = T>,
-    {
-        tokio::pin!(parent);
+    pub(super) async fn run<'a, T>(
+        &mut self,
+        mut parent: LocalBoxFuture<'a, T>,
+        launch: ChildLaunch<'a>,
+    ) -> T {
         let mut children: FuturesUnordered<LocalBoxFuture<'a, ()>> = FuturesUnordered::new();
         let result = loop {
             tokio::select! {

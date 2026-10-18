@@ -1,6 +1,9 @@
 use crate::app_agent::AgentUpdate;
-use futures::{FutureExt, future::BoxFuture};
-use std::sync::{Arc, mpsc};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, mpsc},
+};
 use tokio::sync::oneshot;
 use vega_conversation::types::{
     ConversationEvent, SubagentAdmission, SubagentHost, SubagentSnapshot,
@@ -47,17 +50,20 @@ fn unavailable() -> VegaError {
 }
 
 impl SubagentHost for NativeSubagentHost {
-    fn admit(&self, admission: SubagentAdmission) -> BoxFuture<'static, Result<(), VegaError>> {
+    fn admit(
+        &self,
+        admission: SubagentAdmission,
+    ) -> Pin<Box<dyn Future<Output = Result<(), VegaError>> + Send + 'static>> {
         let (reply, receiver) = oneshot::channel();
         let cancel = admission.cancel.clone();
         let sent = self.send(NativeSubagentUpdate::Admit {
             admission: Box::new(admission),
             reply,
         });
-        async move {
+        Box::pin(async move {
             sent?;
             tokio::select! {biased; _ = cancel.cancelled() => Err(VegaError::Cancelled), result = receiver => result.map_err(|_| unavailable())?}
-        }.boxed()
+        })
     }
     fn event(
         &self,

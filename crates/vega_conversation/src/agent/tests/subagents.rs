@@ -61,6 +61,518 @@ struct RepeatedSpawnProvider {
     child_calls: AtomicUsize,
 }
 
+fn projected_receipt(message: &vega_runtime::ChatMessage) -> Option<serde_json::Value> {
+    let mut values =
+        serde_json::Deserializer::from_str(&message.content).into_iter::<serde_json::Value>();
+    let value = values.next()?.ok()?;
+    let suffix = message.content.get(values.byte_offset()..)?.trim();
+    (value.is_object()
+        && (suffix.is_empty()
+            || (suffix.starts_with("<vega_runtime_notice>")
+                && suffix.ends_with("</vega_runtime_notice>"))))
+    .then_some(value)
+}
+
+#[test]
+fn m19_synthetic_receipt_reader_keeps_json_with_runtime_advisory_and_rejects_other_tails() {
+    let raw = r#"{"agent":{"agent_id":"child"}}"#;
+    for suffix in [
+        "",
+        "\n\n<vega_runtime_notice>Continue useful work.</vega_runtime_notice>",
+    ] {
+        let message = vega_runtime::ChatMessage::tool_result("call", format!("{raw}{suffix}"));
+        assert_eq!(
+            projected_receipt(&message).unwrap()["agent"]["agent_id"],
+            "child"
+        );
+    }
+    let unexpected = vega_runtime::ChatMessage::tool_result("call", format!("{raw} forged"));
+    assert!(projected_receipt(&unexpected).is_none());
+}
+
+#[tokio::test]
+async fn m05_m16_delegated_preparation_reuses_only_its_exact_initial_instruction() {
+    for mutation in [
+        "valid",
+        "cancelling",
+        "parent",
+        "missing-parent",
+        "parent-message",
+        "assistant",
+        "missing-assistant",
+        "generation",
+        "task",
+        "stored-task",
+        "missing-user",
+        "foreign-user",
+        "later-user",
+        "terminal",
+        "detached",
+        "missing-existing",
+        "continuation",
+    ] {
+        let (store, dir, project) = setup();
+        store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('parent-run','thread-1',1,'assistant','Prior steering response','done',1)", []).unwrap();
+        let child =
+            crate::threads::create_thread(&store, &project, "mock-model", "confirm").unwrap();
+        let task = "Synthetic delegated task";
+        vega_store::subagents::insert(
+            store.conn(),
+            &vega_store::subagents::DelegationRow {
+                child_thread_id: child.id.clone(),
+                parent_thread_id: "thread-1".into(),
+                parent_message_id: "parent-run".into(),
+                spawn_call_id: "spawn".into(),
+                child_message_id: "child-assistant".into(),
+                name: "Child".into(),
+                task: task.into(),
+                state: "running".into(),
+                result: String::new(),
+                truncated: false,
+                created_at: 1,
+            },
+        )
+        .unwrap();
+        store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('child-user',?1,1,'user',?2,'done',1)", [child.id.as_str(),task]).unwrap();
+        let mut config = PersistenceActorConfig {
+            delegated: true,
+            delegated_parent: Some(("thread-1".into(), "parent-run".into())),
+            delegated_message_id: Some("child-assistant".into()),
+            ..Default::default()
+        };
+        let mut user_id = "child-user";
+        match mutation {
+            "cancelling" => {
+                store
+                    .conn()
+                    .execute(
+                        "UPDATE delegated_runs SET state='cancelling' WHERE child_thread_id=?1",
+                        [&child.id],
+                    )
+                    .unwrap();
+            }
+            "parent" => config.delegated_parent = Some(("thread-1".into(), "other-run".into())),
+            "missing-parent" => config.delegated_parent = None,
+            "parent-message" => {
+                store
+                    .conn()
+                    .execute("UPDATE messages SET role='user' WHERE id='parent-run'", [])
+                    .unwrap();
+            }
+            "assistant" => config.delegated_message_id = Some("other-assistant".into()),
+            "missing-assistant" => config.delegated_message_id = None,
+            "generation" => {
+                store.conn().execute("UPDATE delegated_runs SET child_message_id='other-generation' WHERE child_thread_id=?1", [&child.id]).unwrap();
+            }
+            "stored-task" => {
+                store
+                    .conn()
+                    .execute(
+                        "UPDATE messages SET content='Changed stored task' WHERE id='child-user'",
+                        [],
+                    )
+                    .unwrap();
+            }
+            "missing-user" => user_id = "missing-user",
+            "foreign-user" => {
+                user_id = "foreign-user";
+                store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('foreign-user','thread-1',2,'user',?1,'done',1)", [task]).unwrap();
+            }
+            "later-user" => {
+                user_id = "later-user";
+                store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('later-user',?1,2,'user',?2,'done',1)", [child.id.as_str(),task]).unwrap();
+            }
+            "terminal" => {
+                store
+                    .conn()
+                    .execute(
+                        "UPDATE delegated_runs SET state='completed' WHERE child_thread_id=?1",
+                        [&child.id],
+                    )
+                    .unwrap();
+            }
+            "detached" => {
+                store
+                    .conn()
+                    .execute(
+                        "UPDATE threads SET parent_thread_id=NULL WHERE id=?1",
+                        [&child.id],
+                    )
+                    .unwrap();
+            }
+            "continuation" => {
+                config.credential_continuation_id = Some("foreign-continuation".into())
+            }
+            _ => {}
+        }
+        let fingerprint =
+            vega_store::credential_privacy::source_fingerprint(store.conn(), &child.id).unwrap();
+        let parent_fingerprint =
+            vega_store::credential_privacy::source_fingerprint(store.conn(), "thread-1").unwrap();
+        let before_thread = vega_store::threads::find(store.conn(), &child.id)
+            .unwrap()
+            .unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("Child complete".into()),
+            usage(2),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]);
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let persisted_user = (mutation != "missing-existing").then(|| user_id.into());
+        let content = if mutation == "task" {
+            "Changed task"
+        } else {
+            task
+        };
+        let result = entry::run_thread_task_with_automation_inner(
+            &store,
+            &provider,
+            &tools,
+            &child.id,
+            content,
+            "System",
+            CancellationToken::new(),
+            &RejectPermissionHook,
+            |_| Ok(()),
+            config.clone(),
+            persisted_user,
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+        if matches!(mutation, "valid" | "cancelling") {
+            let run = result.unwrap();
+            assert!(!run.failed);
+            assert_eq!(run.assistant_message_id, "child-assistant");
+            let requests = provider.requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                requests[0]
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == ChatRole::User && message.content == task)
+                    .count(),
+                1
+            );
+            let assistant = vega_store::messages::find(store.conn(), "child-assistant")
+                .unwrap()
+                .unwrap();
+            assert_eq!(assistant.seq, 2);
+            assert_eq!(assistant.status, "done");
+            let after_first =
+                vega_store::credential_privacy::source_fingerprint(store.conn(), &child.id)
+                    .unwrap();
+            assert!(
+                entry::run_thread_task_with_automation_inner(
+                    &store,
+                    &provider,
+                    &tools,
+                    &child.id,
+                    task,
+                    "System",
+                    CancellationToken::new(),
+                    &RejectPermissionHook,
+                    |_| Ok(()),
+                    config,
+                    Some(user_id.into()),
+                    None,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(provider.requests().len(), 1);
+            assert_eq!(
+                vega_store::credential_privacy::source_fingerprint(store.conn(), &child.id)
+                    .unwrap(),
+                after_first
+            );
+        } else {
+            assert!(result.is_err(), "mutation {mutation}");
+            assert!(provider.requests().is_empty(), "mutation {mutation}");
+            assert_eq!(
+                vega_store::credential_privacy::source_fingerprint(store.conn(), &child.id)
+                    .unwrap(),
+                fingerprint,
+                "mutation {mutation}"
+            );
+            assert_eq!(
+                vega_store::credential_privacy::source_fingerprint(store.conn(), "thread-1")
+                    .unwrap(),
+                parent_fingerprint,
+                "mutation {mutation}"
+            );
+            let after_thread = vega_store::threads::find(store.conn(), &child.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                after_thread.parent_thread_id,
+                before_thread.parent_thread_id
+            );
+            assert_eq!(after_thread.updated_at, before_thread.updated_at);
+        }
+        let count: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE thread_id=?1 AND role='user'",
+                [&child.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, if mutation == "later-user" { 2 } else { 1 });
+    }
+}
+
+#[test]
+fn m04_m19_subagent_proposals_and_approvals_accept_only_exact_authority_and_valid_input() {
+    use vega_runtime::{RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource};
+
+    let approval = RuntimeApprovalAudit {
+        decision: RuntimeApprovalDecision::Once,
+        source: RuntimeApprovalSource::ReadonlyTool,
+        note: None,
+        danger: None,
+    };
+    let state = |tool: &str, input: &str| tool_calls::ToolCallState {
+        thread_id: "thread-1".into(),
+        tool: tool.into(),
+        input_json: input.into(),
+        status: "pending_approval".into(),
+        approval: None,
+        output_text: None,
+        exit_code: None,
+        duration_ms: None,
+        output_full_path: None,
+    };
+    for (tool, input) in [
+        (
+            "spawn_agent",
+            r#"{"name":"Research","task":"Find evidence"}"#,
+        ),
+        ("list_agents", "{}"),
+        ("wait_agent", r#"{"agent_ids":["child"],"timeout_ms":0}"#),
+        ("cancel_agent", r#"{"agent_id":"child"}"#),
+    ] {
+        let call = vega_runtime::RuntimeToolCall {
+            id: "call".into(),
+            name: tool.into(),
+            input_json: input.into(),
+        };
+        assert!(validate_runtime_proposal(&call).is_ok());
+        let state = state(tool, input);
+        assert!(validate_runtime_approval_event(&state, "call", &approval, None).is_ok());
+        for altered in [
+            RuntimeApprovalAudit {
+                decision: RuntimeApprovalDecision::Always,
+                ..approval.clone()
+            },
+            RuntimeApprovalAudit {
+                source: RuntimeApprovalSource::User,
+                ..approval.clone()
+            },
+            RuntimeApprovalAudit {
+                note: Some("untrusted note".into()),
+                ..approval.clone()
+            },
+            RuntimeApprovalAudit {
+                danger: Some(vega_runtime::RuntimeDangerAudit {
+                    rule_id: "synthetic".into(),
+                    decision: RuntimeApprovalDecision::Once,
+                    note: None,
+                }),
+                ..approval.clone()
+            },
+        ] {
+            assert!(validate_runtime_approval_event(&state, "call", &altered, None).is_err());
+        }
+        let remember = vega_runtime::RuntimePermissionTarget {
+            call_id: "call".into(),
+            tool: RuntimeMutatingTool::Write,
+            display_target: "/synthetic".into(),
+            exact_pattern: "/synthetic".into(),
+        };
+        assert!(
+            validate_runtime_approval_event(&state, "call", &approval, Some(&remember)).is_err()
+        );
+    }
+    for (tool, input) in [
+        ("spawn_agent", "{}"),
+        ("wait_agent", "{}"),
+        ("cancel_agent", "{}"),
+        ("spawn_agent", r#"{"name":"Research"}"#),
+        (
+            "spawn_agent",
+            r#"{"name":"Research","task":"Find","role":"admin"}"#,
+        ),
+        ("list_agents", r#"{"extra":true}"#),
+        ("wait_agent", r#"{"agent_ids":[]}"#),
+        ("cancel_agent", r#"{"agent_id":""}"#),
+        ("spawn_agent", "[]"),
+    ] {
+        let call = vega_runtime::RuntimeToolCall {
+            id: "invalid".into(),
+            name: tool.into(),
+            input_json: input.into(),
+        };
+        assert_eq!(validate_runtime_proposal(&call).is_ok(), input == "{}");
+        assert!(
+            validate_runtime_approval_event(&state(tool, input), "invalid", &approval, None)
+                .is_err()
+        );
+    }
+    let unknown = vega_runtime::RuntimeToolCall {
+        id: "unknown".into(),
+        name: "unknown_agent".into(),
+        input_json: r#"{"name":"Research","task":"Find"}"#.into(),
+    };
+    assert!(validate_runtime_proposal(&unknown).is_err());
+    assert!(
+        validate_runtime_approval_event(&state("unknown_agent", "{}"), "unknown", &approval, None)
+            .is_err()
+    );
+}
+
+struct ReaderFailureHook(Arc<AtomicBool>);
+
+impl vega_runtime::RuntimeSubagentHook for ReaderFailureHook {
+    fn call(
+        &self,
+        _: String,
+        _: String,
+        _: serde_json::Value,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<serde_json::Value, VegaError>> {
+        let unavailable = self.0.clone();
+        async move {
+            unavailable.store(true, Ordering::SeqCst);
+            Ok(serde_json::json!({"agents":[]}))
+        }
+        .boxed()
+    }
+}
+
+#[tokio::test]
+async fn m19_hook_completion_reader_failure_persists_a_recoverable_failed_terminal() {
+    let (store, dir, project) = setup();
+    let mut prepared = prepare_run_with_images_and_reasoning(
+        store.database_path().unwrap().to_path_buf(),
+        "thread-1".into(),
+        "Inspect delegated work".into(),
+        "System".into(),
+        "reader-user".into(),
+        "reader-assistant".into(),
+        PersistenceActorConfig::default(),
+        false,
+        None,
+        None,
+        Vec::new(),
+    )
+    .unwrap();
+    let unavailable = Arc::new(AtomicBool::new(false));
+    let reader_state = unavailable.clone();
+    prepared.request.tool_config = prepared
+        .request
+        .tool_config
+        .with_subagents(Some(Arc::new(ReaderFailureHook(unavailable.clone()))))
+        .with_credential_reader(Arc::new(move || {
+            if reader_state.load(Ordering::SeqCst) {
+                Err(())
+            } else {
+                Ok(Vec::new())
+            }
+        }))
+        .with_turn_limit(1);
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::ToolUse {
+            id: "reader-tool".into(),
+            name: "list_agents".into(),
+            input_json: "{}".into(),
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
+    ])]);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let mut sequence = prepared.next_tool_seq;
+    let mut terminals = Vec::new();
+    vega_runtime::run_agent_with_sink(
+        &provider,
+        &tools,
+        prepared.request,
+        CancellationToken::new(),
+        |event| {
+            let result = if matches!(
+                event,
+                RuntimeEvent::ToolCallProposed(_)
+                    | RuntimeEvent::ToolCallApproved { .. }
+                    | RuntimeEvent::ToolCallRunning { .. }
+                    | RuntimeEvent::ToolCallFinished(_)
+            ) {
+                persist_runtime_event(
+                    &store,
+                    &project,
+                    "thread-1",
+                    "reader-assistant",
+                    "mock-model",
+                    false,
+                    "",
+                    &mut sequence,
+                    &event,
+                    None,
+                )
+            } else {
+                Ok(())
+            };
+            if let RuntimeEvent::ToolCallFinished(terminal) = event {
+                terminals.push(terminal);
+            }
+            async move { result }
+        },
+    )
+    .await
+    .unwrap();
+    assert!(unavailable.load(Ordering::SeqCst));
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].status, RuntimeToolStatus::Failed);
+    assert!(
+        terminals[0]
+            .output
+            .starts_with("Tool error: tool 'subagent' failed:")
+    );
+    assert!(terminals[0].truncated.is_none());
+    let reopened = Store::open(store.database_path().unwrap()).unwrap();
+    let terminal = tool_calls::terminal_results(reopened.conn(), "thread-1")
+        .unwrap()
+        .remove("reader-tool")
+        .unwrap();
+    assert_eq!(terminal.status, "failed");
+    assert_eq!(terminal.output, terminals[0].output);
+    let approval = ApprovalAudit::from_json(&terminal.approval).unwrap();
+    assert_eq!(
+        validate_recovered_projection(
+            &project,
+            "thread-1",
+            "reader-tool",
+            &terminal.tool,
+            &terminal.input_json,
+            &terminal.output,
+            RuntimeToolStatus::Failed,
+            &approval,
+            terminal.exit_code,
+            terminal.duration_ms
+        )
+        .unwrap(),
+        "{}"
+    );
+}
+
 #[tokio::test]
 async fn m04_escaped_owner_secret_never_creates_child_metadata_or_provider_work() {
     let (store, dir, _) = setup();
@@ -154,9 +666,7 @@ impl Provider for RepeatedSpawnProvider {
                     .messages
                     .iter()
                     .filter(|message| message.role == ChatRole::Tool)
-                    .filter_map(|message| {
-                        serde_json::from_str::<serde_json::Value>(&message.content).ok()
-                    })
+                    .filter_map(projected_receipt)
                     .collect::<Vec<_>>();
                 let ids = values
                     .iter()
@@ -307,6 +817,7 @@ async fn m07_m08_m16_stop_while_admission_ack_is_pending_never_starts_provider_o
             .unwrap();
     let run = run.unwrap();
     assert!(run.interrupted);
+    assert_eq!(provider.root_calls.load(Ordering::SeqCst), 1);
     assert_eq!(provider.child_calls.load(Ordering::SeqCst), 0);
     assert!(!run.events.iter().any(|event| matches!(event,ConversationEvent::ToolCallFinished {call_id,result} if call_id == "repeated-spawn" && result.status == ToolCallStatus::Success)));
     let children = crate::subagents::children(&store, "thread-1").unwrap();
@@ -389,7 +900,10 @@ impl Provider for ParallelProvider {
             .messages
             .iter()
             .rev()
-            .find(|message| message.role == ChatRole::User)
+            .find(|message| {
+                message.role == ChatRole::User
+                    && matches!(message.content.as_str(), "parent" | "child-a" | "child-b")
+            })
             .unwrap()
             .content
             .clone();
@@ -428,9 +942,7 @@ impl Provider for ParallelProvider {
                         .messages
                         .iter()
                         .filter(|message| message.role == ChatRole::Tool)
-                        .filter_map(|message| {
-                            serde_json::from_str::<serde_json::Value>(&message.content).ok()
-                        })
+                        .filter_map(projected_receipt)
                         .filter_map(|value| {
                             value
                                 .pointer("/agent/agent_id")
@@ -459,9 +971,7 @@ impl Provider for ParallelProvider {
                         .rev()
                         .filter(|message| message.role == ChatRole::Tool)
                         .find_map(|message| {
-                            serde_json::from_str::<serde_json::Value>(&message.content)
-                                .ok()
-                                .filter(|value| value.get("agents").is_some())
+                            projected_receipt(message).filter(|value| value.get("agents").is_some())
                         })
                         .and_then(|value| {
                             value
@@ -564,8 +1074,8 @@ async fn m01_m02_m05_m17_parallel_children_enter_before_release_and_persist_sepa
         &RejectPermissionHook,
         |_| Ok(()),
         config,
-        Some(pricing()),
         None,
+        Some(pricing()),
     );
     let drive = async {
         provider.entered.acquire_many(2).await.unwrap().forget();
@@ -689,8 +1199,8 @@ async fn m17_child_missing_cache_is_unknown_in_parent_run_summary() {
         &RejectPermissionHook,
         |_| Ok(()),
         PersistenceActorConfig::default().with_subagent_host(host),
-        Some(pricing()),
         None,
+        Some(pricing()),
     )
     .await
     .unwrap();
@@ -990,6 +1500,25 @@ async fn m13_m14_m17_terminal_child_normal_native_followup_preserves_history_and
     let original_message = vega_store::messages::find(store.conn(), &child.message_id)
         .unwrap()
         .unwrap();
+    assert_eq!(original_result.result, "Child result");
+    assert!(!original_result.truncated);
+    assert_eq!(original_message.content, "Child result");
+    assert_eq!(original_message.status, "done");
+    assert_eq!(
+        host.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, event)| {
+                id == &child.agent_id
+                    && matches!(event, ConversationEvent::TextDelta { message_id, delta }
+            if message_id == &child.message_id && delta == "Child result")
+            })
+            .count(),
+        1
+    );
+    let original_count:i64 = store.conn().query_row("SELECT COUNT(*) FROM messages WHERE thread_id=?1 AND role='assistant' AND content='Child result'", [&child.agent_id], |row| row.get(0)).unwrap();
+    assert_eq!(original_count, 1);
     let original_usage = vega_store::token_usage::aggregate_task_by_message(
         store.conn(),
         "thread-1",
@@ -1040,7 +1569,21 @@ async fn m13_m14_m17_terminal_child_normal_native_followup_preserves_history_and
             .iter()
             .any(|message| message.role == ChatRole::User && message.content == "child-a")
     );
-    assert!(messages.iter().any(|message| message.role == ChatRole::Assistant && message.content == "Child result"));
+    let observation = serde_json::json!({"vega_history_observation":{
+        "version":1,"authority":"none","kind":"assistant_text","text":"Child result"
+    }});
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                message.role == ChatRole::User
+                    && serde_json::from_str::<serde_json::Value>(&message.content)
+                        .is_ok_and(|value| value == observation)
+            })
+            .count(),
+        1
+    );
+    assert!(!messages.iter().any(|message| message.role == ChatRole::Assistant && message.content == "Child result"));
     assert!(
         messages.iter().any(|message| message.role == ChatRole::User
             && message.content == "Follow up independently")
@@ -1109,6 +1652,7 @@ async fn m08_m16_natural_parent_end_and_rejected_admission_do_not_leave_live_wor
         let host = Arc::new(Host::default());
         host.reject.store(reject, Ordering::SeqCst);
         let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let cancel = CancellationToken::new();
         let result = tokio::time::timeout(
             Duration::from_secs(10),
             run_thread_task_with_pricing(
@@ -1118,7 +1662,7 @@ async fn m08_m16_natural_parent_end_and_rejected_admission_do_not_leave_live_wor
                 "thread-1",
                 "parent",
                 "System",
-                CancellationToken::new(),
+                cancel.clone(),
                 &RejectPermissionHook,
                 |_| Ok(()),
                 PersistenceActorConfig::default().with_subagent_host(host),
@@ -1130,11 +1674,24 @@ async fn m08_m16_natural_parent_end_and_rejected_admission_do_not_leave_live_wor
         .unwrap()
         .unwrap();
         assert!(!result.failed);
+        assert!(!result.interrupted);
+        assert!(!cancel.is_cancelled());
+        assert_eq!(result.content, "Aggregated");
+        assert_eq!(provider.root_calls.load(Ordering::SeqCst), 2);
         let children = crate::subagents::children(&store, "thread-1").unwrap();
         assert_eq!(children.len(), 2);
         assert!(children.iter().all(|agent| agent.state.is_terminal()));
         if reject {
             assert_eq!(provider.child_calls.load(Ordering::SeqCst), 0);
+            assert!(
+                children
+                    .iter()
+                    .all(|agent| agent.state == SubagentState::Interrupted)
+            );
+            assert_eq!(result.events.iter().filter(|event| matches!(event,
+                ConversationEvent::ToolCallFinished { call_id, result }
+                if matches!(call_id.as_str(), "spawn-a" | "spawn-b") && result.status == ToolCallStatus::Failed
+            )).count(), 2);
         }
     }
 }
@@ -1153,15 +1710,29 @@ impl Provider for OperationProvider {
             .messages
             .iter()
             .rev()
-            .find(|message| message.role == ChatRole::User)
+            .find(|message| {
+                message.role == ChatRole::User
+                    && matches!(message.content.as_str(), "parent" | "child-a" | "child-b")
+            })
             .unwrap()
             .content
             .clone();
+        let call_id = format!("operation-{user}");
         let child_first = user != "parent"
-            && !request
-                .messages
-                .iter()
-                .any(|message| message.role == ChatRole::Tool);
+            && !request.messages.iter().any(|message| {
+                (message.role == ChatRole::Tool
+                    && message.tool_call_id.as_deref() == Some(call_id.as_str()))
+                    || (message.role == ChatRole::User
+                        && serde_json::from_str::<serde_json::Value>(&message.content).is_ok_and(
+                            |value| {
+                                let observation = &value["vega_history_observation"];
+                                observation["version"].as_u64() == Some(1)
+                                    && observation["authority"].as_str() == Some("none")
+                                    && observation["kind"].as_str() == Some("tool_result")
+                                    && observation["call_id"].as_str() == Some(call_id.as_str())
+                            },
+                        ))
+            });
         let source = self.inner.chat_stream(request, cancel);
         let edit = self.edit;
         async move {
@@ -1177,8 +1748,17 @@ impl Provider for OperationProvider {
 async fn m09_m10_child_read_witness_and_permission_modes_remain_independent() {
     for mode in ["readonly", "confirm", "auto", "full_access"] {
         for edit in [false, true] {
-            let (store, dir, _) = setup();
-            vega_store::threads::set_permission_mode(store.conn(), "thread-1", mode, 1).unwrap();
+            let (store, dir, _data_dir, _) = setup_external(mode);
+            fs::write(dir.path().join("lib.rs"), "// TODO: persist me\n").unwrap();
+            assert!(
+                !store
+                    .database_path()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("checkpoints")
+                    .starts_with(dir.path())
+            );
             let tools = vega_tools::Tools::new(dir.path()).unwrap();
             tools.read("lib.rs", None, None).unwrap();
             let before = fs::read(dir.path().join("lib.rs")).unwrap();
@@ -1204,29 +1784,116 @@ async fn m09_m10_child_read_witness_and_permission_modes_remain_independent() {
             )
             .await
             .unwrap();
-            assert!(!result.failed);
-            assert_eq!(fs::read(dir.path().join("lib.rs")).unwrap(), before);
+            assert!(!result.failed, "mode={mode}, edit={edit}");
             assert_eq!(
-                dir.path().join("child-a.txt").exists(),
-                !edit && matches!(mode, "auto" | "full_access")
+                fs::read(dir.path().join("lib.rs")).unwrap(),
+                before,
+                "mode={mode}, edit={edit}"
             );
+            for name in ["child-a", "child-b"] {
+                assert_eq!(
+                    dir.path().join(format!("{name}.txt")).exists(),
+                    !edit && matches!(mode, "auto" | "full_access"),
+                    "mode={mode}, edit={edit}, child={name}"
+                );
+            }
+            let children = crate::subagents::children(&store, "thread-1").unwrap();
+            assert_eq!(children.len(), 2, "mode={mode}, edit={edit}");
             let events = host.events.lock().unwrap();
             let terminals = events
                 .iter()
-                .filter_map(|(_, event)| {
-                    if let ConversationEvent::ToolCallFinished { call_id, result } = event {
-                        call_id.starts_with("operation-").then_some(result.status)
-                    } else {
-                        None
+                .filter_map(|(child, event)| match event {
+                    ConversationEvent::ToolCallFinished { call_id, result }
+                        if call_id.starts_with("operation-") =>
+                    {
+                        Some((child.clone(), call_id.clone(), result.clone()))
                     }
+                    _ => None,
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(terminals.len(), 2);
+            assert_eq!(
+                terminals.len(),
+                2,
+                "mode={mode}, edit={edit}, child_states={:?}, events={}",
+                children.iter().map(|child| child.state).collect::<Vec<_>>(),
+                events.len()
+            );
+            let proposals = events
+                .iter()
+                .filter_map(|(child, event)| match event {
+                    ConversationEvent::ToolCallProposed { call }
+                        if call.id.starts_with("operation-") =>
+                    {
+                        Some((child, call))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                proposals.len(),
+                if edit { 0 } else { 2 },
+                "mode={mode}, edit={edit}"
+            );
+            for (child_id, call) in proposals {
+                let stored = tool_calls::find_state(store.conn(), &call.id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(&stored.thread_id, child_id, "mode={mode}, edit={edit}");
+                assert_eq!(stored.tool, call.tool, "mode={mode}, edit={edit}");
+                assert_eq!(
+                    stored.input_json, call.input_json,
+                    "mode={mode}, edit={edit}"
+                );
+            }
+            for (child_id, call_id, terminal) in &terminals {
+                let stored = tool_calls::find_state(store.conn(), call_id)
+                    .unwrap()
+                    .unwrap();
+                let identity = tool_calls::find_identity(store.conn(), call_id)
+                    .unwrap()
+                    .unwrap();
+                let child = children
+                    .iter()
+                    .find(|child| &child.agent_id == child_id)
+                    .unwrap();
+                assert_eq!(&stored.thread_id, child_id, "mode={mode}, edit={edit}");
+                assert_eq!(
+                    identity.message_id, child.message_id,
+                    "mode={mode}, edit={edit}"
+                );
+                assert_eq!(
+                    ToolCallStatus::parse(&stored.status),
+                    Some(terminal.status),
+                    "mode={mode}, edit={edit}"
+                );
+                assert_eq!(
+                    stored.output_text.as_deref(),
+                    Some(terminal.output.as_str()),
+                    "mode={mode}, edit={edit}"
+                );
+                if edit {
+                    let audit =
+                        vega_tools::InvalidWriteEditAudit::from_json(&stored.input_json).unwrap();
+                    assert_eq!(
+                        audit.validation_error_code(),
+                        vega_tools::MutationErrorCode::FileNotRead,
+                        "mode={mode}, edit={edit}"
+                    );
+                }
+            }
             if edit || matches!(mode, "readonly" | "confirm") {
                 assert!(
                     terminals
                         .iter()
-                        .all(|status| *status != ToolCallStatus::Success)
+                        .all(|(_, _, result)| result.status != ToolCallStatus::Success),
+                    "mode={mode}, edit={edit}"
+                );
+            } else {
+                assert!(
+                    terminals
+                        .iter()
+                        .all(|(_, _, result)| result.status == ToolCallStatus::Success),
+                    "mode={mode}, edit={edit}"
                 );
             }
         }

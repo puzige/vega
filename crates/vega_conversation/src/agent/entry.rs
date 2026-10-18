@@ -1002,7 +1002,8 @@ where
                 }
             }
         },
-    );
+    )
+    .boxed_local();
     let processor_future = process_runtime_events(
         runtime_receiver,
         &actor,
@@ -1018,8 +1019,9 @@ where
             run_id: &prepared.assistant_message_id,
             root_attempt_id: &root_attempt_id,
         },
-    );
-    let pipeline = async { tokio::join!(runtime_future, processor_future) };
+    )
+    .boxed_local();
+    let pipeline = async move { tokio::join!(runtime_future, processor_future) }.boxed_local();
     let (runtime_result, processor_result) =
         if let (Some(supervisor), Some(launch)) = (&mut supervisor, child_launch) {
             supervisor.run(pipeline, launch).await

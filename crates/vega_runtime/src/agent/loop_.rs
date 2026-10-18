@@ -2921,6 +2921,7 @@ where
                 result.truncated = None;
                 redact_runtime_tool_result(&tool_config, &mut result);
                 user_questions::validate_redacted_result(&call, &mut result);
+                subagents::validate_redacted_subagent_result(&call, &mut result);
                 recovery.observe(&call, &result);
                 emit!(
                     events,
@@ -2947,6 +2948,7 @@ where
                 let mut result = result;
                 redact_runtime_tool_result(&tool_config, &mut result);
                 user_questions::validate_redacted_result(&call, &mut result);
+                subagents::validate_redacted_subagent_result(&call, &mut result);
                 recovery.observe(&call, &result);
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
                 messages.push(ChatMessage::runtime_tool_result(&call, &result));
@@ -3219,6 +3221,7 @@ where
             }
             redact_runtime_tool_result(&tool_config, &mut result);
             user_questions::validate_redacted_result(&call, &mut result);
+            subagents::validate_redacted_subagent_result(&call, &mut result);
             recovery.observe(&call, &result);
             if call.name == "ComputerScreenshot"
                 && result.status == RuntimeToolStatus::Success

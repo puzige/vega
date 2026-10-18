@@ -558,6 +558,91 @@ mod tests {
     }
 
     #[test]
+    fn m19_delegation_review_and_cleanup_use_only_the_current_thread_exception_scope() {
+        let token = "ghp_delegatedSynthetic0123456789";
+        let (store, _data, _config) = fixture(token);
+        vega_store::subagents::insert(
+            store.conn(),
+            &vega_store::subagents::DelegationRow {
+                child_thread_id: "other".into(),
+                parent_thread_id: "t".into(),
+                parent_message_id: "parent-run".into(),
+                spawn_call_id: "spawn".into(),
+                child_message_id: "child-run".into(),
+                name: token.into(),
+                task: token.into(),
+                state: "completed".into(),
+                result: token.into(),
+                truncated: false,
+                created_at: 1,
+            },
+        )
+        .unwrap();
+        for thread in ["t", "other"] {
+            let snapshot = review(&store, thread).unwrap();
+            let findings = snapshot
+                .findings
+                .iter()
+                .filter(|finding| finding.field.starts_with("delegation."))
+                .collect::<Vec<_>>();
+            assert_eq!(findings.len(), 3);
+            assert!(findings.iter().all(|finding| finding.message_id.is_none()));
+            assert!(
+                findings
+                    .iter()
+                    .all(|finding| !finding.preview.contains(token))
+            );
+            assert_eq!(
+                vega_store::subagents::find(store.conn(), "other")
+                    .unwrap()
+                    .unwrap()
+                    .result,
+                token
+            );
+        }
+        let snapshot = review(&store, "t").unwrap();
+        let index = snapshot
+            .findings
+            .iter()
+            .position(|finding| finding.field == "delegation.task")
+            .unwrap();
+        set_exception(&store, "t", &snapshot, index, true).unwrap();
+        let parent = review(&store, "t").unwrap();
+        assert!(parent.findings.iter().any(|finding| finding.excepted));
+        let child = review(&store, "other").unwrap();
+        assert!(child.findings.iter().all(|finding| !finding.excepted));
+        permanently_clean(&store, "other", &child).unwrap();
+        let row = vega_store::subagents::find(store.conn(), "other")
+            .unwrap()
+            .unwrap();
+        assert!(!row.name.contains(token));
+        assert!(!row.task.contains(token));
+        assert!(!row.result.contains(token));
+        assert_eq!(row.parent_thread_id, "t");
+        assert_eq!(row.child_message_id, "child-run");
+        assert_eq!(row.state, "completed");
+        assert!(permanently_clean(&store, "t", &parent).is_err());
+        let parent_text: String = store
+            .conn()
+            .query_row("SELECT content FROM messages WHERE id='u'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(parent_text, token);
+        assert_eq!(
+            vega_store::credential_privacy::exceptions(store.conn(), "t")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            vega_store::credential_privacy::exceptions(store.conn(), "other")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn live_cache_fails_closed_after_rotation_and_recovers_after_refresh() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
