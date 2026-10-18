@@ -459,6 +459,14 @@ impl ConversationStream {
         cx.notify();
     }
 
+    pub(super) fn shows_running_send(&self, cx: &App) -> bool {
+        self.actions.running
+            && self.thread.backend == TaskBackend::Native
+            && !self.composer_submit_pending
+            && !self.actions.stopping
+            && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
+    }
+
     fn move_composer_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.input.read(cx).is_composing() {
             cx.propagate();
@@ -470,9 +478,6 @@ impl ConversationStream {
         ];
         controls.push(self.context_usage_focus.clone());
         controls.push(self.model_focus.clone());
-        if self.actions.running && self.can_submit_message(cx) {
-            controls.push(self.pending_ui.send_focus.clone());
-        }
         if self.pending_queue.paused
             && !self.visible_pending_messages().is_empty()
             && !self.actions.running

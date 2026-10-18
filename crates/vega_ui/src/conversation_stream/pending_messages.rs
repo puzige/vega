@@ -1,6 +1,7 @@
 use super::attachments::ImagePreview;
 use super::*;
 use crate::icons::{Icon, icon};
+use crate::interaction::InteractionExt;
 use gpui_kit::{
     Anchor, Bounds, Div, Focusable, Global, Role, Stateful, anchored, canvas, deferred, point,
 };
@@ -38,7 +39,6 @@ pub(crate) struct PendingQueueUi {
     pub(super) items: HashMap<String, PendingItemUi>,
     pub(super) menu: Option<String>,
     pub(super) recovered_edit: Option<PendingMessage>,
-    pub(super) send_focus: FocusHandle,
     pub(super) resume_focus: FocusHandle,
     pub(super) recover_focus: FocusHandle,
     menu_focus: [FocusHandle; 2],
@@ -52,7 +52,6 @@ impl PendingQueueUi {
             items: HashMap::new(),
             menu: None,
             recovered_edit: None,
-            send_focus: cx.focus_handle().tab_stop(true),
             resume_focus: cx.focus_handle().tab_stop(true),
             recover_focus: cx.focus_handle().tab_stop(true),
             menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
@@ -436,7 +435,11 @@ impl ConversationStream {
     ) {
         match action {
             PendingControlAction::Queue(action) => self.queue_action(action.clone(), window, cx),
-            PendingControlAction::Submit => self.submit_message(cx),
+            PendingControlAction::Submit => {
+                if self.shows_running_send(cx) && !self.input.read(cx).is_composing() {
+                    self.submit_message(cx);
+                }
+            }
             PendingControlAction::Menu(id) => {
                 if self.pending_ui.menu.as_ref() == Some(id) {
                     self.close_pending_menu(window, cx);
@@ -536,23 +539,70 @@ impl ConversationStream {
     }
 
     pub(crate) fn render_running_send(&self, can_send: bool, cx: &mut Context<Self>) -> AnyElement {
-        self.pending_button(
-            PendingButton {
-                id: "composer-running-send".into(),
-                label: match self.running_message_behavior(cx) {
-                    PendingMessageBehavior::Queue => "排队发送",
-                    PendingMessageBehavior::Steer => "插话",
+        let colors = theme(cx).colors;
+        let enabled = can_send && !self.input.read(cx).is_composing();
+        let label = match self.running_message_behavior(cx) {
+            PendingMessageBehavior::Queue => "排队发送",
+            PendingMessageBehavior::Steer => "插话",
+        };
+        div()
+            .id("composer-running-send")
+            .debug_selector(|| "composer-running-send".into())
+            .role(Role::Button)
+            .aria_label(label)
+            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
+            .key_context("PendingMessageControl")
+            .track_focus(&self.action_focus[1])
+            .tab_stop(true)
+            .size(px(Layout::COMPOSER_SEND_SIZE))
+            .flex_shrink_0()
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(if enabled {
+                colors.accent
+            } else {
+                colors.bg_hover
+            })
+            .text_color(if enabled {
+                colors.brand_on_accent
+            } else {
+                colors.text_tertiary
+            })
+            .when(enabled, |button| button.cursor_pointer())
+            .interaction_surface(
+                if enabled {
+                    colors.accent
+                } else {
+                    colors.bg_hover
                 },
-                description: None,
-                glyph: Icon::ArrowUp,
-                focus: self.pending_ui.send_focus.clone(),
-                enabled: can_send,
-                selected: false,
-                action: PendingControlAction::Submit,
-            },
-            cx,
-        )
-        .into_any_element()
+                colors.brand_primary_strong,
+                colors.accent,
+                enabled,
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.activate_pending_control(&PendingControlAction::Submit, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ActivatePendingMessageControl, window, cx| {
+                    cx.stop_propagation();
+                    this.activate_pending_control(&PendingControlAction::Submit, window, cx);
+                }),
+            )
+            .child(icon(
+                Icon::ArrowUp,
+                if enabled {
+                    colors.brand_on_accent
+                } else {
+                    colors.text_tertiary
+                },
+            ))
+            .into_any_element()
     }
 
     pub(crate) fn render_pending_status(&self, cx: &mut Context<Self>) -> AnyElement {

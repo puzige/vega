@@ -400,8 +400,15 @@ async fn r11_composer_stream_stop_retains_partial_and_next_draft(
             .unwrap()
             .computer_use = Some(computer_control.clone());
     });
-    assert_composer_control_size(&f, "composer-stop", cx);
-    click(&f, "composer-stop", cx);
+    assert_composer_control_size(&f, "composer-running-send", cx);
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("composer-stop")
+            .is_none()
+    );
+    f.stream
+        .update(cx, ConversationStream::request_composer_stop);
+    cx.run_until_parked();
     assert_eq!(computer_control.status().phase, ControlPhase::Stopping);
     assert_terminal(&f, cx);
     assert!(

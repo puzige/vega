@@ -69,7 +69,8 @@ async fn issue79_errors_stay_above_composer_across_draft_and_session_routes(
 
     stream.update(cx, ConversationStream::begin_composer_run);
     assert!(bounds(window, "conversation-controller-error", cx).is_none());
-    assert!(bounds(window, "composer-stop", cx).is_some());
+    assert!(bounds(window, "composer-running-send", cx).is_some());
+    assert!(bounds(window, "composer-stop", cx).is_none());
     let cleared_draft_composer =
         bounds(window, "composer-shell", cx).expect("cleared draft composer");
     assert!(
@@ -147,7 +148,8 @@ async fn issue79_errors_stay_above_composer_across_draft_and_session_routes(
     stream.update(cx, ConversationStream::begin_composer_run);
     assert!(bounds(window, "conversation-controller-error", cx).is_none());
     assert!(bounds(window, "conversation-mcp-warning", cx).is_none());
-    assert!(bounds(window, "composer-stop", cx).is_some());
+    assert!(bounds(window, "composer-running-send", cx).is_some());
+    assert!(bounds(window, "composer-stop", cx).is_none());
     stream.update(cx, |stream, cx| stream.finish_composer_run(false, cx));
     assert!(bounds(window, "composer-send", cx).is_some());
 }

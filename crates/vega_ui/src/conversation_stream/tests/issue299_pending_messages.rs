@@ -178,7 +178,7 @@ async fn issue299_running_enter_follows_default_and_ack_preserves_later_draft(
 }
 
 #[gpui_kit::test]
-async fn issue299_running_send_focus_keeps_stop_adjacent_and_skips_pending_send(
+async fn running_primary_action_keeps_focus_and_switches_to_stop_while_submitting(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "issue299");
@@ -206,11 +206,12 @@ async fn issue299_running_send_focus_keeps_stop_adjacent_and_skips_pending_send(
     cx.simulate_keystrokes(window.into(), "shift-tab");
     window
         .update(cx, |_, window, cx| {
-            assert!(stream.read(cx).pending_ui.send_focus.is_focused(window));
+            assert!(stream.read(cx).model_focus.is_focused(window));
         })
         .unwrap();
+    cx.simulate_keystrokes(window.into(), "tab space");
+    assert!(stopped.lock().unwrap().is_empty());
     focus_composer(window, &stream, cx);
-    cx.simulate_keystrokes(window.into(), "cmd-enter");
     assert!(stream.read_with(cx, |stream, _| stream.composer_submit_pending));
     cx.simulate_keystrokes(window.into(), "shift-tab");
     window
@@ -230,6 +231,145 @@ async fn issue299_running_send_focus_keeps_stop_adjacent_and_skips_pending_send(
         stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_owned()),
         "retained draft"
     );
+}
+
+#[gpui_kit::test]
+async fn running_primary_action_replaces_stop_and_restores_it_after_ack(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "primary-action");
+    let submitted = Arc::new(Mutex::new(Vec::<ComposerSubmitted>::new()));
+    let captured = submitted.clone();
+    cx.update(|cx| {
+        cx.subscribe(&stream, move |_, event: &ComposerSubmitted, _| {
+            captured.lock().unwrap().push(event.clone());
+        })
+        .detach();
+    });
+    let idle = bounds(window, "composer-send", cx);
+    stream.update(cx, ConversationStream::begin_composer_run);
+    assert_eq!(bounds(window, "composer-stop", cx), idle);
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-running-send")
+            .is_none()
+    );
+    for (behavior, key) in [
+        (PendingMessageBehavior::Queue, "enter"),
+        (PendingMessageBehavior::Steer, "space"),
+    ] {
+        cx.update(|cx| cx.set_global(RunningMessageDefault(behavior)));
+        stream.update(cx, |stream, cx| {
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text("follow up", cx));
+        });
+        assert_eq!(bounds(window, "composer-running-send", cx), idle);
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("composer-stop")
+                .is_none()
+        );
+        focus_composer(window, &stream, cx);
+        cx.simulate_keystrokes(window.into(), "shift-tab");
+        cx.simulate_keystrokes(window.into(), key);
+        assert_eq!(
+            submitted.lock().unwrap().last().unwrap().pending_behavior,
+            Some(behavior)
+        );
+        assert_eq!(bounds(window, "composer-stop", cx), idle);
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("composer-running-send")
+                .is_none()
+        );
+        stream.update(cx, |stream, cx| {
+            stream.accept_queued_submission("follow up", cx)
+        });
+        assert!(stream.read_with(cx, |stream, cx| stream.input.read(cx).text().is_empty()));
+        assert_eq!(bounds(window, "composer-stop", cx), idle);
+    }
+    assert_eq!(submitted.lock().unwrap().len(), 2);
+    stream.update(cx, |stream, cx| {
+        stream
+            .input
+            .update(cx, |input, cx| input.set_text("click follow up", cx));
+    });
+    click(window, "composer-running-send", cx);
+    assert_eq!(submitted.lock().unwrap().len(), 3);
+    assert_eq!(
+        submitted.lock().unwrap()[2].pending_behavior,
+        Some(PendingMessageBehavior::Steer)
+    );
+    stream.update(cx, |stream, cx| {
+        stream.reject_composer_submission(cx);
+        stream.request_composer_stop(cx);
+    });
+    assert_eq!(bounds(window, "composer-stop", cx), idle);
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-running-send")
+            .is_none()
+    );
+}
+
+#[gpui_kit::test]
+async fn running_primary_action_attachment_import_and_clear_preserve_guards(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "attachment-primary-action");
+    stream.update(cx, |stream, cx| {
+        stream.begin_composer_run(cx);
+        let image = ImageAttachment::from_bytes(
+            include_bytes!("../../../../../assets/logo/raster/vega-icon-f1-original.png").to_vec(),
+        )
+        .unwrap();
+        let preview = crate::conversation_stream::attachments::ImagePreview::new(
+            image,
+            "draft.png".into(),
+            cx,
+        );
+        stream.attachments.push((1, preview));
+        stream.attachment_import_pending = true;
+        cx.notify();
+    });
+    let send = bounds(window, "composer-running-send", cx);
+    assert_eq!(
+        send.size,
+        gpui_kit::size(
+            px(Layout::COMPOSER_SEND_SIZE),
+            px(Layout::COMPOSER_SEND_SIZE)
+        )
+    );
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-stop")
+            .is_none()
+    );
+    click(window, "composer-running-send", cx);
+    assert!(!stream.read_with(cx, |stream, _| stream.composer_submit_pending));
+    stream.update(cx, |stream, cx| {
+        stream.attachment_import_pending = false;
+        assert!(stream.can_submit_message(cx));
+        stream.attachments.clear();
+        cx.notify();
+    });
+    bounds(window, "composer-stop", cx);
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-running-send")
+            .is_none()
+    );
+    window
+        .update(cx, |_, window, cx| {
+            use gpui_kit::EntityInputHandler;
+            let input = stream.read(cx).composer_input();
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "ni hao", Some(6..6), window, cx);
+            });
+        })
+        .unwrap();
+    click(window, "composer-running-send", cx);
+    assert!(!stream.read_with(cx, |stream, _| stream.composer_submit_pending));
+    assert!(stream.read_with(cx, |stream, cx| stream.input.read(cx).is_composing()));
 }
 
 #[gpui_kit::test]
@@ -536,6 +676,7 @@ async fn issue299_paused_queue_requires_explicit_resume_and_codex_has_no_queue_c
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("pending-message-rail").is_none());
     assert!(visual.debug_bounds("composer-running-send").is_none());
+    assert!(visual.debug_bounds("composer-stop").is_some());
     assert!(visual.debug_bounds("pending-resume").is_none());
 }
 

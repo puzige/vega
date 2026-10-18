@@ -98,3 +98,7 @@ Codex ACP 的后续会话、steering 扩展协商属于其现有未完成能力�
 遵循 `AGENTS.md` 与 `docs/vega-exec-guide.md`：新增代码不写注释（仅必要 unsafe SAFETY 例外）、不用非测试 unwrap/expect、无同步 UI IO、新依赖须先裁决。
 
 PR 使用 `Refs #299`，不得自动关闭。云端门禁通过后按仓库流程 squash 合并并置 In review，等待用户手测；保留本卡分支/worktree。回滚通过 revert 本卡 PR；schema 仅增不删，保留未发送消息数据，不静默删除用户输入。
+
+## 2026-10-18 用户修订：共用主按钮
+
+运行中的发送与停止改为同一主按钮位置互斥显示：有草稿时为插话/排队发送箭头，无草稿时为停止；提交/停止过渡与既有 guard 保持。详细验收与边界见 [Composer 单一主按钮](vega-composer-single-primary-action.md)。本修订只替代并排展示方式，不改变 queue/steer 调度和停止语义。

@@ -379,15 +379,12 @@ impl ConversationStream {
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_model_controls(window, cx))
                             })
+                            .when(self.shows_running_send(cx), |row| {
+                                row.child(self.render_running_send(can_send, cx))
+                            })
                             .when(
-                                self.actions.running
-                                    && self.thread.backend == TaskBackend::Native
-                                    && (!self.input.read(cx).text().is_empty()
-                                        || !self.attachments.is_empty()),
-                                |row| row.child(self.render_running_send(can_send, cx)),
-                            )
-                            .when(
-                                self.actions.running || self.composer_submit_pending,
+                                (self.actions.running || self.composer_submit_pending)
+                                    && !self.shows_running_send(cx),
                                 |row| row.child(self.render_composer_stop(cx)),
                             )
                             .when(
