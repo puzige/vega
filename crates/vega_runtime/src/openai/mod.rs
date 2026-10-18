@@ -139,7 +139,7 @@ impl OpenAiProvider {
             )
             .json(body)
             .build()?;
-        { self.http.execute(request).await }
+        self.http.execute(request).await
     }
 
     /// Sends the request (with retries) and returns the SSE event stream on

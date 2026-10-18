@@ -340,7 +340,7 @@ impl ImageSystem for NativeImageSystem {
     fn applications(&self, path: &Path) -> Result<Vec<ImageApplication>, ImageOpenError> {
         #[cfg(target_os = "macos")]
         {
-            { macos::applications(path) }
+            macos::applications(path)
         }
         #[cfg(not(target_os = "macos"))]
         {

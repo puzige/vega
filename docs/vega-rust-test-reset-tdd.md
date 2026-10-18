@@ -71,5 +71,12 @@
 - 保留业务连接检查、沙箱自检、生产断言、benchmark 和打包逻辑。侧边栏排序、滚动渐隐的生产差异另做专项静态审查；控件 ID、无障碍、焦点、事件、滚动句柄及绘制接线保留。
 - Cargo 离线同步移除 16 条过时 workspace 依赖边及 10 个仅由 GPUI 测试支持引入的包。依赖包由 924 减为 914，保留包版本、来源和校验和不变；生产 `tempfile` 保留。
 - 本地已执行：`cargo fmt --all -- --check`、`git diff HEAD --check`、无依赖 Cargo metadata、离线 workspace 锁文件一致性检查、TOML/YAML/嵌入 Python AST 与 CI shell 语法检查、模块/文件嵌入引用检查、受保护文件字节对比。静态解析库的旧 Rust 语法限制与早期崩溃不作为通过证据；最终格式检查独立解析全部保留源码。
-- **未执行，待云端验证**：Rust 编译/类型/借用检查、Clippy、Rust/Nextest 和三组 Python 测试。当前无本轮云端运行结果，Nextest 实际发现与执行数尚未取得；零源码测试不冒充运行通过。
+- **本地未执行**：Rust 编译/类型/借用检查、Clippy、Rust/Nextest 和三组 Python 测试；云端结果独立记录如下，不把本地静态检查称为运行通过。
 - 63 个受保护路径（脚本、资源、迁移、发布工作流、Nextest 配置、工具链及 benchmark 入口）与最终基线字节一致。
+
+## PR 与云端验证记录
+
+PR：[Rust 测试清零与测试先行规则](https://github.com/puzige/vega/pull/473)。
+
+- 首轮提交 `f2a1e4a7`：[Actions 39122759500](https://github.com/puzige/vega/actions/runs/39122759500)。格式通过；Nextest job 成功，Python 三组分别 5、15、14 个测试通过；Rust 实际清点为 0 发现、0 执行（14 个 binary），明确回执 `no Rust tests`，不称为 Rust 测试全部通过。
+- 首轮 Clippy 失败：删除测试条件分支后留下单表达式花括号，`unused_braces` 被 `-D warnings` 拦截；完整 Nextest 构建日志还显示了同类 wrapper 和一个测试 selector 删除后的未用局部变量。保留首次失败证据，修复仅做机械清理，不新增测试、不降低 lint 或 CI 门禁。最新修复 head 的完整 required check 待云端验证，首轮 Nextest 成功不替代最新 head 验证。

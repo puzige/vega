@@ -93,7 +93,6 @@ impl RunNotice {
         }
         let recovery_id = self.message_id.clone();
         let credential_failure = self.can_resume_credentials() && !reading_preview;
-        let message_id = self.message_id.clone();
         let color = match self.kind {
             RunNoticeKind::Retrying { .. } => colors.text_secondary,
             RunNoticeKind::Failure(_)

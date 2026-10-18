@@ -6,6 +6,6 @@ impl SendRequest for reqwest::RequestBuilder {
         let (client, request) = self.build_split();
         let request = request?;
 
-        { client.execute(request).await }
+        client.execute(request).await
     }
 }

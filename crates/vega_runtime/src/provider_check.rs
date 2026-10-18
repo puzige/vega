@@ -266,5 +266,5 @@ async fn send_request(
     client: &reqwest::Client,
     request: reqwest::Request,
 ) -> Result<reqwest::Response, reqwest::Error> {
-    { client.execute(request).await }
+    client.execute(request).await
 }

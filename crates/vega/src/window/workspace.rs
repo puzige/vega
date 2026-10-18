@@ -289,7 +289,7 @@ impl VegaWindow {
                 database_path,
                 project_id: project_id.clone(),
             };
-            { vega_ui::terminal::TerminalView::for_target(target, cx) }
+            vega_ui::terminal::TerminalView::for_target(target, cx)
         });
         self.workspace.terminals.insert(
             id,
