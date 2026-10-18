@@ -84,13 +84,10 @@ pub fn load_catalog_snapshot(path: &Path) -> Result<CatalogSnapshot, PricingErro
 
 /// Loads an existing catalog or atomically seeds the built-in five-model catalog.
 pub fn load_or_seed_catalog(path: &Path) -> Result<CatalogLoad, PricingError> {
-    load_or_seed_catalog_inner(path, SaveFault::None)
+    load_or_seed_catalog_inner(path)
 }
 
-fn load_or_seed_catalog_inner(
-    path: &Path,
-    seed_fault: SaveFault,
-) -> Result<CatalogLoad, PricingError> {
+fn load_or_seed_catalog_inner(path: &Path) -> Result<CatalogLoad, PricingError> {
     match fs::symlink_metadata(path) {
         Ok(_) => load_catalog(path).map(|catalog| CatalogLoad {
             catalog,
@@ -99,7 +96,7 @@ fn load_or_seed_catalog_inner(
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let catalog = PricingCatalog::built_in()?;
-            match save_catalog_atomic_inner(path, &catalog, seed_fault) {
+            match save_catalog_atomic_inner(path, &catalog) {
                 Ok(()) => Ok(CatalogLoad {
                     catalog: load_catalog(path)?,
                     seeded: true,
@@ -126,52 +123,16 @@ fn load_or_seed_catalog_inner(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn load_or_seed_with_postcommit_failure(
-    path: &Path,
-) -> Result<CatalogLoad, PricingError> {
-    load_or_seed_catalog_inner(path, SaveFault::AfterRename)
-}
-
 /// Atomically replaces one explicit pricing file after complete validation.
 ///
 /// A successful rename is the commit point. A later directory-sync failure
 /// returns [`PricingError::CommittedDurabilityUnknown`], meaning the new bytes
 /// may already be visible and callers must not blindly retry.
 pub fn save_catalog_atomic(path: &Path, catalog: &PricingCatalog) -> Result<(), PricingError> {
-    save_catalog_atomic_inner(path, catalog, SaveFault::None)
+    save_catalog_atomic_inner(path, catalog)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SaveFault {
-    None,
-    #[cfg(test)]
-    BeforeRename,
-    #[cfg(test)]
-    ChangeTargetBeforeRecheck,
-    #[cfg(test)]
-    AfterRename,
-    #[cfg(test)]
-    TempCollisionExhaustion,
-    #[cfg(test)]
-    Write,
-    #[cfg(test)]
-    Flush,
-    #[cfg(test)]
-    FileSync,
-    #[cfg(test)]
-    Rename,
-    #[cfg(test)]
-    DirectoryOpen,
-    #[cfg(test)]
-    DirectorySync,
-}
-
-fn save_catalog_atomic_inner(
-    path: &Path,
-    catalog: &PricingCatalog,
-    _fault: SaveFault,
-) -> Result<(), PricingError> {
+fn save_catalog_atomic_inner(path: &Path, catalog: &PricingCatalog) -> Result<(), PricingError> {
     let bytes = catalog.encode()?;
     let parent = path
         .parent()
@@ -186,59 +147,29 @@ fn save_catalog_atomic_inner(
         PricingCatalog::decode(bytes)?;
     }
 
-    let (mut file, temp_path) = create_temp(parent, file_name, _fault)?;
+    let (mut file, temp_path) = create_temp(parent, file_name)?;
     let mut cleanup = TempCleanup::new(temp_path);
     let precommit = (|| -> Result<(), PricingError> {
-        #[cfg(test)]
-        if _fault == SaveFault::Write {
-            file.write_all(&bytes[..bytes.len() / 2])
-                .map_err(|_| PricingError::io("write"))?;
-            return Err(PricingError::io("write"));
-        }
         file.write_all(&bytes)
             .map_err(|_| PricingError::io("write"))?;
-        #[cfg(test)]
-        if _fault == SaveFault::Flush {
-            return Err(PricingError::io("flush"));
-        }
+
         file.flush().map_err(|_| PricingError::io("flush"))?;
-        #[cfg(test)]
-        if _fault == SaveFault::FileSync {
-            return Err(PricingError::io("file_sync"));
-        }
+
         file.sync_all().map_err(|_| PricingError::io("file_sync"))?;
         drop(file);
-        #[cfg(test)]
-        if _fault == SaveFault::ChangeTargetBeforeRecheck {
-            fs::write(path, b"concurrent winner")
-                .map_err(|_| PricingError::io("injected_target_change"))?;
-        }
+
         if snapshot_target(path)? != target_snapshot {
             return Err(PricingError::SaveTargetChanged);
         }
-        #[cfg(test)]
-        if _fault == SaveFault::BeforeRename {
-            return Err(PricingError::io("injected_precommit"));
-        }
-        #[cfg(test)]
-        if _fault == SaveFault::Rename {
-            return Err(PricingError::io("rename"));
-        }
+
         fs::rename(cleanup.path()?, path).map_err(|_| PricingError::io("rename"))?;
         cleanup.disarm();
         Ok(())
     })();
     precommit?;
 
-    #[cfg(test)]
-    if matches!(_fault, SaveFault::AfterRename | SaveFault::DirectoryOpen) {
-        return Err(PricingError::CommittedDurabilityUnknown);
-    }
     let directory = File::open(parent).map_err(|_| PricingError::CommittedDurabilityUnknown)?;
-    #[cfg(test)]
-    if _fault == SaveFault::DirectorySync {
-        return Err(PricingError::CommittedDurabilityUnknown);
-    }
+
     directory
         .sync_all()
         .map_err(|_| PricingError::CommittedDurabilityUnknown)
@@ -359,7 +290,6 @@ fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
 fn create_temp(
     parent: &Path,
     file_name: &std::ffi::OsStr,
-    _fault: SaveFault,
 ) -> Result<(File, PathBuf), PricingError> {
     let process_id = std::process::id();
     for _ in 0..TEMP_ATTEMPTS {
@@ -368,17 +298,7 @@ fn create_temp(
         temp_name.push(file_name);
         temp_name.push(format!(".vega-{process_id}-{sequence}.tmp"));
         let temp_path = parent.join(temp_name);
-        #[cfg(test)]
-        let opened = if _fault == SaveFault::TempCollisionExhaustion {
-            TEMP_COLLISION_ATTEMPTS.with(|count| count.set(count.get() + 1));
-            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
-        } else {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp_path)
-        };
-        #[cfg(not(test))]
+
         let opened = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -390,21 +310,6 @@ fn create_temp(
         }
     }
     Err(PricingError::io("temp_create"))
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEMP_COLLISION_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_temp_collision_attempts() {
-    TEMP_COLLISION_ATTEMPTS.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn temp_collision_attempts() -> u64 {
-    TEMP_COLLISION_ATTEMPTS.with(std::cell::Cell::get)
 }
 
 struct TempCleanup {
@@ -431,37 +336,4 @@ impl Drop for TempCleanup {
             let _ = fs::remove_file(path);
         }
     }
-}
-
-#[cfg(test)]
-pub(crate) fn save_with_precommit_failure(
-    path: &Path,
-    catalog: &PricingCatalog,
-) -> Result<(), PricingError> {
-    save_catalog_atomic_inner(path, catalog, SaveFault::BeforeRename)
-}
-
-#[cfg(test)]
-pub(crate) fn save_with_postcommit_failure(
-    path: &Path,
-    catalog: &PricingCatalog,
-) -> Result<(), PricingError> {
-    save_catalog_atomic_inner(path, catalog, SaveFault::AfterRename)
-}
-
-#[cfg(test)]
-pub(crate) fn save_with_concurrent_target_change(
-    path: &Path,
-    catalog: &PricingCatalog,
-) -> Result<(), PricingError> {
-    save_catalog_atomic_inner(path, catalog, SaveFault::ChangeTargetBeforeRecheck)
-}
-
-#[cfg(test)]
-pub(crate) fn save_with_fault(
-    path: &Path,
-    catalog: &PricingCatalog,
-    fault: SaveFault,
-) -> Result<(), PricingError> {
-    save_catalog_atomic_inner(path, catalog, fault)
 }

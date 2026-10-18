@@ -289,14 +289,7 @@ impl VegaWindow {
                 database_path,
                 project_id: project_id.clone(),
             };
-            #[cfg(not(test))]
-            {
-                vega_ui::terminal::TerminalView::for_target(target, cx)
-            }
-            #[cfg(test)]
-            {
-                vega_ui::terminal::TerminalView::for_test_target(target, cx)
-            }
+            vega_ui::terminal::TerminalView::for_target(target, cx)
         });
         self.workspace.terminals.insert(
             id,
@@ -1036,20 +1029,12 @@ impl VegaWindow {
                 }
                 cx.notify();
             }),
-        )
-        .debug_selector(|| "environment-close".into());
+        );
         let mut card = div()
             .id(if overlay {
                 "environment-overlay-card"
             } else {
                 "environment-card"
-            })
-            .debug_selector(move || {
-                if overlay {
-                    "environment-overlay-card".into()
-                } else {
-                    "environment-card".into()
-                }
             })
             .w(px(Layout::ENVIRONMENT_CARD_WIDTH))
             .max_w_full()
@@ -1077,7 +1062,6 @@ impl VegaWindow {
         if let Some(label) = project_label {
             card = card.child(
                 div()
-                    .debug_selector(|| "environment-project".into())
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .flex()
                     .items_center()
@@ -1121,13 +1105,6 @@ impl VegaWindow {
             } else {
                 "environment-rail"
             })
-            .debug_selector(move || {
-                if overlay {
-                    "environment-overlay".into()
-                } else {
-                    "environment-rail".into()
-                }
-            })
             .w(px(Layout::ENVIRONMENT_RAIL_WIDTH))
             .h_full()
             .flex_shrink_0()
@@ -1166,39 +1143,8 @@ impl VegaWindow {
             self.workspace.reveal_tabs[index] = false;
         }
         let tabs_selector = if bottom { "bottom-tabs" } else { "right-tabs" };
-        let header_selector = if bottom {
-            "bottom-workspace-header"
-        } else {
-            "right-workspace-header"
-        };
-        let actions_selector = if bottom {
-            "bottom-workspace-actions"
-        } else {
-            "right-workspace-actions"
-        };
-        let add_selector = if bottom {
-            "bottom-workspace-add"
-        } else {
-            "right-workspace-add"
-        };
-        let dock_selector = if bottom {
-            "bottom-workspace-dock"
-        } else {
-            "right-workspace-dock"
-        };
-        let maximize_selector = if bottom {
-            "bottom-workspace-maximize"
-        } else {
-            "right-workspace-maximize"
-        };
-        let hide_selector = if bottom {
-            "bottom-workspace-hide"
-        } else {
-            "right-workspace-hide"
-        };
         let mut strip = div()
             .id(tabs_selector)
-            .debug_selector(move || tabs_selector.into())
             .flex()
             .flex_1()
             .min_w_0()
@@ -1223,7 +1169,6 @@ impl VegaWindow {
             let tab_icon = Self::workspace_tab_icon(&key);
             let tab_group = SharedString::from(format!("workspace-tab-group-{key:?}"));
             let tab_selector = SharedString::from(format!("workspace-tab-{key:?}"));
-            let close_selector = SharedString::from(format!("workspace-tab-close-{key:?}"));
             let tab_focus = self
                 .workspace
                 .tab_focuses
@@ -1244,12 +1189,10 @@ impl VegaWindow {
                     .group_hover(tab_group.clone(), |style| style.opacity(1.))
                     .in_focus(|style| style.opacity(1.))
                     .focus_visible(|style| style.opacity(1.))
-            })
-            .debug_selector(move || close_selector.to_string());
+            });
             strip = strip.child(
                 div()
                     .id(tab_selector.clone())
-                    .debug_selector(move || tab_selector.to_string())
                     .aria_label(label.clone())
                     .flex_shrink_0()
                     .max_w_full()
@@ -1305,75 +1248,57 @@ impl VegaWindow {
                     .child(close),
             );
         }
-        let mut actions = div()
-            .debug_selector(move || actions_selector.into())
-            .flex()
-            .items_center()
-            .gap_1()
-            .flex_shrink_0();
+        let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
         if review_selected {
-            actions = actions.child(
-                icon_button(
-                    Icon::Document,
-                    "提交更改",
-                    colors,
-                    cx.listener(|this, _, _, cx| this.workspace_open_commit(cx)),
-                )
-                .debug_selector(|| "workspace-review-commit".into()),
-            );
+            actions = actions.child(icon_button(
+                Icon::Document,
+                "提交更改",
+                colors,
+                cx.listener(|this, _, _, cx| this.workspace_open_commit(cx)),
+            ));
         }
         let actions = actions
-            .child(
-                icon_button(
-                    Icon::Plus,
-                    "新建工作区标签",
-                    colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.workspace_toggle_menu(bottom, window, cx)
-                    }),
-                )
-                .debug_selector(move || add_selector.into()),
-            )
-            .child(
-                icon_button(
-                    Icon::DockMove,
-                    if bottom {
-                        "移到右侧"
-                    } else {
-                        "移到底部"
-                    },
-                    colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.workspace_move_selected(index, window, cx);
-                    }),
-                )
-                .debug_selector(move || dock_selector.into()),
-            )
-            .child(
-                icon_button(
-                    Icon::Maximize,
-                    if self.workspace.maximized[index] {
-                        "还原工作区"
-                    } else {
-                        "最大化工作区"
-                    },
-                    colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.image_preview.previous_maximized = None;
-                        if this.workspace.selected[index] == Some(TabKey::Subagents) {
-                            this.subagent_panel.previous_maximized = None;
-                        }
-                        this.workspace.maximized[index] = !this.workspace.maximized[index];
-                        this.workspace.reveal_tabs[index] = true;
-                        this.workspace_focus(index, window, cx);
-                        cx.notify();
-                    }),
-                )
-                .debug_selector(move || maximize_selector.into()),
-            );
+            .child(icon_button(
+                Icon::Plus,
+                "新建工作区标签",
+                colors,
+                cx.listener(move |this, _, window, cx| {
+                    this.workspace_toggle_menu(bottom, window, cx)
+                }),
+            ))
+            .child(icon_button(
+                Icon::DockMove,
+                if bottom {
+                    "移到右侧"
+                } else {
+                    "移到底部"
+                },
+                colors,
+                cx.listener(move |this, _, window, cx| {
+                    this.workspace_move_selected(index, window, cx);
+                }),
+            ))
+            .child(icon_button(
+                Icon::Maximize,
+                if self.workspace.maximized[index] {
+                    "还原工作区"
+                } else {
+                    "最大化工作区"
+                },
+                colors,
+                cx.listener(move |this, _, window, cx| {
+                    this.image_preview.previous_maximized = None;
+                    if this.workspace.selected[index] == Some(TabKey::Subagents) {
+                        this.subagent_panel.previous_maximized = None;
+                    }
+                    this.workspace.maximized[index] = !this.workspace.maximized[index];
+                    this.workspace.reveal_tabs[index] = true;
+                    this.workspace_focus(index, window, cx);
+                    cx.notify();
+                }),
+            ));
 
         let header = div()
-            .debug_selector(move || header_selector.into())
             .flex()
             .items_center()
             .gap_1()
@@ -1384,19 +1309,16 @@ impl VegaWindow {
                     Layout::SHELL_SLOT_CLUSTER_RESERVE + Layout::SHELL_SLOT_GUTTER
                 ))
             })
-            .child(
-                icon_button(
-                    if bottom {
-                        Icon::ChevronDown
-                    } else {
-                        Icon::ChevronRight
-                    },
-                    "隐藏面板",
-                    colors,
-                    cx.listener(move |this, _, window, cx| this.workspace_hide(index, window, cx)),
-                )
-                .debug_selector(move || hide_selector.into()),
-            )
+            .child(icon_button(
+                if bottom {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                },
+                "隐藏面板",
+                colors,
+                cx.listener(move |this, _, window, cx| this.workspace_hide(index, window, cx)),
+            ))
             .child(strip)
             .child(actions);
         let body = match selected {
@@ -1593,7 +1515,6 @@ impl VegaWindow {
                 )
                 .child(
                     div()
-                        .debug_selector(|| "right-workspace-pane".into())
                         .w(px(width))
                         .h_full()
                         .flex_shrink_0()
@@ -1631,7 +1552,6 @@ impl VegaWindow {
                 )
                 .child(
                     div()
-                        .debug_selector(|| "bottom-workspace-pane".into())
                         .h(px(height))
                         .flex_shrink_0()
                         .child(self.render_workspace_pane(true, window, cx)),
@@ -1639,20 +1559,14 @@ impl VegaWindow {
         }
         if environment_overlay {
             layout = layout
-                .child(
-                    div()
-                        .debug_selector(|| "environment-overlay-backdrop".into())
-                        .absolute()
-                        .inset_0()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.environment_overlay_open = false;
-                                this.workspace_focus_composer(window, cx);
-                                cx.notify();
-                            }),
-                        ),
-                )
+                .child(div().absolute().inset_0().on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.environment_overlay_open = false;
+                        this.workspace_focus_composer(window, cx);
+                        cx.notify();
+                    }),
+                ))
                 .child(
                     div()
                         .absolute()
@@ -1683,7 +1597,6 @@ impl VegaWindow {
                 .clone();
             let mut menu = div()
                 .id("workspace-add-menu")
-                .debug_selector(|| "workspace-add-menu".into())
                 .track_focus(&focus)
                 .key_context("WorkspaceMenu")
                 .on_key_down(cx.listener(|_this, event: &KeyDownEvent, window, cx| {
@@ -1739,13 +1652,11 @@ impl VegaWindow {
             for action in creation_actions {
                 menu = match action {
                     WorkspaceCreateAction::Subagents => menu.child(workspace_button(
-                        "workspace-add-subagents",
                         "Subagents",
                         colors,
                         cx.listener(|this, _, window, cx| this.open_subagent_panel(window, cx)),
                     )),
                     WorkspaceCreateAction::Review => menu.child(workspace_button(
-                        "workspace-add-review",
                         "Review · 工作区变更",
                         colors,
                         cx.listener(|this, _, _, cx| {
@@ -1755,7 +1666,6 @@ impl VegaWindow {
                         }),
                     )),
                     WorkspaceCreateAction::NewTerminal => menu.child(workspace_button(
-                        "workspace-add-terminal",
                         "终端 · 新建登录 shell",
                         colors,
                         cx.listener(|this, _, window, cx| {
@@ -1797,7 +1707,6 @@ impl VegaWindow {
 }
 
 fn workspace_button(
-    selector: &'static str,
     label: impl Into<SharedString>,
     colors: ThemeColors,
     activate: impl Fn(&(), &mut Window, &mut App) + 'static,
@@ -1808,7 +1717,6 @@ fn workspace_button(
     let keyboard = activate.clone();
     div()
         .id(label.clone())
-        .debug_selector(move || selector.into())
         .aria_label(keyboard_label)
         .focusable()
         .tab_stop(true)
@@ -1846,7 +1754,6 @@ fn environment_action(
     let keyboard = activate.clone();
     div()
         .id(id)
-        .debug_selector(move || id.into())
         .aria_label(label)
         .focusable()
         .tab_stop(true)

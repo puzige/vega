@@ -689,8 +689,7 @@ impl<'de> Deserialize<'de> for RawModel {
         D: Deserializer<'de>,
     {
         let decoded = RawModelDecoded::deserialize(deserializer)?;
-        #[cfg(test)]
-        RAW_MODEL_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+
         Ok(Self {
             model: decoded.model,
             input_usd_per_million: decoded.input_usd_per_million,
@@ -735,8 +734,7 @@ impl<'de> Deserialize<'de> for RawWindow {
         D: Deserializer<'de>,
     {
         let decoded = RawWindowDecoded::deserialize(deserializer)?;
-        #[cfg(test)]
-        RAW_WINDOW_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+
         Ok(Self {
             weekdays: decoded.weekdays,
             start_minute: decoded.start_minute,
@@ -823,25 +821,6 @@ where
         message,
         marker: std::marker::PhantomData,
     })
-}
-
-#[cfg(test)]
-thread_local! {
-    static RAW_MODEL_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static RAW_WINDOW_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_raw_construction_counts() {
-    RAW_MODEL_CONSTRUCTIONS.with(|count| count.set(0));
-    RAW_WINDOW_CONSTRUCTIONS.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn raw_construction_counts() -> (usize, usize) {
-    let models = RAW_MODEL_CONSTRUCTIONS.with(std::cell::Cell::get);
-    let windows = RAW_WINDOW_CONSTRUCTIONS.with(std::cell::Cell::get);
-    (models, windows)
 }
 
 impl From<RawModel> for ModelPricingSpec {

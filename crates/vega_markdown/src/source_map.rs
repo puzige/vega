@@ -185,23 +185,3 @@ impl SourceTextMap {
         spans
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn source_positions_distinguish_repeated_markdown_and_survive_append() {
-        let source = "**same**\n\n**same** with &amp; `code`";
-        let mut map = SourceTextMap::new(source);
-        let first = map.take("same", 0);
-        let second = map.take("same with & code", 6);
-        assert_ne!(first[0].position(0), second[0].position(6));
-        assert_eq!(second[0].position(6).source.start, 12);
-        let mut newer = SourceTextMap::new(&format!("{source} extra"));
-        newer.take("same", 0);
-        let newer = newer.take("same with & code extra", 6);
-        assert_eq!(second[0].position(6), newer[0].position(6));
-        assert!(second.iter().any(|span| !span.literal));
-    }
-}

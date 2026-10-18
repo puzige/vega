@@ -135,13 +135,6 @@ fn styled_text(
                     }
                 })
                 .collect::<Vec<_>>();
-            #[cfg(test)]
-            if let Some(probe) = cx.try_global::<PaintProbe>() {
-                probe.0.borrow_mut().push(PaintSample {
-                    text: shown.clone(),
-                    moving,
-                });
-            }
             let shaped = window
                 .text_system()
                 .shape_line(shown.into(), px(font_size), &runs, None);
@@ -169,16 +162,3 @@ fn styled_text(
         .child(canvas)
         .into_any_element()
 }
-
-#[cfg(test)]
-#[derive(Default)]
-pub(crate) struct PaintProbe(pub std::cell::RefCell<Vec<PaintSample>>);
-
-#[cfg(test)]
-pub(crate) struct PaintSample {
-    pub text: String,
-    pub moving: bool,
-}
-
-#[cfg(test)]
-impl gpui_kit::Global for PaintProbe {}

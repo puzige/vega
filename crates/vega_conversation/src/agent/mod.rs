@@ -5,9 +5,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use tokio::sync::{mpsc, oneshot, watch};

@@ -79,7 +79,6 @@ impl RunNotice {
         if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
             return gpui_kit::div()
                 .id(format!("assistant-network-retry-{}", self.message_id))
-                .debug_selector(|| "assistant-network-retry".into())
                 .w_full()
                 .min_w_0()
                 .py_1()
@@ -94,7 +93,6 @@ impl RunNotice {
         }
         let recovery_id = self.message_id.clone();
         let credential_failure = self.can_resume_credentials() && !reading_preview;
-        let message_id = self.message_id.clone();
         let color = match self.kind {
             RunNoticeKind::Retrying { .. } => colors.text_secondary,
             RunNoticeKind::Failure(_)
@@ -103,7 +101,6 @@ impl RunNotice {
             | RunNoticeKind::CompactionFailure(_) => colors.danger,
         };
         gpui_kit::div()
-            .debug_selector(move || format!("run-notice-{message_id}"))
             .w_full()
             .min_w_0()
             .py_1()
@@ -117,7 +114,7 @@ impl RunNotice {
                                 | RunNoticeKind::ContextFailure
                                 | RunNoticeKind::CompactionFailure(_)
                         ),
-                        |row| row.debug_selector(|| "assistant-run-failure".into()),
+                        |row| row,
                     )
                     .child(render_rows::plain_error_notice(self.text(), color)),
             )

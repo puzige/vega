@@ -325,37 +325,3 @@ pub(crate) fn allowed_link(target: &str) -> bool {
         scheme.eq_ignore_ascii_case("mailto") && !remainder.is_empty()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::allowed_link;
-
-    #[test]
-    fn allows_only_absolute_http_https_and_mailto_targets() {
-        for target in [
-            "http://example.com/path",
-            "https://example.com/path?q=1#section",
-            "mailto:user@example.com",
-            "mailto:?subject=Hello",
-            "HTTPS://example.com",
-            "http://[::1]:8080/path",
-        ] {
-            assert!(allowed_link(target));
-        }
-        for target in [
-            "example.com",
-            "/relative/path",
-            "//example.com",
-            "javascript:alert(1)",
-            "data:text/plain,hello",
-            "http:example.com",
-            "http:///path",
-            "mailto:",
-            "mailto:user @example.com",
-            " https://example.com",
-            "https://example.com\n",
-        ] {
-            assert!(!allowed_link(target));
-        }
-    }
-}

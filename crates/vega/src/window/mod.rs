@@ -25,8 +25,6 @@ mod commit;
 mod commit_reconcile;
 mod composer_predictions;
 mod context;
-#[cfg(test)]
-pub(crate) use context::run_manual_context_worker;
 mod diff;
 mod file_index;
 mod image_preview;
@@ -47,8 +45,6 @@ mod updater;
 mod workspace;
 
 use self::file_index::*;
-#[cfg(test)]
-pub(crate) use self::file_index::{ActiveFileIndex, FileIndexOwner};
 use crate::app_agent::*;
 use crate::artifact_controller::*;
 use crate::branch_controller::*;
@@ -183,50 +179,10 @@ pub(crate) struct VegaWindow {
     #[cfg(test)]
     pub(crate) model_selection_config_override: Option<std::path::PathBuf>,
     #[cfg(test)]
-    pub(crate) commit_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
-    #[cfg(test)]
     pub(crate) agent_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
-    /// Per-window worker entry probe used by production-path tests. Keeping
-    /// the counter with its owning controller prevents unrelated concurrent
-    /// gpui tests from changing the zero/one spawn evidence.
-    #[cfg(test)]
-    pub(crate) agent_worker_start_probe: Arc<AgentWorkerStartProbe>,
-    #[cfg(test)]
-    pub(crate) commit_test_probe: Option<Arc<CommitTestProbe>>,
-    #[cfg(test)]
-    pub(crate) pricing_drop_next_worker_result: bool,
-    #[cfg(test)]
-    pub(crate) pricing_next_worker_gate: Option<Arc<std::sync::Barrier>>,
-    #[cfg(test)]
-    pub(crate) model_selection_worker_gate: Option<Arc<std::sync::Barrier>>,
-    #[cfg(test)]
-    pub(crate) reasoning_save_worker_gate: Option<Arc<std::sync::Barrier>>,
-    #[cfg(test)]
-    pub(crate) model_catalog_worker_gate: Option<Arc<std::sync::Barrier>>,
 }
 
 impl VegaWindow {
-    pub(crate) fn record_commit_probe(&self, event: &'static str) {
-        #[cfg(not(test))]
-        let _ = event;
-        #[cfg(test)]
-        if let Some(probe) = &self.commit_test_probe {
-            probe.record(event);
-        }
-    }
-
-    pub(crate) fn record_commit_terminal_application(&self, trace: bool) {
-        #[cfg(not(test))]
-        let _ = trace;
-        #[cfg(test)]
-        if let Some(probe) = &self.commit_test_probe {
-            probe.terminal_applications.fetch_add(1, Ordering::SeqCst);
-            if trace {
-                probe.record("panel_terminal");
-            }
-        }
-    }
-
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         cx.on_release(|this, cx| {
             if cx
@@ -373,23 +329,7 @@ impl VegaWindow {
             #[cfg(test)]
             model_selection_config_override: None,
             #[cfg(test)]
-            commit_provider_override: None,
-            #[cfg(test)]
             agent_provider_override: None,
-            #[cfg(test)]
-            agent_worker_start_probe: Arc::new(AgentWorkerStartProbe::default()),
-            #[cfg(test)]
-            commit_test_probe: None,
-            #[cfg(test)]
-            pricing_drop_next_worker_result: false,
-            #[cfg(test)]
-            pricing_next_worker_gate: None,
-            #[cfg(test)]
-            model_selection_worker_gate: None,
-            #[cfg(test)]
-            reasoning_save_worker_gate: None,
-            #[cfg(test)]
-            model_catalog_worker_gate: None,
         };
         window.start_pricing_load(cx);
         if !cfg!(test) {

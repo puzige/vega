@@ -3,13 +3,9 @@ name = "vega_conversation"
 version.workspace = true
 edition.workspace = true
 
-[features]
-test-support = ["dep:tempfile", "vega_runtime/test-support", "vega_mcp/test-support"]
-
 [dependencies]
 ring.workspace = true
 vega_credentials = { workspace = true }
-tempfile = { workspace = true, optional = true }
 vega_store = { workspace = true }
 vega_runtime = { workspace = true }
 vega_mcp = { workspace = true }
@@ -30,12 +26,6 @@ vt100.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
-vega_conversation = { path = ".", features = ["test-support"] }
-vega_mcp = { workspace = true, features = ["test-support"] }
 vega_runtime = { workspace = true, features = ["test-support"] }
-vega_tools = { workspace = true, features = ["test-support"] }
-tracing-subscriber = { workspace = true }
-image = { workspace = true }
-base64 = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["test-util", "rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
