@@ -3,7 +3,8 @@ use crate::icons::Icon;
 use gpui_kit::{TestAppContext, VisualTestContext, WindowHandle};
 use vega_conversation::types::{
     ContextAccountingRecord, ContextAccountingSource, ContextAccountingStage,
-    ContextCompactionUsageState, TaskBackend, ThreadMode, ThreadStatus,
+    ContextCompactionUsageState, TaskBackend, ThreadMode, ThreadStatus, ToolCall, ToolCallStatus,
+    ToolResult,
 };
 
 fn accounting(
@@ -161,6 +162,126 @@ fn status(generation: u64, status: Status) -> ContextCompactionStatusRecord {
         failure: None,
         usage: ContextCompactionUsageState::Unknown,
     }
+}
+
+#[gpui_kit::test]
+async fn active_run_phases_follow_tools_and_owned_compaction_without_resetting_clock(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "phase-run".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::RunStarted {
+                    message_id: "phase-run".into(),
+                    started_at: Instant::now() - std::time::Duration::from_secs(22),
+                },
+                cx,
+            );
+            let group = stream.run_activity_groups["phase-run"].clone();
+            let started_at = group.read(cx).test_clock().0;
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: ToolCall {
+                        id: "phase-tool".into(),
+                        tool: "bash".into(),
+                        input_json: r#"{"cmd":"pwd"}"#.into(),
+                    },
+                },
+                cx,
+            );
+            assert_eq!(group.read(cx).test_label(), "Working for 22s");
+            stream.apply_event(
+                ConversationEvent::ToolCallRunning {
+                    call_id: "phase-tool".into(),
+                },
+                cx,
+            );
+            assert_eq!(group.read(cx).test_label(), "Running tools · 22s");
+            stream.apply_event(
+                ConversationEvent::ToolCallFinished {
+                    call_id: "phase-tool".into(),
+                    result: ToolResult {
+                        status: ToolCallStatus::Success,
+                        output: "observed".into(),
+                        reused: false,
+                        exit_code: Some(0),
+                        duration_ms: Some(1),
+                        truncated: Some(false),
+                        invalid: None,
+                    },
+                },
+                cx,
+            );
+            assert_eq!(group.read(cx).test_label(), "Working for 22s");
+            assert!(!stream.apply_context_status(
+                "other-thread",
+                "mock",
+                status(1, Status::Compacting),
+                cx
+            ));
+            assert_eq!(group.read(cx).test_label(), "Working for 22s");
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(1, Status::Compacting),
+                cx
+            ));
+            assert_eq!(group.read(cx).test_label(), "Compacting context · 22s");
+            group.update(cx, |group, cx| group.set_waiting(true, cx));
+            assert_eq!(group.read(cx).test_label(), "Awaiting confirmation for 22s");
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(1, Status::Succeeded),
+                cx
+            ));
+            assert_eq!(group.read(cx).test_label(), "Awaiting confirmation for 22s");
+            group.update(cx, |group, cx| group.set_waiting(false, cx));
+            assert_eq!(group.read(cx).test_label(), "Working for 22s");
+            stream.apply_event(
+                ConversationEvent::AssistantResponseStarted {
+                    message_id: "phase-run".into(),
+                    text_start_bytes: 0,
+                },
+                cx,
+            );
+            assert_eq!(group.read(cx).test_label(), "Waiting for response · 22s");
+            assert!(!stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(1, Status::Compacting),
+                cx
+            ));
+            assert_eq!(group.read(cx).test_label(), "Waiting for response · 22s");
+            assert_eq!(group.read(cx).test_clock().0, started_at);
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: "phase-run".into(),
+                    stop_reason: vega_conversation::types::ConversationStopReason::End,
+                    execution_duration_ms: Some(23_000),
+                },
+                cx,
+            );
+            assert_eq!(group.read(cx).test_label(), "Worked for 23s");
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Compacting),
+                cx
+            ));
+            assert_eq!(group.read(cx).test_label(), "Worked for 23s");
+            assert!(!group.read(cx).test_clock().1);
+        })
+        .unwrap();
 }
 
 #[test]

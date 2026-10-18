@@ -2058,7 +2058,7 @@ fn normalize_terminal_history_groups(
                                 && expected.tool_call_id.as_deref() == Some(stored.id.as_str())
                         })
                         .ok_or_else(invalid)?;
-                    if message != expected {
+                    if message.without_runtime_guidance() != *expected {
                         return Err(invalid());
                     }
                 }

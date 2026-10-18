@@ -631,7 +631,8 @@ async fn conflicting_persisted_call_id_is_not_silently_reused_or_executed() {
         }, .. } if output == CALL_ID_CONFLICT_OUTPUT
     )));
     assert!(provider.requests()[1].messages.iter().any(|message| {
-        message.role == ChatRole::Tool && message.content == CALL_ID_CONFLICT_OUTPUT
+        message.role == ChatRole::Tool
+            && message.content == format!("{CALL_ID_CONFLICT_OUTPUT}{PROGRESS_NOTICE}")
     }));
 }
 
@@ -1028,10 +1029,11 @@ async fn issue302_large_bash_output_is_bounded_for_fresh_and_reused_model_result
         .iter()
         .find(|message| message.role == ChatRole::Tool)
         .unwrap();
-    assert!(projected.content.len() <= 65_536);
-    assert!(projected.content.contains("omitted"));
-    assert!(projected.content.starts_with(&output[..100]));
-    assert!(projected.content.ends_with(&output[output.len() - 100..]));
+    let body = projected.content.strip_suffix(PROGRESS_NOTICE).unwrap();
+    assert!(body.len() <= 65_536);
+    assert!(body.contains("omitted"));
+    assert!(body.starts_with(&output[..100]));
+    assert!(body.ends_with(&output[output.len() - 100..]));
     let reused = requests[2]
         .messages
         .iter()
@@ -1039,7 +1041,9 @@ async fn issue302_large_bash_output_is_bounded_for_fresh_and_reused_model_result
         .collect::<Vec<_>>();
     assert_eq!(reused.len(), 2);
     assert_eq!(reused[0], projected);
-    assert_eq!(reused[1], projected);
+    let mut expected_reuse = projected.clone();
+    expected_reuse.content = body.to_string();
+    assert_eq!(reused[1], &expected_reuse);
     let finished = outcome
         .events
         .iter()

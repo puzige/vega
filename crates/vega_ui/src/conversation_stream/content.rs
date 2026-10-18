@@ -1156,6 +1156,24 @@ impl ConversationStream {
         self.feed_meter(&event, cx);
         self.clear_recovered_retry(&event);
         let phase = match &event {
+            ConversationEvent::AssistantResponseStarted { message_id, .. }
+                if self
+                    .active_agent_message
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == message_id) =>
+            {
+                Some(run_activity::RunPhase::Requesting)
+            }
+            ConversationEvent::ThinkingDelta { message_id, delta }
+            | ConversationEvent::SummaryDelta { message_id, delta }
+                if !delta.trim().is_empty()
+                    && self
+                        .active_agent_message
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == message_id) =>
+            {
+                Some(run_activity::RunPhase::Thinking)
+            }
             ConversationEvent::TextDelta { message_id, delta }
                 if delta.chars().any(|character| !character.is_whitespace())
                     && self
@@ -1168,7 +1186,7 @@ impl ConversationStream {
             ConversationEvent::ToolCallProposed { call }
                 if !self.tool_cards.contains_key(&call.id) =>
             {
-                Some(run_activity::RunPhase::Tool)
+                Some(run_activity::RunPhase::Working)
             }
             ConversationEvent::ToolCallRunning { call_id }
             | ConversationEvent::ToolCallFinished { call_id, .. }
@@ -1180,7 +1198,7 @@ impl ConversationStream {
             {
                 Some(
                     if matches!(&event, ConversationEvent::ToolCallFinished { .. }) {
-                        run_activity::RunPhase::Thinking
+                        run_activity::RunPhase::Working
                     } else {
                         run_activity::RunPhase::Tool
                     },

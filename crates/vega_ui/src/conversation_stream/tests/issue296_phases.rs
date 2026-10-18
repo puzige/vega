@@ -579,7 +579,7 @@ async fn issue296_run_clock_keeps_start_across_phase_and_terminal(cx: &mut TestA
         begin(stream, cx);
         let group = stream.run_activity_groups["run"].clone();
         let start = group.read(cx).test_clock().0;
-        assert_eq!(group.read(cx).test_label(), "Working for 22s");
+        assert_eq!(group.read(cx).test_label(), "Responding · 22s");
         stream.apply_event(
             ConversationEvent::RunStarted {
                 message_id: "run".into(),
@@ -594,7 +594,7 @@ async fn issue296_run_clock_keeps_start_across_phase_and_terminal(cx: &mut TestA
             cx,
         );
         assert_eq!(group.read(cx).test_clock().0, start);
-        assert!(group.read(cx).test_clock().2 == run_activity::RunPhase::Tool);
+        assert!(group.read(cx).test_clock().2 == run_activity::RunPhase::Working);
         stream.apply_event(terminal(), cx);
         assert_eq!(group.read(cx).test_label(), "Worked for 23s");
         assert!(!group.read(cx).test_clock().1);
