@@ -329,4 +329,5 @@ fn issue75_runtime_fixes_history_reloads_terminal_computer_results() {
     }
 }
 
+mod subagents;
 mod user_questions;

@@ -109,6 +109,7 @@ impl ConversationStream {
     /// the pixel adjustment exact), and in-flight entry indices shift so a
     /// streaming run keeps writing into its own turn.
     pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        let subagents = page.subagents.clone();
         let was_empty = self.entries.is_empty();
         self.ensure_entry_identities();
         let anchor = self.scroll_anchor_snapshot();
@@ -131,10 +132,14 @@ impl ConversationStream {
         self.hydration.loading = false;
         self.hydration.paused = false;
         self.hydration.paused_direction = None;
+        for snapshot in subagents {
+            self.apply_subagent(snapshot, cx);
+        }
         cx.notify();
     }
 
     pub fn apply_newer_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        let subagents = page.subagents.clone();
         self.ensure_entry_identities();
         let anchor = self.scroll_anchor_snapshot();
         let previous_len = self.entries.len();
@@ -150,6 +155,9 @@ impl ConversationStream {
         self.hydration.paused_direction = None;
         if appended_entries > 0 && !anchor.following_tail {
             self.restore_scroll_anchor(&anchor);
+        }
+        for snapshot in subagents {
+            self.apply_subagent(snapshot, cx);
         }
         cx.notify();
     }
@@ -650,6 +658,7 @@ impl ConversationStream {
         self.message_anchor_keyboard_id = None;
         self.list.reset(0);
         self.tool_cards.clear();
+        self.subagent_groups.clear();
         self.run_activity_groups.clear();
         self.run_responses.clear();
         self.artifact_cards.clear();

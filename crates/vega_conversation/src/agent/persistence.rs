@@ -1,7 +1,20 @@
 use super::*;
 
+#[derive(Clone)]
+pub(crate) struct DelegatedAuthority {
+    pub run_mode: RuntimeRunMode,
+    pub permission_mode: RuntimePermissionMode,
+    pub exact_rules: Vec<RuntimeExactRule>,
+}
+
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    pub(crate) subagent_host: Option<Arc<dyn crate::types::SubagentHost>>,
+    pub(crate) delegated: bool,
+    pub(crate) delegated_parent: Option<(String, String)>,
+    pub(crate) delegated_message_id: Option<String>,
+    pub(crate) delegated_authority: Option<DelegatedAuthority>,
+    pub(crate) delegated_context_budget: Option<vega_runtime::ContextBudget>,
     pub(crate) user_questions: Option<Arc<dyn vega_runtime::RuntimeUserQuestionHook>>,
     pub(crate) automation_claim: Option<crate::types::AutomationRunClaim>,
     pub(crate) automation_hook: Option<Arc<dyn vega_runtime::RuntimeAutomationHook>>,
@@ -47,6 +60,11 @@ pub(crate) enum InjectedPersistenceFailure {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_subagent_host(mut self, host: Arc<dyn crate::types::SubagentHost>) -> Self {
+        self.subagent_host = Some(host);
+        self
+    }
+
     pub fn with_user_questions(
         mut self,
         hook: Arc<dyn vega_runtime::RuntimeUserQuestionHook>,
@@ -281,12 +299,14 @@ impl PersistenceActor {
                             {
                                 hook.missing_usage();
                             }
-                            let transaction =
-                                if usage.is_some() && config.automation_claim.is_some() {
-                                    Some(store.immediate_transaction()?)
-                                } else {
-                                    None
-                                };
+                            let transaction = if usage.is_some()
+                                && (config.automation_claim.is_some()
+                                    || config.delegated_parent.is_some())
+                            {
+                                Some(store.immediate_transaction()?)
+                            } else {
+                                None
+                            };
                             persist_runtime_event(
                                 &store,
                                 &project_id,
@@ -299,6 +319,29 @@ impl PersistenceActor {
                                 &event,
                                 execution_duration_ms,
                             )?;
+                            if usage.is_some()
+                                && let Some((parent_thread, parent_message)) =
+                                    &config.delegated_parent
+                            {
+                                let cache_known = match event.as_ref() {
+                                    RuntimeEvent::UsageUpdated { usage, .. } => {
+                                        usage.cache_read.is_some() && usage.cache_write.is_some()
+                                    }
+                                    RuntimeEvent::ContextCompactionUsageUpdated { usage } => {
+                                        usage.usage.cache_read.is_some()
+                                            && usage.usage.cache_write.is_some()
+                                    }
+                                    _ => false,
+                                };
+                                vega_store::subagents::attribute_usage(
+                                    store.conn(),
+                                    store.conn().last_insert_rowid(),
+                                    &thread_id,
+                                    parent_thread,
+                                    parent_message,
+                                    cache_known,
+                                )?;
+                            }
                             if let (Some((input, output)), Some(claim)) =
                                 (usage, config.automation_claim.as_ref())
                             {

@@ -383,6 +383,9 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
         root.agent_controller.active.insert(
             failure_thread.id.clone(),
             ActiveAgentRun {
+                root_message_id: None,
+                delegated_message_id: None,
+                delegated_parent_thread: None,
                 queue_generation: "fixture-run".into(),
                 queue_delivery: None,
                 queue_ready: false,

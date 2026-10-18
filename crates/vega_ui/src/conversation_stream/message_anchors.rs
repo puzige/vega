@@ -91,7 +91,8 @@ impl ConversationStream {
                 | StreamEntry::Artifact { .. } => (MessageAnchorKind::Tool, "工具活动".to_string()),
                 StreamEntry::Plan { .. } => (MessageAnchorKind::Plan, "计划消息".to_string()),
                 StreamEntry::Summary { .. } => (MessageAnchorKind::Summary, "任务结果".to_string()),
-                StreamEntry::ContextCompaction { .. }
+                StreamEntry::Subagents { .. }
+                | StreamEntry::ContextCompaction { .. }
                 | StreamEntry::RunActivity { .. }
                 | StreamEntry::RunActivitySegment { .. }
                 | StreamEntry::Permission { .. }
@@ -647,6 +648,9 @@ pub(super) fn estimate_entry_height(
         .clamp(1., Layout::CONVERSATION_MAX_WIDTH);
     let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
     match entry {
+        StreamEntry::Subagents { group } => {
+            group.read(cx).row_count() as f32 * Layout::DISCLOSURE_HEADER_HEIGHT
+        }
         StreamEntry::RunActivity { group } => group.read(cx).estimated_header_height(),
         StreamEntry::RunActivitySegment { group, segment } => {
             group.read(cx).estimated_segment_height(

@@ -27,6 +27,37 @@ fn run(store: &Store, kind: AutomationKind, now: i64) -> AutomationRunClaim {
 }
 
 #[test]
+fn m17_parallel_provider_usage_and_delegated_budget_are_counted_once() {
+    use vega_runtime::RuntimeAutomationHook;
+    let store = fixture();
+    create(&store, "/goal --budget 20 parallel");
+    let claim = run(&store, AutomationKind::Goal, 1000);
+    let claim = activate_claim(&store, &claim).unwrap().unwrap();
+    let binding = AutomationBinding::new(std::path::PathBuf::new(), claim.clone());
+    binding.provider_started();
+    binding.provider_started();
+    binding.provider_started();
+    assert!(!binding.usage_complete());
+    binding.provider_usage();
+    binding.provider_usage();
+    assert!(!binding.usage_complete());
+    binding.provider_usage();
+    assert!(binding.usage_complete());
+    usage(&store, &claim, 1, 3, 1);
+    usage(&store, &claim, 2, 5, 1);
+    usage(&store, &claim, 2, 5, 1);
+    assert!(check_subagent_budget(store.conn(), &claim).is_ok());
+    usage(&store, &claim, 3, 10, 1);
+    assert!(check_subagent_budget(store.conn(), &claim).is_err());
+    finish(&store, &claim, true, binding.usage_complete(), 1, 2000).unwrap();
+    let task = load(&store, "thread").unwrap().remove(0);
+    assert_eq!(task.used_tokens, 21);
+    assert_eq!(task.status, AutomationStatus::BudgetLimited);
+    binding.missing_usage();
+    assert!(!binding.usage_complete());
+}
+
+#[test]
 fn revision_storage_limit_rejects_pause_without_changing_the_task() {
     let store = fixture();
     let mut task = create(&store, "/goal verify bounds").remove(0);

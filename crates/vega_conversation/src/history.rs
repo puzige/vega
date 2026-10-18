@@ -182,6 +182,7 @@ impl AssistantStatus {
 /// Result of one hydration projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPage {
+    pub subagents: Vec<crate::types::SubagentSnapshot>,
     /// Entries in ascending seq position (oldest → newest).
     pub entries: Vec<HistoryEntry>,
     /// `Some(oldest_seq)` when older history may exist — pass
@@ -206,8 +207,11 @@ pub fn restart_history_page(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or_default();
-    recovery::recover_thread(store.conn(), thread_id, now)
-        .map_err(|error| ConversationError::Store(error.to_string()))?;
+    crate::subagents::recover_children(store, thread_id, now)?;
+    if !crate::subagents::is_live(store, thread_id) {
+        recovery::recover_thread(store.conn(), thread_id, now)
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+    }
     latest_history_page(store, thread_id, limit)
 }
 
@@ -443,6 +447,14 @@ fn assemble(
         }
     }
     Ok(HistoryPage {
+        subagents: crate::subagents::children(store, thread_id)?
+            .into_iter()
+            .filter(|agent| {
+                page.rows
+                    .iter()
+                    .any(|message| message.id == agent.parent_message_id)
+            })
+            .collect(),
         entries,
         older_cursor: page.older_cursor,
         newer_cursor: page.newer_cursor,

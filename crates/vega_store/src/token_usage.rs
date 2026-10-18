@@ -134,6 +134,23 @@ pub fn aggregate_by_thread(
     aggregate_rows(statement.query_map([thread_id], map_aggregate_row)?)
 }
 
+pub fn aggregate_task_by_thread(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<UsageAggregate, UsageAggregateError> {
+    let mut statement = conn.prepare("SELECT input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_microcents,pricing_version FROM token_usage WHERE thread_id=?1 OR delegated_parent_thread_id=?1 ORDER BY id")?;
+    aggregate_rows(statement.query_map([thread_id], map_aggregate_row)?)
+}
+
+pub fn aggregate_task_by_message(
+    conn: &Connection,
+    thread_id: &str,
+    message_id: &str,
+) -> Result<UsageAggregate, UsageAggregateError> {
+    let mut statement = conn.prepare("SELECT input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_microcents,pricing_version FROM token_usage WHERE (thread_id=?1 AND message_id=?2) OR (delegated_parent_thread_id=?1 AND delegated_parent_message_id=?2) ORDER BY id")?;
+    aggregate_rows(statement.query_map(params![thread_id, message_id], map_aggregate_row)?)
+}
+
 /// Aggregates every `token_usage` row of one assistant message with checked
 /// arithmetic (per-task cost scope).
 pub fn aggregate_by_message(

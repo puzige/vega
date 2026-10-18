@@ -101,3 +101,6 @@ pub use user_questions::*;
 
 mod automation;
 pub use automation::*;
+
+mod subagents;
+pub use subagents::*;

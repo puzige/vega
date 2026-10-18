@@ -345,6 +345,9 @@ impl VegaWindow {
                 .observe_terminal_message(generation, thread_id, stream, &event);
             stream.update(cx, |stream, cx| stream.apply_event(event, cx));
         }
+        for update in batch.subagents {
+            self.apply_subagent_update(thread_id, stream, update, cx);
+        }
         if let Some(active) = self.agent_controller.active.get(thread_id) {
             let control = active.computer_use.clone();
             stream.update(cx, |stream, cx| {

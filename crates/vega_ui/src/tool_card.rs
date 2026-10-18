@@ -523,7 +523,8 @@ impl ToolCard {
                 },
                 _ => ToolActivityCategory::Other,
             },
-            Some(ToolCardInputProjection::Corrupt) => ToolActivityCategory::Other,
+            Some(ToolCardInputProjection::Subagent { .. })
+            | Some(ToolCardInputProjection::Corrupt) => ToolActivityCategory::Other,
         }
     }
 
@@ -938,6 +939,7 @@ impl ToolCard {
                 identity.exact_tool_name,
                 identity.server_id
             ),
+            (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
             (Some(ToolCardInputProjection::CodexAcp { identity, .. }), _) => format!(
                 "{} Codex ACP · {}",
                 generic_verb("run", self.activity_state(), self.status),
@@ -1021,7 +1023,8 @@ impl ToolCard {
     fn has_detail(&self) -> bool {
         match &self.input {
             Some(ToolCardInputProjection::Bash { .. }) => true,
-            Some(ToolCardInputProjection::UserQuestion { .. })
+            Some(ToolCardInputProjection::Subagent { .. })
+            | Some(ToolCardInputProjection::UserQuestion { .. })
             | Some(ToolCardInputProjection::ReadOnly { .. })
             | Some(ToolCardInputProjection::Mcp { .. })
             | Some(ToolCardInputProjection::ComputerUse { .. })
@@ -1033,7 +1036,8 @@ impl ToolCard {
     fn detail_row_count(&self) -> usize {
         match &self.input {
             Some(ToolCardInputProjection::Bash { .. }) => 3 + self.output_rows.len(),
-            Some(ToolCardInputProjection::UserQuestion { .. })
+            Some(ToolCardInputProjection::Subagent { .. })
+            | Some(ToolCardInputProjection::UserQuestion { .. })
             | Some(ToolCardInputProjection::ReadOnly { .. })
             | Some(ToolCardInputProjection::Mcp { .. })
             | Some(ToolCardInputProjection::ComputerUse { .. })

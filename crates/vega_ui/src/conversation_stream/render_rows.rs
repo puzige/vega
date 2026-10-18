@@ -132,6 +132,7 @@ fn render_entry_internal(
 ) -> AnyElement {
     let colors = theme(cx).colors;
     match entry {
+        StreamEntry::Subagents { group } => group.clone().into_any_element(),
         StreamEntry::RunActivity { group } => RunActivityGroup::render(group.clone(), window, cx),
         StreamEntry::RunActivitySegment { group, segment } => {
             RunActivityGroup::render_segment(group.clone(), *segment, window, cx)

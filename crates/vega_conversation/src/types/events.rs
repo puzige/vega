@@ -934,6 +934,11 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         tool: call.name.clone(),
         input_json: call.input_json.clone(),
     };
+    if vega_runtime::is_subagent_tool(&call.name) {
+        return (call.input_json == "{}"
+            || vega_runtime::valid_subagent_input(&call.name, &call.input_json))
+        .then_some(projected);
+    }
     if call.name == vega_runtime::USER_QUESTION_TOOL {
         let valid = vega_runtime::UserQuestionInput::from_json(&call.input_json).is_ok()
             || vega_runtime::user_question_validation_error(&call.input_json).is_some();

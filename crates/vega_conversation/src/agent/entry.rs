@@ -641,7 +641,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_thread_task_with_automation_inner<F>(
+pub(super) async fn run_thread_task_with_automation_inner<F>(
     store: &Store,
     provider: &dyn Provider,
     tools: &vega_tools::Tools,
@@ -661,6 +661,10 @@ async fn run_thread_task_with_automation_inner<F>(
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
+    let _live_thread = store
+        .database_path()
+        .map(|path| crate::subagents::LiveDelegation::new(path, thread_id))
+        .transpose()?;
     let mut actor_config = actor_config;
     actor_config.steering_cancel = Some(cancel.clone());
     crate::attachments::validate_images(&images)
@@ -684,7 +688,10 @@ where
         .or_else(|| persisted_user_message_id.clone())
         .or_else(|| actor_config.pending_message_id.clone())
         .unwrap_or_else(|| ulid::Ulid::generate().to_string());
-    let assistant_message_id = ulid::Ulid::generate().to_string();
+    let assistant_message_id = actor_config
+        .delegated_message_id
+        .clone()
+        .unwrap_or_else(|| ulid::Ulid::generate().to_string());
     let database_path = match store.database_path() {
         Some(path) => path.to_path_buf(),
         None => {
@@ -739,6 +746,13 @@ where
         }
     };
 
+    if let Some(authority) = &actor_config.delegated_authority {
+        prepared.request.tool_config.run_mode = authority.run_mode;
+        prepared.request.tool_config.permission_mode = authority.permission_mode;
+        prepared.request.tool_config.exact_rules = authority.exact_rules.clone();
+        prepared.request.context_budget = actor_config.delegated_context_budget;
+    }
+    let subagent_mcp = mcp_servers.clone();
     prepared.request.tool_config = prepared
         .request
         .tool_config
@@ -804,6 +818,37 @@ where
             session.messages().to_vec(),
             session.environment_fingerprint(),
         );
+    }
+
+    let subagent_host = actor_config.subagent_host.clone().filter(|_| {
+        !actor_config.delegated && prepared.request.tool_config.run_mode == RuntimeRunMode::Execute
+    });
+    let subagent_host = subagent_host.filter(|_| {
+        vega_store::threads::find(store.conn(), thread_id).is_ok_and(|thread| {
+            thread.is_some_and(|thread| {
+                thread.parent_thread_id.is_none() && thread.backend == "native"
+            })
+        })
+    });
+    let mut supervisor = subagent_host
+        .as_ref()
+        .map(|_| super::subagents::Supervisor::new());
+    let child_launch = subagent_host.map(|host| super::subagents::ChildLaunch {
+        provider,
+        tools,
+        database: prepared.database_path.clone(),
+        parent_thread: thread_id.to_string(),
+        parent_message: prepared.assistant_message_id.clone(),
+        settings: super::subagents::ChildSettings::new(&prepared.request, &actor_config),
+        mcp_servers: subagent_mcp,
+        host,
+        cancel: cancel.child_token(),
+    });
+    if let Some(supervisor) = &supervisor {
+        prepared.request.tool_config = prepared
+            .request
+            .tool_config
+            .with_subagents(Some(supervisor.hook()));
     }
 
     let actor = match PersistenceActor::start(PersistenceActorStart {
@@ -957,7 +1002,8 @@ where
                 }
             }
         },
-    );
+    )
+    .boxed_local();
     let processor_future = process_runtime_events(
         runtime_receiver,
         &actor,
@@ -973,8 +1019,15 @@ where
             run_id: &prepared.assistant_message_id,
             root_attempt_id: &root_attempt_id,
         },
-    );
-    let (runtime_result, processor_result) = tokio::join!(runtime_future, processor_future);
+    )
+    .boxed_local();
+    let pipeline = async move { tokio::join!(runtime_future, processor_future) }.boxed_local();
+    let (runtime_result, processor_result) =
+        if let (Some(supervisor), Some(launch)) = (&mut supervisor, child_launch) {
+            supervisor.run(pipeline, launch).await
+        } else {
+            pipeline.await
+        };
     skill_watch_stop.cancel();
     if let Some(watch) = skill_watch {
         let _ = watch.await;

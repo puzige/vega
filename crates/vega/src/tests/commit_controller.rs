@@ -141,6 +141,7 @@ async fn commit_controller_retiring_fence_is_first_wins_and_holds_owner(
     });
     let repo = diff_controller_repo();
     let thread = Thread {
+        parent_thread_id: None,
         id: "commit-thread".into(),
         backend: vega_conversation::types::TaskBackend::Native,
         project_id: "commit-project".into(),
@@ -220,6 +221,7 @@ async fn commit_controller_binds_exact_snapshot_and_overflow_is_zero_work(
     });
     let repo = diff_controller_repo();
     let thread = Thread {
+        parent_thread_id: None,
         id: "commit-capability-thread".into(),
         backend: vega_conversation::types::TaskBackend::Native,
         project_id: "commit-capability-project".into(),

@@ -118,6 +118,14 @@ impl Tools {
         self.reads.clone()
     }
 
+    pub fn isolated(&self) -> Self {
+        let mut tools = self.clone();
+        tools.reads = ReadState::default();
+        tools.mutation = None;
+        tools.instance_id = TOOL_INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        tools
+    }
+
     /// Resolve an absolute or project-relative file path without creating it.
     pub fn file_path(&self, path: &str) -> Result<PathBuf, ToolError> {
         let resolved =

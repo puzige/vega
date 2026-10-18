@@ -81,6 +81,7 @@ mod plan;
 mod pricing;
 mod r69;
 mod reasoning;
+mod subagents;
 mod updater;
 mod user_questions;
 

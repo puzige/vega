@@ -60,6 +60,7 @@ pub mod run_diagnostics;
 pub mod sidebar_organization;
 pub mod skills;
 // T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
+pub mod subagents;
 pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
@@ -100,6 +101,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0024_credential_privacy.sql"),
     include_str!("../migrations/0025_failure_details.sql"),
     include_str!("../migrations/0026_automation.sql"),
+    include_str!("../migrations/0027_subagents.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -430,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_thirty_eight_tables() {
+    fn migrate_creates_exactly_the_thirty_nine_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -461,6 +463,7 @@ mod tests {
                 "credential_continuations",
                 "credential_privacy_epoch",
                 "credential_privacy_exceptions",
+                "delegated_runs",
                 "image_attachments",
                 "mcp_secret_cleanup",
                 "mcp_servers",
@@ -727,7 +730,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 38);
+        assert_eq!(tables, 39);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
@@ -818,7 +821,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 38);
+        assert_eq!(tables, 39);
         let response_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {

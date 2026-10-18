@@ -72,6 +72,7 @@ async fn question_navigation_retains_production_stream_and_stop_is_thread_scoped
                 &origin.id,
                 &stream,
                 AgentBatch {
+                    subagents: Vec::new(),
                     events: vec![
                         ConversationEvent::MessageStarted {
                             message_id: "question-message".into(),

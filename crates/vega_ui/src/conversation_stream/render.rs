@@ -1821,6 +1821,7 @@ impl Render for ConversationStream {
             )
             .on_action(cx.listener(Self::open_diff_action))
             .on_action(cx.listener(Self::copy_selected_text))
+            .children(self.render_subagent_parent(cx))
             .child(
                 div()
                     .w_full()

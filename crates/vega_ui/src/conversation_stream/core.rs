@@ -36,6 +36,9 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
+    pub(crate) subagent_parent_focus: FocusHandle,
+    pub(crate) delegated_run_active: bool,
     pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
@@ -336,6 +339,20 @@ impl ConversationStream {
         permission_queue: PermissionQueue,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_request_queues(
+            thread,
+            permission_queue,
+            vega_conversation::agent::UserQuestionQueue::new(),
+            cx,
+        )
+    }
+
+    pub fn new_with_request_queues(
+        thread: Thread,
+        permission_queue: PermissionQueue,
+        user_question_queue: vega_conversation::agent::UserQuestionQueue,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.observe_global::<RunningMessageDefault>(|_, cx| cx.notify())
             .detach();
         let input = cx.new(|cx| {
@@ -385,7 +402,6 @@ impl ConversationStream {
             },
         )
         .detach();
-        let user_question_queue = vega_conversation::agent::UserQuestionQueue::new();
         let mut question_listener = user_question_queue.subscribe();
         let user_question_listener_task = cx.spawn(async move |this, cx| {
             while question_listener.changed().await {
@@ -419,6 +435,9 @@ impl ConversationStream {
                 this.context_usage_dismissed = true;
                 cx.notify();
                 this.timeout_permission(cx);
+                if this.delegated_run_active {
+                    this.cancel_user_questions(cx);
+                }
             }
         })
         .detach();
@@ -470,6 +489,9 @@ impl ConversationStream {
         )
         .detach();
         Self {
+            subagent_groups: HashMap::new(),
+            subagent_parent_focus: cx.focus_handle().tab_stop(true),
+            delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
             computer_use_control: None,
             computer_use_diagnostic: None,

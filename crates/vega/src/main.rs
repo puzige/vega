@@ -32,6 +32,7 @@ mod codex_agent;
 mod commit_controller;
 mod diff_controller;
 mod model_catalog;
+mod native_subagents;
 mod pricing_controller;
 mod reasoning_capabilities;
 mod thread_reload;

@@ -102,6 +102,7 @@ fn entry_shapes(stream: &ConversationStream, cx: &App) -> Vec<String> {
             StreamEntry::User { .. } => vec!["user".to_string()],
             StreamEntry::UserImages { .. } => vec!["user-images".to_string()],
             StreamEntry::Screenshot { .. } => vec!["screenshot".to_string()],
+            StreamEntry::Subagents { .. } => vec!["subagents".to_string()],
         })
         .collect()
 }

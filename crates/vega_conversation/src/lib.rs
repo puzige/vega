@@ -60,3 +60,5 @@ pub mod pending_messages;
 pub mod privacy;
 
 pub mod automation;
+
+pub mod subagents;
