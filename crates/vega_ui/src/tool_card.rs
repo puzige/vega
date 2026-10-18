@@ -130,6 +130,19 @@ impl ToolDetail {
             + self.output.len()
             + usize::from(self.footer.is_some())
     }
+
+    fn append_visible_text(&self, text: &mut String) {
+        for row in self
+            .title
+            .iter()
+            .chain(self.command.iter())
+            .chain(self.output.iter())
+            .chain(self.footer.iter().map(|(text, _)| text))
+        {
+            text.push('\n');
+            text.push_str(row);
+        }
+    }
 }
 
 /// UI-only audited tool call. It never retains a provider call id, raw
@@ -446,6 +459,14 @@ impl ToolCard {
             }
     }
 
+    /// Whether this card is the atomic invalid terminal and must never prompt.
+    pub fn is_invalid_terminal(&self) -> bool {
+        matches!(
+            self.result,
+            Some(ToolCardResultProjection::InvalidRejected { .. })
+        )
+    }
+
     pub(crate) fn activity_category(&self) -> ToolActivityCategory {
         match (&self.input, &self.result) {
             (_, Some(ToolCardResultProjection::Corrupt)) => ToolActivityCategory::Other,
@@ -548,8 +569,29 @@ impl ToolCard {
         colors.conversation_tool
     }
 
+    /// Content rendered by the card, used by leak-focused tests.
+    pub fn visible_text(&self) -> String {
+        let mut text = self.compact_row_text();
+        if self.expanded
+            && let Some(detail) = self.detail()
+        {
+            detail.append_visible_text(&mut text);
+        }
+        text
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_elapsed_active(&self) -> bool {
+        self.running_started_at.is_some() && self.elapsed_refresh_task.is_some()
+    }
+
     pub(crate) fn is_expanded(&self) -> bool {
         self.expanded
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compact_visible_text(&self) -> String {
+        self.compact_row_text()
     }
 
     fn compact_row_text(&self) -> String {
@@ -603,6 +645,7 @@ impl ToolCard {
 
     pub(crate) fn render(
         card: Entity<Self>,
+        selector: String,
         indented: bool,
         window: &mut gpui_kit::Window,
         cx: &mut App,
@@ -625,6 +668,10 @@ impl ToolCard {
         let detail_id = format!("tool-detail-{}", card.entity_id());
         let toggle_card = card.clone();
         let keyboard_card = card.clone();
+        let debug_selector = selector.clone();
+        let icon_selector = format!("{selector}-icon");
+        let title_selector = format!("{selector}-title");
+        let chevron_selector = format!("{selector}-chevron");
         let disclosure_group: gpui_kit::SharedString =
             format!("tool-disclosure-{}", card.entity_id()).into();
         let focus =
@@ -640,6 +687,7 @@ impl ToolCard {
             ))
             .tab_stop(expandable)
             .focus_visible(move |row| row.bg(colors.bg_hover))
+            .debug_selector(move || debug_selector.clone())
             .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
             .text_size(px(Typography::CONVERSATION))
             .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -670,6 +718,7 @@ impl ToolCard {
             })
             .child(
                 div()
+                    .debug_selector(move || icon_selector.clone())
                     .size(px(Layout::ICON_SIZE))
                     .flex_shrink_0()
                     .flex()
@@ -683,6 +732,7 @@ impl ToolCard {
             )
             .child(
                 div()
+                    .debug_selector(move || title_selector.clone())
                     .min_w_0()
                     .flex_shrink(1.)
                     .truncate()
@@ -692,6 +742,7 @@ impl ToolCard {
             )
             .child(crate::disclosure::inline_chevron(
                 disclosure_group,
+                chevron_selector,
                 &focus,
                 expanded,
                 expandable,
@@ -709,6 +760,7 @@ impl ToolCard {
             .when_some(expanded.then_some(detail).flatten(), move |card, detail| {
                 card.child(render_detail(
                     detail,
+                    format!("{selector}-detail"),
                     detail_id,
                     &detail_scroll,
                     &colors,
@@ -1149,11 +1201,13 @@ pub(crate) fn contain_disclosure_scroll(
 
 fn render_detail(
     detail: ToolDetail,
+    selector: String,
     id: String,
     scroll: &ScrollHandle,
     colors: &ThemeColors,
     cx: &App,
 ) -> AnyElement {
+    let debug_selector = selector.clone();
     let mut rows = Vec::with_capacity(detail.logical_rows());
     if let Some(title) = detail.title {
         rows.push(detail_row(
@@ -1185,8 +1239,12 @@ fn render_detail(
         } else {
             state.terminal_color(colors)
         };
+        let row_selector = format!("{selector}-footer-row");
+        let status_selector = format!("{selector}-footer-status");
+        let icon_selector = format!("{selector}-footer-icon");
         rows.push(
             div()
+                .debug_selector(move || row_selector.clone())
                 .w_full()
                 .min_h(px(ROW_HEIGHT))
                 .flex_shrink_0()
@@ -1194,6 +1252,7 @@ fn render_detail(
                 .justify_end()
                 .child(
                     div()
+                        .debug_selector(move || status_selector.clone())
                         .flex()
                         .items_center()
                         .gap(px(Layout::CONVERSATION_INLINE_GAP))
@@ -1201,9 +1260,15 @@ fn render_detail(
                         .text_color(color)
                         .when_some(state.terminal_icon(), |row, icon| {
                             row.child(
-                                div().size(px(Layout::ICON_SIZE)).flex_shrink_0().child(
-                                    crate::icons::sized_icon(icon, color, Layout::ICON_SIZE),
-                                ),
+                                div()
+                                    .debug_selector(move || icon_selector.clone())
+                                    .size(px(Layout::ICON_SIZE))
+                                    .flex_shrink_0()
+                                    .child(crate::icons::sized_icon(
+                                        icon,
+                                        color,
+                                        Layout::ICON_SIZE,
+                                    )),
                             )
                         })
                         .child(footer),
@@ -1227,6 +1292,7 @@ fn render_detail(
             surface.child(
                 div()
                     .id(gpui_kit::SharedString::from(id))
+                    .debug_selector(move || debug_selector.clone())
                     .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
                     .track_scroll(scroll)
                     .on_scroll_wheel(contain_disclosure_scroll(scroll))
@@ -1277,4 +1343,878 @@ fn detail_row(
         .text_color(color)
         .child(gpui_kit::base::SelectableText::new(id, text))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use vega_conversation::types::{InvalidToolCode, InvalidToolKind, InvalidToolProjection};
+
+    fn result(status: ToolCallStatus, output: &str) -> ToolResult {
+        ToolResult {
+            status,
+            output: output.to_string(),
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            invalid: None,
+        }
+    }
+
+    #[test]
+    fn tool_activity_leading_visual_is_category_owned_and_neutral_for_every_state() {
+        for status in [
+            ToolCallStatus::PendingApproval,
+            ToolCallStatus::Approved,
+            ToolCallStatus::Running,
+            ToolCallStatus::Success,
+            ToolCallStatus::Rejected,
+            ToolCallStatus::Cancelled,
+            ToolCallStatus::Failed,
+        ] {
+            for (input, expected) in [
+                (
+                    ToolCardInputProjection::Bash {
+                        command: "true".into(),
+                    },
+                    Icon::Terminal,
+                ),
+                (
+                    ToolCardInputProjection::ComputerUse {
+                        tool: "ComputerAct".into(),
+                        action: "click".into(),
+                    },
+                    Icon::MousePointer,
+                ),
+            ] {
+                let card = ToolCard::hydrated(Some(input), status, None, None);
+                assert_eq!(
+                    card.leading_icon(),
+                    expected,
+                    "operation icon for {status:?}"
+                );
+                for colors in [vega_theme::LIGHT, vega_theme::DARK] {
+                    assert_eq!(card.leading_icon_color(&colors), colors.conversation_tool);
+                }
+            }
+        }
+
+        for (category, expected) in [
+            (ToolActivityCategory::Shell, Icon::Terminal),
+            (ToolActivityCategory::Read, Icon::BookOpen),
+            (ToolActivityCategory::Find, Icon::Folder),
+            (ToolActivityCategory::Search, Icon::Search),
+            (ToolActivityCategory::Write, Icon::Document),
+            (ToolActivityCategory::Edit, Icon::Pencil),
+            (ToolActivityCategory::Mcp, Icon::Plug),
+            (ToolActivityCategory::CodexAcp, Icon::Bot),
+            (ToolActivityCategory::ComputerUse, Icon::Monitor),
+            (ToolActivityCategory::Skill, Icon::Wrench),
+            (ToolActivityCategory::Other, Icon::Wrench),
+        ] {
+            assert_eq!(category.icon(), expected, "{category:?}");
+        }
+
+        for (action, expected) in [
+            ("observe", Icon::Monitor),
+            ("screenshot", Icon::Camera),
+            ("click", Icon::MousePointer),
+            ("scroll", Icon::MousePointer),
+            ("type_text", Icon::Keyboard),
+            ("press_key", Icon::Keyboard),
+            ("hotkey", Icon::Keyboard),
+            ("navigate", Icon::Globe),
+            ("invalid", Icon::Monitor),
+        ] {
+            let tool = match action {
+                "observe" => "ComputerObserve",
+                "screenshot" => "ComputerScreenshot",
+                "navigate" => "BrowserAct",
+                _ => "ComputerAct",
+            };
+            let call = ToolCall {
+                id: action.into(),
+                tool: tool.into(),
+                input_json: serde_json::json!({"kind":"computer_use", "version":1, "action":action, "argument_bytes":2, "argument_digest":"a".repeat(64)}).to_string(),
+            };
+            let mut card = ToolCard::proposed(&call);
+            assert_eq!(card.leading_icon(), expected);
+            assert!(card.apply_approved(Approval::Once));
+            let mut finished = result(ToolCallStatus::Success, "Synthetic result");
+            finished.truncated = Some(false);
+            assert!(card.apply_finished(&finished));
+            assert_eq!(card.leading_icon(), expected);
+            let restored = ToolCard::hydrated(
+                card.input.clone(),
+                card.status,
+                card.approval,
+                card.result.clone(),
+            );
+            assert_eq!(restored.leading_icon(), expected);
+            assert_eq!(restored.visible_text(), card.visible_text());
+        }
+        for action in ["", "future_action"] {
+            let card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::ComputerUse {
+                    tool: "ComputerAct".into(),
+                    action: action.into(),
+                }),
+                ToolCallStatus::Running,
+                None,
+                None,
+            );
+            assert_eq!(card.leading_icon(), Icon::Monitor);
+        }
+        for input in [
+            None,
+            Some(ToolCardInputProjection::Corrupt),
+            Some(ToolCardInputProjection::ComputerUse {
+                tool: "ComputerObserve".into(),
+                action: "observe".into(),
+            }),
+        ] {
+            let card = ToolCard::hydrated(
+                input,
+                ToolCallStatus::Failed,
+                None,
+                Some(ToolCardResultProjection::Corrupt),
+            );
+            assert_eq!(card.leading_icon(), Icon::Wrench);
+            assert_eq!(card.activity_state(), ToolActivityState::Failed);
+            assert!(card.visible_text().contains(CORRUPT_LABEL));
+        }
+    }
+
+    #[test]
+    fn skill_load_and_reference_cards_show_success_without_reference_body() {
+        let load = ToolCall {
+            id: "load-reviewer".into(),
+            tool: "load_skill".into(),
+            input_json: r#"{"name":"reviewer"}"#.into(),
+        };
+        let mut load_card = ToolCard::proposed(&load);
+        assert!(load_card.apply_approved(Approval::Once));
+        let mut loaded = result(
+            ToolCallStatus::Success,
+            r#"{"name":"reviewer","status":"loaded"}"#,
+        );
+        loaded.truncated = Some(false);
+        assert!(load_card.apply_finished(&loaded));
+        assert!(load_card.visible_text().contains("Loaded Skill reviewer"));
+        assert!(!load_card.visible_text().contains(CORRUPT_LABEL));
+
+        let read = ToolCall {
+            id: "read-reviewer".into(),
+            tool: "read_skill_resource".into(),
+            input_json: r#"{"name":"reviewer","path_bytes":19,"path_sha256":"00f28c21b21007f540efab680c48c95d3914621a9ef1e064ebbdb1277d34ef88"}"#.into(),
+        };
+        let mut read_card = ToolCard::proposed(&read);
+        assert!(read_card.apply_approved(Approval::Once));
+        let mut returned = result(
+            ToolCallStatus::Success,
+            "[Lower-trust Skill reference]\n{\"name\":\"reviewer\",\"path\":\"references/notes.md\",\"text\":\"PRIVATE REFERENCE\",\"lower_trust\":true,\"content_sha256\":\"f30f856c035ac9d081141af0397093625c492f488189b61f67f7b258540c75d7\"}",
+        );
+        returned.truncated = Some(false);
+        assert!(read_card.apply_finished(&returned));
+        let visible = read_card.visible_text();
+        assert!(visible.contains("Read Skill reviewer reference"));
+        assert!(!visible.contains(CORRUPT_LABEL));
+        assert!(!visible.contains("PRIVATE REFERENCE"));
+        assert!(!visible.contains("references/notes.md"));
+    }
+
+    #[test]
+    fn malformed_skill_receipt_or_reference_stays_content_free_corrupt() {
+        let load = ToolCall {
+            id: "load-reviewer".into(),
+            tool: "load_skill".into(),
+            input_json: r#"{"name":"reviewer"}"#.into(),
+        };
+        let mut load_card = ToolCard::proposed(&load);
+        assert!(load_card.apply_approved(Approval::Once));
+        let mut wrong_receipt = result(
+            ToolCallStatus::Success,
+            r#"{"name":"other","status":"loaded","private":"PRIVATE BODY"}"#,
+        );
+        wrong_receipt.truncated = Some(false);
+        assert!(!load_card.apply_finished(&wrong_receipt));
+        assert!(load_card.visible_text().contains(CORRUPT_LABEL));
+        assert!(!load_card.visible_text().contains("PRIVATE BODY"));
+
+        let raw_path = ToolCard::proposed(&ToolCall {
+            id: "unsafe-input".into(),
+            tool: "read_skill_resource".into(),
+            input_json: r#"{"name":"reviewer","path":"/SECRET_ROOT/notes.md"}"#.into(),
+        });
+        assert!(raw_path.visible_text().contains(CORRUPT_LABEL));
+        assert!(!raw_path.visible_text().contains("SECRET_ROOT"));
+
+        let read = ToolCall {
+            id: "read-reviewer".into(),
+            tool: "read_skill_resource".into(),
+            input_json: r#"{"name":"reviewer","path_bytes":19,"path_sha256":"00f28c21b21007f540efab680c48c95d3914621a9ef1e064ebbdb1277d34ef88"}"#.into(),
+        };
+        let mut read_card = ToolCard::proposed(&read);
+        assert!(read_card.apply_approved(Approval::Once));
+        let mut forged_reference = result(
+            ToolCallStatus::Success,
+            "[Lower-trust Skill reference]\n{\"name\":\"reviewer\",\"path\":\"references/notes.md\",\"text\":\"PRIVATE REFERENCE\",\"lower_trust\":true,\"content_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+        );
+        forged_reference.truncated = Some(false);
+        assert!(!read_card.apply_finished(&forged_reference));
+        assert!(read_card.visible_text().contains(CORRUPT_LABEL));
+        assert!(!read_card.visible_text().contains("PRIVATE REFERENCE"));
+    }
+
+    #[test]
+    fn write_success_hides_fingerprint_and_checkpoint_ref() {
+        let call = ToolCall {
+            id: "SECRET_CALL_ID".into(),
+            tool: "write".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"write","path":"src/lib.rs","content_bytes":3,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert!(card.apply_approved(Approval::Once));
+        let mut terminal = result(
+            ToolCallStatus::Success,
+            r#"{"path":"src/lib.rs","bytes_written":3,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+        );
+        terminal.truncated = Some(false);
+        assert!(card.apply_finished(&terminal));
+        let visible = card.visible_text();
+        assert!(visible.contains("src/lib.rs · 3 bytes"));
+        assert!(!visible.contains("SECRET_CALL_ID"));
+        assert!(!visible.contains("aaaaaaaa"));
+        assert!(!visible.contains("preimage-v1"));
+    }
+
+    #[test]
+    fn corrupt_success_is_content_free() {
+        let call = ToolCall {
+            id: "call".into(),
+            tool: "edit".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"edit","path":"src/lib.rs","old_string_bytes":3,"new_string_bytes":4,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert!(card.apply_approved(Approval::Once));
+        assert!(!card.apply_finished(&result(
+            ToolCallStatus::Success,
+            r#"{"path":"/SECRET_ROOT/file","bytes_written":4,"replacements":2,"checkpoint_ref":"SECRET_REF"}"#,
+        )));
+        let visible = card.visible_text();
+        assert!(visible.contains(CORRUPT_LABEL));
+        assert!(!visible.contains("SECRET_ROOT"));
+        assert!(!visible.contains("SECRET_REF"));
+    }
+
+    #[test]
+    fn invalid_terminal_uses_typed_projection_only() {
+        let result = ToolResult {
+            status: ToolCallStatus::Rejected,
+            output: "Tool error: invalid write input (malformed_json)".into(),
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            invalid: Some(InvalidToolProjection::new(
+                InvalidToolKind::Write,
+                InvalidToolCode::MalformedJson,
+            )),
+        };
+        let card = ToolCard::invalid_terminal(&result);
+        assert!(card.is_invalid_terminal());
+        assert_eq!(card.visible_text(), "Rejected write: malformed_json");
+    }
+
+    #[test]
+    fn codex_tool_rows_identify_safe_objects_and_keep_metadata_in_details() {
+        for (tool, input, expected) in [
+            (
+                "bash",
+                r#"{"cmd":"printf 'ok'"}"#,
+                "Awaiting approval to run printf 'ok'",
+            ),
+            (
+                "read",
+                r#"{"file_path":"src/main.rs"}"#,
+                "Awaiting approval to read main.rs",
+            ),
+            (
+                "glob",
+                r#"{"pattern":"src/**/*.rs"}"#,
+                "Awaiting approval to find files",
+            ),
+            (
+                "grep",
+                r#"{"pattern":"TODO","path":"src"}"#,
+                "Awaiting approval to search content",
+            ),
+        ] {
+            let card = ToolCard::proposed(&ToolCall {
+                id: "object-row".into(),
+                tool: tool.into(),
+                input_json: input.into(),
+            });
+            assert_eq!(card.visible_text(), expected);
+            assert_eq!(card.row_count(), 1);
+        }
+    }
+
+    #[test]
+    fn compact_duration_uses_english_units_without_changing_clock_values() {
+        for (milliseconds, expected) in [
+            (0, "0ms"),
+            (12, "12ms"),
+            (1234, "1.2s"),
+            (3000, "3s"),
+            (65000, "1m 5s"),
+            (3600000, "1h"),
+            (3665000, "1h 1m 5s"),
+        ] {
+            assert_eq!(human_duration(milliseconds), expected);
+        }
+        assert_eq!(human_elapsed(0), "0s");
+    }
+
+    #[test]
+    fn expanded_shell_title_projects_current_state_without_mutating_command() {
+        for (exit_code, collapsed, expanded) in [
+            (0, "Ran echo hello", "Ran command in 3s"),
+            (1, "Command failed: echo hello", "Command failed after 3s"),
+        ] {
+            let mut card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::Bash {
+                    command: "echo hello".into(),
+                }),
+                ToolCallStatus::Success,
+                Some(Approval::Once),
+                Some(ToolCardResultProjection::Bash {
+                    status: ToolCallStatus::Success,
+                    output: "原始输出".into(),
+                    exit_code: Some(exit_code),
+                    duration_ms: Some(3000),
+                    truncated: Some(false),
+                    reused: false,
+                }),
+            );
+            assert_eq!(card.compact_visible_text(), collapsed);
+            card.expanded = true;
+            assert_eq!(card.compact_visible_text(), expanded);
+            assert!(card.visible_text().contains("$ echo hello\n原始输出"));
+            card.expanded = false;
+            assert_eq!(card.compact_visible_text(), collapsed);
+        }
+    }
+
+    #[test]
+    fn hydrated_terminal_without_duration_keeps_status_without_inventing_time() {
+        let mut card = ToolCard::hydrated(
+            Some(ToolCardInputProjection::Bash {
+                command: "true".into(),
+            }),
+            ToolCallStatus::Success,
+            Some(Approval::Once),
+            Some(ToolCardResultProjection::Bash {
+                status: ToolCallStatus::Success,
+                output: String::new(),
+                exit_code: Some(0),
+                duration_ms: None,
+                truncated: Some(false),
+                reused: false,
+            }),
+        );
+        assert_eq!(card.bash_duration(), None);
+        assert_eq!(card.visible_text(), "Ran true");
+        assert!(!card.live_elapsed_active());
+        card.expanded = true;
+        assert!(card.visible_text().ends_with("Success"));
+        assert_eq!(card.compact_visible_text(), "Ran command");
+    }
+
+    #[test]
+    fn bash_output_starts_collapsed_and_metadata_is_structured() {
+        let call = ToolCall {
+            id: "bash-call".into(),
+            tool: "bash".into(),
+            input_json: r#"{"cmd":"printf 'ok'"}"#.into(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert!(card.apply_approved(Approval::Once));
+        let mut terminal = result(ToolCallStatus::Success, "ok");
+        terminal.exit_code = Some(0);
+        terminal.duration_ms = Some(12);
+        terminal.truncated = Some(false);
+        assert!(card.apply_finished(&terminal));
+        assert_eq!(card.row_count(), 1);
+        assert_eq!(card.visible_text(), "Ran printf 'ok'");
+        assert!(card.visible_text().contains("printf 'ok'"));
+        assert!(!card.visible_text().contains("\nok"));
+        card.expanded = true;
+        assert_eq!(card.row_count(), 5);
+        assert!(
+            card.visible_text()
+                .contains("\nShell\n$ printf 'ok'\nok\nSuccess")
+        );
+    }
+
+    #[test]
+    fn nonzero_bash_exit_is_presented_as_failure_without_changing_status() {
+        let call = ToolCall {
+            id: "bash-call".into(),
+            tool: "bash".into(),
+            input_json: r#"{"cmd":"false"}"#.into(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert!(card.apply_approved(Approval::Once));
+        let mut terminal = result(ToolCallStatus::Success, "");
+        terminal.exit_code = Some(1);
+        terminal.duration_ms = Some(4);
+        terminal.truncated = Some(false);
+        assert!(card.apply_finished(&terminal));
+        assert_eq!(card.status, ToolCallStatus::Success);
+        assert!(card.visible_text().contains("Command failed: false"));
+    }
+
+    #[test]
+    fn bash_pending_running_and_terminal_failure_preserve_safe_command() {
+        let command = "printf 'a  b'\nprintf\t'done'";
+        for (status, result, expected) in [
+            (
+                ToolCallStatus::PendingApproval,
+                None,
+                "Awaiting approval to run",
+            ),
+            (ToolCallStatus::Approved, None, "Ready to run"),
+            (ToolCallStatus::Running, None, "Running"),
+            (
+                ToolCallStatus::Rejected,
+                Some(ToolCardResultProjection::Bash {
+                    status: ToolCallStatus::Rejected,
+                    output: "denied".into(),
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    reused: false,
+                }),
+                "Command rejected:",
+            ),
+            (
+                ToolCallStatus::Failed,
+                Some(ToolCardResultProjection::Bash {
+                    status: ToolCallStatus::Failed,
+                    output: "spawn failed".into(),
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    reused: false,
+                }),
+                "Command failed:",
+            ),
+            (
+                ToolCallStatus::Cancelled,
+                Some(ToolCardResultProjection::Bash {
+                    status: ToolCallStatus::Cancelled,
+                    output: "cancelled".into(),
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    reused: false,
+                }),
+                "Command cancelled:",
+            ),
+        ] {
+            let mut card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::Bash {
+                    command: command.into(),
+                }),
+                status,
+                None,
+                result,
+            );
+            assert_eq!(
+                card.visible_text(),
+                format!("{expected} printf 'a  b' printf 'done'")
+            );
+            assert_eq!(card.row_count(), 1);
+            card.expanded = true;
+            let expanded = match status {
+                ToolCallStatus::PendingApproval => "Awaiting command approval",
+                ToolCallStatus::Approved => "Ready to run command",
+                ToolCallStatus::Running => "Running command",
+                ToolCallStatus::Rejected => "Command rejected",
+                ToolCallStatus::Failed => "Command failed",
+                ToolCallStatus::Cancelled => "Command cancelled",
+                _ => unreachable!(),
+            };
+            assert_eq!(card.compact_visible_text(), expanded);
+            assert!(card.visible_text().contains(&format!("$ {command}")));
+            assert_eq!(card.status, status);
+            assert!(!card.live_elapsed_active());
+            card.expanded = false;
+            assert_eq!(
+                card.compact_visible_text(),
+                format!("{expected} printf 'a  b' printf 'done'")
+            );
+        }
+    }
+
+    #[test]
+    fn bash_compact_summary_identifies_command_and_preserves_terminal_metadata() {
+        let command = "printf 'a  b'\nprintf done";
+        for (status, exit, action) in [
+            (ToolCallStatus::Success, Some(0), "Ran"),
+            (ToolCallStatus::Success, Some(1), "Command failed:"),
+            (ToolCallStatus::Success, Some(-1), "Command failed:"),
+        ] {
+            let mut card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::Bash {
+                    command: command.into(),
+                }),
+                status,
+                Some(Approval::Once),
+                Some(ToolCardResultProjection::Bash {
+                    status,
+                    output: "result".into(),
+                    exit_code: exit,
+                    duration_ms: Some(1200),
+                    truncated: Some(true),
+                    reused: true,
+                }),
+            );
+            assert_eq!(
+                card.visible_text(),
+                format!("{action} printf 'a  b' printf done")
+            );
+            assert_eq!(card.row_count(), 1);
+            card.expanded = true;
+            assert!(card.visible_text().contains(&format!("$ {command}")));
+            assert!(card.visible_text().contains("Shell · truncated · reused"));
+            assert_eq!(
+                card.terminal_footer(),
+                if exit == Some(0) {
+                    "Success"
+                } else {
+                    "Failure"
+                }
+            );
+            assert!(card.visible_text().contains("result"));
+            if let Some(exit) = exit {
+                assert!(!card.visible_text().contains(&format!("exit {exit}")));
+                assert!(
+                    matches!(card.result, Some(ToolCardResultProjection::Bash { exit_code: Some(actual), .. }) if actual == exit)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lifecycle_replays_are_idempotent_but_regressions_fail_closed() {
+        let call = ToolCall {
+            id: "write-call".into(),
+            tool: "write".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert!(card.matches_call(&call));
+        assert!(card.apply_approved(Approval::Once));
+        assert!(card.apply_approved(Approval::Once));
+        assert!(!card.matches_call(&call));
+        assert!(!card.apply_approved(Approval::Always));
+
+        let mut denied = ToolCard::proposed(&call);
+        assert!(!denied.apply_approved(Approval::Deny));
+        assert!(matches!(
+            denied.result,
+            Some(ToolCardResultProjection::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn strict_success_truncation_shape_rejects_impossible_mutation_metadata() {
+        let call = ToolCall {
+            id: "write-call".into(),
+            tool: "write".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+        let success_json = r#"{"path":"a.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#;
+
+        for truncated in [None, Some(true)] {
+            let mut card = ToolCard::proposed(&call);
+            assert!(card.apply_approved(Approval::Once));
+            let mut terminal = result(ToolCallStatus::Success, success_json);
+            terminal.truncated = truncated;
+            assert!(!card.apply_finished(&terminal));
+        }
+
+        let mut reused = result(ToolCallStatus::Success, success_json);
+        reused.reused = true;
+        assert!(matches!(
+            tool_card_result_projection(Some(&tool_card_input_projection(&call)), &reused),
+            ToolCardResultProjection::WriteSuccess { reused: true, .. }
+        ));
+    }
+
+    #[test]
+    fn mutation_audit_projection_rejects_each_corrupt_numeric_and_shape_class() {
+        let bad_write_inputs = [
+            r#"{}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","extra":true}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":1,"content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":-1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1.5,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":18446744073709551616,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"/SECRET_DATA_ROOT/../a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"SECRET_HASH"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+            r#"{"path":"a.txt","content":"SECRET_RAW_BODY"}"#,
+        ];
+        for input_json in bad_write_inputs {
+            let card = ToolCard::proposed(&ToolCall {
+                id: "SECRET_CALL_ID".into(),
+                tool: "write".into(),
+                input_json: input_json.into(),
+            });
+            let visible = card.visible_text();
+            assert!(
+                visible.contains(CORRUPT_LABEL),
+                "input was accepted: {input_json}"
+            );
+            assert!(!visible.contains("SECRET_CALL_ID"));
+            assert!(!visible.contains("SECRET_DATA_ROOT"));
+            assert!(!visible.contains("SECRET_HASH"));
+            assert!(!visible.contains("SECRET_RAW_BODY"));
+        }
+
+        let bad_edit_inputs = [
+            r#"{"audit_version":"write_edit_v1","tool":"edit","path":"a.txt","old_string_bytes":1,"new_string_bytes":2,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","extra":true}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"edit","path":"a.txt","old_string_bytes":"1","new_string_bytes":2,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"edit","path":"a.txt","old_string_bytes":-1,"new_string_bytes":2,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"edit","path":"a.txt","old_string_bytes":1.5,"new_string_bytes":2,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"edit","path":"a.txt","old_string_bytes":1,"new_string_bytes":18446744073709551616,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        ];
+        for input_json in bad_edit_inputs {
+            let card = ToolCard::proposed(&ToolCall {
+                id: "call".into(),
+                tool: "edit".into(),
+                input_json: input_json.into(),
+            });
+            assert!(card.visible_text().contains(CORRUPT_LABEL));
+        }
+    }
+
+    #[test]
+    fn mutation_success_projection_rejects_each_corrupt_output_field() {
+        let write_call = ToolCall {
+            id: "write-call".into(),
+            tool: "write".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+        let bad_write_outputs = [
+            r#"{}"#,
+            r#"{"path":"a.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63","extra":true}"#,
+            r#"{"path":1,"bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":-1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":1.5,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":18446744073709551616,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":1,"checkpoint_ref":1}"#,
+            r#"{"path":"a.txt","bytes_written":1,"checkpoint_ref":"SECRET_CHECKPOINT_REF"}"#,
+            r#"{"path":"other.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"/SECRET_DATA_ROOT/../a.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":2,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+        ];
+        for output in bad_write_outputs {
+            let mut card = ToolCard::proposed(&write_call);
+            assert!(card.apply_approved(Approval::Once));
+            let mut terminal = result(ToolCallStatus::Success, output);
+            terminal.truncated = Some(false);
+            assert!(
+                !card.apply_finished(&terminal),
+                "output was accepted: {output}"
+            );
+            let visible = card.visible_text();
+            assert!(visible.contains(CORRUPT_LABEL));
+            assert!(!visible.contains("SECRET_CHECKPOINT_REF"));
+            assert!(!visible.contains("SECRET_DATA_ROOT"));
+        }
+
+        let edit_call = ToolCall {
+            id: "edit-call".into(),
+            tool: "edit".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"edit","path":"a.txt","old_string_bytes":1,"new_string_bytes":2,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+        let bad_edit_outputs = [
+            r#"{}"#,
+            r#"{"path":"a.txt","bytes_written":2,"replacements":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63","extra":true}"#,
+            r#"{"path":"a.txt","bytes_written":"2","replacements":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":-1,"replacements":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":1.5,"replacements":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":18446744073709551616,"replacements":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":2,"replacements":0,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":2,"replacements":-1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":2,"replacements":1.5,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":2,"replacements":18446744073709551616,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":2,"replacements":1,"checkpoint_ref":"SECRET_CHECKPOINT_REF"}"#,
+        ];
+        for output in bad_edit_outputs {
+            let mut card = ToolCard::proposed(&edit_call);
+            assert!(card.apply_approved(Approval::Once));
+            let mut terminal = result(ToolCallStatus::Success, output);
+            terminal.truncated = Some(false);
+            assert!(
+                !card.apply_finished(&terminal),
+                "output was accepted: {output}"
+            );
+            assert!(card.visible_text().contains(CORRUPT_LABEL));
+        }
+    }
+
+    #[test]
+    fn mutation_terminal_allowlist_and_invalid_projection_fail_closed() {
+        let call = ToolCall {
+            id: "write-call".into(),
+            tool: "write".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+
+        let mut rejected = ToolCard::proposed(&call);
+        assert!(rejected.apply_finished(&result(
+            ToolCallStatus::Rejected,
+            "Tool error: permission denied",
+        )));
+        assert!(!rejected.visible_text().contains("permission denied"));
+
+        for (status, output) in [
+            (ToolCallStatus::Failed, "Tool error: write failed"),
+            (ToolCallStatus::Cancelled, "Tool error: tool worker failed"),
+        ] {
+            let mut card = ToolCard::proposed(&call);
+            assert!(card.apply_approved(Approval::Once));
+            assert!(card.apply_finished(&result(status, output)));
+        }
+
+        let mut corrupt = ToolCard::proposed(&call);
+        assert!(corrupt.apply_approved(Approval::Once));
+        assert!(
+            !corrupt.apply_finished(&result(ToolCallStatus::Failed, "SECRET_RAW_FAILURE_BODY",))
+        );
+        assert!(corrupt.visible_text().contains(CORRUPT_LABEL));
+        assert!(!corrupt.visible_text().contains("SECRET_RAW_FAILURE_BODY"));
+
+        let forged_invalid = ToolResult {
+            status: ToolCallStatus::Rejected,
+            output: "SECRET_INVALID_BODY".into(),
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            invalid: Some(InvalidToolProjection::new(
+                InvalidToolKind::Write,
+                InvalidToolCode::MalformedJson,
+            )),
+        };
+        let card = ToolCard::invalid_terminal(&forged_invalid);
+        assert!(card.visible_text().contains(CORRUPT_LABEL));
+        assert!(!card.visible_text().contains("SECRET_INVALID_BODY"));
+
+        let mut known = ToolCard::proposed(&call);
+        assert!(!known.apply_finished(&ToolResult {
+            output: "Tool error: invalid write input (malformed_json)".into(),
+            ..forged_invalid
+        }));
+        assert!(known.visible_text().contains(CORRUPT_LABEL));
+    }
+
+    #[test]
+    fn identical_terminal_only_is_idempotent_and_late_events_are_corrupt() {
+        let call = ToolCall {
+            id: "write-call".into(),
+            tool: "write".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+        let mut terminal = result(
+            ToolCallStatus::Success,
+            r#"{"path":"a.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+        );
+        terminal.truncated = Some(false);
+        let mut card = ToolCard::proposed(&call);
+        assert!(card.apply_approved(Approval::Once));
+        assert!(card.apply_finished(&terminal));
+        assert!(card.apply_finished(&terminal));
+        assert!(!card.matches_call(&call));
+        assert!(!card.apply_approved(Approval::Once));
+        assert!(card.visible_text().contains(CORRUPT_LABEL));
+    }
+
+    #[test]
+    fn long_bash_command_stays_one_compact_row_and_detail_keeps_the_full_command() {
+        let command = format!("printf '{}{}'", "中".repeat(70), "a".repeat(90));
+        let call = ToolCall {
+            id: "SECRET_CALL_ID".into(),
+            tool: "bash".into(),
+            input_json: serde_json::json!({ "cmd": command }).to_string(),
+        };
+        let card = ToolCard::proposed(&call);
+        assert!(!card.summary.contains('\n'));
+        assert_eq!(card.row_count(), 1);
+        assert_eq!(
+            card.visible_text(),
+            format!("Awaiting approval to run {command}")
+        );
+        assert!(card.visible_text().contains(&command));
+        assert!(!card.visible_text().contains("SECRET_CALL_ID"));
+        let mut card = card;
+        card.expanded = true;
+        assert!(card.visible_text().contains(&format!("$ {command}")));
+    }
+
+    #[test]
+    fn expanded_bash_command_preserves_quoted_spaces_and_multiline_whitespace() {
+        let command = "printf 'a  b'\nprintf\t'done'";
+        let call = ToolCall {
+            id: "bash-spacing".into(),
+            tool: "bash".into(),
+            input_json: serde_json::json!({ "cmd": command }).to_string(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert_eq!(
+            card.summary,
+            "Awaiting approval to run printf 'a  b' printf 'done'"
+        );
+        assert!(!card.summary.contains('\n'));
+        assert!(!card.summary.contains('\r'));
+        assert!(!card.summary.contains('\t'));
+        card.expanded = true;
+        assert!(card.visible_text().contains(&format!("$ {command}")));
+    }
+
+    #[test]
+    fn late_approval_clears_expanded_bash_output_to_fixed_corrupt_card() {
+        let call = ToolCall {
+            id: "bash-call".into(),
+            tool: "bash".into(),
+            input_json: r#"{"cmd":"printf SECRET_COMMAND"}"#.into(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert!(card.apply_approved(Approval::Once));
+        let mut terminal = result(ToolCallStatus::Success, "SECRET_BASH_OUTPUT");
+        terminal.exit_code = Some(0);
+        terminal.duration_ms = Some(1);
+        terminal.truncated = Some(false);
+        assert!(card.apply_finished(&terminal));
+        card.expanded = true;
+        assert!(card.visible_text().contains("SECRET_BASH_OUTPUT"));
+
+        assert!(!card.apply_approved(Approval::Once));
+        assert_eq!(card.visible_text(), "Tool result corrupted");
+        assert_eq!(card.row_count(), 1);
+        assert!(!card.visible_text().contains("SECRET_BASH_OUTPUT"));
+        assert!(!card.visible_text().contains("SECRET_COMMAND"));
+        assert!(!card.summary.contains("SECRET_COMMAND"));
+        assert!(card.input.is_none());
+        assert!(card.output_rows.is_empty());
+        assert!(!card.expanded);
+        assert!(card.permission_identity().is_none());
+    }
 }

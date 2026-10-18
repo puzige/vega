@@ -120,3 +120,97 @@ fn root_recursive_delete(command: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::detect_danger;
+
+    fn rule(command: &str) -> Option<&'static str> {
+        detect_danger(command)
+            .unwrap()
+            .map(|matched| matched.rule_id)
+    }
+
+    #[test]
+    fn danger_rm_root_variants_and_negatives() {
+        for command in [
+            "rm -rf /",
+            "rm -fr /",
+            "rm -r -f /",
+            "rm -f -R /",
+            "rm --recursive --force /",
+            "rm --force --recursive /",
+            "\trm   -r   -f   /  ",
+            "/bin/rm -Rf /",
+        ] {
+            assert_eq!(rule(command), Some("rm-root-recursive-force"), "{command}");
+        }
+        for command in [
+            "rm -rf ./",
+            "rm -r /",
+            "rm -f /",
+            "echo rm -rf /",
+            "rmdir /",
+        ] {
+            assert_eq!(rule(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn danger_git_force_push_variants_and_negatives() {
+        for command in [
+            "git push -f",
+            "git push --force origin main",
+            "git push origin main --force-with-lease",
+            "git push --force-with-lease=refs/heads/main",
+            "/usr/bin/git push --force origin main",
+            "echo ok; git push -f origin main",
+        ] {
+            assert_eq!(rule(command), Some("git-force-push"), "{command}");
+        }
+        for command in [
+            "git push",
+            "git push origin main",
+            "git fetch --force",
+            "echo git push -f",
+        ] {
+            assert_eq!(rule(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn danger_device_format_and_diskutil_rules_have_negatives() {
+        for (command, expected) in [
+            ("dd if=image of=/dev/disk4", "raw-device-write"),
+            ("dd bs=1m of=/dev/rdisk2 if=image", "raw-device-write"),
+            ("/bin/dd if=image of=/dev/disk4", "raw-device-write"),
+            ("mkfs /dev/disk4", "filesystem-format"),
+            ("/sbin/mkfs.ext4 /dev/disk4", "filesystem-format"),
+            ("mkfs_apfs /dev/disk4", "filesystem-format"),
+            ("/sbin/mkfs-ext4 /dev/disk4", "filesystem-format"),
+            ("mkfs-not-a-command file", "filesystem-format"),
+            (
+                "diskutil eraseDisk APFS Empty /dev/disk4",
+                "diskutil-destructive",
+            ),
+            (
+                "diskutil partitionDisk /dev/disk4 1 GPT APFS X R",
+                "diskutil-destructive",
+            ),
+            (
+                "/usr/sbin/diskutil secureErase 0 /dev/disk4",
+                "diskutil-destructive",
+            ),
+        ] {
+            assert_eq!(rule(command), Some(expected), "{command}");
+        }
+        for command in [
+            "dd if=/dev/zero of=./image",
+            "echo dd of=/dev/disk4",
+            "diskutil list",
+            "diskutil info /dev/disk4",
+        ] {
+            assert_eq!(rule(command), None, "{command}");
+        }
+    }
+}

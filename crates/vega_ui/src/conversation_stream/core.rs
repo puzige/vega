@@ -20,6 +20,10 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) prediction_waiting_for_queue: bool,
+    pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
+    pub(crate) prediction_generation: u64,
+    pub(crate) prediction_completed: Option<String>,
     pub(crate) reading_preview: bool,
     pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
     pub(crate) subagent_parent_focus: FocusHandle,
@@ -333,7 +337,15 @@ impl ConversationStream {
         .detach();
         // 空输入禁用发送 + `@` 触发的文件选择跟随输入内容变化：输入内容
         // 变化即重渲染 Composer。
+        cx.observe_global::<ComposerPredictionsEnabled>(|this, cx| {
+            this.invalidate_composer_prediction(cx);
+            cx.notify();
+        })
+        .detach();
+        cx.observe_self(|this, cx| this.reconcile_composer_prediction(cx))
+            .detach();
         cx.observe(&input, |this, input, cx| {
+            this.reconcile_composer_prediction(cx);
             this.sync_composer_actions(&input, cx);
             this.sync_at_query(&input, cx);
         })
@@ -349,7 +361,10 @@ impl ConversationStream {
         let user_question_listener_task = cx.spawn(async move |this, cx| {
             while question_listener.changed().await {
                 if this
-                    .update(cx, |this, cx| this.install_pending_user_question(cx))
+                    .update(cx, |this, cx| {
+                        this.reconcile_composer_prediction(cx);
+                        this.install_pending_user_question(cx);
+                    })
                     .is_err()
                 {
                     break;
@@ -360,7 +375,10 @@ impl ConversationStream {
         let permission_listener_task = cx.spawn(async move |this, cx| {
             while listener.changed().await {
                 let alive = this
-                    .update(cx, |this, cx| this.install_pending_permission(cx))
+                    .update(cx, |this, cx| {
+                        this.reconcile_composer_prediction(cx);
+                        this.install_pending_permission(cx);
+                    })
                     .is_ok();
                 if !alive {
                     break;
@@ -427,6 +445,10 @@ impl ConversationStream {
         )
         .detach();
         Self {
+            prediction_waiting_for_queue: false,
+            prediction_owner: None,
+            prediction_generation: 0,
+            prediction_completed: None,
             reading_preview: false,
             subagent_groups: HashMap::new(),
             subagent_parent_focus: cx.focus_handle().tab_stop(true),
@@ -1593,6 +1615,11 @@ impl ConversationStream {
     pub fn restore_meter(&mut self, usage: RestoredUsage, cx: &mut Context<Self>) {
         self.meter.restore(usage);
         cx.notify();
+    }
+
+    /// Current counter projection (C4): the Composer renders exactly this.
+    pub fn meter_snapshot(&self) -> MeterSnapshot {
+        self.meter.snapshot()
     }
 
     pub(crate) fn feed_meter(&mut self, event: &ConversationEvent, cx: &mut Context<Self>) {

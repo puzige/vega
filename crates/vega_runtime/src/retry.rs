@@ -48,3 +48,52 @@ impl RetryPolicy {
 pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
     value.trim().parse::<u64>().ok().map(Duration::from_secs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_policy_backs_off_1s_2s_4s_with_three_retries() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.max_retries, 3);
+        assert_eq!(policy.backoff(0), Duration::from_secs(1));
+        assert_eq!(policy.backoff(1), Duration::from_secs(2));
+        assert_eq!(policy.backoff(2), Duration::from_secs(4));
+    }
+
+    #[test]
+    fn backoff_is_capped_at_max_delay() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.backoff(10), policy.max_delay);
+    }
+
+    #[test]
+    fn delay_for_prefers_retry_after_and_caps_it() {
+        let policy = RetryPolicy::default();
+        assert_eq!(
+            policy.delay_for(0, Some(Duration::from_secs(2))),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            policy.delay_for(0, Some(Duration::from_secs(3600))),
+            policy.max_delay
+        );
+        assert_eq!(
+            policy.delay_for(1, None),
+            Duration::from_secs(2),
+            "missing Retry-After falls back to the exponential schedule"
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_accepts_seconds_only() {
+        assert_eq!(parse_retry_after("5"), Some(Duration::from_secs(5)));
+        assert_eq!(parse_retry_after(" 3 "), Some(Duration::from_secs(3)));
+        assert_eq!(parse_retry_after("0"), Some(Duration::from_secs(0)));
+        assert_eq!(parse_retry_after("abc"), None);
+        assert_eq!(parse_retry_after("-1"), None);
+        // HTTP-date form intentionally unsupported.
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+    }
+}

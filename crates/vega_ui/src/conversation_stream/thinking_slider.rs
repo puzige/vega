@@ -123,6 +123,30 @@ pub fn tier_display_label(effort: &str) -> String {
     }
 }
 
+/// Static debug selectors for rendered dots, indexed by dot position. The
+/// array bound exists because `VisualTestContext::debug_bounds` only accepts a
+/// `&'static str`; the reference ladder tops out at nine tiers, so twelve
+/// leaves headroom.
+pub(crate) const DOT_SELECTORS: [&str; 12] = [
+    "thinking-slider-dot-0",
+    "thinking-slider-dot-1",
+    "thinking-slider-dot-2",
+    "thinking-slider-dot-3",
+    "thinking-slider-dot-4",
+    "thinking-slider-dot-5",
+    "thinking-slider-dot-6",
+    "thinking-slider-dot-7",
+    "thinking-slider-dot-8",
+    "thinking-slider-dot-9",
+    "thinking-slider-dot-10",
+    "thinking-slider-dot-11",
+];
+
+/// Debug selectors for the gradient's segments, one per adjacent pair in
+/// [`TRACK_GRADIENT`].
+pub(crate) const GRADIENT_SEGMENT_SELECTORS: [&str; 2] =
+    ["thinking-slider-gradient-0", "thinking-slider-gradient-1"];
+
 // ---------------------------------------------------------------------------
 // Tier ladder and resolution (spec §3.1)
 // ---------------------------------------------------------------------------
@@ -328,6 +352,12 @@ impl ThinkingSliderModel {
     ) {
         self.tiers = tiers;
         self.rebind(supports_off, current, default);
+    }
+
+    /// The tier the slider falls back to when the preferred tier is no longer
+    /// supported.
+    pub fn default_tier(&self) -> Option<&str> {
+        self.default.as_deref()
     }
 
     fn select(&mut self, index: usize) -> Option<String> {
@@ -571,7 +601,10 @@ impl ThinkingSlider {
                         linear_color_stop(from, 0.0),
                         linear_color_stop(to, 1.0),
                     ));
-                segments.push(segment);
+                segments.push(match GRADIENT_SEGMENT_SELECTORS.get(index).copied() {
+                    Some(selector) => segment.debug_selector(move || selector.to_string()),
+                    None => segment,
+                });
             }
             return div().children(segments).into_any_element();
         }
@@ -581,6 +614,7 @@ impl ThinkingSlider {
 
         let narrow = fill_has_right_cap(selected, self.model.dot_count());
         div()
+            .debug_selector(|| "thinking-slider-fill-flat".into())
             .absolute()
             .left_0()
             .top_0()
@@ -666,7 +700,7 @@ impl Render for ThinkingSlider {
         let dots = (0..count).map(|index| {
             let offset = dot_center_offset(index, count);
             let filled = selected.is_some_and(|selected| index <= selected);
-            div()
+            let dot = div()
                 .absolute()
                 .left(px(offset - THINKING_DOT_DIAMETER / 2.0))
                 .top(px((THINKING_TRACK_HEIGHT - THINKING_DOT_DIAMETER) / 2.0))
@@ -676,7 +710,11 @@ impl Render for ThinkingSlider {
                     TRACK_DOT_FILLED
                 } else {
                     colors.text_tertiary
-                })
+                });
+            match DOT_SELECTORS.get(index).copied() {
+                Some(selector) => dot.debug_selector(move || selector.to_string()),
+                None => dot,
+            }
         });
 
         // The track captures its own bounds at prepaint so a click position
@@ -686,6 +724,7 @@ impl Render for ThinkingSlider {
 
         let track = div()
             .id("thinking-slider-track")
+            .debug_selector(|| "thinking-slider-track".into())
             .relative()
             .w(px(THINKING_TRACK_WIDTH))
             .h(px(THINKING_TRACK_HEIGHT))
@@ -717,6 +756,7 @@ impl Render for ThinkingSlider {
             .when_some(selected, |track, selected| {
                 track.child(
                     div()
+                        .debug_selector(|| "thinking-slider-knob".into())
                         .absolute()
                         .left(px(
                             dot_center_offset(selected, count) - THINKING_KNOB_DIAMETER / 2.0
@@ -733,6 +773,7 @@ impl Render for ThinkingSlider {
 
         card_shadow(
             div()
+                .debug_selector(|| "thinking-slider-card".into())
                 .flex()
                 .flex_col()
                 .items_center()
@@ -766,6 +807,7 @@ impl ThinkingSlider {
     ) -> AnyElement {
         div()
             .id("thinking-slider-title-block")
+            .debug_selector(|| "thinking-slider-title-block".into())
             .flex()
             .flex_col()
             .items_center()
@@ -790,6 +832,7 @@ impl ThinkingSlider {
     ) -> AnyElement {
         div()
             .id("thinking-slider-title")
+            .debug_selector(|| "thinking-slider-title".into())
             .flex()
             .items_center()
             .justify_center()
@@ -810,22 +853,30 @@ impl ThinkingSlider {
             // same claim as a centred label.
             .child(
                 div()
+                    .debug_selector(|| "thinking-slider-title-group".into())
                     .flex()
                     .items_center()
                     .gap(px(TITLE_GROUP_GAP))
                     .min_w_0()
                     .child(
                         div()
+                            .debug_selector(|| "thinking-slider-label".into())
                             .min_w_0()
                             .truncate()
                             .text_size(px(Typography::METADATA))
                             .text_color(label_color)
                             .child(label),
                     )
-                    .child(div().flex().flex_shrink_0().child(crate::icons::icon(
-                        crate::icons::Icon::ChevronRight,
-                        colors.text_tertiary,
-                    ))),
+                    .child(
+                        div()
+                            .debug_selector(|| "thinking-slider-chevron".into())
+                            .flex()
+                            .flex_shrink_0()
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::ChevronRight,
+                                colors.text_tertiary,
+                            )),
+                    ),
             )
             .into_any_element()
     }
@@ -841,6 +892,7 @@ impl ThinkingSlider {
             .max_w(px(TITLE_BLOCK_CONTENT_MAX_WIDTH))
             .child(
                 div()
+                    .debug_selector(|| "thinking-slider-model".into())
                     .min_w_0()
                     .truncate()
                     .text_size(px(Typography::SIDEBAR))
@@ -855,5 +907,465 @@ fn tier_label_color_for(selected: Option<usize>, strongest: Option<usize>) -> Rg
     match (selected, strongest) {
         (Some(selected), Some(strongest)) if selected == strongest => TIER_LABEL_STRONG,
         _ => TIER_LABEL_BASE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{Modifiers, TestAppContext, VisualTestContext, WindowHandle, WindowOptions};
+
+    fn tiers(list: &[&str]) -> Vec<String> {
+        list.iter().map(|tier| (*tier).to_string()).collect()
+    }
+
+    fn open_slider(
+        cx: &mut TestAppContext,
+        tier_list: Vec<String>,
+        current: &str,
+        default: &str,
+    ) -> WindowHandle<ThinkingSlider> {
+        open_slider_with(cx, tier_list, false, current, default)
+    }
+
+    fn open_slider_with(
+        cx: &mut TestAppContext,
+        tier_list: Vec<String>,
+        supports_off: bool,
+        current: &str,
+        default: &str,
+    ) -> WindowHandle<ThinkingSlider> {
+        let current = current.to_string();
+        let default = default.to_string();
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            cx.open_window(WindowOptions::default(), move |_, cx| {
+                cx.new(|cx| {
+                    ThinkingSlider::new(
+                        "GPT-6 Astra",
+                        tier_list,
+                        supports_off,
+                        current,
+                        default,
+                        cx,
+                    )
+                })
+            })
+            .expect("thinking slider window")
+        })
+    }
+
+    fn rendered_dot_count(visual: &mut VisualTestContext) -> usize {
+        DOT_SELECTORS
+            .iter()
+            .copied()
+            .filter(|selector| visual.debug_bounds(selector).is_some())
+            .count()
+    }
+
+    /// Reads the mounted slider's tier. `WindowHandle::read_with` returns a
+    /// `Result` because the window may be gone; the harness always has it.
+    fn tier_of(window: &WindowHandle<ThinkingSlider>, cx: &TestAppContext) -> Option<String> {
+        window
+            .read_with(cx, |slider, _| slider.tier().map(str::to_string))
+            .expect("slider window is open")
+    }
+
+    /// Window-space x of dot `index` for a mounted track.
+    fn dot_x(track: Bounds<Pixels>, index: usize, count: usize) -> Pixels {
+        track.left() + px(dot_center_offset(index, count))
+    }
+
+    // ---- pure resolution -------------------------------------------------
+
+    #[test]
+    fn dot_count_tracks_the_supported_tier_count() {
+        for (list, expected) in [
+            (tiers(&["low", "medium", "high"]), 3),
+            (
+                tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+                6,
+            ),
+            (Vec::new(), 0),
+        ] {
+            let model = ThinkingSliderModel::new(list, false, "medium", "medium");
+            assert_eq!(model.dot_count(), expected);
+        }
+    }
+
+    #[test]
+    fn unsupported_current_falls_back_to_the_nearest_lower_supported_tier() {
+        // glm-5.3's declared efforts. `ultra`/`persistent` sit above `max`,
+        // `xhigh` between `high` and `max`.
+        let supported = tiers(&["low", "high", "max"]);
+        assert_eq!(resolve_tier(&supported, "ultra", "low"), Some("max"));
+        assert_eq!(resolve_tier(&supported, "persistent", "low"), Some("max"));
+        assert_eq!(resolve_tier(&supported, "xhigh", "low"), Some("high"));
+        // The literal reference snippet scans from index 0, so it would answer
+        // `low` for all three of the above. This is the divergence the module
+        // docs pin down.
+        assert_eq!(resolve_tier(&supported, "max", "low"), Some("max"));
+        assert_eq!(resolve_tier(&supported, "low", "high"), Some("low"));
+        // Nothing lies below `low`, so the configured default applies.
+        assert_eq!(resolve_tier(&supported, "minimal", "high"), Some("high"));
+    }
+
+    #[test]
+    fn fallback_skips_unsupported_gaps_in_the_ladder() {
+        let supported = tiers(&["minimal", "medium", "max"]);
+        assert_eq!(resolve_tier(&supported, "high", "medium"), Some("medium"));
+        assert_eq!(resolve_tier(&supported, "xhigh", "medium"), Some("medium"));
+        assert_eq!(
+            resolve_tier(&supported, "persistent", "medium"),
+            Some("max")
+        );
+    }
+
+    #[test]
+    fn nothing_below_the_preferred_tier_uses_the_default_then_the_first() {
+        let supported = tiers(&["medium", "high"]);
+        // `minimal` sits below every supported tier; the configured default
+        // wins over the first supported tier.
+        assert_eq!(resolve_tier(&supported, "minimal", "high"), Some("high"));
+        // An unsupported default still resolves, to the first supported tier.
+        assert_eq!(resolve_tier(&supported, "minimal", "max"), Some("medium"));
+        // A tier outside the ladder has no rank, so the same path applies.
+        assert_eq!(resolve_tier(&supported, "bogus", "high"), Some("high"));
+    }
+
+    #[test]
+    fn no_supported_tiers_resolve_to_nothing() {
+        assert_eq!(resolve_tier(&[], "medium", "medium"), None);
+        let model = ThinkingSliderModel::new(Vec::new(), false, "medium", "medium");
+        assert_eq!(model.tier(), None);
+        assert_eq!(model.selected_position(), None);
+        assert_eq!(model.default_tier(), None);
+    }
+
+    #[test]
+    fn the_default_tier_resolves_through_the_fallback() {
+        // `xhigh` is not supported; the nearest lower supported tier is `high`.
+        let model =
+            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), false, "low", "xhigh");
+        assert_eq!(model.default_tier(), Some("high"));
+    }
+
+    #[test]
+    fn selecting_an_index_is_idempotent() {
+        let mut model =
+            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), false, "medium", "low");
+        assert_eq!(model.select(2), Some("high".to_string()));
+        assert_eq!(model.select(2), None);
+        assert_eq!(model.select(9), None);
+        assert_eq!(model.tier(), Some("high"));
+    }
+
+    #[test]
+    fn strongest_position_marks_the_gradient_tier() {
+        let model =
+            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), false, "medium", "low");
+        assert_eq!(model.strongest_position(), Some(2));
+        assert_eq!(
+            tier_label_color_for(model.selected_position(), model.strongest_position()),
+            TIER_LABEL_BASE
+        );
+        let mut strongest = model.clone();
+        strongest.select(2);
+        assert_eq!(
+            tier_label_color_for(
+                strongest.selected_position(),
+                strongest.strongest_position()
+            ),
+            TIER_LABEL_STRONG
+        );
+    }
+
+    #[test]
+    fn only_the_strongest_tier_takes_the_gradient() {
+        // The two measured states: `Medium` (index 1 of 6) is flat, `Ultra`
+        // (the last of 7) is the gradient.
+        assert_eq!(track_fill_style(1, Some(5)), TrackFillStyle::Flat);
+        assert_eq!(track_fill_style(0, Some(5)), TrackFillStyle::Flat);
+        assert_eq!(track_fill_style(5, Some(5)), TrackFillStyle::Gradient);
+        // A single-tier model is both weakest and strongest.
+        assert_eq!(track_fill_style(0, Some(0)), TrackFillStyle::Gradient);
+        // No tiers at all never renders a fill.
+        assert_eq!(track_fill_style(0, None), TrackFillStyle::Flat);
+    }
+
+    #[test]
+    fn measured_colours_match_the_spec_samples() {
+        // §4.1 tier-name colours.
+        assert_eq!(TIER_LABEL_STRONG, measured_rgba(0x924FF7FF));
+        assert_eq!(TIER_LABEL_BASE, measured_rgba(0x3983F7FF));
+        // §4.2 flat fill, unfilled track, and the gradient's measured
+        // endpoints.
+        assert_eq!(TRACK_FILL_FLAT, measured_rgba(0x3983F7FF));
+        assert_eq!(TRACK_UNFILLED, measured_rgba(0xE9E8E8FF));
+        assert_eq!(TRACK_DOT_FILLED, measured_rgba(0xFFFFFFFF));
+        assert_eq!(TRACK_GRADIENT[0], (0.0, measured_rgba(0x3346CDFF)));
+        assert_eq!(TRACK_GRADIENT[2], (1.0, measured_rgba(0x7E5AF0FF)));
+        assert_eq!(TRACK_GRADIENT[1].1, measured_rgba(0xAE76FFFF));
+        // The measured §4.3 geometry.
+        assert_eq!(THINKING_CARD_WIDTH, 254.5);
+        assert_eq!(THINKING_TRACK_WIDTH, 203.0);
+        assert_eq!(THINKING_TRACK_HEIGHT, 24.0);
+        assert_eq!(THINKING_KNOB_DIAMETER, 24.0);
+    }
+
+    #[test]
+    fn dot_centres_stay_inside_the_measured_track_box() {
+        let half_knob = THINKING_KNOB_DIAMETER / 2.0;
+        for count in 1..=TIER_LADDER.len() {
+            for index in 0..count {
+                let offset = dot_center_offset(index, count);
+                assert!(
+                    (half_knob..=THINKING_TRACK_WIDTH - half_knob).contains(&offset),
+                    "dot {index} of {count} at {offset} escapes the 203px box"
+                );
+            }
+        }
+        // The strongest dot's knob is flush with the measured right edge.
+        assert_eq!(
+            dot_center_offset(6, 7) + THINKING_KNOB_DIAMETER / 2.0,
+            THINKING_TRACK_WIDTH
+        );
+    }
+
+    // ---- rendered geometry and interaction -------------------------------
+
+    #[gpui_kit::test]
+    async fn rendered_dots_equal_the_supported_tier_count(cx: &mut TestAppContext) {
+        for list in [
+            tiers(&["low", "medium", "high"]),
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+        ] {
+            let expected = list.len();
+            let window = open_slider(cx, list, "medium", "medium");
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            assert_eq!(
+                rendered_dot_count(&mut visual),
+                expected,
+                "one dot per supported tier"
+            );
+            assert!(visual.debug_bounds("thinking-slider-card").is_some());
+            assert!(visual.debug_bounds("thinking-slider-track").is_some());
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn card_and_track_match_the_measured_geometry(cx: &mut TestAppContext) {
+        let window = open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "medium",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let card = visual
+            .debug_bounds("thinking-slider-card")
+            .expect("mounted card");
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        let knob = visual
+            .debug_bounds("thinking-slider-knob")
+            .expect("mounted knob");
+        assert!(
+            (f32::from(card.size.width) - THINKING_CARD_WIDTH).abs() <= 1.0,
+            "card width {} != measured {THINKING_CARD_WIDTH}",
+            f32::from(card.size.width)
+        );
+        assert!(
+            (f32::from(track.size.width) - THINKING_TRACK_WIDTH).abs() <= 1.0,
+            "track width {} != measured {THINKING_TRACK_WIDTH}",
+            f32::from(track.size.width)
+        );
+        assert!(
+            (f32::from(track.size.height) - THINKING_TRACK_HEIGHT).abs() <= 1.0,
+            "track height {} != measured {THINKING_TRACK_HEIGHT}",
+            f32::from(track.size.height)
+        );
+        assert!(
+            (f32::from(knob.size.width) - THINKING_KNOB_DIAMETER).abs() <= 1.0,
+            "knob diameter {} != measured {THINKING_KNOB_DIAMETER}",
+            f32::from(knob.size.width)
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn clicking_a_dot_selects_that_tier(cx: &mut TestAppContext) {
+        let window = open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "medium",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        let count = 6;
+
+        // `medium` is index 2, so the knob starts there.
+        assert_eq!(tier_of(&window, cx), Some("medium".to_string()));
+
+        for (index, expected) in [(5, "max"), (0, "minimal"), (3, "high")] {
+            let position = gpui_kit::point(dot_x(track, index, count), track.center().y);
+            visual.simulate_click(position, Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                tier_of(&window, cx),
+                Some(expected.to_string()),
+                "click on dot {index}"
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn flat_and_gradient_fills_mount_for_the_measured_states(cx: &mut TestAppContext) {
+        // `Medium` of 6 tiers: a flat fill, no gradient segments.
+        let window = open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "medium",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(
+            visual.debug_bounds("thinking-slider-fill-flat").is_some(),
+            "a non-strongest tier renders the flat fill"
+        );
+        for selector in GRADIENT_SEGMENT_SELECTORS {
+            assert!(
+                visual.debug_bounds(selector).is_none(),
+                "{selector} must not mount below the strongest tier"
+            );
+        }
+
+        // The strongest tier: the gradient, no flat fill.
+        let window = open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "max",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(
+            visual.debug_bounds("thinking-slider-fill-flat").is_none(),
+            "the strongest tier must not use the flat fill"
+        );
+        for selector in GRADIENT_SEGMENT_SELECTORS {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "{selector} must mount for the strongest tier"
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn dragging_the_knob_selects_the_tier_under_the_pointer(cx: &mut TestAppContext) {
+        let window = open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "minimal",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        let count = 6;
+
+        let start = gpui_kit::point(dot_x(track, 0, count), track.center().y);
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+
+        // GPUI consumes the first move past its 2 px threshold to create the
+        // drag, so that move carries no `drag_move`. A real drag continues
+        // moving, which is what the second move below represents.
+        visual.simulate_mouse_move(
+            gpui_kit::point(dot_x(track, 1, count), track.center().y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        visual.simulate_mouse_move(
+            gpui_kit::point(dot_x(track, 2, count), track.center().y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(
+            tier_of(&window, cx),
+            Some("medium".to_string()),
+            "the drag tracks the pointer"
+        );
+
+        // Continue to the strongest dot and release.
+        visual.simulate_mouse_move(
+            gpui_kit::point(dot_x(track, 5, count), track.center().y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_up(
+            gpui_kit::point(dot_x(track, 5, count), track.center().y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(tier_of(&window, cx), Some("max".to_string()));
+    }
+
+    #[gpui_kit::test]
+    async fn a_fast_flick_resolves_on_release(cx: &mut TestAppContext) {
+        // The move that starts a drag is consumed, so a single flick from one
+        // end of the track to the other delivers no `drag_move` at the release
+        // position. The release handler must still land on the release dot.
+        let window = open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "minimal",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        let count = 6;
+
+        visual.simulate_mouse_down(
+            gpui_kit::point(dot_x(track, 0, count), track.center().y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let far = gpui_kit::point(dot_x(track, 4, count), track.center().y);
+        visual.simulate_mouse_move(far, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(far, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            tier_of(&window, cx),
+            Some("xhigh".to_string()),
+            "release resolves the tier under the pointer"
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn unsupported_current_tier_is_rendered_at_the_fallback(cx: &mut TestAppContext) {
+        // `ultra` is not in this model's supported list; the slider must show
+        // `high`, the nearest supported tier below it.
+        let window = open_slider(cx, tiers(&["low", "medium", "high"]), "ultra", "low");
+        cx.run_until_parked();
+        assert_eq!(tier_of(&window, cx), Some("high".to_string()));
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert_eq!(rendered_dot_count(&mut visual), 3);
     }
 }

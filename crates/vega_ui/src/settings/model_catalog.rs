@@ -316,6 +316,7 @@ impl SettingsView {
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
+                    .debug_selector(|| "model-catalog-source".into())
                     .child(format!(
                         "models.dev · {} 分钟前获取",
                         std::time::SystemTime::now()
@@ -557,6 +558,10 @@ impl SettingsView {
                     body = body.child(
                         settings_action_chrome(colors)
                             .id(format!("catalog-model-{}", model.id))
+                            .debug_selector({
+                                let id = format!("catalog-model-{}", model.id);
+                                move || id.clone()
+                            })
                             .focus_visible(move |style| style.border_color(colors.accent))
                             .on_key_down(cx.listener(
                                 move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
@@ -610,6 +615,10 @@ impl SettingsView {
                 body = body.child(
                     settings_action_chrome(colors)
                         .id(format!("catalog-provider-{}", provider.id))
+                        .debug_selector({
+                            let id = format!("catalog-provider-{}", provider.id);
+                            move || id.clone()
+                        })
                         .focus_visible(move |style| style.border_color(colors.accent))
                         .on_key_down(cx.listener(
                             move |this, event: &gpui_kit::KeyDownEvent, _, cx| {

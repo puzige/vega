@@ -304,6 +304,26 @@ pub fn init(cx: &mut App) {
             sidebar::CloseThreadActions,
             Some("ThreadActionsMenu"),
         ),
+        KeyBinding::new(
+            "tab",
+            text_input::AcceptPrediction,
+            Some("TextInputPrediction"),
+        ),
+        KeyBinding::new(
+            "right",
+            text_input::AcceptPrediction,
+            Some("TextInputPrediction"),
+        ),
+        KeyBinding::new(
+            "enter",
+            text_input::AcceptPrediction,
+            Some("TextInputPrediction"),
+        ),
+        KeyBinding::new(
+            "escape",
+            text_input::DismissPrediction,
+            Some("TextInputPrediction"),
+        ),
         KeyBinding::new("enter", conversation_stream::SendMessage, Some("Composer")),
         KeyBinding::new("shift-enter", text_input::InsertNewline, Some("Composer")),
         KeyBinding::new(

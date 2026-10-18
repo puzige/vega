@@ -222,6 +222,9 @@ mod state;
 mod usage;
 pub use usage::UsageReloadRequested;
 
+#[cfg(test)]
+mod tests;
+
 pub use helpers::all_models;
 pub(crate) use helpers::*;
 pub use state::SettingsView;

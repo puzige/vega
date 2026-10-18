@@ -49,6 +49,7 @@ impl VegaWindow {
                         view.apply_refresh_error(map_commit_reconcile_error(*code), cx);
                     }
                 });
+            self.record_commit_probe("ui_diff");
         }
         if let Some((service, snapshot)) = &reconciled.branch
             && let Some(active) = self.branch_controller.active.as_mut()
@@ -70,6 +71,7 @@ impl VegaWindow {
                     }
                     Err(code) => selector.apply_error(*code, cx),
                 });
+            self.record_commit_probe("ui_branch");
         }
         let mut artifact_failure = None;
         if let Some((service, cards)) = &reconciled.artifacts
@@ -92,6 +94,7 @@ impl VegaWindow {
                 }
                 Err(code) => artifact_failure = Some(*code),
             }
+            self.record_commit_probe("ui_artifact");
         }
         if let Some(code) = artifact_failure {
             self.close_artifact_route(code, cx);

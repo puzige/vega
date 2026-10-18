@@ -174,6 +174,27 @@ pub(crate) struct CommitWorkspaceReconciliation {
     pub(crate) artifacts: Option<CommitArtifactReconciliation>,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct CommitTestProbe {
+    pub(crate) prepare_workers: std::sync::atomic::AtomicUsize,
+    pub(crate) draft_workers: std::sync::atomic::AtomicUsize,
+    pub(crate) commit_workers: std::sync::atomic::AtomicUsize,
+    pub(crate) terminal_applications: std::sync::atomic::AtomicUsize,
+    pub(crate) drop_commit_sender: AtomicBool,
+    pub(crate) trace: Mutex<Vec<&'static str>>,
+}
+
+#[cfg(test)]
+impl CommitTestProbe {
+    pub(crate) fn record(&self, event: &'static str) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(event);
+    }
+}
+
 pub(crate) type CommitBranchReconciliation = (
     Arc<BranchWorkspaceService>,
     Result<BranchSnapshot, GitWorkspaceErrorCode>,
@@ -189,6 +210,7 @@ pub(crate) fn reconcile_commit_consumers(
     workspace: Option<WorkspaceSnapshot>,
     branch: Option<Arc<BranchWorkspaceService>>,
     artifacts: Option<Arc<ArtifactService>>,
+    #[cfg(test)] probe: Option<&Arc<CommitTestProbe>>,
 ) -> CommitWorkspaceReconciliation {
     // Mutation ownership is not terminal until one workspace snapshot is
     // authoritative both before and after every consumer read. Branch and
@@ -208,20 +230,40 @@ pub(crate) fn reconcile_commit_consumers(
                 }
             },
         };
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.record("workspace_candidate");
+        }
         let branch_result = branch.as_ref().map(|branch| {
             let snapshot = runtime
                 .block_on(branch.refresh(tokio_util::sync::CancellationToken::new()))
                 .map_err(|failure| failure.code());
             (branch.clone(), snapshot)
         });
+        #[cfg(test)]
+        if branch_result.is_some()
+            && let Some(probe) = probe
+        {
+            probe.record("branch_result");
+        }
         let artifact_result = artifacts.as_ref().map(|artifacts| {
             let cards = runtime
                 .block_on(artifacts.reconcile(tokio_util::sync::CancellationToken::new()))
                 .map_err(|failure| failure.code());
             (artifacts.clone(), cards)
         });
+        #[cfg(test)]
+        if artifact_result.is_some()
+            && let Some(probe) = probe
+        {
+            probe.record("artifact_result");
+        }
         match runtime.block_on(service.reconcile_workspace()) {
             Ok(final_workspace) if final_workspace == authoritative => {
+                #[cfg(test)]
+                if let Some(probe) = probe {
+                    probe.record("workspace_final");
+                }
                 return CommitWorkspaceReconciliation {
                     workspace: Ok(final_workspace),
                     workspace_service: service.workspace_service(),
@@ -398,7 +440,10 @@ pub(crate) fn run_commit_checklist_worker(
     workspace: Arc<GitWorkspaceService>,
     service: Arc<TrustedGitService>,
     cancel: tokio_util::sync::CancellationToken,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
 ) -> CommitWorkerResult {
+    #[cfg(test)]
+    let _ = probe;
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -422,7 +467,12 @@ pub(crate) fn run_commit_prepare_worker(
     cancel: tokio_util::sync::CancellationToken,
     branch: Option<Arc<BranchWorkspaceService>>,
     artifacts: Option<Arc<ArtifactService>>,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
 ) -> CommitWorkerResult {
+    #[cfg(test)]
+    if let Some(probe) = &probe {
+        probe.prepare_workers.fetch_add(1, Ordering::SeqCst);
+    }
     let Ok(runtime) = build_commit_runtime() else {
         return CommitWorkerResult::RuntimeUnavailable(CommitErrorCode::SpawnFailed);
     };
@@ -433,6 +483,8 @@ pub(crate) fn run_commit_prepare_worker(
         completion.workspace.take(),
         branch,
         artifacts,
+        #[cfg(test)]
+        probe.as_ref(),
     );
     match &reconciled.workspace {
         Ok(workspace) => {
@@ -462,8 +514,17 @@ pub(crate) fn run_commit_draft_worker(
     prepared_id: vega_conversation::types::PreparedCommitId,
     thread: Thread,
     cancel: tokio_util::sync::CancellationToken,
+    provider_override: Option<Arc<dyn vega_runtime::Provider>>,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
 ) -> CommitWorkerResult {
-    let provider = match commit_provider(&thread, config_path.as_deref()) {
+    #[cfg(test)]
+    if let Some(probe) = &probe {
+        probe.draft_workers.fetch_add(1, Ordering::SeqCst);
+    }
+    let provider = match provider_override
+        .map(Ok)
+        .unwrap_or_else(|| commit_provider(&thread, config_path.as_deref()))
+    {
         Ok(provider) => provider,
         Err(()) => return CommitWorkerResult::Draft(Err(CommitErrorCode::DraftFailed)),
     };
@@ -484,7 +545,12 @@ pub(crate) fn run_commit_execute_worker(
     cancel: tokio_util::sync::CancellationToken,
     branch: Option<Arc<BranchWorkspaceService>>,
     artifacts: Option<Arc<ArtifactService>>,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
 ) -> CommitWorkerResult {
+    #[cfg(test)]
+    if let Some(probe) = &probe {
+        probe.commit_workers.fetch_add(1, Ordering::SeqCst);
+    }
     let Ok(runtime) = build_commit_runtime() else {
         return CommitWorkerResult::RuntimeUnavailable(CommitErrorCode::SpawnFailed);
     };
@@ -495,6 +561,8 @@ pub(crate) fn run_commit_execute_worker(
         completion.workspace.take(),
         branch,
         artifacts,
+        #[cfg(test)]
+        probe.as_ref(),
     );
     completion.workspace = reconciled.workspace.as_ref().ok().cloned();
     CommitWorkerResult::Commit(completion, reconciled)
@@ -504,12 +572,20 @@ pub(crate) fn run_commit_recovery_worker(
     service: Arc<TrustedGitService>,
     branch: Option<Arc<BranchWorkspaceService>>,
     artifacts: Option<Arc<ArtifactService>>,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
 ) -> CommitWorkerResult {
     loop {
         let runtime = build_commit_recovery_runtime_with(build_commit_runtime, std::thread::sleep);
         if let Ok(runtime) = runtime {
-            let reconciled =
-                reconcile_commit_consumers(&runtime, &service, None, branch, artifacts);
+            let reconciled = reconcile_commit_consumers(
+                &runtime,
+                &service,
+                None,
+                branch,
+                artifacts,
+                #[cfg(test)]
+                probe.as_ref(),
+            );
             return CommitWorkerResult::Recovered(CommitErrorCode::ChangedDuringRead, reconciled);
         }
         // Each construction batch is finite. Keep the exact owner live and

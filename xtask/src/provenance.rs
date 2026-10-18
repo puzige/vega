@@ -397,6 +397,26 @@ fn release_artifacts(output: &[u8]) -> Result<(PathBuf, PathBuf)> {
     ))
 }
 
+#[cfg(test)]
+mod artifact_tests {
+    use super::release_artifacts;
+    use std::path::Path;
+
+    #[test]
+    fn uses_current_cargo_artifact_paths_and_requires_both_binaries() {
+        let output = br#"{"reason":"compiler-artifact","target":{"name":"xtask","kind":["bin"]},"executable":"/managed/triple/release/xtask"}
+{"reason":"compiler-artifact","target":{"name":"vega","kind":["bin"]},"executable":"/managed/triple/release/vega"}
+{"reason":"build-finished","success":true}
+"#;
+        let (xtask, vega) = release_artifacts(output).expect("current artifacts");
+        assert_eq!(xtask, Path::new("/managed/triple/release/xtask"));
+        assert_eq!(vega, Path::new("/managed/triple/release/vega"));
+        assert!(release_artifacts(br#"{"reason":"build-finished","success":true}"#).is_err());
+        assert!(release_artifacts(b"invalid json").is_err());
+        assert!(release_artifacts(br#"{"reason":"compiler-artifact","target":{"name":"vega","kind":["lib"]},"executable":"/stale/vega"}"#).is_err());
+    }
+}
+
 /// Prefers the rustup proxy so rust-toolchain.toml is honored even when
 /// Homebrew's cargo shadows it in PATH, so prefer the rustup proxy.
 fn cargo_bin() -> PathBuf {
@@ -457,4 +477,57 @@ fn format_unix_utc(secs: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sha256_matches_known_vectors() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b"The quick brown fox jumps over the lazy dog"),
+            "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592"
+        );
+        // Multi-block (> 64 bytes) input.
+        let long = vec![b'a'; 1_000];
+        let hex = sha256_hex(&long);
+        assert_eq!(hex.len(), 64);
+        // Same input twice → same hash; one byte flip → different hash.
+        let mut flipped = long.clone();
+        flipped[0] = b'b';
+        assert_eq!(sha256_hex(&long), sha256_hex(&long));
+        assert_ne!(sha256_hex(&long), sha256_hex(&flipped));
+    }
+
+    #[test]
+    fn unix_utc_formatting() {
+        assert_eq!(format_unix_utc(0), "1970-01-01T00:00:00Z");
+        // 2026-08-31T00:00:00Z = 1788134400.
+        assert_eq!(format_unix_utc(1_788_134_400), "2026-08-31T00:00:00Z");
+        assert_eq!(format_unix_utc(86_399), "1970-01-01T23:59:59Z");
+    }
+
+    #[test]
+    fn refresh_rate_detection_returns_a_value_or_none() {
+        // On this macOS host the detection must either succeed with a sane
+        // Hz or return None (never a garbage value).
+        if let Some(hz) = main_display_refresh_hz() {
+            assert!((23.9..=240.0).contains(&hz), "implausible refresh {hz}Hz");
+        }
+    }
+
+    #[test]
+    fn rss_probe_rejects_bogus_pid() {
+        // pid 0 is the kernel; proc_pidinfo fails the size check.
+        assert!(rss_resident_bytes(0).is_err());
+    }
 }

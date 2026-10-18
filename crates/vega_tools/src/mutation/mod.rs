@@ -11,6 +11,9 @@ use std::sync::Mutex;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use serde_json::{Map, Value};
 
 use crate::codec::{
@@ -26,6 +29,11 @@ const MAX_EDIT_CONTEXT_CHARS: usize = 512;
 const CONTEXT_SIDE_BYTES: usize = 96;
 const TEMP_ATTEMPTS: usize = 16;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_ATOMIC_REPLACE: Cell<bool> = const { Cell::new(false) };
+}
 
 /// A content-free invalid-input result ready for terminal rejection/audit.
 #[derive(Clone, PartialEq, Eq)]
@@ -632,16 +640,55 @@ impl Tools {
     /// Execute a previously prepared write after checking that it belongs to
     /// this exact tool instance and checkpoint scope.
     pub fn execute_write(&self, prepared: PreparedWrite) -> Result<ToolOutput, ToolError> {
-        self.execute_write_inner(prepared)
+        self.execute_write_inner(prepared, None)
     }
 
     /// Execute a previously prepared edit after checking that it belongs to
     /// this exact tool instance and checkpoint scope.
     pub fn execute_edit(&self, prepared: PreparedEdit) -> Result<ToolOutput, ToolError> {
-        self.execute_edit_inner(prepared)
+        self.execute_edit_inner(prepared, None)
     }
 
-    fn execute_write_inner(&self, prepared: PreparedWrite) -> Result<ToolOutput, ToolError> {
+    #[cfg(test)]
+    fn write(&self, path: &str, content: &str) -> Result<ToolOutput, ToolError> {
+        if self.file_path(path)?.exists() {
+            self.read(path, None, None)?;
+        }
+        let raw = serde_json::to_string(&WriteInput { path, content })
+            .map_err(|_| MutationError::new(MutationErrorCode::CodecInvalid))?;
+        let prepared = self
+            .prepare_write_json(&raw)
+            .map_err(prepare_to_tool_error)?;
+        self.execute_write(prepared)
+    }
+
+    #[cfg(test)]
+    fn edit(
+        &self,
+        path: &str,
+        old_string: &str,
+        new_string: &str,
+    ) -> Result<ToolOutput, ToolError> {
+        if self.file_path(path)?.exists() {
+            self.read(path, None, None)?;
+        }
+        let raw = serde_json::to_string(&EditInput {
+            path,
+            old_string,
+            new_string,
+        })
+        .map_err(|_| MutationError::new(MutationErrorCode::CodecInvalid))?;
+        let prepared = self
+            .prepare_edit_json(&raw)
+            .map_err(prepare_to_tool_error)?;
+        self.execute_edit(prepared)
+    }
+
+    fn execute_write_inner(
+        &self,
+        prepared: PreparedWrite,
+        after_checkpoint: Option<&dyn Fn()>,
+    ) -> Result<ToolOutput, ToolError> {
         let _guard = MUTATION_LOCK
             .lock()
             .map_err(|_| mutation_error(MutationErrorCode::FilesystemError))?;
@@ -679,6 +726,9 @@ impl Tools {
             .map(|metadata| metadata.permissions());
         let checkpoint_ref =
             context.checkpoint(&target.relative, &target.display, preimage.as_deref())?;
+        if let Some(hook) = after_checkpoint {
+            hook();
+        }
         let current_git_dir = current_git_dir(self)?;
         context.validate_git_boundary(current_git_dir.as_deref())?;
         revalidate_target(self, &target, preimage.as_deref())?;
@@ -696,7 +746,11 @@ impl Tools {
         Ok(ToolOutput::clean(success.to_json()?))
     }
 
-    fn execute_edit_inner(&self, prepared: PreparedEdit) -> Result<ToolOutput, ToolError> {
+    fn execute_edit_inner(
+        &self,
+        prepared: PreparedEdit,
+        after_checkpoint: Option<&dyn Fn()>,
+    ) -> Result<ToolOutput, ToolError> {
         let _guard = MUTATION_LOCK
             .lock()
             .map_err(|_| mutation_error(MutationErrorCode::FilesystemError))?;
@@ -743,6 +797,9 @@ impl Tools {
             .map(|metadata| metadata.permissions());
         let checkpoint_ref =
             context.checkpoint(&target.relative, &target.display, original.as_deref())?;
+        if let Some(hook) = after_checkpoint {
+            hook();
+        }
         let current_git_dir = current_git_dir(self)?;
         context.validate_git_boundary(current_git_dir.as_deref())?;
         revalidate_target(self, &target, original.as_deref())?;
@@ -775,6 +832,21 @@ impl Tools {
         }
         Ok(context)
     }
+}
+
+#[cfg(test)]
+#[derive(serde::Serialize)]
+struct WriteInput<'a> {
+    path: &'a str,
+    content: &'a str,
+}
+
+#[cfg(test)]
+#[derive(serde::Serialize)]
+struct EditInput<'a> {
+    path: &'a str,
+    old_string: &'a str,
+    new_string: &'a str,
 }
 
 fn parse_object(
@@ -845,6 +917,14 @@ fn invalid_error(
     match InvalidMutation::from_raw(tool, raw_input, code) {
         Ok(invalid) => PrepareMutationError::Invalid(invalid),
         Err(error) => PrepareMutationError::Internal(error),
+    }
+}
+
+#[cfg(test)]
+fn prepare_to_tool_error(error: PrepareMutationError) -> ToolError {
+    match error {
+        PrepareMutationError::Invalid(invalid) => MutationError::new(invalid.code()).into(),
+        PrepareMutationError::Internal(error) => error.into(),
     }
 }
 
@@ -1086,6 +1166,10 @@ fn atomic_replace(
     bytes: &[u8],
     permissions: Option<Permissions>,
 ) -> Result<(), ToolError> {
+    #[cfg(test)]
+    if FAIL_ATOMIC_REPLACE.get() {
+        return Err(mutation_error(MutationErrorCode::AtomicWriteFailed).into());
+    }
     let Some(parent) = destination.parent() else {
         return Err(mutation_error(MutationErrorCode::AtomicWriteFailed).into());
     };
@@ -1151,3 +1235,6 @@ fn atomic_replace(
     }
     Err(mutation_error(MutationErrorCode::AtomicWriteFailed).into())
 }
+
+#[cfg(test)]
+mod tests;

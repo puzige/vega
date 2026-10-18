@@ -122,3 +122,118 @@ pub fn has_unknown_usage(conn: &Connection, parent: &str) -> rusqlite::Result<bo
 pub fn run_usage_complete(conn: &Connection, parent: &str, run: &str) -> rusqlite::Result<bool> {
     conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM delegated_runs WHERE parent_thread_id=?1 AND parent_message_id=?2 AND usage_complete=0) AND NOT EXISTS(SELECT 1 FROM token_usage WHERE delegated_parent_thread_id=?1 AND delegated_parent_message_id=?2 AND delegated_cache_known IS NOT 1)",params![parent,run],|row| row.get(0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thread(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO threads(id,model,created_at,updated_at) VALUES(?1,'mock',1,1)",
+            [id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn m15_m16_relationship_and_original_result_survive_reopen_and_replay() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.sqlite");
+        let store = crate::Store::open(&path).unwrap();
+        store.migrate().unwrap();
+        thread(store.conn(), "parent");
+        thread(store.conn(), "child");
+        let record = DelegationRow {
+            child_thread_id: "child".into(),
+            parent_thread_id: "parent".into(),
+            parent_message_id: "parent-run".into(),
+            spawn_call_id: "spawn".into(),
+            child_message_id: "child-run".into(),
+            name: "Research".into(),
+            task: "Find evidence".into(),
+            state: "running".into(),
+            result: String::new(),
+            truncated: false,
+            created_at: 1,
+        };
+        insert(store.conn(), &record).unwrap();
+        assert!(insert(store.conn(), &record).is_err());
+        assert_eq!(
+            crate::threads::find(store.conn(), "child")
+                .unwrap()
+                .unwrap()
+                .parent_thread_id
+                .as_deref(),
+            Some("parent")
+        );
+        finish(
+            store.conn(),
+            "child",
+            "child-run",
+            "completed",
+            "original",
+            false,
+        )
+        .unwrap();
+        assert!(
+            !finish(
+                store.conn(),
+                "child",
+                "new-user-run",
+                "completed",
+                "later",
+                false
+            )
+            .unwrap()
+        );
+        drop(store);
+        let reopened = crate::Store::open(path).unwrap();
+        let rows = list(reopened.conn(), "parent", Some("parent-run")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].result, "original");
+        assert!(list(reopened.conn(), "unrelated", None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn m03_m04_capacity_and_names_are_bound_to_parent_generation() {
+        let store = crate::Store::open(":memory:").unwrap();
+        store.migrate().unwrap();
+        thread(store.conn(), "parent");
+        for index in 0..4 {
+            let id = format!("child-{index}");
+            thread(store.conn(), &id);
+            insert(
+                store.conn(),
+                &DelegationRow {
+                    child_thread_id: id.clone(),
+                    parent_thread_id: "parent".into(),
+                    parent_message_id: "run".into(),
+                    spawn_call_id: id.clone(),
+                    child_message_id: id,
+                    name: format!("Task {index}"),
+                    task: "task".into(),
+                    state: "running".into(),
+                    result: String::new(),
+                    truncated: false,
+                    created_at: 1,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(active_count(store.conn(), "parent", "run").unwrap(), 4);
+        finish(
+            store.conn(),
+            "child-0",
+            "child-0",
+            "failed",
+            "failure",
+            false,
+        )
+        .unwrap();
+        assert_eq!(active_count(store.conn(), "parent", "run").unwrap(), 3);
+        assert_eq!(
+            active_count(store.conn(), "parent", "other-run").unwrap(),
+            0
+        );
+    }
+}

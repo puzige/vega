@@ -260,3 +260,60 @@ pub(crate) fn discover_git_dir(root: &Path) -> Result<Option<PathBuf>, MutationE
         .map(Some)
         .map_err(|_| MutationErrorCode::PathGit)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use tempfile::tempdir;
+
+    use super::super::Tools;
+    use crate::error::ToolError;
+
+    fn tools_at(root: &Path) -> Tools {
+        Tools::new(root).unwrap()
+    }
+
+    #[test]
+    fn file_reads_resolve_absolute_parent_and_external_symlinks() {
+        let owned = tempdir().unwrap();
+        let root = owned.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let outside = owned.path().join("note.txt");
+        fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("alias")).unwrap();
+        let tools = tools_at(&root);
+        for input in [outside.to_str().unwrap(), "../note.txt", "alias"] {
+            assert_eq!(tools.read(input, None, None).unwrap().text, "1 | outside");
+        }
+        // Search/walk tools retain their project-only fence.
+        assert!(matches!(
+            super::resolve_in_root(tools.root(), "../note.txt"),
+            Err(ToolError::PathEscape(_))
+        ));
+        assert!(matches!(
+            super::resolve_in_root(tools.root(), "alias"),
+            Err(ToolError::PathEscape(_))
+        ));
+    }
+
+    #[test]
+    fn deep_relative_paths_inside_root_are_allowed() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("src/deep/lib.rs");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "pub fn deep() {}\n").unwrap();
+
+        let tools = tools_at(dir.path());
+        let out = tools.read("src/deep/lib.rs", None, None).unwrap();
+        assert_eq!(out.text, "1 | pub fn deep() {}");
+
+        // 根内 symlink（指向根内另一文件）放行
+        fs::write(dir.path().join("real.txt"), "inside\n").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real.txt"), dir.path().join("alias.txt"))
+            .unwrap();
+        let out = tools.read("alias.txt", None, None).unwrap();
+        assert_eq!(out.text, "1 | inside");
+    }
+}

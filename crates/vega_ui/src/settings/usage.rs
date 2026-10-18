@@ -19,11 +19,13 @@ pub(crate) struct UsageState {
 }
 
 fn usage_metric(
+    index: usize,
     label: &'static str,
     value: gpui_kit::StyledText,
     colors: vega_theme::ThemeColors,
 ) -> Div {
     div()
+        .debug_selector(move || format!("usage-metric-{index}"))
         .flex_1()
         .flex_basis(px(Layout::SETTINGS_LABEL_WIDTH))
         .min_w_0()
@@ -33,6 +35,7 @@ fn usage_metric(
         .gap_1()
         .child(
             div()
+                .debug_selector(move || format!("usage-metric-value-{index}"))
                 .w_full()
                 .min_w_0()
                 .text_align(gpui_kit::TextAlign::Left)
@@ -42,6 +45,7 @@ fn usage_metric(
         )
         .child(
             div()
+                .debug_selector(move || format!("usage-metric-label-{index}"))
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_secondary)
                 .child(label),
@@ -116,21 +120,26 @@ impl SettingsView {
                     .text_color(colors.text_secondary)
                     .child("应用用量 · 按 UTC 日期统计"),
             );
-        let mut page = settings_section().w_full().child(header);
+        let mut page = settings_section()
+            .debug_selector(|| "usage-dashboard".into())
+            .w_full()
+            .child(header);
         if self.usage.error {
-            page = page.child(settings_status(
-                "使用统计读取失败，请刷新重试",
-                colors.danger,
-                colors,
-            ));
+            page = page.child(
+                settings_status("使用统计读取失败，请刷新重试", colors.danger, colors)
+                    .debug_selector(|| "usage-error".into()),
+            );
         }
         if let Some(data) = self.usage.dashboard.clone() {
             if data.lifetime.calls == 0 {
-                page = page.child(settings_status(
-                    "暂无使用记录。完成对话后将在这里显示实际用量。",
-                    colors.text_secondary,
-                    colors,
-                ));
+                page = page.child(
+                    settings_status(
+                        "暂无使用记录。完成对话后将在这里显示实际用量。",
+                        colors.text_secondary,
+                        colors,
+                    )
+                    .debug_selector(|| "usage-empty".into()),
+                );
             } else {
                 page = page.child(self.render_usage_data(&data, cx));
             }
@@ -189,6 +198,7 @@ impl SettingsView {
                     }
                 }),
             )
+            .debug_selector(move || id.into())
             .tab_stop(true)
             .when(enabled, |button| button.cursor_pointer())
             .when(!enabled, |button| button.text_color(colors.text_tertiary))
@@ -232,9 +242,14 @@ impl SettingsView {
             .flex_row()
             .flex_wrap()
             .gap(px(Layout::SETTINGS_FIELD_GAP))
-            .children(metrics.into_iter().map(|(label, value)| {
-                usage_metric(label, gpui_kit::StyledText::new(value), colors)
-            }));
+            .children(
+                metrics
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (label, value))| {
+                        usage_metric(index, label, gpui_kit::StyledText::new(value), colors)
+                    }),
+            );
         let heatmap = div()
             .flex()
             .flex_col()
@@ -281,20 +296,24 @@ impl SettingsView {
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
                     .child(
-                        div().child(
-                            data.days
-                                .first()
-                                .map(|day| utc_date(day.start_ms))
-                                .unwrap_or_default(),
-                        ),
+                        div()
+                            .debug_selector(|| "usage-activity-start-date".into())
+                            .child(
+                                data.days
+                                    .first()
+                                    .map(|day| utc_date(day.start_ms))
+                                    .unwrap_or_default(),
+                            ),
                     )
                     .child(
-                        div().child(
-                            data.days
-                                .last()
-                                .map(|day| utc_date(day.start_ms))
-                                .unwrap_or_default(),
-                        ),
+                        div()
+                            .debug_selector(|| "usage-activity-end-date".into())
+                            .child(
+                                data.days
+                                    .last()
+                                    .map(|day| utc_date(day.start_ms))
+                                    .unwrap_or_default(),
+                            ),
                     ),
             )
             .child(heatmap_canvas(data, self.usage.heatmap_mode, colors))
@@ -353,6 +372,7 @@ impl SettingsView {
             std::rc::Rc::new(std::cell::Cell::new(None::<Bounds<gpui_kit::Pixels>>));
         let clicked_bounds = canvas_bounds.clone();
         let trend = div()
+            .debug_selector(|| "usage-trend".into())
             .p(px(Layout::SETTINGS_GROUP_PADDING))
             .border_1()
             .border_color(colors.border_subtle)
@@ -376,6 +396,7 @@ impl SettingsView {
             .child(
                 div()
                     .id("usage-trend-chart")
+                    .debug_selector(|| "usage-trend-chart".into())
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -403,6 +424,7 @@ impl SettingsView {
             );
         let trend = trend.child(
             div()
+                .debug_selector(|| "usage-daily-detail".into())
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -424,29 +446,39 @@ impl SettingsView {
                         ))
                 })),
         );
-        let legend = div()
-            .flex_1()
-            .min_w(px(180.))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .children(models.iter().filter_map(|(name, values, color)| {
-                let total: u64 = values.iter().sum();
-                (total > 0).then(|| {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(div().size(px(8.)).rounded_full().bg(*color))
-                        .child(div().flex_1().min_w_0().child(name.clone()))
-                        .child(div().text_color(colors.text_secondary).child(format!(
-                            "{} · {:.1}%",
-                            compact(total),
-                            100. * total as f64 / selected_total.max(1) as f64
-                        )))
-                })
-            }));
+        let legend =
+            div()
+                .flex_1()
+                .min_w(px(180.))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .children(models.iter().enumerate().filter_map(
+                    |(index, (name, values, color))| {
+                        let total: u64 = values.iter().sum();
+                        (total > 0).then(|| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().size(px(8.)).rounded_full().bg(*color))
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("usage-model-name-{index}"))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(name.clone()),
+                                )
+                                .child(div().text_color(colors.text_secondary).child(format!(
+                                    "{} · {:.1}%",
+                                    compact(total),
+                                    100. * total as f64 / selected_total.max(1) as f64
+                                )))
+                        })
+                    },
+                ));
         let distribution = div()
+            .debug_selector(|| "usage-distribution".into())
             .p(px(Layout::SETTINGS_GROUP_PADDING))
             .border_1()
             .border_color(colors.border_subtle)
@@ -467,6 +499,7 @@ impl SettingsView {
                             .relative()
                             .size(px(145.))
                             .flex_shrink_0()
+                            .debug_selector(|| "usage-donut-frame".into())
                             .child(donut_canvas(models, colors))
                             .child(
                                 div()
@@ -476,6 +509,7 @@ impl SettingsView {
                                     .flex_col()
                                     .items_center()
                                     .justify_center()
+                                    .debug_selector(|| "usage-donut-total".into())
                                     .child(
                                         div()
                                             .text_size(px(Typography::HEADING_CARD))
@@ -720,4 +754,158 @@ fn donut_canvas(models: ModelPoints, colors: vega_theme::ThemeColors) -> AnyElem
     .size(px(145.))
     .flex_shrink_0()
     .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{TestAppContext, VisualTestContext, WindowBounds, WindowOptions};
+    use vega_conversation::types::{UsageDay, UsageModelSeries};
+
+    fn sample(calls: u64) -> UsageDashboard {
+        let totals = UsageTotals {
+            calls,
+            total_tokens: calls * 123,
+            priced_cost_microcents: 1,
+            unpriced_calls: calls.saturating_sub(1),
+            ..Default::default()
+        };
+        let days: Vec<_> = (0..365)
+            .map(|i| UsageDay {
+                start_ms: i * 86_400_000,
+                totals: if i == 364 {
+                    totals.clone()
+                } else {
+                    UsageTotals::default()
+                },
+            })
+            .collect();
+        UsageDashboard {
+            generated_at_ms: 365 * 86_400_000,
+            timezone_label: "UTC".into(),
+            lifetime: totals,
+            models: vec![UsageModelSeries {
+                model: Some("model-a".into()),
+                days: days[335..].to_vec(),
+            }],
+            days,
+        }
+    }
+
+    #[test]
+    fn costs_keep_microcents_and_unpriced_coverage_and_heatmap_modes_keep_calendar() {
+        let data = sample(2);
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(951782400000), "2000-02-29");
+        assert_eq!(weekday_offset(&data), 3);
+        assert_eq!(cost_label(&data.lifetime), "US$0.000001 + 1次未计价");
+        assert_eq!(heatmap_values(&data, 0).len(), 365);
+        assert_eq!(heatmap_values(&data, 1).len(), 365);
+        assert_eq!(heatmap_values(&data, 2).len(), 365);
+        assert_eq!(heatmap_values(&data, 2)[364], 246);
+        assert_eq!(
+            cost_label(&UsageTotals {
+                calls: 1,
+                unpriced_calls: 1,
+                ..Default::default()
+            }),
+            "未计价"
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn settings_usage_real_render_controls_refresh_empty_and_failure(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            crate::init(cx);
+        });
+        let view = cx.new(SettingsView::new_for_test);
+        view.update(cx, |view, _| view.section = 4);
+        let reloads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = reloads.clone();
+        cx.update(|cx| {
+            cx.subscribe(&view, move |_, _: &UsageReloadRequested, _| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .detach();
+        });
+        let root = view.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(960.), px(900.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| root,
+            )
+            .expect("usage settings window")
+        });
+        view.update(cx, |view, cx| view.apply_usage_dashboard(Ok(sample(0)), cx));
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("usage-empty").is_some());
+        assert!(visual.debug_bounds("usage-trend").is_none());
+        let refresh = visual
+            .debug_bounds("usage-refresh")
+            .expect("refresh button");
+        visual.simulate_click(refresh.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        view.update(&mut visual, |view, cx| {
+            view.apply_usage_dashboard(Err(UsageDashboardError::Unavailable), cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("usage-error").is_some());
+        view.update(&mut visual, |view, cx| {
+            view.apply_usage_dashboard(Ok(sample(2)), cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("usage-trend").is_some());
+        assert!(visual.debug_bounds("usage-error").is_none());
+        let activity_start = visual
+            .debug_bounds("usage-activity-start-date")
+            .expect("exact activity start");
+        let activity_end = visual
+            .debug_bounds("usage-activity-end-date")
+            .expect("exact activity end");
+        assert!(activity_end.origin.x > activity_start.origin.x);
+        let donut_frame = visual
+            .debug_bounds("usage-donut-frame")
+            .expect("donut frame");
+        let donut_total = visual
+            .debug_bounds("usage-donut-total")
+            .expect("centered donut total");
+        assert_eq!(donut_frame.center(), donut_total.center());
+        assert_eq!(donut_frame.size, size(px(145.), px(145.)));
+        let chart = visual
+            .debug_bounds("usage-trend-chart")
+            .expect("clickable daily chart");
+        visual.simulate_click(chart.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            view.read_with(&visual, |v, _| v.usage.selected_day),
+            Some(3)
+        );
+        assert!(visual.debug_bounds("usage-daily-detail").is_some());
+        let weekly = visual.debug_bounds("usage-weekly").expect("weekly control");
+        visual.simulate_click(weekly.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(view.read_with(&visual, |v, _| v.usage.heatmap_mode), 1);
+        let thirty = visual.debug_bounds("usage-30days").expect("range control");
+        visual.simulate_click(thirty.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(view.read_with(&visual, |v, _| v.usage.range_days), 30);
+        visual.update(|_, cx| {
+            cx.set_global(vega_theme::Theme::dark());
+            cx.refresh_windows();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("usage-trend").is_some());
+    }
 }

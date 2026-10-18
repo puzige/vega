@@ -40,3 +40,39 @@ impl ProjectWorkerActivity {
             .is_some_and(|workers| workers.iter().any(|worker| worker.upgrade().is_some()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectWorkerActivity;
+
+    #[test]
+    fn workers_in_other_windows_and_projects_keep_independent_lifetimes() {
+        let mut activity = ProjectWorkerActivity::default();
+        let first_window = activity.register("project-a");
+        let second_window = activity.register("project-a");
+        let other_project = activity.register("project-b");
+        assert!(activity.is_active("project-a"));
+        assert!(activity.is_active("project-b"));
+        drop(first_window);
+        assert!(activity.is_active("project-a"));
+        drop(second_window);
+        assert!(!activity.is_active("project-a"));
+        assert!(activity.is_active("project-b"));
+        let newest = activity.register("project-b");
+        assert_eq!(activity.workers.len(), 1, "stale projects are pruned");
+        assert_eq!(activity.workers["project-b"].len(), 2);
+        drop(other_project);
+        assert!(activity.is_active("project-b"));
+        drop(newest);
+        assert!(!activity.is_active("project-b"));
+    }
+
+    #[test]
+    fn standalone_workers_never_claim_a_project() {
+        let mut activity = ProjectWorkerActivity::default();
+        let standalone = activity.register("");
+        assert!(!activity.is_active(""));
+        assert!(activity.workers.is_empty());
+        drop(standalone);
+    }
+}

@@ -115,10 +115,18 @@ impl VegaWindow {
         let (sender, receiver) = mpsc::sync_channel(1);
         let window_alive = self.window_alive.clone();
         let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
         let recovery_phase = fence.phase;
         cx.background_executor()
             .spawn(async move {
-                let result = run_commit_recovery_worker(service, branch, artifacts);
+                let result = run_commit_recovery_worker(
+                    service,
+                    branch,
+                    artifacts,
+                    #[cfg(test)]
+                    probe,
+                );
                 mark_commit_worker_terminal_if_authoritative(
                     recovery_phase,
                     &result,
@@ -154,17 +162,23 @@ impl VegaWindow {
                 if let Some(reconciled) = reconciliation {
                     self.apply_commit_workspace_reconciliation(&fence.route, reconciled, cx);
                 }
-                if let Some(operation) = fence.operation {
-                    let _ = active
+                let terminal_applied = if let Some(operation) = fence.operation {
+                    active
                         .identity
                         .panel
-                        .update(cx, |panel, cx| panel.clear_pending(operation, cx));
+                        .update(cx, |panel, cx| panel.clear_pending(operation, cx))
+                } else {
+                    false
+                };
+                if terminal_applied {
+                    self.record_commit_terminal_application(true);
                 }
                 if self.trusted_actions.release(active.lease) {
                     active
                         .identity
                         .stream
                         .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                    self.record_commit_probe("lease_release");
                 }
                 return;
             }
@@ -222,6 +236,8 @@ impl VegaWindow {
                         )
                     });
                     self.close_commit_route(cx);
+                } else {
+                    self.record_commit_terminal_application(false);
                 }
             }
             (CommitPhase::Preparing, CommitWorkerResult::Prepare(completion, _)) => {
@@ -238,7 +254,7 @@ impl VegaWindow {
                     active.prepared = success.then_some(prepared_id).flatten();
                 }
                 if let Some(operation) = fence.operation {
-                    let _ = fence.route.panel.update(cx, |panel, cx| {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
                         let value = completion.prepared.ok_or(
                             completion
                                 .error
@@ -246,6 +262,9 @@ impl VegaWindow {
                         );
                         panel.finish_prepare(operation, value, cx)
                     });
+                    if applied {
+                        self.record_commit_terminal_application(true);
+                    }
                 }
             }
             (CommitPhase::Drafting, CommitWorkerResult::Draft(result)) => {
@@ -253,10 +272,13 @@ impl VegaWindow {
                     active.phase = CommitPhase::CommitReady;
                 }
                 if let Some(operation) = fence.operation {
-                    let _ = fence
+                    let applied = fence
                         .route
                         .panel
                         .update(cx, |panel, cx| panel.finish_draft(operation, result, cx));
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
                 }
             }
             (CommitPhase::Committing, CommitWorkerResult::Commit(completion, _)) => {
@@ -266,10 +288,13 @@ impl VegaWindow {
                     CommitOutcome::Failed(code) => Some(code),
                 };
                 if let Some(operation) = fence.operation {
-                    let _ = fence
+                    let applied = fence
                         .route
                         .panel
                         .update(cx, |panel, cx| panel.finish_commit(operation, error, cx));
+                    if applied {
+                        self.record_commit_terminal_application(true);
+                    }
                 }
                 if let Some(active) = self.commit_controller.active.take()
                     && self.trusted_actions.release(active.lease)
@@ -278,6 +303,7 @@ impl VegaWindow {
                         .identity
                         .stream
                         .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                    self.record_commit_probe("lease_release");
                 }
             }
             (CommitPhase::Preparing, CommitWorkerResult::Recovered(code, _)) => {
@@ -286,16 +312,22 @@ impl VegaWindow {
                     active.prepared = None;
                 }
                 if let Some(operation) = fence.operation {
-                    let _ = fence.route.panel.update(cx, |panel, cx| {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
                         panel.finish_prepare(operation, Err(code), cx)
                     });
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
                 }
             }
             (CommitPhase::Committing, CommitWorkerResult::Recovered(code, _)) => {
                 if let Some(operation) = fence.operation {
-                    let _ = fence.route.panel.update(cx, |panel, cx| {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
                         panel.finish_commit(operation, Some(code), cx)
                     });
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
                 }
                 if let Some(active) = self.commit_controller.active.take()
                     && self.trusted_actions.release(active.lease)
@@ -304,13 +336,17 @@ impl VegaWindow {
                         .identity
                         .stream
                         .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                    self.record_commit_probe("lease_release");
                 }
             }
             (CommitPhase::Preparing, CommitWorkerResult::RuntimeUnavailable(code)) => {
                 if let Some(operation) = fence.operation {
-                    let _ = fence.route.panel.update(cx, |panel, cx| {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
                         panel.finish_prepare(operation, Err(code), cx)
                     });
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
                 }
                 if let Some(active) = self.commit_controller.active.take()
                     && self.trusted_actions.release(active.lease)
@@ -323,9 +359,12 @@ impl VegaWindow {
             }
             (CommitPhase::Committing, CommitWorkerResult::RuntimeUnavailable(code)) => {
                 if let Some(operation) = fence.operation {
-                    let _ = fence.route.panel.update(cx, |panel, cx| {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
                         panel.finish_commit(operation, Some(code), cx)
                     });
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
                 }
                 if let Some(active) = self.commit_controller.active.take()
                     && self.trusted_actions.release(active.lease)
@@ -439,9 +478,17 @@ impl VegaWindow {
         let (sender, receiver) = mpsc::sync_channel(1);
         let window_alive = self.window_alive.clone();
         let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
         cx.background_executor()
             .spawn(async move {
-                let result = run_commit_checklist_worker(workspace, service, cancel);
+                let result = run_commit_checklist_worker(
+                    workspace,
+                    service,
+                    cancel,
+                    #[cfg(test)]
+                    probe,
+                );
                 mark_commit_worker_terminal_if_authoritative(
                     CommitPhase::Checklist,
                     &result,
@@ -548,6 +595,8 @@ impl VegaWindow {
         let (sender, receiver) = mpsc::sync_channel(1);
         let window_alive = self.window_alive.clone();
         let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
         cx.background_executor()
             .spawn(async move {
                 let result = run_commit_prepare_worker(
@@ -557,6 +606,8 @@ impl VegaWindow {
                     cancel,
                     branch,
                     artifacts,
+                    #[cfg(test)]
+                    probe,
                 );
                 mark_commit_worker_terminal_if_authoritative(
                     CommitPhase::Preparing,
@@ -613,13 +664,27 @@ impl VegaWindow {
         let lease = active.lease;
         let prepared_id = request.prepared_id;
         let config_path = self.composer_config_path();
+        #[cfg(test)]
+        let provider_override = self.commit_provider_override.clone();
+        #[cfg(not(test))]
+        let provider_override = None;
         let (sender, receiver) = mpsc::sync_channel(1);
         let window_alive = self.window_alive.clone();
         let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
         cx.background_executor()
             .spawn(async move {
-                let result =
-                    run_commit_draft_worker(config_path, service, prepared_id, thread, cancel);
+                let result = run_commit_draft_worker(
+                    config_path,
+                    service,
+                    prepared_id,
+                    thread,
+                    cancel,
+                    provider_override,
+                    #[cfg(test)]
+                    probe,
+                );
                 mark_commit_worker_terminal_if_authoritative(
                     CommitPhase::Drafting,
                     &result,
@@ -690,8 +755,12 @@ impl VegaWindow {
         let (sender, receiver) = mpsc::sync_channel(1);
         let window_alive = self.window_alive.clone();
         let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
         cx.background_executor()
             .spawn(async move {
+                #[cfg(test)]
+                let disconnect_probe = probe.clone();
                 let result = run_commit_execute_worker(
                     service,
                     prepared_id,
@@ -699,7 +768,16 @@ impl VegaWindow {
                     cancel,
                     branch,
                     artifacts,
+                    #[cfg(test)]
+                    probe,
                 );
+                #[cfg(test)]
+                if disconnect_probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.drop_commit_sender.swap(false, Ordering::SeqCst))
+                {
+                    return;
+                }
                 mark_commit_worker_terminal_if_authoritative(
                     CommitPhase::Committing,
                     &result,

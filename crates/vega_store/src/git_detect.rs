@@ -37,3 +37,92 @@ fn head_branch(gitdir: &Path) -> Option<String> {
     let target = head.trim().strip_prefix("ref: ")?.trim();
     target.strip_prefix("refs/heads/").map(str::to_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::detect_git;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Writes `contents` to `dir/.git/HEAD`, creating the `.git` directory.
+    fn write_head(repo: &std::path::Path, contents: &str) {
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".git/HEAD"), contents).unwrap();
+    }
+
+    #[test]
+    fn repo_with_checked_out_branch_reports_the_branch() {
+        let dir = tempdir().unwrap();
+        write_head(dir.path(), "ref: refs/heads/main\n");
+        assert_eq!(detect_git(dir.path()), Some("main".to_string()));
+
+        // 分支名可以带斜杠（如 feature/xxx）。
+        write_head(dir.path(), "ref: refs/heads/feature/detect\n");
+        assert_eq!(detect_git(dir.path()), Some("feature/detect".to_string()));
+    }
+
+    #[test]
+    fn worktree_pointer_file_is_followed_to_its_head() {
+        let dir = tempdir().unwrap();
+        let main_repo = dir.path().join("main");
+        let worktree = dir.path().join("wt");
+        fs::create_dir_all(main_repo.join(".git/worktrees/wt")).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+
+        // 绝对路径指针。
+        fs::write(
+            worktree.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                main_repo.join(".git/worktrees/wt").display()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            main_repo.join(".git/worktrees/wt/HEAD"),
+            "ref: refs/heads/feature-x\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_git(&worktree),
+            Some("feature-x".to_string()),
+            "absolute gitdir pointer"
+        );
+
+        // 相对路径指针（相对 worktree 根目录解析）。
+        let worktree_rel = dir.path().join("wt-rel");
+        fs::create_dir_all(&worktree_rel).unwrap();
+        fs::write(
+            worktree_rel.join(".git"),
+            "gitdir: ../main/.git/worktrees/wt\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_git(&worktree_rel),
+            Some("feature-x".to_string()),
+            "relative gitdir pointer"
+        );
+    }
+
+    #[test]
+    fn detached_head_reports_no_branch() {
+        let dir = tempdir().unwrap();
+        // detached：HEAD 直接写对象 id。
+        write_head(dir.path(), "3f9c1b2a4d5e6f708192a3b4c5d6e7f8091a2b3c\n");
+        assert_eq!(detect_git(dir.path()), None);
+
+        // ref 指向 heads 之外（如 tag）也不算分支。
+        write_head(dir.path(), "ref: refs/tags/v1.0\n");
+        assert_eq!(detect_git(dir.path()), None);
+    }
+
+    #[test]
+    fn plain_directory_reports_nothing() {
+        let dir = tempdir().unwrap();
+        assert_eq!(detect_git(dir.path()), None);
+
+        // 完全不存在的路径同样返回 None（不报错、不 panic）。
+        let missing = dir.path().join("missing");
+        assert_eq!(detect_git(&missing), None);
+    }
+}

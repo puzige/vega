@@ -152,3 +152,47 @@ fn unix_ms() -> u64 {
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_words_are_frozen_vocabulary() {
+        assert_eq!(status_word(false), "performance gate failed");
+        // A passing short-run gate is the §1 fixture word, never a hint of
+        // terminal evidence.
+        assert_eq!(status_word(true), "engineering fixture passed");
+        assert_eq!(STATUS_HARDWARE_PENDING, "hardware pending");
+    }
+
+    #[test]
+    fn p2_result_carries_the_schema_erratum_fields() {
+        let p2 = P2Result {
+            seconds: 10,
+            rate_per_s: 1_000,
+            run_completed: true,
+            events_total: 10_001,
+            deltas_total: 10_000,
+            frames: 598,
+            queue_max_depth: 0,
+            batch_latencies_us: vec![1_000, 2_000],
+            per_second: vec![serde_json::json!({"t": 1, "frames": 60})],
+            p50_us: 6_822,
+            p99_us: 14_406,
+            gate_passed: true,
+            schema: "vega-c6-stream.v1".into(),
+            sandbox_root: "/tmp/x".into(),
+        };
+        let json = serde_json::to_string(&p2).unwrap();
+        assert!(json.contains(r#""run_completed":true"#));
+        assert!(json.contains(r#""per_second":[{"t":1,"frames":60}]"#));
+    }
+
+    #[test]
+    fn empty_c1c2_is_the_p2_only_placeholder() {
+        let empty = C1C2Result::empty();
+        assert!(!empty.has_data());
+        assert_eq!(empty.c1_p95_us, 0);
+    }
+}

@@ -536,3 +536,7 @@ pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'st
         Status::Failed => failure.unwrap_or(Failure::Unavailable).message(),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/context_control.rs"]
+mod tests;

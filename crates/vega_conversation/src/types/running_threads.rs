@@ -43,3 +43,42 @@ impl RunningThreads {
         self.ids.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RunningThreads;
+
+    #[test]
+    fn tracks_each_thread_independently() {
+        let mut running = RunningThreads::default();
+        assert!(running.is_empty());
+        running.set("a", true);
+        running.set("b", true);
+        running.set("a", false);
+        assert!(!running.is_running("a"));
+        assert!(running.is_running("b"));
+        assert_eq!(running.len(), 1);
+        assert!(!running.is_empty());
+    }
+
+    #[test]
+    fn repeated_writes_are_idempotent() {
+        let mut running = RunningThreads::default();
+        running.set("a", true);
+        let started = running.clone();
+        running.set("a", true);
+        assert_eq!(
+            running, started,
+            "a repeated true must not change the value"
+        );
+
+        running.set("a", false);
+        let stopped = running.clone();
+        running.set("a", false);
+        assert_eq!(
+            running, stopped,
+            "a repeated false must not change the value"
+        );
+        assert!(running.is_empty());
+    }
+}

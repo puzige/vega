@@ -411,3 +411,141 @@ impl VegaError {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::VegaError;
+
+    #[test]
+    fn vega_error_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<VegaError>();
+    }
+
+    #[test]
+    fn provider_error_debug_and_display_hide_payload() {
+        const MESSAGE_SENTINEL: &str = "VEGA_PROVIDER_MESSAGE_SENTINEL";
+        let err = VegaError::Provider {
+            status: Some(503),
+            message: MESSAGE_SENTINEL.to_string(),
+            retryable: true,
+        };
+        for rendered in [format!("{err:?}"), err.to_string()] {
+            assert!(rendered.contains("503"), "provider status metadata missing");
+            assert!(
+                rendered.contains("retryable"),
+                "provider retry metadata missing"
+            );
+            assert!(
+                !rendered.contains(MESSAGE_SENTINEL),
+                "provider formatting leaked payload"
+            );
+        }
+        let VegaError::Provider {
+            status,
+            message,
+            retryable,
+        } = err
+        else {
+            unreachable!()
+        };
+        assert_eq!(status, Some(503));
+        assert!(
+            message == MESSAGE_SENTINEL,
+            "typed provider message changed"
+        );
+        assert!(retryable);
+    }
+
+    #[test]
+    fn provider_diagnostic_debug_and_display_hide_body_and_request_id() {
+        const MESSAGE_SENTINEL: &str = "VEGA_PROVIDER_BODY_CANARY";
+        const REQUEST_ID_SENTINEL: &str = "VEGA_REQUEST_ID_CANARY";
+        let err = VegaError::ProviderDiagnostic {
+            kind: crate::provider::ProviderFailureKind::Rejected,
+            status: Some(429),
+            message: MESSAGE_SENTINEL.to_string(),
+            retryable: false,
+            retry_count: Some(2),
+            request_id: Some(REQUEST_ID_SENTINEL.to_string()),
+        };
+        for rendered in [format!("{err:?}"), err.to_string()] {
+            assert!(rendered.contains("429"));
+            assert!(rendered.contains("retryable"));
+            assert!(!rendered.contains(MESSAGE_SENTINEL));
+            assert!(!rendered.contains(REQUEST_ID_SENTINEL));
+        }
+    }
+
+    #[test]
+    fn error_debug_redacts_io_store_and_tool_payloads() {
+        const IO_SENTINEL: &str = "VEGA_IO_SENTINEL";
+        const TOOL_SENTINEL: &str = "VEGA_TOOL_SENTINEL";
+        const TOOL_MESSAGE_SENTINEL: &str = "VEGA_TOOL_MESSAGE_SENTINEL";
+        let values = [
+            VegaError::Io(std::io::Error::other(IO_SENTINEL)),
+            VegaError::Store(rusqlite::Error::InvalidParameterName(IO_SENTINEL.into())),
+            VegaError::Tool {
+                tool: TOOL_SENTINEL.into(),
+                message: TOOL_MESSAGE_SENTINEL.into(),
+            },
+        ];
+        for value in values {
+            let rendered = format!("{value:?}");
+            for sentinel in [IO_SENTINEL, TOOL_SENTINEL, TOOL_MESSAGE_SENTINEL] {
+                assert!(!rendered.contains(sentinel), "error Debug leaked payload");
+            }
+        }
+    }
+
+    #[test]
+    fn provider_context_diagnostics_preserve_only_explicit_token_measurements() {
+        for prefix in [
+            "",
+            "provider request failed (HTTP 400): ",
+            "chat/completions request failed (HTTP 400): ",
+        ] {
+            let error = VegaError::Provider {
+                status: Some(400),
+                message: format!(
+                    "{prefix}{}",
+                    r#"{"error":{"code":"context_length_exceeded","requested_tokens":130000,"max_context_tokens":128000,"message":"PRIVATE_BODY"}}"#
+                ),
+                retryable: false,
+            };
+            let metrics = error.diagnostic_metrics();
+            assert_eq!(error.context_input_overflow(), Some(Some(2000)));
+            assert_eq!(metrics.failure_source, Some("provider"));
+            assert_eq!(metrics.failure_kind, Some("context_over_limit"));
+            assert_eq!(metrics.failure_scope, Some("request_context"));
+            assert_eq!(metrics.failure_observed, Some(130000));
+            assert_eq!(metrics.failure_limit, Some(128000));
+            assert_eq!(metrics.failure_units, Some("tokens"));
+            assert!(!format!("{metrics:?}").contains("PRIVATE_BODY"));
+        }
+        for body in [
+            r#"{"error":{"code":"context_length_exceeded","max_tokens":128000}}"#,
+            r#"{"error":{"code":"context_length_exceeded","requested_tokens":"130000","max_context_tokens":-1}}"#,
+        ] {
+            let error = VegaError::ProviderDiagnostic {
+                kind: crate::ProviderFailureKind::Rejected,
+                status: Some(400),
+                message: body.into(),
+                retryable: false,
+                retry_count: None,
+                request_id: None,
+            };
+            let metrics = error.diagnostic_metrics();
+            assert_eq!(metrics.failure_kind, Some("context_over_limit"));
+            assert_eq!(metrics.failure_observed, None);
+            assert_eq!(metrics.failure_limit, None);
+            assert_eq!(metrics.failure_units, None);
+            assert_eq!(error.context_input_overflow(), Some(None));
+        }
+    }
+
+    #[test]
+    fn cancelled_display_is_stable() {
+        assert_eq!(VegaError::Cancelled.to_string(), "operation cancelled");
+    }
+}

@@ -1,4 +1,5 @@
 pub use crate::automatic_titles::AutomaticTitleRequest;
+pub use crate::composer_predictions::{ComposerPredictionFence, ComposerPredictionRequest};
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{
@@ -26,6 +27,11 @@ mod tool_calls;
 mod usage;
 mod usage_dashboard;
 mod workspace;
+
+#[cfg(test)]
+mod tests_audit_wire;
+#[cfg(test)]
+mod tests_conversion;
 
 pub use artifact::*;
 pub use codex_task::*;

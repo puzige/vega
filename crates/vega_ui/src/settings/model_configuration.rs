@@ -116,6 +116,7 @@ impl SettingsView {
             || matches!(self.reasoning, ReasoningSettingsProjection::Saving { .. })
             || matches!(self.pricing, PricingSettingsProjection::Saving { .. });
         settings_section()
+            .debug_selector(|| "settings-unsaved-guard".into())
             .child(settings_status("当前修改尚未保存", colors.warning, colors))
             .child(
                 settings_actions()
@@ -207,6 +208,7 @@ impl SettingsView {
         let keyboard = listener.clone();
         settings_action_chrome(colors)
             .id(id)
+            .debug_selector(move || id.into())
             .interactive(colors, enabled, false)
             .when(enabled, |button| {
                 button
@@ -255,6 +257,7 @@ impl SettingsView {
             .child(
                 div()
                     .id(id)
+                    .debug_selector(move || id.into())
                     .aria_label(label)
                     .track_focus(&self.settings_help_focus)
                     .tab_stop(true)
@@ -301,6 +304,7 @@ impl SettingsView {
                     gpui_kit::deferred(
                         div()
                             .id("settings-help-popup")
+                            .debug_selector(|| "settings-help-popup".into())
                             .absolute()
                             .top(relative(1.))
                             .right_0()

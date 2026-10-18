@@ -304,15 +304,23 @@ impl ConversationStream {
                             .min_w_0()
                             .flex_shrink_0()
                             .pt(px(top))
+                            .debug_selector(move || format!("run-detail-row-{detail_index}"))
                             .child(RunActivityGroup::render_child(child, window, cx))
                             .into_any_element()
                     }
                     RunDetail::Assistant(index) => {
                         previous_assistant = true;
+                        let selector = match &self.entries[index] {
+                            StreamEntry::Assistant { copy, .. } => {
+                                format!("run-process-message-{}", copy.id)
+                            }
+                            _ => format!("run-process-entry-{index}"),
+                        };
                         gpui_kit::div()
                             .w_full()
                             .min_w_0()
                             .flex_shrink_0()
+                            .debug_selector(move || selector.clone())
                             .child(render_rows::render_entry_with_selection(
                                 &self.entries[index],
                                 window,

@@ -41,6 +41,26 @@ impl ConversationStream {
         self.skill_projection_generation
     }
 
+    #[doc(hidden)]
+    pub fn composer_skill_pin_count(&self) -> Option<usize> {
+        self.skill_projection
+            .as_ref()
+            .map(|projection| projection.pins.len())
+    }
+
+    #[doc(hidden)]
+    pub fn composer_skill_mutation_pending(&self) -> bool {
+        self.skill_mutation_pending
+    }
+
+    #[doc(hidden)]
+    pub fn composer_skill_candidates(&self) -> Vec<SkillComposerCandidate> {
+        self.skill_projection
+            .as_ref()
+            .map(|projection| projection.candidates.clone())
+            .unwrap_or_default()
+    }
+
     pub fn apply_skill_projection(
         &mut self,
         generation: u64,
@@ -197,6 +217,7 @@ impl ConversationStream {
     pub(crate) fn render_active_skills(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mut row = div()
+            .debug_selector(|| "active-skills".into())
             .key_context("Composer")
             .on_action(cx.listener(Self::next_composer_control))
             .on_action(cx.listener(Self::previous_composer_control))
@@ -217,6 +238,7 @@ impl ConversationStream {
                     .child(
                         div()
                             .id("active-skill-stop")
+                            .debug_selector(|| "active-skill-stop".into())
                             .focusable()
                             .track_focus(&focus[0])
                             .tab_stop(true)
@@ -244,6 +266,7 @@ impl ConversationStream {
                     .child(
                         div()
                             .id("active-skill-disable")
+                            .debug_selector(|| "active-skill-disable".into())
                             .focusable()
                             .track_focus(&focus[1])
                             .tab_stop(true)

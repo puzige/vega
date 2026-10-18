@@ -406,3 +406,170 @@ fn replay_session_resident_size(
                 .saturating_mul(std::mem::size_of::<ChatMessage>()),
         )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Map, Value};
+    use vega_runtime::{ResponseReplayLayout, ResponseReplaySlot};
+
+    fn messages_with_content(content: String) -> Vec<ChatMessage> {
+        let mut system = ChatMessage::new(ChatRole::System, "system");
+        system.attach_replay_frame(ReplayFrame::new(
+            1,
+            vega_runtime::ReasoningReplayPolicy::StandardChat,
+        ));
+        if let Some(frame) = system.replay_frame().cloned() {
+            let mut frame = frame;
+            frame.bind_environment([0; 32]);
+            system.attach_replay_frame(frame);
+        }
+        vec![system, ChatMessage::new(ChatRole::User, content)]
+    }
+
+    fn seal_session(
+        registry: &ReplaySessionRegistry,
+        thread_id: &str,
+        source_version: u64,
+        source_fingerprint: String,
+        content: String,
+    ) -> bool {
+        let checkpoint_fence = ReplayCheckpointFence::from_checkpoint(None);
+        let lease = registry.begin(
+            thread_id,
+            source_version,
+            &source_fingerprint,
+            checkpoint_fence,
+        );
+        registry.seal(
+            lease,
+            source_version,
+            source_fingerprint,
+            checkpoint_fence,
+            format!("owner-{thread_id}"),
+            messages_with_content(content),
+        )
+    }
+
+    #[test]
+    fn automatic_replay_old_window_lease_drop_keeps_newer_owner_sealable() {
+        let registry = ReplaySessionRegistry::new();
+        let checkpoint_fence = ReplayCheckpointFence::from_checkpoint(None);
+        let old_owner = registry.begin("shared-thread", 1, "source", checkpoint_fence);
+        let new_owner = registry.begin("shared-thread", 1, "source", checkpoint_fence);
+        drop(old_owner);
+        assert!(registry.seal(
+            new_owner,
+            1,
+            "source".into(),
+            checkpoint_fence,
+            "final-owner".into(),
+            messages_with_content("second owner remains current".into()),
+        ));
+    }
+
+    #[test]
+    fn automatic_replay_active_candidate_does_not_consume_idle_session_budget() {
+        let registry = ReplaySessionRegistry::new();
+        let content = "x".repeat(7 * 1024 * 1024);
+        for index in 0..4 {
+            assert!(seal_session(
+                &registry,
+                &format!("thread-{index}"),
+                1,
+                format!("source-{index}"),
+                content.clone(),
+            ));
+        }
+        let active = registry.begin(
+            "thread-0",
+            1,
+            "source-0",
+            ReplayCheckpointFence::from_checkpoint(None),
+        );
+        assert!(active.candidate().is_some());
+        assert!(seal_session(
+            &registry,
+            "thread-new",
+            1,
+            "source-new".into(),
+            content,
+        ));
+        let state = registry.inner.lock().unwrap();
+        assert_eq!(state.sessions.len(), MAX_IDLE_SESSIONS);
+        assert!(!state.sessions.contains_key("thread-0"));
+        assert!(state.sessions.contains_key("thread-new"));
+        assert!(state.idle_bytes <= MAX_SESSION_BYTES);
+        drop(state);
+        drop(active);
+    }
+
+    #[test]
+    fn automatic_replay_registry_rejects_a_session_above_the_idle_byte_cap() {
+        let registry = ReplaySessionRegistry::new();
+        assert!(!seal_session(
+            &registry,
+            "oversized",
+            1,
+            "source".into(),
+            "x".repeat(MAX_SESSION_BYTES + 1),
+        ));
+        let state = registry.inner.lock().unwrap();
+        assert!(state.sessions.is_empty());
+        assert_eq!(state.idle_bytes, 0);
+    }
+
+    #[test]
+    fn automatic_replay_registry_counts_nested_reserved_json_and_session_metadata() {
+        let mut nested_values = Vec::with_capacity(25_000);
+        for object_index in 0..25_000 {
+            let mut object = Map::new();
+            for field_index in 0..8 {
+                let mut key = String::with_capacity(32);
+                key.push_str(&format!("field-{object_index}-{field_index}"));
+                let mut text = String::with_capacity(32);
+                text.push('v');
+                object.insert(key, Value::String(text));
+            }
+            nested_values.push(Value::Object(object));
+        }
+        let mut messages = messages_with_content("nested replay payload".into());
+        messages[1].response_replay_layout = Some(ResponseReplayLayout {
+            response_id: None,
+            slots: vec![ResponseReplaySlot::Message(Value::Array(nested_values))],
+        });
+        assert!(messages_size(&messages) > MAX_SESSION_BYTES);
+        let registry = ReplaySessionRegistry::new();
+        let checkpoint_fence = ReplayCheckpointFence::from_checkpoint(None);
+        let lease = registry.begin("nested", 1, "source", checkpoint_fence);
+        assert!(!registry.seal(
+            lease,
+            1,
+            "source".into(),
+            checkpoint_fence,
+            "owner-nested".into(),
+            messages,
+        ));
+        let state = registry.inner.lock().unwrap();
+        assert!(state.sessions.is_empty());
+        assert_eq!(state.idle_bytes, 0);
+
+        let metadata_registry = ReplaySessionRegistry::new();
+        assert!(seal_session(
+            &metadata_registry,
+            "metadata",
+            1,
+            "source-metadata".into(),
+            "small replay".into(),
+        ));
+        let metadata_state = metadata_registry.inner.lock().unwrap();
+        let session = metadata_state.sessions.get("metadata").unwrap();
+        let minimum_metadata = std::mem::size_of::<(String, ReplaySession)>()
+            + 2 * std::mem::size_of::<usize>()
+            + "metadata".len()
+            + "source-metadata".len()
+            + "owner-metadata".len();
+        assert!(session.byte_size >= messages_size(&session.messages) + minimum_metadata);
+        assert!(session.frame().is_some());
+    }
+}

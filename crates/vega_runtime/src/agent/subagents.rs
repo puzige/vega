@@ -111,3 +111,201 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition { name: "cancel_agent".into(), description: "Request cancellation of one delegated generation owned by this run. Cancellation is confirmed only after interruption is persisted. Cannot stop a later user continuation.".into(), input_schema: serde_json::json!({"type":"object","properties":{"agent_id":{"type":"string"}},"required":["agent_id"],"additionalProperties":false}), strict: true },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m19_redacted_results_fail_closed_only_for_unsafe_subagent_terminals() {
+        let call = RuntimeToolCall {
+            id: "result-call".into(),
+            name: "list_agents".into(),
+            input_json: "{}".into(),
+        };
+        let source = r#"{"evidence":"synthetic-private"}"#;
+        let known = r#""evidence":"synthetic-private""#.to_string();
+        let config = RuntimeToolConfig::default()
+            .with_credential_reader(Arc::new(move || Ok(vec![known.clone()])));
+        let broken = config.redact_tool_output(source).unwrap();
+        assert!(!broken.contains("synthetic-private"));
+        assert!(serde_json::from_str::<Value>(&broken).is_err());
+        for (status, output) in [
+            (RuntimeToolStatus::Success, broken),
+            (RuntimeToolStatus::Success, "[]".into()),
+            (
+                RuntimeToolStatus::Success,
+                serde_json::json!({"agents":"x".repeat(128 * 1024)}).to_string(),
+            ),
+            (
+                RuntimeToolStatus::Failed,
+                "Tool error: credential safety check unavailable".into(),
+            ),
+        ] {
+            let mut result = terminal_result(&call, output, status, Some(validation_audit()));
+            result.reused = true;
+            result.truncated = Some(false);
+            result.exit_code = Some(0);
+            result.duration_ms = Some(1);
+            let approval = result.approval.clone();
+            validate_redacted_subagent_result(&call, &mut result);
+            assert_eq!(result.call_id, call.id);
+            assert!(result.reused);
+            assert_eq!(result.approval, approval);
+            assert!(result.remember_rule.is_none());
+            assert_eq!(result.status, RuntimeToolStatus::Failed);
+            assert_eq!(result.output, SUBAGENT_UNSAFE_RESULT);
+            assert!(result.truncated.is_none());
+            assert!(result.exit_code.is_none());
+            assert!(result.duration_ms.is_none());
+        }
+        for (name, status, output) in [
+            (
+                "read",
+                RuntimeToolStatus::Failed,
+                "Tool error: credential safety check unavailable",
+            ),
+            (
+                "list_agents",
+                RuntimeToolStatus::Cancelled,
+                SUBAGENT_CANCELLED_OUTPUT,
+            ),
+            (
+                "list_agents",
+                RuntimeToolStatus::Rejected,
+                "Tool error: denied: unavailable tool",
+            ),
+            ("list_agents", RuntimeToolStatus::Success, "{\"agents\":[]}"),
+            (
+                "list_agents",
+                RuntimeToolStatus::Failed,
+                "Tool error: tool 'subagent' failed: synthetic failure",
+            ),
+        ] {
+            let call = RuntimeToolCall {
+                name: name.into(),
+                ..call.clone()
+            };
+            let mut result = terminal_result(&call, output.into(), status, None);
+            result.reused = true;
+            result.truncated = Some(false);
+            validate_redacted_subagent_result(&call, &mut result);
+            assert_eq!(result.status, status);
+            assert_eq!(result.output, output);
+            assert!(result.reused);
+            assert_eq!(result.truncated, Some(false));
+        }
+    }
+
+    struct NoopHook;
+    impl RuntimeSubagentHook for NoopHook {
+        fn call(
+            &self,
+            _: String,
+            _: String,
+            _: Value,
+            _: CancellationToken,
+        ) -> BoxFuture<'static, Result<Value, VegaError>> {
+            async { Ok(serde_json::json!({})) }.boxed()
+        }
+    }
+
+    #[test]
+    fn m03_m19_delegation_changes_replay_capability_only_for_execute() {
+        let config = RuntimeToolConfig::new(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::Confirm,
+            "p".into(),
+            "t".into(),
+            PathBuf::from("/checkpoint"),
+            Vec::new(),
+        );
+        let before = config.replay_capability_digest().unwrap();
+        assert_ne!(
+            before,
+            config
+                .clone()
+                .with_subagents(Some(Arc::new(NoopHook)))
+                .replay_capability_digest()
+                .unwrap()
+        );
+        for mode in [RuntimeRunMode::Ask, RuntimeRunMode::Plan] {
+            let mut scoped = config.clone();
+            scoped.run_mode = mode;
+            assert_eq!(
+                scoped.replay_capability_digest().unwrap(),
+                scoped
+                    .clone()
+                    .with_subagents(Some(Arc::new(NoopHook)))
+                    .replay_capability_digest()
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn m04_escaped_owner_secret_is_rejected_before_hook_and_audit() {
+        let known = "fixture-owned-secret".to_string();
+        let config = RuntimeToolConfig::new(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::Confirm,
+            "p".into(),
+            "t".into(),
+            PathBuf::from("/checkpoint"),
+            Vec::new(),
+        )
+        .with_subagents(Some(Arc::new(NoopHook)))
+        .with_credential_reader(Arc::new(move || Ok(vec![known.clone()])));
+        let caps =
+            RunCapabilitySnapshot::freeze(config.run_mode, config.permission_mode, Vec::new())
+                .unwrap()
+                .with_subagents(true);
+        let dir = tempfile::tempdir().unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let escaped = "fixture-owned-secret"
+            .bytes()
+            .map(|byte| format!("\\u{byte:04x}"))
+            .collect::<String>();
+        let input = format!("{{\"name\":\"A\",\"task\":\"{escaped}\"}}");
+        let prepared = prepare_runtime_call(
+            &tools,
+            &config,
+            &caps,
+            RuntimeToolCall {
+                id: "encoded".into(),
+                name: "spawn_agent".into(),
+                input_json: input,
+            },
+        )
+        .unwrap();
+        assert!(matches!(&prepared, PreparedRuntimeCall::Unknown(_)));
+        assert_eq!(prepared.call().input_json, "{}");
+    }
+
+    #[test]
+    fn m04_subagent_inputs_are_strict_and_bounded() {
+        assert!(valid_subagent_input(
+            "spawn_agent",
+            r#"{"name":"Research","task":"Find evidence"}"#
+        ));
+        for value in [
+            serde_json::json!({"name":"", "task":"x"}),
+            serde_json::json!({"name":"x", "task":"x".repeat(32769)}),
+            serde_json::json!({"name":"x", "task":"x", "role":"admin"}),
+        ] {
+            assert!(!valid_subagent_input("spawn_agent", &value.to_string()));
+        }
+        for input in [
+            r#"{"agent_ids":[]}"#,
+            r#"{"agent_ids":["a","a"]}"#,
+            r#"{"agent_ids":["a"],"timeout_ms":-1}"#,
+            r#"{"agent_ids":["a"],"timeout_ms":60001}"#,
+        ] {
+            assert!(!valid_subagent_input("wait_agent", input));
+        }
+        assert!(valid_subagent_input(
+            "wait_agent",
+            r#"{"agent_ids":["a"],"timeout_ms":0}"#
+        ));
+    }
+}

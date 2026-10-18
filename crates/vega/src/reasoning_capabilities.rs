@@ -381,3 +381,379 @@ pub(crate) fn freeze_reasoning_profile(
         .freeze_resolved(profile.protocol, replay_policy)
         .map_err(|_| ReasoningCapabilityError::Invalid)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use futures::StreamExt;
+    use vega_runtime::{ChatMessage, ChatRole, ChatToolCall, OpenAiProvider, Provider};
+
+    fn route(api: ProviderApi, endpoint: &str, model: &str) -> ReasoningProfileProjection {
+        resolve_reasoning_profile("custom", api, endpoint, model, None).unwrap()
+    }
+
+    #[test]
+    fn exact_registry_normalizes_only_endpoint_host_default_port_and_terminal_slash() {
+        for endpoint in [
+            "https://API.DEEPSEEK.COM:443/",
+            "https://api.deepseek.com/v1/",
+        ] {
+            let profile = route(ProviderApi::ChatCompletions, endpoint, "deepseek-v4-pro");
+            assert_eq!(profile.protocol, ReasoningProtocol::DeepSeekChatCompletions);
+            assert_eq!(
+                profile.replay_profile,
+                ReasoningReplaySetting::DeepSeekTools
+            );
+        }
+        for endpoint in [
+            "https://api.deepseek.com/v1?route=custom",
+            "https://user@api.deepseek.com/v1",
+            "https://api.deepseek.com/v1/extra",
+            "https://api.deepseek.com.evil.invalid/v1",
+        ] {
+            let profile = route(ProviderApi::ChatCompletions, endpoint, "deepseek-v4-pro");
+            assert_eq!(profile.protocol, ReasoningProtocol::Unknown);
+        }
+    }
+
+    #[test]
+    fn sensitive_endpoint_components_are_not_normalized_or_exposed() {
+        for endpoint in [
+            "https://user:password-canary@api.deepseek.com/v1",
+            "https://api.deepseek.com/v1?token=query-canary",
+            "https://api.deepseek.com/v1#fragment-canary",
+        ] {
+            let profile = route(ProviderApi::ChatCompletions, endpoint, "deepseek-v4-pro");
+            assert_eq!(profile.protocol, ReasoningProtocol::Unknown);
+            let diagnostic = format!("{:?}", ReasoningCapabilityError::Conflict);
+            assert!(!diagnostic.contains("canary"));
+        }
+    }
+
+    #[test]
+    fn registry_uses_exact_api_and_model_pairs_and_does_not_trust_provider_name() {
+        let glm = route(
+            ProviderApi::ChatCompletions,
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+            "glm-5.3",
+        );
+        assert_eq!(glm.protocol, ReasoningProtocol::ZhipuChatCompletions);
+        assert_eq!(glm.replay_profile, ReasoningReplaySetting::GlmPreserved);
+        for (api, endpoint, model) in [
+            (
+                ProviderApi::ChatCompletions,
+                "https://api.deepseek.com",
+                "deepseek-v4-pro-preview",
+            ),
+            (
+                ProviderApi::Responses,
+                "https://api.deepseek.com",
+                "deepseek-v4-pro",
+            ),
+        ] {
+            let profile = route(api, endpoint, model);
+            assert_ne!(
+                profile.replay_profile,
+                ReasoningReplaySetting::DeepSeekTools
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn automatic_replay_migrated_v1_custom_true_resolves_validates_and_replays_on_the_chat_wire()
+     {
+        let config_dir = tempfile::tempdir().unwrap();
+        let reasoning_path = config_dir.path().join("reasoning.toml");
+        std::fs::write(
+            &reasoning_path,
+            r#"version = 1
+
+[[profiles]]
+provider = "custom"
+model = "migrated-model"
+protocol = "unknown"
+support = "unknown"
+preserve_reasoning_content = true
+"#,
+        )
+        .unwrap();
+        let stored = vega_store::reasoning::read_from(&reasoning_path).unwrap();
+        let projection = ReasoningProfileProjection::from_store(
+            stored.profile("custom", "migrated-model").unwrap(),
+        )
+        .unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let capture = captured.clone();
+        let frozen = resolve_reasoning_profile(
+            "custom",
+            ProviderApi::ChatCompletions,
+            "https://fixture.invalid",
+            "migrated-model",
+            Some(projection),
+        )
+        .and_then(freeze_reasoning_profile)
+        .unwrap();
+        frozen.validate().unwrap();
+        let provider = OpenAiProvider::new("https://fixture.invalid", "test-key")
+            .unwrap()
+            .with_test_sse_responder(move |request| {
+                *capture.lock().unwrap() = Some(
+                    serde_json::from_slice::<serde_json::Value>(
+                        request.body().unwrap().as_bytes().unwrap(),
+                    )
+                    .unwrap(),
+                );
+                "data: [DONE]\n\n".into()
+            });
+        let mut request = ChatMessage::assistant_with_tools(
+            "working",
+            vec![ChatToolCall {
+                id: "call-1".into(),
+                name: "read".into(),
+                input_json: "{}".into(),
+            }],
+        );
+        request.reasoning_content = Some("migrated private reasoning".into());
+        let mut stream = provider
+            .chat_stream_once(
+                vega_runtime::ChatRequest {
+                    model: "migrated-model".into(),
+                    messages: vec![ChatMessage::new(ChatRole::User, "continue"), request],
+                    reasoning: Some(frozen),
+                    ..Default::default()
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+        let body = captured.lock().unwrap().take().unwrap();
+        assert_eq!(body["model"], "migrated-model");
+        assert_eq!(
+            body["messages"][1]["reasoning_content"],
+            "migrated private reasoning"
+        );
+        assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call-1");
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn explicit_custom_policy_wins_but_conflicts_with_known_routes_fail_closed() {
+        let mut custom = ReasoningProfileProjection::unknown("custom", "relay-model");
+        custom.protocol = ReasoningProtocol::ZhipuChatCompletions;
+        custom.replay_profile = ReasoningReplaySetting::GlmInterleaved;
+        assert_eq!(
+            resolve_reasoning_profile(
+                "custom",
+                ProviderApi::ChatCompletions,
+                "https://relay.invalid/v1",
+                "relay-model",
+                Some(custom),
+            )
+            .unwrap()
+            .replay_profile,
+            ReasoningReplaySetting::GlmInterleaved
+        );
+        let mut conflict = ReasoningProfileProjection::unknown("custom", "deepseek-v4-pro");
+        conflict.protocol = ReasoningProtocol::OpenAiChatCompletions;
+        conflict.replay_profile = ReasoningReplaySetting::StandardChat;
+        assert_eq!(
+            resolve_reasoning_profile(
+                "custom",
+                ProviderApi::ChatCompletions,
+                "https://api.deepseek.com",
+                "deepseek-v4-pro",
+                Some(conflict),
+            ),
+            Err(ReasoningCapabilityError::Conflict)
+        );
+    }
+
+    #[test]
+    fn legacy_migration_is_below_known_route_and_keeps_custom_wire_fallback() {
+        let mut old_custom = ReasoningProfileProjection::unknown("relay", "model");
+        old_custom.replay_profile = ReasoningReplaySetting::LegacyTextTools;
+        let migrated = resolve_reasoning_profile(
+            "relay",
+            ProviderApi::ChatCompletions,
+            "https://relay.invalid/v1",
+            "model",
+            Some(old_custom),
+        )
+        .unwrap();
+        assert_eq!(
+            migrated.replay_profile,
+            ReasoningReplaySetting::LegacyTextTools
+        );
+        let mut old_known = ReasoningProfileProjection::unknown("relay", "deepseek-v4-pro");
+        old_known.replay_profile = ReasoningReplaySetting::LegacyTextTools;
+        let known = resolve_reasoning_profile(
+            "relay",
+            ProviderApi::ChatCompletions,
+            "https://api.deepseek.com",
+            "deepseek-v4-pro",
+            Some(old_known),
+        )
+        .unwrap();
+        assert_eq!(known.replay_profile, ReasoningReplaySetting::DeepSeekTools);
+    }
+
+    #[test]
+    fn automatic_replay_v1_true_and_false_declarations_cannot_override_exact_routes() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("reasoning.toml");
+        for legacy in [true, false] {
+            std::fs::write(
+                &path,
+                format!(
+                    "version = 1\n\n[[profiles]]\nprovider = \"relay\"\nmodel = \"deepseek-v4-pro\"\nprotocol = \"unknown\"\nsupport = \"unknown\"\npreserve_reasoning_content = {legacy}\n"
+                ),
+            )
+            .unwrap();
+            let stored = vega_store::reasoning::read_from(&path).unwrap();
+            let old = ReasoningProfileProjection::from_store(
+                stored.profile("relay", "deepseek-v4-pro").unwrap(),
+            )
+            .unwrap();
+            let deepseek = resolve_reasoning_profile(
+                "relay",
+                ProviderApi::ChatCompletions,
+                "https://api.deepseek.com",
+                "deepseek-v4-pro",
+                Some(old.clone()),
+            )
+            .unwrap();
+            assert_eq!(
+                deepseek.replay_profile,
+                ReasoningReplaySetting::DeepSeekTools
+            );
+            assert_eq!(
+                deepseek.protocol,
+                ReasoningProtocol::DeepSeekChatCompletions
+            );
+
+            let mut responses_old = old;
+            responses_old.model = "responses-model".into();
+            let responses = resolve_reasoning_profile(
+                "relay",
+                ProviderApi::Responses,
+                "https://relay.invalid/v1",
+                "responses-model",
+                Some(responses_old),
+            )
+            .unwrap();
+            assert_eq!(responses.protocol, ReasoningProtocol::ResponsesApi);
+            assert_eq!(
+                responses.replay_profile,
+                ReasoningReplaySetting::ResponsesItems
+            );
+        }
+    }
+
+    #[test]
+    fn known_route_reconciles_legacy_preferences_without_promoting_legacy_policy() {
+        let mut legacy_deepseek = ReasoningProfileProjection::unknown("relay", "deepseek-v4-pro");
+        legacy_deepseek.replay_profile = ReasoningReplaySetting::LegacyTextTools;
+        legacy_deepseek.efforts = vec!["medium".into()];
+        legacy_deepseek.preference = ReasoningChoice::Effort("medium".into());
+        let resolved = resolve_reasoning_profile(
+            "relay",
+            ProviderApi::ChatCompletions,
+            "https://api.deepseek.com",
+            "deepseek-v4-pro",
+            Some(legacy_deepseek),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.replay_profile,
+            ReasoningReplaySetting::DeepSeekTools
+        );
+        assert_eq!(
+            resolved.preference,
+            ReasoningChoice::Effort("medium".into())
+        );
+        assert_eq!(resolved.efforts, ["medium"]);
+    }
+
+    #[test]
+    fn glm_disabled_wire_and_preferences_are_preserved_only_when_supported() {
+        let mut glm47 = ReasoningProfileProjection::unknown("zhipu", "glm-4.7");
+        glm47.protocol = ReasoningProtocol::ZhipuChatCompletions;
+        glm47.support = ReasoningSupport::Optional;
+        glm47.efforts = vec!["low".into(), "high".into(), "max".into()];
+        glm47.supports_disabled = true;
+        glm47.disabled_wire = Some(ReasoningDisabledWire::ThinkingTypeDisabled);
+        glm47.preference = ReasoningChoice::Disabled;
+        let resolved = resolve_reasoning_profile(
+            "zhipu",
+            ProviderApi::ChatCompletions,
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-4.7",
+            Some(glm47),
+        )
+        .unwrap();
+        assert_eq!(resolved.preference, ReasoningChoice::Disabled);
+        assert!(resolved.supports_disabled);
+        assert_eq!(
+            resolved.disabled_wire,
+            Some(ReasoningDisabledWire::ThinkingTypeDisabled)
+        );
+        let mut glm53 = resolved;
+        glm53.model = "glm-5.3".into();
+        assert!(
+            resolve_reasoning_profile(
+                "zhipu",
+                ProviderApi::ChatCompletions,
+                "https://open.bigmodel.cn/api/paas/v4",
+                "glm-5.3",
+                Some(glm53),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_glm_interleaved_authority_survives_catalog_reconciliation() {
+        let catalog = route(
+            ProviderApi::ChatCompletions,
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-4.7",
+        );
+        let mut configured = catalog.clone();
+        configured.replay_profile = ReasoningReplaySetting::GlmInterleaved;
+        let reconciled = reconcile_catalog_profile(&catalog, Some(configured)).unwrap();
+        assert_eq!(
+            reconciled.replay_profile,
+            ReasoningReplaySetting::GlmInterleaved
+        );
+        assert_eq!(
+            freeze_reasoning_profile(reconciled).unwrap().replay_policy,
+            ReasoningReplayPolicy::GlmInterleaved
+        );
+    }
+
+    #[test]
+    fn responses_transport_always_resolves_to_response_items_and_rejects_other_templates() {
+        let profile = route(ProviderApi::Responses, "https://relay.invalid/v1", "model");
+        assert_eq!(profile.protocol, ReasoningProtocol::ResponsesApi);
+        assert_eq!(
+            profile.replay_profile,
+            ReasoningReplaySetting::ResponsesItems
+        );
+        let mut invalid = ReasoningProfileProjection::unknown("custom", "model");
+        invalid.protocol = ReasoningProtocol::OpenAiChatCompletions;
+        invalid.replay_profile = ReasoningReplaySetting::StandardChat;
+        assert_eq!(
+            resolve_reasoning_profile(
+                "custom",
+                ProviderApi::Responses,
+                "https://relay.invalid/v1",
+                "model",
+                Some(invalid),
+            ),
+            Err(ReasoningCapabilityError::Conflict)
+        );
+    }
+}

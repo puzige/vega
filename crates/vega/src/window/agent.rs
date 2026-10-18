@@ -831,6 +831,8 @@ impl VegaWindow {
             .active
             .get_mut(thread_id)
             .map(|active| {
+                active.composer_prediction_config_generation =
+                    self.composer_prediction_config_generation;
                 active.queue_delivery = queue_delivery;
                 PendingRunContext {
                     generation: active.queue_generation.clone(),
@@ -885,6 +887,10 @@ impl VegaWindow {
             })
             .cloned()
             .collect();
+        #[cfg(test)]
+        let provider_override = self.agent_provider_override.clone();
+        #[cfg(test)]
+        let worker_start_probe = self.agent_worker_start_probe.clone();
         let worker = std::thread::Builder::new()
             .name("vega-agent".into())
             .spawn(move || {
@@ -905,7 +911,11 @@ impl VegaWindow {
                     file_read_state,
                     queue_context,
                     automation_pauses,
+                    #[cfg(test)]
+                    provider_override,
                     replay_registry,
+                    #[cfg(test)]
+                    worker_start_probe,
                 );
                 drop(worker_activity);
             });
@@ -1004,6 +1014,8 @@ impl VegaWindow {
                             && !stream.read(cx).permission_queue().has_pending()
                             && !stream.read(cx).has_pending_user_question();
                         let ActiveAgentRun {
+                            composer_prediction,
+                            composer_prediction_config_generation,
                             pending_user_content: pending_user,
                             pending_approved_instruction,
                             terminal_failure,
@@ -1104,6 +1116,19 @@ impl VegaWindow {
                             queue_ready && !recovery_projected && pending_review.is_none();
                         if let Some(pending) = pending_review {
                             this.finish_owned_plan_review(pending.stream, &pending.request, cx);
+                        }
+                        if queue_ready
+                            && composer_prediction_config_generation
+                                == this.composer_prediction_config_generation
+                            && let Some(request) = composer_prediction
+                            && let Some(message_id) = terminal_message_id.as_deref()
+                        {
+                            this.prepare_composer_prediction(
+                                &display_stream,
+                                request,
+                                message_id,
+                                cx,
+                            );
                         }
                         this.finish_pending_run(&thread_id, &display_stream, queue_ready, cx);
                         this.resume_deferred_message_location(&thread_id, cx);

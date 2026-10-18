@@ -26,8 +26,13 @@ pub fn separator(colors: ThemeColors) -> AnyElement {
         .into_any_element()
 }
 
-pub fn search_field(input: &Entity<TextInput>, colors: ThemeColors) -> AnyElement {
+pub fn search_field(
+    input: &Entity<TextInput>,
+    selector: &'static str,
+    colors: ThemeColors,
+) -> AnyElement {
     div()
+        .debug_selector(move || selector.to_string())
         .flex_shrink_0()
         .mx_1()
         .mb_1()
@@ -59,6 +64,7 @@ pub fn action_row(
     };
     let row = div()
         .id(selector)
+        .debug_selector(move || selector.to_string())
         .h(px(MENU_ROW_HEIGHT))
         .flex_shrink_0()
         .mx_1()
@@ -121,14 +127,20 @@ pub fn row_container(
         .when(enabled, |row| row.cursor_pointer())
 }
 
-pub fn selection_marker(selected: bool, colors: ThemeColors) -> AnyElement {
+pub fn selection_marker(
+    selected: bool,
+    selector: impl FnOnce() -> String,
+    colors: ThemeColors,
+) -> AnyElement {
     div()
         .w(px(Typography::SIDEBAR))
         .flex_shrink_0()
         .flex()
         .justify_end()
         .when(selected, |marker| {
-            marker.child(icon(Icon::Check, colors.brand_primary))
+            marker
+                .debug_selector(selector)
+                .child(icon(Icon::Check, colors.brand_primary))
         })
         .into_any_element()
 }

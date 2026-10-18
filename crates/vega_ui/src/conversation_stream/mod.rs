@@ -27,10 +27,11 @@ use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
-    PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan, ProviderPreflightFailure,
-    ReasoningChoice, ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunFailureKind,
-    RunUsageEstimator, SkillComposerMutation, SkillComposerProjection, SkillSelectionIntent,
-    TaskBackend, TaskCostSummary, Thread, ThreadMode,
+    MeterSnapshot, PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan,
+    ProviderPreflightFailure, ReasoningChoice, ReasoningProfileProjection, ReasoningSupport,
+    RestoredUsage, RunFailureKind, RunUsageEstimator, SkillComposerMutation,
+    SkillComposerProjection, SkillSelectionIntent, TaskBackend, TaskCostSummary, Thread,
+    ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -259,6 +260,9 @@ pub struct ComposerDefaultsRequested {
 /// the thread (or before any page arrived). One page is in flight at a time;
 /// a failed load pauses auto-retry until the viewport leaves the top edge.
 mod composer;
+mod composer_predictions;
+pub(crate) use composer_predictions::ComposerPredictionsEnabled;
+pub use composer_predictions::set_composer_predictions_enabled;
 mod composer_actions;
 use composer_actions::ComposerActions;
 mod content;
@@ -290,6 +294,9 @@ mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;
 mod utility_bar;
+
+#[cfg(test)]
+mod tests;
 
 pub use core::ConversationStream;
 pub use core::ModelPickerLevel;

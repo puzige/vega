@@ -220,6 +220,7 @@ impl ToolActivityGroup {
                 ))
                 .tab_stop(true)
                 .focus_visible(move |row| row.bg(colors.bg_hover))
+                .debug_selector(|| "tool-activity-group-toggle".to_string())
                 .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
                 .text_size(px(Typography::CONVERSATION))
                 .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -240,6 +241,7 @@ impl ToolActivityGroup {
                 })
                 .child(
                     div()
+                        .debug_selector(|| "tool-activity-group-icon".into())
                         .size(px(Layout::ICON_SIZE))
                         .flex_shrink_0()
                         .flex()
@@ -253,6 +255,7 @@ impl ToolActivityGroup {
                 )
                 .child(
                     div()
+                        .debug_selector(|| "tool-activity-group-label".into())
                         .min_w_0()
                         .flex_shrink(1.)
                         .truncate()
@@ -262,6 +265,7 @@ impl ToolActivityGroup {
                 )
                 .child(crate::disclosure::inline_chevron(
                     disclosure_group,
+                    "tool-activity-group-chevron".into(),
                     &focus,
                     expanded,
                     true,
@@ -279,6 +283,7 @@ impl ToolActivityGroup {
                     .child(
                         div()
                             .id(gpui_kit::SharedString::from(scroll_id))
+                            .debug_selector(|| "tool-activity-group-content".into())
                             .w_full()
                             .min_w_0()
                             .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
@@ -289,11 +294,15 @@ impl ToolActivityGroup {
                             .flex()
                             .flex_col()
                             .gap(px(Layout::PROCESS_ITEM_GAP))
-                            .children(
-                                children
-                                    .into_iter()
-                                    .map(|card| ToolCard::render(card, true, window, cx)),
-                            )
+                            .children(children.into_iter().enumerate().map(|(index, card)| {
+                                ToolCard::render(
+                                    card,
+                                    format!("tool-activity-child-{index}"),
+                                    true,
+                                    window,
+                                    cx,
+                                )
+                            }))
                             .tracked_scroll_edge_fade(
                                 scroll.clone(),
                                 colors.bg_base,
@@ -306,6 +315,7 @@ impl ToolActivityGroup {
             );
         }
         div()
+            .debug_selector(|| "tool-activity-group".to_string())
             .w_full()
             .min_w_0()
             .flex()

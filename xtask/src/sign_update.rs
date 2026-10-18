@@ -195,3 +195,24 @@ fn verify_signature(domain: &[u8], public: &[u8], raw: &[u8], signature: &str) -
         .verify(&message, &STANDARD.decode(signature.trim())?)
         .map_err(|_| anyhow::anyhow!("update signature mismatch"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signatures_bind_raw_bytes_and_domain() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[9; 32]).unwrap();
+        let raw = br#"{"schema":1}"#;
+        let delta_domain = b"Vega file delta manifest v1\n";
+        let mut message = delta_domain.to_vec();
+        message.extend_from_slice(raw);
+        let signature = STANDARD.encode(key.sign(&message).as_ref());
+        assert!(verify_signature(delta_domain, key.public_key().as_ref(), raw, &signature).is_ok());
+        assert!(verify_signature(DOMAIN, key.public_key().as_ref(), raw, &signature).is_err());
+        assert!(
+            verify_signature(delta_domain, key.public_key().as_ref(), b"{}", &signature).is_err()
+        );
+        assert!(verify_signature(delta_domain, &[0; 32], raw, &signature).is_err());
+    }
+}

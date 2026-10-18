@@ -258,6 +258,11 @@ impl VegaWindow {
         if !self.agent_controller.matches(generation, thread_id, stream) {
             return AgentBatchIngress::Stale;
         }
+        if let Some(request) = batch.composer_prediction
+            && let Some(active) = self.agent_controller.active.get_mut(thread_id)
+        {
+            active.composer_prediction = Some(request);
+        }
         if let Some((control, owner)) = batch.computer_use_ready
             && let Some(active) = self.agent_controller.active.get_mut(thread_id)
         {
@@ -578,6 +583,12 @@ impl VegaWindow {
         .detach();
     }
 
+    #[cfg(test)]
+    pub(crate) fn take_next_artifact_terminal(&mut self) -> Option<ArtifactTerminalDispatch> {
+        let identity = self.artifact_controller.active.as_ref()?.identity.clone();
+        self.take_artifact_terminal_for(&identity)
+    }
+
     fn take_artifact_terminal_for(
         &mut self,
         identity: &ArtifactRouteIdentity,
@@ -750,6 +761,8 @@ impl VegaWindow {
         self.workspace
             .open(workspace::TabKey::Artifact(request.card_id));
         let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        ARTIFACT_PREVIEW_WORKER_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let worker_fence = fence.clone();
         let worker = std::thread::Builder::new()
             .name("vega-artifact-preview".into())
@@ -964,6 +977,8 @@ impl VegaWindow {
             (fence, active.service.clone(), cancel)
         };
         let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        ARTIFACT_OPEN_WORKER_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let worker_fence = fence.clone();
         let worker = std::thread::Builder::new()
             .name("vega-artifact-open".into())

@@ -23,7 +23,10 @@ mod automation_editor;
 mod branch;
 mod commit;
 mod commit_reconcile;
+mod composer_predictions;
 mod context;
+#[cfg(test)]
+pub(crate) use context::run_manual_context_worker;
 mod diff;
 mod file_index;
 mod image_preview;
@@ -44,6 +47,8 @@ mod updater;
 mod workspace;
 
 use self::file_index::*;
+#[cfg(test)]
+pub(crate) use self::file_index::{ActiveFileIndex, FileIndexOwner};
 use crate::app_agent::*;
 use crate::artifact_controller::*;
 use crate::branch_controller::*;
@@ -92,6 +97,8 @@ impl ModelSelectionRefresh {
 }
 
 pub(crate) struct VegaWindow {
+    pub(crate) composer_prediction_config_generation: u64,
+    pub(crate) composer_prediction: Option<composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
     navigation: navigation::Navigation,
@@ -173,9 +180,53 @@ pub(crate) struct VegaWindow {
     /// The model-only result of a save that completed while Settings was
     /// visible. It is merged into the newest route projection after close.
     pub(crate) deferred_model_refresh: Option<ModelSelectionRefresh>,
+    #[cfg(test)]
+    pub(crate) model_selection_config_override: Option<std::path::PathBuf>,
+    #[cfg(test)]
+    pub(crate) commit_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
+    #[cfg(test)]
+    pub(crate) agent_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
+    /// Per-window worker entry probe used by production-path tests. Keeping
+    /// the counter with its owning controller prevents unrelated concurrent
+    /// gpui tests from changing the zero/one spawn evidence.
+    #[cfg(test)]
+    pub(crate) agent_worker_start_probe: Arc<AgentWorkerStartProbe>,
+    #[cfg(test)]
+    pub(crate) commit_test_probe: Option<Arc<CommitTestProbe>>,
+    #[cfg(test)]
+    pub(crate) pricing_drop_next_worker_result: bool,
+    #[cfg(test)]
+    pub(crate) pricing_next_worker_gate: Option<Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    pub(crate) model_selection_worker_gate: Option<Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    pub(crate) reasoning_save_worker_gate: Option<Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    pub(crate) model_catalog_worker_gate: Option<Arc<std::sync::Barrier>>,
 }
 
 impl VegaWindow {
+    pub(crate) fn record_commit_probe(&self, event: &'static str) {
+        #[cfg(not(test))]
+        let _ = event;
+        #[cfg(test)]
+        if let Some(probe) = &self.commit_test_probe {
+            probe.record(event);
+        }
+    }
+
+    pub(crate) fn record_commit_terminal_application(&self, trace: bool) {
+        #[cfg(not(test))]
+        let _ = trace;
+        #[cfg(test)]
+        if let Some(probe) = &self.commit_test_probe {
+            probe.terminal_applications.fetch_add(1, Ordering::SeqCst);
+            if trace {
+                probe.record("panel_terminal");
+            }
+        }
+    }
+
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         cx.on_release(|this, cx| {
             if cx
@@ -198,6 +249,13 @@ impl VegaWindow {
                 .0
                 .as_ref()
                 .map(|thread| thread.id.clone());
+            if this
+                .composer_prediction
+                .as_ref()
+                .is_some_and(|owner| !this.composer_prediction_route_matches(owner, cx))
+            {
+                this.cancel_composer_prediction(cx);
+            }
             this.update_message_location_route(route_thread_id.as_deref());
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
@@ -224,6 +282,7 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.cancel_composer_prediction(cx);
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
             this.close_diff_if_route_stale(cx);
@@ -255,11 +314,14 @@ impl VegaWindow {
         let sidebar = cx.new(Sidebar::new);
         cx.subscribe(&sidebar, |this, _, event: &SidebarEvent, cx| match event {
             SidebarEvent::ThreadDeleted(thread_id) => {
+                this.cancel_composer_prediction_for_thread(thread_id, cx);
                 this.cancel_agent_for_thread(thread_id, cx);
             }
         })
         .detach();
         let mut window = Self {
+            composer_prediction_config_generation: 0,
+            composer_prediction: None,
             updater: crate::updater::Updater::default(),
             update_notice_dismissed: false,
             navigation: navigation::Navigation::new(cx, None),
@@ -308,13 +370,36 @@ impl VegaWindow {
             model_catalog_loading: false,
             model_catalog_generation: 0,
             deferred_model_refresh: None,
+            #[cfg(test)]
+            model_selection_config_override: None,
+            #[cfg(test)]
+            commit_provider_override: None,
+            #[cfg(test)]
+            agent_provider_override: None,
+            #[cfg(test)]
+            agent_worker_start_probe: Arc::new(AgentWorkerStartProbe::default()),
+            #[cfg(test)]
+            commit_test_probe: None,
+            #[cfg(test)]
+            pricing_drop_next_worker_result: false,
+            #[cfg(test)]
+            pricing_next_worker_gate: None,
+            #[cfg(test)]
+            model_selection_worker_gate: None,
+            #[cfg(test)]
+            reasoning_save_worker_gate: None,
+            #[cfg(test)]
+            model_catalog_worker_gate: None,
         };
         window.start_pricing_load(cx);
-        window.start_updater(cx);
+        if !cfg!(test) {
+            window.start_updater(cx);
+        }
         window
     }
 
     pub(crate) fn window_terminal_cleanup(&mut self) {
+        self.composer_prediction = None;
         self.image_preview.retire();
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);

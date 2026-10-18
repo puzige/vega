@@ -3,6 +3,7 @@ mod artifact;
 pub mod attachments;
 mod automatic_titles;
 pub mod codex_tasks;
+mod composer_predictions;
 mod git_workspace;
 pub mod history;
 pub mod plans;
@@ -41,6 +42,12 @@ pub use mcp_settings::{McpRunReadiness, McpServerSettingsService, McpSettingsErr
 
 mod skill_settings;
 pub use skill_settings::{SkillSettingsError, SkillSettingsService};
+
+#[cfg(any(test, feature = "test-support"))]
+pub use git_workspace::{
+    FixtureGitCommand, GitCommandFixture, GitTestCommandExecutor, GitTestCommandGuard,
+    fixture_git_command, register_git_test_executor,
+};
 
 pub mod pending_messages;
 

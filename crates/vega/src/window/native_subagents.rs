@@ -121,6 +121,7 @@ impl VegaWindow {
                 let generation = active.generation;
                 parent_stream.update(cx, |parent, cx| parent.apply_subagent_usage(&event, cx));
                 let batch = AgentBatch {
+                    composer_prediction: None,
                     subagents: Vec::new(),
                     events: vec![event],
                     codex_mode_confirmed: false,
@@ -164,6 +165,7 @@ impl VegaWindow {
                 let stream = active.stream.clone();
                 let generation = active.generation;
                 let batch = AgentBatch {
+                    composer_prediction: None,
                     subagents: Vec::new(),
                     events: Vec::new(),
                     codex_mode_confirmed: false,

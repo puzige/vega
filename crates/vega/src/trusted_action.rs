@@ -99,4 +99,39 @@ impl TrustedActionCoordinator {
         }
         false
     }
+
+    #[cfg(test)]
+    pub(crate) fn active_token(&self) -> Option<TrustedActionToken> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .active
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopping_preparation_discards_late_preflight_and_skill_pin_callbacks() {
+        let gate = TrustedActionCoordinator::default();
+        for kind in [
+            TrustedActionKind::AgentPreflight,
+            TrustedActionKind::SkillSelection,
+        ] {
+            let token = gate.acquire(kind, 0, 0).expect("preparation lease");
+            assert!(gate.cancel_agent_preparation());
+            assert!(
+                !gate.release(token),
+                "late callback must not own the next run"
+            );
+            assert!(!gate.is_busy());
+        }
+        let unrelated = gate
+            .acquire(TrustedActionKind::ModelSelection, 0, 0)
+            .expect("unrelated lease");
+        assert!(!gate.cancel_agent_preparation());
+        assert!(gate.release(unrelated));
+    }
 }

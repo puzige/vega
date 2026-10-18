@@ -347,6 +347,7 @@ impl ConversationStream {
         let key_anchors = anchors.clone();
         let rail = div()
             .id("message-anchor-rail")
+            .debug_selector(|| "message-anchor-rail".into())
             .aria_label("消息导航，使用上下键选择，Enter跳转，Esc关闭预览")
             .tab_stop(true)
             .track_focus(&self.message_anchor_focus)
@@ -449,6 +450,7 @@ impl ConversationStream {
                             || current_id.as_deref() == Some(id.as_str());
                         div()
                             .id(gpui_kit::SharedString::from(format!("message-anchor-{id}")))
+                            .debug_selector(move || format!("message-anchor-item-{id}"))
                             .aria_label(anchor_preview_label(anchor))
                             .w_full()
                             .h(px(Layout::CONVERSATION_MARKER_PITCH))
@@ -514,6 +516,7 @@ fn render_message_anchor_preview(
 ) -> AnyElement {
     div()
         .id("message-anchor-preview")
+        .debug_selector(|| "message-anchor-preview".into())
         .aria_label(label.clone())
         .w(px(width))
         .max_h(px(Layout::MESSAGE_ANCHOR_PREVIEW_HEIGHT))

@@ -455,9 +455,15 @@ impl VegaWindow {
             ..
         } = job;
         let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        let worker_gate = self.reasoning_save_worker_gate.take();
         let worker = std::thread::Builder::new()
             .name("vega-reasoning-save".into())
             .spawn(move || {
+                #[cfg(test)]
+                if let Some(gate) = worker_gate {
+                    gate.wait();
+                }
                 let result = match vega_store::reasoning::save_profile_patch(
                     &path,
                     &expected_snapshot,
@@ -687,5 +693,66 @@ impl VegaWindow {
         } else {
             stream.update(cx, ConversationStream::clear_reasoning_profile);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reconcile_reasoning_profiles;
+    use vega_conversation::types::{ReasoningChoice, ReasoningProfileProjection, ReasoningSupport};
+
+    fn glm_profile() -> vega_store::reasoning::ReasoningProfile {
+        vega_store::reasoning::ReasoningProfile {
+            provider: "zhipu".into(),
+            model: "glm-5.3".into(),
+            protocol: "zhipu_chat_completions".into(),
+            support: "required".into(),
+            efforts: vec!["low".into(), "high".into(), "max".into()],
+            supports_disabled: false,
+            disabled_wire: None,
+            replay_profile: "glm_preserved".into(),
+            preference: "max".into(),
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn reconcile_external_profile_deletion_keeps_catalog_as_provider_default(
+        _cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let catalog = vec![ReasoningProfileProjection::from_store(&glm_profile()).unwrap()];
+        let reconciled = reconcile_reasoning_profiles(
+            &vega_store::reasoning::ReasoningConfig::default(),
+            catalog,
+        );
+        let reconciled =
+            reconciled.expect("missing profile is a valid provider-default projection");
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].provider, "zhipu");
+        assert_eq!(reconciled[0].model, "glm-5.3");
+        assert_eq!(reconciled[0].support, ReasoningSupport::Required);
+        assert_eq!(
+            reconciled[0].preference,
+            ReasoningChoice::Effort("max".into())
+        );
+        assert_eq!(
+            reconciled[0].replay_profile,
+            vega_conversation::types::ReasoningReplaySetting::GlmPreserved
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn reconcile_invalid_declared_profile_cannot_become_provider_default(
+        _cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let mut invalid = glm_profile();
+        invalid.protocol = "openai_chat_completions".into();
+        invalid.support = "optional".into();
+        invalid.efforts = vec!["not-a-declared-effort".into()];
+        invalid.preference = "provider_default".into();
+        let config = vega_store::reasoning::ReasoningConfig {
+            version: vega_store::reasoning::REASONING_CONFIG_VERSION,
+            profiles: vec![invalid],
+        };
+        assert!(reconcile_reasoning_profiles(&config, Vec::new()).is_err());
     }
 }

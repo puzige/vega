@@ -800,3 +800,69 @@ fn floor_ratio(value: u64, numerator: u64, denominator: u64) -> Result<u64, Cont
         .map(|value| value / denominator)
         .ok_or(ContextEstimateError::Overflow)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ChatMessage, ChatRole, ChatToolCall};
+
+    #[test]
+    fn historical_observation_estimates_escaped_json_once_for_both_context_paths() {
+        let mut assistant = ChatMessage::assistant_with_tools(
+            "checked",
+            vec![ChatToolCall {
+                id: "history-estimate".into(),
+                name: "read".into(),
+                input_json: "PRIVATE_PARAMETER".into(),
+            }],
+        );
+        assistant
+            .mark_stored_tool_calls_with_statuses(vec!["failed".into()])
+            .unwrap();
+        let raw = vec![
+            assistant,
+            ChatMessage::tool_result("history-estimate", "line one\n\"quoted\" result"),
+        ];
+        let projected = crate::project_model_messages(&raw).unwrap();
+        assert_eq!(projected.len(), 3);
+        let separate = estimate_chat_context("system", &raw, &[]).unwrap();
+        let already_projected = estimate_chat_context("system", &projected, &[]).unwrap();
+        let wire_messages = std::iter::once(ChatMessage::new(ChatRole::System, "system"))
+            .chain(raw.iter().cloned())
+            .collect::<Vec<_>>();
+        let wire = estimate_wire_context(&wire_messages, &[]).unwrap();
+        assert_eq!(separate, already_projected);
+        assert_eq!(wire, separate);
+        assert_eq!(separate.message_count, 4);
+        assert_eq!(
+            separate,
+            estimate_wire_context(
+                &std::iter::once(ChatMessage::new(ChatRole::System, "system"))
+                    .chain(projected)
+                    .collect::<Vec<_>>(),
+                &[],
+            )
+            .unwrap()
+        );
+        assert!(
+            separate.input_tokens
+                > estimate_chat_context(
+                    "system",
+                    &[
+                        ChatMessage::assistant_with_tools(
+                            "checked",
+                            vec![ChatToolCall {
+                                id: "history-estimate".into(),
+                                name: "read".into(),
+                                input_json: "PRIVATE_PARAMETER".into(),
+                            }],
+                        ),
+                        ChatMessage::tool_result("history-estimate", "line one result"),
+                    ],
+                    &[],
+                )
+                .unwrap()
+                .input_tokens
+        );
+    }
+}

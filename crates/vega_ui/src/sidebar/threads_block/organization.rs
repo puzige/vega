@@ -14,6 +14,8 @@ mod reorder;
 pub(super) use reorder::ReorderItem;
 use reorder::ReorderState;
 mod render;
+#[cfg(test)]
+mod tests;
 
 pub(super) struct Organization {
     pub(super) snapshot: Option<SidebarOrganizationSnapshot>,

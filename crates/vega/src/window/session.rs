@@ -385,9 +385,16 @@ impl VegaWindow {
         }
         let worker_request = request.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        let worker_gate = self.model_selection_worker_gate.take();
         let spawned = std::thread::Builder::new()
             .name("vega-thread-model".into())
             .spawn(move || {
+                #[cfg(test)]
+                if let Some(gate) = worker_gate {
+                    gate.wait();
+                }
+
                 let outcome = (|| {
                     let config = vega_store::config::read_from(&config_path)
                         .map_err(|error| error.to_string())?;
@@ -473,6 +480,10 @@ impl VegaWindow {
     }
 
     pub(crate) fn composer_config_path(&self) -> Option<std::path::PathBuf> {
+        #[cfg(test)]
+        if let Some(path) = &self.model_selection_config_override {
+            return Some(path.clone());
+        }
         vega_store::paths::config_dir().map(|dir| dir.join("config.toml"))
     }
 
@@ -481,6 +492,9 @@ impl VegaWindow {
         replay_identity_changed: bool,
         cx: &mut Context<Self>,
     ) {
+        self.composer_prediction_config_generation =
+            self.composer_prediction_config_generation.wrapping_add(1);
+        self.cancel_composer_prediction(cx);
         if replay_identity_changed
             && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
         {
@@ -576,9 +590,15 @@ impl VegaWindow {
         self.model_catalog_loading = true;
         let generation = self.model_catalog_generation;
         let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        let worker_gate = self.model_catalog_worker_gate.take();
         let worker = std::thread::Builder::new()
             .name("vega-model-catalog".into())
             .spawn(move || {
+                #[cfg(test)]
+                if let Some(gate) = worker_gate {
+                    gate.wait();
+                }
                 let result = vega_store::config::read_from(&config_path)
                     .map(|config| {
                         let mut models = Vec::new();

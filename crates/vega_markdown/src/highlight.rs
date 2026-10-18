@@ -249,3 +249,169 @@ pub fn highlight(code: &str, language: &str) -> Option<Vec<HighlightSpan>> {
         context.highlight(code)
     })
 }
+
+#[cfg(test)]
+fn cached_grammar_count() -> usize {
+    CONTEXTS.with(|contexts| contexts.borrow().len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Asserts the module contract: sorted, non-overlapping, in-bounds,
+    /// char-aligned spans.
+    fn assert_span_invariants(code: &str, spans: &[HighlightSpan]) {
+        let mut previous_end = 0;
+        for span in spans {
+            assert!(span.start_byte >= previous_end, "overlapping: {spans:?}");
+            assert!(span.end_byte <= code.len(), "out of bounds: {spans:?}");
+            assert!(code.is_char_boundary(span.start_byte));
+            assert!(code.is_char_boundary(span.end_byte));
+            assert!(span.start_byte < span.end_byte);
+            previous_end = span.end_byte;
+        }
+    }
+
+    /// Collects the kinds of spans whose sliced content equals `text`.
+    fn kinds_for(code: &str, spans: &[HighlightSpan], text: &str) -> Vec<HighlightKind> {
+        spans
+            .iter()
+            .filter(|span| &code[span.start_byte..span.end_byte] == text)
+            .map(|span| span.kind)
+            .collect()
+    }
+
+    #[test]
+    fn rust_sample_highlights_keyword_comment_string_and_nested_escape() {
+        let code = "fn main() {\n    // greet\n    let s = \"a\\nb\";\n}\n";
+        let spans = highlight(code, "rust").expect("rust is supported");
+        assert_span_invariants(code, &spans);
+        // 关键字 / 注释 / 函数名
+        assert_eq!(kinds_for(code, &spans, "fn"), vec![HighlightKind::Keyword]);
+        assert_eq!(
+            kinds_for(code, &spans, "main"),
+            vec![HighlightKind::Function]
+        );
+        assert_eq!(kinds_for(code, &spans, "let"), vec![HighlightKind::Keyword]);
+        assert_eq!(
+            kinds_for(code, &spans, "// greet"),
+            vec![HighlightKind::Comment]
+        );
+        // 嵌套结构：字符串字面量含转义 \n —— rust 查询中 @escape 模式（L154）
+        // 晚于 @string（L147），later pattern wins，转义段独立成 Escape span
+        // （paint_runs 契约：嵌套更特异的 capture 保留自己的 span）
+        let literal = "\"a\\nb\"";
+        assert_eq!(kinds_for(code, &spans, "\\n"), vec![HighlightKind::Escape]);
+        // 转义段之外的字面量部分（含引号）仍归 String
+        assert_eq!(kinds_for(code, &spans, "\"a"), vec![HighlightKind::String]);
+        assert_eq!(kinds_for(code, &spans, "b\""), vec![HighlightKind::String]);
+        // 整段字面量被转义 span 切开，故无任何 span 覆盖完整 literal
+        assert!(
+            kinds_for(code, &spans, literal).is_empty(),
+            "escape must split the literal: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn python_sample_highlights_keyword_comment_function_and_string() {
+        let code = "def greet(name):\n    # say hi\n    return \"hi\"\n";
+        let spans = highlight(code, "python").expect("python is supported");
+        assert_span_invariants(code, &spans);
+        assert_eq!(kinds_for(code, &spans, "def"), vec![HighlightKind::Keyword]);
+        assert_eq!(
+            kinds_for(code, &spans, "greet"),
+            vec![HighlightKind::Function]
+        );
+        assert_eq!(
+            kinds_for(code, &spans, "# say hi"),
+            vec![HighlightKind::Comment]
+        );
+        assert_eq!(
+            kinds_for(code, &spans, "\"hi\""),
+            vec![HighlightKind::String]
+        );
+    }
+
+    #[test]
+    fn typescript_sample_highlights_keyword_type_and_string() {
+        let code = "interface User {\n  id: number;\n}\nconst tag = \"v1\";\n";
+        let spans = highlight(code, "typescript").expect("typescript is supported");
+        assert_span_invariants(code, &spans);
+        assert_eq!(
+            kinds_for(code, &spans, "interface"),
+            vec![HighlightKind::Keyword]
+        );
+        // 大写开头的标识符经 TS 查询 pattern 判为类型
+        assert_eq!(kinds_for(code, &spans, "User"), vec![HighlightKind::Type]);
+        assert_eq!(kinds_for(code, &spans, "number"), vec![HighlightKind::Type]);
+        assert_eq!(
+            kinds_for(code, &spans, "const"),
+            vec![HighlightKind::Keyword]
+        );
+        assert_eq!(
+            kinds_for(code, &spans, "\"v1\""),
+            vec![HighlightKind::String]
+        );
+    }
+
+    #[test]
+    fn javascript_sample_highlights_keyword_comment_and_function() {
+        let code = "function add(a, b) {\n  // sum\n  return a + b;\n}\n";
+        let spans = highlight(code, "javascript").expect("javascript is supported");
+        assert_span_invariants(code, &spans);
+        assert_eq!(
+            kinds_for(code, &spans, "function"),
+            vec![HighlightKind::Keyword]
+        );
+        assert_eq!(
+            kinds_for(code, &spans, "add"),
+            vec![HighlightKind::Function]
+        );
+        assert_eq!(
+            kinds_for(code, &spans, "// sum"),
+            vec![HighlightKind::Comment]
+        );
+        assert_eq!(
+            kinds_for(code, &spans, "return"),
+            vec![HighlightKind::Keyword]
+        );
+    }
+
+    #[test]
+    fn unknown_and_empty_language_tags_return_none() {
+        assert_eq!(highlight("let x = 1;", "cobol"), None);
+        assert_eq!(highlight("let x = 1;", ""), None);
+        assert_eq!(highlight("let x = 1;", "not-a-language"), None);
+    }
+
+    #[test]
+    fn empty_code_with_supported_language_returns_empty_span_list() {
+        assert_eq!(highlight("", "rust"), Some(Vec::new()));
+        assert_eq!(highlight("", "python"), Some(Vec::new()));
+        // 未知语言规则优先于空串规则
+        assert_eq!(highlight("", "cobol"), None);
+    }
+
+    #[test]
+    fn language_tags_match_case_insensitively_with_aliases() {
+        let code = "let x = 1;";
+        assert!(highlight(code, "Rust").is_some());
+        assert!(highlight(code, "RS").is_some());
+        assert!(highlight(code, "ts").is_some());
+        assert!(highlight(code, "tsx").is_some());
+        assert!(highlight(code, "py").is_some());
+        // 架构师裁决：markdown grammar 砍掉，其 fence 标签一律降级纯文本
+        assert_eq!(highlight(code, "markdown"), None);
+        assert_eq!(highlight(code, "MD"), None);
+    }
+
+    #[test]
+    fn parsers_are_cached_across_blocks_per_language() {
+        let code = "fn a() {}\n";
+        assert!(highlight(code, "rust").is_some());
+        assert!(highlight(code, "rust").is_some()); // 同语言复用缓存 Parser
+        assert!(highlight("def b():\n    pass\n", "python").is_some());
+        assert_eq!(cached_grammar_count(), 2);
+    }
+}

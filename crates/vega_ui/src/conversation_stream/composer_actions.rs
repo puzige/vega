@@ -55,6 +55,15 @@ pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
     matches!(mode, PermissionMode::Auto | PermissionMode::FullAccess)
 }
 
+pub(crate) fn permission_icon_selector(icon: crate::icons::Icon) -> &'static str {
+    match icon {
+        crate::icons::Icon::Hand => "composer-permission-status-icon-hand",
+        crate::icons::Icon::Shield => "composer-permission-status-icon-shield",
+        crate::icons::Icon::Warning => "composer-permission-status-icon-warning",
+        _ => "composer-permission-status-icon-unexpected",
+    }
+}
+
 pub(crate) const PERMISSION_PICKER_TITLE: &str = "操作应如何获得批准？";
 
 pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
@@ -101,6 +110,51 @@ impl ComposerActionRow {
             Self::FileReference => false,
             Self::Mode(mode) => thread.mode == mode,
             Self::Permission(mode) => thread.permission_mode == mode,
+        }
+    }
+
+    /// Stable selector for the production click and keyboard tests.
+    fn selector(self) -> &'static str {
+        match self {
+            Self::Goal => "composer-action-goal",
+            Self::Loop => "composer-action-loop",
+            Self::AddImages => "composer-action-images",
+            Self::CredentialReview => "composer-action-credentials",
+            Self::ComputerTakeover => "composer-action-computer-takeover",
+            Self::FileReference => "composer-action-file",
+            Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask",
+            Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan",
+            Self::Mode(ThreadMode::Execute) => "composer-action-mode-execute",
+            Self::Permission(PermissionMode::ReadOnly) => "composer-action-permission-readonly",
+            Self::Permission(PermissionMode::Confirm) => "composer-action-permission-confirm",
+            Self::Permission(PermissionMode::Auto) => "composer-action-permission-auto",
+            Self::Permission(PermissionMode::FullAccess) => {
+                "composer-action-permission-full_access"
+            }
+        }
+    }
+
+    /// Selector of the selection marker, which exists in the frame only while
+    /// this row holds the thread's authoritative value.
+    fn check_selector(self) -> &'static str {
+        match self {
+            Self::Goal => "composer-action-goal-check",
+            Self::Loop => "composer-action-loop-check",
+            Self::AddImages => "composer-action-images-check",
+            Self::CredentialReview => "composer-action-credentials-check",
+            Self::ComputerTakeover => "composer-action-computer-takeover-check",
+            Self::FileReference => "composer-action-file-check",
+            Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask-check",
+            Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan-check",
+            Self::Mode(ThreadMode::Execute) => "composer-action-mode-execute-check",
+            Self::Permission(PermissionMode::ReadOnly) => {
+                "composer-action-permission-readonly-check"
+            }
+            Self::Permission(PermissionMode::Confirm) => "composer-action-permission-confirm-check",
+            Self::Permission(PermissionMode::Auto) => "composer-action-permission-auto-check",
+            Self::Permission(PermissionMode::FullAccess) => {
+                "composer-action-permission-full_access-check"
+            }
         }
     }
 }
@@ -211,6 +265,7 @@ impl ConversationStream {
 
     /// Projects worker ownership, including preparation before a durable message exists.
     pub fn begin_composer_run(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_composer_prediction(cx);
         self.clear_live_context_accounting();
         self.actions.running = true;
         self.actions.stopping = false;
@@ -375,7 +430,6 @@ impl ConversationStream {
 
     fn move_composer_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.input.read(cx).is_composing() {
-            cx.propagate();
             return;
         }
         let mut controls = vec![
@@ -685,6 +739,7 @@ impl ConversationStream {
             children.push(
                 div()
                     .id(format!("composer-action-{generation}-{index}"))
+                    .debug_selector(move || row.selector().to_string())
                     .aria_label(label)
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .px_2()
@@ -727,7 +782,11 @@ impl ConversationStream {
                     // same x, with or without a check.
                     .child(
                         div()
-                            .when(selected, |marker| marker.child("✓"))
+                            .when(selected, |marker| {
+                                marker
+                                    .debug_selector(move || row.check_selector().to_string())
+                                    .child("✓")
+                            })
                             .w(px(Typography::SIDEBAR))
                             .flex_shrink_0(),
                     )
@@ -769,6 +828,7 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         div()
             .id("composer-stop")
+            .debug_selector(|| "composer-stop".into())
             .track_focus(&self.action_focus[1])
             .tab_stop(true)
             .aria_label(if self.actions.stopping {

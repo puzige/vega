@@ -618,6 +618,15 @@ impl Connection {
         ))
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_io<R, W>(reader: R, writer: W, child: Option<Box<dyn ChildControl>>) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        Self::from_parts(reader, writer, child, None)
+    }
+
     fn from_parts<R, W>(
         reader: R,
         writer: W,
@@ -910,6 +919,20 @@ impl Connection {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn wait_for_terminal_for_test(&self) -> Result<Error, Error> {
+        let mut terminal = self.terminal.lock().await;
+        loop {
+            if let Some(error) = terminal.borrow().clone() {
+                return Ok(error);
+            }
+            terminal
+                .changed()
+                .await
+                .map_err(|_| Error::ConnectionClosed)?;
+        }
+    }
+
     fn report_terminal(&self, error: Error) -> Result<Option<Event>, Error> {
         if self.error_reported.swap(true, Ordering::AcqRel) {
             Ok(None)
@@ -986,6 +1009,26 @@ impl Connection {
         if let Some(stderr) = tasks.stderr.take() {
             let _ = stderr.await;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attach_child(&self, child: Box<dyn ChildControl>) {
+        *lock(&self.inner.child) = Some(child);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn available_event_permits(&self) -> usize {
+        self.inner.event_budget.available_permits()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn available_writer_slots_for_test(&self) -> usize {
+        self.inner.writer.capacity()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drain_stderr<R: AsyncRead + Unpin>(reader: R) -> impl Future<Output = usize> {
+        drain_stderr(reader)
     }
 }
 

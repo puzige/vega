@@ -47,6 +47,9 @@ pub(crate) fn load(
 
 pub(crate) fn refresh(root: &Path, owner: &CatalogIdentity, now: u64) -> ModelCatalogProjection {
     refresh_with(root, owner, now, || {
+        if cfg!(test) {
+            return Err("模型目录网络测试替身不可用".into());
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

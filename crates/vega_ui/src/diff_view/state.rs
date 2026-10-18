@@ -22,8 +22,22 @@ impl DiffView {
         }
     }
 
+    pub fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
     pub fn generation(&self) -> Option<u64> {
         self.snapshot.as_ref().map(|snapshot| snapshot.generation)
+    }
+
+    pub fn snapshot_stats(&self) -> Option<WorkspaceStats> {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.stats.clone())
     }
 
     pub fn layout(&self) -> DiffLayout {
@@ -36,6 +50,18 @@ impl DiffView {
 
     pub fn row_count(&self) -> usize {
         self.rows.len()
+    }
+
+    pub fn is_refreshing(&self) -> bool {
+        self.refreshing
+    }
+
+    pub fn is_refresh_progress_visible(&self) -> bool {
+        self.show_refresh_progress
+    }
+
+    pub fn refresh_error(&self) -> Option<GitWorkspaceErrorCode> {
+        self.refresh_error
     }
 
     pub fn projection_error(&self) -> Option<GitWorkspaceErrorCode> {

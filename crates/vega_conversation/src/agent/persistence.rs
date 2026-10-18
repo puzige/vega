@@ -29,6 +29,30 @@ pub struct PersistenceActorConfig {
     pub(crate) owner_credential_reader: Option<vega_runtime::CredentialReader>,
     pub(crate) replay_registry: Option<super::ReplaySessionRegistry>,
     pub(crate) replay_route_fingerprint: Option<[u8; 32]>,
+    #[cfg(test)]
+    pub(crate) snapshot_writes: Option<Arc<AtomicUsize>>,
+    #[cfg(test)]
+    pub(crate) command_delay: Option<Duration>,
+    #[cfg(test)]
+    pub(crate) fail_event: Option<InjectedPersistenceFailure>,
+    #[cfg(test)]
+    pub(crate) preparation_delay: Option<Duration>,
+    #[cfg(test)]
+    pub(crate) preparation_query_only: bool,
+    #[cfg(test)]
+    pub(crate) actor_query_only: bool,
+    #[cfg(test)]
+    pub(crate) fail_start: bool,
+    #[cfg(test)]
+    pub(crate) checkpoint_root: Option<PathBuf>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InjectedPersistenceFailure {
+    Running,
+    Finished,
+    PanicRunning,
 }
 
 impl PersistenceActorConfig {
@@ -105,11 +129,48 @@ impl PersistenceActorConfig {
         self
     }
 
-    pub(crate) fn delay_command(&self) {}
+    pub(crate) fn delay_command(&self) {
+        #[cfg(test)]
+        if let Some(delay) = self.command_delay {
+            std::thread::sleep(delay);
+        }
+    }
 
-    pub(crate) fn record_snapshot(&self) {}
+    pub(crate) fn record_snapshot(&self) {
+        #[cfg(test)]
+        if let Some(writes) = &self.snapshot_writes {
+            writes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     pub(crate) fn check_event(&self, event: &RuntimeEvent) -> Result<(), VegaError> {
+        #[cfg(test)]
+        {
+            let matches_failure = matches!(
+                (self.fail_event, event),
+                (
+                    Some(InjectedPersistenceFailure::Running),
+                    RuntimeEvent::ToolCallRunning { .. }
+                ) | (
+                    Some(InjectedPersistenceFailure::Finished),
+                    RuntimeEvent::ToolCallFinished(_)
+                )
+            );
+            if matches_failure {
+                return Err(persistence_actor_error(
+                    "injected critical persistence failure",
+                ));
+            }
+            if matches!(
+                (self.fail_event, event),
+                (
+                    Some(InjectedPersistenceFailure::PanicRunning),
+                    RuntimeEvent::ToolCallRunning { .. }
+                )
+            ) {
+                panic!("injected persistence actor panic");
+            }
+        }
         let _ = event;
         Ok(())
     }
@@ -167,6 +228,19 @@ impl PersistenceActor {
                     return Err(VegaError::Store(error));
                 }
             };
+            #[cfg(test)]
+            if config.actor_query_only
+                && let Err(error) = store.conn().execute_batch("PRAGMA query_only = ON")
+            {
+                let _ = ready.send(Err(error.to_string()));
+                return Err(VegaError::Store(error));
+            }
+            #[cfg(test)]
+            if config.fail_start {
+                let error = persistence_actor_error("injected startup failure");
+                let _ = ready.send(Err(error.to_string()));
+                return Err(error);
+            }
             let _ = ready.send(Ok(()));
             let mut next_tool_seq = next_tool_seq;
             let mut message_id = message_id;

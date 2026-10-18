@@ -585,3 +585,68 @@ pub fn terminal_indexed_color(index: u8) -> Rgba {
     };
     rgba((value << 8) | 255)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dark_tokens_match_ui_spec_table() {
+        // Spot-check a few Dark column entries from the UI spec §2 table.
+        assert_eq!(u32::from(DARK.bg_base), 0x202020FF);
+        assert_eq!(u32::from(DARK.text_primary), 0xEDEDEDFF);
+        assert_eq!(u32::from(DARK.code_bg), 0x262626FF);
+        assert_eq!(u32::from(DARK.bg_subtle), 0x262626FF);
+        assert_eq!(u32::from(DARK.bg_hover), 0x282828FF);
+        assert_eq!(u32::from(DARK.bg_active), 0x303030FF);
+    }
+
+    #[test]
+    fn light_and_dark_palettes_differ_on_key_tokens() {
+        assert_ne!(u32::from(LIGHT.bg_base), u32::from(DARK.bg_base));
+        assert_ne!(u32::from(LIGHT.text_primary), u32::from(DARK.text_primary));
+        assert_ne!(
+            u32::from(LIGHT.brand_primary),
+            u32::from(DARK.brand_primary)
+        );
+        assert_ne!(u32::from(LIGHT.bg_active), u32::from(DARK.bg_active));
+    }
+
+    #[test]
+    fn appearance_toggle_round_trips() {
+        assert_eq!(Appearance::Light.toggle(), Appearance::Dark);
+        assert_eq!(Appearance::Dark.toggle(), Appearance::Light);
+        assert_eq!(Appearance::Light.toggle().toggle(), Appearance::Light);
+    }
+
+    #[test]
+    fn theme_toggle_swaps_palette_in_place() {
+        let mut theme = Theme::light();
+        theme.toggle();
+        assert_eq!(theme.appearance, Appearance::Dark);
+        assert_eq!(u32::from(theme.colors.bg_base), u32::from(DARK.bg_base));
+        assert_eq!(
+            u32::from(theme.colors.text_primary),
+            u32::from(DARK.text_primary)
+        );
+
+        theme.toggle();
+        assert_eq!(theme.appearance, Appearance::Light);
+        assert_eq!(u32::from(theme.colors.bg_base), u32::from(LIGHT.bg_base));
+        assert_eq!(
+            u32::from(theme.colors.text_primary),
+            u32::from(LIGHT.text_primary)
+        );
+    }
+
+    #[test]
+    fn theme_constructors_match_palettes() {
+        let light = Theme::light();
+        assert_eq!(light.appearance, Appearance::Light);
+        assert_eq!(u32::from(light.colors.bg_base), u32::from(LIGHT.bg_base));
+
+        let dark = Theme::dark();
+        assert_eq!(dark.appearance, Appearance::Dark);
+        assert_eq!(u32::from(dark.colors.bg_base), u32::from(DARK.bg_base));
+    }
+}

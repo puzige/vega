@@ -2235,6 +2235,29 @@ fn summary_collection_failure(
     }
 }
 
+#[cfg(test)]
+async fn collect_summary_with_timeout(
+    provider: &dyn Provider,
+    request: ChatRequest,
+    pricing_catalog: Option<&vega_token::PricingCatalog>,
+    cancel: CancellationToken,
+    timeout: Duration,
+) -> Result<(String, Option<ContextCompactionUsage>), ContextCompactionFailure> {
+    match collect_summary_with_timeout_diagnostics(
+        provider,
+        request,
+        pricing_catalog,
+        cancel,
+        SUMMARY_IDLE_TIMEOUT,
+        tokio::time::Instant::now() + timeout,
+    )
+    .await
+    {
+        Ok(collection) => Ok((collection.summary, collection.metrics.usage)),
+        Err(failure) => Err(*failure.failure),
+    }
+}
+
 async fn collect_summary_with_timeout_diagnostics(
     provider: &dyn Provider,
     request: ChatRequest,
@@ -2534,4 +2557,861 @@ fn normalize_summary(text: &str) -> Result<String, ContextRuntimeError> {
         return Err(ContextRuntimeError::InvalidSummary);
     }
     Ok(format!("Summary:\n{summary}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::future::pending;
+    use vega_runtime::{MockProvider, ScriptStep};
+    use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
+
+    #[tokio::test]
+    async fn summary_stage_records_overflow_bytes_without_persisting_summary_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("vega.db");
+        let store = Store::open(&database_path).unwrap();
+        store.migrate().unwrap();
+        vega_store::threads::create_standalone(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "summary-thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock-model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let writer = std::sync::Arc::new(super::super::diagnostics::DiagnosticsWriter::start(
+            database_path.clone(),
+        ));
+        let diagnostics = super::super::diagnostics::DiagnosticsContext {
+            writer,
+            thread_id: "summary-thread".into(),
+            run_id: "summary-run".into(),
+            root_attempt_id: "root-attempt".into(),
+        };
+        let accepted_text = "SUMMARY_ACCEPTED_BODY_CANARY";
+        let overflow_text = format!(
+            "SUMMARY_OVERFLOW_BODY_CANARY{}",
+            "x".repeat(SUMMARY_OUTPUT_LIMIT)
+        );
+        let observed_visible_bytes = accepted_text.len() + overflow_text.len();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::Usage {
+                input: 7,
+                output: 4,
+                cache_read: Some(1),
+                cache_write: Some(0),
+            },
+            ProviderEvent::TextDelta(accepted_text.into()),
+            ProviderEvent::TextDelta(overflow_text),
+            ProviderEvent::Done {
+                stop_reason: StopReason::Length,
+            },
+        ])]);
+        let hook = ConversationCompactionHook::new(
+            &provider,
+            database_path,
+            "summary-thread",
+            "mock-model",
+            None,
+            None,
+        )
+        .with_diagnostics(diagnostics);
+        let mut usages = Vec::new();
+        let mut usage_complete = true;
+        let result = hook
+            .run_summary_stage(
+                ChatRequest::default(),
+                1,
+                &mut usages,
+                &mut usage_complete,
+                &CancellationToken::new(),
+                tokio::time::Instant::now() + SUMMARY_OPERATION_TIMEOUT,
+            )
+            .await;
+        assert!(matches!(
+            &result,
+            Err(failure)
+                if matches!(failure.error.as_ref(), VegaError::Context(ContextRuntimeError::SummaryOutputTruncated { .. }))
+        ));
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            events = vega_store::run_diagnostics::read_by_run(
+                store.conn(),
+                "summary-thread",
+                "summary-run",
+            )
+            .unwrap();
+            if events.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let events = events;
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].event.state,
+            vega_store::run_diagnostics::DiagnosticState::Started
+        );
+        assert_eq!(
+            events[1].event.state,
+            vega_store::run_diagnostics::DiagnosticState::Failed
+        );
+        assert_eq!(
+            events[1].event.failure_code,
+            Some(vega_store::run_diagnostics::DiagnosticFailureCode::SummaryTruncated)
+        );
+        assert_eq!(
+            events[1].event.metrics.visible_output_bytes,
+            Some(observed_visible_bytes as u64)
+        );
+        assert_eq!(events[1].event.metrics.output_tokens, Some(4));
+        let export =
+            vega_store::run_diagnostics::export_run(store.conn(), "summary-thread", "summary-run")
+                .unwrap();
+        assert!(!export.contains(accepted_text));
+        assert!(!export.contains("SUMMARY_OVERFLOW_BODY_CANARY"));
+    }
+
+    #[tokio::test]
+    async fn summary_stage_persists_timeout_before_provider_call() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("vega.db");
+        let store = Store::open(&database_path).unwrap();
+        store.migrate().unwrap();
+        vega_store::threads::create_standalone(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "timeout-thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock-model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let diagnostics = super::super::diagnostics::DiagnosticsContext {
+            writer: std::sync::Arc::new(super::super::diagnostics::DiagnosticsWriter::start(
+                database_path.clone(),
+            )),
+            thread_id: "timeout-thread".into(),
+            run_id: "timeout-run".into(),
+            root_attempt_id: "timeout-root".into(),
+        };
+        let provider = MockProvider::new(Vec::<ScriptStep>::new());
+        let hook = ConversationCompactionHook::new(
+            &provider,
+            database_path,
+            "timeout-thread",
+            "mock-model",
+            None,
+            None,
+        )
+        .with_diagnostics(diagnostics);
+        let mut usages = Vec::new();
+        let mut usage_complete = true;
+        let result = hook
+            .run_summary_stage(
+                ChatRequest::default(),
+                1,
+                &mut usages,
+                &mut usage_complete,
+                &CancellationToken::new(),
+                tokio::time::Instant::now(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(ref failure)
+                if matches!(failure.error.as_ref(), VegaError::Context(ContextRuntimeError::SummaryTimedOut))
+        ));
+        assert!(provider.requests().is_empty());
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            events = vega_store::run_diagnostics::read_by_run(
+                store.conn(),
+                "timeout-thread",
+                "timeout-run",
+            )
+            .unwrap();
+            if events.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[1].event.failure_code,
+            Some(vega_store::run_diagnostics::DiagnosticFailureCode::SummaryTimeout)
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_input_preflight_failure_is_classified_before_provider_call() {
+        const SOURCE_CANARY: &str = "SUMMARY_PREFLIGHT_SOURCE_CANARY";
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("vega.db");
+        let store = Store::open(&database_path).unwrap();
+        store.migrate().unwrap();
+        vega_store::threads::create_standalone(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "preflight-thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock-model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        for (id, seq, role, content) in [
+            ("old-user", 1, "user", "old question".to_string()),
+            (
+                "old-assistant",
+                2,
+                "assistant",
+                format!("{SOURCE_CANARY} {}", "x".repeat(12_000)),
+            ),
+            ("new-user", 3, "user", "latest question".to_string()),
+        ] {
+            vega_store::messages::insert(
+                store.conn(),
+                &vega_store::messages::MessageRow {
+                    id: id.into(),
+                    thread_id: "preflight-thread".into(),
+                    seq,
+                    role: role.into(),
+                    kind: "text".into(),
+                    content,
+                    status: "done".into(),
+                    created_at: seq,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+        }
+        let provider = MockProvider::new(Vec::<ScriptStep>::new());
+        let result = compact_thread_manually(
+            &store,
+            &provider,
+            "preflight-thread",
+            "mock-model",
+            "system",
+            Vec::new(),
+            ContextBudget::new(2_000, 100, false).unwrap(),
+            CancellationToken::new(),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(ref failure)
+                    if matches!(failure.error.as_ref(), VegaError::Context(ContextRuntimeError::SummaryInputOverLimit { .. }))
+            ),
+            "unexpected result: {:?}",
+            result.as_ref().err().map(|failure| &failure.error)
+        );
+        assert!(provider.requests().is_empty());
+        let events =
+            vega_store::run_diagnostics::read_by_thread(store.conn(), "preflight-thread").unwrap();
+        assert!(events.iter().any(|event| {
+            event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::Run
+                && event.event.state == vega_store::run_diagnostics::DiagnosticState::Failed
+        }));
+        let summary_failure = events
+            .iter()
+            .find(|event| {
+                event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::ContextSummary
+                    && event.event.state == vega_store::run_diagnostics::DiagnosticState::Failed
+            })
+            .expect("pre-provider summary failure should be persisted");
+        assert_eq!(
+            summary_failure.event.failure_code,
+            Some(vega_store::run_diagnostics::DiagnosticFailureCode::ContextOverLimit)
+        );
+        let export = vega_store::run_diagnostics::export_run(
+            store.conn(),
+            "preflight-thread",
+            &summary_failure.event.run_id,
+        )
+        .unwrap();
+        assert!(!export.contains(SOURCE_CANARY));
+    }
+
+    #[tokio::test]
+    async fn summary_empty_and_malformed_framing_have_distinct_failures() {
+        let cases = [
+            (
+                vec![
+                    ProviderEvent::TextDelta("  \n".into()),
+                    ProviderEvent::Done {
+                        stop_reason: StopReason::End,
+                    },
+                ],
+                ContextRuntimeError::SummaryEmpty,
+            ),
+            (
+                vec![
+                    ProviderEvent::TextDelta("<summary>unfinished".into()),
+                    ProviderEvent::Done {
+                        stop_reason: StopReason::End,
+                    },
+                ],
+                ContextRuntimeError::SummaryFormatInvalid,
+            ),
+        ];
+        for (events, expected) in cases {
+            let provider = MockProvider::new(vec![ScriptStep::events(events)]);
+            let result = collect_summary_with_timeout(
+                &provider,
+                ChatRequest::default(),
+                None,
+                CancellationToken::new(),
+                SUMMARY_OPERATION_TIMEOUT,
+            )
+            .await;
+            assert!(matches!(
+                result,
+                Err(ref failure) if matches!(failure.error.as_ref(), VegaError::Context(error) if *error == expected)
+            ));
+        }
+    }
+
+    #[test]
+    fn compaction_failure_summary_errors_keep_their_safe_diagnostic_classes() {
+        let cases = [
+            (ContextRuntimeError::SummaryTimedOut, Code::SummaryTimeout),
+            (
+                ContextRuntimeError::SummaryOutputTruncated {
+                    visible_bytes: 9,
+                    thinking_bytes: 2,
+                    output_tokens: Some(5),
+                },
+                Code::SummaryTruncated,
+            ),
+            (ContextRuntimeError::SummaryEmpty, Code::SummaryEmpty),
+            (
+                ContextRuntimeError::SummaryFormatInvalid,
+                Code::SummaryFormatInvalid,
+            ),
+            (
+                ContextRuntimeError::SummaryProjectionInvalid,
+                Code::SummaryProjectionInvalid,
+            ),
+            (
+                ContextRuntimeError::SourceChanged,
+                Code::SummarySourceChanged,
+            ),
+            (
+                ContextRuntimeError::SummaryInputOverLimit {
+                    estimated_tokens: 901,
+                    input_budget: 900,
+                },
+                Code::ContextOverLimit,
+            ),
+            (
+                ContextRuntimeError::ResultOverLimit {
+                    estimated_tokens: 901,
+                    target_tokens: 540,
+                },
+                Code::ContextOverLimit,
+            ),
+            (
+                ContextRuntimeError::InvalidProjection,
+                Code::SummaryProjectionInvalid,
+            ),
+            (
+                ContextRuntimeError::SystemMessageInResult,
+                Code::SummaryProjectionInvalid,
+            ),
+            (
+                ContextRuntimeError::SourceTooLarge,
+                Code::SummarySourceTooLarge,
+            ),
+            (
+                ContextRuntimeError::AggregateTooLarge,
+                Code::SummaryAggregateTooLarge,
+            ),
+            (
+                ContextRuntimeError::ImagesUnsupported,
+                Code::SummaryImagesUnsupported,
+            ),
+            (
+                ContextRuntimeError::NoCompactablePrefix,
+                Code::SummaryNoCompactablePrefix,
+            ),
+            (
+                ContextRuntimeError::AlreadyAttempted,
+                Code::SummaryAlreadyAttempted,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                crate::agent::diagnostics::failure_code(&VegaError::Context(error)),
+                Some(expected)
+            );
+        }
+        for (kind, expected) in [
+            (vega_runtime::ProviderFailureKind::Http, Code::ProviderHttp),
+            (
+                vega_runtime::ProviderFailureKind::Transport,
+                Code::ProviderTransportOrStream,
+            ),
+            (
+                vega_runtime::ProviderFailureKind::Protocol,
+                Code::ProviderProtocol,
+            ),
+            (
+                vega_runtime::ProviderFailureKind::Rejected,
+                Code::ProviderRejected,
+            ),
+        ] {
+            let error = VegaError::ProviderDiagnostic {
+                kind,
+                status: None,
+                message: "diagnostic classification canary".into(),
+                retryable: false,
+                retry_count: None,
+                request_id: None,
+            };
+            assert_eq!(
+                crate::agent::diagnostics::failure_code(&error),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn summary_stream_error_keeps_prior_response_metadata() {
+        let mut metrics = SummaryDiagnosticMetrics {
+            provider: vega_runtime::ProviderResponseMetadata {
+                http_status: Some(200),
+                request_id: Some("summary-resp-opaque".into()),
+                retry_count: Some(1),
+            },
+            ..SummaryDiagnosticMetrics::default()
+        };
+        let error = VegaError::ProviderDiagnostic {
+            kind: vega_runtime::ProviderFailureKind::Protocol,
+            status: None,
+            message: "summary parser canary".into(),
+            retryable: false,
+            retry_count: None,
+            request_id: None,
+        };
+        set_summary_provider_error(&mut metrics, &error);
+        assert_eq!(metrics.provider.http_status, Some(200));
+        assert_eq!(
+            metrics.provider.request_id.as_deref(),
+            Some("summary-resp-opaque")
+        );
+        assert_eq!(metrics.provider.retry_count, Some(1));
+    }
+
+    fn assistant(calls: &[&str]) -> ChatMessage {
+        ChatMessage::assistant_with_tools(
+            "text",
+            calls
+                .iter()
+                .map(|id| vega_runtime::ChatToolCall {
+                    id: (*id).to_string(),
+                    name: "read".to_string(),
+                    input_json: "{}".to_string(),
+                })
+                .collect(),
+        )
+    }
+
+    fn result(id: &str) -> ChatMessage {
+        ChatMessage::tool_result(id, "ok")
+    }
+
+    #[test]
+    fn complete_projection_accepts_single_and_multi_call_groups() {
+        assert!(validate_complete_projection(&[assistant(&["one"]), result("one")]).is_ok());
+        assert!(
+            validate_complete_projection(&[
+                assistant(&["one", "two"]),
+                result("one"),
+                result("two"),
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn complete_projection_rejects_orphan_duplicate_and_missing_results() {
+        assert!(validate_complete_projection(&[result("orphan")]).is_err());
+        assert!(
+            validate_complete_projection(&[assistant(&["one"]), result("one"), result("one"),])
+                .is_err()
+        );
+        assert!(validate_complete_projection(&[assistant(&["one"])]).is_err());
+        assert!(
+            validate_complete_projection(&[
+                assistant(&["one", "two"]),
+                result("one"),
+                result("wrong"),
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_complete_projection(&[
+                assistant(&["one"]),
+                ChatMessage::new(ChatRole::User, "interleaved"),
+                result("one"),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn summary_prompt_prioritizes_continuation_state_over_incidental_tool_facts() {
+        assert!(SUMMARY_SYSTEM_PROMPT.contains("continuation checkpoint"));
+        for requirement in [
+            "user requirements",
+            "user corrections",
+            "exact paths",
+            "latest task",
+            "Pending Tasks",
+        ] {
+            assert!(SUMMARY_INSTRUCTION.contains(requirement));
+        }
+        assert!(!SUMMARY_INSTRUCTION.contains("2048"));
+    }
+
+    #[test]
+    fn summary_reasoning_disables_only_an_explicitly_supported_wire() {
+        let profile = FrozenReasoning {
+            provider: "cpa".to_string(),
+            model: "deepseek-v4.1-flash".to_string(),
+            protocol: vega_runtime::ReasoningProtocol::OpenAiChatCompletions,
+            replay_policy: vega_runtime::ReasoningReplayPolicy::StandardChat,
+            choice: ReasoningChoice::Effort("max".to_string()),
+            supports_disabled: true,
+            disabled_wire: Some(vega_runtime::ReasoningDisabledWire::ReasoningEffortNone),
+            declared_efforts: vec!["max".to_string()],
+        };
+        let summary = summary_reasoning(Some(&profile)).expect("profile is present");
+        assert_eq!(summary.choice, ReasoningChoice::Disabled);
+        assert_eq!(summary.model, profile.model);
+
+        let unsupported = FrozenReasoning {
+            supports_disabled: false,
+            disabled_wire: None,
+            ..profile.clone()
+        };
+        assert_eq!(summary_reasoning(Some(&unsupported)), Some(unsupported));
+
+        let unknown = FrozenReasoning::unknown("custom", "model");
+        assert_eq!(summary_reasoning(Some(&unknown)), Some(unknown));
+    }
+
+    struct PendingProvider;
+
+    impl Provider for PendingProvider {
+        fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            _cancel: CancellationToken,
+        ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>>
+        {
+            Box::pin(pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_deadline_covers_stream_acquisition() {
+        let result = collect_summary_with_timeout(
+            &PendingProvider,
+            ChatRequest {
+                model: "mock-model".to_string(),
+                ..ChatRequest::default()
+            },
+            None,
+            CancellationToken::new(),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ref failure)
+                if matches!(
+                    failure.error.as_ref(),
+                    VegaError::Context(ContextRuntimeError::SummaryTimedOut)
+                ) && failure.usages.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn summary_rejects_text_after_done_and_preserves_usage() {
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("valid summary".to_string()),
+            ProviderEvent::Usage {
+                input: 7,
+                output: 3,
+                cache_read: Some(0),
+                cache_write: Some(0),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+            ProviderEvent::TextDelta("late text".to_string()),
+        ])]);
+        let result = collect_summary_with_timeout(
+            &provider,
+            ChatRequest {
+                model: "mock-model".to_string(),
+                ..ChatRequest::default()
+            },
+            None,
+            CancellationToken::new(),
+            SUMMARY_OPERATION_TIMEOUT,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ref failure)
+                if matches!(
+                    failure.error.as_ref(),
+                    VegaError::Context(ContextRuntimeError::SummaryFormatInvalid)
+                ) && matches!(
+                    failure.usages.first(),
+                    Some(usage) if usage.usage.input == 7 && usage.usage.output == 3
+                )
+        ));
+    }
+
+    #[tokio::test]
+    async fn summary_rejects_output_over_bound_and_preserves_usage() {
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::Usage {
+                input: 7,
+                output: 1_025,
+                cache_read: Some(0),
+                cache_write: Some(0),
+            },
+            ProviderEvent::TextDelta("x".repeat(SUMMARY_OUTPUT_LIMIT + 1)),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]);
+        let result = collect_summary_with_timeout(
+            &provider,
+            ChatRequest {
+                model: "mock-model".to_string(),
+                ..ChatRequest::default()
+            },
+            None,
+            CancellationToken::new(),
+            SUMMARY_OPERATION_TIMEOUT,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ref failure)
+                if matches!(
+                    failure.error.as_ref(),
+                    VegaError::Context(ContextRuntimeError::SummaryOutputTruncated { .. })
+                ) && matches!(
+                    failure.usages.first(),
+                    Some(usage) if usage.usage.input == 7 && usage.usage.output == 1_025
+                )
+        ));
+    }
+
+    struct StalledSummaryProvider {
+        token: std::sync::Mutex<Option<CancellationToken>>,
+        acquired: bool,
+    }
+    impl Provider for StalledSummaryProvider {
+        fn chat_stream(
+            &self,
+            _request: ChatRequest,
+            cancel: CancellationToken,
+        ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>>
+        {
+            *self.token.lock().unwrap() = Some(cancel);
+            let acquired = self.acquired;
+            Box::pin(async move {
+                if !acquired {
+                    return pending().await;
+                }
+                Ok(Box::pin(
+                    futures::stream::once(async {
+                        Ok(ProviderEvent::Usage {
+                            input: 42,
+                            output: 9,
+                            cache_read: Some(0),
+                            cache_write: Some(0),
+                        })
+                    })
+                    .chain(futures::stream::pending()),
+                ) as vega_runtime::EventStream)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_parity_timeout_cancels_child_and_preserves_observed_usage() {
+        for acquired in [false, true] {
+            let provider = StalledSummaryProvider {
+                token: std::sync::Mutex::new(None),
+                acquired,
+            };
+            let parent = CancellationToken::new();
+            let failure = collect_summary_with_timeout(
+                &provider,
+                ChatRequest::default(),
+                None,
+                parent.clone(),
+                Duration::from_millis(10),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                failure.error.as_ref(),
+                VegaError::Context(ContextRuntimeError::SummaryTimedOut)
+            ));
+            assert!(
+                provider
+                    .token
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .is_cancelled()
+            );
+            assert!(!parent.is_cancelled());
+            assert_eq!(failure.usages.len(), usize::from(acquired));
+            if acquired {
+                assert_eq!(failure.usages[0].usage.output, 9);
+            }
+        }
+    }
+
+    #[test]
+    fn claude_input_overflow_recognizer_is_narrow_and_content_safe() {
+        for text in [
+            r#"{"error":{"code":"context_length_exceeded","requested_tokens":3000,"max_context_tokens":2000}}"#,
+            "chat/completions request failed (HTTP 400): {\"error\":{\"code\":\"prompt_too_long\"}}",
+            "prompt is too long: 3000 tokens",
+            "This model's maximum context length is 2000 tokens",
+        ] {
+            let error = VegaError::Provider {
+                status: Some(400),
+                message: text.into(),
+                retryable: false,
+            };
+            assert!(classify_summary_input_overflow(&error).is_some());
+        }
+        for text in [
+            "user wrote prompt too long",
+            r#"{"error":{"code":"rate_limit_exceeded"},"prompt":"prompt too long"}"#,
+            "maximum output tokens exceeded",
+        ] {
+            let error = VegaError::Provider {
+                status: Some(400),
+                message: text.into(),
+                retryable: false,
+            };
+            assert!(classify_summary_input_overflow(&error).is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_summary_requests_reuse_operation_deadline_and_usage() {
+        let first = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("complete".into()),
+            ProviderEvent::Usage {
+                input: 10,
+                output: 3,
+                cache_read: Some(0),
+                cache_write: Some(0),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]);
+        let stalled = StalledSummaryProvider {
+            token: std::sync::Mutex::new(None),
+            acquired: true,
+        };
+        let first_hook =
+            ConversationCompactionHook::new(&first, PathBuf::new(), "owned", "model", None, None);
+        let next_hook =
+            ConversationCompactionHook::new(&stalled, PathBuf::new(), "owned", "model", None, None);
+        let parent = CancellationToken::new();
+        let mut usages = Vec::new();
+        let mut complete = true;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(40);
+        first_hook
+            .run_summary_stage(
+                ChatRequest::default(),
+                1,
+                &mut usages,
+                &mut complete,
+                &parent,
+                deadline,
+            )
+            .await
+            .unwrap();
+        let failure = tokio::time::timeout(
+            Duration::from_millis(250),
+            next_hook.run_summary_stage(
+                ChatRequest::default(),
+                2,
+                &mut usages,
+                &mut complete,
+                &parent,
+                deadline,
+            ),
+        )
+        .await
+        .expect("second request cannot restart the operation deadline")
+        .unwrap_err();
+        assert!(matches!(
+            failure.error.as_ref(),
+            VegaError::Context(ContextRuntimeError::SummaryTimedOut)
+        ));
+        assert_eq!(failure.usages.len(), 2);
+        assert_eq!(failure.usages[0].usage.output, 3);
+        assert_eq!(failure.usages[1].usage.output, 9);
+        assert!(
+            stalled
+                .token
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_cancelled()
+        );
+        assert!(!parent.is_cancelled());
+    }
 }

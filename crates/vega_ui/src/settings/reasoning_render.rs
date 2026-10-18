@@ -55,11 +55,14 @@ impl SettingsView {
                     ));
                 }
                 if let Some(error) = error {
-                    column = column.child(settings_status(
-                        reasoning_settings_error_label(*error),
-                        colors.danger,
-                        colors,
-                    ));
+                    column = column.child(
+                        settings_status(
+                            reasoning_settings_error_label(*error),
+                            colors.danger,
+                            colors,
+                        )
+                        .debug_selector(|| "reasoning-save-error".into()),
+                    );
                 }
                 let profiles = profiles.clone();
                 let selected = self.model_settings.clone();
@@ -181,6 +184,7 @@ impl SettingsView {
                 ]
             };
             card = card.child(settings_field(
+                format!("reasoning-advanced-templates-{index}"),
                 "协议模板",
                 None,
                 settings_actions()
@@ -204,6 +208,7 @@ impl SettingsView {
             ));
             if profile.protocol != ReasoningProtocol::ResponsesApi {
                 card = card.child(settings_field(
+                    format!("reasoning-protocol-{index}"),
                     "协议",
                     None,
                     settings_actions().children(
@@ -231,6 +236,7 @@ impl SettingsView {
                 ));
                 if profile.protocol != ReasoningProtocol::Unknown {
                     card = card.child(settings_field(
+                        format!("reasoning-support-{index}"),
                         "支持范围",
                         None,
                         settings_actions().children(
@@ -264,6 +270,7 @@ impl SettingsView {
                     )
                 {
                     card = card.child(settings_field(
+                        format!("reasoning-disabled-{index}"),
                         "允许关闭思考",
                         None,
                         settings_switch(
@@ -315,6 +322,7 @@ impl SettingsView {
                 settings_action_chrome(colors)
                     .id(format!("reasoning-effort-{index}-{effort}"))
                     .interactive(colors, enabled, selected)
+                    .debug_selector(move || format!("reasoning-effort-{index}-{effort}"))
                     .border_color(gpui_kit::transparent_black())
                     .when_some(focus, |button, focus| button.track_focus(&focus))
                     .focus_visible(move |style| style.border_color(colors.accent))
@@ -342,8 +350,15 @@ impl SettingsView {
                     }),
             );
         }
-        card = card.child(settings_field("允许档位", None, effort_row, colors));
         card = card.child(settings_field(
+            format!("reasoning-efforts-{index}"),
+            "允许档位",
+            None,
+            effort_row,
+            colors,
+        ));
+        card = card.child(settings_field(
+            format!("reasoning-preference-{index}"),
             "当前偏好",
             None,
             settings_actions().children(reasoning_choices(&profile).into_iter().enumerate().map(
@@ -407,10 +422,12 @@ fn reasoning_option_with_focus(
     focus: Option<FocusHandle>,
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let selector = id.clone();
     let listener = std::rc::Rc::new(listener);
     let keyboard = listener.clone();
     settings_action_chrome(colors)
         .id(id)
+        .debug_selector(move || selector.clone())
         .interactive(colors, true, selected)
         .focusable()
         .tab_stop(true)

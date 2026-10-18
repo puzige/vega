@@ -1,7 +1,15 @@
 use super::*;
 
-fn loading_indicator(colors: ThemeColors) -> AnyElement {
+fn loading_indicator(preview: bool, colors: ThemeColors) -> AnyElement {
     div()
+        .debug_selector(move || {
+            if preview {
+                "screenshot-preview-loading"
+            } else {
+                "screenshot-loading"
+            }
+            .into()
+        })
         .size_full()
         .flex()
         .items_center()
@@ -15,15 +23,24 @@ fn loading_indicator(colors: ThemeColors) -> AnyElement {
 fn screenshot_image(
     image: Arc<gpui_kit::Image>,
     dimensions: (u32, u32),
+    preview: bool,
     colors: ThemeColors,
 ) -> gpui_kit::Img {
     gpui_kit::img(image)
+        .debug_selector(move || {
+            if preview {
+                "screenshot-preview-pixels"
+            } else {
+                "screenshot-pixels"
+            }
+            .into()
+        })
         .size_full()
         .max_w(px(dimensions.0 as f32))
         .max_h(px(dimensions.1 as f32))
         .object_fit(gpui_kit::ObjectFit::Contain)
         .rounded(px(Layout::SCREENSHOT_RADIUS - Layout::SCREENSHOT_BORDER))
-        .with_loading(move || loading_indicator(colors))
+        .with_loading(move || loading_indicator(preview, colors))
 }
 
 pub(crate) struct ScreenshotCard {
@@ -55,7 +72,7 @@ impl ScreenshotCard {
         });
     }
 
-    fn image_content(&self, cx: &App) -> AnyElement {
+    fn image_content(&self, preview: bool, cx: &App) -> AnyElement {
         let colors = theme(cx).colors;
         div()
             .absolute()
@@ -67,10 +84,11 @@ impl ScreenshotCard {
                 Some(image) => screenshot_image(
                     image.clone(),
                     (self.image.image.width(), self.image.image.height()),
+                    preview,
                     colors,
                 )
                 .into_any_element(),
-                None => loading_indicator(colors),
+                None => loading_indicator(preview, colors),
             })
             .into_any_element()
     }
@@ -81,6 +99,7 @@ impl Render for ScreenshotCard {
         let colors = theme(cx).colors;
         let (width, height) = self.thumbnail_size();
         div()
+            .debug_selector(|| "assistant-screenshot".into())
             .w(px(width + Layout::SCREENSHOT_BORDER * 2.0))
             .max_w_full()
             .flex()
@@ -93,6 +112,7 @@ impl Render for ScreenshotCard {
             .child(
                 div()
                     .id("screenshot-expand")
+                    .debug_selector(|| "screenshot-expand".into())
                     .aria_label("查看截图大图")
                     .track_focus(&self.image.view.read(cx).thumbnail_focus())
                     .tab_stop(true)
@@ -113,7 +133,7 @@ impl Render for ScreenshotCard {
                         }),
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.open_preview(window, cx)))
-                    .child(self.image_content(cx))
+                    .child(self.image_content(false, cx))
                     .child(crate::image_preview::ImagePreview::thumbnail_tracker(
                         &self.image.view,
                     )),

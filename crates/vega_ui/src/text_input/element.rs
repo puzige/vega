@@ -77,7 +77,9 @@ impl Element for TextElement {
         // Never paint the real value of a masked field.
         let (display_text, text_color) = if input.content.is_empty() {
             (
-                input.placeholder.clone(),
+                input
+                    .prediction_text()
+                    .map_or_else(|| input.placeholder.clone(), SharedString::from),
                 theme(cx).colors.text_tertiary.into(),
             )
         } else {
@@ -234,6 +236,10 @@ impl Element for TextElement {
             });
         }
 
+        let ghost = input.prediction_text().is_some();
+        if ghost {
+            lines.truncate(input.rows);
+        }
         let total_visual_rows = lines.len().max(1);
         let (visible_rows, first_visible_row) = if input.multiline {
             let total = lines.len().max(1);
@@ -391,6 +397,14 @@ impl Element for TextElement {
                 );
             }
 
+            #[cfg(test)]
+            self.input.update(cx, |input, _| {
+                input.painted_cursor_bounds = prepaint
+                    .cursor
+                    .as_ref()
+                    .filter(|_| focus_handle.is_focused(window))
+                    .map(|cursor| cursor.bounds);
+            });
             if focus_handle.is_focused(window)
                 && let Some(cursor) = prepaint.cursor.take()
             {
@@ -406,6 +420,10 @@ impl Element for TextElement {
         };
         window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
             prepaint.fade.paint(color, ScrollFade::compact(), window);
+        });
+        #[cfg(test)]
+        self.input.update(cx, |input, _| {
+            input.painted_fade_metrics = Some(prepaint.fade);
         });
 
         self.input.update(cx, |input, cx| {
@@ -437,6 +455,9 @@ impl Render for TextInput {
         let mut container = div()
             .flex_1()
             .key_context("TextInput")
+            .when(self.prediction_text().is_some(), |input| {
+                input.key_context("TextInput TextInputPrediction")
+            })
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
@@ -453,6 +474,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::insert_newline))
+            .on_action(cx.listener(Self::accept_prediction))
+            .on_action(cx.listener(Self::dismiss_prediction))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

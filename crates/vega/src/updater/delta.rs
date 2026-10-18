@@ -412,3 +412,311 @@ fn verify_tree(files: &[TargetFile], root: &Path) -> UpdateResult<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn target(path: &str, bytes: &[u8], mode: u32) -> TargetFile {
+        TargetFile {
+            path: path.into(),
+            size: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            mode,
+        }
+    }
+
+    fn fixture() -> (Manifest, signature::SignedManifest, Vec<u8>) {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(
+            "Contents/MacOS/vega",
+            zip::write::SimpleFileOptions::default().unix_permissions(0o755),
+        )
+        .unwrap();
+        zip.write_all(b"new binary").unwrap();
+        zip.start_file(
+            "Contents/new",
+            zip::write::SimpleFileOptions::default().unix_permissions(0o644),
+        )
+        .unwrap();
+        zip.write_all(b"new resource").unwrap();
+        let archive = zip.finish().unwrap().into_inner();
+        let full: signature::SignedManifest = serde_json::from_value(json!({
+            "schema": 1, "version": "1.0.2", "bundle_id": "ai.vega", "target": "aarch64-apple-darwin",
+            "archive": network::ASSET, "size": 100000, "sha256": "a".repeat(64)
+        })).unwrap();
+        let manifest = Manifest {
+            schema: 1,
+            version: "1.0.2".into(),
+            bundle_id: "ai.vega".into(),
+            target: "aarch64-apple-darwin".into(),
+            full_sha256: full.sha256.clone(),
+            files: vec![
+                target("Contents/MacOS/vega", b"new binary", 0o755),
+                target("Contents/Info.plist", b"plist", 0o644),
+                target("Contents/reused", b"same resource", 0o755),
+                target("Contents/new", b"new resource", 0o644),
+            ],
+            patches: vec![Patch {
+                from_version: "1.0.0".into(),
+                archive: "Vega-delta-1.0.0-to-1.0.2.zip".into(),
+                size: archive.len() as u64,
+                sha256: format!("{:x}", Sha256::digest(&archive)),
+                files: vec!["Contents/MacOS/vega".into(), "Contents/new".into()],
+            }],
+        };
+        (manifest, full, archive)
+    }
+
+    fn source(root: &Path) -> PathBuf {
+        let source = root.join("source.app");
+        std::fs::create_dir_all(source.join("Contents/MacOS")).unwrap();
+        for (path, bytes) in [
+            ("Contents/MacOS/vega", "old binary"),
+            ("Contents/Info.plist", "plist"),
+            ("Contents/reused", "same resource"),
+            ("Contents/deleted", "old resource"),
+        ] {
+            std::fs::write(source.join(path), bytes).unwrap();
+        }
+        source.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn reconstructs_direct_patch_adds_deletes_and_changes_permissions() {
+        let (manifest, full, bytes) = fixture();
+        manifest.validate(&full).unwrap();
+        assert_eq!(manifest.patch("1.0.0").unwrap().from_version, "1.0.0");
+        assert!(manifest.patch("1.0.1").is_err());
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        validate_reuse(&manifest, &manifest.patches[0], &source).unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let candidate = reconstruct_archive(
+            &manifest,
+            &manifest.patches[0],
+            bytes,
+            &source,
+            &output.path().canonicalize().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(candidate.join("Contents/MacOS/vega")).unwrap(),
+            b"new binary"
+        );
+        assert_eq!(
+            std::fs::read(candidate.join("Contents/new")).unwrap(),
+            b"new resource"
+        );
+        assert!(!candidate.join("Contents/deleted").exists());
+        assert_eq!(
+            std::fs::metadata(candidate.join("Contents/reused"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::read(source.join("Contents/MacOS/vega")).unwrap(),
+            b"old binary"
+        );
+    }
+
+    #[test]
+    fn rejects_modified_sources_and_symlink_ancestors_and_leaves_old_app() {
+        let (manifest, _, bytes) = fixture();
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        validate_reuse(&manifest, &manifest.patches[0], &source).unwrap();
+        std::fs::write(source.join("Contents/reused"), b"evil resource").unwrap();
+        assert!(validate_reuse(&manifest, &manifest.patches[0], &source).is_err());
+        let output = tempfile::tempdir().unwrap();
+        assert!(
+            reconstruct_archive(
+                &manifest,
+                &manifest.patches[0],
+                bytes,
+                &source,
+                output.path()
+            )
+            .is_err()
+        );
+        std::fs::remove_file(source.join("Contents/reused")).unwrap();
+        std::os::unix::fs::symlink(
+            source.join("Contents/Info.plist"),
+            source.join("Contents/reused"),
+        )
+        .unwrap();
+        assert!(validate_reuse(&manifest, &manifest.patches[0], &source).is_err());
+        std::fs::rename(source.join("Contents"), source.join("real")).unwrap();
+        std::os::unix::fs::symlink(source.join("real"), source.join("Contents")).unwrap();
+        assert!(validate_reuse(&manifest, &manifest.patches[0], &source).is_err());
+        assert_eq!(
+            std::fs::read(source.join("real/MacOS/vega")).unwrap(),
+            b"old binary"
+        );
+    }
+
+    #[test]
+    fn manifest_rejects_unsafe_paths_collisions_modes_limits_and_binding() {
+        for path in [
+            "/Contents/evil",
+            "Contents/../evil",
+            "Contents//evil",
+            "Contents/./evil",
+            "Contents/evil\\x",
+            "Contents/evil\0",
+            "Contents/é",
+            "Contents/a:b",
+        ] {
+            let (mut manifest, full, _) = fixture();
+            manifest.files.push(target(path, b"x", 0o644));
+            assert!(manifest.validate(&full).is_err(), "{path:?}");
+        }
+        for paths in [
+            ["Contents/reused", "Contents/reused/a"],
+            ["Contents/A/a", "Contents/a/b"],
+            ["Contents/X", "Contents/x"],
+        ] {
+            let (mut manifest, full, _) = fixture();
+            for path in paths {
+                manifest.files.push(target(path, b"x", 0o644));
+            }
+            assert!(manifest.validate(&full).is_err());
+        }
+        let (mut manifest, full, _) = fixture();
+        manifest.files[0].mode = 0o4755;
+        assert!(manifest.validate(&full).is_err());
+        manifest.files[0].mode = 0o755;
+        manifest.files[0].size = EXPANDED_LIMIT;
+        assert!(manifest.validate(&full).is_err());
+        manifest.files[0].size = 10;
+        manifest.full_sha256 = "b".repeat(64);
+        assert!(manifest.validate(&full).is_err());
+    }
+
+    #[test]
+    fn rejects_unlisted_symlink_wrong_mode_and_corrupted_patch_entries() {
+        for variant in ["extra", "symlink", "mode", "hash"] {
+            let (manifest, _, _) = fixture();
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            let options = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
+            if variant == "symlink" {
+                zip.add_symlink("Contents/MacOS/vega", "/outside", options)
+                    .unwrap();
+            } else {
+                zip.start_file(
+                    "Contents/MacOS/vega",
+                    if variant == "mode" {
+                        options.unix_permissions(0o644)
+                    } else {
+                        options
+                    },
+                )
+                .unwrap();
+                zip.write_all(if variant == "hash" {
+                    b"bad binary"
+                } else {
+                    b"new binary"
+                })
+                .unwrap();
+            }
+            let second = match variant {
+                "extra" => "Contents/extra",
+                _ => "Contents/new",
+            };
+            zip.start_file(second, options.unix_permissions(0o644))
+                .unwrap();
+            zip.write_all(b"new resource").unwrap();
+            let bytes = zip.finish().unwrap().into_inner();
+            let root = tempfile::tempdir().unwrap();
+            let source = source(root.path());
+            let output = tempfile::tempdir().unwrap();
+            assert!(
+                reconstruct_archive(
+                    &manifest,
+                    &manifest.patches[0],
+                    bytes,
+                    &source,
+                    output.path()
+                )
+                .is_err(),
+                "{variant}"
+            );
+        }
+    }
+
+    #[test]
+    fn changed_candidate_is_detected_and_empty_candidates_allow_full_only() {
+        let (mut manifest, full, bytes) = fixture();
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        let output = tempfile::tempdir().unwrap();
+        let candidate = reconstruct_archive(
+            &manifest,
+            &manifest.patches[0],
+            bytes,
+            &source,
+            &output.path().canonicalize().unwrap(),
+        )
+        .unwrap();
+        std::fs::write(candidate.join("Contents/new"), b"tampered").unwrap();
+        assert!(verify_tree(&manifest.files, &candidate).is_err());
+        manifest.files.clear();
+        assert!(manifest.validate(&full).is_err());
+        manifest.patches.clear();
+        manifest.validate(&full).unwrap();
+        assert!(manifest.patch("1.0.0").is_err());
+    }
+    #[test]
+    fn duplicate_zip_names_and_unknown_manifest_fields_are_rejected() {
+        let (manifest, _, _) = fixture();
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for name in ["Contents/MacOS/vega", "Contents/MacOS/fake"] {
+            zip.start_file(
+                name,
+                zip::write::SimpleFileOptions::default().unix_permissions(0o755),
+            )
+            .unwrap();
+            zip.write_all(b"new binary").unwrap();
+        }
+        let mut bytes = zip.finish().unwrap().into_inner();
+        let needle = b"Contents/MacOS/fake";
+        for index in 0..bytes.len() - needle.len() {
+            if &bytes[index..index + needle.len()] == needle {
+                bytes[index..index + needle.len()].copy_from_slice(b"Contents/MacOS/vega");
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let source = source(root.path());
+        let output = tempfile::tempdir().unwrap();
+        assert!(
+            reconstruct_archive(
+                &manifest,
+                &manifest.patches[0],
+                bytes,
+                &source,
+                output.path()
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_value::<TargetFile>(json!({"path": "Contents/a", "size": 0, "mode": 420, "sha256": "a".repeat(64), "extra": true})).is_err());
+    }
+
+    #[test]
+    fn unsigned_and_oversized_delta_metadata_is_rejected() {
+        let (_, full, _) = fixture();
+        assert!(verify(b"{}", b"invalid", &full).is_err());
+        assert!(verify(&vec![b' '; MANIFEST_LIMIT as usize + 1], b"invalid", &full).is_err());
+        assert!(
+            verify(
+                b"{}",
+                &vec![b' '; signature::SIGNATURE_LIMIT as usize + 1],
+                &full
+            )
+            .is_err()
+        );
+    }
+}

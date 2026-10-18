@@ -221,6 +221,11 @@ impl WriteEditAudit {
         Ok(audit)
     }
 
+    #[cfg(test)]
+    pub(crate) fn edit(path: &str, old: &str, new: &str) -> Result<Self, MutationError> {
+        Self::edit_with_replace_all(path, old, new, false)
+    }
+
     pub(crate) fn edit_with_replace_all(
         path: &str,
         old: &str,
@@ -740,4 +745,321 @@ struct EditSuccessOwned {
     bytes_written: u64,
     replacements: u64,
     checkpoint_ref: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids() -> CheckpointIds {
+        CheckpointIds::new("project", "thread", "call").unwrap()
+    }
+
+    #[test]
+    fn checkpoint_id_boundaries_and_unicode_are_collision_free() {
+        assert!(CheckpointIds::new("", "t", "c").is_err());
+        let max = "a".repeat(120);
+        let refs = CheckpointIds::new(&max, "t", "c").unwrap();
+        assert_eq!(refs.project_component().len(), 243);
+        assert!(CheckpointIds::new(&"a".repeat(121), "t", "c").is_err());
+        assert!(CheckpointIds::new(&"界".repeat(40), "t", "c").is_ok());
+        assert!(CheckpointIds::new(&"界".repeat(41), "t", "c").is_err());
+        assert_ne!(
+            CheckpointIds::new("é", "t", "c")
+                .unwrap()
+                .project_component(),
+            CheckpointIds::new("e", "t", "c")
+                .unwrap()
+                .project_component()
+        );
+    }
+
+    #[test]
+    fn checkpoint_ref_is_strict_and_opaque() {
+        let checkpoint_ref = ids().checkpoint_ref();
+        assert_eq!(
+            CheckpointRef::parse(checkpoint_ref.as_str()).unwrap(),
+            checkpoint_ref
+        );
+        for invalid in [
+            "/preimage-v1/id-61/id-62/id-63",
+            "preimage-v1/raw/id-62/id-63",
+            "preimage-v1/id-6A/id-62/id-63",
+            "preimage-v1/id-6/id-62/id-63",
+            "preimage-v1/id-ff/id-62/id-63",
+            "preimage-v1/id-61/id-62",
+            "preimage-v1/id-61/id-62/id-63/extra",
+            "wrong/id-61/id-62/id-63",
+            "../preimage-v1/id-61/id-62/id-63",
+        ] {
+            assert!(CheckpointRef::parse(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn valid_audits_roundtrip_without_bodies() {
+        let write = WriteEditAudit::write("src/lib.rs", "super-secret").unwrap();
+        let write_json = write.to_json().unwrap();
+        assert!(!write_json.contains("super-secret"));
+        assert_eq!(WriteEditAudit::from_json(&write_json).unwrap(), write);
+
+        let edit = WriteEditAudit::edit("src/lib.rs", "old-secret", "new-secret").unwrap();
+        let edit_json = edit.to_json().unwrap();
+        assert!(!edit_json.contains("old-secret"));
+        assert!(!edit_json.contains("new-secret"));
+        assert_eq!(WriteEditAudit::from_json(&edit_json).unwrap(), edit);
+    }
+
+    #[test]
+    fn fingerprint_is_domain_order_and_length_sensitive() {
+        let a = WriteEditAudit::write("a/b", "c").unwrap();
+        let b = WriteEditAudit::write("a", "bc").unwrap();
+        let c = WriteEditAudit::edit("a/b", "", "c").unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a.to_json().unwrap(), c.to_json().unwrap());
+
+        let fixed_write = WriteEditAudit::write("src/lib.rs", "hello").unwrap();
+        let fixed_edit = WriteEditAudit::edit("src/lib.rs", "old", "new").unwrap();
+        let WriteEditAudit::Write { fingerprint_v1, .. } = fixed_write else {
+            panic!("expected write audit");
+        };
+        let WriteEditAudit::Edit {
+            fingerprint_v1: edit_fingerprint,
+            ..
+        } = fixed_edit
+        else {
+            panic!("expected edit audit");
+        };
+        assert_eq!(
+            fingerprint_v1,
+            "b6d0184e17548852c31283f2d837dd793c05bbb9c472eb247341d3f4fdc48a6a"
+        );
+        assert_eq!(
+            WriteEditAudit::write("src/lib.rs", "hello")
+                .unwrap()
+                .to_json()
+                .unwrap(),
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"src/lib.rs","content_bytes":5,"fingerprint_v1":"b6d0184e17548852c31283f2d837dd793c05bbb9c472eb247341d3f4fdc48a6a"}"#
+        );
+        assert_eq!(
+            edit_fingerprint,
+            "92011380b59838d6256152f088ef7e9e3ec03110f12be78200fe8271ea9ba3ac"
+        );
+    }
+
+    #[test]
+    fn invalid_audit_is_deterministic_and_content_free() {
+        let raw = r#"{"path":"/secret","content":"token=very-secret"}"#;
+        let audit =
+            InvalidWriteEditAudit::new(MutationTool::Write, raw, MutationErrorCode::PathAbsolute)
+                .unwrap();
+        let json = audit.to_json().unwrap();
+        assert!(!json.contains("/secret"));
+        assert!(!json.contains("very-secret"));
+        assert_eq!(InvalidWriteEditAudit::from_json(&json).unwrap(), audit);
+        assert_eq!(audit.raw_input_bytes, 48);
+        assert_eq!(
+            audit.raw_input_sha256,
+            "ea0c502a822d2607c11d7d0d605f903ddb663b8bbd5ef8925435a07634f28add"
+        );
+        assert_eq!(
+            json,
+            r#"{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":48,"raw_input_sha256":"ea0c502a822d2607c11d7d0d605f903ddb663b8bbd5ef8925435a07634f28add","validation_error_code":"path_absolute"}"#
+        );
+        assert_eq!(
+            InvalidWriteEditAudit::new(MutationTool::Write, raw, MutationErrorCode::PathAbsolute)
+                .unwrap(),
+            audit
+        );
+    }
+
+    #[test]
+    fn metadata_and_success_outputs_are_exact_and_strict() {
+        let metadata = CreatedNewFileMetadata::new("metadata.json").unwrap();
+        assert_eq!(
+            metadata.to_json().unwrap(),
+            r#"{"metadata_version":"preimage_v1","kind":"created_new_file","path":"metadata.json"}"#
+        );
+        assert_eq!(
+            CreatedNewFileMetadata::from_json(&metadata.to_json().unwrap()).unwrap(),
+            metadata
+        );
+
+        let write = WriteSuccessOutput {
+            path: "src/lib.rs".to_string(),
+            bytes_written: 9,
+            checkpoint_ref: ids().checkpoint_ref(),
+        };
+        assert_eq!(
+            WriteSuccessOutput::from_json(&write.to_json().unwrap()).unwrap(),
+            write
+        );
+        let edit = EditSuccessOutput {
+            path: "src/lib.rs".to_string(),
+            bytes_written: 10,
+            replacements: 1,
+            checkpoint_ref: ids().checkpoint_ref(),
+        };
+        assert_eq!(
+            EditSuccessOutput::from_json(&edit.to_json().unwrap()).unwrap(),
+            edit
+        );
+        assert_eq!(
+            edit.to_json().unwrap(),
+            format!(
+                r#"{{"path":"src/lib.rs","bytes_written":10,"replacements":1,"checkpoint_ref":"{}"}}"#,
+                ids().checkpoint_ref().as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn strict_codecs_reject_shape_number_constant_path_hash_and_ref_errors() {
+        let valid_ref = ids().checkpoint_ref();
+        let ref_value = valid_ref.as_str();
+        let bad_audits = [
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":-1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":1.0,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":1e0,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":-0,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":18446744073709551616,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"wrong","tool":"write","path":"a","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"../a","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":1,"fingerprint_v1":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","extra":0}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","path":"b","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        ];
+        for value in bad_audits {
+            assert!(WriteEditAudit::from_json(value).is_err(), "{value}");
+        }
+
+        for value in [
+            r#"{"metadata_version":"preimage_v1","kind":"created_new_file","path":"a","extra":1}"#,
+            r#"{"metadata_version":"wrong","kind":"created_new_file","path":"a"}"#,
+            r#"{"metadata_version":"preimage_v1","kind":"wrong","path":"a"}"#,
+            r#"{"metadata_version":"preimage_v1","kind":"created_new_file","path":"./a"}"#,
+        ] {
+            assert!(CreatedNewFileMetadata::from_json(value).is_err(), "{value}");
+        }
+
+        let success_negatives = [
+            format!(r#"{{"path":"a","bytes_written":-1,"checkpoint_ref":"{ref_value}"}}"#),
+            format!(r#"{{"path":"a","bytes_written":1.0,"checkpoint_ref":"{ref_value}"}}"#),
+            r#"{"path":"a","bytes_written":1,"checkpoint_ref":"raw"}"#.to_string(),
+            format!(r#"{{"path":"a","bytes_written":1,"checkpoint_ref":"{ref_value}","extra":0}}"#),
+            format!(
+                r#"{{"path":"a","path":"b","bytes_written":1,"checkpoint_ref":"{ref_value}"}}"#
+            ),
+        ];
+        for value in success_negatives {
+            assert!(WriteSuccessOutput::from_json(&value).is_err(), "{value}");
+        }
+        {
+            let replacements = 0;
+            let value = format!(
+                r#"{{"path":"a","bytes_written":1,"replacements":{replacements},"checkpoint_ref":"{ref_value}"}}"#
+            );
+            assert!(EditSuccessOutput::from_json(&value).is_err());
+        }
+    }
+
+    #[test]
+    fn every_strict_schema_rejects_missing_extra_and_wrong_typed_fields() {
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let checkpoint_ref = ids().checkpoint_ref();
+        let checkpoint_ref = checkpoint_ref.as_str();
+
+        let write_audit_invalid = [
+            format!(r#"{{"tool":"write","path":"a","content_bytes":1,"fingerprint_v1":"{hash}"}}"#),
+            format!(r#"{{"audit_version":"write_edit_v1","path":"a","content_bytes":1,"fingerprint_v1":"{hash}"}}"#),
+            format!(r#"{{"audit_version":"write_edit_v1","tool":"write","content_bytes":1,"fingerprint_v1":"{hash}"}}"#),
+            format!(r#"{{"audit_version":"write_edit_v1","tool":"write","path":"a","fingerprint_v1":"{hash}"}}"#),
+            r#"{"audit_version":1,"tool":"write","path":"a","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.to_string(),
+            r#"{"audit_version":"write_edit_v1","tool":1,"path":"a","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.to_string(),
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":1,"content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.to_string(),
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":"1","fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.to_string(),
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"a","content_bytes":1,"fingerprint_v1":1}"#.to_string(),
+        ];
+        for value in write_audit_invalid {
+            assert!(WriteEditAudit::from_json(&value).is_err(), "{value}");
+        }
+
+        let edit_audit_invalid = [
+            format!(r#"{{"tool":"edit","path":"a","old_string_bytes":1,"new_string_bytes":1,"fingerprint_v1":"{hash}"}}"#),
+            format!(r#"{{"audit_version":"write_edit_v1","path":"a","old_string_bytes":1,"new_string_bytes":1,"fingerprint_v1":"{hash}"}}"#),
+            format!(r#"{{"audit_version":"write_edit_v1","tool":"edit","old_string_bytes":1,"new_string_bytes":1,"fingerprint_v1":"{hash}"}}"#),
+            format!(r#"{{"audit_version":"write_edit_v1","tool":"edit","path":"a","new_string_bytes":1,"fingerprint_v1":"{hash}"}}"#),
+            format!(r#"{{"audit_version":"write_edit_v1","tool":"edit","path":"a","old_string_bytes":1,"fingerprint_v1":"{hash}"}}"#),
+            r#"{"audit_version":"write_edit_v1","tool":"edit","path":"a","old_string_bytes":"1","new_string_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.to_string(),
+            r#"{"audit_version":"write_edit_v1","tool":"edit","path":"a","old_string_bytes":1,"new_string_bytes":null,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.to_string(),
+            format!(r#"{{"audit_version":"write_edit_v1","tool":"edit","path":"a","old_string_bytes":1,"new_string_bytes":1,"fingerprint_v1":"{hash}","extra":0}}"#),
+        ];
+        for value in edit_audit_invalid {
+            assert!(WriteEditAudit::from_json(&value).is_err(), "{value}");
+        }
+
+        let invalid_audit_invalid = [
+            format!(r#"{{"tool":"write","raw_input_bytes":1,"raw_input_sha256":"{hash}","validation_error_code":"malformed_json"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","raw_input_bytes":1,"raw_input_sha256":"{hash}","validation_error_code":"malformed_json"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_sha256":"{hash}","validation_error_code":"malformed_json"}}"#),
+            r#"{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":1,"validation_error_code":"malformed_json"}"#.to_string(),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":1,"raw_input_sha256":"{hash}"}}"#),
+            format!(r#"{{"audit_version":"wrong","tool":"write","raw_input_bytes":1,"raw_input_sha256":"{hash}","validation_error_code":"malformed_json"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"bash","raw_input_bytes":1,"raw_input_sha256":"{hash}","validation_error_code":"malformed_json"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":-1,"raw_input_sha256":"{hash}","validation_error_code":"malformed_json"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":1.0,"raw_input_sha256":"{hash}","validation_error_code":"malformed_json"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":18446744073709551616,"raw_input_sha256":"{hash}","validation_error_code":"malformed_json"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":1,"raw_input_sha256":"{hash}","validation_error_code":"unknown"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":1,"raw_input_sha256":"{hash}","validation_error_code":"atomic_write_failed"}}"#),
+            format!(r#"{{"audit_version":"write_edit_invalid_v1","tool":"write","raw_input_bytes":1,"raw_input_sha256":"{hash}","validation_error_code":"malformed_json","extra":0}}"#),
+        ];
+        for value in invalid_audit_invalid {
+            assert!(InvalidWriteEditAudit::from_json(&value).is_err(), "{value}");
+        }
+
+        let metadata_invalid = [
+            r#"{"kind":"created_new_file","path":"a"}"#,
+            r#"{"metadata_version":"preimage_v1","path":"a"}"#,
+            r#"{"metadata_version":"preimage_v1","kind":"created_new_file"}"#,
+            r#"{"metadata_version":1,"kind":"created_new_file","path":"a"}"#,
+            r#"{"metadata_version":"preimage_v1","kind":1,"path":"a"}"#,
+            r#"{"metadata_version":"preimage_v1","kind":"created_new_file","path":1}"#,
+        ];
+        for value in metadata_invalid {
+            assert!(CreatedNewFileMetadata::from_json(value).is_err(), "{value}");
+        }
+
+        let write_success_invalid = [
+            format!(r#"{{"bytes_written":1,"checkpoint_ref":"{checkpoint_ref}"}}"#),
+            r#"{"path":"a","checkpoint_ref":"raw"}"#.to_string(),
+            r#"{"path":"a","bytes_written":1}"#.to_string(),
+            format!(r#"{{"path":1,"bytes_written":1,"checkpoint_ref":"{checkpoint_ref}"}}"#),
+            format!(r#"{{"path":"a","bytes_written":"1","checkpoint_ref":"{checkpoint_ref}"}}"#),
+            r#"{"path":"a","bytes_written":1,"checkpoint_ref":1}"#.to_string(),
+        ];
+        for value in write_success_invalid {
+            assert!(WriteSuccessOutput::from_json(&value).is_err(), "{value}");
+        }
+
+        let edit_success_invalid = [
+            format!(
+                r#"{{"bytes_written":1,"replacements":1,"checkpoint_ref":"{checkpoint_ref}"}}"#
+            ),
+            format!(r#"{{"path":"a","replacements":1,"checkpoint_ref":"{checkpoint_ref}"}}"#),
+            format!(r#"{{"path":"a","bytes_written":1,"checkpoint_ref":"{checkpoint_ref}"}}"#),
+            r#"{"path":"a","bytes_written":1,"replacements":1}"#.to_string(),
+            format!(
+                r#"{{"path":"a","bytes_written":1,"replacements":"1","checkpoint_ref":"{checkpoint_ref}"}}"#
+            ),
+            format!(
+                r#"{{"path":"a","bytes_written":1,"replacements":1.0,"checkpoint_ref":"{checkpoint_ref}"}}"#
+            ),
+            format!(
+                r#"{{"path":"a","bytes_written":1,"replacements":1,"checkpoint_ref":"{checkpoint_ref}","extra":0}}"#
+            ),
+        ];
+        for value in edit_success_invalid {
+            assert!(EditSuccessOutput::from_json(&value).is_err(), "{value}");
+        }
+    }
 }

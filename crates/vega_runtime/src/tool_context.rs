@@ -274,3 +274,6 @@ pub(crate) fn fingerprint_call(name: &str, input: &str) -> [u8; 32] {
     }
     hash.finalize().into()
 }
+
+#[cfg(test)]
+mod tests;

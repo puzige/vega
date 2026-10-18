@@ -75,6 +75,7 @@ pub fn render_delete_confirm_overlay(
                         )
                         .child(
                             div()
+                                .debug_selector(|| "delete-confirm-action".into())
                                 .px_3()
                                 .py_1()
                                 .rounded_md()
