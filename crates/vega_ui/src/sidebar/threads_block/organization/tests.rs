@@ -799,19 +799,50 @@ async fn sidebar_reorder_rejects_cross_scope_blank_and_cancel_without_clicks(
     assert_eq!(snapshot(&f), before);
     assert_reorder_navigation_unchanged(&f, cx);
 
-    start_row_drag(&f, cx, format!("pinned-thread-row-{}", pinned[0]));
-    let project_row = bounds(&f, cx, "project-header-p");
-    let hidden_row = bounds(&f, cx, format!("pinned-thread-row-{}", pinned[6]));
-    assert!(hidden_row.bottom() > bounds(&f, cx, "organization-pinned-scroll").bottom());
-    move_drag(&f, cx, project_row.center());
-    release_drag(&f, cx, project_row.center());
+    cx.update(|cx| cx.set_global(SettingsOpen(false)));
+    let pinned_order = scope_order(&before, None, true);
+    let pinned_source = format!("pinned-thread-row-{}", pinned_order[0]);
+    let hidden_selector = format!("pinned-thread-row-{}", pinned_order.last().unwrap());
+    let hidden_row = bounds(&f, cx, &hidden_selector);
+    let sidebar = bounds(&f, cx, "sidebar");
+    let settings = bounds(&f, cx, "sidebar-settings-surface");
+    let height = hidden_row.center().y + sidebar.bottom() - settings.center().y;
+    cx.simulate_window_resize(f.window.into(), gpui_kit::size(px(1200.), height));
+    cx.run_until_parked();
+    let viewport = bounds(&f, cx, "sidebar-scroll");
+    let pinned_viewport = bounds(&f, cx, "organization-pinned-scroll");
+    let source_row = bounds(&f, cx, &pinned_source);
+    let hidden_row = bounds(&f, cx, &hidden_selector);
+    let settings = bounds(&f, cx, "sidebar-settings-surface");
+    let target = settings.center();
+    assert!(
+        viewport.contains(&source_row.center()) && pinned_viewport.contains(&source_row.center()),
+        "drag source {source_row:?} must be inside viewport {viewport:?} and pinned clip {pinned_viewport:?}"
+    );
+    assert!(
+        hidden_row.bottom() > viewport.bottom(),
+        "hidden row {hidden_row:?} must extend beyond viewport {viewport:?}"
+    );
+    assert!(
+        hidden_row.contains(&target) && !viewport.contains(&target),
+        "footer drop {target:?} must overlap hidden row {hidden_row:?} outside viewport {viewport:?}"
+    );
+    assert!(
+        bounds(&f, cx, "sidebar").contains(&target),
+        "footer drop {target:?} must remain inside the window"
+    );
+    start_row_drag(&f, cx, pinned_source);
+    move_drag(&f, cx, target);
+    release_drag(&f, cx, target);
     assert_eq!(
         snapshot(&f),
         before,
-        "clipped pinned rows cannot receive a drop over projects"
+        "clipped pinned rows cannot receive a drop over the settings footer"
     );
+    assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
     assert_reorder_navigation_unchanged(&f, cx);
-    cx.update(|cx| cx.set_global(SettingsOpen(false)));
+    cx.simulate_window_resize(f.window.into(), gpui_kit::size(px(1200.), px(1400.)));
+    cx.run_until_parked();
     click(&f, cx, format!("project-thread-row-{}", f.other.id));
     assert_eq!(
         cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone()),
@@ -879,16 +910,46 @@ async fn sidebar_reorder_keyboard_menus_restore_manual_order_and_keep_endpoints_
 async fn sidebar_reorder_after_visible_boundary_preserves_unrendered_tasks(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    let f = fixture(cx);
+    let f = fixture_with_size(cx, 1200., 500.);
     let store = Store::open(f.dir.path().join("organization.db")).unwrap();
     let extra = create_reorder_threads(&store, Some("p"), 8, false);
     conversation::set_thread_status(&store, &extra[0], ThreadStatus::Archived).unwrap();
+    create_reorder_threads(&store, None, 12, false);
     sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
     cx.run_until_parked();
     let before = snapshot(&f);
     let ids = scope_order(&before, Some("p"), false);
     assert_eq!(ids.len(), 13);
-    assert!(absent(&f, cx, format!("project-thread-row-{}", ids[6])));
+    assert_eq!(ids[5], extra[0], "archived row must remain the next anchor");
+    let page_size = sessions(&f, cx).read_with(cx, |block, _| {
+        block.organization.as_ref().unwrap().project_threads_visible["p"]
+    });
+    let mounted = ids
+        .iter()
+        .filter(|id| !absent(&f, cx, format!("project-thread-row-{id}")))
+        .count();
+    let viewport = bounds(&f, cx, "sidebar-scroll");
+    assert_eq!(page_size, 5, "initial project page in {viewport:?}");
+    assert_eq!(mounted, 5, "initial mounted rows in {viewport:?}");
+    let source_row = bounds(&f, cx, format!("project-thread-row-{}", ids[0]));
+    let last_visible = bounds(&f, cx, format!("project-thread-row-{}", ids[4]));
+    let show_more = bounds(&f, cx, "project-p-show-more");
+    for (label, row) in [
+        ("source", source_row),
+        ("last visible target", last_visible),
+        ("show more", show_more),
+    ] {
+        assert!(
+            viewport.contains(&row.center())
+                && row.top() >= viewport.top()
+                && row.bottom() <= viewport.bottom(),
+            "{label} {row:?} must be inside viewport {viewport:?}"
+        );
+    }
+    assert!(
+        absent(&f, cx, format!("project-thread-row-{}", ids[6])),
+        "next active row must be unrendered with page size {page_size}, mounted {mounted}"
+    );
     drop_row(
         &f,
         cx,

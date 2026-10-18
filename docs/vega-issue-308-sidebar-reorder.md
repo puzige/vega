@@ -1,8 +1,10 @@
 # #308 — 侧栏项目与会话上下排序
 
-版本：v1，2026-10-18。状态：已按用户范围冻结，待实现与 Actions 验证。
+版本：v1.1，2026-10-18。状态：已实现，集成最新基线后待 Actions 重验与用户手测。
 Issue：https://github.com/puzige/vega/issues/308
-基线：`75da678a`。分支：`feat/308-sidebar-reorder`。
+原始基线：`75da678a`；当前集成基线：`cf00946e`。分支：`feat/308-sidebar-reorder`。
+
+v1.1 只更新集成记录，以下产品契约及 A1–A10 验收目标不变。原实现提交 `9190b003` 已通过 Actions（3160 passed、5 skipped），但 master 并发合入 #465 的历史测试/标识清理后出现合并冲突。本卡 rebase 到 `cf00946e`，保留上游清理以及本卡 3 项 service、6 项 GPUI 测试；原有 CI 结果仅作历史证据，新 head 必须重新通过 required check。矩阵中的待验证项以本轮 CI 与后续手测结果回写为准。
 
 ## 需求与范围
 
