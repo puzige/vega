@@ -21,3 +21,7 @@
 pending_messages.rs 的 render_running_send 使用同尺寸、圆形、主色与 disabled token 的发送按钮，保留 queue/steer 路由、明确的 accessible label 和键盘激活。composer_actions.rs 的焦点列表采用与渲染相同的可见条件，防止隐藏动作获得焦点；必要时复用单一主动作 focus。不得改队列存储、调度、runtime、模型协议、权限与停止实现。已有附件、IME、准备和错误恢复规则不变。
 
 补充或调整现有 composer/pending_messages 进程内回归，禁止本地运行 Vega、编译或测试；仅快速格式与 diff 静态检查。Actions 执行完整 PR check，用户合并后手测两种运行中发送模式及空/有草稿切换。无新依赖、数据迁移、额外界面说明或设置。
+
+## CI 回归适配
+
+云端发现旧 composer_actions 停止测试、issue79 错误布局测试及 utility_bar 跨主题布局测试仍假定运行中有草稿时存在停止按钮。按本展示契约更新这些明确受影响的预期：Native 有草稿验证发送且停止缺席；无草稿与 Codex 仍验证停止。停止保留草稿的 controller 集成测试可通过现有公开 request_composer_stop 发起取消，保留完整的未发送草稿、partial persistence、computer-use stopping、late-tool suppression 等断言；另行维持无草稿停止按钮的真实点击覆盖。不得删除、忽略或弱化这些行为断言。

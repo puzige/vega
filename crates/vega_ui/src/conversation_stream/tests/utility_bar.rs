@@ -195,7 +195,7 @@ async fn issue294_existing_native_composer_has_no_branch_entry(cx: &mut TestAppC
             input.set_text("owned continuation draft", cx)
         });
     });
-    assert_branch_free_footer(window, TaskBackend::Native, false, 8.0, cx);
+    assert_branch_free_footer(window, TaskBackend::Native, "composer-send", 8.0, cx);
     focus_composer(window, &stream, cx);
     let controls = stream.read_with(cx, |stream, _| {
         [
@@ -213,7 +213,7 @@ async fn issue294_existing_native_composer_has_no_branch_entry(cx: &mut TestAppC
             "Tab must reach {name} without a branch focus target"
         );
     }
-    assert_branch_free_footer(window, TaskBackend::Native, false, 8.0, cx);
+    assert_branch_free_footer(window, TaskBackend::Native, "composer-send", 8.0, cx);
     assert!(
         window
             .update(cx, |_, window, cx| {
@@ -233,7 +233,7 @@ async fn issue294_existing_native_composer_has_no_branch_entry(cx: &mut TestAppC
 fn assert_branch_free_footer(
     window: WindowHandle<StreamHarness>,
     backend: TaskBackend,
-    stopping_control: bool,
+    primary_action: &'static str,
     expected_gap: f32,
     cx: &mut TestAppContext,
 ) {
@@ -276,13 +276,12 @@ fn assert_branch_free_footer(
         0.0,
         "leading controls share their row",
     );
-    let (send_stop, absent_action) = if stopping_control {
-        ("composer-stop", "composer-send")
-    } else {
-        ("composer-send", "composer-stop")
-    };
-    assert!(visual.debug_bounds(absent_action).is_none());
-    let mut required = vec!["composer-add", status, send_stop];
+    for action in ["composer-send", "composer-running-send", "composer-stop"] {
+        if action != primary_action {
+            assert!(visual.debug_bounds(action).is_none());
+        }
+    }
+    let mut required = vec!["composer-add", status, primary_action];
     if backend == TaskBackend::Native {
         required.push("composer-model");
     } else {
@@ -347,7 +346,14 @@ async fn issue294_hydrated_native_and_codex_footers_keep_controls_across_theme_a
                 stream.composer_submit_pending = submit_pending;
                 cx.notify();
             });
-            assert_branch_free_footer(window, backend, running || submit_pending, 8.0, cx);
+            let primary_action = if submit_pending || (running && backend == TaskBackend::Codex) {
+                "composer-stop"
+            } else if running {
+                "composer-running-send"
+            } else {
+                "composer-send"
+            };
+            assert_branch_free_footer(window, backend, primary_action, 8.0, cx);
             stream.read_with(cx, |stream, cx| {
                 assert_eq!(stream.input.read(cx).text(), "owned recovered draft");
                 assert_eq!(stream.thread.backend, backend);
@@ -366,7 +372,7 @@ async fn issue294_hydrated_native_and_codex_footers_keep_controls_across_theme_a
             let visual = VisualTestContext::from_window(window.into(), cx);
             visual.simulate_resize(gpui_kit::size(px(360.0), px(600.0)));
             visual.run_until_parked();
-            assert_branch_free_footer(window, backend, false, 4.0, cx);
+            assert_branch_free_footer(window, backend, "composer-send", 4.0, cx);
         }
     }
 }
