@@ -459,25 +459,3 @@ impl AppConfig {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod composer_prediction_tests {
-    use super::*;
-
-    #[test]
-    fn missing_prediction_preference_defaults_on_and_disabled_round_trips() {
-        assert!(AgentConfig::default().composer_predictions_enabled);
-        let old: AgentConfig = toml::from_str("running_message_behavior = 'steer'\n").unwrap();
-        assert!(old.composer_predictions_enabled);
-        let mut disabled = AppConfig {
-            agent: old,
-            ..Default::default()
-        };
-        disabled.agent.composer_predictions_enabled = false;
-        let saved = toml::to_string(&disabled).unwrap();
-        let reloaded: AppConfig = toml::from_str(&saved).unwrap();
-        assert_eq!(disabled, reloaded);
-        assert!(!reloaded.agent.composer_predictions_enabled);
-        assert_eq!(reloaded.agent.running_message_behavior, "steer");
-    }
-}

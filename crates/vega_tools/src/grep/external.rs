@@ -43,8 +43,6 @@ fn ignored(layers: &[IgnoreLayer], path: &Path, is_directory: bool) -> bool {
 }
 
 fn load_ignore(file: File, path: &Path, search: &GrepSearch<'_>) -> Result<Gitignore, ToolError> {
-    #[cfg(test)]
-    super::test_event(super::GrepTestEvent::BeforeIgnoreRead, path, Some(&file));
     check_cancelled(search.cancel)?;
     if search.guard.blocks_file(&file)? {
         return Err(invalid("grep ignore configuration is protected"));
@@ -84,12 +82,6 @@ fn visit(
 ) -> Result<(), ToolError> {
     check_cancelled(search.cancel)?;
     let entries = descriptor::entries(directory, search.cancel)?;
-    #[cfg(test)]
-    super::test_event(
-        super::GrepTestEvent::DirectoryEnumerated,
-        path,
-        Some(directory),
-    );
     check_cancelled(search.cancel)?;
     let mut layer = IgnoreLayer {
         ignore: None,

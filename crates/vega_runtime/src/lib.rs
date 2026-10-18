@@ -1,8 +1,6 @@
 mod agent;
 mod context;
 mod error;
-#[cfg(any(test, feature = "test-support"))]
-mod mock;
 mod openai;
 mod permission;
 mod provider;
@@ -43,8 +41,6 @@ pub use error::VegaError;
 pub mod computer_use;
 pub mod images;
 pub use images::ImageAttachment;
-#[cfg(any(test, feature = "test-support"))]
-pub use mock::{MockProvider, ScriptStep};
 pub use openai::OpenAiProvider;
 pub use permission::{
     RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeCapabilityOutcome,

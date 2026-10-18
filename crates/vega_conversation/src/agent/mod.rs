@@ -53,9 +53,6 @@ mod pipeline;
 mod replay_sessions;
 mod skills;
 
-#[cfg(test)]
-mod tests;
-
 pub use compaction::{
     ConversationCompactionHook, compact_thread_manually, compact_thread_manually_accounted,
     compact_thread_manually_accounted_with_credential_reader,

@@ -887,8 +887,6 @@ impl VegaWindow {
             })
             .cloned()
             .collect();
-        #[cfg(test)]
-        let provider_override = self.agent_provider_override.clone();
         let worker = std::thread::Builder::new()
             .name("vega-agent".into())
             .spawn(move || {
@@ -909,8 +907,6 @@ impl VegaWindow {
                     file_read_state,
                     queue_context,
                     automation_pauses,
-                    #[cfg(test)]
-                    provider_override,
                     replay_registry,
                 );
                 drop(worker_activity);
