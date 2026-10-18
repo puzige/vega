@@ -989,6 +989,8 @@ fn keyboard_copy_preserves_draft_selection_context_menu_and_links(cx: &mut TestA
     cx.run_until_parked();
     let initial_submissions = submissions.get();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
     drag_text(&mut visual, user, "Selectable".len());
     visual.simulate_keystrokes("cmd-c");
     assert_eq!(clipboard(&visual), "Selectable");
