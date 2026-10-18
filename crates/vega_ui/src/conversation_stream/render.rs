@@ -332,19 +332,7 @@ impl ConversationStream {
                             .when(self.thread.backend == TaskBackend::Codex, |row| {
                                 row.child(self.render_backend_status(cx))
                             })
-                            .child(div().min_w_0().flex_1().when(
-                                self.input.read(cx).prediction_text().is_some(),
-                                |hint| {
-                                    hint.overflow_hidden().child(
-                                        div()
-                                            .debug_selector(|| "composer-prediction-hint".into())
-                                            .whitespace_nowrap()
-                                            .text_size(px(Typography::METADATA))
-                                            .text_color(colors.text_tertiary)
-                                            .child("Tab 接受"),
-                                    )
-                                },
-                            ))
+                            .child(div().min_w_0().flex_1())
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_model_controls(window, cx))
                             })
