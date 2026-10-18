@@ -1,6 +1,6 @@
 # Composer 下一轮输入预测
 
-状态：v1.6，2026-10-18 冻结实施。关联 [Issue #469](https://github.com/puzige/vega/issues/469)。用户确认默认开启，复用当前会话模型，保留设置开关。本轮交付到 PR 准备完成，不自动合并 master。
+状态：v1.7，2026-10-18。输入预测主体沿用 v1.6；[Issue #474 展示修订](vega-issue-474-remove-tab-accept-hint.md)等待实施。关联 [Issue #469](https://github.com/puzige/vega/issues/469)。用户确认默认开启，复用当前会话模型，保留设置开关。#469 原交付边界为 PR 准备完成、不自动合并 master；#474 按其独立规格执行。
 
 ## 1. 目标与范围
 
@@ -27,7 +27,7 @@ Native 主会话成功结束后，为空 Composer 生成一条可编辑的下一
 | P9 失败与弃权 | provider 错误、超时、取消、空输出、null、畸形/额外字段 JSON、过长、工具调用、未正常结束 | 静默弃权，不影响主会话成功状态或显示模型错误；不重试 | MockProvider |
 | P10 使用量与隔离 | 请求成功、弃权或收到 usage 后失败 | usage 按现有辅助调用语义计费，缺价格保持未知；消息/主轮状态不变，无内容或凭据日志 | conversation/store |
 | P11 非目标轮次 | 失败/停止、plan、自动任务、子会话、ACP、打开历史 | 零预测请求，已有功能保持 | app/GPUI |
-| P12 UI 可发现性 | 浅深主题，窄窗口，长中英文建议 | 建议与 placeholder 不重叠、无强制布局跳动；有简短 Tab 接受提示；复制/选区/IME 仍只读取真实草稿 | GPUI + 用户手测 |
+| P12 UI 展示 | 浅深主题，窄窗口，长中英文建议 | 建议与 placeholder 不重叠、无强制布局跳动；按 #474 移除工具栏“Tab 接受”提示，保留接受键位；复制/选区/IME 仍只读取真实草稿 | GPUI + 用户手测 |
 
 ## 3. 配置与 UI
 
@@ -36,7 +36,7 @@ Native 主会话成功结束后，为空 Composer 生成一条可编辑的下一
 - 保存沿用 `SettingsView::save_preferences` 的逐字段并发冲突检查，不能重写提供方等无关字段。开关变化传到所有已缓存主会话并撤销预测；不会触发补生成。
 - GPUI 开关广播壳只在 `vega_ui` 内部使用，不导出为跨 crate 共享类型。app 通过生产用 setter 函数传入 bool 更新开关；UI 内订阅广播，不要求 app 枚举缓存，不让 conversation 依赖 GPUI。业务 fence/request 仍统一经过 `vega_conversation::types`。
 - 预测只在真正空文本、无 marked/IME 状态且其所属会话可交互时出现。空白字符也算草稿。弱提示不进入 `TextInput.content`、复制、选择、无障碍真实值或历史。
-- 显示时原 placeholder 被替换，保留简短“Tab 接受”提示；不增加进度、成功条或常驻背景解释。无预测时几何和原键位不变。
+- 显示时原 placeholder 被替换；按 [#474](vega-issue-474-remove-tab-accept-hint.md) 移除工具栏“Tab 接受”提示，不新增替代文字、图标或帮助入口。预测显示与接受键位保留，不增加进度、成功条或常驻背景解释；无预测时几何和原键位不变。
 - 仅无修饰的 Tab/Right/Enter 接受；事件被消费且仅修改真实文本。Esc 丢弃当前建议并使该请求失效。输入法处理优先于接受；开始 marked composition 即清除当前建议，不因 compositionend 恢复过期建议。
 - marked composition 期间，送达应用 action 层的发送、换行及 Composer 焦点遍历命令应消费并保持文本、选区、焦点不变。平台已先把按键交给原生输入法；action 再 propagate 会使 GPUI 回退为插入 Enter/Tab 字符。平台的真实提交仍通过 `EntityInputHandler` 原路径落入草稿，不屏蔽提交回调或改写提交文本。
 
@@ -85,6 +85,8 @@ Actions：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets
 - 2026-10-18 v1.4：根据云端回归明确区分身份 fence 与持续阻塞，补充权限/提问 latch 的即时撤销；保留 IME 优先与主轮脚本隔离。用户要求本轮 PR 准备好后保持打开，不自动合并。
 - 2026-10-18 v1.5：依据锁定 GPUI 的 `dispatch_keystroke` 和 macOS 平台派发源码修正 IME action 语义：原生输入法先处理；仍送达应用的发送/换行/遍历命令在 marked 状态消费，避免 propagate 触发控制字符回退；保留真实提交回调。
 - 2026-10-18 v1.6：用户授权同步 #473 后的新 master，但明确本任务不属于一次性清零范围，保留当前全部测试与断言。本轮仅集成，行为与测试目标不变；冻结原生产/测试/fixture/Cargo 内容，详见[集成交接](vega-issue-469-master-sync.md)。初始实现缺少完整 TEST-FIRST 先行证据的事实仍保留，不追认 TDD。
+
+- 2026-10-18 v1.7：按 #474 用户要求修订 P12 与 §3，移除“Tab 接受”展示要求；其余预测、键位、IME、请求、取消与计费契约不变。修复方案和先行测试计划见[独立规格](vega-issue-474-remove-tab-accept-hint.md)，本次修订不代表实现或验证已完成。
 
 ## 8. 新 master 集成边界
 
