@@ -283,11 +283,7 @@ pub(crate) fn display_width(text: &str) -> usize {
 pub(crate) fn flatten_inlines(spans: &[Inline], out: &mut Vec<StreamSpan>) {
     for span in spans {
         match span {
-            Inline::Text(text) => out.push(StreamSpan {
-                text: text.clone(),
-                style: SpanStyle::Plain,
-                link: None,
-            }),
+            Inline::Text(text) => out.extend(autolinks::text_spans(text)),
             Inline::Code(code) => out.push(StreamSpan {
                 text: code.clone(),
                 style: SpanStyle::Code,
