@@ -32,6 +32,7 @@ mod model_catalog;
 mod model_context;
 mod native_subagents;
 pub(crate) mod navigation;
+mod notifications;
 mod pending_messages;
 mod pricing;
 mod privacy;
@@ -98,6 +99,7 @@ pub(crate) struct VegaWindow {
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
     navigation: navigation::Navigation,
+    completion_attention: notifications::CompletionAttention,
     pub(crate) palette: crate::app_palette::AppPalette,
     /// Sidebar with the [新建任务] button, projects block, and sessions block.
     pub(crate) sidebar: Entity<Sidebar>,
@@ -279,6 +281,7 @@ impl VegaWindow {
             updater: crate::updater::Updater::default(),
             update_notice_dismissed: false,
             navigation: navigation::Navigation::new(cx, None),
+            completion_attention: notifications::CompletionAttention::default(),
             palette: crate::app_palette::AppPalette::default(),
             sidebar,
             settings_view: None,

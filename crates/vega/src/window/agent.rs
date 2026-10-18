@@ -582,7 +582,8 @@ impl VegaWindow {
             .active
             .get(thread_id)
             .map(|active| (active.generation, active.stream.clone()));
-        if let Some(active) = self.agent_controller.active.get(thread_id) {
+        if let Some(active) = self.agent_controller.active.get_mut(thread_id) {
+            active.cancellation_reason = Some(RunCancellationReason::User);
             if let Some(control) = &active.computer_use {
                 control.stop();
             }

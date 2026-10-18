@@ -370,6 +370,7 @@ impl VegaWindow {
 
         vega_ui::sidebar::set_thread_running(thread_id, false, cx);
         self.finish_context_primary_owner(generation);
+        self.finish_completion_attention(&run, success, cx);
 
         if let Some(message_id) = &run.terminal_message_id {
             let duration_ms = u64::try_from(run.started.elapsed().as_millis()).ok();

@@ -3,8 +3,8 @@
 ## 范围与基线
 
 - Issue：[#481](https://github.com/puzige/vega/issues/481)。采用[最新产品裁决](https://github.com/puzige/vega/issues/481#issuecomment-6253705604)中的 A：侧边栏与原生 macOS 通知同卡实现。
-- 初始代码基线：`b3c2ffafb9ae39e32654c6692b2f35da3955d76a`；测试接线同步到 `efd92833488fb3432042682e81d7f4eec1a10d0d`（#482）。任务分支：`feat/481-session-completion-notifications`。
-- 本规格 v1.1，2026-10-19。v1.1 仅同步最新基线与[测试交付生命周期](vega-rust-test-delivery-lifecycle.md)，A1–A17 目标、输入和预期不变。主 agent 负责规格、审查和集成；同一专职子 agent 依次负责先行测试与生产实现。
+- 初始代码基线：`b3c2ffafb9ae39e32654c6692b2f35da3955d76a`；测试接线同步到 `efd92833488fb3432042682e81d7f4eec1a10d0d`（#482），后续集成 `6c782a630ceb4c83f4f6b1e09bdc645ac8e87092`（#479复制功能）。任务分支：`feat/481-session-completion-notifications`。
+- 本规格 v1.3，2026-10-19。v1.1 同步最新基线与[测试交付生命周期](vega-rust-test-delivery-lifecycle.md)；v1.2 仅记录经预先审查的测试显示环境接线修正，A1–A17 目标和预期不变，原容量输入及全部断言保留；v1.3 仅同步#479共享stream方法与集成验证记录，四份测试内容保持v1.2已审查哈希。主 agent 负责规格、审查和集成；同一专职子 agent 依次负责先行测试与生产实现。
 - 沿用 GPUI Kit 已公开的 `App::show_system_notification`、`dismiss_system_notification`、`on_system_notification_response`。禁止新增依赖或直接平台 FFI。
 - 不新增消息计数、通知历史、声音、单会话静音开关、分组标记或排序规则，不修改模型原文或用户配置。
 - 本地只读源码及执行快速差异、格式和静态检查。编译、Clippy、测试均由现有 PR Actions 执行。
@@ -15,23 +15,23 @@
 
 | 用例 | 前置与操作 | 可观察结果 | 层级与证据 | 当前状态 |
 |---|---|---|---|---|
-| A1 | 会话 A 运行，主窗口聚焦且实际显示 A，进入完成/失败/非用户中断终态 | 不新增未读，不发系统通知；保留真实终态和正常收尾 | GPUI 终态入口与存储读取 | 待先行测试及 CI |
-| A2 | 窗口聚焦显示 B，A 进入上述三个终态 | A 的 unread 持久化为 true，B 不变；有合格输出时通知 A | GPUI 终态入口、平台通知与持久存储 | 待先行测试及 CI |
-| A3 | 窗口不聚焦，当前路由分别为 A/B，A 结束 | 两种情况均置 A 未读并按条件通知；后台路由缓存不等于可见 | 与 A1/A2 构成聚焦 × 会话 × 终态矩阵 | 待先行测试及 CI |
-| A4 | Settings 遮住缓存的 A，窗口聚焦时 A 结束 | A 视为后台；不因缓存 id 相等抑制通知或未读 | GPUI 实际路由与平台通知 | 待先行测试及 CI |
-| A5 | 用户主动取消 A；分别当前可见与后台；另测 review 内部 handoff | 用户取消不发系统通知；后台取消终态仍保留 unread，当前可见不新增 unread；内部 handoff 继续同一用户任务，不冒充结果完成；不把其他 Interrupted 当用户取消 | GPUI 取消、handoff 与真实终态状态 | 待先行测试及 CI |
-| A6 | 同一 run 重复 Finished，或旧 generation 在新 run 中迟到 | 对同一 run 最多一次通知/完成副作用；旧消息不终结新 run，不覆盖其 running 状态 | 真正 ingress、RunningThreads 与平台记录 | 待先行测试及 CI |
-| A7 | 同一会话连续两次后台 run，各有不同输出 | 每个新 run 各通知一次、内容归属各自本轮；不得沿用上轮摘要或去重键 | GPUI 两轮事件、通知 tag/body | 待先行测试及 CI |
-| A8 | run 没有输出、仅 thinking、仅工具、仅 commentary、仅空白文本，且历史有旧答案 | 均不发通知；后台仍置未读。历史答案和内部输出不能充当本轮结果 | 真实流投影、终态入口和平台记录 | 待先行测试及 CI |
-| A9 | run 有普通 assistant 输出，或 commentary 后有可信 Final；包含多行、中文与长文本 | 取本轮最后合格 assistant 文本；不混入 commentary/thinking/工具/历史；正文单行、UTF-8 完整且有界 | 流投影与最终平台通知内容 | 待先行测试及 CI |
-| A10 | 有结果的完成/失败/非用户中断，分别有/无会话标题 | 标题使用会话标题或“新任务”；失败/中断正文明确终态，不能看起来像成功 | 平台通知的可见内容 | 待先行测试及 CI |
-| A11 | GPUI 通知投递不可用，后台 run 结束 | 正常结束并持久化 unread，没有应用错误或重试/自制授权 UI；无系统通知交付 | 无平台 app identity 的测试平台；真实拒绝见 M5 | 待先行测试及 CI |
-| A12 | 已未读的 A 经元数据刷新、组织投影/重排或项目展开，然后真正访问 A | 所有刷新不清 unread；组织操作不改任务时间/项目归属；元数据 reload 保留现有 open_thread 活动时间语义，visit_thread 才清未读并持久化 | 会话/组织服务与存储读取 | 待先行测试及 CI |
-| A13 | 后台完成后重新激活窗口，实际显示 A；另测 Settings 遮挡及已前台时手动标未读 | 新的真实访问通过 visit 清未读；Settings 仍遮挡时保持 A 未读；普通 render 不清除用户在已可见 A 上刚作的手动未读标记；不顺带清 B | 窗口 activation、导航与存储 | 待先行测试及 CI |
-| A14 | A 未读又在运行，随后停止；分别无操作区、hover 与键盘操作区 | 尾部单一状态：操作区 > running > unread > 既有时间戳；保持现有几何、主题色和操作可发现性 | 实际行投影/渲染决策，必要的 GPUI 布局检查 | 待先行测试及 CI |
-| A15 | 从 B/Settings 点击 A 的通知；A 仍存在 | 激活主窗口、导航 A、按 visit_thread 清 A 未读；B 的业务数据不变，不创建消息或新 run，不丢草稿 | GPUI simulate_system_notification_response 与持久状态 | 待先行测试及 CI |
-| A16 | 点击无关/未知 tag，或目标已不存在的通知 | 忽略无关响应；不存在的任务不重建、不误导航、不开始 run；不得以清其他任务未读作为回执 | GPUI 响应与会话/消息状态 | 待先行测试及 CI |
-| A17 | 未读写入后紧接真实访问/切换；或手动标记已读在完成前发起但稍后返回 | durable 状态遵守真实操作/完成的先后顺序，不由过期异步结果重新置未读或清错对象；访问失败保持真实错误恢复路径 | 隔离存储与现有导航 mutation 时序 | 待先行测试及 CI |
+| A1 | 会话 A 运行，主窗口聚焦且实际显示 A，进入完成/失败/非用户中断终态 | 不新增未读，不发系统通知；保留真实终态和正常收尾 | GPUI 终态入口与存储读取 | 旧基线 GREEN；集成待 CI |
+| A2 | 窗口聚焦显示 B，A 进入上述三个终态 | A 的 unread 持久化为 true，B 不变；有合格输出时通知 A | GPUI 终态入口、平台通知与持久存储 | 旧基线 GREEN；集成待 CI |
+| A3 | 窗口不聚焦，当前路由分别为 A/B，A 结束 | 两种情况均置 A 未读并按条件通知；后台路由缓存不等于可见 | 与 A1/A2 构成聚焦 × 会话 × 终态矩阵 | 旧基线 GREEN；集成待 CI |
+| A4 | Settings 遮住缓存的 A，窗口聚焦时 A 结束 | A 视为后台；不因缓存 id 相等抑制通知或未读 | GPUI 实际路由与平台通知 | 旧基线 GREEN；集成待 CI |
+| A5 | 用户主动取消 A；分别当前可见与后台；另测 review 内部 handoff | 用户取消不发系统通知；后台取消终态仍保留 unread，当前可见不新增 unread；内部 handoff 继续同一用户任务，不冒充结果完成；不把其他 Interrupted 当用户取消 | GPUI 取消、handoff 与真实终态状态 | 旧基线 GREEN；集成待 CI |
+| A6 | 同一 run 重复 Finished，或旧 generation 在新 run 中迟到 | 对同一 run 最多一次通知/完成副作用；旧消息不终结新 run，不覆盖其 running 状态 | 真正 ingress、RunningThreads 与平台记录 | 旧基线 GREEN；集成待 CI |
+| A7 | 同一会话连续两次后台 run，各有不同输出 | 每个新 run 各通知一次、内容归属各自本轮；不得沿用上轮摘要或去重键 | GPUI 两轮事件、通知 tag/body | 旧基线 GREEN；集成待 CI |
+| A8 | run 没有输出、仅 thinking、仅工具、仅 commentary、仅空白文本，且历史有旧答案 | 均不发通知；后台仍置未读。历史答案和内部输出不能充当本轮结果 | 真实流投影、终态入口和平台记录 | 旧基线 GREEN；集成待 CI |
+| A9 | run 有普通 assistant 输出，或 commentary 后有可信 Final；包含多行、中文与长文本 | 取本轮最后合格 assistant 文本；不混入 commentary/thinking/工具/历史；正文单行、UTF-8 完整且有界 | 流投影与最终平台通知内容 | 旧基线 GREEN；集成待 CI |
+| A10 | 有结果的完成/失败/非用户中断，分别有/无会话标题 | 标题使用会话标题或“新任务”；失败/中断正文明确终态，不能看起来像成功 | 平台通知的可见内容 | 旧基线 GREEN；集成待 CI |
+| A11 | GPUI 通知投递不可用，后台 run 结束 | 正常结束并持久化 unread，没有应用错误或重试/自制授权 UI；无系统通知交付 | 无平台 app identity 的测试平台；真实拒绝见 M5 | 旧基线 GREEN；集成待 CI |
+| A12 | 已未读的 A 经元数据刷新、组织投影/重排或项目展开，然后真正访问 A | 所有刷新不清 unread；组织操作不改任务时间/项目归属；元数据 reload 保留现有 open_thread 活动时间语义，visit_thread 才清未读并持久化 | 会话/组织服务与存储读取 | 旧基线 GREEN；集成待 CI |
+| A13 | 后台完成后重新激活窗口，实际显示 A；另测 Settings 遮挡及已前台时手动标未读 | 新的真实访问通过 visit 清未读；Settings 仍遮挡时保持 A 未读；普通 render 不清除用户在已可见 A 上刚作的手动未读标记；不顺带清 B | 窗口 activation、导航与存储 | 旧基线 GREEN；集成待 CI |
+| A14 | A 未读又在运行，随后停止；分别无操作区、hover 与键盘操作区 | 尾部单一状态：操作区 > running > unread > 既有时间戳；保持现有几何、主题色和操作可发现性 | 实际行投影/渲染决策，必要的 GPUI 布局检查 | 旧基线 GREEN；集成待 CI |
+| A15 | 从 B/Settings 点击 A 的通知；A 仍存在 | 激活主窗口、导航 A、按 visit_thread 清 A 未读；B 的业务数据不变，不创建消息或新 run，不丢草稿 | GPUI simulate_system_notification_response 与持久状态 | 旧基线 GREEN；集成待 CI |
+| A16 | 点击无关/未知 tag，或目标已不存在的通知 | 忽略无关响应；不存在的任务不重建、不误导航、不开始 run；不得以清其他任务未读作为回执 | GPUI 响应与会话/消息状态 | 旧基线 GREEN；集成待 CI |
+| A17 | 未读写入后紧接真实访问/切换；或手动标记已读在完成前发起但稍后返回 | durable 状态遵守真实操作/完成的先后顺序，不由过期异步结果重新置未读或清错对象；访问失败保持真实错误恢复路径 | 隔离存储与现有导航 mutation 时序 | 旧基线 GREEN；集成待 CI |
 
 所有正常/失败/取消矩阵验证运行不再活动及 `RunningThreads` 的真实状态。通知次数只用于“不得重复通知/不得通知”的业务契约，结合正文、存储和运行终态断言，不能以 mock 调用数量代替行为。
 
@@ -83,7 +83,7 @@
    - `crates/vega/src/main.rs`、新的应用通知模块与 `window/` 通知模块：应用 identity、单一响应 handler、窗口 activation/路由可见性、投递记录和导航。`window/navigation.rs::record_navigation_visit` 可沿 sidebar 已有的短同步 `visit_thread` 边界最小统一实际访问的写入顺序，保留导航 fence、草稿 guard、精确投影与错误恢复；resolver 只读操作仍异步。
    - `crates/vega/src/app_agent.rs`、`window/artifact.rs`、`window/agent.rs` 及必要的现有终态调用方：一次完成所有权、当前 run 消息身份、终态分类，接入未读与通知。不修改 runtime 的 headless 依赖关系。
    - `crates/vega_ui/src/conversation_stream/phase.rs` 等已有流投影模块：提供真实消费所需的只读摘要投影；跨 crate 不新增两套共享结构，不为测试扩大 public API。
-   - `crates/vega_ui/src/sidebar/row_helpers.rs`、`threads_block.rs`、`sidebar/organization/projections.rs` 和必要现有入口：主行与组织搜索投影的尾部互斥、未读更新及其顺序。不改组织/排序契约，不直接写 SQLite。
+   - `crates/vega_ui/src/sidebar/row_helpers.rs`、`threads_block.rs`、`sidebar/threads_block/organization/projections.rs` 和必要现有入口：主行与组织搜索投影的尾部互斥、未读更新及其顺序。不改组织/排序契约，不直接写 SQLite。
    - 会话存储入口只在实现已列明未读/访问契约确有需要时最小调整；不新增表或设置。
 4. 专职子 agent 停止写入并交回文件清单、静态检查、冻结测试未改证明、风险及 `/tmp/vega-481-executor-report.md`。主 agent 审查/提交到同 PR，Actions 验证同一测试 GREEN 和最新 head 完整门禁。
 5. 带同一冻结测试的 GREEN 验证后，先在同一 PR 固定完整提交 SHA、可访问测试源码/补丁与 RED/GREEN run/job、准确计数，再委派同一专职子 agent 用独立清理提交删除本卡 Rust 测试与独占 harness/config override/feature/dev dependency。删除前后生产行为保持相同，不删除失败或未执行测试来换绿。
@@ -112,11 +112,13 @@ cargo nextest run --workspace
 | 证据 | 记录 |
 |---|---|
 | 生产未改基线 | 初始 `b3c2ffafb9ae39e32654c6692b2f35da3955d76a`；同步后 `efd92833488fb3432042682e81d7f4eec1a10d0d` |
-| 测试先行提交与 frozen 文件摘要 | 待提交 |
-| Actions RED 与失败原因 | 待 CI |
-| 生产实现提交与先后顺序 | 未开始；须有效 RED 后 |
-| 带同一测试 GREEN | 待 CI |
-| 独立删测 / 最终 head 空集 required check | 待 GREEN 后清理及 CI |
+| 测试先行提交与 frozen 文件摘要 | [`05c9d46e9be4354d3e97d9de5f30a1520e76ce9b`](https://github.com/puzige/vega/commit/05c9d46e9be4354d3e97d9de5f30a1520e76ce9b)，25 个定义；四个测试文件与初始 `28cdd7d1` 的 SHA-256 相同，固定源码见 PR #483 |
+| Actions RED 与失败原因 | [39158242375](https://github.com/puzige/vega/actions/runs/39158242375)：目标 `app_notifications::bind`、`completion_response`、`session_row_trailing`/`SessionRowTrailing` 接口缺失；行为断言尚未执行，发现/执行计数未取得。Format、Python 步骤成功 |
+| 生产实现提交与先后顺序 | 2026-10-18 19:25 UTC 核实接口缺失 RED 后授权实现；`fd639d860fe9365b184044323d399a2092fbb377` 首轮编译检查因 running 容器缺少控件 ID 失败，行为断言未执行；`c6cf4ed91aa6a030a1fde1bb6cb9cd92233933c7` 补上 ID，保留 aria 标签与冻结测试，Format/Clippy 成功 |
+| 首次实际执行及测试接线修正 | [39160375451](https://github.com/puzige/vega/actions/runs/39160375451)：25 发现/执行，24 通过、1 SIGKILL、0 跳过，未取得 GREEN。容量保护用例在强制渲染1 MiB+1连续文本后166.661秒被终止，不能仅凭日志断言 OOM。静态排版路径存在重复 shape 剩余长文本的资源放大；本卡不改既有生产排版。经[修正前审查](https://github.com/puzige/vega/pull/483#issuecomment-6254481111)，仅在原 oversized 输入前加入 `f.route(false, true, true, cx);`，先用真实 Settings 隐藏同一B editor，保留live composer、1 MiB+1原输入、实际通知点击与全部原断言。修正后该文件 SHA-256 为 `448d898a826b8fc7b0bdc4b6cf61e4162ef81c7f537800043dd343e57c27e28a`，删去这一行与原文件逐字节一致，其余三份测试文件未改；提交链接在 PR 固定，再验证完整 GREEN |
+| 旧基线带同一测试 GREEN | 完整 head [`98fa9dbdb92997221452dd8a29a4635e655fdca6`](https://github.com/puzige/vega/commit/98fa9dbdb92997221452dd8a29a4635e655fdca6)，[Actions39161474919](https://github.com/puzige/vega/actions/runs/39161474919) / [Nextest117775504853](https://github.com/puzige/vega/actions/runs/39161474919/job/117775504853)：25发现、25执行、25通过、0失败/跳过，忽略数未单列；容量用例2.477秒通过。Python5+15+14=34执行通过，Format、全目标Clippy、required check成功。[GREEN留存记录](https://github.com/puzige/vega/pull/483#issuecomment-6254557028)含四份固定源码/完整SHA-256及原始输出；已在删测授权之前固定 |
+| 最新基线集成与同测验证 | 清理前fetch发现master更新，未删除测试。同步到`6c782a630ceb4c83f4f6b1e09bdc645ac8e87092`，测试提交变为`ed562597bc83f881e3c6b93f7c3d175862085118`；仅处理phase.rs同处插入冲突，完整保留双方方法。通知摘要方法SHA-256=`94faff2ea9176069ea10725955b568e20b433804ba04eee54e744c989762c01d`未变，移除本卡方法后phase.rs与上游逐字节一致；其余13个上游文件未变。四份测试内容未改，完整永久源码已在[PR读回核实](https://github.com/puzige/vega/pull/483#issuecomment-6254579238)。最新集成head带测GREEN待CI，旧结果不用于最终合并 |
+| 独立删测 / 最终 head 空集 required check | 尚未清理；待最新集成带测GREEN固定证据后重新授权仅删除本卡25个Rust测试及独占支持，16个允许路径。最终head云端0发现/0执行及完整门禁待核实 |
 | 真实 macOS 通知/权限/点击 | 待用户手测 |
 
 用户手测：

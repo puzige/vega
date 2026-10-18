@@ -801,6 +801,7 @@ async fn notification_navigation_preserves_a_draft_and_respects_capacity_guard(
             .to_owned()),
         "keep this draft"
     );
+    f.route(false, true, true, cx);
     let oversized = "x".repeat(1024 * 1024 + 1);
     b_stream
         .read_with(cx, |stream, _| stream.composer_input())

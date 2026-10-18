@@ -17,6 +17,7 @@ const WINDOW_MIN_HEIGHT: f32 = 600.0;
 
 mod agent_context;
 mod app_agent;
+mod app_notifications;
 mod app_palette;
 mod app_usage;
 mod artifact_controller;
@@ -55,6 +56,7 @@ fn main() {
 
     let app = application().with_assets(gpui_kit::assets::Assets);
     app.run(|cx: &mut App| {
+        app_notifications::init(cx);
         // GPUI Kit owns the shared component/base globals before any Vega
         // view can render a Kit control.
         gpui_kit::init(cx);
@@ -159,7 +161,8 @@ fn main() {
         };
 
         if let Ok(root) = window.update(cx, |_, _, cx| cx.entity().downgrade()) {
-            app_palette::bind_shortcuts(window.into(), root, cx);
+            app_palette::bind_shortcuts(window.into(), root.clone(), cx);
+            app_notifications::bind(window, root, cx);
         }
         cx.activate(true);
         updater::acknowledge_startup();

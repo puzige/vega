@@ -182,12 +182,32 @@ pub(crate) fn archive_section_visible(archived_count: usize) -> bool {
     archived_count > 0
 }
 
-pub(crate) fn shows_timestamp_at_rest(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionRowTrailing {
+    Actions,
+    Running,
+    Unread,
+    Timestamp,
+    Empty,
+}
+
+pub(crate) fn session_row_trailing(
     actions_visible: bool,
-    show_timestamp_at_rest: bool,
     running: bool,
-) -> bool {
-    !actions_visible && show_timestamp_at_rest && !running
+    unread: bool,
+    show_timestamp_at_rest: bool,
+) -> SessionRowTrailing {
+    if actions_visible {
+        SessionRowTrailing::Actions
+    } else if running {
+        SessionRowTrailing::Running
+    } else if unread {
+        SessionRowTrailing::Unread
+    } else if show_timestamp_at_rest {
+        SessionRowTrailing::Timestamp
+    } else {
+        SessionRowTrailing::Empty
+    }
 }
 
 /// Relative time for a session row (ui-spec §4.1, "2h" style).

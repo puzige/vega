@@ -254,6 +254,58 @@ impl ConversationStream {
         owner.is_some()
     }
 
+    pub fn completion_response(&self, message_ids: &[String], cx: &App) -> Option<String> {
+        for message_id in message_ids.iter().rev() {
+            let copies = self
+                .entries
+                .iter()
+                .zip(&self.entry_identities)
+                .filter_map(|(entry, identity)| {
+                    if identity.message_id.as_ref() != Some(message_id) {
+                        return None;
+                    }
+                    match entry {
+                        StreamEntry::Assistant { copy, .. } => Some(copy),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            if let Some(responses) = self.run_responses.get(message_id) {
+                let text = copies
+                    .iter()
+                    .map(|copy| copy.original_text())
+                    .collect::<String>();
+                let Some(responses) = responses.validated(&text) else {
+                    continue;
+                };
+                if let Some(response) = responses
+                    .iter()
+                    .rev()
+                    .find(|response| response.kind == AssistantResponseKind::Final)
+                    && let Some(text) = text.get(response.text_start_bytes..response.text_end_bytes)
+                    && !text.trim().is_empty()
+                {
+                    return Some(text.to_owned());
+                }
+                continue;
+            }
+            for copy in copies.into_iter().rev() {
+                if self
+                    .run_activity_groups
+                    .get(message_id)
+                    .is_some_and(|group| group.read(cx).hides_copy(copy.id))
+                {
+                    continue;
+                }
+                let text = copy.original_text();
+                if !text.trim().is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn run_details(
         &self,
         group: &Entity<RunActivityGroup>,
