@@ -83,6 +83,12 @@ pub use mutations::apply;
 mod calendar;
 pub use calendar::local_calendar_bucket;
 
+#[cfg(test)]
+mod legacy_message_order_tests;
+
+#[cfg(test)]
+mod message_order_tests;
+
 /// Register or reuse a folder and reveal its project in one revision-checked transaction.
 /// Call on a background executor; folder validation and canonicalization perform filesystem IO.
 pub fn register_and_reveal_project(
