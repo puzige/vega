@@ -130,3 +130,12 @@ PR 保留基线、测试补丁/提交、有效 RED 的 run/job 与原始失败�
 允许的最小生产修复：仅替换 `render_rows::selection_context_menu` 的生命周期包装，可放入同目录私有 `selection_menu.rs`；继续复用现有PopupMenu内容/禁用状态、样式、键盘处理、定位、点击外部关闭和焦点恢复。菜单状态强持菜单实体，Dismiss订阅仅弱持状态，关闭时释放菜单与订阅，避免状态和实体互相强持。保留稳定控件身份、正文选择/链接、焦点、事件和布局；如函数签名必须补窗口参数，仅修改现有调用点（含thinking_body），不扩展到其他菜单。
 
 不改冻结测试、依赖/锁文件、上游源码、CI、Python或benchmark。先由专职子agent完成最小修复，主控审查引用所有权与差异；同一完整13项实际GREEN并留证后，才按v1.1独立删测、最终空集门禁和正式PR。原功能实现与该次资源修复的基线、RED和GREEN分别记录，保留真实提交顺序。
+
+
+## 带冻结测试 GREEN 与交付证据
+
+以上各阶段的待验证状态保留为过程记录；本节记录实际带测试结果。GREEN完整head `f3fddc952ea028af8b4ef96c7f006b70f6a8d297` 的 [Actions 39159992468](https://github.com/puzige/vega/actions/runs/39159992468) 已成功：Nextest明确13发现、13执行、13通过、0失败、0跳过（14 binaries，忽略数未单列）；Python 5+15+14=34执行通过，fmt、全目标Clippy和required check均成功。原C9三类键盘复制、草稿/选区/菜单/链接及退出资源检查全部通过。
+
+测试源码SHA-256 `c1d8db023323402c7d19d87b1667eec45215e14c2c37b217d018c64d751162cf` 与原重新冻结文件一致。[删除前固定的GREEN记录及完整源码](https://github.com/puzige/vega/pull/479#issuecomment-6254362017)包含完整SHA、RED/实现时序、各run/job与准确计数，已从GitHub读回核对全文和源码哈希；原始版本及等价修正恢复链也保留。证据不依赖本机文件、可删除分支或会过期artifact。
+
+GREEN之后的独立删测仅移除本卡13项Rust测试、自包含fixture/helper、模块/cfg接线、SELECTION_TARGET_LAYOUT几何观察、7个测试debug selector、UI临时dev依赖及其10个独占锁包；两个Cargo文件应回到efd92833字节一致。真实控件ID、可访问名称、复制/选择/Final/焦点/菜单释放/布局和滚动行为保留，Python、CI、benchmark不变。删除提交与最终head完整门禁固定在本PR；最终结果必须明确 **0发现/0执行、no Rust tests**，不能将空集冒充本节的带测试GREEN。
