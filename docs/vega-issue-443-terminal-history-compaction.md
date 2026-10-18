@@ -1,7 +1,7 @@
 # 停止或失败后的历史回合参与自动压缩
 
 - Issue：[#443](https://github.com/puzige/vega/issues/443)
-- 版本：v1，2026-10-17；基线为包含 #442 的 master。
+- 版本：v2，2026-10-18；本次基线为 v0.1.150。下文保留 v1 已交付契约，新增部分 checkpoint 的二次压缩修复。
 - 本卡用户明确要求 Codex 建卡后直接修复；Codex 主会话冻结方案、审查和集成，专职子 agent 实现。
 - 优先级 P1；规模 S。生产修改局部，主要工作是生产路径回归。
 
@@ -60,3 +60,42 @@ cargo nextest run --workspace
 - 主会话先提交并发布本规格，再委派实现；子 agent 只改允许的生产/测试文件，不改 spec、不 push/开 PR/合并。
 - 子 agent 回报修改、commit、静态检查退出码、待 CI 项和偏离；完成后停止写入。主会话审查、提交 PR、等待 Actions 后 squash merge。
 - 合并后卡片 In review，Issue 开放，分支/worktree 保留，等待用户手测；不提前 Done 或清理。
+
+## v2：已有部分 checkpoint 的历史再次压缩
+
+### 现场与根因
+
+用户指定继续使用 #443，重复登记 #454 已关闭。v0.1.150 已包含 v1 修复，但 2026-10-18 的一轮继续任务在约 8 分 45 秒后失败：12 次主请求和 24 次工具调用成功，随后压缩预检查在 93 毫秒内返回 `summary_source_changed`。诊断没有记录精确拒绝分支；以下为现场元数据与生产代码的静态对应，运行验证只由 Actions 完成。
+
+已有部分 checkpoint 覆盖旧助手正文的前 3,018 字节及部分工具轮次。旧正文共 3,976 字节；重载只保留后 958 字节，首个保留工具的绝对 offset 3,018 变为相对 offset 0。`pipeline::source_after_checkpoint` 正确切掉正文前缀、移除已覆盖工具并重定位剩余工具；`compact_impl` 的持久化投影使用该 checkpoint，历史归一化却把完整 `source` 交给 `normalize_terminal_history_groups`，因此对同一合法尾部使用了不同坐标和工具集合。v1 测试从无 checkpoint 的历史开始，没有覆盖本次前置条件。
+
+### 验收用例（先于实现）
+
+只使用临时 Store、现有 MockProvider 与生产历史加载/压缩路径，不运行真实模型、网络或外部进程。至少一个用例通过真实自动压缩运行入口，另一个从生产 hook 安装首个部分 checkpoint 后关闭并重开 Store，再做第二次压缩。不得仅手工裁剪 Vec 后测试比较函数。
+
+| 用例 | 前置状态与操作 | 必须观察的结果 |
+| --- | --- | --- |
+| P1 停止后再次压缩 | 长工具回合已有非零正文和工具游标的部分 checkpoint；旧助手 interrupted；发起新用户回合并自动压缩 | 发出摘要请求，安装后继 checkpoint，主模型继续；摘要包含既有摘要和未覆盖尾部，保留最新用户请求，旧工具零调度；原始历史保持不变 |
+| P2 失败重试与重开 | 生产 hook 安装部分 checkpoint；旧助手 failed；关闭并重开 Store 后重试并再次压缩 | 正常完成二次压缩；再次重开后投影与结果一致，无尾部丢失或工具重复；失败事实保留 |
+| P3 正常结束与连续部分 checkpoint | 覆盖 done 旧助手；同一助手先后生成至少两个递进的部分 checkpoint 后成为历史，继续并压缩 | 以最新 checkpoint 为准，仅处理尚未覆盖的尾部；每次安装的 predecessor、正文/工具游标连续一致，不把已总结前缀重新插入 |
+| P4 UTF-8 与工具边界 | 正文含多字节字符，切点合法且非零；首个保留工具相对 offset 为 0；含同 offset 的不同 response 轮次，保留当前 live owner 的完整工具组 | 正文按字节准确切分，工具分组/调用结果配对保持；当前回合与旧历史分别匹配其合法投影 |
+| P5 真实变化仍拒绝 | 基于部分 checkpoint 的合法请求分别变更保留正文、工具参数/结果、调用顺序或 offset；另覆盖不完整工具组 | 以现有 SourceChanged/InvalidProjection 错误拒绝，摘要请求为零，checkpoint 不变；不能通过丢弃工具或比较较短前缀放行 |
+| P6 保留既有围栏 | 运行 v1、continuous_compaction、history_permissions、reasoning_replay 的既有回归 | 无 checkpoint、整消息 checkpoint、当前 owner、模型/来源围栏和最终 CAS 保持原契约 |
+
+使用参数化状态覆盖可共享夹具，但不同故障断言须有业务意义。无需扩大生产 public API；新测试名称描述行为，不嵌入卡号。至少静态证明 P1/P2 在修复前会于绝对/相对 offset 校验失败，CI 证明修复后的生产路径通过。
+
+### v2 冻结实现方案
+
+1. 在 `crates/vega_conversation/src/agent/compaction.rs::compact_impl` 的自动压缩来源校验分支，调用现有 `pipeline::source_after_checkpoint(&source, checkpoint.as_ref())` 取得一次 checkpoint 投影后的 source。当前 owned group 的 canonical 构造与旧终态组的归一化使用这个相同投影，避免重复实现字节和工具游标裁剪。
+2. `normalize_terminal_history_groups` 对收到的 projected source 保留全部原有 owner、终态、正文、工具参数/结果、顺序与偏移检查。改动应让两侧在相同坐标内严格相等；不能简单跳过已有 checkpoint 的组、忽略 offset、截短比较或吞掉 SourceChanged。
+3. 原始 `source` 仍供版本/指纹、模型/source fence、覆盖边界和 checkpoint 安装 CAS 使用；不得用 projected source 替换原始持久化事实。新的持久化 checkpoint 游标继续使用原消息字节/工具序列坐标，不把相对 offset 写回数据库。
+4. 扩展 `agent/tests/terminal_history_compaction.rs`，或新增语义命名测试模块并在 `agent/tests/mod.rs` 注册。复用已有连续压缩/历史夹具，不新增依赖、DDL、生产配置、UI 或 provider 协议改动。禁止访问测试环境外的用户数据库。
+5. 保留 v1 的终态白名单及所有既有测试断言。若当前 production hook 有额外前置契约导致用例无法到达目标校验，先回报主会话调整夹具/规格，不能绕过校验或扩大范围。
+
+### v2 验证与交付
+
+- 任务分支：`feat/443-partial-checkpoint-compaction`，复用本卡干净 worktree，从最新 origin/master 创建；v1 分支与验证证据保留。
+- 用户明确授权 Codex 直接修复；主会话写规格、审查、集成，专职子 agent 是唯一代码写入者。子 agent 不改 spec、不操作生产数据、不 push/开 PR/合并。
+- 本地仅快速差异和 rustfmt 静态检查；完整 fmt、Clippy、workspace nextest 由标准 PR Actions 执行。回报最新 head 的原始证据及首次失败原因，不弱化断言，不盲目重跑。
+- 用户手测：新版中重开一条曾做过回合内部分压缩的已停止/失败长任务，继续至下一次自动压缩，观察任务继续且历史和最新请求保留。代码合并不代表安装完成，不自动恢复或重试用户正在运行的任务。
+- 最新 head required check 通过后 squash merge；#443 转 In review 并保持开放，等待用户手测。回滚仅 revert 本次提交，无 schema/数据回滚步骤。
