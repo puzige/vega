@@ -4,6 +4,8 @@ use gpui_kit::MouseMoveEvent;
 use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
 mod organization;
+#[cfg(test)]
+mod tests;
 use organization::{Organization, OrganizationSection};
 
 /// Events emitted by the session block.
