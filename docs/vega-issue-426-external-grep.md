@@ -16,7 +16,7 @@
 | B | 明确指定外部普通文件，Full access 或批准 Once | 返回真实匹配行、1-based 行号及 canonical 绝对路径；同一结果可交 read；不因项目根拒绝 | tools + runtime loop |
 | C | 明确指定外部目录 | 仅该目录后代普通文件；不跟随后代 symlink；保留排序、ignore/hidden 过滤、二进制跳过、500 条上限与截断标记 | tools |
 | D | 外部文件/目录使用 Confirm、Auto、ReadOnly，包括 Ask/Plan | 沿用 Read 审批；仅批准后执行；Deny、timeout、取消均无匹配正文泄漏，并保留真实拒绝/取消状态 | runtime permission/loop |
-| E | Always 与已有 exact Read 规则 | 复用规范化目标的 Read exact rule；目录 exact rule 只复用同一目录调用，不匹配其父目录、兄弟、子路径或任意 glob；不授予写权限 | runtime permission/loop |
+| E | Always、旧 exact Read 规则、文件变目录 | 文件可复用 canonical 文件的 Read exact rule；目录必须匹配独立的 `grep-dir:v1:<canonical-path>` Read rule，旧裸目录/文件规则不升级为递归许可；只匹配同一目录调用，不匹配父/兄弟/子路径或 glob | runtime permission/loop |
 | F | 入口 symlink 或带 `..` 的相对外部路径 | 与 read 共用规范化身份；审批显示真实目标；执行不重新解释原别名去追随新目标 | tools + runtime |
 | G | 批准等待中更换文件、目录，或将 canonical 目标/祖先换为 symlink | 执行前 fail closed，返回可理解的 target-changed/不支持目标错误；不读取替换目标。文件内容原地更新不等同目标身份变化 | tools + runtime hook |
 | H | 目录遍历过程中后代符号链接/目录被替换，或外部兄弟目录含相同文件名 | 实际文件读取以获批目录 descriptor 为锚，逐组件 no-follow；不读取范围外匹配；无效/变化时失败而非重定向 | tools 进程内 fixture |
@@ -25,6 +25,7 @@
 | K | 无效 regex、JSON/参数类型 | 执行/审批前或原有固定错误路径拒绝，不回显敏感参数；后续模型仍可纠正，工具只执行一次 | tools + runtime loop |
 | L | 模型续轮、工具定义与幂等 | schema 不改字段；描述承认外部读取审批；live 调用保持可执行参数与配对结果；stored 历史不升级成指令；相同 call-id 复用及冲突保护保留 | registry + runtime loop |
 | M | glob/写入/shell 回归 | glob 仍拒绝外部/parent pattern，grep 不记录 read-before-write 版本，不增加写入能力，不改变 shell 根目录 | tools + 既有回归 |
+| N | 外部目录的 ignore 配置位于父目录/global/越界 git common-dir，或树内 ignore 是 symlink/硬链接/特殊文件 | 不隐式打开授权树外配置；树内配置通过与正文相同的 fd/no-follow/凭据检查后解析，保护范围不因隐藏配置文件而扩大；安全配置的匹配/negation/优先级保留 | tools 进程内 fixture |
 
 以上均为进程内 fixture、MockProvider 和权限 hook；不新增真实外部进程、网络或应用 E2E。仅更新本次明确替代的 grep 外部拒绝断言，其余既有安全和输出断言不放宽。
 
@@ -41,17 +42,18 @@
 ### 权限、冻结与执行
 
 - grep 为只读搜索；外部目标走现有 `RuntimeMutatingTool::Read` 与 `RuntimePermissionTarget`，不新增存储权限枚举。Full access、exact rule、Once、Always、拒绝、timeout、取消和审批审计沿用 ExternalRead 决策顺序。
-- Always 保存 canonical 入口的 exact Read rule。批准一个目录不增加 path-prefix 规则，也不允许对另一个入口自动跳过审批；该目录调用本身可搜索获批子树。
+- 文件 Always 保存 canonical 文件的裸路径 exact Read rule，可与既有 Read 复用。目录 Always 则保存同一 `Read` 类型下的有版本精确签名 `grep-dir:v1:<canonical-directory>`；签名不作为路径显示，审批仍显示真实绝对目录路径。旧裸 Read 规则（包括曾获批但最终因目标是目录而失败的 Read）、文件路径后来变成目录，均不能自动授权递归搜索。目录规则不增加 path-prefix 匹配，不授权另一父/兄弟/子路径入口，也不授予写权限。
 - prepare 解析并冻结 canonical 入口和其实际对象身份，执行只消费此 prepared target。文件的 descriptor/metadata 身份、目录的 descriptor/metadata 身份须在批准后、读取前复核；不能仅比较路径字符串或把普通 Readonly 分支当授权。
-- 原始入口别名不在执行时重新解析。canonical 目标或其祖先被重定向、更换 inode/类型、删除时失败；可固定使用已打开但仍经核对的 descriptor。相同文件 inode 内原地内容更新按读取语义读取，不为 grep 新增内容版本锁。
-- 目录下实际文件的打开必须以获批目录 descriptor 为锚，逐组件 `O_NOFOLLOW`，并保留普通文件、nonblocking、硬链接与凭据检查。只做 pathname starts_with 和 walker.follow_links(false) 不足以代替 descriptor 范围保证。
+- 原始入口别名不在执行时重新解析。canonical 目标或其祖先被重定向、更换 inode/类型、删除时失败；准备与执行应核对目标及 canonical 祖先链的 `(dev, ino, type)`，不能只比较目标 pathname。可固定使用已打开但仍经核对的 descriptor。相同文件 inode 内原地内容更新按读取语义读取，不为 grep 新增内容版本锁。
+- 外部目录的枚举、子目录进入、ignore 配置及正文打开都必须以获批目录 descriptor 为锚，逐组件 `O_NOFOLLOW`，并保留普通文件、nonblocking、硬链接与凭据检查；枚举与打开之间的对象变化不得重定向。仅给 walker 产出文件换 opener、pathname starts_with 或 walker.follow_links(false) 不足以代替 descriptor 范围保证。项目内保留既有 walker/ignore 语义，正文仍以 frozen 目录 fd 安全打开，不修改 glob 的共享 walker。
 - 取消检查覆盖审批前后及执行起点；搜索循环使用已有 CancellationToken 路径适时退出，不产生取消后成功结果。输出上限达成后停止读取更多匹配。
 - 无审批或拒绝时不得读取文件正文。prepare 可解析、stat/open descriptor 以冻结身份，不执行匹配、二进制探测或结果正文采集。
 
 ### 凭据、忽略规则与错误
 
-- 凭据根及受保护别名禁止直接搜索；遍历普通目录时过滤受保护目标，保留已有祖先/别名检查和 descriptor 硬链接拒绝。默认项目搜索不能因新增入口逻辑丢失现有过滤。
-- 保留 ignore crate 既有 `.gitignore`/`.ignore`/git exclude/hidden 规则、确定性排序、二进制检测、500 条输出上限及截断标记。grep 不构成 read-before-write 所需的完整文件读取。
+- 凭据根及受保护别名禁止直接搜索；显式外部目录与凭据根祖先/后代重叠时拒绝整次搜索。默认项目搜索及原有项目内目录搜索仍可返回安全部分，不能因新增入口校验改成整次失败；外部安全遍历在进入受保护目录前剪枝。保留 path guard、保护目录对象身份检查和 descriptor 硬链接拒绝；已安装 policy 才有此保护，Full access 不绕过。
+- 项目内保留 ignore crate 既有 `.gitignore`/`.ignore`/git exclude/global/hidden 语义。外部目录只隐式读取获批树内通过安全 fd 打开及凭据/硬链接检查的 `.gitignore`/`.ignore` 和树内 `.git/info/exclude`；不加载树外父目录、global、gitdir/common-dir 指针配置。可复用 `ignore` matcher/`GitignoreBuilder::add_line` 解析已安全读取的内容；保留树内规则优先级、negation、hidden 过滤和确定性排序。直接指定外部文件不隐式加载邻近配置。
+- 保留二进制检测、500 条输出上限及截断标记，确认第 501 条后停止正文读取。该限制只是结果数量上限，不声称总字节/内存/时间有界。grep 不构成 read-before-write 所需的完整文件读取。
 - 输入错误、目标变化和不支持目标返回可操作错误，不把拒绝包装为成功空结果，不输出凭据正文。运行失败与审批拒绝/取消状态保持区分；不新增原始参数/内容日志。
 
 ## 实现顺序与允许修改范围
@@ -78,3 +80,4 @@ GitHub Actions：现有 PR check 执行 `cargo fmt --all -- --check`、`cargo cl
 ## 变更记录与证据状态
 
 - 2026-10-18：v1，按用户本轮交付授权冻结范围、用例、目录授权、路径展示及目标冻结；代码与自动回归尚待实现/Actions，真实依赖搜索待用户手测。
+- 2026-10-18：v2，独立安全审查确认旧 Read 目录规则可能在失败执行前被记忆，以及 ignore walker 会普通打开父/global/指针配置；暂停尚未落盘的实现，先补独立目录签名和树内安全 ignore 合同，明确默认项目兼容性、祖先身份与回归 N。不改变 glob、Read 或其他工具行为。
