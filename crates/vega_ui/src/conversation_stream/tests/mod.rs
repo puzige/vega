@@ -19,6 +19,7 @@ type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 mod automation;
 
 mod composer_counter;
+mod composer_picker;
 mod composer_predictions;
 mod core_flow;
 mod hydration;
