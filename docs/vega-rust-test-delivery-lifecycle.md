@@ -5,10 +5,10 @@
 用户在 #476 合并后追加规则：生产实现过程中可以保留测试，但最终交付代码不包含测试；测试及其验证过程留在 commit 和 PR 中，作为以后找回原始测试的可信来源。用户进一步确认：
 
 - **仅适用于 Rust**；Python 发布、组件准备、delta 测试及其 fixture 继续保留。
-- **本次一并删除现存 115 个 Rust 测试及独占支持**，不是只改规则。
+- **本次一并删除现存 Rust 测试及独占支持**，不是只改规则；初始为 115 个，期间最新 master 的 #480 新增 8 个，最终集成范围合计 **123** 个。
 - 允许先用 **draft PR** 触发现有云端 RED/GREEN；删测并验证最终 head 后，再转为正式 PR。不增加本地执行许可或新 CI 触发设施。
 
-本轮初始基线为合并后的 `1f70e72d4074c96846119398e52697aaab894d54`。该规则取代此前“新增有效 Rust 测试应永久保留”的交付要求，但不放宽先测后修、测试质量、安全边界或禁止事后补测的约束。旧的清零与合并纠偏报告保留为历史记录，不改写原结论。
+本轮初始基线为合并后的 `1f70e72d4074c96846119398e52697aaab894d54`，提交前远端新增 #480，最终集成基线更新为 `b3c2ffafb9ae39e32654c6692b2f35da3955d76a`。保留其模型选择器几何稳定、空会话隐藏用量及键盘路径修复，删除新增 8 个测试及独占观察接线。该规则取代此前“新增有效 Rust 测试应永久保留”的交付要求，但不放宽先测后修、测试质量、安全边界或禁止事后补测的约束。旧的清零与合并纠偏报告保留为历史记录，不改写原结论。
 
 ## 固定交付顺序
 
@@ -37,7 +37,7 @@ PR 是测试的检索入口，至少记录以下内容，不只写“CI 绿了�
 
 ### 删除验收
 
-1. 逐项识别并移除基线的 **115** 个 Rust 测试定义：vega 10、conversation 33、runtime 21、store 1、tools 29、UI 21；其余成员及 `xtask` 为 0。按语法/条件编译边界清理混合文件，不按文件名或源码字符串整段误删。
+1. 逐项识别并移除最终基线的 **123** 个 Rust 测试定义：vega 10、conversation 33、runtime 21、store 1、tools 29、UI 29（原 21 + #480 新增 8）；其余成员及 `xtask` 为 0。按语法/条件编译边界清理混合文件，不按文件名或源码字符串整段误删。
 2. 删除上述集合独占支持和测试依赖；只移除无生产/benchmark 消费者的内容，不升级依赖、不恢复历史测试、不回滚输入预测或外部 grep 功能。
 3. 保持 Python 脚本与 fixture、workflows、Nextest 配置、迁移、资源、benchmark、发布/打包契约不变。通用测试 runner 和 CI 空集处理能力保留，开发 draft 仍能验证新测试。
 4. 记录删除数量、模块/include 引用、生产差异与受保护文件哈希；本地只做低 CPU 差异/格式/静态检查，不编译、不运行 Vega/Clippy/测试/打包。完整检查仅交 Actions。
@@ -67,14 +67,21 @@ PR 是测试的检索入口，至少记录以下内容，不只写“CI 绿了�
 | [预测设置界面](https://github.com/puzige/vega/blob/1f70e72d4074c96846119398e52697aaab894d54/crates/vega_ui/src/settings/tests.rs) | 2 |
 | [预测输入](https://github.com/puzige/vega/blob/1f70e72d4074c96846119398e52697aaab894d54/crates/vega_ui/src/text_input/tests.rs) | 1 |
 
+### 期间新增的模型选择器测试
+
+- 来源：[PR #480](https://github.com/puzige/vega/pull/480)，8 个新测试；原测试提交 `9db5eb30f68b9b342441d73edb803472900bab48`，有效 RED [Actions 39151902385](https://github.com/puzige/vega/actions/runs/39151902385)，后续实现 `9637111c85f216b365e8b1990d192d3c59537cc8`，最新基线集成及 GREEN `fc24491ab16b9f111a072f5dacabd2c2db13d8c4`。
+- [带测试 GREEN：Actions 39154822274](https://github.com/puzige/vega/actions/runs/39154822274)：123 个发现/执行，123 通过、0 跳过。该 head 与合并结果 `b3c2ffaf` 全树一致；这批新增 8 个的先行证据与原 115 个的证据缺口分别记录，不混为同一 TDD 结论。
+- 固定原始[模型选择器测试源码](https://github.com/puzige/vega/blob/b3c2ffafb9ae39e32654c6692b2f35da3955d76a/crates/vega_ui/src/conversation_stream/tests/composer_picker.rs)，SHA-256 `604c9b91ece02aba76a9d58a84faf417d80e44d761267469eec6af97ed18c6b5`。生产三文件只清理测试专用 debug selector，不撤销真实布局、内容条件、控件 ID/无障碍/焦点/事件行为。原 [#480 记录](vega-issue-467-composer-picker-stability.md)保持不变。
+
 ## 本轮验证记录
 
 ### 本地静态结果
 
-- 独立清点基线 115 个定义，删除后为 **0**；测试条件属性为 **0**，无可执行 doctest（原有 `text` 围栏不是测试）。旧版语法库仍有基线语法覆盖限制，不把静态清点称为类型/借用/运行验证。
-- 63 个受保护路径与基线逐字节一致；Python、workflows、Nextest 配置、迁移、资源和 benchmark 保留。关键预测/grep 生产文件字节一致；混合文件生产差异按条件编译投影及明确列出的测试专用查询/常量分支简化审查。
+- 最终集成独立清点 **123 → 0**（初始 115 + #480 新增 8）；保留 368 个 Rust 文件，测试条件属性为 **0**，无可执行 doctest（原有 `text` 围栏不是测试）。旧版语法库仍有 60 个文件存在基线语法覆盖限制，不把静态清点称为类型/借用/运行验证。
+- 初始实现审查的 82 个受保护路径逐字节一致；主会话最终对最新 `b3c2ffaf` 的 63 个核心受保护路径复核未变，涵盖 Python、workflows、Nextest 配置、迁移、资源和 benchmark。关键预测/grep 生产文件字节一致；混合文件生产差异按条件编译投影及明确列出的测试专用查询/常量分支简化审查。
+- #480 的 `render.rs` 18 个、`thinking_slider.rs` 2 个 debug selector 被清除，除这 20 个测试观察接线外，生产 token 与上游一致；`composer_actions.rs` 与上游逐字节一致。真实 ID、无障碍、布局测量/宽度和内容条件、键盘/焦点/事件行为保留。
 - 锁文件由 924 个包减为 914 个，仅移除 GPUI 测试支持独占的 10 个包；保留包的版本、来源和 checksum 不变，无包新增/升级。解析依赖身份后无新增边，只有 8 条现有包的测试支持边移除；消除同名多版本后的锁文件标签缩写不算新增依赖。
-- `cargo fmt --all -- --check`、`cargo metadata --no-deps --offline --locked --format-version 1`、`git diff --check` 均退出码 0。3 个 workflow YAML、2 个 skill frontmatter 和 8 个新增本地链接目标静态检查有效；13 个原测试源码链接与 GitHub 已合并提交文件树的 blob 身份一致。
+- `cargo fmt --all -- --check`、`cargo metadata --no-deps --offline --locked --format-version 1`、`git diff --check` 均退出码 0。3 个 workflow YAML、2 个 skill frontmatter 和新增本地链接目标静态检查有效；14 个原测试源码链接（原 13 + 新增 1）与 GitHub 已合并提交文件树的 blob 身份一致。
 - 本地未编译、运行 Vega、Clippy、Rust/Python 测试、benchmark 或打包。
 
 ### 最终 head 云端结果
