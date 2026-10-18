@@ -1,6 +1,6 @@
 # 消息与代码块复制
 
-版本：v1，2026-10-19。Issue：[复制功能增强 #477](https://github.com/puzige/vega/issues/477)。
+版本：v1.1，2026-10-19；行为验收沿用冻结 v1。Issue：[复制功能增强 #477](https://github.com/puzige/vega/issues/477)。
 
 ## 范围与基线
 
@@ -90,3 +90,21 @@ PR 保留基线、测试补丁/提交、有效 RED 的 run/job 与原始失败�
 用户在合并与云端发布后手测：对含中文、空行、两个代码块的真实会话，分别用鼠标和键盘复制用户消息、最终回复及代码块，粘贴核对原文；确认过程不出现整条复制、移动到按钮不闪退、横向滚动保留按钮、浅深主题与选字/草稿均正常。应用更新/安装由用户正常入口完成，不为本卡在本地启动 Vega。
 
 回滚为 revert 本卡 squash 提交，无数据迁移。用户明确手测通过前不关闭 Issue、不标 Done、不清理任务分支或 worktree。
+
+## v1.1 交付规则与冻结 C9 修复（#482 后）
+
+用户要求同步 `efd92833488fb3432042682e81d7f4eec1a10d0d`（#482）。C1–C10 的行为验收、13个开发测试的 fixture/目标/断言不变；本节更新交付顺序和原 C9 的必要焦点接线，不追加测试或追认缺失证据。此前文档所述开发保留测试，以本节和 [Rust 测试生命周期](vega-rust-test-delivery-lifecycle.md) 为准。
+
+冻结源码为 `crates/vega_ui/src/conversation_stream/tests/copy_actions.rs`，SHA-256 `688d2428efe401cd0b5eba4e615509e418fdc5a22398aacc600bdf819bdb1086`。完整源码已固定到 [PR 原始测试归档](https://github.com/puzige/vega/pull/479#issuecomment-6253908078)，并读回校验；完整测试提交 `3bbd02ef878e24c5e81d175b103a2c15f9b97933`、有效 RED [39155948614](https://github.com/puzige/vega/actions/runs/39155948614/job/117759089744) 和此前等价接线修正均保留在 PR/Issue。该 RED 发生在重放 `e14241237d00e8a666f96bcf69ab30e58286777d` 前；后续 GREEN 仍未取得，不把135/136通过写成GREEN。
+
+带测试运行 [39156461571](https://github.com/puzige/vega/actions/runs/39156461571/job/117760583604) 中，C9 用户消息与最终回复的 Tab/Enter/Space 已通过，随后到达代码按钮的 Tab 检查失败。静态分析确认 `composer_actions.rs::move_composer_focus` 对内部控件取模环绕并停止传播，使焦点进入 Composer 后不能返回会话正文。修复仅保留内部控件顺序及 IME guard，在首尾边界或当前焦点不属于内部控件时交给 `window.focus_prev/next`；不改测试、不改变复制数据和提交行为。该文件加入本卡允许范围。
+
+开发时仅保留本卡13项测试及必要几何观察、定位标记和UI dev依赖 `gpui_kit[test-support]` / `vega_runtime`。不恢复 master 已删除的123个旧测试、旧fixture/mock、runtime test-support或无关dev依赖。
+
+交付顺序固定为：
+
+1. 保留同一冻结测试，修复原 C9；现有 draft PR 通过 Actions 确认全部13项实际执行并 GREEN。冻结文件哈希保持不变，未知计数如实记录。
+2. 在 PR 固定带测试 GREEN 的完整提交 SHA、原始源码/必要接线补丁、RED 原因与 GREEN run/job及准确计数，读回确认可找回；不依赖可删除分支、本机文件或过期artifact。
+3. 用独立提交删除本卡Rust测试、`cfg(test)`模块及几何观察、仅测试使用的debug selector和dev依赖/锁包。逐项审查无生产/benchmark消费者；保留真实控件ID、可访问名称、焦点/事件/布局/滚动、Python测试及fixture、benchmark和通用CI。
+4. 删测后不夹带生产行为变化，运行最终head完整云端门禁。fmt、全目标Clippy、Python以及Rust发现/构建成功；Rust报告 **0发现/0执行，`no Rust tests`**，不是“Rust测试通过”。出现基线整合导致实现变化时，先恢复同一冻结测试重新GREEN再删测。
+5. 带测试GREEN与最终空集门禁均可核实后才转正式PR，并按原看板流程合并、保留资源与开放Issue等待用户手测。按用户要求保留真实开发历史和独立删测提交，不重排提交追认TDD。
