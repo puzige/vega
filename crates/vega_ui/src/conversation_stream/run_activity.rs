@@ -1153,6 +1153,7 @@ impl RunActivityGroup {
         let header_focus = group_ref.header_focus.clone().tab_stop(can_expand);
         let header = div()
             .id(("run-activity-toggle", group.entity_id()))
+            .debug_selector(|| "run-activity-toggle".into())
             .group(disclosure_group.clone())
             .track_focus(&header_focus)
             .tab_stop(can_expand)

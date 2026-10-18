@@ -14,6 +14,11 @@ use gpui_kit::{
 use super::links::{LinkRange, fragment_link_ranges, register_link_interactions};
 use super::model::MessageCopy;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static SELECTION_TARGET_LAYOUT: RefCell<Option<(String, Option<TextLayout>)>> = const { RefCell::new(None) };
+}
+
 #[derive(Clone)]
 struct LaidOutRun {
     text: SharedString,
@@ -292,6 +297,14 @@ impl Element for SelectableStyledText {
             content_range: self.content_range.clone(),
             logical_range: self.logical_range.clone(),
             selected: self.selected.clone(),
+        });
+        #[cfg(test)]
+        SELECTION_TARGET_LAYOUT.with_borrow_mut(|target| {
+            if let Some((text, layout)) = target
+                && text == self.content.as_ref()
+            {
+                *layout = Some(self.text.layout().clone());
+            }
         });
         let lines = self.paint_runs.as_ref().and_then(|runs| {
             super::inline_code::shape(self.content.clone(), runs, self.text.layout(), window)

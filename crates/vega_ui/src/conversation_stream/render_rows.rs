@@ -472,6 +472,7 @@ fn selectable_user_message(
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
     let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
     let mut body = div()
+        .debug_selector(|| "user-message-bubble".into())
         .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
         .bg(colors.conversation_bubble)
         .rounded(px(Layout::USER_MESSAGE_RADIUS))
@@ -528,6 +529,7 @@ fn selectable_markdown_message(
     cx: &mut App,
 ) -> AnyElement {
     div()
+        .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
         .pt(px(Layout::CONVERSATION_BODY_TOP))
@@ -629,6 +631,7 @@ fn markdown_blocks(
                     .id(gpui_kit::SharedString::from(format!(
                         "markdown-code-{block_id}-{start}"
                     )))
+                    .debug_selector(move || format!("markdown-code-{start}"))
                     .w_full()
                     .min_w_0()
                     .overflow_x_scroll()

@@ -15,6 +15,7 @@ type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
 mod composer_picker;
 mod composer_predictions;
+mod copy_actions;
 
 mod issue426_external_grep;
 
