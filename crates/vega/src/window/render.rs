@@ -4,6 +4,7 @@ use vega_ui::icons::{Icon, shell_icon_button};
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_navigation(cx);
+        self.sync_completion_attention(window, cx);
         if self.appearance_subscription.is_none() {
             self.appearance_subscription =
                 Some(cx.observe_window_appearance(window, |_, _, cx| {

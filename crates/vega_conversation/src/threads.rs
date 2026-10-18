@@ -237,7 +237,7 @@ pub fn list_standalone_threads(
 
 /// Loads one thread by id; reports [`ConversationError::NotFound`] when the
 /// row is missing.
-fn get_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
+pub fn get_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
     let row = store::find(store.conn(), thread_id)
         .map_err(store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.to_string()))?;

@@ -587,6 +587,44 @@ impl ThreadsBlock {
             cx.notify();
             return;
         }
+        if let Some(unread) = update.unread
+            && update.title.is_none()
+            && update.status.is_none()
+            && update.pinned.is_none()
+        {
+            crate::navigation::begin_task_mutation(cx);
+            let result = with_store(cx, |store| {
+                conversation::update_thread(store, &thread.id, &update)
+                    .map_err(|error| error.to_string())
+            });
+            crate::navigation::finish_task_mutation(cx);
+            match result {
+                Ok(()) => {
+                    for row in self
+                        .threads
+                        .iter_mut()
+                        .chain(self.archived.iter_mut())
+                        .filter(|row| row.id == thread.id)
+                    {
+                        row.unread = unread;
+                    }
+                    if let Some(mut opened) = cx.global::<OpenedThread>().0.clone()
+                        && opened.id == thread.id
+                        && opened.project_id == thread.project_id
+                    {
+                        opened.unread = unread;
+                        cx.set_global(OpenedThread(Some(opened)));
+                    }
+                    self.error = None;
+                    if self.organization.is_some() {
+                        self.refresh_organization(cx);
+                    }
+                }
+                Err(error) => self.error = Some(error),
+            }
+            cx.refresh_windows();
+            return;
+        }
         let generation = self.project_generation;
         let id = thread.id.clone();
         let project = thread.project_id.clone();
@@ -1370,7 +1408,13 @@ impl ThreadsBlock {
         if menu_open {
             group = group.track_focus(&self.actions_scope_focus);
         }
-        if shows_timestamp_at_rest(actions_visible, show_timestamp_at_rest, running) {
+        let trailing = session_row_trailing(
+            actions_visible,
+            running,
+            thread.unread,
+            show_timestamp_at_rest,
+        );
+        if trailing == SessionRowTrailing::Timestamp {
             group = group.child(
                 div()
                     .flex_1()
@@ -1397,15 +1441,15 @@ impl ThreadsBlock {
                 .child(
                     Spinner::new()
                         .ease(gpui_kit::linear)
-                        .with_size(px(16.))
+                        .with_size(px(Layout::ICON_SIZE))
                         .icon(IconName::LoaderCircle)
                         .color(colors.text_secondary.into()),
                 )
         };
-        if running && !actions_visible {
+        if trailing == SessionRowTrailing::Running {
             group = group.child(running_indicator());
         }
-        if thread.unread && !running && !actions_visible {
+        if trailing == SessionRowTrailing::Unread {
             group = group.child(
                 div()
                     .size(px(Layout::SIDEBAR_ACTION_SIZE))

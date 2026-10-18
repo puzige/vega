@@ -162,73 +162,33 @@ impl VegaWindow {
     }
 
     // The short shared write guard blocks later task-menu writes, never typing.
-    fn record_navigation_visit(&mut self, thread: Thread, cx: &mut Context<Self>) {
-        let Some(path) = cx
-            .global::<VegaStore>()
-            .0
-            .as_ref()
-            .ok()
-            .and_then(|store| store.database_path())
-            .map(PathBuf::from)
-        else {
-            return;
-        };
+    pub(super) fn record_navigation_visit(&mut self, thread: Thread, cx: &mut Context<Self>) {
         vega_ui::navigation::begin_task_mutation(cx);
-        let mutation = task_mutation_state(cx);
-        let task = thread.id.clone();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let _ = std::thread::Builder::new()
-            .name("vega-navigation-visit".into())
-            .spawn(move || {
-                let result = vega_store::Store::open(path)
-                    .map_err(|_| NavigationError::Unavailable)
-                    .and_then(|store| {
-                        vega_conversation::threads::visit_thread(&store, &task)
-                            .map_err(|_| NavigationError::Unavailable)
-                    });
-                let _ = sender.send(result);
-            });
-        cx.spawn(async move |owner, cx| {
-            let result = loop {
-                match receiver.try_recv() {
-                    Ok(result) => break result,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        break Err(NavigationError::Unavailable);
-                    }
-                    Err(mpsc::TryRecvError::Empty) => {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(25))
-                            .await
-                    }
+        let result = match &cx.global::<VegaStore>().0 {
+            Ok(store) => vega_conversation::threads::visit_thread(store, &thread.id)
+                .map_err(|_| NavigationError::Unavailable),
+            Err(_) => Err(NavigationError::Unavailable),
+        };
+        vega_ui::navigation::finish_task_mutation(cx);
+        match result {
+            Ok(visited) => {
+                if let Some(mut current) = cx.global::<OpenedThread>().0.clone()
+                    && current.id == thread.id
+                    && current.project_id == thread.project_id
+                {
+                    current.unread = visited.unread;
+                    current.updated_at = visited.updated_at;
+                    cx.set_global(OpenedThread(Some(current)));
                 }
-            };
-            cx.update(|cx| {
-                let unchanged = task_mutation_state(cx) == mutation;
-                vega_ui::navigation::finish_task_mutation(cx);
-                let _ = owner.update(cx, |this, cx| {
-                    if !unchanged {
-                        return;
-                    }
-                    match result {
-                        Ok(visited) => {
-                            if let Some(mut current) = cx.global::<OpenedThread>().0.clone()
-                                && current.id == thread.id
-                                && current.project_id == thread.project_id
-                            {
-                                current.unread = visited.unread;
-                                current.updated_at = visited.updated_at;
-                                cx.set_global(OpenedThread(Some(current)));
-                            }
-                        }
-                        Err(_) => this.navigation.error = Some("页面已打开，但访问状态保存失败。"),
-                    }
-                    this.publish_navigation(cx);
-                    cx.refresh_windows();
-                    cx.notify();
-                });
-            });
-        })
-        .detach();
+                self.navigation.error = None;
+                cx.set_global(NavigationState::default());
+                self.sidebar.update(cx, Sidebar::reload_sessions);
+            }
+            Err(_) => self.navigation.error = Some("页面已打开，但访问状态保存失败。"),
+        }
+        self.publish_navigation(cx);
+        cx.refresh_windows();
+        cx.notify();
     }
 
     fn navigate_from_editor(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {

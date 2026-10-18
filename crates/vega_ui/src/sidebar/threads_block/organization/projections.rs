@@ -540,6 +540,12 @@ impl ThreadsBlock {
         let opened = cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone());
         let selected = opened.as_deref() == Some(thread.id.as_str());
         let thread_id = thread.id.clone();
+        let trailing = session_row_trailing(
+            false,
+            thread_is_running(&thread_id, cx),
+            thread.unread,
+            false,
+        );
         let mut row = div()
             .id(ElementId::Name(
                 format!("project-thread-row-{thread_id}").into(),
@@ -581,11 +587,31 @@ impl ThreadsBlock {
                     })
                     .child(thread_title(thread)),
             )
-            .children(
-                thread
-                    .unread
-                    .then(|| div().size(px(6.)).rounded_full().bg(colors.accent)),
-            );
+            .children((trailing == SessionRowTrailing::Unread).then(|| {
+                div()
+                    .size(px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH * 3.))
+                    .rounded_full()
+                    .bg(colors.accent)
+            }))
+            .children((trailing == SessionRowTrailing::Running).then(|| {
+                div()
+                    .id(ElementId::Name(
+                        format!("project-thread-running-{}", thread.id).into(),
+                    ))
+                    .size(px(Layout::SIDEBAR_ACTION_SIZE))
+                    .aria_label("任务正在运行")
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Spinner::new()
+                            .ease(gpui_kit::linear)
+                            .with_size(px(Layout::ICON_SIZE))
+                            .icon(IconName::LoaderCircle)
+                            .color(colors.text_secondary.into()),
+                    )
+            }));
         if show_project
             && let Some(project) = self
                 .organization
