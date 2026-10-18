@@ -26,7 +26,9 @@ actions!(
         Paste,
         Cut,
         Copy,
-        InsertNewline
+        InsertNewline,
+        AcceptPrediction,
+        DismissPrediction
     ]
 );
 
@@ -53,6 +55,7 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     content_revision: u64,
+    prediction: Option<SharedString>,
     placeholder: SharedString,
     masked: bool,
     multiline: bool,

@@ -168,6 +168,7 @@ impl ConversationStream {
         }
         // 提交即收起 `@file` 建议下拉并取消当前索引 owner；解析阶段
         // 仍由 app 在 provider 构造前执行。
+        self.invalidate_composer_prediction(cx);
         self.close_file_selector_and_cancel(cx);
         let text = self.input.read(cx).text().to_string();
         self.composer_submit_pending = true;

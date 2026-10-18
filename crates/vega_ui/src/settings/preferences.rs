@@ -28,6 +28,7 @@ impl SettingsView {
                     }
                 };
             }
+            patch!(agent.composer_predictions_enabled);
             patch!(agent.desktop_use_enabled);
             patch!(agent.browser_use_enabled);
             patch!(agent.running_message_behavior);
@@ -47,6 +48,10 @@ impl SettingsView {
                 this.provider_management.saving = false;
                 match result {
                     Ok(config) => {
+                        crate::conversation_stream::set_composer_predictions_enabled(
+                            config.agent.composer_predictions_enabled,
+                            cx,
+                        );
                         cx.set_global(RunningMessageDefault(
                             if config.agent.running_message_behavior == "steer" {
                                 PendingMessageBehavior::Steer
@@ -83,6 +88,12 @@ impl SettingsView {
     ) {
         let mut candidate = self.config.clone();
         candidate.agent.running_message_behavior = behavior.as_str().to_string();
+        self.save_preferences(candidate, cx);
+    }
+    pub(crate) fn toggle_composer_predictions(&mut self, cx: &mut Context<Self>) {
+        let mut candidate = self.config.clone();
+        candidate.agent.composer_predictions_enabled =
+            !candidate.agent.composer_predictions_enabled;
         self.save_preferences(candidate, cx);
     }
 }

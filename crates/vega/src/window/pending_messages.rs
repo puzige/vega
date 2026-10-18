@@ -489,6 +489,7 @@ impl VegaWindow {
                 }
                 this.project_pending_queue(&thread_id, &stream, projection, cx);
                 this.continue_pending_queue(&thread_id, &stream, cx);
+                this.start_pending_composer_prediction(&thread_id, &stream, cx);
             });
         })
         .detach();
@@ -639,15 +640,21 @@ impl VegaWindow {
         let generation = self.agent_controller.running_message_default_generation;
         let worker = cx.background_executor().spawn(async move {
             vega_store::config::read_from(&path)
-                .map(|config| config.agent.running_message_behavior)
+                .map(|config| {
+                    (
+                        config.agent.running_message_behavior,
+                        config.agent.composer_predictions_enabled,
+                    )
+                })
                 .ok()
         });
         cx.spawn(async move |this, cx| {
-            if let Some(value) = worker.await {
+            if let Some((value, predictions_enabled)) = worker.await {
                 let _ = this.update(cx, |this, cx| {
                     if this.agent_controller.running_message_default_generation != generation {
                         return;
                     }
+                    set_composer_predictions_enabled(predictions_enabled, cx);
                     cx.set_global(RunningMessageDefault(if value == "steer" {
                         PendingMessageBehavior::Steer
                     } else {

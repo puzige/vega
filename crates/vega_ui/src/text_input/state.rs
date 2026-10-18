@@ -10,6 +10,7 @@ impl TextInput {
             focus_handle: cx.focus_handle(),
             content: "".into(),
             content_revision: 0,
+            prediction: None,
             placeholder: placeholder.into(),
             masked,
             multiline: false,
@@ -91,6 +92,7 @@ impl TextInput {
 
     /// Clears content and selection (used to reset the add-provider form).
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = "".into();
         self.selected_range = 0..0;
@@ -102,6 +104,7 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = text.to_string().into();
         self.selected_range = self.content.len()..self.content.len();
@@ -109,6 +112,51 @@ impl TextInput {
         self.marked_range = None;
         self.update_logical_viewport();
         cx.notify();
+    }
+
+    pub fn prediction_text(&self) -> Option<&str> {
+        self.prediction
+            .as_deref()
+            .filter(|_| self.content.is_empty() && !self.is_composing())
+    }
+
+    pub(crate) fn set_prediction(&mut self, suggestion: Option<String>, cx: &mut Context<Self>) {
+        let prediction = suggestion
+            .filter(|_| self.content.is_empty() && !self.is_composing())
+            .map(SharedString::from);
+        if self.prediction != prediction {
+            self.prediction = prediction;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn accept_prediction(
+        &mut self,
+        _: &AcceptPrediction,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prediction_text().is_none() {
+            cx.propagate();
+            return;
+        }
+        if let Some(suggestion) = self.prediction.take() {
+            self.set_text(&suggestion, cx);
+        }
+    }
+
+    pub(crate) fn dismiss_prediction(
+        &mut self,
+        _: &DismissPrediction,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prediction.take().is_some() {
+            self.content_revision = self.content_revision.wrapping_add(1);
+            cx.notify();
+        } else {
+            cx.propagate();
+        }
     }
 
     pub(crate) fn content_revision(&self) -> u64 {
@@ -161,6 +209,7 @@ impl TextInput {
             return;
         };
         let replacement = format!("{path} ");
+        self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content =
             (self.content[..range.start].to_owned() + &replacement + &self.content[range.end..])

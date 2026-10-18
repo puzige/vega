@@ -481,6 +481,9 @@ impl VegaWindow {
         replay_identity_changed: bool,
         cx: &mut Context<Self>,
     ) {
+        self.composer_prediction_config_generation =
+            self.composer_prediction_config_generation.wrapping_add(1);
+        self.cancel_composer_prediction(cx);
         if replay_identity_changed
             && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
         {

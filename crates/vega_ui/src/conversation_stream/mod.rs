@@ -259,6 +259,9 @@ pub struct ComposerDefaultsRequested {
 /// the thread (or before any page arrived). One page is in flight at a time;
 /// a failed load pauses auto-retry until the viewport leaves the top edge.
 mod composer;
+mod composer_predictions;
+pub(crate) use composer_predictions::ComposerPredictionsEnabled;
+pub use composer_predictions::set_composer_predictions_enabled;
 mod composer_actions;
 use composer_actions::ComposerActions;
 mod content;

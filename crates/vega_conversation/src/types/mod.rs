@@ -1,4 +1,5 @@
 pub use crate::automatic_titles::AutomaticTitleRequest;
+pub use crate::composer_predictions::{ComposerPredictionFence, ComposerPredictionRequest};
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{

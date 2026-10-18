@@ -42,6 +42,7 @@ impl EntityInputHandler for TextInput {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.prediction = None;
         self.marked_range = None;
         cx.notify();
     }
@@ -60,6 +61,7 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| self.selected_range.clone());
         let range = self.clamp_range(range);
 
+        self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -85,6 +87,7 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| self.selected_range.clone());
         let range = self.clamp_range(range);
 
+        self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])

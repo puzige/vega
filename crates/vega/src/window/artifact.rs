@@ -258,6 +258,11 @@ impl VegaWindow {
         if !self.agent_controller.matches(generation, thread_id, stream) {
             return AgentBatchIngress::Stale;
         }
+        if let Some(request) = batch.composer_prediction
+            && let Some(active) = self.agent_controller.active.get_mut(thread_id)
+        {
+            active.composer_prediction = Some(request);
+        }
         if let Some((control, owner)) = batch.computer_use_ready
             && let Some(active) = self.agent_controller.active.get_mut(thread_id)
         {

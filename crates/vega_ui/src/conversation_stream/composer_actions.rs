@@ -211,6 +211,7 @@ impl ConversationStream {
 
     /// Projects worker ownership, including preparation before a durable message exists.
     pub fn begin_composer_run(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_composer_prediction(cx);
         self.clear_live_context_accounting();
         self.actions.running = true;
         self.actions.stopping = false;

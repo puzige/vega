@@ -20,6 +20,10 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) prediction_waiting_for_queue: bool,
+    pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
+    pub(crate) prediction_generation: u64,
+    pub(crate) prediction_completed: Option<String>,
     pub(crate) reading_preview: bool,
     pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
     pub(crate) subagent_parent_focus: FocusHandle,
@@ -333,7 +337,15 @@ impl ConversationStream {
         .detach();
         // 空输入禁用发送 + `@` 触发的文件选择跟随输入内容变化：输入内容
         // 变化即重渲染 Composer。
+        cx.observe_global::<ComposerPredictionsEnabled>(|this, cx| {
+            this.invalidate_composer_prediction(cx);
+            cx.notify();
+        })
+        .detach();
+        cx.observe_self(|this, cx| this.reconcile_composer_prediction(cx))
+            .detach();
         cx.observe(&input, |this, input, cx| {
+            this.reconcile_composer_prediction(cx);
             this.sync_composer_actions(&input, cx);
             this.sync_at_query(&input, cx);
         })
@@ -427,6 +439,10 @@ impl ConversationStream {
         )
         .detach();
         Self {
+            prediction_waiting_for_queue: false,
+            prediction_owner: None,
+            prediction_generation: 0,
+            prediction_completed: None,
             reading_preview: false,
             subagent_groups: HashMap::new(),
             subagent_parent_focus: cx.focus_handle().tab_stop(true),

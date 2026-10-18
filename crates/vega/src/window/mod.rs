@@ -23,6 +23,7 @@ mod automation_editor;
 mod branch;
 mod commit;
 mod commit_reconcile;
+mod composer_predictions;
 mod context;
 mod diff;
 mod file_index;
@@ -92,6 +93,8 @@ impl ModelSelectionRefresh {
 }
 
 pub(crate) struct VegaWindow {
+    pub(crate) composer_prediction_config_generation: u64,
+    pub(crate) composer_prediction: Option<composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
     navigation: navigation::Navigation,
@@ -198,6 +201,13 @@ impl VegaWindow {
                 .0
                 .as_ref()
                 .map(|thread| thread.id.clone());
+            if this
+                .composer_prediction
+                .as_ref()
+                .is_some_and(|owner| !this.composer_prediction_route_matches(owner, cx))
+            {
+                this.cancel_composer_prediction(cx);
+            }
             this.update_message_location_route(route_thread_id.as_deref());
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
@@ -224,6 +234,7 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.cancel_composer_prediction(cx);
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
             this.close_diff_if_route_stale(cx);
@@ -255,11 +266,14 @@ impl VegaWindow {
         let sidebar = cx.new(Sidebar::new);
         cx.subscribe(&sidebar, |this, _, event: &SidebarEvent, cx| match event {
             SidebarEvent::ThreadDeleted(thread_id) => {
+                this.cancel_composer_prediction_for_thread(thread_id, cx);
                 this.cancel_agent_for_thread(thread_id, cx);
             }
         })
         .detach();
         let mut window = Self {
+            composer_prediction_config_generation: 0,
+            composer_prediction: None,
             updater: crate::updater::Updater::default(),
             update_notice_dismissed: false,
             navigation: navigation::Navigation::new(cx, None),
@@ -315,6 +329,7 @@ impl VegaWindow {
     }
 
     pub(crate) fn window_terminal_cleanup(&mut self) {
+        self.composer_prediction = None;
         self.image_preview.retire();
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
