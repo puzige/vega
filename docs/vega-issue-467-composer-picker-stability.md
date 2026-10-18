@@ -62,6 +62,14 @@ RED/GREEN baseline, test commit/patch, original failure, implementation ordering
 - Cloud format/all-target Clippy and the three existing Python checks passed. Local format and whitespace checks passed; no local code execution or compilation was performed.
 - Frozen-target and implementation authorization record: https://github.com/puzige/vega/pull/480#issuecomment-6253325263. A dedicated production subagent was admitted only after confirming effective RED. Tests remain unchanged; same-test GREEN and latest-head full gate are pending.
 
+## Upstream integration boundary
+
+While the first implementation was being prepared, `master` advanced to `1f70e72d` through [the historical-test reconciliation](vega-rust-reset-reconciliation.md). GitHub could not create a merge ref for the implementation head `9637111c`, so no implementation check-run was started. This is not GREEN evidence.
+
+The branch integrates that master commit without rewriting the original RED/test/implementation history. Conflicts in `render.rs` and `tests/mod.rs` are resolved by preserving the cleaned upstream suite and the task's original behavior. The eight-test file remains byte-identical. Only its three history-construction helpers and three private observation methods are supplied in the test-only module; only the 20 actually referenced geometry selectors are present on the original production elements (18 in `render.rs`, two in `thinking_slider.rs`). No wrapper, accounting, runtime, action, dependency, or public production API is added by the integration.
+
+Static integration audit: all 137 upstream-deleted files remain absent; all 115 retained upstream test definitions remain unchanged. The integrated source has those 115 plus this task's eight test attributes. These are source counts, not discovered/executed tests. No historical test collection is restored. Format, staged/unstaged whitespace, frozen-test hash, and conflict checks passed. The resolved latest head still requires Actions for same-test GREEN and complete required gate.
+
 ## Manual acceptance and rollback
 
 Using the official cloud-built application, check the affected long model name and a short name in both workspace layouts. Open the slider, enter the model list, close/reopen, and change models. Check that context/permission controls remain stationary for the same selected model, and that an extremely long name cannot push send/stop outside the Composer. In a new task, edit a draft: no usage indicator should exist. Send a message: the normal indicator and keyboard/click tooltip should become available. Open an existing conversation, then create another new task: the old tooltip must not persist. Check light/dark appearance and normal keyboard/Escape behavior.
@@ -71,4 +79,5 @@ Rollback is to revert this task's isolated production change, preserving underly
 ## Revision record
 
 - 2026-10-18: initial acceptance freeze and implementation plan under explicit user authorization to proceed directly.
-- 2026-10-18: recorded test-only commit and cloud effective RED before production implementation; test targets and assertions frozen. GREEN and manual acceptance pending.
+- 2026-10-18: recorded test-only commit and cloud effective RED before production implementation; test targets and assertions frozen.
+- 2026-10-18: integrated the upstream historical-test reconciliation while preserving its deletions and this task's frozen assertions. Latest-head GREEN and manual acceptance pending.

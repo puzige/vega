@@ -9,24 +9,12 @@ use vega_store::config::{self, AppConfig};
 #[derive(Clone, Debug)]
 pub struct ProviderSettingsService {
     config_path: PathBuf,
-    #[cfg(any(test, feature = "test-support"))]
-    test_transport: Option<provider_check::mock::Transport>,
 }
 
 impl ProviderSettingsService {
     /// Create a service for an explicitly resolved configuration file.
     pub fn new(config_path: PathBuf) -> Self {
-        Self {
-            config_path,
-            #[cfg(any(test, feature = "test-support"))]
-            test_transport: None,
-        }
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_test_transport(mut self, transport: provider_check::mock::Transport) -> Self {
-        self.test_transport = Some(transport);
-        self
+        Self { config_path }
     }
 
     /// Read current configuration on a background worker.
@@ -187,12 +175,6 @@ impl ProviderSettingsService {
         cancel: CancellationToken,
     ) -> ProviderNetworkResult {
         let operation = self.perform_network(&request, cancel.clone());
-        #[cfg(any(test, feature = "test-support"))]
-        let mut outcome = match &self.test_transport {
-            Some(transport) => transport.scope(operation).await,
-            None => operation.await,
-        };
-        #[cfg(not(any(test, feature = "test-support")))]
         let mut outcome = operation.await;
         if outcome.is_ok() {
             let service = self.clone();
@@ -302,6 +284,3 @@ fn validate_models(models: &[String]) -> Result<(), ProviderSettingsError> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

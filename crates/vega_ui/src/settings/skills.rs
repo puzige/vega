@@ -256,12 +256,10 @@ impl SettingsView {
         let colors = theme(cx).colors;
         let mut column = settings_section()
             .id("settings-skills")
-            .debug_selector(|| "settings-skills".into())
             .child(section_title("Agent Skills", colors.text_primary))
             .child(
                 div()
                     .id("skills-intro")
-                    .debug_selector(|| "skills-intro".into())
                     .text_color(colors.text_secondary)
                     .child("Skills 是低信任工作流说明，不会扩大脚本、MCP 或文件工具权限。全局与自动触发默认关闭。"),
             )
@@ -281,9 +279,7 @@ impl SettingsView {
         }
         if let Some(message) = &self.skills.message {
             column = column.child(
-                settings_status(message.clone(), colors.warning, colors)
-                    .id("skills-message")
-                    .debug_selector(|| "skills-message".into()),
+                settings_status(message.clone(), colors.warning, colors).id("skills-message"),
             );
         }
         if let Some(projection) = self.skills.projection.clone() {
@@ -443,10 +439,8 @@ impl SettingsView {
                 cx,
             )));
         if let Some(diagnostic) = &source.diagnostic {
-            let selector = format!("skills-source-diagnostic-{}", source.id);
             card = card.child(
                 div()
-                    .debug_selector(move || selector.clone())
                     .mt_3()
                     .text_color(colors.warning)
                     .child(format!("来源不可用：{diagnostic}")),
@@ -486,11 +480,9 @@ impl SettingsView {
                 .child(div().child(format!("{} · {status}", candidate.name)));
             if let Some(label) = skill_shadow_label(projection, candidate) {
                 let id = format!("skills-shadow-{}-{}", source.id, candidate.name);
-                let selector = id.clone();
                 row = row.child(
                     div()
                         .id(id)
-                        .debug_selector(move || selector.clone())
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_secondary)
                         .child(label),
@@ -560,7 +552,6 @@ impl SettingsView {
         let colors = theme(cx).colors;
         div()
             .id("skills-root-preview")
-            .debug_selector(|| "skills-root-preview".into())
             .flex()
             .flex_col()
             .min_w_0()
@@ -613,7 +604,6 @@ impl SettingsView {
         let colors = theme(cx).colors;
         div()
             .id("skills-body-preview")
-            .debug_selector(|| "skills-body-preview".into())
             .flex()
             .flex_col()
             .min_w_0()
@@ -669,7 +659,6 @@ fn skill_button(
     settings_action_chrome(colors)
         .id(id.clone())
         .interaction_surface(colors.bg_elevated, colors.bg_hover, colors.bg_active, true)
-        .debug_selector(move || id.clone())
         .focusable()
         .tab_stop(true)
         .focus_visible(move |style| style.border_color(colors.accent))
@@ -722,7 +711,7 @@ fn skill_toggle_row(
                 }
             }))
     });
-    settings_field(format!("{id}-row"), label, None, switch, colors)
+    settings_field(label, None, switch, colors)
 }
 
 fn scope_label(scope: SkillUiScope) -> &'static str {

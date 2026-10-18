@@ -290,12 +290,7 @@ impl VegaWindow {
         }
         let colors = theme(cx).colors;
         let counts = self.subagent_counts();
-        let mut section = div()
-            .debug_selector(|| "environment-subagents".into())
-            .py_2()
-            .flex()
-            .flex_col()
-            .gap_1();
+        let mut section = div().py_2().flex().flex_col().gap_1();
         section = section.child(
             panel_button(
                 "environment-subagents-open",
@@ -857,7 +852,6 @@ impl VegaWindow {
         let colors = theme(cx).colors;
         let mut root = div()
             .id("subagent-panel")
-            .debug_selector(|| "subagent-panel".into())
             .track_focus(&self.subagent_panel.focus)
             .size_full()
             .min_w_0()
@@ -1023,7 +1017,6 @@ impl VegaWindow {
             let rows = self.subagent_panel.agents.clone();
             let mut list = div()
                 .id("subagent-panel-list")
-                .debug_selector(|| "subagent-panel-list".into())
                 .flex_1()
                 .min_h_0()
                 .p_3()
@@ -1042,7 +1035,6 @@ impl VegaWindow {
                 let child = agent.agent_id.clone();
                 list = list.child(
                     div()
-                        .debug_selector(|| "subagent-panel-row".into())
                         .flex()
                         .flex_wrap()
                         .items_center()
@@ -1096,12 +1088,10 @@ fn panel_button(
 ) -> Stateful<Div> {
     let id = id.into();
     let label = label.into();
-    let selector = id.clone();
     let activate = std::rc::Rc::new(activate);
     let keyboard = activate.clone();
     div()
         .id(id)
-        .debug_selector(move || selector.to_string())
         .role(Role::Button)
         .aria_label(label.clone())
         .focusable()
@@ -1131,6 +1121,3 @@ fn panel_button(
         })
         .child(label)
 }
-
-#[cfg(test)]
-mod tests;

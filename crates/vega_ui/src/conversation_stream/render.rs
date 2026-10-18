@@ -6,8 +6,8 @@ use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, anchored, canvas, poin
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
-    PERMISSION_ORDER, permission_description, permission_icon, permission_icon_selector,
-    permission_is_warning, permission_label,
+    PERMISSION_ORDER, permission_description, permission_icon, permission_is_warning,
+    permission_label,
 };
 pub(crate) use super::composer_actions::{PERMISSION_PICKER_LEARN_MORE, PERMISSION_PICKER_TITLE};
 
@@ -80,7 +80,6 @@ impl ConversationStream {
             gpui_kit::linear_color_stop(colors.bg_base, 1.),
         );
         div()
-            .debug_selector(|| "conversation-foreground".into())
             .absolute()
             .bottom_0()
             .left_0()
@@ -112,7 +111,6 @@ impl ConversationStream {
             )
             .child(
                 div()
-                    .debug_selector(|| "conversation-bottom-fade".into())
                     .absolute()
                     .top(px(
                         Layout::READING_NAVIGATION_HEIGHT - Layout::CONVERSATION_BOTTOM_FADE_HEIGHT
@@ -125,7 +123,6 @@ impl ConversationStream {
             .child(self.render_resume_tail(cx))
             .child(
                 div()
-                    .debug_selector(|| "conversation-foreground-surface".into())
                     .w_full()
                     .flex()
                     .flex_col()
@@ -155,7 +152,6 @@ impl ConversationStream {
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         div()
-            .debug_selector(|| "conversation-reading-navigation".into())
             .h(px(Layout::READING_NAVIGATION_HEIGHT))
             .flex_shrink_0()
             .py(px(Layout::READING_NAVIGATION_PADDING))
@@ -165,7 +161,6 @@ impl ConversationStream {
                 row.child(
                     div()
                         .id("scroll-to-bottom")
-                        .debug_selector(|| "scroll-to-bottom".into())
                         .aria_label("回到底部")
                         .track_focus(&self.resume_tail_focus)
                         .tab_stop(true)
@@ -208,7 +203,6 @@ impl ConversationStream {
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
         let can_send = self.can_submit_message(cx);
         div()
-            .debug_selector(|| "composer-wrapper".into())
             .px(px(Layout::CONVERSATION_PADDING))
             .pt(px(Layout::COMPOSER_PADDING_TOP))
             .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
@@ -222,7 +216,6 @@ impl ConversationStream {
                     .filter(|_| !self.controller_error_is_run_notice())
                     .map(|error| {
                         div()
-                            .debug_selector(|| "conversation-controller-error".to_string())
                             .w_full()
                             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                             .mx_auto()
@@ -401,7 +394,6 @@ impl ConversationStream {
             .child(self.render_active_skills(cx))
             .children(self.mcp_warning.clone().map(|warning| {
                 div()
-                    .debug_selector(|| "conversation-mcp-warning".to_string())
                     .w_full()
                     .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                     .mx_auto()
@@ -451,7 +443,6 @@ impl ConversationStream {
                     )
                     .child(
                         div()
-                            .debug_selector(move || permission_icon_selector(glyph).to_string())
                             .flex()
                             .flex_shrink_0()
                             .child(crate::icons::icon(glyph, ink)),
@@ -473,7 +464,6 @@ impl ConversationStream {
         };
         div()
             .id("composer-backend-status")
-            .debug_selector(|| "composer-backend-status".into())
             .aria_label(label)
             .min_w_0()
             .flex_shrink_1()
@@ -509,7 +499,6 @@ impl ConversationStream {
                 };
                 div()
                     .id(("composer-permission-option", index))
-                    .debug_selector(move || format!("composer-permission-option-{}", mode.as_str()))
                     .min_h(px(44.))
                     .flex_shrink_0()
                     .px_2()
@@ -559,24 +548,16 @@ impl ConversationStream {
                             .flex()
                             .justify_end()
                             .when(selected, |marker| {
-                                marker
-                                    .debug_selector(move || {
-                                        format!(
-                                            "composer-permission-option-{}-check",
-                                            mode.as_str()
-                                        )
-                                    })
-                                    .child(crate::icons::icon(
-                                        crate::icons::Icon::Check,
-                                        colors.brand_primary,
-                                    ))
+                                marker.child(crate::icons::icon(
+                                    crate::icons::Icon::Check,
+                                    colors.brand_primary,
+                                ))
                             }),
                     )
             });
 
         gpui_kit::deferred(
             div()
-                .debug_selector(|| "composer-permission-picker".into())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .absolute()
                 .bottom(gpui_kit::relative(1.0))
@@ -594,7 +575,6 @@ impl ConversationStream {
                 .shadow_sm()
                 .child(
                     div()
-                        .debug_selector(|| "composer-permission-picker-title".into())
                         .flex_shrink_0()
                         .px_2()
                         .pt_2()
@@ -1047,7 +1027,6 @@ impl ConversationStream {
                     .gap_2()
                     .child(
                         div()
-                            .debug_selector(|| "context-usage-tooltip-title".into())
                             .flex_1()
                             .text_size(px(Typography::BODY))
                             .text_color(colors.text_primary)
@@ -1057,7 +1036,6 @@ impl ConversationStream {
                     .child(
                         div()
                             .id("context-usage-help")
-                            .debug_selector(|| "context-usage-help".into())
                             .size(px(Layout::ICON_SIZE))
                             .tooltip(move |_, cx| crate::icons::tooltip(help.clone(), cx))
                             .child(crate::icons::icon(
@@ -1091,11 +1069,7 @@ impl ConversationStream {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(
-                                div()
-                                    .debug_selector(|| "context-usage-tooltip-estimate".into())
-                                    .child("估算已用 / 配置输入上限"),
-                            )
+                            .child(div().child("估算已用 / 配置输入上限"))
                             .child(
                                 div()
                                     .debug_selector(|| "context-usage-tooltip-compact".into())
@@ -1312,7 +1286,6 @@ impl ConversationStream {
                 .shadow_sm()
                 .child(
                     div()
-                        .debug_selector(|| "composer-model-heading".into())
                         .flex_shrink_0()
                         .px_2()
                         .pt_2()
@@ -1390,7 +1363,6 @@ impl ConversationStream {
         Some(
             div()
                 .id("message-anchor-status")
-                .debug_selector(|| "message-anchor-status".into())
                 .aria_label(label)
                 .w_full()
                 .px_2()
@@ -1516,7 +1488,6 @@ impl Render for ConversationStream {
             message_anchor_preview_in_lane = preview_in_lane;
             div()
                 .id("conversation-scroll")
-                .debug_selector(|| "conversation-scroll".into())
                 .size_full()
                 .flex()
                 .flex_col()
@@ -1533,7 +1504,6 @@ impl Render for ConversationStream {
                         .child(
                             div()
                                 .id("conversation-message-list")
-                                .debug_selector(|| "conversation-message-list".into())
                                 .relative()
                                 .min_w_0()
                                 .flex_1()
@@ -1573,7 +1543,6 @@ impl Render for ConversationStream {
                                                         },
                                                         Some(entry) => render_stream_entry(
                                                             entry,
-                                                            index,
                                                             this.entry_identities
                                                                 .get(index)
                                                                 .is_some_and(|identity| {
@@ -1673,7 +1642,6 @@ impl Render for ConversationStream {
                     .relative()
                     .child(
                         div()
-                            .debug_selector(|| "conversation-column".into())
                             .min_w_0()
                             .w_full()
                             .max_w(px(Layout::CONVERSATION_MAX_WIDTH))

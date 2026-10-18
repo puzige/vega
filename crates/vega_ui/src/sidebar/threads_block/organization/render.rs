@@ -127,7 +127,6 @@ impl ThreadsBlock {
         let keyboard_action = action.clone();
         div()
             .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
             .focusable()
             .tab_stop(true)
             .aria_label(aria)
@@ -214,7 +213,6 @@ impl ThreadsBlock {
         self.prepare_reorder();
         let mut body = div()
             .id("sidebar-organization")
-            .debug_selector(|| "sidebar-organization".into())
             .when_some(
                 self.organization.as_ref().filter(|org| org.reorder.gesture),
                 |body, org| body.track_focus(&org.reorder.focus),
@@ -265,7 +263,6 @@ impl ThreadsBlock {
         let keyboard_action = action.clone();
         div()
             .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
             .aria_label(label.clone())
             .focusable()
             .tab_stop(true)
@@ -337,31 +334,21 @@ impl ThreadsBlock {
         Some(
             div()
                 .id("organization-pinned")
-                .debug_selector(|| "organization-section-pinned".into())
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
                 .child(
                     div()
-                        .debug_selector(|| "organization-header-pinned".into())
                         .h(px(28.))
                         .flex()
                         .items_center()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child(
-                            div()
-                                .debug_selector(move || {
-                                    format!("organization-section-label-{label}")
-                                })
-                                .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                                .child(label),
-                        ),
+                        .child(div().pl(px(Layout::SIDEBAR_LABEL_INSET)).child(label)),
                 )
                 .child(
                     div()
                         .id("organization-pinned-scroll")
-                        .debug_selector(|| "organization-pinned-scroll".into())
                         // Include the row surface outset inside the scroll clip.
                         .ml(px(-8.0))
                         .pl_2()
@@ -415,7 +402,6 @@ impl ThreadsBlock {
             });
         let header = div()
             .id("organization-recents-header")
-            .debug_selector(|| "organization-header-recents".into())
             .track_focus(&self.recents_header_focus)
             .flex()
             .items_center()
@@ -423,7 +409,6 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
-                    .debug_selector(move || format!("organization-section-label-{label}"))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
@@ -431,16 +416,6 @@ impl ThreadsBlock {
             )
             .child(
                 div()
-                    .debug_selector(move || {
-                        format!(
-                            "organization-recents-actions-{}",
-                            if header_actions_visible {
-                                "visible"
-                            } else {
-                                "rest"
-                            }
-                        )
-                    })
                     .flex()
                     .items_center()
                     .gap_1()
@@ -489,7 +464,6 @@ impl ThreadsBlock {
         let empty = empty.then(|| {
             div()
                 .id("organization-recents-empty")
-                .debug_selector(|| "organization-recents-empty".into())
                 .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                 .px_3()
                 .flex()
@@ -500,7 +474,6 @@ impl ThreadsBlock {
         });
         div()
             .id("organization-recents")
-            .debug_selector(|| "organization-section-recents".into())
             .flex()
             .flex_col()
             .flex_shrink_0()
@@ -528,7 +501,6 @@ impl ThreadsBlock {
             || self.focused_section == Some(OrganizationSection::Projects);
         let header = div()
             .id("organization-projects-header")
-            .debug_selector(|| "organization-header-projects".into())
             .track_focus(&self.projects_header_focus)
             .flex()
             .items_center()
@@ -536,33 +508,19 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
-                    .debug_selector(move || format!("organization-section-label-{label}"))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
             )
-            .child(
-                div()
-                    .debug_selector(move || {
-                        format!(
-                            "organization-projects-actions-{}",
-                            if header_actions_visible {
-                                "visible"
-                            } else {
-                                "rest"
-                            }
-                        )
-                    })
-                    .child(self.vector_control(
-                        "organization-add-project",
-                        "添加项目文件夹",
-                        crate::icons::Icon::FolderPlus,
-                        Control::AddProject,
-                        !header_actions_visible,
-                        cx,
-                    )),
-            )
+            .child(div().child(self.vector_control(
+                "organization-add-project",
+                "添加项目文件夹",
+                crate::icons::Icon::FolderPlus,
+                Control::AddProject,
+                !header_actions_visible,
+                cx,
+            )))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.set_hovered_section(OrganizationSection::Projects, *hovered, cx);
             }));
@@ -594,7 +552,6 @@ impl ThreadsBlock {
         );
         div()
             .id("organization-projects")
-            .debug_selector(|| "organization-section-projects".into())
             .flex()
             .flex_col()
             .child(header)
@@ -607,11 +564,9 @@ impl ThreadsBlock {
         let state_name = if expanded { "less" } else { "more" };
         let label = if expanded { "收起" } else { "展开更多" };
         let id = format!("organization-projects-show-{state_name}");
-        let label_id = "organization-projects-progressive-label".to_string();
         let focus = &self.projects_progressive_focus;
         div()
             .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
             .track_focus(focus)
             .focusable()
             .tab_stop(true)
@@ -648,7 +603,7 @@ impl ThreadsBlock {
                     }
                 }),
             )
-            .child(div().debug_selector(move || label_id.clone()).child(label))
+            .child(div().child(label))
             .into_any_element()
     }
 
@@ -665,12 +620,10 @@ impl ThreadsBlock {
         let colors = theme(cx).colors;
         let label = "展开更多";
         let id = format!("project-{project_id}-show-more");
-        let label_id = format!("project-{project_id}-progressive-label");
         let mouse_project_id = project_id.to_owned();
         let keyboard_project_id = project_id.to_owned();
         div()
             .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
             .focusable()
             .tab_stop(true)
             .role(gpui_kit::Role::Button)
@@ -709,7 +662,7 @@ impl ThreadsBlock {
                     }
                 }),
             )
-            .child(div().debug_selector(move || label_id.clone()).child(label))
+            .child(div().child(label))
             .into_any_element()
     }
 
@@ -742,10 +695,6 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("project-header-{}", project.id).into(),
             ))
-            .debug_selector({
-                let id = project.id.clone();
-                move || format!("project-header-{id}")
-            })
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex()
             .items_center()
@@ -813,15 +762,6 @@ impl ThreadsBlock {
                         )
                         .into(),
                     ))
-                    .debug_selector({
-                        let id = project.id.clone();
-                        move || {
-                            format!(
-                                "project-folder-{id}-{}",
-                                if collapsed { "closed" } else { "open" }
-                            )
-                        }
-                    })
                     .size(px(16.))
                     .flex_shrink_0()
                     .child(crate::icons::icon(
@@ -838,10 +778,6 @@ impl ThreadsBlock {
                     .id(ElementId::Name(
                         format!("organization-project-{}", project.id).into(),
                     ))
-                    .debug_selector({
-                        let id = project.id.clone();
-                        move || format!("organization-project-{id}")
-                    })
                     .flex_1()
                     .min_w_0()
                     .truncate()
@@ -853,11 +789,6 @@ impl ThreadsBlock {
                 div()
                     .when_some(self.project_focuses.get(&project.id), |actions, focus| {
                         actions.track_focus(focus)
-                    })
-                    .debug_selector({
-                        let id = project.id.clone();
-                        let state = if actions_visible { "visible" } else { "rest" };
-                        move || format!("project-actions-{id}-{state}")
                     })
                     .flex()
                     .items_center()
@@ -883,15 +814,6 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("project-section-{}", project_id).into(),
             ))
-            .debug_selector({
-                let project_id = project_id.clone();
-                move || {
-                    format!(
-                        "project-persistent-surface-{project_id}-{}",
-                        if selected { "active" } else { "rest" }
-                    )
-                }
-            })
             .flex()
             .flex_col()
             .child(self.render_reorder_row(

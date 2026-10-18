@@ -56,8 +56,6 @@ pub struct Tools {
     pub(crate) instance_id: u64,
     pub(crate) reads: ReadState,
     pub(crate) credential_policy: Option<Arc<crate::credentials::ToolCredentialPolicy>>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) bash_executor: Option<crate::bash::BashTestExecutor>,
 }
 
 impl Tools {
@@ -78,8 +76,7 @@ impl Tools {
         Ok(Self {
             root: canonical,
             mutation: None,
-            #[cfg(any(test, feature = "test-support"))]
-            bash_executor: None,
+
             reads: ReadState::default(),
             credential_policy: None,
             instance_id: TOOL_INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -168,26 +165,4 @@ pub(crate) fn relative_display(root: &Path, path: &Path) -> Result<String, ToolE
     path.strip_prefix(root)
         .map(|relative| relative.to_string_lossy().into_owned())
         .map_err(|_| ToolError::PathEscape(path.to_string_lossy().into_owned()))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-
-    use crate::{ToolError, Tools};
-
-    #[test]
-    fn project_root_must_be_an_existing_directory() {
-        let dir = tempdir().unwrap();
-        let file = dir.path().join("file.txt");
-        fs::write(&file, "content").unwrap();
-
-        assert!(matches!(Tools::new(&file), Err(ToolError::InvalidInput(_))));
-        assert!(matches!(
-            Tools::new(dir.path().join("missing")),
-            Err(ToolError::NotFound(_))
-        ));
-    }
 }

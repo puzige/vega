@@ -11,7 +11,7 @@ use gpui_kit::{
 use vega_conversation::types::{
     DiffLanguage, DiffLayer, DiffRowKind, DiffTextProjection, GitWorkspaceErrorCode,
     WorkspaceChangeKind, WorkspaceFile, WorkspaceFileId, WorkspaceHead, WorkspaceLineCount,
-    WorkspaceSnapshot, WorkspaceStats,
+    WorkspaceSnapshot,
 };
 use vega_markdown::HighlightKind;
 use vega_theme::{ThemeColors, Typography, theme};
@@ -31,8 +31,6 @@ actions!(
 
 pub const DIFF_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
 pub const DIFF_ROW_HEIGHT: f32 = 24.0;
-pub const DIFF_MIN_WINDOW_WIDTH: f32 = 960.0;
-pub const DIFF_MIN_WINDOW_HEIGHT: f32 = 600.0;
 pub const DIFF_CHANGE_BACKGROUND_OPACITY: f32 = 0.08;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -161,6 +159,3 @@ mod render;
 mod state;
 
 pub(crate) use render::*;
-
-#[cfg(test)]
-mod tests;

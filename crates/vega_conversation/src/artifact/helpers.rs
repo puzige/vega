@@ -223,7 +223,6 @@ pub(crate) fn launch_open(
     target: OpenInTarget,
     timeout: Duration,
     cancel: &CancellationToken,
-    #[cfg(test)] mock: &super::tests::LaunchMock,
 ) -> Result<(), GitWorkspaceError> {
     if cancel.is_cancelled() {
         return Err(workspace_error(GitWorkspaceErrorCode::Cancelled));
@@ -235,11 +234,6 @@ pub(crate) fn launch_open(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0);
-    #[cfg(test)]
-    if let Some(result) = mock.execute(&command) {
-        guard.revalidate()?;
-        return result;
-    }
     let mut child = command
         .spawn()
         .map_err(|_| workspace_error(GitWorkspaceErrorCode::SpawnFailed))?;

@@ -1617,11 +1617,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Current counter projection (C4): the Composer renders exactly this.
-    pub fn meter_snapshot(&self) -> MeterSnapshot {
-        self.meter.snapshot()
-    }
-
     pub(crate) fn feed_meter(&mut self, event: &ConversationEvent, cx: &mut Context<Self>) {
         let accepted = match event {
             ConversationEvent::MessageStarted { .. } => self.active_agent_message.is_none(),

@@ -464,7 +464,6 @@ impl ProjectsBlock {
                     )
                     .child(
                         div()
-                            .debug_selector(move || format!("projects-section-label-{label}"))
                             .text_size(px(Typography::METADATA))
                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                             .text_color(colors.text_secondary)
@@ -653,6 +652,3 @@ impl Render for ProjectsBlock {
             .into_any_element()
     }
 }
-
-#[cfg(test)]
-mod tests;

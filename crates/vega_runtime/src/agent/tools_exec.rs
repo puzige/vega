@@ -1972,7 +1972,6 @@ pub(crate) fn outcome(
     }
 }
 
-// A one-shot test barrier at the worker's committed-to-execute boundary.
 #[cfg(test)]
 struct ReadonlyExecutionGate {
     started: tokio::sync::oneshot::Sender<()>,

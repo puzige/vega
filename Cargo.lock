@@ -7838,7 +7838,6 @@ name = "vega"
 version = "0.1.0"
 dependencies = [
  "base64",
- "futures",
  "gpui-kit",
  "libc",
  "reqwest",
@@ -7878,9 +7877,7 @@ dependencies = [
 name = "vega_conversation"
 version = "0.1.0"
 dependencies = [
- "base64",
  "futures",
- "image",
  "libc",
  "portable-pty",
  "ring",
@@ -7892,9 +7889,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "ulid",
- "vega_conversation",
  "vega_credentials",
  "vega_mcp",
  "vega_runtime",
@@ -7942,11 +7937,9 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "futures",
- "http",
  "reqwest",
  "serde_json",
  "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -7989,7 +7982,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.20",
  "toml 1.1.4+spec-1.1.0",
  "ulid",
@@ -8009,7 +8001,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.20",
 ]
 
@@ -8041,7 +8032,6 @@ dependencies = [
  "tracing",
  "vega_conversation",
  "vega_markdown",
- "vega_mcp",
  "vega_runtime",
  "vega_store",
  "vega_theme",

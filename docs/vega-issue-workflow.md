@@ -79,6 +79,7 @@ Feature：Backlog → In progress（Codex 审查并组织实现）→ In review�
 
 - Codex、Vega 及子 agent **本地不运行 Vega 代码、不编译、构建、打包或执行测试**，包括定向 cargo check、Clippy、test/nextest；只做低 CPU、快速结束的差异、格式和静态检查。技能 frontmatter 等静态校验不属于运行 Vega。
 - 有行为变化时按执行总纲 §7.2 先写有效测试，再由 GitHub Actions 确认目标行为缺失的 RED；无关编译、依赖或 runner 失败不算 RED。冻结后不补测、不放宽断言、不 ignore 或重试换绿；新需求、遗漏边界或新 Bug 须先记录独立验收变化并重开先测后修周期。纯文档/格式不强加测试，本次 Rust 清零不造替代测试或 RED，保留 Python 测试。不新增真实外部进程/网络 E2E 门禁。
+- 集成旧任务分支前先同步最新 master，保留其已删除历史测试的结果；“保留当前测试”仅指当前有效测试，不授权整目录/整仓恢复旧集合。逐项审查真正新增的测试、必要支持和来源证据，改名/改写不自动算新增；确需新回归按 §7.2 独立先测后修。见 [合并纠偏规格](vega-rust-reset-reconciliation.md)。
 - Codex 在实现前建立/复用测试先行 draft PR 确认 RED，实现后审查同一测试 GREEN 和最新 head 门禁；保留 squash 后仍可访问的顺序及原始失败证据，最终绿色 CI 不能单独证明 TDD。未运行写“待 CI 验证”；空集写 `no Rust tests`，不称 Rust 测试通过。审查和 CI 期间保持 In progress，PR 不用自动关闭 Issue 的关键字。
 - CI 启动后 **每 5 分钟查询一次**；收到完成/失败通知或用户要求即时查看时可立即查询，不使用更短轮询或 watch。仅确认最新 head 的 required check `check (fmt, clippy, test)` 成功后，由 Codex squash merge master。
 - 合并后进入 In review，等待用户纯手动验收。发布/打包仍走云端，合并不代表应用已安装；合并时不提前删除任务分支/worktree。

@@ -476,11 +476,9 @@ impl ConversationStream {
             selected,
             action,
         } = button;
-        let selector = id.clone();
         let keyboard_action = action.clone();
         div()
             .id(id)
-            .debug_selector(move || selector.clone())
             .role(Role::Button)
             .aria_label(label)
             .when_some(description, |element, description| {
@@ -548,7 +546,6 @@ impl ConversationStream {
         };
         div()
             .id("composer-running-send")
-            .debug_selector(|| "composer-running-send".into())
             .role(Role::Button)
             .aria_label(label)
             .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
@@ -712,165 +709,150 @@ impl ConversationStream {
             .len()
             .min(Layout::PENDING_MESSAGE_VISIBLE_ROWS) as f32;
         let viewport_height = visible * Layout::PENDING_MESSAGE_ROW_HEIGHT;
-        let rows =
-            self.pending_queue
-                .messages
-                .iter()
-                .filter_map(|message| {
-                    let item = self.pending_ui.items.get(&message.id)?;
-                    let id = message.id.clone();
-                    let more_bounds = item.bounds.clone();
-                    let enabled = self.pending_controls_enabled();
-                    let steer_enabled = enabled
-                        && self.actions.running
-                        && message.behavior == PendingMessageBehavior::Queue;
-                    let steer_description = if !self.actions.running {
-                        Some("当前没有运行中的任务，请继续队列")
-                    } else if message.behavior == PendingMessageBehavior::Steer {
-                        Some("该消息已安排插话")
-                    } else {
-                        None
-                    };
-                    let steer = self
-                        .pending_button(
-                            PendingButton {
-                                id: format!("pending-steer-{id}"),
-                                label: "插话",
-                                description: steer_description,
-                                glyph: Icon::Steer,
-                                focus: item.focus[0].clone(),
-                                enabled: steer_enabled,
-                                selected: false,
-                                action: PendingControlAction::Queue(PendingQueueAction::Steer(
-                                    id.clone(),
-                                )),
-                            },
-                            cx,
-                        )
-                        .w_auto()
-                        .px_1()
-                        .child("插话");
-                    let remove = self.pending_button(
+        let rows = self
+            .pending_queue
+            .messages
+            .iter()
+            .filter_map(|message| {
+                let item = self.pending_ui.items.get(&message.id)?;
+                let id = message.id.clone();
+                let more_bounds = item.bounds.clone();
+                let enabled = self.pending_controls_enabled();
+                let steer_enabled = enabled
+                    && self.actions.running
+                    && message.behavior == PendingMessageBehavior::Queue;
+                let steer_description = if !self.actions.running {
+                    Some("当前没有运行中的任务，请继续队列")
+                } else if message.behavior == PendingMessageBehavior::Steer {
+                    Some("该消息已安排插话")
+                } else {
+                    None
+                };
+                let steer = self
+                    .pending_button(
                         PendingButton {
-                            id: format!("pending-remove-{id}"),
-                            label: "删除消息",
-                            description: None,
-                            glyph: Icon::Trash,
-                            focus: item.focus[1].clone(),
-                            enabled,
+                            id: format!("pending-steer-{id}"),
+                            label: "插话",
+                            description: steer_description,
+                            glyph: Icon::Steer,
+                            focus: item.focus[0].clone(),
+                            enabled: steer_enabled,
                             selected: false,
-                            action: PendingControlAction::Queue(PendingQueueAction::Remove(
+                            action: PendingControlAction::Queue(PendingQueueAction::Steer(
                                 id.clone(),
                             )),
                         },
                         cx,
-                    );
-                    let more = self
-                        .pending_button(
-                            PendingButton {
-                                id: format!("pending-more-{id}"),
-                                label: "消息选项",
-                                description: None,
-                                glyph: Icon::More,
-                                focus: item.focus[2].clone(),
-                                enabled,
-                                selected: self.pending_ui.menu.as_ref() == Some(&id),
-                                action: PendingControlAction::Menu(id.clone()),
-                            },
-                            cx,
-                        )
-                        .relative()
-                        .child(
-                            canvas(
-                                move |bounds, _, _| more_bounds.set(Some(bounds)),
-                                |_, _, _, _| {},
-                            )
-                            .absolute()
-                            .inset_0(),
-                        );
-                    let preview = if message.content.is_empty() {
-                        "图片".into()
-                    } else {
-                        message.content.replace(['\r', '\n'], " ")
-                    };
-                    let content_id = id.clone();
-                    let row_id = id.clone();
-                    Some(
-                        div()
-                            .debug_selector(move || format!("pending-row-{row_id}"))
-                            .h(px(Layout::PENDING_MESSAGE_ROW_HEIGHT))
-                            .flex_shrink_0()
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(icon(
-                                if message.behavior == PendingMessageBehavior::Queue {
-                                    Icon::Queue
-                                } else {
-                                    Icon::Steer
-                                },
-                                colors.text_tertiary,
-                            ))
-                            .children(item.images.iter().take(1).enumerate().map(
-                                |(index, image)| {
-                                    let image_id = id.clone();
-                                    div()
-                                        .debug_selector(move || {
-                                            format!("pending-thumbnail-{image_id}-{index}")
-                                        })
-                                        .size(px(Layout::PENDING_MESSAGE_THUMBNAIL))
-                                        .flex_shrink_0()
-                                        .relative()
-                                        .child(crate::image_preview::ImagePreview::thumbnail_sized(
-                                            &image.view,
-                                            Layout::PENDING_MESSAGE_THUMBNAIL,
-                                            cx,
-                                        ))
-                                        .when(message.images.len() > 1, |element| {
-                                            element.child(
-                                                div()
-                                                    .absolute()
-                                                    .bottom_0()
-                                                    .right_0()
-                                                    .px_1()
-                                                    .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                                                    .bg(colors.bg_elevated)
-                                                    .text_color(colors.text_secondary)
-                                                    .text_size(px(Typography::METADATA))
-                                                    .child(format!(
-                                                        "+{}",
-                                                        message.images.len() - 1
-                                                    )),
-                                            )
-                                        })
-                                },
-                            ))
-                            .child(
-                                div()
-                                    .debug_selector(move || format!("pending-content-{content_id}"))
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .text_size(px(Typography::BODY))
-                                    .text_color(colors.text_primary)
-                                    .child(preview),
-                            )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(steer)
-                                    .child(remove)
-                                    .child(more),
-                            ),
                     )
-                })
-                .collect::<Vec<_>>();
+                    .w_auto()
+                    .px_1()
+                    .child("插话");
+                let remove = self.pending_button(
+                    PendingButton {
+                        id: format!("pending-remove-{id}"),
+                        label: "删除消息",
+                        description: None,
+                        glyph: Icon::Trash,
+                        focus: item.focus[1].clone(),
+                        enabled,
+                        selected: false,
+                        action: PendingControlAction::Queue(PendingQueueAction::Remove(id.clone())),
+                    },
+                    cx,
+                );
+                let more = self
+                    .pending_button(
+                        PendingButton {
+                            id: format!("pending-more-{id}"),
+                            label: "消息选项",
+                            description: None,
+                            glyph: Icon::More,
+                            focus: item.focus[2].clone(),
+                            enabled,
+                            selected: self.pending_ui.menu.as_ref() == Some(&id),
+                            action: PendingControlAction::Menu(id.clone()),
+                        },
+                        cx,
+                    )
+                    .relative()
+                    .child(
+                        canvas(
+                            move |bounds, _, _| more_bounds.set(Some(bounds)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    );
+                let preview = if message.content.is_empty() {
+                    "图片".into()
+                } else {
+                    message.content.replace(['\r', '\n'], " ")
+                };
+                Some(
+                    div()
+                        .h(px(Layout::PENDING_MESSAGE_ROW_HEIGHT))
+                        .flex_shrink_0()
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(icon(
+                            if message.behavior == PendingMessageBehavior::Queue {
+                                Icon::Queue
+                            } else {
+                                Icon::Steer
+                            },
+                            colors.text_tertiary,
+                        ))
+                        .children(item.images.iter().take(1).map(|image| {
+                            div()
+                                .size(px(Layout::PENDING_MESSAGE_THUMBNAIL))
+                                .flex_shrink_0()
+                                .relative()
+                                .child(crate::image_preview::ImagePreview::thumbnail_sized(
+                                    &image.view,
+                                    Layout::PENDING_MESSAGE_THUMBNAIL,
+                                    cx,
+                                ))
+                                .when(message.images.len() > 1, |element| {
+                                    element.child(
+                                        div()
+                                            .absolute()
+                                            .bottom_0()
+                                            .right_0()
+                                            .px_1()
+                                            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                                            .bg(colors.bg_elevated)
+                                            .text_color(colors.text_secondary)
+                                            .text_size(px(Typography::METADATA))
+                                            .child(format!("+{}", message.images.len() - 1)),
+                                    )
+                                })
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_size(px(Typography::BODY))
+                                .text_color(colors.text_primary)
+                                .child(preview),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(steer)
+                                .child(remove)
+                                .child(more),
+                        ),
+                )
+            })
+            .collect::<Vec<_>>();
         div()
             .w_full()
             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
@@ -879,7 +861,6 @@ impl ConversationStream {
             .mb(px(-Layout::PENDING_MESSAGE_OVERLAP))
             .child(
                 div()
-                    .debug_selector(|| "pending-message-rail".into())
                     .relative()
                     .w_full()
                     .h(px(viewport_height + Layout::PENDING_MESSAGE_OVERLAP))
@@ -893,7 +874,6 @@ impl ConversationStream {
                         rail.child(
                             div()
                                 .id("pending-message-scroll")
-                                .debug_selector(|| "pending-message-scroll".into())
                                 .h(px(viewport_height))
                                 .w_full()
                                 .flex()
@@ -1044,7 +1024,6 @@ impl ConversationStream {
             .child(toggle_label);
         let menu = div()
             .id("pending-message-menu")
-            .debug_selector(|| "pending-message-menu".into())
             .key_context("PendingMessageMenu")
             .on_action(cx.listener(Self::close_pending_menu_action))
             .on_action(cx.listener(Self::next_pending_menu_item))

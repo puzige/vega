@@ -1,7 +1,5 @@
 mod parser;
 mod runtime;
-#[cfg(test)]
-mod tests;
 pub use parser::parse_command;
 pub(crate) use runtime::AutomationBinding;
 

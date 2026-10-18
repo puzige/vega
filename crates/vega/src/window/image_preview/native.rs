@@ -71,8 +71,6 @@ struct Reservation {
 struct Cache {
     closing: bool,
     inflight: usize,
-    #[cfg(test)]
-    materialize_gate: Option<Arc<std::sync::Barrier>>,
     cleanup: Vec<std::thread::JoinHandle<()>>,
     next: u64,
     entries: Vec<Reservation>,
@@ -200,19 +198,6 @@ impl ImageExportCache {
             id
         };
         let _materializing = Materializing(self.clone());
-        #[cfg(test)]
-        {
-            let gate = self
-                .0
-                .state
-                .lock()
-                .ok()
-                .and_then(|cache| cache.materialize_gate.clone());
-            if let Some(gate) = gate {
-                gate.wait();
-                gate.wait();
-            }
-        }
         let result = (|| {
             if cancel.is_cancelled() {
                 return Err(ImageOpenError::Cancelled);
@@ -355,17 +340,7 @@ impl ImageSystem for NativeImageSystem {
     fn applications(&self, path: &Path) -> Result<Vec<ImageApplication>, ImageOpenError> {
         #[cfg(target_os = "macos")]
         {
-            #[cfg(test)]
-            {
-                let _ = macos::applications
-                    as fn(&Path) -> Result<Vec<ImageApplication>, ImageOpenError>;
-                let _ = path;
-                Err(ImageOpenError::Applications)
-            }
-            #[cfg(not(test))]
-            {
-                macos::applications(path)
-            }
+            macos::applications(path)
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -374,12 +349,6 @@ impl ImageSystem for NativeImageSystem {
         }
     }
     fn spawn(&self, args: &[std::ffi::OsString]) -> Result<Box<dyn ImageProcess>, ImageOpenError> {
-        #[cfg(test)]
-        {
-            let _ = args;
-            Err(ImageOpenError::Launch)
-        }
-        #[cfg(not(test))]
         {
             let child = std::process::Command::new("/usr/bin/open")
                 .args(args)
@@ -393,10 +362,8 @@ impl ImageSystem for NativeImageSystem {
     }
 }
 
-#[cfg(not(test))]
 struct NativeImageProcess(std::process::Child);
 
-#[cfg(not(test))]
 impl ImageProcess for NativeImageProcess {
     fn poll(&mut self) -> Result<Option<bool>, ImageOpenError> {
         self.0
