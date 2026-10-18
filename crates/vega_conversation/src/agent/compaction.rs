@@ -1419,10 +1419,11 @@ impl ConversationCompactionHook<'_> {
                 .filter(|call| call.message_id == owner_id)
                 .map(|call| call.id.as_str())
                 .collect::<HashSet<_>>();
-            let mut owned_source =
+            let projected_source =
                 super::pipeline::source_after_checkpoint(&source, checkpoint.as_ref()).map_err(
                     |_| failure(context_error(ContextRuntimeError::SourceChanged), None),
                 )?;
+            let mut owned_source = projected_source.clone();
             owned_source
                 .messages
                 .retain(|message| message.id == owner_id);
@@ -1464,8 +1465,11 @@ impl ConversationCompactionHook<'_> {
             }
             let request_without_owned_group =
                 remove_owned_live_group(&request.messages, &owned_call_ids);
-            let request_without_owned_group =
-                normalize_terminal_history_groups(&source, owner_id, &request_without_owned_group)?;
+            let request_without_owned_group = normalize_terminal_history_groups(
+                &projected_source,
+                owner_id,
+                &request_without_owned_group,
+            )?;
             let persisted_history = persisted_history.iter().collect::<Vec<_>>();
             let request_without_owned_group =
                 request_without_owned_group.iter().collect::<Vec<_>>();

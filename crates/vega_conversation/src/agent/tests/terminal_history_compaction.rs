@@ -1,7 +1,9 @@
-use super::super::pipeline::history_from_context_source_with_checkpoint;
+use super::super::pipeline::{
+    history_from_context_source_with_checkpoint, source_after_checkpoint,
+};
 use super::*;
 use vega_runtime::{ChatMessage, ChatRole, ContextCompactionHook, ContextRuntimeError};
-use vega_store::context_compaction::{latest_checkpoint, load_source};
+use vega_store::context_compaction::{ContextCheckpoint, latest_checkpoint, load_source};
 
 fn seed_terminal_history(store: &Store, status: &str, empty_text: bool) {
     let content = if empty_text {
@@ -75,7 +77,7 @@ fn seed_followup(store: &Store) {
     .to_json()
     .unwrap();
     store.conn().execute(
-        "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) VALUES ('current-read', 'thread-1', 'current', 4, 'read', '{\"path\":\"lib.rs\"}', 'Current observation', 'success', ?1, 4, 4, 0)",
+        "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) VALUES ('current-read', 'thread-1', 'current', (SELECT COALESCE(MAX(seq), 0) + 1 FROM tool_calls), 'read', '{\"path\":\"lib.rs\"}', 'Current observation', 'success', ?1, 4, 4, 0)",
         [approval],
     ).unwrap();
     store.conn().execute(
@@ -224,6 +226,7 @@ async fn compact_history(
     provider: &MockProvider,
     messages: Vec<ChatMessage>,
     estimate: vega_runtime::ContextEstimate,
+    owner: &str,
 ) -> Result<vega_runtime::ContextCompactionResult, vega_runtime::ContextCompactionFailure> {
     let source = load_source(store.conn(), "thread-1").unwrap();
     let budget = vega_runtime::ContextBudget::new(20_000, 1_000, true).unwrap();
@@ -246,7 +249,7 @@ async fn compact_history(
             source_version: source.source_version,
             source_fingerprint: Some(source.fingerprint),
             require_source_fence: false,
-            source_owner_id: Some("current".into()),
+            source_owner_id: Some(owner.into()),
         },
         CancellationToken::new(),
     )
@@ -285,7 +288,7 @@ async fn reopened_terminal_history_compacts_without_losing_current_user_or_tool_
             .to_vec();
         let estimate = vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
         let provider = MockProvider::new(final_response("Earlier observations summarized."));
-        let result = compact_history(&reopened, &provider, history, estimate)
+        let result = compact_history(&reopened, &provider, history, estimate, "current")
             .await
             .unwrap();
         assert_eq!(provider.requests().len(), 1);
@@ -433,7 +436,7 @@ async fn terminal_history_compaction_rejects_changed_or_incomplete_sources() {
             }
             let before = load_source(store.conn(), "thread-1").unwrap();
             let provider = MockProvider::new(Vec::new());
-            let result = compact_history(&store, &provider, history, estimate).await;
+            let result = compact_history(&store, &provider, history, estimate, "current").await;
             let expected = if matches!(
                 mutation,
                 HistoryMutation::MissingResult
@@ -457,5 +460,471 @@ async fn terminal_history_compaction_rejects_changed_or_incomplete_sources() {
                     .is_none()
             );
         }
+    }
+}
+
+const PARTIAL_PREFIX: &str = "已核对🌙前缀。";
+
+fn append_partial_round(store: &Store, round: i64, text: &str) {
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET content = content || ?1 WHERE id = 'previous'",
+            [text],
+        )
+        .unwrap();
+    let offset: i64 = store
+        .conn()
+        .query_row(
+            "SELECT length(CAST(content AS BLOB)) FROM messages WHERE id = 'previous'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ReadonlyTool,
+        danger: None,
+    }
+    .to_json()
+    .unwrap();
+    for parallel in 0..2 {
+        let seq = round * 2 + parallel;
+        let id = format!("partial-read-{seq}");
+        store.conn().execute(
+            "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) VALUES (?1, 'thread-1', 'previous', ?2, 'read', '{\"path\":\"lib.rs\"}', ?3, 'success', ?4, 2, 2, ?5)",
+            (&id, seq, format!("Retained observation {seq}"), &approval, offset),
+        ).unwrap();
+        store.conn().execute(
+            "INSERT INTO tool_call_rounds (message_id, call_id, response_id) VALUES ('previous', ?1, ?2)",
+            (&id, format!("partial-round-{round}")),
+        ).unwrap();
+    }
+}
+
+fn partial_history(store: &Store) -> Vec<ChatMessage> {
+    let source = load_source(store.conn(), "thread-1").unwrap();
+    let checkpoint = latest_checkpoint(store.conn(), "thread-1", "mock-model").unwrap();
+    history_from_context_source_with_checkpoint(&source, checkpoint.as_ref(), "").unwrap()
+}
+
+fn summary_result_ids(provider: &MockProvider) -> Vec<String> {
+    provider.requests()[0]
+        .messages
+        .iter()
+        .filter_map(|message| {
+            let value = serde_json::from_str::<serde_json::Value>(&message.content).ok()?;
+            let observation = &value["vega_history_observation"];
+            (observation["kind"] == "tool_result")
+                .then(|| observation["call_id"].as_str().unwrap().to_string())
+        })
+        .collect()
+}
+
+async fn seed_partial_checkpoint(store: &Store) -> ContextCheckpoint {
+    store.conn().execute(
+        "INSERT INTO messages (id, thread_id, seq, role, content, status, created_at) VALUES ('goal', 'thread-1', 1, 'user', 'Preserve the earlier work', 'done', 1), ('previous', 'thread-1', 2, 'assistant', ?1, 'done', 2)",
+        [PARTIAL_PREFIX],
+    ).unwrap();
+    append_partial_round(store, 1, "");
+    append_partial_round(store, 2, "");
+    let history = partial_history(store);
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET status = 'streaming' WHERE id = 'previous'",
+            [],
+        )
+        .unwrap();
+    let before = load_source(store.conn(), "thread-1").unwrap();
+    let provider = MockProvider::new(final_response("First partial summary."));
+    let estimate = vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
+    let result = compact_history(store, &provider, history, estimate, "previous")
+        .await
+        .unwrap();
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(
+        summary_result_ids(&provider),
+        ["partial-read-2", "partial-read-3"]
+    );
+    assert_eq!(load_source(store.conn(), "thread-1").unwrap(), before);
+    let checkpoint = latest_checkpoint(store.conn(), "thread-1", "mock-model")
+        .unwrap()
+        .unwrap();
+    assert_eq!(checkpoint.covered_through_seq, 1);
+    assert_eq!(checkpoint.covered_assistant_id.as_deref(), Some("previous"));
+    assert_eq!(
+        checkpoint.covered_assistant_text_bytes,
+        PARTIAL_PREFIX.len() as u64
+    );
+    assert_eq!(checkpoint.covered_assistant_tool_seq, 3);
+    assert_eq!(checkpoint.expected_previous_id, None);
+    assert_eq!(checkpoint.source_fingerprint, before.fingerprint);
+    let retained = before
+        .tool_calls
+        .iter()
+        .filter(|call| call.seq as u64 > checkpoint.covered_assistant_tool_seq)
+        .collect::<Vec<_>>();
+    assert_eq!(retained.len(), 2);
+    assert!(retained.iter().all(|call| {
+        call.text_offset_bytes == Some(PARTIAL_PREFIX.len() as i64)
+            && call.text_offset_bytes.unwrap() > 0
+    }));
+    let projected = source_after_checkpoint(&before, Some(&checkpoint)).unwrap();
+    assert_eq!(projected.tool_calls.len(), 2);
+    assert!(
+        projected
+            .tool_calls
+            .iter()
+            .all(|call| call.text_offset_bytes == Some(0))
+    );
+    assert_eq!(result.messages, partial_history(store));
+    assert!(result.messages[1].content.is_empty());
+    assert_eq!(result.messages[1].tool_calls[0].id, "partial-read-4");
+    checkpoint
+}
+
+async fn resume_partial_history(status: &str) {
+    let (store, dir, _) = setup();
+    let first = seed_partial_checkpoint(&store).await;
+    let tail = format!("未总结尾部🌙{}", " retained evidence".repeat(2_600));
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET status = ?1, content = content || ?2 WHERE id = 'previous'",
+            (status, &tail),
+        )
+        .unwrap();
+    vega_store::context_compaction::save_model_policy(
+        store.conn(),
+        &vega_store::context_compaction::ModelContextPolicy {
+            provider: "mock-provider".into(),
+            model: "mock-model".into(),
+            input_limit: Some(20_000),
+            output_reserve: Some(1_000),
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+    let before = load_source(store.conn(), "thread-1").unwrap();
+    drop(store);
+    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+    assert_eq!(load_source(reopened.conn(), "thread-1").unwrap(), before);
+    let history = partial_history(&reopened);
+    assert_eq!(history.last().unwrap().content, tail);
+    assert!(history[1].content.is_empty());
+    let provider = MockProvider::new_rounds(vec![
+        final_response("Retained tail summarized."),
+        final_response("Continued after partial compaction."),
+    ]);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let run = run_thread_task_with_permission_config_and_reasoning(
+        &reopened,
+        &provider,
+        &tools,
+        "thread-1",
+        "Continue with the remaining work",
+        "system",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        Some(FrozenReasoning::unknown("mock-provider", "mock-model")),
+    )
+    .await
+    .unwrap();
+    assert!(!run.failed && !run.interrupted);
+    assert_eq!(run.content, "Continued after partial compaction.");
+    assert!(run.events.iter().all(|event| !matches!(
+        event,
+        ConversationEvent::ToolCallProposed { .. } | ConversationEvent::ToolCallRunning { .. }
+    )));
+    assert!(run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ContextCompactionStatus { record }
+            if record.status == crate::types::ContextCompactionStatus::Succeeded
+    )));
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].tools.is_empty());
+    assert_eq!(
+        summary_result_ids(&provider),
+        ["partial-read-4", "partial-read-5"]
+    );
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains(&first.summary))
+    );
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content == tail)
+    );
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .all(|message| !message.content.contains(PARTIAL_PREFIX))
+    );
+    assert!(requests[1].messages.iter().any(|message| {
+        message.role == ChatRole::User && message.content == "Continue with the remaining work"
+    }));
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .all(|message| { message.tool_calls.is_empty() && message.tool_call_id.is_none() })
+    );
+    let checkpoint = latest_checkpoint(reopened.conn(), "thread-1", "mock-model")
+        .unwrap()
+        .unwrap();
+    assert_eq!(checkpoint.expected_previous_id, Some(first.id));
+    assert_eq!(checkpoint.covered_through_seq, 2);
+    assert_eq!(checkpoint.covered_assistant_id, None);
+    let after = load_source(reopened.conn(), "thread-1").unwrap();
+    assert_eq!(
+        &after.messages[..before.messages.len()],
+        before.messages.as_slice()
+    );
+    assert_eq!(after.tool_calls, before.tool_calls);
+    let projection = partial_history(&reopened);
+    drop(reopened);
+    let reloaded = Store::open(dir.path().join("vega.db")).unwrap();
+    assert_eq!(load_source(reloaded.conn(), "thread-1").unwrap(), after);
+    assert_eq!(partial_history(&reloaded), projection);
+    assert_eq!(
+        latest_checkpoint(reloaded.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .unwrap(),
+        checkpoint
+    );
+    assert_eq!(projection.len(), 3);
+    assert!(projection[0].content.contains("Retained tail summarized."));
+    assert_eq!(projection[1].content, "Continue with the remaining work");
+    assert_eq!(projection[2].content, "Continued after partial compaction.");
+}
+
+#[tokio::test]
+async fn stopped_partial_history_reopens_and_automatically_compacts_again() {
+    resume_partial_history("interrupted").await;
+}
+
+#[tokio::test]
+async fn failed_partial_history_reopens_and_automatically_compacts_again() {
+    resume_partial_history("failed").await;
+}
+
+#[tokio::test]
+async fn completed_partial_history_uses_latest_cursor_and_retains_live_owner() {
+    let (store, _dir, _) = setup();
+    let first = seed_partial_checkpoint(&store).await;
+    let step = "第二阶段✅";
+    append_partial_round(&store, 3, step);
+    append_partial_round(&store, 4, "");
+    let before = load_source(store.conn(), "thread-1").unwrap();
+    let history = partial_history(&store);
+    let estimate = vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
+    let provider = MockProvider::new(final_response("Second partial summary."));
+    let result = compact_history(&store, &provider, history, estimate, "previous")
+        .await
+        .unwrap();
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(
+        summary_result_ids(&provider),
+        [
+            "partial-read-4",
+            "partial-read-5",
+            "partial-read-6",
+            "partial-read-7"
+        ]
+    );
+    assert!(
+        provider.requests()[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains(&first.summary))
+    );
+    assert_eq!(load_source(store.conn(), "thread-1").unwrap(), before);
+    let second = latest_checkpoint(store.conn(), "thread-1", "mock-model")
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.expected_previous_id, Some(first.id));
+    assert_eq!(second.covered_through_seq, 1);
+    assert_eq!(second.covered_assistant_id.as_deref(), Some("previous"));
+    assert_eq!(
+        second.covered_assistant_text_bytes,
+        (PARTIAL_PREFIX.len() + step.len()) as u64
+    );
+    assert_eq!(second.covered_assistant_tool_seq, 7);
+    assert_eq!(second.source_fingerprint, before.fingerprint);
+    assert_eq!(result.messages, partial_history(&store));
+    assert!(result.messages[1].content.is_empty());
+    let tail = "最后的未总结尾部。";
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET status = 'done', content = content || ?1 WHERE id = 'previous'",
+            [tail],
+        )
+        .unwrap();
+    seed_followup(&store);
+    let history = partial_history(&store);
+    let suffix_index = history
+        .iter()
+        .position(|message| message.content == "Continue with the retained request")
+        .unwrap();
+    let suffix = history[suffix_index..].to_vec();
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET status = 'streaming' WHERE id = 'current'",
+            [],
+        )
+        .unwrap();
+    let before = load_source(store.conn(), "thread-1").unwrap();
+    let estimate = vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
+    let provider = MockProvider::new(final_response("Completed history summarized."));
+    let result = compact_history(&store, &provider, history, estimate, "current")
+        .await
+        .unwrap();
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(
+        summary_result_ids(&provider),
+        ["partial-read-8", "partial-read-9"]
+    );
+    let requests = provider.requests();
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains(&second.summary))
+    );
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content == tail)
+    );
+    assert!(requests[0].messages.iter().all(|message| {
+        !message.content.contains(PARTIAL_PREFIX)
+            && !message.content.contains(step)
+            && !message.content.contains(&first.summary)
+    }));
+    assert_eq!(&result.messages[1..], suffix.as_slice());
+    assert_eq!(
+        result.messages.last().unwrap().tool_call_id.as_deref(),
+        Some("current-read")
+    );
+    assert_eq!(load_source(store.conn(), "thread-1").unwrap(), before);
+    let third = latest_checkpoint(store.conn(), "thread-1", "mock-model")
+        .unwrap()
+        .unwrap();
+    assert_eq!(third.expected_previous_id, Some(second.id));
+    assert_eq!(third.covered_through_seq, 2);
+    assert_eq!(third.covered_assistant_id, None);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PartialHistoryMutation {
+    Text,
+    Arguments,
+    Output,
+    CallOrder,
+    Offset,
+    MissingResult,
+    DuplicateResult,
+    MissingRound,
+}
+
+#[tokio::test]
+async fn partial_history_rejects_retained_tail_mutations_without_replacing_checkpoint() {
+    for mutation in [
+        PartialHistoryMutation::Text,
+        PartialHistoryMutation::Arguments,
+        PartialHistoryMutation::Output,
+        PartialHistoryMutation::CallOrder,
+        PartialHistoryMutation::Offset,
+        PartialHistoryMutation::MissingResult,
+        PartialHistoryMutation::DuplicateResult,
+        PartialHistoryMutation::MissingRound,
+    ] {
+        let (store, _dir, _) = setup();
+        let checkpoint = seed_partial_checkpoint(&store).await;
+        let tail = "保留🌙尾部";
+        store.conn().execute(
+            "UPDATE messages SET status = 'failed', content = content || ?1 WHERE id = 'previous'",
+            [tail],
+        ).unwrap();
+        seed_followup(&store);
+        let mut history = partial_history(&store);
+        let estimate = vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
+        let assistant = history
+            .iter()
+            .position(|message| {
+                message
+                    .tool_calls
+                    .iter()
+                    .any(|call| call.id == "partial-read-4")
+            })
+            .unwrap();
+        let tail_index = history
+            .iter()
+            .position(|message| message.content == tail)
+            .unwrap();
+        assert!(history[assistant].content.is_empty());
+        match mutation {
+            PartialHistoryMutation::Text => history[tail_index].content.push_str(" changed"),
+            PartialHistoryMutation::Arguments => {
+                history[assistant].tool_calls[0].input_json = r#"{"path":"changed.rs"}"#.into()
+            }
+            PartialHistoryMutation::Output => history[assistant + 1].content.push_str(" changed"),
+            PartialHistoryMutation::CallOrder => {
+                history[assistant].tool_calls.reverse();
+                history.swap(assistant + 1, assistant + 2);
+            }
+            PartialHistoryMutation::Offset => {
+                let character = history[tail_index].content.remove(0);
+                history[assistant].content.push(character);
+            }
+            PartialHistoryMutation::MissingResult => {
+                history.remove(assistant + 1);
+            }
+            PartialHistoryMutation::DuplicateResult => {
+                history.insert(assistant + 2, history[assistant + 1].clone());
+            }
+            PartialHistoryMutation::MissingRound => {
+                drop(history.drain(assistant..assistant + 3));
+            }
+        }
+        let before = load_source(store.conn(), "thread-1").unwrap();
+        let provider = MockProvider::new(Vec::new());
+        let result = compact_history(&store, &provider, history, estimate, "current").await;
+        let expected = if matches!(
+            mutation,
+            PartialHistoryMutation::MissingResult | PartialHistoryMutation::DuplicateResult
+        ) {
+            ContextRuntimeError::InvalidProjection
+        } else {
+            ContextRuntimeError::SourceChanged
+        };
+        assert!(
+            matches!(result, Err(failure) if matches!(failure.error.as_ref(), VegaError::Context(error) if *error == expected)),
+            "{mutation:?}"
+        );
+        assert!(provider.requests().is_empty(), "{mutation:?}");
+        assert_eq!(load_source(store.conn(), "thread-1").unwrap(), before);
+        assert_eq!(
+            latest_checkpoint(store.conn(), "thread-1", "mock-model")
+                .unwrap()
+                .unwrap(),
+            checkpoint
+        );
     }
 }
