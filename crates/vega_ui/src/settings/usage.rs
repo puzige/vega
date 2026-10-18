@@ -761,36 +761,6 @@ mod tests {
     use super::*;
     use gpui_kit::{TestAppContext, VisualTestContext, WindowBounds, WindowOptions};
     use vega_conversation::types::{UsageDay, UsageModelSeries};
-    struct MetricHarness {
-        values: Vec<String>,
-        layouts: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::TextLayout>>>,
-        width: f32,
-    }
-
-    impl Render for MetricHarness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let colors = theme(cx).colors;
-            self.layouts.borrow_mut().clear();
-            let metrics = self
-                .values
-                .iter()
-                .enumerate()
-                .map(|(index, value)| {
-                    let text = gpui_kit::StyledText::new(value.clone());
-                    self.layouts.borrow_mut().push(text.layout().clone());
-                    usage_metric(index, "合成指标", text, colors)
-                })
-                .collect::<Vec<_>>();
-            settings_group(colors)
-                .w(px(self.width))
-                .flex_row()
-                .flex_wrap()
-                .gap(px(Layout::SETTINGS_FIELD_GAP))
-                .text_size(px(Typography::BODY))
-                .line_height(relative(Typography::BODY_LINE_HEIGHT))
-                .children(metrics)
-        }
-    }
 
     fn sample(calls: u64) -> UsageDashboard {
         let totals = UsageTotals {

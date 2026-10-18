@@ -1894,9 +1894,6 @@ pub(crate) fn forward_pipeline_error_with_duration<F>(
     }
 }
 
-#[cfg(test)]
-mod asset_metadata_tests;
-
 pub(crate) fn source_after_checkpoint(
     source: &vega_store::context_compaction::ContextSource,
     checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,

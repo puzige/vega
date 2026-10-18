@@ -1,5 +1,5 @@
 use super::*;
-use gpui_kit::{AppContext, Modifiers, Render, TestAppContext, VisualTestContext, WindowHandle};
+use gpui_kit::{AppContext, Render, TestAppContext, WindowHandle};
 
 struct Harness {
     input: Entity<TextInput>,

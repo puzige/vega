@@ -8,42 +8,27 @@ use tokio_util::sync::CancellationToken;
 use vega_conversation::agent::PermissionHook;
 use vega_conversation::types::{
     Approval, Microcents, PermissionDecision, PermissionMode, PermissionRequest, Plan, PlanStatus,
-    ReadOnlyToolKind, SummaryCost, TaskBackend, TaskCostSummary, TaskSummaryOutcome, ThreadMode,
-    ThreadStatus, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
-    ToolResult,
+    SummaryCost, TaskBackend, TaskCostSummary, TaskSummaryOutcome, ThreadMode, ThreadStatus,
+    ToolCall, ToolCallStatus, ToolResult,
 };
 use vega_markdown::split_deltas;
 use vega_markdown::{ListItem, TableCell};
 
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
-mod attachments;
 mod automation;
 
-mod composer_actions;
 mod composer_counter;
 mod core_flow;
-mod cua_menu_stability;
-mod cua_screenshots;
-mod cua_usability;
-mod e2e_variable_height;
-mod hover_copy;
 mod hydration;
 
-mod menu_lists;
 mod model_markdown;
-mod model_picker_levels;
-mod permission_picker;
 mod permissions_cards;
-mod preparing_indicator;
 
 mod scroll_follow;
-mod skills;
 mod subagent_reading;
 mod thinking;
-mod timeline;
 mod user_questions;
-mod utility_bar;
 
 mod variable_height;
 

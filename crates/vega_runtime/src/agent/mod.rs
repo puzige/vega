@@ -350,12 +350,6 @@ impl RuntimeToolConfig {
         ))
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_mcp_candidates(mut self, candidates: Vec<McpCandidate>) -> Self {
-        self.mcp_candidates = candidates;
-        self
-    }
-
     /// Freeze the currently ready, explicitly enabled MCP servers at run
     /// start. Settings owns enablement and must not pass disabled servers.
     pub fn with_mcp_servers(mut self, servers: Vec<McpReadyServer>) -> Self {

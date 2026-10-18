@@ -86,18 +86,6 @@ fn table_preserves_cells_and_alignment_without_text_padding() {
     );
 }
 
-struct TableView(StreamModel);
-impl Render for TableView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(markdown_item(
-            &self.0,
-            None,
-            &vega_theme::Theme::light().colors,
-            "table-view-markdown",
-        ))
-    }
-}
-
 #[test]
 fn nested_lists_indent_and_number() {
     let node = RenderNode::List(ListBlock {

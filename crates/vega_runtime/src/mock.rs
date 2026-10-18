@@ -218,7 +218,7 @@ impl Provider for MockProvider {
 mod tests {
     use super::*;
     use crate::provider::{ChatMessage, ChatRole, StopReason};
-    use futures::Stream;
+    use futures::{Stream, StreamExt};
 
     fn request() -> ChatRequest {
         ChatRequest {

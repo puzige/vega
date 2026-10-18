@@ -66,8 +66,8 @@ fn bench() -> Result<()> {
     let prov = provenance::collect(&workspace, &build)?;
 
     println!(
-        "\nvega bench — S8-T43 frozen contracts (C1/C2/C6; SDD v1.0). \
-         Historical S6 numbers are noncomparable.\n"
+        "\nvega bench — startup latency, resident memory, stream latency and render margin \
+         (C1/C2/C6).\n"
     );
 
     let c1c2 = bench_c1_c2(&build, &prov, C2_ROUNDS)?;
@@ -225,7 +225,7 @@ fn bench_p2_with(build: &ReleaseBuild, prov: &Provenance) -> Result<report::P2Re
     preseed_profile(&isolation.home)?;
     println!(
         "C6 P2 stream: 10 s @ 1,000 deltas/s through ConversationStream::apply_event \
-         (daily-PR feedback; 5-minute soak is T48/T49)"
+         (daily-PR feedback; not the 5-minute terminal soak)"
     );
     let out = temp.root.join("p2-report.json");
     let seconds = contract::C6_STREAM_SECONDS.to_string();

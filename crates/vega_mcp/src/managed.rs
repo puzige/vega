@@ -363,20 +363,3 @@ fn parse_result(value: Value) -> Result<ManagedResult, McpError> {
     }
     Ok(result)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn fixture(stream: tokio::io::DuplexStream) -> ManagedClient {
-        let (read, write) = tokio::io::split(stream);
-        ManagedClient {
-            child: None,
-            stdin: Box::new(write),
-            stdout: BufReader::new(Box::new(read)),
-            next_id: 1,
-            tools: HashMap::new(),
-            closed: false,
-            browser_connection_started: false,
-        }
-    }
-}

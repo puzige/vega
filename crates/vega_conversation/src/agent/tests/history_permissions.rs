@@ -1,5 +1,4 @@
 use super::*;
-use crate::types::{ContextCompactionFailureCode, ContextCompactionStatus, Microcents};
 use vega_store::permissions;
 
 fn history_observation(message: &vega_runtime::ChatMessage) -> Option<serde_json::Value> {
@@ -7,11 +6,6 @@ fn history_observation(message: &vega_runtime::ChatMessage) -> Option<serde_json
         .ok()?
         .get("vega_history_observation")
         .cloned()
-}
-
-struct GatedSummaryProvider {
-    started: std::sync::Arc<tokio::sync::Notify>,
-    release: std::sync::Arc<tokio::sync::Notify>,
 }
 
 struct MutatingSecondStageProvider {
@@ -47,26 +41,6 @@ impl vega_runtime::Provider for MutatingSecondStageProvider {
             .unwrap();
         }
         self.inner.chat_stream(request, cancel)
-    }
-}
-
-impl vega_runtime::Provider for GatedSummaryProvider {
-    fn chat_stream(
-        &self,
-        _request: vega_runtime::ChatRequest,
-        _cancel: CancellationToken,
-    ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
-        self.started.notify_one();
-        let release = self.release.clone();
-        Box::pin(async move {
-            release.notified().await;
-            Ok(Box::pin(futures::stream::iter(vec![
-                Ok(ProviderEvent::TextDelta("gated summary".into())),
-                Ok(ProviderEvent::Done {
-                    stop_reason: StopReason::End,
-                }),
-            ])) as vega_runtime::EventStream)
-        })
     }
 }
 

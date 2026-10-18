@@ -166,7 +166,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::{MIGRATIONS, Store, skills, tool_calls};
+    use super::{MIGRATIONS, Store};
     use rusqlite::ErrorCode;
     use tempfile::tempdir;
 

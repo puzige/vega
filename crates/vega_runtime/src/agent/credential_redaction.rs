@@ -508,13 +508,6 @@ fn starts_with_ascii_case_insensitive(haystack: &[u8], start: usize, needle: &[u
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SECRET: &str = "canary-provider-credential-output-170-abcdefghijklmnopqrstuvwxyz";
-}
-
-#[cfg(test)]
 mod broker_policy_tests {
     use super::*;
     #[test]

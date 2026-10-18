@@ -757,10 +757,9 @@ pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};
 mod tests {
 
     use super::{
-        OpenedThread, PendingDeleteConfirm, RenameResolution, RunningThreadsGlobal,
-        SelectedProject, Sidebar, SidebarEvent, VegaStore, archive_section_visible,
-        civil_from_days, clear_opened_thread_of_project, relative_time_from, resolve_rename,
-        row_shows_actions, set_thread_running, shows_timestamp_at_rest, thread_is_running,
+        OpenedThread, PendingDeleteConfirm, RenameResolution, SelectedProject, Sidebar,
+        SidebarEvent, VegaStore, archive_section_visible, civil_from_days,
+        clear_opened_thread_of_project, relative_time_from, resolve_rename, row_shows_actions,
         thread_title,
     };
     use gpui_kit::AppContext;

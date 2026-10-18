@@ -410,37 +410,7 @@ impl Provider for OwnerCredentialProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vega_runtime::{ChatMessage, MockProvider, ScriptStep};
-
-    struct RecoveryOnlyProvider(std::sync::atomic::AtomicUsize);
-
-    impl Provider for RecoveryOnlyProvider {
-        fn chat_stream(
-            &self,
-            _: ChatRequest,
-            _: CancellationToken,
-        ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
-            panic!("primary request must use recovery entry point")
-        }
-
-        fn chat_stream_recovering(
-            &self,
-            _: ChatRequest,
-            _: CancellationToken,
-        ) -> BoxFuture<'static, Result<vega_runtime::ProviderStream, VegaError>> {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(async {
-                Ok(vega_runtime::ProviderStream {
-                    events: Box::pin(futures::stream::empty()),
-                    metadata: vega_runtime::ProviderResponseMetadata {
-                        http_status: Some(200),
-                        request_id: None,
-                        retry_count: Some(2),
-                    },
-                })
-            })
-        }
-    }
+    use vega_runtime::{ChatMessage, MockProvider};
 
     #[test]
     fn projection_preserves_json_structure_and_refuses_schema_semantic_changes() {

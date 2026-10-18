@@ -533,8 +533,8 @@ mod tests {
     use super::{
         composer_history, create_standalone_thread, create_thread, current_project, delete_thread,
         draft_thread, list_standalone_threads, list_threads, materialize_draft, new_thread_id,
-        now_ms, open_thread, rename_thread, set_thread_mode, set_thread_permission_mode,
-        set_thread_pinned, set_thread_status, task_workspace_root, update_thread,
+        open_thread, rename_thread, set_thread_mode, set_thread_permission_mode, set_thread_pinned,
+        set_thread_status, task_workspace_root, update_thread,
     };
     use crate::codex_tasks::{
         begin_codex_session_creation, bind_codex_task, codex_prompt_binding, codex_task_identity,
@@ -545,7 +545,7 @@ mod tests {
         CodexAdapterArgument, CodexAdapterKind, CodexApprovalPolicy, CodexExecutionSnapshot,
         CodexProfileReference, CodexReasoningEffort, CodexRunSettings, CodexSandboxMode,
         CodexSessionCreationState, CodexSessionFailureCode, CodexSessionUncertaintyCode,
-        CodexWorkspaceSnapshot, ConversationError, PermissionMode, TaskBackend, Thread, ThreadMode,
+        CodexWorkspaceSnapshot, ConversationError, PermissionMode, TaskBackend, ThreadMode,
         ThreadStatus, ThreadUpdate,
     };
     use vega_store::Store;

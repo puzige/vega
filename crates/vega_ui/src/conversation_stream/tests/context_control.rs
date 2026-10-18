@@ -1,30 +1,10 @@
 use super::*;
 
-use gpui_kit::{TestAppContext, VisualTestContext, WindowHandle};
+use gpui_kit::{TestAppContext, WindowHandle};
 use vega_conversation::types::{
-    ContextAccountingRecord, ContextAccountingSource, ContextAccountingStage,
     ContextCompactionUsageState, TaskBackend, ThreadMode, ThreadStatus, ToolCall, ToolCallStatus,
     ToolResult,
 };
-
-fn accounting(
-    source: ContextAccountingSource,
-    predicted_input: u64,
-    revision: u64,
-) -> ContextAccountingRecord {
-    ContextAccountingRecord {
-        source,
-        stage: ContextAccountingStage::PrimaryPreflight,
-        provider_input_baseline: (source == ContextAccountingSource::UsageAnchored).then_some(500),
-        incremental_estimate: predicted_input.saturating_sub(500),
-        predicted_input,
-        input_budget: 10_000,
-        trigger_tokens: 8_000,
-        target_tokens: 6_000,
-        revision,
-        covered_messages: 2,
-    }
-}
 
 fn setup(cx: &mut TestAppContext) -> WindowHandle<ConversationStream> {
     cx.update(|cx| {

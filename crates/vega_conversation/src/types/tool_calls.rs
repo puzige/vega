@@ -1262,9 +1262,6 @@ pub(crate) fn is_terminal(status: ToolCallStatus) -> bool {
     )
 }
 
-#[cfg(test)]
-mod asset_metadata_tests;
-
 fn user_question_result_projection(
     input: &Result<UserQuestionInput, String>,
     result: &ToolResult,

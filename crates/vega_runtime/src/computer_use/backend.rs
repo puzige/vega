@@ -19,40 +19,7 @@ use vega_mcp::{LocalServer, ManagedClient};
 pub(super) struct Backends {
     desktop: Option<Desktop>,
     browser: Option<Browser>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(super) fixture: Option<DesktopFixture>,
 }
-#[cfg(any(test, feature = "test-support"))]
-pub(super) struct DesktopFixture {
-    pub windows: Vec<DesktopTarget>,
-    pub results: std::collections::VecDeque<vega_mcp::ManagedResult>,
-    pub actions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    pub calls: Vec<(String, Value)>,
-    pub permissions: std::collections::VecDeque<Value>,
-    #[cfg(test)]
-    pub permission_gate: Option<(
-        usize,
-        std::sync::Arc<tokio::sync::Notify>,
-        std::sync::Arc<tokio::sync::Notify>,
-    )>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl DesktopFixture {
-    fn permissions_result(&mut self) -> vega_mcp::ManagedResult {
-        let structured = self.permissions.front().cloned();
-        if self.permissions.len() > 1 {
-            self.permissions.pop_front();
-        }
-        vega_mcp::ManagedResult {
-            structured,
-            text: Vec::new(),
-            images: Vec::new(),
-            is_error: false,
-        }
-    }
-}
-
 struct Dispatch<'a> {
     cancel: &'a CancellationToken,
     started: bool,
@@ -179,27 +146,10 @@ fn action_unknown(
 }
 
 impl Backends {
-    #[cfg(any(test, feature = "test-support"))]
-    pub(super) fn install_fixture(&mut self, fixture: DesktopFixture) {
-        self.fixture = Some(fixture);
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(super) fn fixture_calls(&self) -> Vec<(String, Value)> {
-        self.fixture
-            .as_ref()
-            .map(|fixture| fixture.calls.clone())
-            .unwrap_or_default()
-    }
-
     async fn desktop_windows(
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Vec<DesktopTarget>, Error> {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(fixture) = &self.fixture {
-            return Ok(fixture.windows.clone());
-        }
         self.desktop
             .as_mut()
             .ok_or(Error::NotReady)?
@@ -213,39 +163,6 @@ impl Backends {
         args: Value,
         cancel: &CancellationToken,
     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(fixture) = &mut self.fixture {
-            if name == "check_permissions" {
-                #[cfg(test)]
-                {
-                    let gate = fixture.permission_gate.as_mut().and_then(
-                        |(remaining, entered, release)| {
-                            *remaining = remaining.saturating_sub(1);
-                            (*remaining == 0).then(|| (entered.clone(), release.clone()))
-                        },
-                    );
-                    if let Some((entered, release)) = gate {
-                        fixture.permission_gate = None;
-                        entered.notify_one();
-                        tokio::select! { biased;
-                            _ = cancel.cancelled() => return Err(vega_mcp::McpError::Cancelled),
-                            _ = release.notified() => {}
-                        }
-                    }
-                }
-                return Ok(fixture.permissions_result());
-            }
-            fixture.calls.push((name.into(), args.clone()));
-            if name != "get_window_state" {
-                fixture
-                    .actions
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-            return fixture
-                .results
-                .pop_front()
-                .ok_or(vega_mcp::McpError::InvalidMessage);
-        }
         self.desktop
             .as_mut()
             .and_then(|desktop| desktop.client.as_mut())
@@ -491,15 +408,6 @@ impl Backends {
         epoch: u64,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        #[cfg(any(test, feature = "test-support"))]
-        if capability == Capability::Desktop && self.fixture.is_some() {
-            if run.control.target(capability)?.is_none() {
-                run.control.begin(capability)?;
-                run.control
-                    .connected(epoch, capability, Target::DesktopCatalog)?;
-            }
-            return Ok(());
-        }
         if match capability {
             Capability::Desktop => self.desktop.is_some(),
             Capability::Browser => {

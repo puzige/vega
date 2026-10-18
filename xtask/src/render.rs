@@ -156,9 +156,9 @@ pub fn measure_render_margin(
         row_count,
         verdict,
         literal_120fps: if literal_capable {
-            "eligible-for-literal-judgment (T50 hardware evidence still required)"
+            "eligible-for-literal-judgment (hardware evidence still required)"
         } else {
-            "hardware pending (host below 120 Hz; literal 120fps is T50)"
+            "hardware pending (host below 120 Hz)"
         },
         budget_us_120hz: C6_FRAME_BUDGET_120HZ_US,
     })

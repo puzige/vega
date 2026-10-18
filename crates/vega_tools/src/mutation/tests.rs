@@ -6,8 +6,8 @@ use tempfile::{TempDir, tempdir};
 
 use super::{FAIL_ATOMIC_REPLACE, PrepareMutationError};
 use crate::{
-    CheckpointIds, CreatedNewFileMetadata, EditSuccessOutput, InvalidMutation, MutationErrorCode,
-    MutationTool, ToolError, Tools, WriteSuccessOutput,
+    CheckpointIds, CreatedNewFileMetadata, InvalidMutation, MutationErrorCode, MutationTool,
+    ToolError, Tools, WriteSuccessOutput,
 };
 
 struct Fixture {

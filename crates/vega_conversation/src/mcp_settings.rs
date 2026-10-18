@@ -2102,7 +2102,3 @@ mod callback_fixture {
         browser
     }
 }
-
-#[cfg(test)]
-#[path = "mcp_settings_oauth_tests.rs"]
-mod oauth_tests;

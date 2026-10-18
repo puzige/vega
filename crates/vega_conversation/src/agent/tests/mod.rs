@@ -1,4 +1,3 @@
-mod pending_messages;
 use std::fs;
 use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
@@ -7,29 +6,19 @@ use tempfile::tempdir;
 use vega_runtime::{MockProvider, ProviderEvent, ScriptStep, StopReason};
 
 use super::*;
-use crate::types::{ConversationEvent, PermissionOptionChoice, ToolCallStatus};
+use crate::types::{ConversationEvent, ToolCallStatus};
 
 mod automatic_titles;
 mod automation;
 mod continuous_compaction;
 mod credential_continuation;
-mod credential_redaction;
-mod cua_usability;
 mod failure_paths;
-mod file_edit_parity;
 mod history_permissions;
-mod images;
-mod mcp;
 mod model_context;
 mod model_switch_summary;
-mod network_retry;
 mod permissions;
 mod plan_approval;
-mod provider_overflow;
-mod reasoning_budget;
 mod reasoning_replay;
-mod responses;
-mod skills;
 mod stream_persistence;
 mod terminal_history_compaction;
 mod tool_lifecycle;

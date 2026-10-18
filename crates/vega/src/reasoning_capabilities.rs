@@ -386,6 +386,7 @@ pub(crate) fn freeze_reasoning_profile(
 mod tests {
     use super::*;
 
+    use futures::StreamExt;
     use vega_runtime::{ChatMessage, ChatRole, ChatToolCall, OpenAiProvider, Provider};
 
     fn route(api: ProviderApi, endpoint: &str, model: &str) -> ReasoningProfileProjection {

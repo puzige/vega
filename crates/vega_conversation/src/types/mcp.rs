@@ -229,19 +229,3 @@ impl McpCallIdentity {
         (identity.is_valid() && identity.alias() == call.tool).then_some(identity)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn identity() -> McpCallIdentity {
-        McpCallIdentity {
-            server_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
-            config_revision: 7,
-            exact_tool_name: "lookup".into(),
-            arguments_bytes: 23,
-            arguments_sha256: "a".repeat(64),
-            argument_preview: "query: string".into(),
-        }
-    }
-}

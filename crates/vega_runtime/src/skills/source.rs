@@ -383,8 +383,6 @@ impl SkillSource {
         if before.nlink() != 1 {
             return Err(SkillError::Hardlink);
         }
-        #[cfg(test)]
-        super::asset_probe::run_asset_recheck();
         let after = opened.file.metadata().map_err(|_| SkillError::Io)?;
         if !same_file_state(&before, &after) {
             return Err(SkillError::Stale);
@@ -634,8 +632,6 @@ fn child_is_symlink(parent: &File, component: &CString) -> bool {
 }
 
 fn read_limited(file: &mut File, limit: usize) -> Result<Vec<u8>, SkillError> {
-    #[cfg(test)]
-    super::asset_probe::record_body_read(file);
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1)
         .read_to_end(&mut bytes)

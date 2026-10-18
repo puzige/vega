@@ -507,20 +507,3 @@ impl EntityInputHandler for TerminalView {
         Some(0)
     }
 }
-
-#[cfg(all(test, unix))]
-mod tests {
-
-    use gpui_kit::{
-        AppContext, Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowHandle,
-        WindowOptions, point, px, size,
-    };
-
-    fn assert_pixel_close(actual: gpui_kit::Pixels, expected: f32, label: &str) {
-        let actual = f32::from(actual);
-        assert!(
-            (actual - expected).abs() <= 1.0,
-            "{label}: expected {expected}±1px, got {actual}px"
-        );
-    }
-}

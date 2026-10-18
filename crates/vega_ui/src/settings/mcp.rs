@@ -2030,26 +2030,3 @@ impl SettingsView {
         self.move_mcp_focus(true, window, cx);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use gpui_kit::{
-        Bounds, Render, TestAppContext, WindowBounds, WindowHandle, WindowOptions, size,
-    };
-
-    struct McpSettingsHarness {
-        view: gpui_kit::Entity<SettingsView>,
-    }
-
-    impl Render for McpSettingsHarness {
-        fn render(
-            &mut self,
-            _: &mut gpui_kit::Window,
-            _: &mut gpui_kit::Context<Self>,
-        ) -> impl IntoElement {
-            div().size_full().child(self.view.clone())
-        }
-    }
-}

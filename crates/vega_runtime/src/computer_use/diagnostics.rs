@@ -498,17 +498,3 @@ fn valid_cdp_method(method: &str) -> bool {
             })
         })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rejected(text: &str, structured: serde_json::Value) -> ManagedResult {
-        ManagedResult {
-            text: vec![text.into()],
-            images: Vec::new(),
-            structured: Some(structured),
-            is_error: true,
-        }
-    }
-}

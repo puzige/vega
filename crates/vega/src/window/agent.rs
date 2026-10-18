@@ -1725,14 +1725,14 @@ impl VegaWindow {
             return;
         }
 
-        if let Some(draft) = self.draft_for_route(&thread_id) {
-            if self.materialize_draft(&draft, cx).is_err() {
-                stream.update(cx, |stream, cx| {
-                    stream.reject_composer_submission(cx);
-                    stream.apply_controller_error(cx);
-                });
-                return;
-            }
+        if let Some(draft) = self.draft_for_route(&thread_id)
+            && self.materialize_draft(&draft, cx).is_err()
+        {
+            stream.update(cx, |stream, cx| {
+                stream.reject_composer_submission(cx);
+                stream.apply_controller_error(cx);
+            });
+            return;
         }
         if let Some(intent) = skill_intent {
             self.start_skill_pin_before_agent(

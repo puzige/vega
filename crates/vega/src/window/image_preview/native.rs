@@ -474,38 +474,3 @@ pub(super) fn launch(
 
 #[cfg(target_os = "macos")]
 mod macos;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::OsString;
-
-    fn image() -> ImageAttachment {
-        ImageAttachment::from_bytes(
-            include_bytes!(
-                "../../../../vega_ui/src/conversation_stream/tests/fixtures/screenshot-tiny.png"
-            )
-            .to_vec(),
-        )
-        .unwrap()
-    }
-
-    struct Process;
-    impl ImageProcess for Process {
-        fn poll(&mut self) -> Result<Option<bool>, ImageOpenError> {
-            Ok(None)
-        }
-        fn cancel(&mut self) {}
-    }
-
-    struct System(Mutex<Vec<Vec<OsString>>>);
-    impl ImageSystem for System {
-        fn applications(&self, _: &Path) -> Result<Vec<ImageApplication>, ImageOpenError> {
-            Ok(Vec::new())
-        }
-        fn spawn(&self, args: &[OsString]) -> Result<Box<dyn ImageProcess>, ImageOpenError> {
-            self.0.lock().unwrap().push(args.to_vec());
-            Ok(Box::new(Process))
-        }
-    }
-}

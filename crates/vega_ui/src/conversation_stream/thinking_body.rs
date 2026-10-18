@@ -36,7 +36,6 @@ pub(super) struct ThinkingBody {
     pending_follow: Option<bool>,
     prepared_epoch: u64,
     pub(super) painted: Rc<Cell<bool>>,
-    rendered: Rc<Cell<usize>>,
     horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
 }
 
@@ -50,7 +49,6 @@ impl ThinkingBody {
 
     pub(super) fn evict(&mut self) {
         self.replace_source();
-        self.rendered.set(0);
         self.painted.set(false);
     }
 
@@ -261,7 +259,6 @@ impl ThinkingBlock {
         let colors = theme(cx).colors;
         let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
         let prepared = self.body.prepared.clone();
-        let rendered = self.body.rendered.clone();
         let style = PreparationStyle {
             width: px(0.),
             font: window.text_style().font(),
@@ -279,7 +276,6 @@ impl ThinkingBlock {
             let element = BodyElement {
                 prepared,
                 document: document.clone(),
-                rendered,
                 horizontal_scrolls: self.body.horizontal_scrolls.clone(),
             };
             document.wrap(element.into_any_element(), window, cx)
@@ -315,52 +311,6 @@ impl ThinkingBlock {
             style,
         }
         .into_any_element()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_body_preparing(&self) -> bool {
-        self.body.task.is_some()
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_fragment_count(&self) -> usize {
-        self.body.prepared.as_ref().map_or(0, |body| {
-            body.blocks.iter().map(|block| block.fragments.len()).sum()
-        })
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_rendered_count(&self) -> usize {
-        self.body.rendered.get()
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_revision(&self) -> u64 {
-        self.body.prepared_revision
-    }
-    #[cfg(test)]
-    pub(crate) fn test_horizontal_scroll(&self) -> Option<ScrollHandle> {
-        self.body
-            .horizontal_scrolls
-            .borrow()
-            .values()
-            .find(|scroll| scroll.max_offset().x > px(0.))
-            .cloned()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_prepared_text(&self) -> Option<Arc<str>> {
-        self.body.prepared.as_ref().map(|body| body.text.clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_replace_source(&mut self, source: &str, cx: &mut Context<Self>) {
-        self.text = source.into();
-        self.raw_window = window::SourceWindow::default();
-        self.source_identity = self.source_identity.wrapping_add(1);
-        self.thinking_has_content = source.chars().any(|ch| !ch.is_whitespace());
-        self.body.replace_source();
-        self.source_copy.replace_text(source);
-        self.source_revision = self.source_revision.wrapping_add(1);
-        self.prepare_body(cx);
-        cx.notify();
     }
 }
 
@@ -984,7 +934,6 @@ struct BodyElement {
     horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
     prepared: Arc<PreparedBody>,
     document: SelectionDocumentBuilder,
-    rendered: Rc<Cell<usize>>,
 }
 
 impl IntoElement for BodyElement {
@@ -1025,7 +974,6 @@ impl Element for BodyElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
-        self.rendered.set(0);
         let mask = window.content_mask().bounds;
         let first = self.prepared.blocks.partition_point(|block| {
             bounds.top() + block.origin.y - self.prepared.y_offset + block.size.height
@@ -1041,7 +989,6 @@ impl Element for BodyElement {
                 prepared: self.prepared.clone(),
                 block: index,
                 document: self.document.clone(),
-                rendered: self.rendered.clone(),
             };
             let mut element = if block.horizontal {
                 div()
@@ -1100,7 +1047,6 @@ struct FragmentsElement {
     prepared: Arc<PreparedBody>,
     block: usize,
     document: SelectionDocumentBuilder,
-    rendered: Rc<Cell<usize>>,
 }
 impl IntoElement for FragmentsElement {
     type Element = Self;
@@ -1214,7 +1160,6 @@ impl Element for FragmentsElement {
                     );
                 },
             );
-            self.rendered.set(self.rendered.get() + 1);
             elements.push(element);
         }
         elements
@@ -1343,7 +1288,3 @@ impl Element for VisibilityElement {
         self.content.paint(window, cx);
     }
 }
-
-#[cfg(test)]
-#[path = "thinking_body_window_tests.rs"]
-mod window_tests;

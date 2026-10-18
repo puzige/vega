@@ -14,11 +14,6 @@ pub(crate) struct ToolActivityGroup {
 }
 
 impl ToolActivityGroup {
-    #[cfg(test)]
-    pub(crate) fn scroll_handle(&self) -> ScrollHandle {
-        self.scroll.clone()
-    }
-
     pub(crate) fn new(first: Entity<ToolCard>, second: Entity<ToolCard>) -> Self {
         Self {
             children: vec![first, second],
@@ -119,18 +114,6 @@ impl ToolActivityGroup {
         Layout::CONVERSATION_TOOL_HEIGHT
             + Layout::PROCESS_ITEM_GAP
             + height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn visible_text(&self, cx: &App) -> String {
-        let mut text = self.aggregate_summary(cx);
-        if self.expanded {
-            for child in &self.children {
-                text.push('\n');
-                text.push_str(&child.read(cx).visible_text());
-            }
-        }
-        text
     }
 
     fn aggregate_state(&self, cx: &App) -> ToolActivityState {

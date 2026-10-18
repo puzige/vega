@@ -913,11 +913,7 @@ fn tier_label_color_for(selected: Option<usize>, strongest: Option<usize>) -> Rg
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::{
-        Hsla, Modifiers, Quad, Size, TestAppContext, VisualTestContext, WindowHandle, WindowOptions,
-    };
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use gpui_kit::{Modifiers, TestAppContext, VisualTestContext, WindowHandle, WindowOptions};
 
     fn tiers(list: &[&str]) -> Vec<String> {
         list.iter().map(|tier| (*tier).to_string()).collect()
@@ -1197,45 +1193,6 @@ mod tests {
             "knob diameter {} != measured {THINKING_KNOB_DIAMETER}",
             f32::from(knob.size.width)
         );
-    }
-
-    /// Moves the pointer and lets the resulting frame settle.
-    fn move_pointer(visual: &mut VisualTestContext, position: Point<Pixels>) {
-        visual.simulate_mouse_move(position, None, Modifiers::default());
-        visual.run_until_parked();
-    }
-
-    /// Whether two colours are the same fill.
-    ///
-    /// This compares the 8-bit **RGBA** channels rather than using `Hsla`'s own
-    /// `PartialEq`. Both forms were measured on the real painted quad: the strict
-    /// `Hsla` equality does hold for the hover fill here (`l = 0.9529412`
-    /// round-trips exactly), so this is a deliberate robustness margin rather
-    /// than a necessity. Going through `Rgba` with a one-step tolerance keeps the
-    /// assertion meaningful if a future theme or GPUI version re-introduces a
-    /// rounding difference in the `Rgba` → `Hsla` conversion, while still pinning
-    /// the exact token: `bg_hover` is `0xF3F3F3`, and no neighbouring token is
-    /// within one 8-bit step of it (`bg_active` is `0xEDEDED`, six steps away).
-    fn same_colour(actual: Hsla, expected: Hsla) -> bool {
-        let (actual, expected) = (Rgba::from(actual), Rgba::from(expected));
-        [
-            (actual.r, expected.r),
-            (actual.g, expected.g),
-            (actual.b, expected.b),
-            (actual.a, expected.a),
-        ]
-        .into_iter()
-        .all(|(actual, expected)| (actual - expected).abs() <= 1.0 / 255.0)
-    }
-
-    /// Whether `outer` (logical) covers `inner` (logical), allowing for the
-    /// device-pixel snapping `painted_quads` applies.
-    fn covers(outer: &Bounds<f32>, inner: &Bounds<Pixels>) -> bool {
-        const TOLERANCE: f32 = 1.0;
-        outer.left() <= f32::from(inner.left()) + TOLERANCE
-            && outer.right() >= f32::from(inner.right()) - TOLERANCE
-            && outer.top() <= f32::from(inner.top()) + TOLERANCE
-            && outer.bottom() >= f32::from(inner.bottom()) - TOLERANCE
     }
 
     #[gpui_kit::test]

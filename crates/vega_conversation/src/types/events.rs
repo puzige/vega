@@ -1074,8 +1074,9 @@ pub(crate) fn invalid_tool_code(code: vega_tools::MutationErrorCode) -> Option<I
 
 #[cfg(test)]
 mod run_failure_tests {
-    use super::RunFailureKind;
+    use super::{ContextCompactionFailureCode as Failure, RunFailureKind};
     use vega_runtime::VegaError;
+    use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
 
     fn provider(status: Option<u16>, message: &str) -> VegaError {
         VegaError::Provider {

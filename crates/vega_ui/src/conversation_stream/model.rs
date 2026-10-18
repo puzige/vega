@@ -49,14 +49,6 @@ impl BoundedSamples {
             .map(|values| values.iter().copied().collect())
             .unwrap_or_default()
     }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.values
-            .lock()
-            .map(|values| values.len())
-            .unwrap_or_default()
-    }
 }
 
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以

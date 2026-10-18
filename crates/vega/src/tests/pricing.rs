@@ -71,13 +71,3 @@ impl Render for CommitPanelHarness {
         div().size_full().child(self.panel.clone())
     }
 }
-
-pub(crate) struct PricingWindowHarness {
-    pub(crate) root: Entity<VegaWindow>,
-}
-
-impl Render for PricingWindowHarness {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.root.clone()
-    }
-}

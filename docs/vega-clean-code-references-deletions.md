@@ -2,7 +2,11 @@
 
 对应 Issue #338；静态语法枚举，不表示测试已执行。
 
-原有 3145，保留 1612，删除 1533 个带 test 属性的函数。删除 Rust 文件 47 个。
+原有 3145，保留 1577，删除 1568 个带 test 属性的函数。删除 Rust 文件 112 个。
+
+比较基线：原始提交 `76906235`；工作树快照：2026-10-18 08:35:11 UTC。按函数测试属性静态枚举，保留原始文件路径和函数名；并行修复结束后须再次核对，不将首次清理后的 HEAD 当作原始基线。
+
+相对首次清理，另删除 35 个测试函数（`vega` 14、`vega_conversation` 2、`vega_runtime` 8、`vega_ui` 11）和 65 个 Rust 文件。
 
 - `crates/vega/src/codex_agent/tests.rs`：`issue287_codex_tool_permission_and_lifecycle_keep_exact_option_once`
 - `crates/vega/src/codex_agent/tests.rs`：`issue287_first_codex_prompt_waits_for_empty_set_mode_ack_and_durable_binding`
@@ -36,7 +40,9 @@
 - `crates/vega/src/tests/agent.rs`：`production_agent_worker_defaults_to_unlimited_turns`
 - `crates/vega/src/tests/branch.rs`：`branch_controller_s6_controller_owner_success_applies_authority_then_releases`
 - `crates/vega/src/tests/commit_panel.rs`：`commit_app_production_handlers_reconcile_before_release_across_close_and_routes_s6_controller`
+- `crates/vega/src/tests/composer_actions.rs`：`i58_full_access_mouse_keyboard_and_reopen_use_the_real_controller`
 - `crates/vega/src/tests/composer_actions.rs`：`i61_provider_reasoning_reaches_live_ui_without_persisting_as_answer`
+- `crates/vega/src/tests/composer_actions.rs`：`i61_v3_thinking_only_completion_keeps_summary_with_collapsed_details`
 - `crates/vega/src/tests/composer_actions.rs`：`issue150_running_indicator_follows_the_real_run_lifecycle`
 - `crates/vega/src/tests/composer_actions.rs`：`issue150_running_stop_button_is_brand_blue_and_send_is_unchanged`
 - `crates/vega/src/tests/composer_actions.rs`：`issue64_production_root_tab_reaches_context_ring_after_attachment`
@@ -51,6 +57,18 @@
 - `crates/vega/src/tests/computer_use.rs`：`issue75_usability_no_global_bar_in_task_or_settings_and_window_cleanup_revokes_cua`
 - `crates/vega/src/tests/computer_use.rs`：`issue75_usability_ready_before_message_started_keeps_owned_notice`
 - `crates/vega/src/tests/computer_use.rs`：`issue75_window_cleanup_revokes_every_control_before_cancelling`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_ambiguous_provider_cannot_freeze_either_model_policy_in_worker`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_automatic_runtime_generation_restarts_are_remapped`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_invalid_input_never_persists_or_calls_provider`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_manual_real_worker_cancel_retry_preserves_transcript_and_draft`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_metadata_failure_retries_after_real_settings_route_roundtrip`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_model_aba_same_stream_rejects_old_run`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_primary_pre_message_started_blocks_manual_worker`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_projection_restores_unknown_usage_from_other_model_idempotently`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_reopened_controller_recovers_abandoned_status_without_busy`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_settings_real_inputs_persist_and_reopen`
+- `crates/vega/src/tests/context_compaction.rs`：`i76_context_stale_settings_ack_retires_pending_without_applying_values`
+- `crates/vega/src/tests/context_compaction.rs`：`i91_accounting_event_owner_retires_after_model_aba`
 - `crates/vega/src/tests/context_compaction.rs`：`issue67_context_same_entity_route_aba_retains_live_primary_status`
 - `crates/vega/src/tests/context_compaction.rs`：`issue67_manual_context_is_not_blocked_by_another_thread_owner`
 - `crates/vega/src/tests/context_compaction.rs`：`issue67_queued_background_plan_continuation_preserves_peer_and_artifact_owner`
@@ -311,6 +329,7 @@
 - `crates/vega_conversation/src/agent/tests/reasoning_budget.rs`：`issue372_budget_failure_agrees_between_live_primary_root_and_reopen`
 - `crates/vega_conversation/src/agent/tests/reasoning_budget.rs`：`issue372_legacy_failure_after_steer_owns_only_the_final_failed_assistant`
 - `crates/vega_conversation/src/agent/tests/reasoning_budget.rs`：`issue372_production_compaction_continues_same_task_and_bounds_conversation_buffer`
+- `crates/vega_conversation/src/agent/tests/responses.rs`：`i71_response_replay_tool_loop_and_private_history`
 - `crates/vega_conversation/src/agent/tests/skills.rs`：`issue74_explicit_pin_is_loaded_before_round_one_and_stale_pin_pauses`
 - `crates/vega_conversation/src/agent/tests/skills.rs`：`issue74_imported_global_auto_respects_ui_switches_without_ambient_scan`
 - `crates/vega_conversation/src/agent/tests/skills.rs`：`issue74_mid_run_disable_cancels_stream_before_later_tool_side_effects`
@@ -362,6 +381,7 @@
 - `crates/vega_conversation/src/mcp_settings_oauth_tests.rs`：`issue73_settings_dcr_requires_exact_preview_and_fresh_consent`
 - `crates/vega_conversation/src/mcp_settings_oauth_tests.rs`：`issue73_settings_oauth_preregistered_callback_restart_and_authenticated_connect`
 - `crates/vega_conversation/src/mcp_settings_oauth_tests.rs`：`issue73_settings_slow_dcr_cancel_cannot_resurrect_flow_or_block_next_prepare`
+- `crates/vega_conversation/src/provider_settings/tests.rs`：`i71_settings_test_model_uses_saved_responses_transport`
 - `crates/vega_conversation/src/provider_settings/tests.rs`：`issue81_provider_lifecycle_preserves_manual_credentials_and_enabled_state`
 - `crates/vega_conversation/src/sidebar_organization/tests.rs`：`r14_reveal_is_atomic_revision_checked_and_preserves_other_metadata`
 - `crates/vega_conversation/src/skill_settings/tests.rs`：`issue87_s22_import_limit_does_not_change_invalid_or_unsafe_path_rejection`
@@ -520,6 +540,7 @@
 - `crates/vega_runtime/src/agent/tests/mcp_registry.rs`：`issue75_computer_capability_does_not_bypass_ordinary_mcp_once`
 - `crates/vega_runtime/src/agent/tests/mcp_registry.rs`：`issue85_mcp_schema_stays_owned_and_skill_tools_are_strict`
 - `crates/vega_runtime/src/agent/tests/mcp_registry.rs`：`issue86_m08_reserved_names_keep_unique_frozen_aliases_and_exact_dispatch`
+- `crates/vega_runtime/src/agent/tests/mod.rs`：`i71_summary_response_is_bounded_and_opaque_replay_can_span_many_rounds`
 - `crates/vega_runtime/src/agent/tests/mod.rs`：`issue75_disabled_desktop_name_cannot_trigger_discovery_from_browser_grant_config`
 - `crates/vega_runtime/src/agent/tests/mod.rs`：`issue75_native_tool_gate_rejects_plan_readonly_and_disabled_without_dispatch`
 - `crates/vega_runtime/src/agent/tests/mod.rs`：`issue75_observation_failure_reaches_next_provider_and_rediscovery`
@@ -677,6 +698,13 @@
 - `crates/vega_runtime/src/openai/tests/computer_use.rs`：`issue75_provider_chat_observation_follows_complete_tool_batch`
 - `crates/vega_runtime/src/openai/tests/computer_use.rs`：`issue75_provider_responses_observation_retains_tool_identity`
 - `crates/vega_runtime/src/openai/tests/http.rs`：`issue85_strict_schema_rejection_fails_without_non_strict_fallback`
+- `crates/vega_runtime/src/openai/tests/mod.rs`：`i71_responses_cancellation_discards_pending_tools`
+- `crates/vega_runtime/src/openai/tests/mod.rs`：`i71_responses_done_reconciles_empty_and_partial_deltas_without_duplicates`
+- `crates/vega_runtime/src/openai/tests/mod.rs`：`i71_responses_item_and_terminal_snapshots_recover_missing_deltas_once`
+- `crates/vega_runtime/src/openai/tests/mod.rs`：`i71_responses_rejects_incompatible_profile_before_network`
+- `crates/vega_runtime/src/openai/tests/mod.rs`：`i71_responses_request_effort_off_tools_and_chat_compatibility`
+- `crates/vega_runtime/src/openai/tests/mod.rs`：`i71_responses_summary_parts_snapshots_and_refusal`
+- `crates/vega_runtime/src/openai/tests/mod.rs`：`i71_responses_terminal_failures_never_release_tools`
 - `crates/vega_runtime/src/openai/tests/mod.rs`：`issue296_responses_completed_snapshot_remains_a_trusted_final`
 - `crates/vega_runtime/src/openai/tests/mod.rs`：`issue85_non_strict_tools_do_not_claim_strict_wire`
 - `crates/vega_runtime/src/openai/tests/mod.rs`：`issue85_vega_tools_emit_strict_chat_completions_wire`
@@ -1292,6 +1320,13 @@
 - `crates/vega_ui/src/conversation_stream/tests/r68_popup_dismiss.rs`：`r68_r14_the_project_popup_stays_inside_a_narrow_window`
 - `crates/vega_ui/src/conversation_stream/tests/skills.rs`：`issue74_draft_choice_is_pure_intent_and_duplicate_submit_is_single_flight`
 - `crates/vega_ui/src/conversation_stream/tests/skills.rs`：`issue74_loaded_skill_indicator_is_current_run_only_and_stop_is_real`
+- `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`i61_thinking_acceptance_fences_and_terminal_cleanup`
+- `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`i61_thinking_blocks_follow_real_event_order_and_expand`
+- `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`i61_thinking_bounds_are_utf8_safe_and_cumulative`
+- `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`i61_utf8_near_view_limit_yields_old_body_for_latest_thinking`
+- `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`i71_fenced_summary_keeps_received_content`
+- `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`i71_live_heading_replaces_thinking_label_without_changing_activity_expansion`
+- `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`i71_summary_and_thinking_share_display_budget`
 - `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`issue103_thinking_body_is_bounded`
 - `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`issue103_thinking_scroll_survives_streaming_and_reopen`
 - `crates/vega_ui/src/conversation_stream/tests/thinking.rs`：`issue296_v3_thinking_follows_only_when_reader_is_at_its_tail`
@@ -1325,6 +1360,9 @@
 - `crates/vega_ui/src/conversation_stream/tests/utility_menu_coordination.rs`：`c2_branch_project_branch_sequence_keeps_one_popup_and_escape_closes`
 - `crates/vega_ui/src/conversation_stream/tests/utility_menu_coordination.rs`：`c2_project_branch_project_trigger_sequence_is_mutually_exclusive`
 - `crates/vega_ui/src/conversation_stream/tests/variable_height.rs`：`prepend_splice_preserves_page_boundary_anchor`
+- `crates/vega_ui/src/conversation_stream/thinking.rs`：`i343_heading_yields_to_later_prose_but_not_markers_or_fenced_code`
+- `crates/vega_ui/src/conversation_stream/thinking.rs`：`i343_long_heading_keeps_start_and_long_prose_advances_tail`
+- `crates/vega_ui/src/conversation_stream/thinking.rs`：`i71_preview_incremental_markdown_and_identifiers`
 - `crates/vega_ui/src/conversation_stream/thinking_body_window_tests.rs`：`issue395_retained_code_keeps_horizontal_scroll_when_window_moves`
 - `crates/vega_ui/src/conversation_stream/thinking_body_window_tests.rs`：`issue395_window_mapping_keeps_repeated_markdown_anchor_and_selection`
 - `crates/vega_ui/src/conversation_stream/thinking_body_window_tests.rs`：`issue395_window_preserves_fence_context_and_original_copy`
@@ -1397,6 +1435,7 @@
 - `crates/vega_ui/src/settings/model_catalog/tests.rs`：`issue296_catalog_reasoning_and_prices_preserve_unsupported_semantics`
 - `crates/vega_ui/src/settings/model_catalog/tests.rs`：`issue296_catalog_refresh_preserves_manual_values_and_only_explicit_input_is_applied`
 - `crates/vega_ui/src/settings/model_catalog/tests.rs`：`issue296_catalog_stale_owner_and_generation_cannot_replace_current_model`
+- `crates/vega_ui/src/settings/provider_management/tests.rs`：`i71_settings_api_selection_keyboard_save_reopen_and_add`
 - `crates/vega_ui/src/settings/provider_management/tests.rs`：`issue296_v2_discovery_candidates_keep_complete_shared_prefix_ids`
 - `crates/vega_ui/src/settings/provider_management/tests.rs`：`issue296_v3_capacity_save_ack_keeps_editor_and_pending_navigation`
 - `crates/vega_ui/src/settings/provider_management/tests.rs`：`issue296_v3_delete_confirmation_is_bound_to_provider_and_model`

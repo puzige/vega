@@ -3370,33 +3370,3 @@ where
         live_projection_revision = live_projection_revision.saturating_add(1);
     }
 }
-
-#[cfg(test)]
-mod compaction_cancellation_tests {
-    use super::*;
-
-    struct CancelAtCompletion(bool);
-
-    impl crate::ContextCompactionHook for CancelAtCompletion {
-        fn compact<'a>(
-            &'a self,
-            _request: ContextCompactionRequest,
-            cancel: CancellationToken,
-        ) -> futures::future::BoxFuture<
-            'a,
-            Result<crate::ContextCompactionResult, crate::ContextCompactionFailure>,
-        > {
-            Box::pin(async move {
-                cancel.cancel();
-                Err(crate::ContextCompactionFailure::new(
-                    if self.0 {
-                        VegaError::Cancelled
-                    } else {
-                        VegaError::CredentialCheckUnavailable
-                    },
-                    None,
-                ))
-            })
-        }
-    }
-}

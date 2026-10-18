@@ -163,14 +163,3 @@ pub(crate) fn validate_messages(messages: &[crate::ChatMessage]) -> Result<(), c
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn encode(width: u32, height: u32, format: ImageFormat) -> Vec<u8> {
-        let pixels = image::RgbImage::from_pixel(width, height, image::Rgb([180, 20, 90]));
-        let mut output = Cursor::new(Vec::new());
-        pixels.write_to(&mut output, format).unwrap();
-        output.into_inner()
-    }
-}

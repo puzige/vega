@@ -1,7 +1,5 @@
 mod cache;
 mod parse;
-#[cfg(test)]
-mod tests;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

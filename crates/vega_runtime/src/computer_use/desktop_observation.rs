@@ -195,28 +195,3 @@ pub(super) fn apply(
     observation.original_height = height;
     Ok(())
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    const AX_EMPTY: &str = "ax_tree_empty: the AX walk returned no actionable elements. The window may be a non-AX surface (canvas/WebGL/custom-drawn) or its accessibility tree was not ready (Chromium/Electron require an AX-enable + settle). Do not treat element data as authoritative — re-snapshot if the app just launched, otherwise switch to the visual path.";
-
-    pub(super) fn result() -> vega_mcp::ManagedResult {
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(4, 3)
-            .write_to(&mut bytes, image::ImageFormat::Png)
-            .unwrap();
-        vega_mcp::ManagedResult {
-            text: vec!["PRIVATE_UPSTREAM_TEXT".into()],
-            images: vec![vega_mcp::ManagedImage {
-                bytes: bytes.into_inner(),
-                mime_type: "image/png".into(),
-            }],
-            structured: Some(json!({"pid":1,"window_id":2,"screenshot_frame_valid":true,
-                "snapshot_id":"snapshot","capture_id":"capture","elements":[],
-                "tree_markdown":"PRIVATE_AX","degraded":true,"degraded_reason":AX_EMPTY})),
-            is_error: false,
-        }
-    }
-}

@@ -168,16 +168,3 @@ impl ConversationStream {
         card
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct CardHarness(Entity<ScreenshotCard>);
-
-    impl Render for CardHarness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().p_4().child(self.0.clone())
-        }
-    }
-}

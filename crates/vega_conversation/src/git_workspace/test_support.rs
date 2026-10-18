@@ -92,3 +92,4 @@ pub(super) fn backend_for_root(root: &Path) -> Option<Arc<dyn GitCommandBackend>
 }
 
 mod fixtures;
+pub use fixtures::{FixtureGitCommand, GitCommandFixture, fixture_git_command};

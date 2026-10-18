@@ -435,20 +435,3 @@ impl Render for ImagePreview {
             .children(menu.map(|menu| deferred(menu).with_priority(2)))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{ImagePreview, ImagePreviewAction};
-    use gpui_kit::prelude::*;
-    use gpui_kit::{
-        AppContext, Context, Entity, Image, ImageFormat, IntoElement, Render, TestAppContext,
-        VisualTestContext, Window, div, px, size,
-    };
-
-    struct Harness(Entity<ImagePreview>);
-    impl Render for Harness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(self.0.clone())
-        }
-    }
-}

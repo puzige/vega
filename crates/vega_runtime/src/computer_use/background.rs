@@ -80,22 +80,3 @@ impl BackgroundInput {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn report() -> Value {
-        json!({
-            "exact_window":{"status":"matched","pid":1,"window_id":2},
-            "routes":[
-                {"route":"accessibility","status":"available"},
-                {"route":"window_pointer","status":"available"},
-                {"route":"pid_keyboard","status":"refused","reason":"same_pid_keyboard_ambiguity"}
-            ],
-            "observation":{"one_shot_capture":"available","frame_freshness":"unknown"},
-            "escalation":"SECRET_RAW_REASON"
-        })
-    }
-}

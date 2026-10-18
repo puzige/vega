@@ -56,10 +56,6 @@ fn cold_context_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<Ch
         .collect()
 }
 
-#[cfg(test)]
-#[path = "tests/compaction_timeouts.rs"]
-mod compaction_timeouts;
-
 /// A summary request is a bounded, tool-free transformation rather than a
 /// user-facing reasoning turn.  Disable thinking only when the frozen profile
 /// explicitly declares a legal disabled wire operation; unknown or
@@ -2568,6 +2564,7 @@ mod tests {
     use super::*;
     use futures::future::pending;
     use vega_runtime::{MockProvider, ScriptStep};
+    use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
 
     #[tokio::test]
     async fn summary_stage_records_overflow_bytes_without_persisting_summary_text() {

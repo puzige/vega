@@ -26,18 +26,12 @@ use vega_ui::commit_panel::{
     CommitDraftRequested, CommitPanel, CommitPanelClosed, CommitPrepareRequested, CommitRequested,
 };
 use vega_ui::conversation_stream::{
-    ContextUsageProjection, ConversationStream, HistoryPageRequested, MessageLocationRequested,
-    NewerHistoryPageRequested, OpenCommitPanelRequested, OpenWorkspaceDiffRequested,
+    ConversationStream, MessageLocationRequested, NewerHistoryPageRequested,
     ThreadSettingsRequested,
 };
-use vega_ui::diff_view::{
-    DIFF_REFRESH_INTERVAL, DiffProjectionRequested, DiffRetryRequested, DiffView,
-};
+use vega_ui::diff_view::{DiffRetryRequested, DiffView};
 use vega_ui::plan_card::PlanReviewRequested;
-use vega_ui::settings::{
-    PricingMutationRequested, ReasoningProfileSaveRequested, SettingsOpen, SettingsSaved,
-    SettingsView,
-};
+use vega_ui::settings::{ReasoningProfileSaveRequested, SettingsOpen, SettingsSaved, SettingsView};
 use vega_ui::sidebar::{
     OpenedThread, PendingDeleteConfirm, SidebarCollapsed, SidebarWidth, VegaStore,
 };
@@ -62,7 +56,6 @@ mod agent;
 mod artifact_preview;
 mod artifact_terminal;
 mod automatic_titles;
-mod computer_use;
 mod project_context;
 mod title_fixture;
 use title_fixture::with_auxiliary_title_fixture;
@@ -75,13 +68,11 @@ mod diff;
 mod history;
 
 mod model_selection;
-mod palette;
 mod plan;
 mod pricing;
 
 mod reasoning;
 mod subagents;
-mod updater;
 mod user_questions;
 
 pub(crate) use artifact_terminal::{

@@ -525,7 +525,7 @@ pub fn classified_failure_message_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Store, messages, pending_messages, threads};
+    use crate::{Store, messages, threads};
 
     fn store() -> Store {
         let store = Store::open(":memory:").unwrap();
@@ -638,23 +638,6 @@ mod tests {
             },
         )
         .unwrap();
-    }
-
-    fn delivered(conn: &Connection, id: &str, generation: &str) {
-        pending_messages::insert(
-            conn,
-            &pending_messages::PendingMessageRow {
-                id: id.into(),
-                thread_id: "thread".into(),
-                ordinal: 0,
-                behavior: "steer".into(),
-                generation: generation.into(),
-                payload: String::new(),
-                created_at: 1,
-            },
-        )
-        .unwrap();
-        pending_messages::mark_delivered(conn, "thread", id).unwrap();
     }
 
     fn context_status(

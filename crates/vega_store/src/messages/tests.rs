@@ -805,15 +805,3 @@ fn page_and_tool_batch_read_on_one_fresh_snapshot() {
         .collect();
     assert_eq!(ids, vec!["tc-after"]);
 }
-
-enum ResponseWriterEvent {
-    Waiting,
-    Finished(Result<bool, rusqlite::Error>),
-}
-
-thread_local! {
-    static RESPONSE_WRITER_GATE: std::cell::RefCell<Option<(
-        std::sync::mpsc::Sender<ResponseWriterEvent>,
-        std::sync::mpsc::Receiver<()>,
-    )>> = const { std::cell::RefCell::new(None) };
-}

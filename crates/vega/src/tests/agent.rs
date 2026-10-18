@@ -1,7 +1,5 @@
 use super::*;
 
-use tokio_util::sync::CancellationToken;
-
 #[test]
 fn commit_provider_policy_disables_retries() {
     assert_eq!(commit_retry_policy().max_retries, 0);
@@ -99,80 +97,6 @@ impl Drop for AgentWorkerGuard {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-    }
-}
-
-struct ConcurrentProvider {
-    inner: Arc<vega_runtime::MockProvider>,
-    entered: std::sync::Mutex<Option<mpsc::SyncSender<()>>>,
-    release: CancellationToken,
-}
-
-impl ConcurrentProvider {
-    fn new(inner: Arc<vega_runtime::MockProvider>) -> (Arc<Self>, mpsc::Receiver<()>) {
-        let (entered, receiver) = mpsc::sync_channel(1);
-        (
-            Arc::new(Self {
-                inner,
-                entered: std::sync::Mutex::new(Some(entered)),
-                release: CancellationToken::new(),
-            }),
-            receiver,
-        )
-    }
-}
-
-impl vega_runtime::Provider for ConcurrentProvider {
-    fn chat_stream(
-        &self,
-        request: vega_runtime::ChatRequest,
-        cancel: CancellationToken,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<vega_runtime::EventStream, vega_runtime::VegaError>,
-    > {
-        let future =
-            vega_runtime::Provider::chat_stream(self.inner.as_ref(), request, cancel.clone());
-        let entered = self.entered.lock().expect("concurrent stream gate").take();
-        let release = self.release.clone();
-        Box::pin(async move {
-            let stream = future.await?;
-            let Some(entered) = entered else {
-                return Ok(stream);
-            };
-            let gated = futures::stream::unfold(
-                (stream, Some(entered), false),
-                move |(mut stream, mut entered, first_delivered)| {
-                    let cancel = cancel.clone();
-                    let release = release.clone();
-                    async move {
-                        if first_delivered && let Some(entered) = entered.take() {
-                            entered.send(()).expect("concurrent stream entered");
-                            let released = tokio::time::timeout(Duration::from_secs(5), async {
-                                tokio::select! {
-                                    biased;
-                                    _ = cancel.cancelled() => false,
-                                    _ = release.cancelled() => true,
-                                }
-                            })
-                            .await
-                            .expect("concurrent stream gate deadline");
-                            if !released {
-                                return Some((
-                                    Err(vega_runtime::VegaError::Cancelled),
-                                    (stream, None, true),
-                                ));
-                            }
-                        }
-                        stream
-                            .next()
-                            .await
-                            .map(|event| (event, (stream, entered, true)))
-                    }
-                },
-            );
-            Ok(Box::pin(gated) as vega_runtime::EventStream)
-        })
     }
 }
 

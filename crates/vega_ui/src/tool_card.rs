@@ -161,11 +161,6 @@ pub struct ToolCard {
 }
 
 impl ToolCard {
-    #[cfg(test)]
-    pub(crate) fn scroll_handle(&self) -> ScrollHandle {
-        self.detail_scroll.clone()
-    }
-
     /// Creates a pending card from a durable safe proposal.
     pub fn proposed(call: &ToolCall) -> Self {
         let input = tool_card_input_projection(call);
@@ -528,38 +523,6 @@ impl ToolCard {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn activity_action_name(&self) -> String {
-        let named = match &self.input {
-            Some(ToolCardInputProjection::ComputerUse { action, .. }) => {
-                Some(("control", action.as_str()))
-            }
-            Some(ToolCardInputProjection::Mcp { identity, .. }) => {
-                Some(("call MCP", identity.exact_tool_name.as_str()))
-            }
-            Some(ToolCardInputProjection::CodexAcp { identity, .. }) => {
-                Some(("run Codex ACP", identity.kind.as_str()))
-            }
-            _ => None,
-        };
-        if let Some((action, name)) = named {
-            let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
-            if !name.is_empty() {
-                let mut clipped = name.chars().take(64).collect::<String>();
-                if name.chars().count() > 64 {
-                    clipped.push('…');
-                }
-                return format!("{action} · {clipped}");
-            }
-        }
-        self.activity_category().action_phrase().to_owned()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn call_status(&self) -> ToolCallStatus {
-        self.status
-    }
-
     pub(crate) fn activity_state(&self) -> ToolActivityState {
         if self.status == ToolCallStatus::Cancelled
             && matches!(
@@ -584,15 +547,6 @@ impl ToolCard {
             ToolCallStatus::Failed => ToolActivityState::Failed,
             ToolCallStatus::Cancelled => ToolActivityState::Cancelled,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn needs_attention(&self) -> bool {
-        self.status == ToolCallStatus::PendingApproval
-            || matches!(
-                self.activity_state(),
-                ToolActivityState::Rejected | ToolActivityState::Failed
-            )
     }
 
     pub(crate) fn leading_icon(&self) -> Icon {
@@ -1083,12 +1037,6 @@ impl ToolCard {
             }
             _ => None,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn detail_footer_state(&self) -> Option<ToolActivityState> {
-        self.detail()
-            .and_then(|detail| detail.footer.map(|(_, state)| state))
     }
 }
 

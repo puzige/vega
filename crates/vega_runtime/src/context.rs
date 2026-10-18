@@ -804,7 +804,7 @@ fn floor_ratio(value: u64, numerator: u64, denominator: u64) -> Result<u64, Cont
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChatMessage, ChatRole, ChatToolCall, ToolDefinition};
+    use crate::{ChatMessage, ChatRole, ChatToolCall};
 
     #[test]
     fn historical_observation_estimates_escaped_json_once_for_both_context_paths() {

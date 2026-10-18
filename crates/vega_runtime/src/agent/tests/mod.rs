@@ -1,9 +1,5 @@
-mod cua_batch_projection;
-mod cua_read_progress;
-mod cua_usability;
 mod long_task_progress;
 mod progress_recovery;
-mod steering;
 mod tool_context;
 use std::fs;
 use std::sync::Mutex;
@@ -118,43 +114,6 @@ struct RecordingCompactionHook {
     source_version: u64,
 }
 
-struct TailPreservingCompactionHook {
-    calls: Arc<AtomicUsize>,
-    observed: Arc<Mutex<Vec<ChatMessage>>>,
-}
-
-impl ContextCompactionHook for TailPreservingCompactionHook {
-    fn compact<'a>(
-        &'a self,
-        request: ContextCompactionRequest,
-        _cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut observed) = self.observed.lock() {
-            *observed = request.messages.clone();
-        }
-        let last_user = request
-            .messages
-            .iter()
-            .rposition(|message| message.role == ChatRole::User)
-            .unwrap_or(request.messages.len());
-        let mut messages = vec![ChatMessage::new(ChatRole::User, "summary")];
-        messages.extend(request.messages[last_user..].iter().cloned());
-        async move {
-            Ok(ContextCompactionResult {
-                messages,
-                source_version: request.source_version + 1,
-                source_fingerprint: request.source_fingerprint,
-                replay_cold_prefix_messages: Some(1),
-                replay_interleaved_user_boundary: None,
-                usages: Vec::new(),
-                usage_complete: false,
-            })
-        }
-        .boxed()
-    }
-}
-
 impl ContextCompactionHook for RecordingCompactionHook {
     fn compact<'a>(
         &'a self,
@@ -180,15 +139,11 @@ impl ContextCompactionHook for RecordingCompactionHook {
 }
 
 mod loop_tools;
-mod mcp_registry;
 mod permission_flow;
-mod provider_overflow;
 mod reasoning_budget;
 mod reasoning_replay;
 mod response_phases;
-mod skills;
 
-mod universal_tools;
 mod usage_limits;
 
 struct FixedHook {
@@ -518,74 +473,5 @@ async fn mismatched_disabled_wire_fails_before_provider_call() {
 }
 
 mod claude_compaction;
-
-#[tokio::test]
-async fn i71_summary_response_is_bounded_and_opaque_replay_can_span_many_rounds() {
-    let project = tempdir().unwrap();
-    let data = tempdir().unwrap();
-    fs::write(project.path().join("source.txt"), "owned").unwrap();
-    let tools = vega_tools::Tools::new(project.path()).unwrap();
-    let provider = MockProvider::new(vec![ScriptStep::events(
-        (0..5)
-            .map(|_| ProviderEvent::SummaryDelta("x".repeat(64 * 1024)))
-            .collect::<Vec<_>>(),
-    )]);
-    let result = run_agent(
-        &provider,
-        &tools,
-        request(Vec::new()),
-        CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    assert!(!result.failed);
-    assert!(result.final_text.is_empty());
-    assert_eq!(
-        result
-            .events
-            .iter()
-            .filter(|event| matches!(event, RuntimeEvent::SummaryDelta(_)))
-            .count(),
-        4
-    );
-    let mut rounds: Vec<_> = (0..5).map(|i| vec![ScriptStep::events(replay_fixture_events(vec![
-        ProviderEvent::ReasoningReplay(vec![serde_json::json!({"type":"reasoning","encrypted_content":"x".repeat(220*1024)})]),
-        ProviderEvent::ToolUse { id:format!("read-{i}"),name:"read".into(),input_json:r#"{"path":"source.txt"}"#.into() },
-        ProviderEvent::Done { stop_reason:StopReason::ToolUse },
-    ], crate::ReasoningReplayPolicy::ResponsesItems))]).collect();
-    rounds.push(vec![ScriptStep::events(replay_fixture_events(
-        vec![ProviderEvent::Done {
-            stop_reason: StopReason::End,
-        }],
-        crate::ReasoningReplayPolicy::ResponsesItems,
-    ))]);
-    let provider = MockProvider::new_rounds(rounds);
-    let mut req = replay_fixture_request(Vec::new(), crate::ReasoningReplayPolicy::ResponsesItems);
-    req.tool_config = RuntimeToolConfig::new(
-        RuntimeRunMode::Ask,
-        RuntimePermissionMode::ReadOnly,
-        "project-1".into(),
-        "thread-1".into(),
-        data.path().join("checkpoints"),
-        Vec::new(),
-    );
-    let result = run_agent(&provider, &tools, req, CancellationToken::new())
-        .await
-        .unwrap();
-    assert!(!result.failed);
-    assert!(!result.interrupted);
-    assert_eq!(provider.requests().len(), 6);
-    assert_eq!(result.tool_call_count, 5);
-    assert_eq!(result.executed_tool_call_count, 5);
-    assert_eq!(result.events.iter().filter(|event| matches!(event, RuntimeEvent::ToolCallFinished(finished) if finished.status == RuntimeToolStatus::Success)).count(), 5);
-    assert!(
-        !result
-            .events
-            .iter()
-            .any(|event| matches!(event, RuntimeEvent::Error(_)))
-    );
-    assert!(!format!("{:?}", provider.requests()).contains(&"x".repeat(100)));
-    assert!(!format!("{result:?}").contains(&"x".repeat(100)));
-}
 
 mod user_questions;

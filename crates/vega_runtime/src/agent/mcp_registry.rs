@@ -112,24 +112,6 @@ impl CredentialSnapshot {
     }
 }
 
-#[cfg(test)]
-mod credential_tests {
-    use super::*;
-
-    struct NeverCalled;
-
-    impl McpToolDispatcher for NeverCalled {
-        fn call(
-            &self,
-            _exact_tool_name: String,
-            _arguments: Value,
-            _cancel: CancellationToken,
-        ) -> BoxFuture<'static, Result<McpDispatchOutput, McpDispatchFailure>> {
-            Box::pin(async { unreachable!("result projection must not dispatch") })
-        }
-    }
-}
-
 enum McpConnection {
     Stdio(Box<StdioClient>),
     Http(Box<HttpClient>),
@@ -902,11 +884,6 @@ impl RunCapabilitySnapshot {
 
     pub(crate) fn mcp_tool(&self, alias: &str) -> Option<&FrozenMcpTool> {
         self.mcp_by_alias.get(alias)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mcp_count(&self) -> usize {
-        self.mcp_by_alias.len()
     }
 }
 

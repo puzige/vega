@@ -133,15 +133,3 @@ fn bracket(ch: char) -> Option<(usize, bool)> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::http_ranges;
-
-    fn targets(text: &str) -> Vec<&str> {
-        http_ranges(text)
-            .into_iter()
-            .map(|range| &text[range])
-            .collect()
-    }
-}

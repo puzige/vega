@@ -130,28 +130,6 @@ impl VegaWindow {
     pub(super) fn workspace_has_terminals(&self) -> bool {
         !self.workspace.terminals.is_empty()
     }
-
-    #[cfg(test)]
-    pub(crate) fn add_test_terminal(
-        &mut self,
-        id: u64,
-        project_id: String,
-        view: Entity<vega_ui::terminal::TerminalView>,
-    ) {
-        self.workspace.terminals.insert(
-            id,
-            TerminalTab {
-                project_id,
-                view,
-                bottom: false,
-            },
-        );
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clear_test_terminals(&mut self) {
-        self.workspace.terminals.clear();
-    }
 }
 
 impl Workspace {
@@ -1876,67 +1854,4 @@ fn environment_action(
         })
         .child(vega_ui::icons::icon(icon, colors.text_secondary))
         .child(div().min_w_0().flex_1().truncate().child(label))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{TabKey, VegaWindow, Workspace};
-
-    use gpui_kit::prelude::*;
-    use gpui_kit::{
-        AppContext, Bounds, FocusHandle, Focusable, KeyBinding, Modifiers, MouseButton, Pixels,
-        TestAppContext, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, px,
-        size,
-    };
-
-    fn focus_is(
-        window: WindowHandle<VegaWindow>,
-        focus: &FocusHandle,
-        cx: &mut TestAppContext,
-    ) -> bool {
-        window
-            .update(cx, |_, window, _| focus.is_focused(window))
-            .expect("workspace focus window")
-    }
-
-    fn assert_close(actual: Pixels, expected: f32, label: &str) {
-        let actual = f32::from(actual);
-        assert!(
-            (actual - expected).abs() <= 1.0,
-            "{label}: expected {expected}±1px, got {actual}px"
-        );
-    }
-}
-
-#[cfg(test)]
-mod terminal_tests {
-    use super::{TabKey, VegaWindow, WorkspaceCreateAction};
-
-    use gpui_kit::{
-        AppContext, Bounds, FocusHandle, KeyBinding, Modifiers, TestAppContext, VisualTestContext,
-        WindowBounds, WindowHandle, WindowOptions, point, px, size,
-    };
-
-    struct NonrepositoryGuards {
-        _guards: Vec<vega_conversation::GitTestCommandGuard>,
-    }
-    impl gpui_kit::Global for NonrepositoryGuards {}
-
-    fn assert_pixel_close(actual: gpui_kit::Pixels, expected: f32, label: &str) {
-        let actual = f32::from(actual);
-        assert!(
-            (actual - expected).abs() <= 1.0,
-            "{label}: expected {expected}±1px, got {actual}px"
-        );
-    }
-
-    fn focus_is(
-        window: WindowHandle<VegaWindow>,
-        focus: FocusHandle,
-        cx: &mut TestAppContext,
-    ) -> bool {
-        window
-            .update(cx, |_, window, _| focus.is_focused(window))
-            .expect("mounted window focus")
-    }
 }
