@@ -3,6 +3,10 @@
 Status: SPEC FROZEN v1.1 · 2026-10-18 (Asia/Shanghai).
 Feature: A3-14. Baseline: `6382c908`. Branch: `feat/448-multi-agent`.
 
+UI follow-up: [workspace Subagents v1.2](vega-issue-448-subagent-panels.md)
+adds the right overview, list and detail pane after the user's manual feedback.
+The lifecycle and safety contract below remains authoritative.
+
 ## User decisions and scope
 
 The user requests parallel subtasks within one task: the parent delegates,

@@ -11,6 +11,9 @@ impl ConversationStream {
         card: Entity<ArtifactCard>,
         cx: &mut Context<Self>,
     ) -> bool {
+        card.update(cx, |card, cx| {
+            card.set_reading_preview(self.reading_preview, cx)
+        });
         if let Some(existing) = self.artifact_cards.get(call_id) {
             let incoming = card.read(cx).projection().clone();
             if existing.read(cx).id() == incoming.id {
@@ -170,7 +173,8 @@ impl ConversationStream {
     }
 
     pub(crate) fn can_submit_message(&self, cx: &App) -> bool {
-        (!self.actions.running || self.thread.backend == TaskBackend::Native)
+        !self.reading_preview
+            && (!self.actions.running || self.thread.backend == TaskBackend::Native)
             && !self.pending_queue.busy
             && !self.context_operation_busy()
             && self.actions.pending_mode.is_none()

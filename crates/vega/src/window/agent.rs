@@ -241,6 +241,10 @@ impl VegaWindow {
         request: &HistoryPageRequested,
         cx: &mut Context<Self>,
     ) {
+        if self.owns_subagent_read(&stream, &request.thread_id, cx) {
+            self.request_subagent_history(stream, &request.thread_id, request.before, false, cx);
+            return;
+        }
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
@@ -286,6 +290,10 @@ impl VegaWindow {
         request: &NewerHistoryPageRequested,
         cx: &mut Context<Self>,
     ) {
+        if self.owns_subagent_read(&stream, &request.thread_id, cx) {
+            self.request_subagent_history(stream, &request.thread_id, request.after, true, cx);
+            return;
+        }
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }

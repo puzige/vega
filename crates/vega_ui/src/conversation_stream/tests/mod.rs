@@ -72,6 +72,7 @@ mod r64_popup_deferred;
 mod r68_popup_dismiss;
 mod scroll_follow;
 mod skills;
+mod subagent_reading;
 mod thinking;
 mod timeline;
 mod user_questions;

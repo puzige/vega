@@ -73,6 +73,7 @@ impl RunNotice {
         &self,
         colors: &ThemeColors,
         thread_id: String,
+        reading_preview: bool,
         cx: &mut Context<ConversationStream>,
     ) -> AnyElement {
         if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
@@ -92,7 +93,7 @@ impl RunNotice {
                 .into_any_element();
         }
         let recovery_id = self.message_id.clone();
-        let credential_failure = self.can_resume_credentials();
+        let credential_failure = self.can_resume_credentials() && !reading_preview;
         let message_id = self.message_id.clone();
         let color = match self.kind {
             RunNoticeKind::Retrying { .. } => colors.text_secondary,

@@ -125,6 +125,25 @@ impl PlanCard {
         window.focus(&self.focus[self.focus_index], cx);
     }
 
+    pub fn render_read_only(card: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
+        let rows = card.read(cx).plan.content.lines().count().max(1) + 1;
+        let feedback = card.read(cx).feedback.clone();
+        let review_note = card.read(cx).plan.review_note.clone();
+        let colors = theme(cx).colors;
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .children((0..rows).map(|row| Self::render_row(card.clone(), row, window, cx)))
+            .children(
+                review_note.map(|note| div().px_3().text_color(colors.text_secondary).child(note)),
+            )
+            .children(
+                feedback.map(|feedback| div().px_3().text_color(colors.danger).child(feedback)),
+            )
+            .into_any_element()
+    }
+
     pub fn render_row(
         card: Entity<Self>,
         row: usize,

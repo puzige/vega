@@ -53,7 +53,7 @@ pub(crate) fn model_trigger_label(
 
 impl ConversationStream {
     fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
-        if self.thread.is_standalone() {
+        if self.reading_preview || self.thread.is_standalone() {
             return;
         }
         cx.emit(OpenWorkspaceDiffRequested {
@@ -1587,7 +1587,9 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.reconcile_pending_focus(window, cx);
+        if !self.reading_preview {
+            self.reconcile_pending_focus(window, cx);
+        }
         if !self.context_usage_focus.contains_focused(window, cx) {
             self.context_usage_dismissed = false;
         }
@@ -1600,11 +1602,11 @@ impl Render for ConversationStream {
             });
             self.context_usage_focus_subscriptions = Some((focus_in, focus_out));
         }
-        if !self.selection_view_initialized {
+        if !self.reading_preview && !self.selection_view_initialized {
             gpui_kit::base::TextSelection::clear(window, cx);
             self.selection_view_initialized = true;
         }
-        if self.actions.restore_focus {
+        if !self.reading_preview && self.actions.restore_focus {
             self.actions.restore_focus = false;
             self.focus_composer(window, cx);
         }
@@ -1663,7 +1665,9 @@ impl Render for ConversationStream {
         let mut message_anchor_preview = None;
         let mut message_anchor_rail_overlay = None;
         let mut message_anchor_preview_in_lane = false;
-        let body: AnyElement = if self.entries.is_empty() {
+        let body: AnyElement = if self.reading_preview && self.entries.is_empty() {
+            div().into_any_element()
+        } else if self.entries.is_empty() {
             div()
                 .w_full()
                 .h(px(72.))
@@ -1728,7 +1732,14 @@ impl Render for ConversationStream {
                                                   cx| {
                                                 let row_t0 = Instant::now();
                                                 let entry = this.entries.get(index);
-                                                let item = if this.process_entry_hidden(index, cx) || this.compaction_failure_is_represented(index) {
+                                                let item = if this.reading_preview && let Some(StreamEntry::Permission { card }) = entry {
+                                                    let card = card.read(cx);
+                                                    let (tool, target) = card.identity();
+                                                    let status = if card.is_resolved() { "Confirmation handled" } else { "Awaiting confirmation" };
+                                                    div().text_size(px(Typography::BODY)).text_color(theme(cx).colors.text_secondary).child(format!("{status} · {tool} · {target}")).into_any_element()
+                                                } else if this.reading_preview && let Some(StreamEntry::Plan { card }) = entry {
+                                                    PlanCard::render_read_only(card.clone(), window, cx)
+                                                } else if this.process_entry_hidden(index, cx) || this.compaction_failure_is_represented(index) {
                                                     div().h_0().into_any_element()
                                                 } else {
                                                     match entry {
@@ -1770,7 +1781,7 @@ impl Render for ConversationStream {
                                                         .flex()
                                                         .flex_col()
                                                         .child(item)
-                                                        .child(notice.render(&colors, this.thread.id.clone(), cx))
+                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview, cx))
                                                         .into_any_element()
                                                 } else {
                                                     item
@@ -1818,7 +1829,9 @@ impl Render for ConversationStream {
             )
             .on_action(cx.listener(Self::open_diff_action))
             .on_action(cx.listener(Self::copy_selected_text))
-            .children(self.render_subagent_parent(cx))
+            .when(!self.reading_preview, |root| {
+                root.children(self.render_subagent_parent(cx))
+            })
             .child(
                 div()
                     .w_full()
@@ -1852,17 +1865,22 @@ impl Render for ConversationStream {
                         message_anchor_preview
                     }),
             )
-            .when(!self.entries.is_empty(), |root| {
+            .when(!self.reading_preview && !self.entries.is_empty(), |root| {
                 root.child(self.render_conversation_foreground(window, cx))
             })
-            .when(self.entries.is_empty(), |root| {
+            .when(!self.reading_preview && self.entries.is_empty(), |root| {
                 root.when(self.privacy.opened, |view| {
                     view.child(self.render_privacy_control(cx))
                 })
                 .child(self.render_composer(window, cx))
                 .when(project_bound, |root| root.child(self.commit_panel.clone()))
             })
-            .children(self.render_pending_menu(cx))
+            .when(self.reading_preview, |root| {
+                root.child(self.render_resume_tail(cx))
+            })
+            .when(!self.reading_preview, |root| {
+                root.children(self.render_pending_menu(cx))
+            })
             .into_any_element();
         counters.record_render(render_t0);
         element

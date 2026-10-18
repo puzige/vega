@@ -53,6 +53,7 @@ pub struct ArtifactCleared {
 
 /// Route-owned presentation state; it never reads a path or filesystem.
 pub struct ArtifactCard {
+    reading_preview: bool,
     thread_id: String,
     project_id: String,
     projection: ArtifactProjection,
@@ -73,6 +74,13 @@ impl Focusable for ArtifactCard {
 }
 
 impl ArtifactCard {
+    pub(crate) fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
+        if self.reading_preview != reading {
+            self.reading_preview = reading;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus
             .iter()
@@ -87,6 +95,7 @@ impl ArtifactCard {
     ) -> Self {
         let preview_enabled = projection.preview_available && projection.current_file_id.is_some();
         Self {
+            reading_preview: false,
             thread_id,
             project_id,
             projection,
@@ -295,6 +304,9 @@ impl ArtifactCard {
         _window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
+        if row == 1 && card.read(cx).reading_preview {
+            return div().h_0().into_any_element();
+        }
         let colors = theme(cx).colors;
         let (projection, preview_lines, inline_error, opening, focus) = {
             let card = card.read(cx);
@@ -506,5 +518,64 @@ mod tests {
         assert_eq!(preview_rows("x\n"), ["x"]);
         assert_eq!(preview_rows("x\ny"), ["x", "y"]);
         assert_eq!(preview_rows(&"x\n".repeat(10_000)).len(), 10_000);
+    }
+    #[gpui_kit::test]
+    async fn stream_artifacts_arriving_during_reading_inherit_and_release_the_mode(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::conversation_stream::ConversationStream;
+        use std::sync::Arc;
+        use vega_conversation::types::{
+            ConversationEvent, PermissionMode, TaskBackend, Thread, ThreadMode, ThreadStatus,
+            ToolCall, ToolCallStatus, ToolResult,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let _git = vega_conversation::register_git_test_executor(
+            root.path(),
+            Arc::new(|_, _, _| {
+                Err(vega_conversation::types::GitWorkspaceError::for_test(
+                    GitWorkspaceErrorCode::NotRepository,
+                ))
+            }),
+        )
+        .unwrap();
+        let workspace = Arc::new(vega_conversation::GitWorkspaceService::new(root.path()).unwrap());
+        let service =
+            vega_conversation::ArtifactService::new(workspace, "p".into(), "t".into(), 1).unwrap();
+        let call = ToolCall { id: "c".into(), tool: "write".into(), input_json: serde_json::json!({"audit_version":"write_edit_v1","tool":"write","path":"synthetic.txt","content_bytes":1,"fingerprint_v1":"a".repeat(64)}).to_string() };
+        let projection = service.capture(&call, &ToolResult { status: ToolCallStatus::Success, output: serde_json::json!({"path":"synthetic.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}).to_string(), reused:false, exit_code:None, duration_ms:None, truncated:Some(false), invalid:None }, tokio_util::sync::CancellationToken::new()).await.unwrap().unwrap();
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            crate::init(cx);
+        });
+        let stream = cx.new(|cx| {
+            ConversationStream::new(
+                Thread {
+                    id: "t".into(),
+                    parent_thread_id: Some("parent".into()),
+                    backend: TaskBackend::Native,
+                    project_id: "p".into(),
+                    title: "Child".into(),
+                    mode: ThreadMode::Execute,
+                    permission_mode: PermissionMode::Confirm,
+                    model: "mock".into(),
+                    status: ThreadStatus::Active,
+                    pinned: false,
+                    unread: false,
+                    created_at: 1,
+                    updated_at: 1,
+                },
+                cx,
+            )
+        });
+        let card = cx.new(|cx| ArtifactCard::new("t".into(), "p".into(), projection, cx));
+        stream.update(cx, |stream, cx| {
+            stream.set_reading_preview(true, cx);
+            stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
+            assert!(stream.apply_artifact_card("c", card.clone(), cx));
+        });
+        assert!(card.read_with(cx, |card, _| card.reading_preview));
+        stream.update(cx, |stream, cx| stream.set_reading_preview(false, cx));
+        assert!(!card.read_with(cx, |card, _| card.reading_preview));
     }
 }
