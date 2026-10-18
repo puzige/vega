@@ -1,9 +1,8 @@
 // Capture-only native driver: activates Vega, reads its layer-0 window bounds
 // live, and screenshots that exact rect WITHOUT synthesizing any input.
 //
-// The R69 acceptance needs this: the whole point of the change is that the
-// home composer is usable with no click, so the evidence must not be produced
-// by a driver that clicks first.
+// The home composer must be usable without a click, so capture evidence
+// must not be produced by a driver that clicks first.
 //
 // usage:
 //   swiftc -O scripts/native-capture.swift -o /tmp/vcapture

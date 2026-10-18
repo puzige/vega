@@ -64,7 +64,7 @@ Redesign this app icon in classic macOS third-party developer-tool app icon styl
 
 ## TODO
 
-- [x] ：直接从 F1 SVG 通过 AppKit 导出无水印透明画布，生成 `.iconset` 全套（16/32/128/256/512 + @2x）及 ICNS。该流程和尺寸基线由R17继续复用，见 [ 导出证据](../../docs/vega-r15-icon-delivery.md)。
-- [x] ：从单星微笑浅色SVG通过AppKit导出无水印透明画布，保留居中832px底板、四边96px透明留白，并将生产源切换到 `vega-icon-smile-light.svg`。浅/深/单色SVG共用同一几何，见 [ 导出证据](../../docs/vega-r17-logo-delivery.md)。
+- [x] F1 图标导出：直接从 F1 SVG 通过 AppKit 导出无水印透明画布，生成 `.iconset` 全套（16/32/128/256/512 + @2x）及 ICNS。单星微笑图标继续复用该流程和尺寸基线，见 [F1 图标导出证据](../../docs/vega-r15-icon-delivery.md)。
+- [x] 单星微笑图标导出：从单星微笑浅色SVG通过AppKit导出无水印透明画布，保留居中832px底板、四边96px透明留白，并将生产源切换到 `vega-icon-smile-light.svg`。浅/深/单色SVG共用同一几何，见 [单星微笑图标导出证据](../../docs/vega-r17-logo-delivery.md)。
 - [ ] wordmark 横版（mono symbol + "Vega" 字标）
 - [ ] README 顶图 / 社交分享图（可用落选极光版改造）

@@ -1640,7 +1640,7 @@ pub(crate) fn is_safe_bash_failure(output: &str) -> bool {
 }
 
 pub(crate) fn legacy_unavailable_output(tool: &str) -> String {
-    format!("Tool error: denied: tool '{tool}' is unavailable until the S5 permission gate")
+    format!("Tool error: denied: tool '{tool}' is unavailable until permission is granted")
 }
 
 pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAudit) -> bool {

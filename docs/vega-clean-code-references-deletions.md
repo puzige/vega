@@ -2,11 +2,11 @@
 
 对应 Issue #338；静态语法枚举，不表示测试已执行。
 
-原有 3145，保留 1577，删除 1568 个带 test 属性的函数。删除 Rust 文件 112 个。
+最新 master 基线原有 3157，保留 1587，删除 1570 个带 test 属性的函数。删除 Rust 文件 112 个。
 
-比较基线：原始提交 `76906235`；工作树快照：2026-10-18 08:35:11 UTC。按函数测试属性静态枚举，保留原始文件路径和函数名；并行修复结束后须再次核对，不将首次清理后的 HEAD 当作原始基线。
+比较基线：`75da678a69fa809159f922615e1137bb48b528ba`；在两次清理提交同步此 master 后静态核对。下列 1570 条与该基线到最终源码的测试定义差集逐项一致，没有新增测试或重复条目。静态属性计数不同于 Nextest 的实际运行计数；运行结果见清理规格。
 
-相对首次清理，另删除 35 个测试函数（`vega` 14、`vega_conversation` 2、`vega_runtime` 8、`vega_ui` 11）和 65 个 Rust 文件。
+相对原始基线 `76906235`，删除 1568 个测试，保留其余 1577 个，并完整保留后续上游新增的 10 个普通测试。相对首次清理，另删除 35 个漏扫的 `iNN_` 测试（`vega` 14、`vega_conversation` 2、`vega_runtime` 8、`vega_ui` 11）和 65 个无测试的遗留 Rust 文件。最新 master 将一个旧编号测试替换为同一编号文件内的三个测试，清单按最新定义更新，净增加 2 条删除项。
 
 - `crates/vega/src/codex_agent/tests.rs`：`issue287_codex_tool_permission_and_lifecycle_keep_exact_option_once`
 - `crates/vega/src/codex_agent/tests.rs`：`issue287_first_codex_prompt_waits_for_empty_set_mode_ack_and_durable_binding`
@@ -1107,7 +1107,9 @@
 - `crates/vega_ui/src/conversation_stream/tests/issue299_pending_messages.rs`：`issue299_platform_replacement_and_ime_preserve_a_new_identical_draft`
 - `crates/vega_ui/src/conversation_stream/tests/issue299_pending_messages.rs`：`issue299_queued_ack_preserves_a_retyped_identical_draft`
 - `crates/vega_ui/src/conversation_stream/tests/issue299_pending_messages.rs`：`issue299_running_enter_follows_default_and_ack_preserves_later_draft`
-- `crates/vega_ui/src/conversation_stream/tests/issue299_pending_messages.rs`：`issue299_running_send_focus_keeps_stop_adjacent_and_skips_pending_send`
+- `crates/vega_ui/src/conversation_stream/tests/issue299_pending_messages.rs`：`running_primary_action_attachment_import_and_clear_preserve_guards`
+- `crates/vega_ui/src/conversation_stream/tests/issue299_pending_messages.rs`：`running_primary_action_keeps_focus_and_switches_to_stop_while_submitting`
+- `crates/vega_ui/src/conversation_stream/tests/issue299_pending_messages.rs`：`running_primary_action_replaces_stop_and_restores_it_after_ack`
 - `crates/vega_ui/src/conversation_stream/tests/issue342_model_name_width.rs`：`issue342_label_wording_is_unchanged`
 - `crates/vega_ui/src/conversation_stream/tests/issue342_model_name_width.rs`：`issue342_overlong_name_ellipsises_inside_the_card`
 - `crates/vega_ui/src/conversation_stream/tests/issue342_model_name_width.rs`：`issue342_picker_layers_keep_their_geometry`

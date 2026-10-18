@@ -103,7 +103,7 @@ pub struct BenchReport {
 impl BenchReport {
     pub fn new(provenance: &Provenance, c1c2: C1C2Result, cutoff: Cutoff) -> Self {
         Self {
-            schema: "vega-s8-t43.baseline.v1",
+            schema: "vega-benchmark.baseline.v1",
             timestamp_unix_ms: unix_ms(),
             cutoff,
             provenance: provenance.clone(),
@@ -122,7 +122,7 @@ impl BenchReport {
 /// Writes the report JSON to a repo-external temp path and returns its path
 /// + SHA-256 (C3: 结果文件 SHA-256; raw products never enter the repo).
 pub fn write(report: &BenchReport) -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join("vega-t43-reports");
+    let dir = std::env::temp_dir().join("vega-benchmark-reports");
     std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let json = serde_json::to_string_pretty(report)?;
     let path = dir.join(format!("{}-baseline.json", report.timestamp_unix_ms));

@@ -1,6 +1,6 @@
-# R16 image-generation prompts
+# Vega logo image-generation prompts
 
-## R16-02-spark — elongated internal sparkle in 02
+## Star-cut mark — elongated internal sparkle in 02
 
 2026-09-06. User requested the elongated sparkle treatment for previous design 02 as well. Edit target: middle column of `vega-blue-shape-studies.png`; shape/presentation reference: `vega-blue-01-single-spark-smile.png`. Output: `vega-blue-02-slender-spark.png`. Mode: built-in `image_gen`. Preserve the 02 outer chevron and single negative-space star; do not transfer the 01 cursor or floating star. Additional comparison, not an inferred change of the user's selected direction.
 
@@ -19,7 +19,7 @@ Keep the approved sapphire blue in Light, soft ice blue in Dark, delicate upper-
 Deliver one fully opaque pale cool-gray landscape design board: two equally sized large front-facing hero icons, Light left and Dark right, a small centered row of four matching light/dark thumbnails below. Same geometry in both appearances and every thumbnail. Clean top-left header exactly "VEGA", subtitle exactly "02 / Spark", captions exactly "Light" and "Dark". No 01 or 03 alternatives. Same material finish as the references, calm and precise. The only glyph modification from the ORIGINAL 02 should be the beautifully elongated internal single sparkle.
 ```
 
-## R16-smile — selected 01, one sparkle and a subtle smile
+## Single-spark smile mark — selected 01, one sparkle and a subtle smile
 
 2026-09-06. User selected 01 and requested a sparkle closer to the main star in the sparkle emoji, with a slight smile in the whole mark. The user explicitly corrected the initial interpretation: exactly ONE star, no large/small pair. Reference: `vega-blue-shape-studies.png`, left column only. Output: `vega-blue-01-single-spark-smile.png`. Mode: built-in `image_gen`. Preserve approved blue and soft material; adjust one sparkle and the cursor. Static concept preview.
 
@@ -40,7 +40,7 @@ Colors/material invariants: Light icon sapphire blue around #3478D8 with gentle 
 Presentation: one clean fully opaque pale cool-gray landscape board with two equally sized large front-facing hero icons, Light on the left and Dark on the right, and a centered row of four matching small light/dark thumbnail previews below. The two appearances must use identical symbol geometry and exactly one star each. Header top left exactly "VEGA", subtitle exactly "01 / Spark". Small labels under the two hero tiles exactly "Light" and "Dark". No other words or alternative designs. Comfortable tile margins and glyph footprint around 58-64 percent of tile width. Generous whitespace. Premium, precise, friendly and restrained, with a slight smile emerging from an unmistakable terminal prompt.
 ```
 
-## R16-shape — new shapes with the approved blue palette
+## Shape studies — new shapes with the approved blue palette
 
 2026-09-06. User approved the colors and requested different shapes. Material/color reference: `vega-logo-b-macos-terminal-blue.png`; output: `vega-blue-shape-studies.png`. Mode: built-in `image_gen`. The reference constrains materials and colors, not the silhouette. Three candidates: 01 compact prompt and subordinate star; 02 star cut into a single chevron; 03 V monogram with a command-like baseline. Static comparison board; candidate recommendation is not user selection.
 
@@ -63,7 +63,7 @@ A compact upright V-shaped monogram made of purposeful angular strokes, with a t
 Presentation: a bright fully OPAQUE very light cool-gray landscape sheet, with generous margins and whitespace. Small clean top-left header exactly "VEGA", subtitle exactly "Shape studies". Three equal-width columns, labeled exactly "01", "02", "03" above the icons. In each column: one large light icon, then one smaller dark icon directly below with precisely the SAME geometry, then a row of two very small matching light/dark previews at the bottom. SAME visual tile size, material, lighting and spacing across all three routes, so the different silhouettes are easy to compare. Keep the outer optical padding comparable to a centered 832px visible tile within a 1024px allocation. Each logo should occupy about 58-64 percent of its tile, with comfortable clear margins. No extra descriptions or labels, no old B label, no dock screenshot, no browser UI, no third-party icons, no watermarks. Crisp front-facing iconography with the beautiful blue material of the reference. This is a design comparison, not a marketing poster.
 ```
 
-## R16-blue — blue palette refinement
+## Blue palette refinement
 
 2026-09-06. User requested a suitable blue theme for the current icon. Edit target: `vega-logo-b-macos-terminal.png`; output: `vega-logo-b-macos-terminal-blue.png`. Mode: built-in `image_gen`. Sapphire on Light and soft ice blue on Dark; preserve the prompt, cursor, star, highlights, material and presentation. This is a static logo preview, not an application theme implementation.
 

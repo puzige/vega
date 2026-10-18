@@ -322,7 +322,7 @@ struct Sandbox {
 /// Creates the isolated temp sandbox: fresh `HOME`, `/tmp` logs and reports,
 /// nothing inside the repo (C3 isolation MUSTs).
 fn make_sandbox() -> Result<Sandbox> {
-    let root = std::env::temp_dir().join(format!("vega-t43-{}", unix_ms()));
+    let root = std::env::temp_dir().join(format!("vega-benchmark-{}", unix_ms()));
     let home = root.join("home");
     std::fs::create_dir_all(&home)
         .with_context(|| format!("failed to create the sandbox HOME at {}", home.display()))?;

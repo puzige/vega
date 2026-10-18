@@ -439,7 +439,6 @@ pub struct WorkspaceSnapshot {
     pub stats: WorkspaceStats,
 }
 
-/// Frozen syntax-highlight language vocabulary for Sprint 6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLanguage {
     Rust,

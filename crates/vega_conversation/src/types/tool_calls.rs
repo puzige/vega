@@ -1228,7 +1228,7 @@ pub(crate) fn mutation_failure_output_allowed(
             ) || result.output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
                 || result.output
                     == format!(
-                        "Tool error: denied: tool '{tool_name}' is unavailable until the S5 permission gate"
+                        "Tool error: denied: tool '{tool_name}' is unavailable until permission is granted"
                     )
         }
         ToolCallStatus::Failed => {

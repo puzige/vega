@@ -7,6 +7,7 @@
 - 扫描所有 tracked 非 `docs/` 文件及路径，清除 GitHub Issue 和旧编排任务来源编号（issueNN、iNN_、#NN、RNN、Sn/Tnn、A2-09 等），不是清除普通数字。
 - 测试函数、模块或专用测试文件包含来源编号时直接删除；混合文件只删除受影响项，保留无关测试。删除专属 fixture 和孤立 helper/import/module 引用，不通过改名保留受影响测试。
 - 生产代码仅语义化重命名符号、移除来源注释，行为和协议不变；GitHub 集成的运行时 Issue 编号/URL、用户数据、协议值和普通编号不属于历史来源。
+- 窄例外：将 `xtask` 内部 benchmark 报告的历史来源元数据 `vega-s8-t43.baseline.v1` 改为 `vega-benchmark.baseline.v1`。主会话已确认仓库中无该值的非文档解析器或读取方；此项不涉及应用或 store 协议，不改指标、schema 版本 `v1` 或 JSON 字段。
 - 根文档去掉具体历史编号；指向 `docs/` 内现有文档的链接目标保留，链接文字使用语义名称。这些路径是文档导航而非实现来源；不为清理来源破坏链接或改名历史文档。
 - 带历史任务编号的非测试资源目录改为语义目录，并同步引用。
 
@@ -38,4 +39,12 @@
 - 后续 Clippy 使用 `--keep-going` 一次收集各 crate 的独立诊断；缺失导入按编译器证据恢复，未使用项按实际消费者清理。一次 sccache 临时目录失效只影响本地工具环境，后续命令以 `TMPDIR=/tmp RUSTC_WRAPPER=` 绕过 wrapper，未修改机器或仓库配置。
 - Store/MCP 定向 Nextest：215 项通过、0 跳过。首轮 workspace Nextest 已成功编译，执行 1608 项：1594 通过、14 失败，另有 3 项沿用既有跳过状态。14 项失败均为仍带 `iNN_` 历史编号的测试缺少已清理的 Git capture；补扫确认初轮漏掉共 35 个此类测试，按原授权删除编号测试及独占 helper，不恢复编号 fixture、不放宽断言，最终计数与复跑结果另记。
 - 补齐漏扫后的本地完整 Nextest 已通过：`cargo nextest run --workspace --locked --offline --no-fail-fast --test-threads 2`，1573 项通过、0 失败、3 项沿用既有跳过，退出码 0（同步后续 master 前）。一次工具 120 秒等待超时导致中断的测试运行不计为通过；延长等待时限后的完整运行耗时 45.308 秒。
-- 本地 workspace Clippy（`--all-targets --keep-going --locked --offline -- -D warnings`）已在本轮修复树上通过，退出码 0；同步 master 后仍须针对最终树复核。依赖 `block` 的 future-incompatibility 提示是 Cargo 提示，不是项目 Clippy 警告，未改依赖或关闭门禁。
+- 本地 workspace Clippy（`--all-targets --keep-going --locked --offline -- -D warnings`）已在本轮修复树上通过，退出码 0。依赖 `block` 的 future-incompatibility 提示是 Cargo 提示，不是项目 Clippy 警告，未改依赖或关闭门禁。
+
+## 最终整合与本地验收
+
+- 同步 master `75da678a69fa809159f922615e1137bb48b528ba`，两份编号测试文件保持删除；保留上游 composer 主动作、子 agent 面板实现及 10 个新增普通测试。上游 3 个阅读测试需要的 4 个 helper 从已删除编号模块逐字搬到测试文件本地，其测试体和断言与上游一致。
+- 最新基线静态清点：3157 个带测试属性函数，保留 1587 个、删除 1570 个；删除 Rust 文件 112 个。清单与最新基线差集逐项一致，静态属性计数不等于 Nextest 执行计数。
+- 清理最后 21 处明确来源文本，权限错误只去掉阶段编号，不改变授权判断；SVG 仅改标题/来源注释，几何、颜色、尺寸和 docs 导航目标未变。benchmark 元数据例外见范围规则。
+- 在最终源码上串行执行并通过（均退出码 0）：`cargo fmt --all -- --check`；`cargo clippy --workspace --all-targets --keep-going --locked --offline -- -D warnings`（7.62 秒）；`cargo nextest run --workspace --locked --offline --no-fail-fast --test-threads 2`（1583 项通过、0 失败、3 项既有跳过，45.769 秒）。Python 3 组共 34 项通过；`git diff --check`、13 份 JSON 解析及清单一致性核对通过。
+- 本地 Nextest 构建的 macOS 链接器曾提示 debug unwind section 大小；未隐藏提示、未改链接策略。云端 required check 仍须在推送后的最新提交重新验证；本地通过不表示云端通过，也不表示已合并或用户手测通过。
