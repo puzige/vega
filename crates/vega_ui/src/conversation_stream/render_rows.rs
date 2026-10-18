@@ -479,7 +479,6 @@ fn selectable_user_message(
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
     let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
     let mut body = div()
-        .debug_selector(|| "user-message-bubble".into())
         .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
         .bg(colors.conversation_bubble)
         .rounded(px(Layout::USER_MESSAGE_RADIUS))
@@ -536,7 +535,6 @@ fn selectable_markdown_message(
     cx: &mut App,
 ) -> AnyElement {
     div()
-        .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
         .pt(px(Layout::CONVERSATION_BODY_TOP))
@@ -643,7 +641,6 @@ fn markdown_blocks(
                 .map(|(owner, code)| code_header(code, owner, ordinal, colors));
             body.child(
                 div()
-                    .debug_selector(move || format!("markdown-code-{start}"))
                     .w_full()
                     .min_w_0()
                     .bg(colors.code_bg)
@@ -719,7 +716,6 @@ fn code_header(
                 }
             })
             .id(gpui_kit::SharedString::from(selector.clone()))
-            .debug_selector(move || selector.clone())
             .size(px(Layout::COPY_ACTION_SIZE))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .focus_visible(|style| style.bg(colors.bg_active)),
@@ -1430,14 +1426,6 @@ pub(super) fn message_with_copy(
                         move |_, _, cx| source.copy(cx),
                     )
                     .id(("message-copy", id))
-                    .debug_selector(move || {
-                        let role = if user {
-                            "message-copy-user"
-                        } else {
-                            "message-copy-assistant"
-                        };
-                        format!("{role}-{id}")
-                    })
                     .size(px(Layout::COPY_ACTION_SIZE))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .opacity(0.)

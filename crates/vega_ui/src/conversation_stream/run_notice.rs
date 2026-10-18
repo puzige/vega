@@ -114,7 +114,7 @@ impl RunNotice {
                                 | RunNoticeKind::ContextFailure
                                 | RunNoticeKind::CompactionFailure(_)
                         ),
-                        |row| row.debug_selector(|| "assistant-run-failure".into()),
+                        |row| row,
                     )
                     .child(render_rows::plain_error_notice(self.text(), color)),
             )
