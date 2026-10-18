@@ -74,9 +74,8 @@ fn issue455_user_materialization_keeps_plain_source_lines_and_exact_targets() {
         .flat_map(|line| &line.spans)
         .filter_map(|span| {
             assert!(matches!(span.style, SpanStyle::Plain | SpanStyle::Link));
-            span.link.as_deref().map(|target| {
+            span.link.as_deref().inspect(|&target| {
                 assert_eq!(span.text, target);
-                target
             })
         })
         .collect();
@@ -300,92 +299,108 @@ fn open_user_read_harness(
     (root, visual)
 }
 
-#[gpui_kit::test]
-fn issue455_both_user_renderers_keep_geometry_source_copy_and_link_targets(
-    cx: &mut TestAppContext,
-) {
-    let capture = LinkCapture::start();
+fn assert_user_renderer_links(cx: &mut TestAppContext, selectable: bool) {
+    let _capture = LinkCapture::start();
     let source =
         "请看 https://one.example/中文🙂，还有 http://two.example:8080/a(b)。\n\n**literal**";
-    for selectable in [false, true] {
-        capture.clear();
-        let (copy, mut visual) = if selectable {
-            let copy = MessageCopy::new(source);
-            let (_, visual) = open_selection_harness(
-                cx,
-                StreamEntry::User {
-                    lines: user_message_lines(455, source),
-                    copy: copy.clone(),
-                },
-            );
-            (copy, visual)
-        } else {
-            let (root, visual) = open_user_read_harness(cx, source);
-            let copy = root.read_with(&visual, |root, _| {
-                let StreamEntry::User { copy, .. } = &root.entry else {
-                    panic!("user entry")
-                };
-                copy.clone()
-            });
-            (copy, visual)
-        };
-        let bubble = visual.debug_bounds("user-message-bubble").unwrap();
-        let before = (
-            bubble,
-            painted_link("https://one.example/中文🙂").layout.bounds(),
+    let (copy, mut visual) = if selectable {
+        let copy = MessageCopy::new(source);
+        let (_, visual) = open_selection_harness(
+            cx,
+            StreamEntry::User {
+                lines: user_message_lines(455, source),
+                copy: copy.clone(),
+            },
         );
-        assert_eq!(visual.opened_url(), None);
-        for target in ["https://one.example/中文🙂", "http://two.example:8080/a(b)"] {
-            visual.simulate_click(link_point(target), Modifiers::default());
-            finish_click(&mut visual);
-            assert_eq!(visual.opened_url().as_deref(), Some(target));
-        }
-        assert_eq!(
-            before,
-            (
-                visual.debug_bounds("user-message-bubble").unwrap(),
-                painted_link("https://one.example/中文🙂").layout.bounds()
-            )
-        );
-        assert_eq!(copy.original_text(), source);
-        visual.update(|_, cx| copy.copy(cx));
-        assert_eq!(
-            visual
-                .read_from_clipboard()
-                .and_then(|item| item.text())
-                .as_deref(),
-            Some(source)
-        );
+        (copy, visual)
+    } else {
+        let (root, visual) = open_user_read_harness(cx, source);
+        let copy = root.read_with(&visual, |root, _| {
+            let StreamEntry::User { copy, .. } = &root.entry else {
+                panic!("user entry")
+            };
+            copy.clone()
+        });
+        (copy, visual)
+    };
+    let bubble = visual.debug_bounds("user-message-bubble").unwrap();
+    let before = (
+        bubble,
+        painted_link("https://one.example/中文🙂").layout.bounds(),
+    );
+    assert_eq!(visual.opened_url(), None);
+    for target in ["https://one.example/中文🙂", "http://two.example:8080/a(b)"] {
+        visual.simulate_click(link_point(target), Modifiers::default());
+        finish_click(&mut visual);
+        assert_eq!(visual.opened_url().as_deref(), Some(target));
+    }
+    assert_eq!(
+        before,
+        (
+            visual.debug_bounds("user-message-bubble").unwrap(),
+            painted_link("https://one.example/中文🙂").layout.bounds()
+        )
+    );
+    assert_eq!(copy.original_text(), source);
+    visual.update(|_, cx| copy.copy(cx));
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(source)
+    );
+}
+
+#[gpui_kit::test]
+fn issue455_read_user_renderer_keeps_geometry_source_copy_and_link_targets(
+    cx: &mut TestAppContext,
+) {
+    assert_user_renderer_links(cx, false);
+}
+
+#[gpui_kit::test]
+fn issue455_selectable_user_renderer_keeps_geometry_source_copy_and_link_targets(
+    cx: &mut TestAppContext,
+) {
+    assert_user_renderer_links(cx, true);
+}
+
+fn assert_markdown_renderer_links(cx: &mut TestAppContext, selectable: bool) {
+    let _capture = LinkCapture::start();
+    let source = "## https://heading.example\n\nParagraph https://paragraph.example suffix\n\n- https://list.example\n\n> https://quote.example\n\n| Left | Right |\n|:---|---:|\n| https://left.example | https://right.example |\n\n[https://visible.example](https://target.example) <https://angle.example>";
+    let mut visual = if selectable {
+        open_selection_harness(cx, assistant_entry(source)).1
+    } else {
+        open_read_harness(cx, source).1
+    };
+    assert_eq!(visual.opened_url(), None);
+    for target in [
+        "https://heading.example",
+        "https://paragraph.example",
+        "https://list.example",
+        "https://quote.example",
+        "https://left.example",
+        "https://right.example",
+        "https://target.example",
+        "https://angle.example",
+    ] {
+        visual.simulate_click(link_point(target), Modifiers::default());
+        finish_click(&mut visual);
+        assert_eq!(visual.opened_url().as_deref(), Some(target));
     }
 }
 
 #[gpui_kit::test]
-fn issue455_both_markdown_renderers_open_bare_links_in_every_container(cx: &mut TestAppContext) {
-    let capture = LinkCapture::start();
-    let source = "## https://heading.example\n\nParagraph https://paragraph.example suffix\n\n- https://list.example\n\n> https://quote.example\n\n| Left | Right |\n|:---|---:|\n| https://left.example | https://right.example |\n\n[https://visible.example](https://target.example) <https://angle.example>";
-    for selectable in [false, true] {
-        capture.clear();
-        let mut visual = if selectable {
-            open_selection_harness(cx, assistant_entry(source)).1
-        } else {
-            open_read_harness(cx, source).1
-        };
-        assert_eq!(visual.opened_url(), None);
-        for target in [
-            "https://heading.example",
-            "https://paragraph.example",
-            "https://list.example",
-            "https://quote.example",
-            "https://left.example",
-            "https://right.example",
-            "https://target.example",
-            "https://angle.example",
-        ] {
-            visual.simulate_click(link_point(target), Modifiers::default());
-            finish_click(&mut visual);
-            assert_eq!(visual.opened_url().as_deref(), Some(target));
-        }
-    }
+fn issue455_read_markdown_renderer_opens_bare_links_in_every_container(cx: &mut TestAppContext) {
+    assert_markdown_renderer_links(cx, false);
+}
+
+#[gpui_kit::test]
+fn issue455_selectable_markdown_renderer_opens_bare_links_in_every_container(
+    cx: &mut TestAppContext,
+) {
+    assert_markdown_renderer_links(cx, true);
 }
 
 #[gpui_kit::test]
@@ -556,52 +571,72 @@ fn issue455_read_user_pending_click_cancels_on_blur_and_same_identity_text_repla
     }
 }
 
-#[gpui_kit::test]
-fn issue455_wrapped_bare_urls_keep_last_glyph_hits_and_plain_prefix_suffix(
-    cx: &mut TestAppContext,
-) {
-    let capture = LinkCapture::start();
+fn assert_wrapped_bare_url(cx: &mut TestAppContext, user: bool, selectable: bool) {
+    let _capture = LinkCapture::start();
     let target = format!("https://wrapped.example/{}终🙂", "中文/segment/".repeat(12));
     let source = format!("prefix {target} suffix");
-    for user in [false, true] {
-        for selectable in [false, true] {
-            capture.clear();
-            let mut visual = if selectable {
-                open_selection_harness(cx, entry(user, &source)).1
-            } else if user {
-                open_user_read_harness(cx, &source).1
-            } else {
-                open_read_harness(cx, &source).1
-            };
-            visual.simulate_resize(size(px(330.), px(1800.)));
-            redraw(&mut visual);
-            let painted = painted_link(&target);
-            assert!(painted.regions.len() > 2);
-            assert_eq!(painted.layout.text(), source);
-            for index in [0, source.find("suffix").unwrap()] {
-                visual.simulate_click(
-                    text_point(&painted.layout, index, false),
-                    Modifiers::default(),
-                );
-                finish_click(&mut visual);
-                assert_eq!(visual.opened_url(), None);
-            }
-            let end = source.find(" suffix").unwrap();
-            let (glyph_start, _) = source[..end].char_indices().last().unwrap();
-            let line = painted.layout.line_layout_for_index(end).unwrap();
-            let advance = line.unwrapped_layout.x_for_index(end)
-                - line.unwrapped_layout.x_for_index(glyph_start);
-            assert!(advance > px(0.));
-            let endpoint = painted.layout.position_for_index(end).unwrap();
-            let glyph = point(
-                endpoint.x - advance / 2.,
-                endpoint.y + painted.layout.line_height() / 2.,
-            );
-            visual.simulate_click(glyph, Modifiers::default());
-            finish_click(&mut visual);
-            assert_eq!(visual.opened_url().as_deref(), Some(target.as_str()));
-        }
+    let mut visual = if selectable {
+        open_selection_harness(cx, entry(user, &source)).1
+    } else if user {
+        open_user_read_harness(cx, &source).1
+    } else {
+        open_read_harness(cx, &source).1
+    };
+    visual.simulate_resize(size(px(330.), px(1800.)));
+    redraw(&mut visual);
+    let painted = painted_link(&target);
+    assert!(painted.regions.len() > 2);
+    assert_eq!(painted.layout.text(), source);
+    for index in [0, source.find("suffix").unwrap()] {
+        visual.simulate_click(
+            text_point(&painted.layout, index, false),
+            Modifiers::default(),
+        );
+        finish_click(&mut visual);
+        assert_eq!(visual.opened_url(), None);
     }
+    let end = source.find(" suffix").unwrap();
+    let (glyph_start, _) = source[..end].char_indices().last().unwrap();
+    let line = painted.layout.line_layout_for_index(end).unwrap();
+    let advance =
+        line.unwrapped_layout.x_for_index(end) - line.unwrapped_layout.x_for_index(glyph_start);
+    assert!(advance > px(0.));
+    let endpoint = painted.layout.position_for_index(end).unwrap();
+    let glyph = point(
+        endpoint.x - advance / 2.,
+        endpoint.y + painted.layout.line_height() / 2.,
+    );
+    visual.simulate_click(glyph, Modifiers::default());
+    finish_click(&mut visual);
+    assert_eq!(visual.opened_url().as_deref(), Some(target.as_str()));
+}
+
+#[gpui_kit::test]
+fn issue455_wrapped_read_markdown_url_keeps_last_glyph_hits_and_plain_prefix_suffix(
+    cx: &mut TestAppContext,
+) {
+    assert_wrapped_bare_url(cx, false, false);
+}
+
+#[gpui_kit::test]
+fn issue455_wrapped_selectable_markdown_url_keeps_last_glyph_hits_and_plain_prefix_suffix(
+    cx: &mut TestAppContext,
+) {
+    assert_wrapped_bare_url(cx, false, true);
+}
+
+#[gpui_kit::test]
+fn issue455_wrapped_read_user_url_keeps_last_glyph_hits_and_plain_prefix_suffix(
+    cx: &mut TestAppContext,
+) {
+    assert_wrapped_bare_url(cx, true, false);
+}
+
+#[gpui_kit::test]
+fn issue455_wrapped_selectable_user_url_keeps_last_glyph_hits_and_plain_prefix_suffix(
+    cx: &mut TestAppContext,
+) {
+    assert_wrapped_bare_url(cx, true, true);
 }
 
 #[gpui_kit::test]

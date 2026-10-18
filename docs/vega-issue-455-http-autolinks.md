@@ -61,3 +61,9 @@ cargo nextest run --workspace
 ## 实施前来源边界修订（v2）
 
 源码复核确认 `vega_markdown/nodes.rs` 将 HtmlBlock/InlineHtml 降为 `Inline::Text`，UI 展平时没有 HTML 来源信息。v1 要求在这个接入点独立排除原始 HTML 不可执行。v2 按当前真实数据边界明确：可见的降级文字沿用普通文本扫描，不识别或执行 HTML；保留零解析器改动和原文字节，不为此增加节点、依赖或来源映射。其余验收与范围不变。
+
+## 云端夹具隔离修订（v3）
+
+首轮 [Actions 39083785375](https://github.com/puzige/vega/actions/runs/39083785375) 为 3024 passed / 3 failed / 5 skipped。三个失败均来自同一测试上下文内依次检查多个 renderer：前一组合的合法点击已写入平台的最近打开 URL，后一组合的新窗口仍读取该值，却断言为 None。
+
+锁定 GPUI 的 `TestPlatform::opened_url` 为平台共享字段，`open_url` 覆盖其值，`TestAppContext::opened_url()` 只克隆、不清空；创建新窗口不会新建测试平台。v3 将用户普通/可选、Markdown 普通/可选、折行 user×selectable 各组合分别放到独立的 `#[gpui_kit::test]` 上下文，步骤可由私有 helper 共用。保留所有原有 None、精确目标、几何、原文复制和非链接区域不打开断言，不改成与此前值比较，不重置生产记录，不新增公共 API、忽略或豁免。该修订仅隔离测试夹具，生产契约不变。
