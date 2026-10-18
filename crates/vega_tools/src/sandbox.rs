@@ -94,37 +94,22 @@ impl SandboxConfig {
         })
     }
 
-    pub(crate) fn preflight(
-        &self,
-        temp_root: &TempRoot,
-        hooks: &ExecutionHooks,
-    ) -> Result<(), BashError> {
-        hooks.maybe_fail_traversal()?;
-        let mut metadata_seen = 0_usize;
-        scan_hardlinks(
-            &self.project_root,
-            Some((&self.git_entry, &self.git_dir)),
-            hooks,
-            &mut metadata_seen,
-        )?;
+    pub(crate) fn preflight(&self, temp_root: &TempRoot) -> Result<(), BashError> {
+        scan_hardlinks(&self.project_root, Some((&self.git_entry, &self.git_dir)))?;
         temp_root.validate_identity()?;
-        scan_hardlinks(temp_root.path(), None, hooks, &mut metadata_seen)?;
+        scan_hardlinks(temp_root.path(), None)?;
         temp_root.validate_identity()
     }
 
-    pub(crate) async fn self_test(
-        &self,
-        temp_root: &TempRoot,
-        hooks: &ExecutionHooks,
-    ) -> SandboxSelfTest {
-        let mut command = self.command(hooks.profile(), temp_root);
+    pub(crate) async fn self_test(&self, temp_root: &TempRoot) -> SandboxSelfTest {
+        let mut command = self.command(PROFILE, temp_root);
         command.arg("--").arg("/usr/bin/true");
         command.stdin(Stdio::null());
         command.stdout(Stdio::null());
         command.stderr(Stdio::null());
         command.current_dir(&self.project_root);
         command.process_group(0);
-        hooks.note_spawn();
+
         let mut command = Command::from(command);
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -155,10 +140,10 @@ impl SandboxConfig {
         &self,
         command_text: &str,
         temp_root: &TempRoot,
-        hooks: &ExecutionHooks,
+
         credentials: Option<&ShellCredentialContext>,
     ) -> Result<Child, BashError> {
-        let profile = protected_profile(hooks.profile(), credentials)?;
+        let profile = protected_profile(PROFILE, credentials)?;
         let mut command = self.command(&profile, temp_root);
         command.arg("--").arg(SHELL);
         spawn_shell(
@@ -166,7 +151,6 @@ impl SandboxConfig {
             &self.project_root,
             command_text,
             temp_root,
-            hooks,
             credentials,
         )
     }
@@ -196,7 +180,7 @@ pub(crate) fn spawn_full_access_shell(
     project_root: &Path,
     command_text: &str,
     temp_root: &TempRoot,
-    hooks: &ExecutionHooks,
+
     credentials: Option<&ShellCredentialContext>,
 ) -> Result<Child, BashError> {
     let command = if let Some(context) = credentials {
@@ -207,14 +191,7 @@ pub(crate) fn spawn_full_access_shell(
     } else {
         StdCommand::new(SHELL)
     };
-    spawn_shell(
-        command,
-        project_root,
-        command_text,
-        temp_root,
-        hooks,
-        credentials,
-    )
+    spawn_shell(command, project_root, command_text, temp_root, credentials)
 }
 
 fn spawn_shell(
@@ -222,7 +199,7 @@ fn spawn_shell(
     project_root: &Path,
     command_text: &str,
     temp_root: &TempRoot,
-    hooks: &ExecutionHooks,
+
     credentials: Option<&ShellCredentialContext>,
 ) -> Result<Child, BashError> {
     temp_root.validate_identity()?;
@@ -247,7 +224,7 @@ fn spawn_shell(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    hooks.note_spawn();
+
     let mut command = Command::from(command);
     command.kill_on_drop(true);
     command
@@ -457,12 +434,7 @@ fn random_name(prefix: &str) -> Result<String, BashError> {
     Ok(name)
 }
 
-fn scan_hardlinks(
-    root: &Path,
-    project_git: Option<(&Path, &Path)>,
-    hooks: &ExecutionHooks,
-    metadata_seen: &mut usize,
-) -> Result<(), BashError> {
+fn scan_hardlinks(root: &Path, project_git: Option<(&Path, &Path)>) -> Result<(), BashError> {
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         let directory_metadata = fs::symlink_metadata(&directory)
@@ -480,8 +452,7 @@ fn scan_hardlinks(
             {
                 continue;
             }
-            hooks.maybe_fail_metadata(*metadata_seen)?;
-            *metadata_seen = metadata_seen.saturating_add(1);
+
             let link_metadata = fs::symlink_metadata(&path)
                 .map_err(|_| BashError::new(BashErrorCode::HardlinkPreflight))?;
             if link_metadata.file_type().is_symlink() {
@@ -501,143 +472,4 @@ fn scan_hardlinks(
         }
     }
     Ok(())
-}
-
-#[derive(Default)]
-pub(crate) struct ExecutionHooks {
-    #[cfg(test)]
-    pub(crate) spawn_count: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
-    #[cfg(test)]
-    pub(crate) scan_failure: Option<ScanFailure>,
-    #[cfg(test)]
-    pub(crate) profile_override: Option<String>,
-    #[cfg(test)]
-    pub(crate) after_temp_created: Option<TestPathHook>,
-    #[cfg(test)]
-    pub(crate) before_cleanup: Option<TestPathHook>,
-    #[cfg(test)]
-    pub(crate) force_unconfirmed_reap: bool,
-}
-
-#[cfg(test)]
-pub(crate) type TestPathHook = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
-
-impl ExecutionHooks {
-    fn profile(&self) -> &str {
-        #[cfg(test)]
-        if let Some(profile) = self.profile_override.as_deref() {
-            return profile;
-        }
-        PROFILE
-    }
-
-    fn note_spawn(&self) {
-        #[cfg(test)]
-        if let Some(count) = &self.spawn_count {
-            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
-    pub(crate) fn note_temp_created(&self, _path: &Path) {
-        #[cfg(test)]
-        if let Some(hook) = &self.after_temp_created {
-            hook(_path);
-        }
-    }
-
-    pub(crate) fn note_before_cleanup(&self, _path: &Path) {
-        #[cfg(test)]
-        if let Some(hook) = &self.before_cleanup {
-            hook(_path);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_unconfirmed_reap(&self) -> bool {
-        self.force_unconfirmed_reap
-    }
-
-    #[cfg(not(test))]
-    pub(crate) const fn force_unconfirmed_reap(&self) -> bool {
-        false
-    }
-
-    fn maybe_fail_traversal(&self) -> Result<(), BashError> {
-        #[cfg(test)]
-        if self.scan_failure == Some(ScanFailure::Traversal) {
-            return Err(BashError::new(BashErrorCode::HardlinkPreflight));
-        }
-        Ok(())
-    }
-
-    fn maybe_fail_metadata(&self, _seen: usize) -> Result<(), BashError> {
-        #[cfg(test)]
-        if self.scan_failure == Some(ScanFailure::Metadata) && _seen == 0 {
-            return Err(BashError::new(BashErrorCode::HardlinkPreflight));
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScanFailure {
-    Traversal,
-    Metadata,
-}
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
-    use std::path::PathBuf;
-
-    use crate::error::BashErrorCode;
-
-    use super::utf8_param;
-
-    #[test]
-    fn sandbox_profile_parameter_rejects_non_utf8_without_lossy_aliasing() {
-        let path = PathBuf::from(OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xff]));
-        let error = utf8_param(&path).unwrap_err();
-        assert_eq!(error.code(), BashErrorCode::SandboxUnavailable);
-        assert!(!format!("{error:?}").contains("tmp"));
-    }
-}
-
-#[cfg(test)]
-mod credential_profile_tests {
-    use super::{PROFILE, ShellCredentialContext, protected_profile};
-
-    #[test]
-    fn credential_profile_allows_only_self_pidinfo_without_removing_protection() {
-        for base in [PROFILE, "(version 1)(allow default)"] {
-            for proxy_port in [None, Some(43123)] {
-                let context = ShellCredentialContext {
-                    protected_root: "/private/vega-test-credentials".into(),
-                    proxy_port,
-                    environment: Default::default(),
-                };
-                let profile = protected_profile(base, Some(&context)).unwrap();
-                assert!(profile.starts_with(base));
-                assert!(profile.contains("(deny process-info*)"));
-                assert!(profile.contains("(allow process-info-pidinfo (target self))"));
-                assert!(!profile.contains("(allow process-info*"));
-                assert!(profile.contains(
-                    "(deny file-read* file-write* (subpath \"/private/vega-test-credentials\"))"
-                ));
-                assert!(
-                    profile.contains("(deny mach-lookup (global-name \"com.apple.taskgated\"))")
-                );
-                if proxy_port.is_some() {
-                    assert!(profile.contains("(deny network*)"));
-                    assert!(
-                        profile
-                            .contains("(allow network-outbound (remote tcp \"127.0.0.1:43123\"))")
-                    );
-                }
-            }
-        }
-        assert_eq!(protected_profile(PROFILE, None).unwrap(), PROFILE);
-    }
 }

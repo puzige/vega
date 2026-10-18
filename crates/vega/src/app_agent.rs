@@ -1,6 +1,4 @@
 use std::collections::{HashMap, HashSet};
-#[cfg(test)]
-use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 
@@ -30,69 +28,6 @@ impl Global for AppMcpSettings {}
 pub(crate) struct AppReplaySessions(pub(crate) vega_conversation::agent::ReplaySessionRegistry);
 
 impl Global for AppReplaySessions {}
-
-#[cfg(test)]
-type TestSseResponder = Arc<dyn Fn(&reqwest::Request) -> String + Send + Sync>;
-
-#[cfg(test)]
-#[derive(Default)]
-pub(crate) struct AgentWorkerStartProbe {
-    pub(crate) sse_responder: Option<TestSseResponder>,
-    starts: AtomicUsize,
-    tool_starts: Mutex<HashMap<String, usize>>,
-    bash_executor: Option<vega_tools::BashTestExecutor>,
-    /// Test-only handshake at the existing MockProvider construction boundary.
-    /// The sender releases the worker explicitly; dropping it also unblocks cleanup.
-    pub(crate) provider_construction_gate:
-        Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
-    pub(crate) credential_stages: Mutex<std::collections::HashMap<String, &'static str>>,
-}
-
-#[cfg(test)]
-impl AgentWorkerStartProbe {
-    pub(crate) fn with_sse_responder(responder: TestSseResponder) -> Self {
-        Self {
-            sse_responder: Some(responder),
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn with_bash_executor(executor: vega_tools::BashTestExecutor) -> Self {
-        Self {
-            bash_executor: Some(executor),
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn load(&self) -> usize {
-        self.starts.load(Ordering::SeqCst)
-    }
-
-    pub(crate) fn tool_start_counts(&self) -> HashMap<String, usize> {
-        self.tool_starts
-            .lock()
-            .map_or_else(|_| HashMap::new(), |counts| counts.clone())
-    }
-
-    fn record_tool_start(&self, call_id: &str) {
-        if let Ok(mut counts) = self.tool_starts.lock() {
-            *counts.entry(call_id.to_owned()).or_default() += 1;
-        }
-    }
-
-    fn record(&self) {
-        self.starts.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn credential_stage(&self, thread: &str, stage: &'static str) {
-        if let Ok(mut stages) = self.credential_stages.lock() {
-            stages.insert(thread.to_owned(), stage);
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) use crate::agent_context::SYSTEM_PROMPT;
 
 pub(crate) enum PendingAgentRun {
     Automation(Box<AutomationRunClaim>),
@@ -871,46 +806,6 @@ pub(crate) fn map_reference_failure(error: &vega_tools::ToolError) -> FileRefere
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(crate) fn run_agent_worker(
-    database_path: std::path::PathBuf,
-    project_path: std::path::PathBuf,
-    thread: Thread,
-    run: PendingAgentRun,
-    permission_queue: vega_conversation::agent::PermissionQueue,
-    cancel: tokio_util::sync::CancellationToken,
-    sender: mpsc::SyncSender<AgentUpdate>,
-    pricing_catalog: Option<vega_conversation::PricingCatalog>,
-    config_path: Option<std::path::PathBuf>,
-    reasoning: Option<vega_runtime::FrozenReasoning>,
-    title_notifications: Option<mpsc::Sender<()>>,
-    provider_override: Option<Arc<dyn vega_runtime::Provider>>,
-    worker_start_probe: Arc<AgentWorkerStartProbe>,
-) {
-    run_agent_worker_with_mcp(
-        database_path,
-        project_path,
-        thread,
-        run,
-        permission_queue,
-        vega_conversation::agent::UserQuestionQueue::new(),
-        cancel,
-        sender,
-        pricing_catalog,
-        config_path,
-        reasoning,
-        title_notifications,
-        None,
-        vega_tools::ReadState::default(),
-        None,
-        Vec::new(),
-        provider_override,
-        Some(vega_conversation::agent::ReplaySessionRegistry::new()),
-        worker_start_probe,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_agent_worker_with_mcp(
     database_path: std::path::PathBuf,
     project_path: std::path::PathBuf,
@@ -933,12 +828,8 @@ pub(crate) fn run_agent_worker_with_mcp(
     file_read_state: vega_tools::ReadState,
     queue_context: Option<PendingRunContext>,
     automation_pauses: Vec<AutomationTask>,
-    #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
     replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
-    #[cfg(test)] worker_start_probe: Arc<AgentWorkerStartProbe>,
 ) {
-    #[cfg(test)]
-    worker_start_probe.record();
     let automation_claim = match &run {
         PendingAgentRun::Automation(claim) => Some(claim.as_ref().clone()),
         _ => None,
@@ -972,11 +863,6 @@ pub(crate) fn run_agent_worker_with_mcp(
         let tools = vega_tools::Tools::new(&project_path)
             .map_err(|_| ())?
             .with_read_state(file_read_state);
-        #[cfg(test)]
-        let tools = match &worker_start_probe.bash_executor {
-            Some(executor) => tools.with_bash_test_executor(executor.clone()),
-            None => tools,
-        };
         let store = Store::open(&database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
         vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "已由你暂停").map_err(|_| ())?;
@@ -1018,27 +904,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 .map_err(|_| ())?;
             computer_use = Some(run);
         }
-        // Production must never turn an explicit config path with no unique
-        // enabled owner into a synthetic `unknown` policy. Legacy tests may
-        // inject a provider without a matching config, but an actual two-owner
-        // ambiguity remains forbidden even through that test seam.
-        #[cfg(test)]
-        let allow_test_override = provider_override.is_some()
-            && !config.as_ref().is_some_and(|config| {
-                config
-                    .providers
-                    .iter()
-                    .filter(|provider| {
-                        provider.enabled
-                            && provider.models.iter().any(|model| model == &thread.model)
-                    })
-                    .take(2)
-                    .count()
-                    > 1
-            });
-        #[cfg(not(test))]
-        let allow_test_override = false;
-        if config_path.is_some() && configured_provider.is_none() && !allow_test_override {
+        if config_path.is_some() && configured_provider.is_none() {
             return Err(());
         }
         let provider_name = configured_provider
@@ -1125,55 +991,23 @@ pub(crate) fn run_agent_worker_with_mcp(
         let authority_root = credential_root.clone();
         let owner = mcp_service.clone();
         let selected_provider_reader = provider_credential_reader.clone();
-        #[cfg(test)]
-        let authority_probe = worker_start_probe.clone();
-        #[cfg(test)]
-        let authority_thread = thread.id.clone();
         let owner_credential_reader: CredentialReader = Arc::new(move || {
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "authority_refresh");
             if let Some(root) = &authority_root {
                 vega_conversation::privacy::refresh_authority(&authority_database, root).map_err(|_| ())?;
             }
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "owner_read");
             let mut known = match &owner {
                 Some(service) => service.current_owner_credential_values().map_err(|_| ())?,
                 None => Vec::new(),
             };
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "provider_read");
             if let Some(reader) = &selected_provider_reader {
                 known.extend(reader()?);
             }
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "binding_read");
             if let Some(reader) = &broker_credential_reader {
                 known.extend(reader()?);
             }
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "authority_ready");
             Ok(known)
         });
         let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
-            #[cfg(test)]
-            {
-                let gate = worker_start_probe
-                    .provider_construction_gate
-                    .lock()
-                    .ok()
-                    .and_then(|mut gate| gate.take());
-                if let Some((entered, release)) = gate {
-                    entered.send(()).map_err(|_| ())?;
-                    // Elapsed time is not a release. Test panic drops the sender,
-                    // which terminates this worker without constructing a provider.
-                    release.recv().map_err(|_| ())?;
-                }
-                if let Some(provider) = provider_override.clone() {
-                    worker_start_probe.credential_stage(&thread.id, "provider_constructed");
-                    return Ok(provider);
-                }
-            }
             let provider = configured_provider.clone().ok_or(())?;
             let root = config_path
                 .as_deref()
@@ -1203,12 +1037,6 @@ pub(crate) fn run_agent_worker_with_mcp(
                         credential_exceptions.clone(),
                     ),
                 );
-            #[cfg(test)]
-            let provider = if let Some(responder) = worker_start_probe.sse_responder.clone() {
-                provider.with_test_sse_responder(move |request| responder(request))
-            } else {
-                provider
-            };
             Ok(Arc::new(provider) as Arc<dyn vega_runtime::Provider>)
         };
         let guard_provider = |provider: Arc<dyn vega_runtime::Provider>| {
@@ -1222,14 +1050,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             .build()
             .map_err(|_| ())?;
         let event_sender = sender.clone();
-        #[cfg(test)]
-        let event_probe = worker_start_probe.clone();
         let event_sink = move |event: &vega_conversation::types::ConversationEvent| {
-            #[cfg(test)]
-            if let vega_conversation::types::ConversationEvent::ToolCallRunning { call_id } = event
-            {
-                event_probe.record_tool_start(call_id);
-            }
             event_sender
                 .send(AgentUpdate::Event(event.clone()))
                 .map_err(|_| {
@@ -1548,87 +1369,5 @@ pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
         "执行已设置的循环任务。"
     } else {
         "继续推进已设置的持续目标。"
-    }
-}
-
-#[cfg(test)]
-mod reasoning_replay_tests {
-    use super::provider_replay_route_fingerprint;
-
-    #[test]
-    fn automatic_replay_provider_route_fence_hashes_exact_url_and_owner_key() {
-        let root = tempfile::tempdir().unwrap();
-        vega_store::keystore::set_key(root.path(), "owned", "credential-one").unwrap();
-        let database = root.path().join("database.sqlite");
-        let mut provider = vega_store::config::ProviderConfig {
-            api: vega_store::config::ProviderApi::ChatCompletions,
-            enabled: true,
-            name: "owned".into(),
-            base_url: "https://user:password@example.test/v1?token=query-secret".into(),
-            models: vec!["fixture-model".into()],
-            key_ref: "owned".into(),
-        };
-        let first_credential = vega_store::keystore::get_key(root.path(), "owned").unwrap();
-        let first = provider_replay_route_fingerprint(
-            &provider,
-            root.path(),
-            &first_credential,
-            &database,
-            "project-one",
-        );
-        provider.base_url = "https://user:password@example.test/v1?token=other".into();
-        assert_ne!(
-            first,
-            provider_replay_route_fingerprint(
-                &provider,
-                root.path(),
-                &first_credential,
-                &database,
-                "project-one",
-            )
-        );
-        provider.base_url = "https://user:password@example.test/v1?token=query-secret".into();
-        let revision = vega_store::keystore::revision(root.path());
-        std::fs::write(
-            root.path().join("credentials/credentials.toml"),
-            "[keys]\nowned = 'credential-two'\n",
-        )
-        .unwrap();
-        let second_credential = vega_store::keystore::get_key(root.path(), "owned").unwrap();
-        assert_eq!(vega_store::keystore::revision(root.path()), revision);
-        assert_ne!(
-            first,
-            provider_replay_route_fingerprint(
-                &provider,
-                root.path(),
-                &second_credential,
-                &database,
-                "project-one",
-            )
-        );
-        assert_ne!(
-            first,
-            provider_replay_route_fingerprint(
-                &provider,
-                root.path(),
-                &first_credential,
-                &root.path().join("other-database.sqlite"),
-                "project-one",
-            )
-        );
-        assert_ne!(
-            first,
-            provider_replay_route_fingerprint(
-                &provider,
-                root.path(),
-                &first_credential,
-                &database,
-                "project-two",
-            )
-        );
-        let rendered = format!("{first:?}");
-        for secret in ["user", "password", "query-secret", "credential-one"] {
-            assert!(!rendered.contains(secret));
-        }
     }
 }

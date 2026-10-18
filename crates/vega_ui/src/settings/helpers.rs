@@ -58,17 +58,12 @@ pub(crate) fn settings_group(colors: vega_theme::ThemeColors) -> Div {
 }
 
 pub(crate) fn settings_field(
-    id: impl Into<String>,
     label: &'static str,
     description: Option<String>,
     control: impl IntoElement,
     colors: vega_theme::ThemeColors,
 ) -> Div {
-    let id = id.into();
-    let label_id = format!("{id}-label");
-    let control_id = format!("{id}-control");
     div()
-        .debug_selector(move || id.clone())
         .min_w_0()
         .flex_shrink_0()
         .flex()
@@ -81,7 +76,6 @@ pub(crate) fn settings_field(
         .border_color(colors.border_subtle)
         .child(
             div()
-                .debug_selector(move || label_id.clone())
                 .w(px(Layout::SETTINGS_LABEL_WIDTH))
                 .max_w_full()
                 .flex_shrink_0()
@@ -102,7 +96,6 @@ pub(crate) fn settings_field(
         )
         .child(
             div()
-                .debug_selector(move || control_id.clone())
                 .flex_1()
                 .flex_basis(px(220.))
                 .min_w_0()
@@ -143,7 +136,6 @@ pub(crate) fn settings_switch(
             },
             enabled,
         )
-        .debug_selector(move || id.clone())
         .aria_label(label)
         .w(px(Layout::SETTINGS_SWITCH_WIDTH))
         .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
@@ -213,7 +205,6 @@ pub(crate) fn settings_status(
         crate::icons::Icon::Summary
     };
     div()
-        .debug_selector(|| "settings-status".into())
         .min_w_0()
         .flex_shrink_0()
         .flex()
@@ -228,7 +219,6 @@ pub(crate) fn settings_status(
         .text_color(color)
         .child(
             div()
-                .debug_selector(|| "settings-status-icon-line".into())
                 .w(px(Layout::ICON_SIZE))
                 .h(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
                 .flex_shrink_0()
@@ -237,18 +227,11 @@ pub(crate) fn settings_status(
                 .justify_center()
                 .child(
                     div()
-                        .debug_selector(|| "settings-status-icon".into())
                         .size(px(Layout::ICON_SIZE))
                         .child(crate::icons::icon(icon, color)),
                 ),
         )
-        .child(
-            div()
-                .debug_selector(|| "settings-status-text".into())
-                .min_w_0()
-                .flex_1()
-                .child(label.into()),
-        )
+        .child(div().min_w_0().flex_1().child(label.into()))
 }
 
 pub(crate) fn action_button(
@@ -474,23 +457,6 @@ pub(crate) fn provider_key_ref(existing: Option<&ProviderConfig>, name: &str, ke
             .unwrap_or_else(|| name.to_string())
     } else {
         name.to_string()
-    }
-}
-
-/// Inserts `entry` into `providers`, appending when no provider with the same
-/// name exists and replacing the existing one otherwise. Returns whether an
-/// existing entry was replaced.
-#[cfg(test)]
-pub(crate) fn upsert_provider(providers: &mut Vec<ProviderConfig>, entry: ProviderConfig) -> bool {
-    if let Some(existing) = providers
-        .iter_mut()
-        .find(|provider| provider.name == entry.name)
-    {
-        *existing = entry;
-        true
-    } else {
-        providers.push(entry);
-        false
     }
 }
 

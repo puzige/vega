@@ -31,10 +31,6 @@ pub(crate) struct ContextController {
     // reuse a UI operation id; it is never an app-level ownership fence.
     automatic: HashMap<u64, (u64, u64)>,
     primary_owner: HashMap<u64, ContextOwner>,
-    // Observes the real async service completion in app integration tests;
-    // it does not alter scheduling, projection or error handling.
-    #[cfg(test)]
-    pub(crate) last_load_succeeded: Option<bool>,
 }
 
 impl ContextController {
@@ -188,8 +184,6 @@ impl VegaWindow {
             .unwrap_or_default();
         let activity = vega_ui::sidebar::register_project_worker(&project_id, cx);
         let completion_cancel = cancel.clone();
-        #[cfg(test)]
-        let provider_override = self.agent_provider_override.clone();
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         // A dedicated thread mirrors the primary worker. In particular, a
         // blocking Tokio runtime must not occupy GPUI's cooperative executor.
@@ -198,16 +192,7 @@ impl VegaWindow {
             .spawn(move || {
                 let _activity = activity;
                 let events = run_manual_context_worker(
-                    database,
-                    config,
-                    thread_id,
-                    model,
-                    request_id,
-                    cancel,
-                    reasoning,
-                    pricing,
-                    #[cfg(test)]
-                    provider_override,
+                    database, config, thread_id, model, request_id, cancel, reasoning, pricing,
                 );
                 let _ = sender.send(events);
             });
@@ -383,10 +368,6 @@ impl VegaWindow {
         self.context_controller.load_sequence =
             self.context_controller.load_sequence.saturating_add(1);
         let sequence = self.context_controller.load_sequence;
-        #[cfg(test)]
-        {
-            self.context_controller.last_load_succeeded = None;
-        }
         let worker_owner = owner.clone();
         cx.spawn(async move |this, cx| {
             let projection = cx
@@ -418,10 +399,6 @@ impl VegaWindow {
                     || this.context_controller.load_sequence != sequence
                 {
                     return;
-                }
-                #[cfg(test)]
-                {
-                    this.context_controller.last_load_succeeded = Some(projection.is_ok());
                 }
                 match projection {
                     Ok(projection) => {
@@ -678,7 +655,6 @@ pub(crate) fn run_manual_context_worker(
     cancel: CancellationToken,
     reasoning: Option<vega_runtime::FrozenReasoning>,
     pricing: Option<vega_conversation::PricingCatalog>,
-    #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
 ) -> Result<Vec<ConversationEvent>, ()> {
     let config_path = config_path.ok_or(())?;
     let config = vega_store::config::read_from(&config_path).map_err(|_| ())?;
@@ -732,10 +708,6 @@ pub(crate) fn run_manual_context_worker(
         return Err(());
     }
     let make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
-        #[cfg(test)]
-        if let Some(provider) = provider_override {
-            return Ok(provider);
-        }
         let key =
             vega_store::keystore::get_key(config_path.parent().ok_or(())?, &configured.key_ref)
                 .map_err(|_| ())?;

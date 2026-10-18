@@ -78,10 +78,27 @@ Vega 规则为准。具体边界：
    的红线（依赖白名单、fail-closed、验收协议 §6/§7）优先级高于本技能；
    "Simplicity First" 不得作为省略 fail-closed 校验、验收证据或门禁的理由。
 3. **Surgical Changes 对应本仓纪律**：不顺手重构、不改无关行——与
-   exec-guide 的「测试断言原样」「API facade 冻结」一致；孤儿清理仅限自己的
-   变更引入的死代码。
-4. **Goal-Driven Execution 对应验收协议**：成功判据 = exec-guide §7 的验收命令
-   全绿（fmt / clippy / test / build 及任务卡规定项），并附原始输出。
+   exec-guide 的冻结测试目标/预期与 API 边界纪律一致；孤儿清理仅限自己的
+   变更引入的死代码，或当前用户明确授权的 Rust 测试清零范围。
+4. **Goal-Driven Execution 对应当前 TEST-FIRST**：遵守
+   [Rust 清零/测试先行规格](../../../docs/vega-rust-test-reset-tdd.md) 和
+   [exec-guide §7.2](../../../docs/vega-exec-guide.md#72-test-first-与有效测试当前规则)。
+   有行为变化时，先冻结验收并在生产未改时写齐测试，交 Actions 确认目标行为缺失的
+   有效 RED，再冻结测试目标/预期并写最小实现，验证同一测试 GREEN 与最新 head 门禁。
+   无关编译、依赖或 runner 故障不是 RED；最小接口缺失只标接口缺失 RED，不能称行为断言已执行。
+   实现阶段及完成后禁止补测、按实现输出反推断言、放宽/改期望、ignore 或重试换绿；
+   新需求/遗漏边界/新 Bug 先停止本轮、记录验收变化并重新先测后修。测试错误/接线修正
+   先留证审查，不得改变验收含义。测试须验证稳定边界的行为/业务/安全结果，不能只查源码、
+   mock 调用、镜像算法或内部字段覆盖率；调用次数仅在本身属于契约且结合结果/终态时有效。
+   mock 不替代被测业务/安全决策；新测试用行为命名，issue/task 编号只留文档。
+   纯文档/格式无行为变化不强加测试，纯重构保留已有先行测试；本次清零不人为造测试/RED，
+   保留 Python 发布/组件准备/delta 测试及 fixture，历史报告不是当前验证。
+   成功判据还须附 RED 基线/测试补丁/失败原因、冻结目标、后续实现顺序与同一测试 GREEN
+   的可访问原始证据，squash 后仍可审查；最终绿色 CI 不自动强制或证明 TDD。
+   本地只做低 CPU 静态/格式检查，不运行 Vega、不编译/构建/打包/测试；RED/GREEN、Clippy
+   和完整门禁只交 Actions，打包仅云端发布，不因旧任务授权扩大本地权限。实际 PR gate 保留
+   fmt / 全目标 Clippy / 三组 Python 检查 / Nextest，未运行写待 CI，缺失计数写未取得；
+   日志/摘要中的 `no Rust tests` 表示 0 发现/0 执行，不是 Rust 测试通过。
 5. **遇阻即停**：本技能 "ask when unclear" 在 Vega 落地为 exec-guide §6 的
    `[BLOCKED]` 上报格式，不自创方案绕过。
 6. **代码禁止任何注释**（2026-09-23 用户裁决，exec-guide §3/§4）：`///`、`//!`、

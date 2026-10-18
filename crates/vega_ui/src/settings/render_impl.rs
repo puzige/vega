@@ -190,12 +190,7 @@ impl SettingsView {
                     .flex_col()
                     .min_w_0()
                     .flex_1()
-                    .child(
-                        div()
-                            .debug_selector(move || format!("pricing-model-name-{index}"))
-                            .min_w_0()
-                            .child(entry.model),
-                    )
+                    .child(div().min_w_0().child(entry.model))
                     .child(
                         div()
                             .text_size(px(Typography::BODY))
@@ -262,7 +257,6 @@ impl SettingsView {
             .when_some(editor.model.clone(), |form, model| {
                 form.child(
                     div()
-                        .debug_selector(|| "pricing-editor-model".into())
                         .min_w_0()
                         .mb_3()
                         .font_weight(Typography::HEADING_CARD_WEIGHT)
@@ -271,7 +265,6 @@ impl SettingsView {
             })
             .when(editor.kind == PricingEditorKind::AddCustom, |form| {
                 form.child(settings_field(
-                    "pricing-model",
                     "模型 ID",
                     None,
                     self.pricing_model_input.clone(),
@@ -294,13 +287,7 @@ impl SettingsView {
                             "高峰缓存读取",
                             "高峰缓存写入",
                         ][index];
-                        settings_field(
-                            format!("pricing-rate-{index}"),
-                            label,
-                            Some("USD / 1M tokens".into()),
-                            input.clone(),
-                            colors,
-                        )
+                        settings_field(label, Some("USD / 1M tokens".into()), input.clone(), colors)
                     }),
             )
             .when(show_peak, |form| {
@@ -445,7 +432,6 @@ impl SettingsView {
                         settings_action_chrome(colors)
                             .id(id)
                             .interaction_surface(if self.provider_management.form_api == api { colors.bg_active } else { colors.bg_elevated }, colors.bg_hover, colors.bg_active, !self.provider_management.saving)
-                            .debug_selector(move || id.into())
                             .cursor_pointer()
                             .track_focus(&self.provider_api_focuses[index])
                             .tab_stop(true)
@@ -481,12 +467,11 @@ impl SettingsView {
                     }),
                 ),
             )
-            .child(settings_field("provider-name", "名称", None, self.name_input.clone(), colors))
-            .child(settings_field("provider-url", "服务地址", None, self.base_url_input.clone(), colors))
-            .child(settings_field("provider-models", "模型 ID", None,
+            .child(settings_field("名称", None, self.name_input.clone(), colors))
+            .child(settings_field("服务地址", None, self.base_url_input.clone(), colors))
+            .child(settings_field("模型 ID", None,
                 div()
                     .id("provider-models-input-frame")
-                    .debug_selector(|| "provider-models-input-frame".to_string())
                     .w_full()
                     .h(models_height)
                     .flex_shrink_0()
@@ -498,7 +483,6 @@ impl SettingsView {
                     .child(self.models_input.clone()), colors))
             .child(
                 div()
-                    .debug_selector(|| "provider-models-input-help".to_string())
                     .text_color(colors.text_tertiary)
                     .text_size(px(Typography::BODY))
                     .child(format!(
@@ -508,13 +492,12 @@ impl SettingsView {
             )
             .child(div().text_color(colors.text_tertiary).text_size(px(Typography::BODY))
                 .child("Responses 请求摘要；需要兼容的 reasoning 配置，不支持原始思考回传或 Zhipu thinking 开关。"))
-            .child(settings_field("provider-key", "API Key", Some("更新时留空以保留现有密钥".into()), self.key_input.clone(), colors))
+            .child(settings_field("API Key", Some("更新时留空以保留现有密钥".into()), self.key_input.clone(), colors))
 
             .child(
                 settings_action_chrome(colors)
                     .id("provider-save")
                     .interaction_surface(button_bg, colors.brand_primary_strong, colors.brand_primary_strong, submittable)
-                    .debug_selector(|| "provider-save".into())
                     .key_context("ProviderAction")
                     .track_focus(&self.provider_save_focus)
                     .tab_stop(true)
@@ -615,43 +598,26 @@ impl SettingsView {
             .gap(px(Layout::SETTINGS_SECTION_GAP))
             .child(
                 settings_group(colors)
-                    .debug_selector(|| "settings-general-appearance".into())
                     .child(section_title("外观与布局", colors.text_primary))
-                    .child(settings_field(
-                        "settings-theme",
-                        "主题",
-                        None,
-                        themes,
-                        colors,
-                    ))
-                    .child(settings_field(
-                        "settings-sidebar",
-                        "侧栏",
-                        None,
-                        sidebar,
-                        colors,
-                    )),
+                    .child(settings_field("主题", None, themes, colors))
+                    .child(settings_field("侧栏", None, sidebar, colors)),
             )
             .child(
                 settings_group(colors)
-                    .debug_selector(|| "settings-general-defaults".into())
                     .child(section_title("默认项", colors.text_primary))
                     .child(settings_field(
-                        "settings-permission",
                         "权限模式",
                         None,
                         self.render_mode_selector(cx),
                         colors,
                     ))
                     .child(settings_field(
-                        "settings-model",
                         "模型",
                         None,
                         self.render_model_selector(cx),
                         colors,
                     ))
                     .child(settings_field(
-                        "settings-running-message",
                         "运行中发送消息",
                         None,
                         self.render_running_message_behavior(cx),
@@ -679,10 +645,8 @@ impl SettingsView {
                             PendingMessageBehavior::Steer => "补充要求或调整当前任务方向",
                         };
                         let id = format!("settings-running-message-{}", behavior.as_str());
-                        let selector = id.clone();
                         settings_action_chrome(colors)
                             .id(id)
-                            .debug_selector(move || selector.clone())
                             .aria_label(if selected {
                                 format!("{label}，已选中")
                             } else {
@@ -710,17 +674,10 @@ impl SettingsView {
                             .tooltip(move |_, cx| crate::icons::tooltip(description, cx))
                             .child(label)
                             .child(div().size(px(Layout::ICON_SIZE)).when(selected, |element| {
-                                element
-                                    .debug_selector(move || {
-                                        format!(
-                                            "settings-running-message-{}-selected",
-                                            behavior.as_str()
-                                        )
-                                    })
-                                    .child(crate::icons::icon(
-                                        crate::icons::Icon::Check,
-                                        colors.text_primary,
-                                    ))
+                                element.child(crate::icons::icon(
+                                    crate::icons::Icon::Check,
+                                    colors.text_primary,
+                                ))
                             }))
                             .on_mouse_up(
                                 MouseButton::Left,
@@ -765,7 +722,6 @@ impl SettingsView {
                         colors.bg_active,
                         true,
                     )
-                    .debug_selector(|| "settings-mode-picker".into())
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(move |style| style.border_color(colors.accent))
@@ -819,7 +775,6 @@ impl SettingsView {
                             colors.bg_active,
                             true,
                         )
-                        .debug_selector(move || format!("settings-permission-option-{mode}"))
                         .focusable()
                         .tab_stop(true)
                         .border_1()
@@ -893,7 +848,6 @@ impl SettingsView {
                         colors.bg_active,
                         true,
                     )
-                    .debug_selector(|| "settings-model-picker".into())
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(move |style| style.border_color(colors.accent))
@@ -1017,24 +971,24 @@ impl Render for SettingsView {
             self.config.ui.sessions_collapsed = sessions.0;
         }
         let colors = theme(cx).colors;
-        let (page_title, page_selector) = match self.section {
-            0 => ("服务提供方", "settings-page-providers"),
-            1 => ("通用", "settings-page-general"),
-            2 => ("服务提供方", "settings-page-reasoning"),
-            3 => ("服务提供方", "settings-page-pricing"),
-            4 => ("用量", "settings-page-usage"),
-            5 => ("MCP", "settings-page-mcp"),
-            6 => ("Skills", "settings-page-skills"),
-            7 => ("Agents", "settings-page-agents"),
-            _ => ("用量", "settings-page-usage"),
+        let page_title = match self.section {
+            0 => "服务提供方",
+            1 => "通用",
+            2 => "服务提供方",
+            3 => "服务提供方",
+            4 => "用量",
+            5 => "MCP",
+            6 => "Skills",
+            7 => "Agents",
+            _ => "用量",
         };
         let navigation = [
-            (1, "通用", "settings-nav-general"),
-            (0, "服务提供方", "settings-nav-providers"),
-            (5, "MCP", "settings-nav-mcp"),
-            (7, "Agents", "settings-nav-agents"),
-            (6, "Skills", "settings-nav-skills"),
-            (4, "用量", "settings-nav-usage"),
+            (1, "通用"),
+            (0, "服务提供方"),
+            (5, "MCP"),
+            (7, "Agents"),
+            (6, "Skills"),
+            (4, "用量"),
         ];
         div()
             .id("settings-page")
@@ -1076,7 +1030,6 @@ impl Render for SettingsView {
             .child(
                 div()
                     .id("settings-navigation")
-                    .debug_selector(|| "settings-navigation".into())
                     .w(px(Layout::SETTINGS_NAV_WIDTH))
                     .h_full()
                     .flex_shrink_0()
@@ -1091,7 +1044,6 @@ impl Render for SettingsView {
                         div()
                             .id("settings-back")
                             .interactive(colors, true, false)
-                            .debug_selector(|| "settings-back".into())
                             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                             .flex()
                             .items_center()
@@ -1129,11 +1081,10 @@ impl Render for SettingsView {
                             .child("返回应用"),
                     )
                     .child(div().h(px(24.)).flex_shrink_0())
-                    .children(navigation.into_iter().map(|(index, label, selector)| {
+                    .children(navigation.into_iter().map(|(index, label)| {
                         div()
                             .id(("settings-section", index))
                             .interactive(colors, true, self.navigation_section() == index)
-                            .debug_selector(move || selector.into())
                             .track_focus(&self.section_focuses[index])
                             .tab_stop(true)
                             .focus_visible(move |style| style.border_color(colors.accent))
@@ -1211,7 +1162,6 @@ impl Render for SettingsView {
                     .child(
                         div()
                             .id("settings-content-column")
-                            .debug_selector(|| "settings-content-column".into())
                             .w_full()
                             .max_w(px(Layout::SETTINGS_CONTENT_MAX_WIDTH))
                             .h_full()
@@ -1222,7 +1172,6 @@ impl Render for SettingsView {
                             .child(
                                 div()
                                     .flex_shrink_0()
-                                    .debug_selector(move || page_selector.into())
                                     .text_size(px(Typography::SETTINGS_TITLE))
                                     .font_weight(Typography::HEADING_PAGE_WEIGHT)
                                     .child(page_title),
@@ -1244,7 +1193,6 @@ impl Render for SettingsView {
                             .child(
                                 div()
                                     .id(("settings-section-content", self.section))
-                                    .debug_selector(|| "settings-section-content".into())
                                     .when_some(
                                         self.section_scrolls.get(self.section),
                                         |body, scroll| body.track_scroll(scroll),

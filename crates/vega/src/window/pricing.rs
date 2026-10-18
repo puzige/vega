@@ -224,23 +224,11 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         let (sender, receiver) = mpsc::sync_channel(1);
-        #[cfg(test)]
-        let drop_result = std::mem::replace(&mut self.pricing_drop_next_worker_result, false);
-        #[cfg(test)]
-        let worker_gate = self.pricing_next_worker_gate.take();
-        #[cfg(not(test))]
-        let drop_result = false;
         let spawned = std::thread::Builder::new()
             .name("vega-pricing".to_string())
             .spawn(move || {
-                #[cfg(test)]
-                if let Some(gate) = worker_gate {
-                    gate.wait();
-                }
                 let result = worker();
-                if !drop_result {
-                    let _ = sender.send(result);
-                }
+                let _ = sender.send(result);
             });
         if spawned.is_err() {
             self.apply_pricing_worker_not_started(operation, kind, cx);

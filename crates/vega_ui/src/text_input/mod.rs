@@ -77,11 +77,7 @@ pub struct TextInput {
     editor_scroll: Option<(Range<usize>, u64, usize)>,
     scrollable_editor: bool,
     scroll_fade_on_base: bool,
-    #[cfg(test)]
-    painted_fade_metrics: Option<crate::scroll_edge_fade::ScrollFadeMetrics>,
     total_visual_rows: usize,
-    #[cfg(test)]
-    painted_cursor_bounds: Option<Bounds<Pixels>>,
 }
 
 mod element;
@@ -100,6 +96,3 @@ impl TextInput {
         self
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -231,11 +231,6 @@ impl ThinkingBlock {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn source_text(&self) -> String {
-        self.visible_text().to_owned()
-    }
-
     pub(crate) fn has_source_text(&self) -> bool {
         self.source_copy.has_text()
     }
@@ -277,11 +272,6 @@ impl ThinkingBlock {
 
     fn render_source(card: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
         card.update(cx, |card, cx| card.render_body(window, cx))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_source_copy(&self) -> MessageCopy {
-        self.source_copy.clone()
     }
 
     fn new(cx: &mut Context<Self>) -> Self {
@@ -470,7 +460,6 @@ impl Render for ThinkingBlock {
             .flex()
             .flex_col()
             .gap(px(Layout::PROCESS_ITEM_GAP))
-            .debug_selector(|| "thinking-block".into())
             .on_action(cx.listener(|this, _: &CopySelectedText, _, cx| {
                 if this.source_copy.has_selected_text() {
                     this.source_copy.copy_selected_text(cx);
@@ -488,7 +477,6 @@ impl Render for ThinkingBlock {
                     .when(can_expand, |row| row.aria_expanded(self.expanded))
                     .tab_stop(can_expand)
                     .focus_visible(move |row| row.bg(colors.bg_hover))
-                    .debug_selector(|| "thinking-toggle".into())
                     .aria_label(if can_expand {
                         format!("{}, expand or collapse thinking", title)
                     } else {
@@ -518,7 +506,6 @@ impl Render for ThinkingBlock {
                     }))
                     .child(
                         div()
-                            .debug_selector(|| "thinking-icon".into())
                             .size(px(Layout::ICON_SIZE))
                             .flex_shrink_0()
                             .flex()
@@ -529,21 +516,15 @@ impl Render for ThinkingBlock {
                                 colors.conversation_tool,
                             )),
                     )
-                    .child(
-                        div()
-                            .debug_selector(|| "thinking-title".into())
-                            .min_w_0()
-                            .flex_shrink(1.)
-                            .truncate()
-                            .child(if let Some(epoch) = self.shimmer_epoch {
-                                shimmer::text(title.clone(), epoch, window, cx)
-                            } else {
-                                div().child(title).into_any_element()
-                            }),
-                    )
+                    .child(div().min_w_0().flex_shrink(1.).truncate().child(
+                        if let Some(epoch) = self.shimmer_epoch {
+                            shimmer::text(title.clone(), epoch, window, cx)
+                        } else {
+                            div().child(title).into_any_element()
+                        },
+                    ))
                     .child(crate::disclosure::chevron(
                         format!("thinking-disclosure-{}", cx.entity_id()).into(),
-                        "thinking-chevron".into(),
                         &self.focus,
                         self.expanded,
                         self.has_source_text(),
@@ -564,7 +545,6 @@ impl Render for ThinkingBlock {
             .when(self.truncated, |block| {
                 block.child(
                     div()
-                        .debug_selector(|| "thinking-truncated".into())
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
                         .child("Earlier thinking omitted"),

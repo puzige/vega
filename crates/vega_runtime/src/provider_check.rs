@@ -266,57 +266,5 @@ async fn send_request(
     client: &reqwest::Client,
     request: reqwest::Request,
 ) -> Result<reqwest::Response, reqwest::Error> {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let _ = client;
-        let transport = mock::CURRENT
-            .try_with(Clone::clone)
-            .expect("Provider check test request requires a registered transport");
-        (transport.0)(request).await
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        client.execute(request).await
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod mock {
-    use futures::future::BoxFuture;
-    use std::sync::Arc;
-
-    type Handler = Arc<
-        dyn Fn(reqwest::Request) -> BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>
-            + Send
-            + Sync,
-    >;
-    #[derive(Clone)]
-    pub struct Transport(pub Handler);
-    impl std::fmt::Debug for Transport {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("TestTransport")
-        }
-    }
-    tokio::task_local! { pub(super) static CURRENT: Transport; }
-    impl Transport {
-        pub async fn scope<F: std::future::Future>(&self, future: F) -> F::Output {
-            CURRENT.scope(self.clone(), future).await
-        }
-    }
-    pub fn response(status: u16, headers: &str, body: Vec<u8>) -> reqwest::Response {
-        let mut response = http::Response::builder().status(status);
-        for line in headers.lines().filter(|line| !line.is_empty()) {
-            let (name, value) = line.split_once(':').expect("fixture header");
-            response = response.header(name, value.trim());
-        }
-        if headers.contains("Transfer-Encoding: chunked") {
-            let chunks = futures::stream::once(async move { Ok::<_, std::io::Error>(body) });
-            response
-                .body(reqwest::Body::wrap_stream(chunks))
-                .expect("fixture body")
-                .into()
-        } else {
-            response.body(body).expect("fixture body").into()
-        }
-    }
+    { client.execute(request).await }
 }

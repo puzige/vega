@@ -60,7 +60,6 @@ pub(crate) fn render_entry_with_selection(
 
 pub(crate) fn render_stream_entry(
     entry: &StreamEntry,
-    index: usize,
     suppress_run_notices: bool,
     process_top: f32,
     window: &mut Window,
@@ -91,14 +90,7 @@ pub(crate) fn render_stream_entry(
         .min_w_0()
         .flex()
         .flex_col()
-        .child(
-            div()
-                .debug_selector(move || format!("assistant-body-{index}"))
-                .w_full()
-                .min_w_0()
-                .flex_shrink_0()
-                .child(body),
-        )
+        .child(div().w_full().min_w_0().flex_shrink_0().child(body))
         .into_any_element()
 }
 
@@ -139,7 +131,6 @@ fn render_entry_internal(
             }
             if record.status == vega_conversation::types::ContextCompactionStatus::Failed {
                 return div()
-                    .debug_selector(|| "context-compaction-row".into())
                     .w_full()
                     .min_w_0()
                     .child(plain_error_notice(
@@ -152,7 +143,6 @@ fn render_entry_internal(
             let restored = *restored;
             let label = context_compaction_label(record.status, record.failure, restored);
             div()
-                .debug_selector(|| "context-compaction-row".into())
                 .w_full()
                 .flex_shrink_0()
                 .min_w_0()
@@ -165,7 +155,6 @@ fn render_entry_internal(
                 .text_color(color)
                 .child(
                     div()
-                        .debug_selector(|| "context-compaction-icon-slot".into())
                         .w(px(Layout::ICON_SIZE))
                         .h(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
                         .flex()
@@ -173,20 +162,7 @@ fn render_entry_internal(
                         .flex_shrink_0()
                         .child(icon(glyph, color)),
                 )
-                .child(
-                    div()
-                        .debug_selector(move || {
-                            if restored {
-                                "context-compaction-restored".into()
-                            } else {
-                                "context-compaction-live".into()
-                            }
-                        })
-                        .min_w_0()
-                        .flex_1()
-                        .whitespace_normal()
-                        .child(label),
-                )
+                .child(div().min_w_0().flex_1().whitespace_normal().child(label))
                 .into_any_element()
         }
         StreamEntry::User { lines, copy } => {
@@ -231,20 +207,12 @@ fn render_entry_internal(
         StreamEntry::Tool { card } => {
             let card = card.clone();
             process_surface(&colors)
-                .debug_selector(|| "standalone-tool-process".into())
-                .child(ToolCard::render(
-                    card,
-                    "tool-activity-single-row".to_string(),
-                    false,
-                    window,
-                    cx,
-                ))
+                .child(ToolCard::render(card, false, window, cx))
                 .into_any_element()
         }
         StreamEntry::ToolGroup { group } => {
             let group = group.clone();
             process_surface(&colors)
-                .debug_selector(|| "standalone-tool-group-process".into())
                 .child(ToolActivityGroup::render(group, window, cx))
                 .into_any_element()
         }
@@ -268,7 +236,6 @@ fn render_entry_internal(
                 .pb_2()
                 .child(
                     div()
-                        .debug_selector(|| "conversation-permission-card".into())
                         .w_full()
                         .rounded(px(Layout::STATUS_RADIUS))
                         .border_1()
@@ -296,12 +263,10 @@ fn render_entry_internal(
             div().h_0().into_any_element()
         }
         StreamEntry::Summary { card } => match card.read(cx).summary().outcome {
-            vega_conversation::types::TaskSummaryOutcome::Completed => div()
-                .h_0()
-                .debug_selector(|| "completed-task-summary-hidden".to_string())
-                .into_any_element(),
+            vega_conversation::types::TaskSummaryOutcome::Completed => {
+                div().h_0().into_any_element()
+            }
             outcome => div()
-                .debug_selector(|| "task-outcome-status".to_string())
                 .py_1()
                 .child(plain_error_notice(
                     if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
@@ -341,7 +306,6 @@ fn render_entry_internal(
             };
             let digest = activation.content_sha256.get(..12).unwrap_or("invalid");
             div()
-                .debug_selector(|| "history-skill-provenance".to_string())
                 .py_1()
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_secondary)
@@ -390,7 +354,6 @@ pub(crate) fn markdown_item(
         .map_or(0, |line| line.block_id);
     let id_prefix = id_prefix.to_owned();
     div()
-        .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
         .pt(px(Layout::CONVERSATION_BODY_TOP))
@@ -403,18 +366,10 @@ pub(crate) fn markdown_item(
                 &format!("{id_prefix}-markdown-{message_id}-line-{index}"),
             )
         }))
-        .children(failure.map(|reason| {
-            div()
-                .debug_selector(|| "assistant-run-failure".to_string())
-                .child(plain_error_notice(reason.message(), colors.danger))
-        }))
+        .children(
+            failure.map(|reason| div().child(plain_error_notice(reason.message(), colors.danger))),
+        )
         .into_any_element()
-}
-
-#[cfg(test)]
-thread_local! {
-    // Observe production text layouts without changing measurement or paint.
-    pub(super) static USER_TEXT_LAYOUTS: std::cell::RefCell<Vec<gpui_kit::TextLayout>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 pub(super) fn status_notice(message: String, color: Rgba, colors: &ThemeColors) -> AnyElement {
@@ -442,13 +397,6 @@ pub(super) fn status_notice_with_icon(
         .text_color(color)
         .child(
             div()
-                .debug_selector(move || {
-                    if icon_kind == Icon::Wifi {
-                        "assistant-retry-wifi-icon".into()
-                    } else {
-                        "conversation-status-icon".into()
-                    }
-                })
                 .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
                     - Layout::ICON_SIZE)
                     / 2.0))
@@ -459,21 +407,12 @@ pub(super) fn status_notice_with_icon(
                 .justify_center()
                 .child(icon(icon_kind, color)),
         )
-        .child(
-            div()
-                .debug_selector(|| "conversation-status-text".into())
-                .min_w_0()
-                .flex_1()
-                .child(message),
-        )
+        .child(div().min_w_0().flex_1().child(message))
         .into_any_element()
 }
 
 pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> AnyElement {
-    #[cfg(test)]
-    USER_TEXT_LAYOUTS.with_borrow_mut(Vec::clear);
     let mut body = div()
-        .debug_selector(|| "user-message-bubble".into())
         .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
         .bg(colors.conversation_bubble)
         .rounded(px(Layout::USER_MESSAGE_RADIUS))
@@ -498,8 +437,6 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
             body = body.child(div().h(user_line_height()));
         } else {
             let text = block_text(&line.spans, user_body_style(colors), colors);
-            #[cfg(test)]
-            USER_TEXT_LAYOUTS.with_borrow_mut(|layouts| layouts.push(text.layout().clone()));
             body = body.child(super::inline_code::interactive_styled_text(
                 text,
                 link_ranges(&line.spans),
@@ -510,7 +447,6 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
     div()
         .w_full()
         .flex_shrink_0()
-        .debug_selector(|| "user-message".into())
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
         .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
@@ -536,7 +472,6 @@ fn selectable_user_message(
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
     let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
     let mut body = div()
-        .debug_selector(|| "user-message-bubble".into())
         .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
         .bg(colors.conversation_bubble)
         .rounded(px(Layout::USER_MESSAGE_RADIUS))
@@ -573,7 +508,6 @@ fn selectable_user_message(
     let body = div()
         .w_full()
         .flex_shrink_0()
-        .debug_selector(|| "user-message".into())
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
         .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
@@ -594,7 +528,6 @@ fn selectable_markdown_message(
     cx: &mut App,
 ) -> AnyElement {
     div()
-        .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
         .pt(px(Layout::CONVERSATION_BODY_TOP))
@@ -603,11 +536,9 @@ fn selectable_markdown_message(
         .child(selectable_markdown_content(
             model, copy, focus, colors, false, window, cx,
         ))
-        .children(failure.map(|reason| {
-            div()
-                .debug_selector(|| "assistant-run-failure".to_string())
-                .child(plain_error_notice(reason.message(), colors.danger))
-        }))
+        .children(
+            failure.map(|reason| div().child(plain_error_notice(reason.message(), colors.danger))),
+        )
         .into_any_element()
 }
 
@@ -685,7 +616,6 @@ fn markdown_blocks(
             }
         }
         let body = div()
-            .debug_selector(move || format!("markdown-block-{start}"))
             .w_full()
             .min_w_0()
             .flex_shrink_0()
@@ -699,7 +629,6 @@ fn markdown_blocks(
                     .id(gpui_kit::SharedString::from(format!(
                         "markdown-code-{block_id}-{start}"
                     )))
-                    .debug_selector(move || format!("markdown-code-{start}"))
                     .w_full()
                     .min_w_0()
                     .overflow_x_scroll()
@@ -999,9 +928,6 @@ fn render_table_selectable(
             );
             row = row.child(
                 div()
-                    .debug_selector(move || {
-                        format!("markdown-table-{block_id}-{ordinal}-{row_index}-{column}")
-                    })
                     .flex_basis(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH))
                     .flex_grow(weights[column])
                     .flex_shrink_0()
@@ -1018,7 +944,6 @@ fn render_table_selectable(
         .id(gpui_kit::SharedString::from(format!(
             "{id_prefix}-markdown-table-{block_id}-{ordinal}"
         )))
-        .debug_selector(move || format!("markdown-table-{block_id}-{ordinal}"))
         .w_full()
         .min_w_0()
         .flex_shrink_0()
@@ -1328,9 +1253,6 @@ fn render_table(
             };
             row = row.child(
                 div()
-                    .debug_selector(move || {
-                        format!("markdown-table-{block_id}-{ordinal}-{row_index}-{column}")
-                    })
                     .flex_basis(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH))
                     .flex_grow(weights[column])
                     .flex_shrink_0()
@@ -1352,7 +1274,6 @@ fn render_table(
         .id(gpui_kit::SharedString::from(format!(
             "{id_prefix}-markdown-table-{block_id}-{ordinal}"
         )))
-        .debug_selector(move || format!("markdown-table-{block_id}-{ordinal}"))
         .w_full()
         .min_w_0()
         .flex_shrink_0()
@@ -1434,14 +1355,6 @@ fn message_with_copy(
                         move |_, _, cx| source.copy(cx),
                     )
                     .id(("message-copy", id))
-                    .debug_selector(move || {
-                        if user {
-                            "message-copy-user"
-                        } else {
-                            "message-copy-assistant"
-                        }
-                        .into()
-                    })
                     .opacity(0.)
                     .group_hover(group, |style| style.opacity(1.))
                     .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
@@ -1452,7 +1365,6 @@ fn message_with_copy(
 
 pub(super) fn plain_error_notice(message: String, color: Rgba) -> AnyElement {
     div()
-        .debug_selector(|| "conversation-error-text".into())
         .w_full()
         .min_w_0()
         .text_size(px(Typography::BODY))

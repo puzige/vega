@@ -18,6 +18,8 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ## 状态
 
+当前测试政策见 [Rust 清零与测试先行](docs/vega-rust-test-reset-tdd.md)（[执行规则](docs/vega-exec-guide.md#72-test-first-与有效测试当前规则)）；以下测试数量与本地验证结果保留为历史记录，不代表清零后的现状或本地执行授权。
+
 **2026-09-05 本地 review 更新**：[当前交付与待办](docs/vega-review-current-status.md) 是本轮入口。模型选择、UI 翻新、受信 Git、权限确认、Thinking、@file、Diff 刷新及 Provider/models 表单已本地集成。最新完整功能测试为 898 通过 / 0 失败 / 1 忽略，严格clippy/build/fmt通过。共享worker计数已修复；Astra随后修复了已排队结果被超时检查遗漏的确定性竞态，Git相关149/149及最终build通过；历史Diff/Artifact失败与该竞态的关联未证实，旧证据保留。Thinking 的独立配置原生保存、重启保持与深色显示已验收，不能据此宣称 Phase 1 完成。UI 参考本地 Zcode，性能测试按用户最新要求延期。以下 Sprint 状态保留历史验收边界。
 
 📋 **（脚手架）、（侧边栏 & 项目模型）、（流式会话渲染）、（Runtime 核心）、（写工具、权限门禁与三模式）、（Diff 审阅 & 产物）已完成并验收；（Token 经济：定价目录、API 校准、流式计数与任务成本汇总）已完成自动化/Mock 验收（mock 账单零误差；真实账单 dogfood 为 `real provider/billing pending`）；（打磨 & 里程碑：性能埋点真值化、分页水合、Stop/Resume、P0 收口、1000 行重构）已收口为 `engineering fixture passed`——性能 gate（P7 首帧 / P8 空闲 RSS）按  冻结基线如实 `performance gate failed`，与  虚拟化、 调优一并 **deferred-to-final-optimization**（期末统一优化批，主人决策 2026-08-31）**。真实账单 <5%、ProMotion 120fps、真实仓库任务、7 天 dogfood 为 `human/hardware pending`，由  人类收口。真实 API/dogfood、人工 UI 与未达性能项边界见各 Sprint 验收报告。全部设计文档在 [`docs/`](docs/)：

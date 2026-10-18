@@ -88,16 +88,6 @@ impl ProjectBranchService {
         self.shared.wake.notify_one();
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn has_completion_for_test(&self) -> bool {
-        self.shared
-            .mailbox
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .completion
-            .is_some()
-    }
-
     /// Takes the newest completion without waiting for filesystem work.
     pub fn take_completion(&self) -> Option<ProjectBranchCompletion> {
         self.shared
@@ -302,6 +292,3 @@ fn parse_head(raw: &str) -> io::Result<ProjectBranchState> {
     }
     Err(invalid())
 }
-
-#[cfg(test)]
-mod tests;

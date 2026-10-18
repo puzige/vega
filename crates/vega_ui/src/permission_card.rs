@@ -174,33 +174,6 @@ impl PermissionCard {
         (&self.prompt.tool, &self.prompt.display_target)
     }
 
-    /// Content rendered by the card, used by leak-focused tests.
-    pub fn visible_text(&self) -> String {
-        let mut text = format!(
-            "Permission required {} {}",
-            self.prompt.display_tool(),
-            self.prompt.display_target
-        );
-        if let Some(reason) = &self.prompt.danger_reason {
-            text.push(' ');
-            text.push_str(reason);
-            text.push_str(
-                " Always allow still requires confirmation for future dangerous commands",
-            );
-        }
-        if let Some(options) = &self.prompt.acp_options {
-            for option in options {
-                text.push(' ');
-                text.push_str(&option.name);
-            }
-        } else if self.prompt.external {
-            text.push_str(" Allow once Reject");
-        } else {
-            text.push_str(" Allow once Always allow Reject");
-        }
-        text
-    }
-
     /// Whether another path already closed the first-wins latch.
     pub fn is_resolved(&self) -> bool {
         self.resolved || self.lease.as_ref().is_none_or(PermissionLease::is_resolved)
@@ -461,14 +434,12 @@ impl PermissionCard {
                 format!("Permission required · {}", card_ref.prompt.display_tool())
             };
             return container
-                .debug_selector(|| "permission-card-heading".into())
                 .items_start()
                 .text_size(px(Typography::HEADING_CARD))
                 .font_weight(Typography::HEADING_CARD_WEIGHT)
                 .text_color(color)
                 .child(
                     div()
-                        .debug_selector(|| "permission-card-icon".into())
                         .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
                             - Layout::ICON_SIZE)
                             / 2.0))
@@ -479,13 +450,7 @@ impl PermissionCard {
                         .justify_center()
                         .child(crate::icons::icon(crate::icons::Icon::Warning, color)),
                 )
-                .child(
-                    div()
-                        .debug_selector(|| "permission-card-label".into())
-                        .min_w_0()
-                        .flex_1()
-                        .child(label),
-                )
+                .child(div().min_w_0().flex_1().child(label))
                 .into_any_element();
         }
         let command_end = 1 + card_ref.prompt.command_rows.len();
@@ -662,7 +627,6 @@ fn permission_button(
     let focused = focus.is_focused(window);
     let button = div()
         .id(gpui_kit::SharedString::from(id))
-        .debug_selector(|| "permission-action".into())
         .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
         .flex()
         .items_center()
@@ -696,303 +660,5 @@ fn permission_button(
             .into_any_element()
     } else {
         button.interactive(colors, true, false).into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::future::Future;
-    use std::pin::Pin;
-
-    use gpui_kit::{Render, TestAppContext, WindowHandle, div};
-    use tokio_util::sync::CancellationToken;
-    use vega_conversation::agent::{PermissionHook, PermissionQueue, PermissionQueueListener};
-    use vega_theme::Theme;
-
-    use super::*;
-
-    struct Harness {
-        card: Entity<PermissionCard>,
-    }
-
-    type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
-
-    impl Render for Harness {
-        fn render(
-            &mut self,
-            window: &mut Window,
-            cx: &mut gpui_kit::Context<Self>,
-        ) -> impl IntoElement {
-            let rows = self.card.read(cx).row_count();
-            div().flex().flex_col().children(
-                (0..rows).map(|row| PermissionCard::render_row(self.card.clone(), row, window, cx)),
-            )
-        }
-    }
-
-    fn init_test(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            cx.set_global(Theme::light());
-            crate::init(cx);
-        });
-    }
-
-    fn open_card(
-        cx: &mut TestAppContext,
-        danger: bool,
-        target: &str,
-    ) -> (
-        WindowHandle<Harness>,
-        Entity<PermissionCard>,
-        DecisionFuture,
-        PermissionQueueListener,
-    ) {
-        let queue = PermissionQueue::new();
-        let listener = queue.subscribe();
-        let request = PermissionRequest {
-            call_id: "SECRET_CALL_ID".into(),
-            tool: "bash".into(),
-            display_target: target.into(),
-            danger_rule_id: danger.then(|| "danger.git_force_push".into()),
-            danger_reason: danger.then(|| "强制推送可能覆盖远端历史".into()),
-            external: None,
-            acp_options: None,
-        };
-        let future = queue.request(request, CancellationToken::new());
-        let future: DecisionFuture =
-            Box::pin(async move { future.await.unwrap_or(PermissionDecision::Timeout) });
-        let (request, lease) = queue.take_pending().unwrap().into_parts().unwrap();
-        let card = cx.new(|cx| PermissionCard::new(&request, lease, cx));
-        let root_card = card.clone();
-        let window = cx.update(|cx| {
-            cx.open_window(Default::default(), move |_, cx| {
-                cx.new(|_| Harness { card: root_card })
-            })
-            .unwrap()
-        });
-        cx.run_until_parked();
-        (window, card, future, listener)
-    }
-
-    fn focused(
-        window: WindowHandle<Harness>,
-        card: &Entity<PermissionCard>,
-        cx: &mut TestAppContext,
-    ) -> PermissionFocus {
-        window
-            .update(cx, |_, window, cx| {
-                let card = card.read(cx);
-                if card.once_focus.is_focused(window) {
-                    PermissionFocus::AllowOnce
-                } else if card.always_focus.is_focused(window) {
-                    PermissionFocus::Always
-                } else if card.reject_focus.is_focused(window) {
-                    PermissionFocus::Reject
-                } else {
-                    PermissionFocus::Note
-                }
-            })
-            .unwrap()
-    }
-
-    #[gpui_kit::test]
-    async fn ordinary_focus_note_and_keyboard_decisions(cx: &mut TestAppContext) {
-        init_test(cx);
-        for tabs in 0..4 {
-            let (window, _card, future, _listener) = open_card(cx, false, "printf enter");
-            for _ in 0..tabs {
-                cx.simulate_keystrokes(window.into(), "tab");
-            }
-            cx.simulate_keystrokes(window.into(), "enter");
-            assert_eq!(future.await, PermissionDecision::Once);
-        }
-
-        let expected = [
-            PermissionDecision::Once,
-            PermissionDecision::Always,
-            PermissionDecision::Deny { note: None },
-        ];
-        for (tabs, expected) in expected.into_iter().enumerate() {
-            let (window, _card, future, _listener) = open_card(cx, false, "printf space");
-            for _ in 0..tabs {
-                cx.simulate_keystrokes(window.into(), "tab");
-            }
-            cx.simulate_keystrokes(window.into(), "space");
-            assert_eq!(future.await, expected);
-        }
-
-        let (window, card, future, _listener) = open_card(cx, false, "printf ok");
-        assert_eq!(focused(window, &card, cx), PermissionFocus::AllowOnce);
-
-        cx.simulate_keystrokes(window.into(), "tab tab tab");
-        assert_eq!(focused(window, &card, cx), PermissionFocus::Note);
-        cx.simulate_keystrokes(window.into(), "h i space x");
-        let note = card.read_with(cx, |card, cx| card.note.read(cx).text().to_string());
-        assert_eq!(note, "hi x");
-        assert!(!card.read_with(cx, |card, _| card.is_resolved()));
-        cx.simulate_keystrokes(window.into(), "escape");
-        assert_eq!(
-            future.await,
-            PermissionDecision::Deny {
-                note: Some("hi x".into())
-            }
-        );
-    }
-
-    #[gpui_kit::test]
-    async fn ordinary_tab_wrap_cmd_enter_and_escape_matrix(cx: &mut TestAppContext) {
-        init_test(cx);
-        let (window, card, future, _listener) = open_card(cx, false, "printf cycle");
-        let forward = [
-            PermissionFocus::Always,
-            PermissionFocus::Reject,
-            PermissionFocus::Note,
-            PermissionFocus::AllowOnce,
-        ];
-        for expected in forward {
-            cx.simulate_keystrokes(window.into(), "tab");
-            assert_eq!(focused(window, &card, cx), expected);
-        }
-        cx.simulate_keystrokes(window.into(), "shift-tab");
-        assert_eq!(focused(window, &card, cx), PermissionFocus::Note);
-        cx.simulate_keystrokes(window.into(), "cmd-enter");
-        assert_eq!(future.await, PermissionDecision::Always);
-
-        for tabs in 0..4 {
-            let (window, _card, future, _listener) = open_card(cx, false, "printf escape");
-            for _ in 0..tabs {
-                cx.simulate_keystrokes(window.into(), "tab");
-            }
-            cx.simulate_keystrokes(window.into(), "escape");
-            assert_eq!(future.await, PermissionDecision::Deny { note: None });
-        }
-
-        for tabs in 0..4 {
-            let (window, _card, future, _listener) = open_card(cx, false, "printf always");
-            for _ in 0..tabs {
-                cx.simulate_keystrokes(window.into(), "tab");
-            }
-            cx.simulate_keystrokes(window.into(), "cmd-enter");
-            assert_eq!(future.await, PermissionDecision::Always);
-        }
-    }
-
-    #[gpui_kit::test]
-    async fn danger_focus_ring_enter_and_space_matrix(cx: &mut TestAppContext) {
-        init_test(cx);
-        for tabs in 0..3 {
-            let (window, _card, future, _listener) = open_card(cx, true, "git push --force");
-            for _ in 0..tabs {
-                cx.simulate_keystrokes(window.into(), "tab");
-            }
-            cx.simulate_keystrokes(window.into(), "enter");
-            assert_eq!(future.await, PermissionDecision::Deny { note: None });
-        }
-
-        let expected = [
-            PermissionDecision::Deny { note: None },
-            PermissionDecision::Once,
-            PermissionDecision::Always,
-        ];
-        for (tabs, expected) in expected.into_iter().enumerate() {
-            let (window, _card, future, _listener) = open_card(cx, true, "git push --force");
-            for _ in 0..tabs {
-                cx.simulate_keystrokes(window.into(), "tab");
-            }
-            cx.simulate_keystrokes(window.into(), "space");
-            assert_eq!(future.await, expected);
-        }
-
-        let (window, card, future, _listener) = open_card(cx, true, "git push --force");
-        cx.simulate_keystrokes(window.into(), "shift-tab");
-        assert_eq!(focused(window, &card, cx), PermissionFocus::Always);
-        cx.simulate_keystrokes(window.into(), "shift-tab");
-        assert_eq!(focused(window, &card, cx), PermissionFocus::AllowOnce);
-        cx.simulate_keystrokes(window.into(), "shift-tab");
-        assert_eq!(focused(window, &card, cx), PermissionFocus::Reject);
-        cx.simulate_keystrokes(window.into(), "cmd-enter");
-        assert_eq!(future.await, PermissionDecision::Always);
-
-        let (window, card, future, _listener) = open_card(cx, true, "git push --force");
-        let forward = [
-            PermissionFocus::AllowOnce,
-            PermissionFocus::Always,
-            PermissionFocus::Reject,
-        ];
-        for expected in forward {
-            cx.simulate_keystrokes(window.into(), "tab");
-            assert_eq!(focused(window, &card, cx), expected);
-        }
-        cx.simulate_keystrokes(window.into(), "escape");
-        assert_eq!(future.await, PermissionDecision::Deny { note: None });
-
-        for tabs in 0..3 {
-            let (window, _card, future, _listener) = open_card(cx, true, "git push --force");
-            for _ in 0..tabs {
-                cx.simulate_keystrokes(window.into(), "tab");
-            }
-            cx.simulate_keystrokes(window.into(), "cmd-enter");
-            assert_eq!(future.await, PermissionDecision::Always);
-        }
-
-        for tabs in 0..3 {
-            let (window, _card, future, _listener) = open_card(cx, true, "git push --force");
-            for _ in 0..tabs {
-                cx.simulate_keystrokes(window.into(), "tab");
-            }
-            cx.simulate_keystrokes(window.into(), "escape");
-            assert_eq!(future.await, PermissionDecision::Deny { note: None });
-        }
-    }
-
-    #[gpui_kit::test]
-    async fn timeout_duplicate_and_window_release_are_fail_closed(cx: &mut TestAppContext) {
-        init_test(cx);
-        let (window, card, future, _listener) = open_card(cx, false, "printf ok");
-        cx.simulate_keystrokes(window.into(), "enter cmd-enter");
-        assert_eq!(future.await, PermissionDecision::Once);
-        assert!(card.read_with(cx, |card, _| card.is_resolved()));
-
-        let (_window, card, future, _listener) = open_card(cx, false, "printf timeout");
-        cx.executor().advance_clock(PERMISSION_TIMEOUT);
-        cx.run_until_parked();
-        assert_eq!(future.await, PermissionDecision::Timeout);
-        assert!(card.read_with(cx, |card, _| card.is_resolved()));
-
-        let (window, card, future, _listener) = open_card(cx, false, "printf close");
-        drop(card);
-        window
-            .update(cx, |_, window, _| window.remove_window())
-            .unwrap();
-        cx.run_until_parked();
-        assert_eq!(future.await, PermissionDecision::Timeout);
-    }
-
-    #[gpui_kit::test]
-    fn danger_copy_long_utf8_command_and_debug_are_complete_and_redacted(cx: &mut TestAppContext) {
-        init_test(cx);
-        let command = format!("printf '{}{}'", "中".repeat(70), "a".repeat(90));
-        let (_window, card, _future, _listener) = open_card(cx, true, &command);
-        let (visible, debug, rows) = card.read_with(cx, |card, _| {
-            (
-                card.visible_text(),
-                format!("{card:?}"),
-                card.prompt.command_rows.clone(),
-            )
-        });
-        assert!(visible.contains(&command));
-        assert!(
-            visible
-                .contains("Always allow still requires confirmation for future dangerous commands")
-        );
-        assert!(visible.contains("bash"));
-        assert!(!debug.contains("SECRET_CALL_ID"));
-        assert!(!debug.contains(&command));
-        assert!(rows.iter().all(|row| display_width(row) <= 80));
-        assert_eq!(rows.concat(), command);
-        assert_eq!(
-            card.read_with(cx, |card, _| card.row_count()),
-            rows.len() + 5
-        );
     }
 }

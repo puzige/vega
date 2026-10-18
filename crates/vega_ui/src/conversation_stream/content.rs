@@ -686,10 +686,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    pub fn message_location_status(&self) -> Option<MessageLocationStatus> {
-        self.message_location_status
-    }
-
     /// Releases the in-flight page slot after a failed load. Auto-retry waits
     /// until the viewport leaves the top edge again (failure pause), so a
     /// persistently broken store cannot turn a pinned scroll into a spin loop.
@@ -751,46 +747,6 @@ impl ConversationStream {
         self.permission_queue.clone()
     }
 
-    /// The authoritative run mode this composer projects. Read by the
-    /// application acceptance harness to prove a `+`-menu selection landed on
-    /// the durable thread rather than only in local UI state.
-    #[doc(hidden)]
-    pub fn thread_mode(&self) -> ThreadMode {
-        self.thread.mode
-    }
-
-    /// The authoritative permission mode this composer projects. Same seam as
-    /// [`Self::thread_mode`].
-    #[doc(hidden)]
-    pub fn thread_permission_mode(&self) -> PermissionMode {
-        self.thread.permission_mode
-    }
-
-    #[doc(hidden)]
-    pub fn thinking_choice(&self) -> &str {
-        &self.composer_defaults.thinking
-    }
-
-    #[doc(hidden)]
-    pub fn reasoning_profile(&self) -> Option<&ReasoningProfileProjection> {
-        self.composer_defaults.reasoning.as_ref()
-    }
-
-    #[doc(hidden)]
-    pub fn thinking_slider(&self) -> Entity<ThinkingSlider> {
-        self.thinking_slider.clone()
-    }
-
-    #[doc(hidden)]
-    pub fn model_picker_level(&self) -> ModelPickerLevel {
-        self.model_picker_level
-    }
-
-    #[doc(hidden)]
-    pub fn model_options_len(&self) -> usize {
-        self.model_options.len()
-    }
-
     pub fn branch_selector(&self) -> Entity<BranchSelector> {
         self.branch_selector.clone()
     }
@@ -804,40 +760,8 @@ impl ConversationStream {
         self.active_agent_message.is_some()
     }
 
-    pub fn hydrated_entry_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|entry| {
-                matches!(
-                    entry,
-                    StreamEntry::User { .. }
-                        | StreamEntry::Assistant { .. }
-                        | StreamEntry::Tool { .. }
-                        | StreamEntry::ToolGroup { .. }
-                        | StreamEntry::Plan { .. }
-                        | StreamEntry::Summary { .. }
-                )
-            })
-            .count()
-    }
-
-    /// Whether a hydration page may still be requested for scroll-up
-    /// (exposes the pure gate to the app layer's fence tests).
-    pub fn hydration_cursor(&self) -> Option<i64> {
-        self.hydration.older_cursor
-    }
-
     pub fn has_pending_permission(&self) -> bool {
         self.permission_queue.has_pending()
-    }
-
-    /// Content-free presence check for the production app-entry acceptance
-    /// harness. A queue latch may be pending before its matching proposal is
-    /// ingressed, so callers that need to prove a visible card must check this
-    /// separately.
-    #[doc(hidden)]
-    pub fn has_active_permission_card(&self) -> bool {
-        self.active_permission.is_some()
     }
 
     pub fn has_pending_plan_review(&self, cx: &App) -> bool {
@@ -993,11 +917,6 @@ impl ConversationStream {
             self.merge_tool_entries_around(index, cx);
         }
         cx.notify();
-    }
-
-    /// Total row count across all entries.
-    pub(crate) fn total_rows(&self, cx: &App) -> usize {
-        self.entries.iter().map(|entry| entry.row_count(cx)).sum()
     }
 
     fn observe_run_activity_group(
