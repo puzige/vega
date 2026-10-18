@@ -322,7 +322,11 @@ async fn running_primary_action_attachment_import_and_clear_preserve_guards(
             include_bytes!("../../../../../assets/logo/raster/vega-icon-f1-original.png").to_vec(),
         )
         .unwrap();
-        let preview = attachments::ImagePreview::new(image, "draft.png".into(), cx);
+        let preview = crate::conversation_stream::attachments::ImagePreview::new(
+            image,
+            "draft.png".into(),
+            cx,
+        );
         stream.attachments.push((1, preview));
         stream.attachment_import_pending = true;
         cx.notify();
