@@ -8,10 +8,6 @@ use vega_conversation::types::{ComputerUseControl, ControlPhase};
 /// Labels come from [`mode_command`], so the menu and the parser cannot drift.
 const MODE_ORDER: [ThreadMode; 3] = [ThreadMode::Ask, ThreadMode::Plan, ThreadMode::Execute];
 
-/// Permission-mode rows, in the order both permission surfaces render them
-/// (R57 P1's `+` menu and R62 R8's picker). P2b removed the bottom-row
-/// dropdown; these two surfaces are what keep the permission mode reachable,
-/// and sharing the order is what keeps them from drifting (R62 R9).
 pub(crate) const PERMISSION_ORDER: [PermissionMode; 4] = [
     PermissionMode::ReadOnly,
     PermissionMode::Confirm,
@@ -29,9 +25,6 @@ fn mode_command(mode: ThreadMode) -> &'static str {
     }
 }
 
-/// User-visible permission label. R57 P2b shares this one projection between
-/// the `+`-menu rows and the bottom row's read-only permission status, so the
-/// two surfaces cannot drift.
 pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ReadOnly => "只读",
@@ -41,8 +34,6 @@ pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// Shared descriptions; I58-R7 distinguishes automatic approval from bypassing
-/// the OS sandbox without changing the existing approval controller.
 pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ReadOnly => "每次都询问",
@@ -52,7 +43,6 @@ pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// Per-row glyph; FullAccess shares the existing warning triangle (I58-R7).
 pub(crate) fn permission_icon(mode: PermissionMode) -> crate::icons::Icon {
     match mode {
         PermissionMode::ReadOnly => crate::icons::Icon::Hand,
@@ -61,23 +51,10 @@ pub(crate) fn permission_icon(mode: PermissionMode) -> crate::icons::Icon {
     }
 }
 
-/// Keep Auto's existing warning ink and explicitly mark FullAccess (I58-R7).
 pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
     matches!(mode, PermissionMode::Auto | PermissionMode::FullAccess)
 }
 
-/// R63: the debug selector naming **which glyph** [`permission_icon`] chose,
-/// so the test harness can identify the glyph by what the chip
-/// actually painted.
-///
-/// An icon renders as an `AnyElement` into the sprite atlas and carries no
-/// selector of its own, so a rendered glyph is otherwise invisible to
-/// `VisualTestContext::debug_bounds` — the same reason the picker's checkmark
-/// and the slider's chevron tag a wrapper. The tag is keyed to the glyph
-/// **value** the caller is about to paint (not to the mode), so the tag and
-/// the glyph are one value with one source: there is no second `match` on the
-/// mode here that could drift from [`permission_icon`], and a glyph outside
-/// the three named glyphs is reported as such rather than mislabelled.
 pub(crate) fn permission_icon_selector(icon: crate::icons::Icon) -> &'static str {
     match icon {
         crate::icons::Icon::Hand => "composer-permission-status-icon-hand",
@@ -87,20 +64,8 @@ pub(crate) fn permission_icon_selector(icon: crate::icons::Icon) -> &'static str
     }
 }
 
-/// R62 R8: the picker's title row. The reference implementation's
-/// `composer.permissionsDropdown.title.chatgptDesktop` is
-/// "How should ChatGPT actions be approved?". Vega's UI is Chinese and its
-/// existing vocabulary for this concept is 权限模式 (`settings/render_impl.rs`
-/// field label), so the in-convention title keeps that noun. It drops the
-/// reference's product name: "ChatGPT" is the reference app's assistant, and
-/// no Vega surface names a foreign product, so the sentence addresses the
-/// agent's actions generically.
 pub(crate) const PERMISSION_PICKER_TITLE: &str = "操作应如何获得批准？";
 
-/// R62 R8: the title row's trailing link label. The reference implementation's
-/// `composer.permissionsDropdown.learnMore` is "Learn more". Vega has no docs
-/// surface to open, so the row is rendered as plain secondary text — see the
-/// picker's own comment for why no click handler is attached.
 pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
 
 /// One selectable `+`-menu row. Rendering, keyboard highlight indices, and
@@ -282,11 +247,6 @@ impl ComposerActions {
 }
 
 impl ConversationStream {
-    /// Closes every transient Composer surface before another one opens.
-    /// Their controller state stays untouched; this only prevents overlapping
-    /// action, file, permission, and model menus. R57 P2b removed the
-    /// bottom-row mode dropdown, and R62 R7 brought the permission picker
-    /// back as a real popover, so it belongs in this list.
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
         self.pending_ui.menu = None;
         self.context_control.open = false;
@@ -884,10 +844,6 @@ impl ConversationStream {
             .flex()
             .items_center()
             .justify_center()
-            // #150 R14: the running-state action is a primary brand surface.
-            // It keeps the blue while `stopping` because the run has not
-            // actually ended yet (state must stay real, design guidelines
-            // §2.3); only the cursor and aria label change.
             .bg(colors.accent)
             .text_color(colors.brand_on_accent)
             .when(!self.actions.stopping, |button| button.cursor_pointer())

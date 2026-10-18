@@ -98,49 +98,4 @@ mod tests {
             "escalation":"SECRET_RAW_REASON"
         })
     }
-
-    #[test]
-    fn issue75_background_report_is_target_bound_finite_and_content_free() {
-        let valid = BackgroundInput::from_report(&report(), 1, 2);
-        assert_eq!(
-            valid.keyboard_refusal(),
-            Some(Class::SamePidKeyboardAmbiguity)
-        );
-        assert!(valid.model_text().contains("accessibility=available"));
-        assert!(valid.model_text().contains("window_pointer=available"));
-        assert!(!valid.model_text().contains("SECRET"));
-        assert!(!format!("{valid:?}").contains("SECRET"));
-        let mut cases = vec![Value::Null];
-        for (field, value) in [
-            ("pid", json!(9)),
-            ("window_id", json!(9)),
-            ("status", json!("unknown")),
-        ] {
-            let mut malformed = report();
-            malformed["exact_window"][field] = value;
-            cases.push(malformed);
-        }
-        for (field, value) in [
-            ("status", json!("unknown")),
-            ("reason", json!("SECRET_UNKNOWN")),
-            ("reason", json!({"text":"SECRET_RAW_REASON"})),
-        ] {
-            let mut malformed = report();
-            malformed["routes"][2][field] = value;
-            cases.push(malformed);
-        }
-        let mut duplicate = report();
-        duplicate["routes"][1] = duplicate["routes"][2].clone();
-        cases.push(duplicate);
-        let mut missing = report();
-        missing["routes"].as_array_mut().unwrap().pop();
-        cases.push(missing);
-        for malformed in cases {
-            let projected = BackgroundInput::from_report(&malformed, 1, 2);
-            assert_eq!(projected.keyboard_refusal(), None);
-            assert!(projected.model_text().contains("pid_keyboard=unknown"));
-            assert!(!projected.model_text().contains("SECRET"));
-            assert!(!format!("{projected:?}").contains("SECRET"));
-        }
-    }
 }

@@ -1,86 +1,3 @@
-//! R57 P2a — the thinking-tier slider: a self-contained popup card that picks
-//! one reasoning/thinking tier for a model.
-//!
-//! Contract source: `docs/vega-r57-composer-alignment.md` §3 (mechanism and
-//! fallback) and §4 (measured visual targets). The module deliberately reads
-//! no store: the supported tier list, the current tier, and the default tier
-//! all arrive as constructor inputs, so the component stays headless-testable
-//! and P3 can wire `ReasoningProfile.efforts` / `.preference` into it later.
-//!
-//! Unmeasured items are marked inline and must not be mistaken for measured
-//! values:
-//! - §4.5 M1 (dot diameter) and M5 (exact paddings) — chosen, see the consts.
-//! - §4.5 M3 / R12 (a model supporting no tiers) — renders nothing at all.
-//! - §4.5 M2 (the colour ramp across intermediate tiers) — only the two
-//!   measured endpoints are modelled: highest tier purple, every other tier
-//!   blue.
-//!
-//! ## Fallback semantics
-//!
-//! [`resolve_tier`] implements the *prose* rule stated both in the P2a slice
-//! brief and in spec R10: an unsupported current tier drops to the **nearest
-//! supported tier below it**. The reference bundle's literal snippet
-//!
-//! ```js
-//! tiers.find((t, i) => i < tiers.indexOf(current) && supported.includes(t))
-//! ```
-//!
-//! scans from index 0, so it would instead return the *lowest* supported tier
-//! below current. The two readings differ whenever more than one supported
-//! tier lies below the current one: with supported `[low, high, max]` and
-//! current `ultra`, this module answers `max` while the snippet answers `low`.
-//! [`nearest_lower`] is the single place that decides this; reversing its scan
-//! direction reproduces the snippet literally.
-//!
-//! ## The Off position (R58 §2)
-//!
-//! R58 adds an **Off** position at the far left (tier index 0) for models that
-//! declare a true disabled operation. Vega models "thinking disabled" as a
-//! *separate* [`ReasoningChoice::Disabled`](vega_conversation::types::ReasoningChoice)
-//! reached through the profile's `disabled_wire`, **not** as one entry of the
-//! `efforts` sequence the way the reference implementation does. The Off
-//! position is therefore **visual only**:
-//!
-//! - Off is index 0 and occupies a dot like any tier; the dot count becomes
-//!   `efforts.len() + 1` whenever it is shown (R1).
-//! - It is shown only when the profile declares `supports_disabled` **and** a
-//!   matching `disabled_wire`, the same pairing `reasoning.rs` and
-//!   `FrozenReasoning::validate` enforce (R2). Otherwise the ladder is exactly
-//!   `efforts` and there is no Off.
-//! - Selecting Off emits [`OFF_CHOICE_NAME`] (`"disabled"`), never an effort
-//!   string, and `"off"`/`"none"`/`"disabled"` are never appended to
-//!   [`ThinkingSliderModel::tiers`] (R3).
-//! - The Off label is [`OFF_LABEL`] (`"Off"` since R67 R8; R66 R6 had borrowed
-//!   the reference's `None`, which was wrong — see the constant's own doc).
-//!   Its colour is **unmeasured** and deliberately reuses the lowest tier's
-//!   visual; see [`tier_label_color_for`].
-//!
-//! ## R66: the title block
-//!
-//! R66 wraps the tier-name row and the model-name row in **one** highlight
-//! container (`render_title_block`) that hugs its content, and displays tiers
-//! through [`tier_display_label`] rather than as raw effort ids. The container
-//! is a **visual** merge only: the `ThinkingSliderTitleActivated` handler stays
-//! on the tier row and the model row stays inert (R66 R5 / R62 R3).
-//!
-//! ## R67: the block's fill is a hover state
-//!
-//! R66 R3 made that fill **persistent** — the grey was there whenever the card
-//! was open, with no pointer interaction. The user rejected that reading
-//! (2026-09-15): the grey must appear **only while the pointer is over the
-//! block**, and be absent otherwise (R67 R1). Two things follow, both easy to
-//! get wrong:
-//!
-//! - the fill is applied through `.hover(...)`, not `.bg(...)`;
-//! - the block carries an explicit `.id(...)` (R67 R2). GPUI only re-renders a
-//!   hover transition when the element has **element state**, which exists only
-//!   when `Element::id()` is `Some` (`gpui-pre-0.3.4/src/elements/div.rs:2783`
-//!   registers the transition listener on `element_state`, `:1848` shows `id()`
-//!   is `interactivity.element_id`). An anonymous div with `.hover()` and no
-//!   `.id()` never repaints and its fill never appears at all — strictly worse
-//!   than the persistent version. The id registers a `HitboxBehavior::Normal`
-//!   hitbox and no listeners, so R66 R5's click contract is untouched.
-
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Bounds, Div, DragMoveEvent, Empty, EventEmitter, MouseButton, MouseDownEvent,
@@ -108,22 +25,6 @@ pub const THINKING_KNOB_DIAMETER: f32 = 24.0;
 /// `(254.5 - 203.0) / 2`.
 const CARD_INSET: f32 = (THINKING_CARD_WIDTH - THINKING_TRACK_WIDTH) / 2.0;
 
-/// Radius of the fill layer's capsule caps (R65 R1/R4b/R4d).
-///
-/// The track is a capsule, so each *outer* end of the fill has to be a
-/// half-circle cap of radius `THINKING_TRACK_HEIGHT / 2.0` — the same shape the
-/// track's own caps draw. The name keeps its original left-side spelling (the
-/// gradient's right cap, R4d, reuses the same measured value); it is the one
-/// cap radius this module has.
-///
-/// GPUI clamps each corner radius per quad to `min(width, height) / 2`
-/// (spec §4b). That clamp is why the fill's **drawn** width is padded to
-/// `THINKING_TRACK_HEIGHT` before this radius is applied: at the narrowest fill
-/// (`dot_center_offset(0, n) = 12.0`) the clamp would otherwise land on 6.0,
-/// and a 6px radius on a 12px-wide box leaves the fill poking 6px *outside* the
-/// track's left cap — the blue crescent the user reported. With the padding the
-/// ceiling is `min(24, 24) / 2 = 12` and the cap is a true semicircle. See
-/// [`fill_effective_width`].
 const FILL_LEFT_CAP_RADIUS: f32 = THINKING_TRACK_HEIGHT / 2.0;
 
 /// Dot diameter. **Chosen, not measured**: spec §4.5 M1 lists the dot spacing
@@ -138,42 +39,12 @@ const CARD_PADDING_BOTTOM: f32 = 14.0;
 /// Vertical gap between the card's three rows. **Chosen** (§4.5 M5).
 const CARD_ROW_GAP: f32 = 8.0;
 
-/// Minimum height of each of the card's two text rows (R62 R2). **Chosen, not
-/// measured**: the reference layout fixes the rows' *order* and alignment, not
-/// their height, so §6 M1/M4 stay open on it.
-///
-/// It is a **floor**, applied with `min_h`, not a fixed height: the model name
-/// renders a 21px line box (13px `SIDEBAR` at the default line height), which
-/// overflows a hard 20px and makes the row taller than the constant claims. As
-/// a floor the row takes whichever is larger, so the constant still keeps the
-/// two rows visually equal for short text while a larger line box can never be
-/// clipped.
 const CARD_TEXT_ROW_HEIGHT: f32 = 20.0;
 
-/// Gap between the tier name and its chevron inside the title group (R62 R2).
-/// **Chosen, not measured**: it is the 4px `gap_1` the pre-R62 title row used
-/// between its two text runs, kept so the group's rhythm is unchanged.
 const TITLE_GROUP_GAP: f32 = 4.0;
 
-/// Horizontal padding inside the R66 title highlight block.
-///
-/// **Chosen, not measured.** The reference's block is 172px wide against a
-/// content run narrower than that, so *some* horizontal padding exists; the
-/// spec measures the block's total width, not its inset (§2, M1), so this
-/// value is an approximation. It is deliberately **horizontal only**: R66 R4
-/// freezes the card height and the two row gaps, and vertical padding here
-/// would change both (see `ThinkingSlider::render_title_block`).
 const TITLE_HIGHLIGHT_PADDING_X: f32 = 8.0;
 
-/// Maximum width of the content inside the R66 title block, i.e. the card's
-/// content band less the block's own horizontal padding.
-///
-/// This is what keeps the block content-hugging **and** bounded: the block has
-/// no explicit width, so it takes the wider row's max-content width; each row
-/// is capped here, so the block can never grow past the card. Without a cap the
-/// rows would size to their text and a long model name would spill out of the
-/// card (R62 R6), because a flex column with `items_center` sizes its children
-/// to their content rather than stretching them.
 const TITLE_BLOCK_CONTENT_MAX_WIDTH: f32 =
     THINKING_CARD_WIDTH - CARD_INSET * 2.0 - TITLE_HIGHLIGHT_PADDING_X * 2.0;
 
@@ -218,9 +89,6 @@ const TRACK_GRADIENT: [(f32, Rgba); 3] = [
     (1.0, measured_rgba(0x7E5AF0FF)),
 ];
 
-/// Filled-region dot colour. Measured white (spec §4.2/§4.4: filled dots
-/// render white). Kept as the measured literal rather than a surface token so
-/// R9 holds in both appearances; dark mode is unmeasured.
 const TRACK_DOT_FILLED: Rgba = measured_rgba(0xFFFFFFFF);
 
 /// Unfilled track fill. Measured 0xE9E8E8 (spec §4.2, `Medium` state unfilled
@@ -228,79 +96,12 @@ const TRACK_DOT_FILLED: Rgba = measured_rgba(0xFFFFFFFF);
 /// one 8-bit step away, and is used in dark mode where no measurement exists.
 const TRACK_UNFILLED: Rgba = measured_rgba(0xE9E8E8FF);
 
-/// The persisted name of the Off position (R58 R3).
-///
-/// This is the string the composer already maps to
-/// `ReasoningChoice::Disabled` (`core.rs`'s `reasoning_choice_for_name`) and
-/// the one `reasoning.toml` stores in `ReasoningProfile.preference`. It is a
-/// *choice* name, never an effort: it must not be appended to
-/// [`ThinkingSliderModel::tiers`] or sent as `Effort`.
 pub const OFF_CHOICE_NAME: &str = "disabled";
 
-/// The Off position's tier-name text (R58 R5, **R66 R6**, **R67 R8**).
-///
-/// R66 R6 changed this from Vega's own `关闭` to `None`; R67 R8 changes it again
-/// to `Off`. The `关闭` → `None` step was right to drop the CJK wording (the
-/// model name beside it is always English), but wrong in what it replaced it
-/// with: it borrowed the reference implementation's
-/// `composer.mode.local.reasoning.none.label`, which is the display name of the
-/// reference's **lowest reasoning effort tier**, not of a "no reasoning"
-/// position.
-///
-/// Vega's Off is not an effort. It is a separate
-/// [`ReasoningChoice::Disabled`](vega_conversation::types::ReasoningChoice)
-/// reached through the profile's `disabled_wire`, and it is never a member of
-/// `efforts` (R58 R1/R3, module docs). The reference therefore has **no** label
-/// for the concept Vega's Off names, so there is nothing to copy: borrowing the
-/// tier's label conflated two different things, and it made the Off position
-/// and the `none` tier display the same word. `Off` is Vega's own label for its
-/// own concept (user decision, 2026-09-15).
-///
-/// [`tier_display_label`]'s `none` → `None` row is **not** touched by R67 R8 —
-/// that is the tier table, a different thing (R67 R11).
 pub const OFF_LABEL: &str = "Off";
 
-/// The no-selection label, shown when the persisted preference is
-/// `provider_default` (R58 R6, **R66 R7**).
-///
-/// R66 R7 changed this from `提供方默认` to `Default`. The authority is the
-/// reference implementation's `composer.modelPicker.default.label`, whose
-/// `defaultMessage` is `Default` — a **composer** message key, in the same
-/// namespace as `selectEffort.label` and `modelList.heading`. The Settings
-/// page's `settings.agent.configuration.modelDefault` (`Model default`) is a
-/// different namespace and is deliberately not used (R66 R7's note).
 pub const PROVIDER_DEFAULT_LABEL: &str = "Default";
 
-/// R66 R10/R11/R13: the **pure** display mapping from a persisted effort id to
-/// the tier name the card shows.
-///
-/// The table is quoted verbatim from the reference bundle's own
-/// `composer.mode.local.reasoning.<tier>.label` entries. Two mappings are
-/// deliberately non-trivial and must not be "corrected":
-///
-/// - `low` → `Light` (not `Low`);
-/// - `xhigh` → `Extra High` (not `XHigh`).
-///
-/// R67 R11: this table is the **tier** vocabulary and is untouched by R67 R8's
-/// Off-label change. In particular `none` → `None` stays: `none` is a real
-/// effort tier here, whereas Vega's Off is a separate
-/// [`ReasoningChoice::Disabled`](vega_conversation::types::ReasoningChoice)
-/// that never appears in `efforts`. Reading the user's "null → off" as an edit
-/// to this row would make the `none` tier display as `Off` while the actual Off
-/// position kept its old label — the exact opposite of the request.
-///
-/// R11's fallback uppercases the **first letter** rather than returning the id
-/// verbatim. Vega's efforts are a configurable `Vec<String>` rather than the
-/// reference's fixed enum, so a custom id genuinely reaches this function; the
-/// reference's `other {Other}` fallback cannot be used literally because it
-/// names no id.
-///
-/// R12: this is display only. The effort ids themselves are the persistence
-/// contract and are never rewritten — [`ThinkingSliderModel::tier`] and
-/// [`ThinkingSliderModel::choice_name`] still return the raw id.
-///
-/// Uppercasing is done on the first `char`, not the first byte, so a non-ASCII
-/// custom id is not split.
 pub fn tier_display_label(effort: &str) -> String {
     match effort {
         "none" => "None".to_string(),
@@ -390,17 +191,6 @@ fn nearest_lower<'a>(supported: &'a [String], tier: &str) -> Option<&'a str> {
         .find_map(|candidate| find_supported(supported, candidate))
 }
 
-/// Resolves the tier the slider should show for `preferred`.
-///
-/// Order (spec §3.1 / R10):
-/// 1. `preferred` when the model supports it;
-/// 2. otherwise the nearest supported tier below it;
-/// 3. otherwise `fallback` (the configured default) when supported;
-/// 4. otherwise the first supported tier;
-/// 5. otherwise `None` — the model supports nothing, so there is no slider.
-///
-/// Steps 3 and 4 cover "nothing lies below `preferred`", which the reference
-/// snippet leaves undefined; they are this slice's choice.
 pub fn resolve_tier<'a>(
     supported: &'a [String],
     preferred: &str,
@@ -415,14 +205,6 @@ pub fn resolve_tier<'a>(
     find_supported(supported, fallback).or_else(|| supported.first().map(String::as_str))
 }
 
-// ---------------------------------------------------------------------------
-// Pure model
-// ---------------------------------------------------------------------------
-
-/// What the slider currently shows. R58 R3/R6: the Off position and the
-/// `provider_default` state are deliberately **not** entries of
-/// [`ThinkingSliderModel::tiers`] — the tier list stays exactly the profile's
-/// `efforts`, and only the *position* mapping knows about Off.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Selection {
     /// The Off position (index 0 when shown). Maps to
@@ -439,26 +221,13 @@ pub struct ThinkingSliderModel {
     /// The profile's declared `efforts`, in declaration order. This list is
     /// the tier ladder and **never** contains `off`/`none`/`disabled`.
     tiers: Vec<String>,
-    /// Whether the profile declares a true disabled operation, i.e.
-    /// `supports_disabled` **and** a matching `disabled_wire` (R2). When
-    /// `false` there is no Off position at all.
     supports_off: bool,
     current: Option<Selection>,
-    /// Whether the persisted preference is `provider_default` (R6). That is a
-    /// third state — "let the provider decide" — and is not a position, so the
-    /// track renders with nothing selected.
     provider_default: bool,
     default: Option<String>,
 }
 
 impl ThinkingSliderModel {
-    /// Builds the model, resolving both the current and the default tier
-    /// against `tiers` straight away.
-    ///
-    /// `supports_off` is the R2 pairing (`supports_disabled` with a declared
-    /// `disabled_wire`); `current` is the persisted preference name, where
-    /// [`OFF_CHOICE_NAME`] selects the Off position and `"provider_default"`
-    /// selects nothing.
     pub fn new(tiers: Vec<String>, supports_off: bool, current: &str, default: &str) -> Self {
         let mut model = Self {
             tiers,
@@ -483,18 +252,13 @@ impl ThinkingSliderModel {
         self.default =
             resolve_tier(&self.tiers, default, default).map(std::string::ToString::to_string);
         let fallback = self.default.clone().unwrap_or_default();
-        // R4: `"disabled"` maps to the Off position. It is only representable
-        // when the profile declares the disabled operation; a profile that
-        // somehow persists it without the capability falls through to the
-        // ordinary unsupported-preference fallback instead of showing an Off
-        // position the provider would reject (R2).
+
         if current == OFF_CHOICE_NAME && supports_off {
             self.current = Some(Selection::Off);
             self.provider_default = false;
             return;
         }
-        // R6: `provider_default` is not a position. The track renders no
-        // selection and the label names the state itself.
+
         if current == "provider_default" || current.is_empty() {
             self.current = None;
             self.provider_default = true;
@@ -505,22 +269,14 @@ impl ThinkingSliderModel {
         self.provider_default = false;
     }
 
-    /// The model's supported tiers, in the order the caller declared them.
-    /// This is the profile's `efforts` verbatim — the Off position is not a
-    /// member (R3).
     pub fn tiers(&self) -> &[String] {
         &self.tiers
     }
 
-    /// Whether this model declares a true disabled operation, i.e. whether the
-    /// Off position is shown at all (R2).
     pub fn shows_off(&self) -> bool {
         self.supports_off
     }
 
-    /// Number of dots the track must render — one per supported tier, plus one
-    /// for the Off position when it is shown (R1). This is the single source of
-    /// truth the renderer reads.
     pub fn dot_count(&self) -> usize {
         self.tiers.len() + self.off_offset()
     }
@@ -550,22 +306,10 @@ impl ThinkingSliderModel {
         matches!(self.current, Some(Selection::Off))
     }
 
-    /// Whether the persisted preference is `provider_default` (R6).
     pub fn is_provider_default(&self) -> bool {
         self.provider_default
     }
 
-    /// The tier-name text for the current state.
-    ///
-    /// R66 R10: a tier renders through [`tier_display_label`], not as its raw
-    /// effort id, so `"max"` shows as `Max` and `"low"` as `Light`. The
-    /// **persisted** id is untouched — read [`Self::tier`] or
-    /// [`Self::choice_name`] for that (R12).
-    ///
-    /// Returns an owned `String` because the tier arm allocates: the fallback
-    /// in [`tier_display_label`] cannot be a `&'static str` since a custom
-    /// effort id has no static label. The Off and `provider_default` arms
-    /// return the two frozen constants.
     pub fn label(&self) -> String {
         match self.current.as_ref() {
             Some(Selection::Tier(tier)) => tier_display_label(tier),
@@ -590,13 +334,6 @@ impl ThinkingSliderModel {
         }
     }
 
-    /// Position of the strongest supported tier. The gradient fill and the
-    /// purple label both key off this, which is what makes the two measured
-    /// states (`Medium` flat blue, `Ultra` gradient purple) both correct.
-    ///
-    /// The Off position is never the strongest tier, so an Off-only track has
-    /// no strongest position and therefore no gradient (R5: Off takes the
-    /// lowest tier's visual, which is the flat fill).
     pub fn strongest_position(&self) -> Option<usize> {
         self.tiers
             .len()
@@ -623,11 +360,6 @@ impl ThinkingSliderModel {
         self.default.as_deref()
     }
 
-    /// Selects the position at `index`. Returns the persisted choice name when
-    /// the selection changed.
-    ///
-    /// Position 0 is the Off position when the model shows one, and maps to
-    /// [`OFF_CHOICE_NAME`] — never to an effort (R3).
     fn select(&mut self, index: usize) -> Option<String> {
         let next = match (self.supports_off, index) {
             (true, 0) => Selection::Off,
@@ -647,29 +379,12 @@ impl ThinkingSliderModel {
     }
 }
 
-/// Emitted when the user picks a different position. The composer turns this
-/// into the existing `ComposerDefaults` save path; the component itself
-/// performs no IO.
-///
-/// `choice` is a persisted *choice name*, not necessarily an effort: the Off
-/// position emits [`OFF_CHOICE_NAME`] (`"disabled"`), which the composer maps
-/// to `ReasoningChoice::Disabled` (R3). It is never `"off"`/`"none"`, and it
-/// is never appended to the tier list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThinkingTierSelected {
     pub model: String,
     pub choice: String,
 }
 
-/// Emitted when the user activates the card's title row — the
-/// `model name + tier name + >` block (R59 R2).
-///
-/// This is the **only** way level two is reached: the host answers it by
-/// swapping this card out for the model list (R59 R3), so the two levels are
-/// never on screen together. The reference implementation's
-/// `composer.modelPicker.modelList.open.ariaLabel` ("Accessible label for the
-/// selected-model action **above the model-picker slider**, which opens the
-/// list of available models") is the same control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThinkingSliderTitleActivated;
 
@@ -702,13 +417,6 @@ impl EventEmitter<ThinkingTierSelected> for ThinkingSlider {}
 impl EventEmitter<ThinkingSliderTitleActivated> for ThinkingSlider {}
 
 impl ThinkingSlider {
-    /// Builds the slider for one model.
-    ///
-    /// `tiers` is the model's supported tier list (`ReasoningProfile.efforts`),
-    /// `supports_off` whether the Off position is shown (`supports_disabled`
-    /// with a declared `disabled_wire`, R2), and `current` the persisted
-    /// preference name ([`OFF_CHOICE_NAME`], `"provider_default"`, or a tier).
-    /// An unsupported `current` resolves through [`resolve_tier`].
     pub fn new(
         model_name: impl Into<String>,
         tiers: Vec<String>,
@@ -729,10 +437,6 @@ impl ThinkingSlider {
         }
     }
 
-    /// The model's supported tiers, exactly the profile's `efforts`.
-    ///
-    /// Exposed so acceptance tests can prove the Off position never becomes a
-    /// member of this list (R3).
     pub fn tiers(&self) -> &[String] {
         self.model.tiers()
     }
@@ -743,9 +447,6 @@ impl ThinkingSlider {
         self.model.tier()
     }
 
-    /// The persisted preference name this slider shows
-    /// ([`OFF_CHOICE_NAME`] for Off, else a tier name), or `None` when nothing
-    /// is selected (R3/R6).
     pub fn choice_name(&self) -> Option<&str> {
         self.model.choice_name()
     }
@@ -755,34 +456,18 @@ impl ThinkingSlider {
         self.model.is_off()
     }
 
-    /// Whether the persisted preference is `provider_default` (R6).
     pub fn is_provider_default(&self) -> bool {
         self.model.is_provider_default()
     }
 
-    /// Dots the track renders — one per supported tier, plus one for the Off
-    /// position when the model declares a disabled operation (R1). This is the
-    /// count the composer's acceptance tests assert against, so it stays a
-    /// view accessor rather than a test-only reach into the model.
     pub fn dot_count(&self) -> usize {
         self.model.dot_count()
     }
 
-    /// Whether this model declares any tier at all.
-    ///
-    /// R12: a model with no declared tiers renders nothing, and the host must
-    /// not leave an empty padded slot behind either. Note that Off alone is
-    /// *not* a tier: a profile with `supports_disabled` but no `efforts` still
-    /// renders nothing, because the ladder the slider moves along would be
-    /// empty (R2's pairing is necessary but not sufficient on its own).
     pub fn has_tiers(&self) -> bool {
         !self.model.tiers().is_empty()
     }
 
-    /// Replaces the model name and the supported tier list together (R57 P3).
-    /// The composer re-projects both whenever the displayed model or its
-    /// capability changes; keeping them in one call prevents a frame where the
-    /// card names one model while showing another model's tiers.
     pub fn set_model_and_tiers(
         &mut self,
         model_name: impl Into<String>,
@@ -798,9 +483,6 @@ impl ThinkingSlider {
         cx.notify();
     }
 
-    /// Selects the position at `index`, where index 0 is the Off position
-    /// whenever the model shows one (R1). Returns whether the selection
-    /// changed.
     pub fn select_index(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
         let Some(choice) = self.model.select(index) else {
             return false;
@@ -880,13 +562,6 @@ impl ThinkingSlider {
         }
     }
 
-    /// Tier-name colour. Only the two measured endpoints are modelled (§4.5
-    /// M2 leaves the ramp between them unmeasured): the strongest tier takes
-    /// the measured purple, every other position the measured blue.
-    ///
-    /// R58 R5: the Off position is **unmeasured**. It deliberately takes the
-    /// same visual as the lowest tier — the measured blue, flat fill — rather
-    /// than a new colour, and is flagged as needing calibration.
     fn tier_label_color(&self) -> Rgba {
         tier_label_color_for(
             self.model.selected_position(),
@@ -894,12 +569,6 @@ impl ThinkingSlider {
         )
     }
 
-    /// The fill layer. The strongest tier gets the measured multi-stop
-    /// gradient; every other position the measured flat fill (§4.2).
-    ///
-    /// With nothing selected (R6's `provider_default`) the track renders no
-    /// fill at all, so the unselected state is visibly distinct from any
-    /// position.
     fn render_track_fill(&self, selected: Option<usize>) -> AnyElement {
         let Some(selected) = selected else {
             return Empty.into_any_element();
@@ -921,12 +590,6 @@ impl ThinkingSlider {
                     .top_0()
                     .h(px(THINKING_TRACK_HEIGHT))
                     .w(px(width))
-                    // R65 R1/R4d: only the segment flush with the track's left
-                    // edge carries the capsule's left cap, and only the segment
-                    // flush with its right edge carries the right cap; the inner
-                    // segment keeps square corners so the two halves abut
-                    // seamlessly. Without the right cap the gradient ended on a
-                    // square corner 12px past the track's right cap (spec §4b).
                     .when(gradient_segment_has_left_cap(index), |segment| {
                         segment.rounded_l(px(FILL_LEFT_CAP_RADIUS))
                     })
@@ -948,10 +611,7 @@ impl ThinkingSlider {
         // A flat tier fills up to the knob centre, so the knob straddles the
         // fill edge. The exact extent is unmeasured (§4.5 M5).
         let fill = fill_effective_width(selected, self.model.dot_count());
-        // R65 R4c: a fill narrower than `THINKING_TRACK_HEIGHT` (the lowest tier
-        // / Off) *is* the cap itself, so both of its ends are rounded and it
-        // draws as a 24px disc under the knob. A wider fill keeps its right end
-        // square: that end sits at the knob centre and is covered by the knob.
+
         let narrow = fill_has_right_cap(selected, self.model.dot_count());
         div()
             .debug_selector(|| "thinking-slider-fill-flat".into())
@@ -960,14 +620,6 @@ impl ThinkingSlider {
             .top_0()
             .h(px(THINKING_TRACK_HEIGHT))
             .w(px(fill))
-            // R65 R1: the fill's outer ends must be capsule caps, not square
-            // corners. `overflow_hidden` on the track is a pure rectangle clip
-            // (spec §4), so the track's own `rounded` never reaches this child
-            // and the fill has to carry the radius itself.
-            //
-            // The width above is already padded to `THINKING_TRACK_HEIGHT`, so
-            // the per-quad clamp (spec §4b) lands on the full
-            // `FILL_LEFT_CAP_RADIUS` rather than shrinking the cap.
             .rounded_l(px(FILL_LEFT_CAP_RADIUS))
             .when(narrow, |fill| fill.rounded_r(px(FILL_LEFT_CAP_RADIUS)))
             .bg(TRACK_FILL_FLAT)
@@ -1012,71 +664,22 @@ fn dot_center_offset(index: usize, count: usize) -> f32 {
     half + index as f32 * travel / (count - 1) as f32
 }
 
-/// The width the flat fill is **drawn** at for a selected position: the knob
-/// centre offset, padded up to at least `THINKING_TRACK_HEIGHT` (R65 R4b).
-///
-/// The padding is what makes the cap radius survive GPUI's per-quad clamp. Any
-/// quad narrower than `2 * (H / 2) = THINKING_TRACK_HEIGHT` cannot hold a radius
-/// of `FILL_LEFT_CAP_RADIUS`, so the clamp shrinks it and the cap degenerates
-/// into "small corner + straight edge" that pokes out past the track's own cap
-/// (spec §4b). Padding to the track height sets the clamp ceiling to
-/// `min(24, 24) / 2 = 12`, i.e. a true semicircle.
-///
-/// The padding is at most `THINKING_TRACK_HEIGHT / 2 = 12px`, and the knob
-/// (diameter `THINKING_KNOB_DIAMETER`, painted *after* the fill) covers exactly
-/// `[centre - 12, centre + 12]`, so every padded pixel lands under the knob.
-///
-/// At position 0 the padded fill is a 24px disc sitting exactly under the knob,
-/// which is the intended shape rather than a special case: there is deliberately
-/// no `is_off` branch, and R6 forbids widening past this to make blue show at
-/// the lowest tier. `dot_center_offset` itself is untouched — 203px stays a
-/// hard bound (R3).
 fn fill_effective_width(index: usize, count: usize) -> f32 {
     dot_center_offset(index, count).max(THINKING_TRACK_HEIGHT)
 }
 
-/// Whether the flat fill for `index` must round its **right** corners too
-/// (R65 R4c).
-///
-/// True exactly when the *raw* knob-centre offset is narrower than the track
-/// height, i.e. when the effective width is the padded case. Such a fill is the
-/// cap itself and draws as a disc; a wider one keeps a square right end because
-/// the knob covers it.
 fn fill_has_right_cap(index: usize, count: usize) -> bool {
     dot_center_offset(index, count) < THINKING_TRACK_HEIGHT
 }
 
-/// Whether gradient segment `index` carries the capsule's **left** cap (R65
-/// R1). Only the segment flush with the track's left edge does.
 fn gradient_segment_has_left_cap(index: usize) -> bool {
     index == 0
 }
 
-/// Whether gradient segment `index` carries the capsule's **right** cap (R65
-/// R4d). Only the segment flush with the track's right edge does — the last
-/// one, `TRACK_GRADIENT.len() - 2` in `windows(2)` terms.
 fn gradient_segment_has_right_cap(index: usize) -> bool {
     index == TRACK_GRADIENT.len() - 2
 }
 
-/// R62 R4: the card's own elevation, one tier above the `shadow_sm()` the rest
-/// of Vega's popovers use.
-///
-/// R61 anchored this card to the model trigger, which makes it overlap the
-/// composer card (R61 §2 accepted that). At `shadow_sm()` the composer card's
-/// top border and rounded corner read as a line crossing the slider card — the
-/// user's D1 "looks translucent" / D2 "left side is cut off" reports, whose
-/// real cause is an elevation too weak to separate the layers (R62 §1).
-///
-/// `shadow_lg` rather than `shadow_md`: `shadow_md`'s 6px blur at 10% opacity
-/// is only one step above `shadow_sm` and still reads as a hairline where the
-/// two cards cross, while `shadow_lg`'s 15px blur with a 3px negative spread
-/// produces a clear dark transition on the card's left edge and bottom without
-/// bleeding far past the card. This is a GPUI framework tier, not a Vega token
-/// — Vega has no `shadow_md`/`shadow_lg` wrapper (R62 R4 note).
-///
-/// The card's background stays **opaque** `bg_elevated`; R4 forbids solving the
-/// separation with translucency.
 fn card_shadow(card: Div) -> Div {
     card.shadow_lg()
 }
@@ -1086,17 +689,9 @@ impl Render for ThinkingSlider {
         let colors = theme(cx).colors;
         let count = self.model.dot_count();
         if !self.has_tiers() {
-            // Zero-tier fallback (R12, plan P2a): a model that declares no
-            // reasoning tiers renders no slider at all. The reference app's
-            // UI for this case is UNMEASURED (spec §4.5 M3) — this is the
-            // simplest sensible reading and still needs calibration. The Off
-            // position alone does not make a ladder, so it does not rescue
-            // this case (R58 R2).
             return Empty.into_any_element();
         }
-        // R6: `provider_default` selects no position. The track still renders
-        // (the model does declare tiers) but carries no knob and no fill, and
-        // the label names the state so the user can tell it apart from Off.
+
         let selected = self.model.selected_position();
 
         let label = self.model.label();
@@ -1112,12 +707,8 @@ impl Render for ThinkingSlider {
                 .size(px(THINKING_DOT_DIAMETER))
                 .rounded_full()
                 .bg(if filled {
-                    // R9: filled-region dots render white.
                     TRACK_DOT_FILLED
                 } else {
-                    // R9: unfilled-region dots render grey. No measured value
-                    // exists for this grey, so it takes the tertiary ink
-                    // token, which adapts to both appearances.
                     colors.text_tertiary
                 });
             match DOT_SELECTORS.get(index).copied() {
@@ -1180,23 +771,6 @@ impl Render for ThinkingSlider {
                 )
             });
 
-        // R62 R2 / R66 §2: three stacked rows — the tier-name block (tier name +
-        // chevron, then the model name) and the track.
-        //
-        // R66 §2 replaced the two independent row children with **one**
-        // `render_title_block` child: the highlight is a single block covering
-        // both text rows, hugging its content. R67 R1 makes that block's grey a
-        // **hover** state rather than a persistent fill. R62 R5's two-level
-        // interaction is untouched — see `render_title_row` and
-        // `render_model_row` for which of the two rows handles clicks.
-        //
-        // R6: both text rows carry `min_w_0` + `truncate`, so a long tier or
-        // model name ellipsises inside the measured 254.5px card instead of
-        // spilling past its edge. `min_w_0` is what lets a flex child shrink
-        // below its content width; without it `truncate` never engages.
-        //
-        // R62 R4: `card_shadow` supplies the stronger elevation that makes the
-        // card read as floating above the composer card it overlaps.
         card_shadow(
             div()
                 .debug_selector(|| "thinking-slider-card".into())
@@ -1212,8 +786,6 @@ impl Render for ThinkingSlider {
                 .rounded(px(Layout::COMPOSER_RADIUS))
                 .border_1()
                 .border_color(colors.border_subtle)
-                // R62 R4: the surface stays fully opaque. The card's separation
-                // from the composer card comes from `card_shadow` alone.
                 .bg(colors.bg_elevated)
                 .text_color(colors.text_primary),
         )
@@ -1226,61 +798,6 @@ impl Render for ThinkingSlider {
 }
 
 impl ThinkingSlider {
-    /// R66 §2: the **one** highlight container that wraps both text rows.
-    ///
-    /// R67 R1/R3: the block's fill is a **hover state**, not a persistent
-    /// background. R66 R3 had it always-on; the user rejected that (the grey
-    /// must appear only while the pointer is over the block), so the fill is
-    /// applied through `.hover(...)` instead of `.bg(...)`. When the card is
-    /// open and the pointer is elsewhere the block paints nothing.
-    ///
-    /// The fill colour itself is unchanged (R67 R7): [`ThemeColors::bg_hover`],
-    /// the same light grey the pre-R66 title row used for its hover. R66 R3 and
-    /// R67 R1 disagree only about *when* it shows.
-    ///
-    /// R3's hit area is the **whole block** — both rows plus the horizontal
-    /// padding — so the two rows light up together, which is what R66's
-    /// "model and thinking level are selected together" asks for. Hovering a
-    /// child with its own hitbox still hovers this block: `hit_test` collects
-    /// every hitbox under the pointer and `HitboxBehavior::Normal` does not
-    /// block the ones behind it, so the tier row's own hitbox does not shadow
-    /// the block's.
-    ///
-    /// R2 (R67): the block **must** carry an explicit `.id(...)`. GPUI registers
-    /// the hover-transition listener only when the element has element state
-    /// (`gpui-pre-0.3.4/src/elements/div.rs:2783`), and element state exists
-    /// only when `Element::id()` is `Some` (`:1848`). The paint branch
-    /// (`:3391`) reads `hitbox.is_hovered(window)` when a hitbox exists and
-    /// otherwise falls back to element state, which an anonymous div does not
-    /// have — so `.hover()` **without** `.id()` produces a block that never
-    /// lights up at all, which is worse than R66's persistent grey. The id
-    /// string matches the debug selector so the two names stay one thing.
-    ///
-    /// R66 R5 (still in force): the container carries **no** click interaction.
-    /// It has no `cursor_pointer` and no mouse handler, so wrapping the two rows
-    /// in one box cannot merge their behaviour. The
-    /// `ThinkingSliderTitleActivated` handler stays on the tier row alone and
-    /// the model row stays inert (R62 R3). The `.id(...)` above does not weaken
-    /// that: an id with no listeners registers a `HitboxBehavior::Normal`
-    /// hitbox and no handler, so R66 R5's constraint — which is about *click
-    /// behaviour*, not about hitbox existence — is untouched. See
-    /// `r66_r5_the_highlight_container_is_inert`.
-    ///
-    /// R2 (R66): the block **hugs its content**. The card is an `items_center`
-    /// flex column, so a child with no explicit width takes its content's width
-    /// rather than stretching; neither row below sets `w_full` any more. The
-    /// `max_w` is the card's own content band, so an over-long model name
-    /// still ellipsises inside the card (R62 R6) instead of widening the block
-    /// past it. See the module report for the measured block width.
-    ///
-    /// R4 (R66): the container adds **horizontal** padding only. Vertical
-    /// padding or an extra gap would change the card's height and the two row
-    /// gaps, which R4 freezes; the vertical rhythm therefore stays exactly
-    /// `CARD_PADDING_TOP`, `CARD_ROW_GAP`, `CARD_ROW_GAP`,
-    /// `CARD_PADDING_BOTTOM`.
-    ///
-    /// R67 R5: no hover **transition/animation** is introduced either — the
-    /// fill is a plain two-state style, so the switch is instant.
     fn render_title_block(
         &self,
         label: String,
@@ -1289,8 +806,6 @@ impl ThinkingSlider {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
-            // R67 R2: the id is what makes the hover transition repaint. See the
-            // doc comment above; removing it silently disables the fill.
             .id("thinking-slider-title-block")
             .debug_selector(|| "thinking-slider-title-block".into())
             .flex()
@@ -1301,8 +816,6 @@ impl ThinkingSlider {
             // grow past the card on a long model name.
             .max_w(px(THINKING_CARD_WIDTH - CARD_INSET * 2.0))
             .rounded_md()
-            // R67 R1: hover-triggered, never persistent. R67 R7: the colour is
-            // the unchanged `bg_hover`.
             .hover(move |style| style.bg(colors.bg_hover))
             .px(px(TITLE_HIGHLIGHT_PADDING_X))
             .child(self.render_title_row(label, label_color, colors, cx))
@@ -1310,35 +823,6 @@ impl ThinkingSlider {
             .into_any_element()
     }
 
-    /// R62 R2 row 1: the tier name and its `>` chevron, and the only control
-    /// that opens the model list.
-    ///
-    /// R59 R2/R3 kept the title row as the level-two entry point; R62 R3 keeps
-    /// that meaning exactly, so the `ThinkingSliderTitleActivated` emit below is
-    /// the same event on the same condition. Only the row's contents changed:
-    /// the bolt icon is gone (R1) and the model name moved to its own row.
-    ///
-    /// **R66 R5**: this row is still the *only* clickable one. The highlight
-    /// container above it is inert, so a click on the model row below still
-    /// does nothing (R62 R3) even though the two rows now share one visual
-    /// block.
-    ///
-    /// The row hugs its own content (R66 R2 removed its `w_full`), so the hit
-    /// area is the `tier name + chevron` group rather than the full card band.
-    /// R66 R2 makes the *block* content-hugging, so a full-width row inside it
-    /// would defeat the measurement; the chevron remains the affordance that
-    /// says "this opens something".
-    ///
-    /// **R67 R4**: this row does **not** re-add the pre-R66 `.hover(bg_hover)`.
-    /// R66 removed it because the block painted the same colour persistently;
-    /// that reason no longer holds (R67 R1 made the block's fill hover-only),
-    /// but the conclusion does — the block's own hover covers this row. A child
-    /// with its own hitbox does not shadow its parent's hitbox: `hit_test`
-    /// collects every hitbox under the pointer and `HitboxBehavior::Normal`
-    /// blocks nothing behind it, so hovering the tier row hovers the block
-    /// too. A row-level hover would be a second, redundant fill of the same
-    /// colour, and would risk the row and the block disagreeing about *when*
-    /// they light up. `cursor_pointer` keeps the interactive affordance.
     fn render_title_row(
         &self,
         label: String,
@@ -1360,9 +844,6 @@ impl ThinkingSlider {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|_, _: &MouseUpEvent, _, cx| {
-                    // R59 R3: the host answers this by swapping this card
-                    // out for the model list, so the two levels are never
-                    // on screen together.
                     cx.emit(ThinkingSliderTitleActivated);
                 }),
             )
@@ -1377,10 +858,6 @@ impl ThinkingSlider {
                     .items_center()
                     .gap(px(TITLE_GROUP_GAP))
                     .min_w_0()
-                    // R62 R2: the tier name keeps R57's **measured** strength
-                    // ramp (`tier_label_color`: purple at the strongest tier,
-                    // blue below it, spec §4.1) — R57 §3.4 R8 froze that and
-                    // R62 does not change it.
                     .child(
                         div()
                             .debug_selector(|| "thinking-slider-label".into())
@@ -1404,22 +881,6 @@ impl ThinkingSlider {
             .into_any_element()
     }
 
-    /// R62 R2 row 2: the model name, centred, in `text_secondary`.
-    ///
-    /// R62 R3 keeps this row **inert**: no id, no cursor, no hover, no mouse
-    /// handler. It stays inside the card's own hit area (the layer's
-    /// `occlude()`), so a click on it is swallowed by the card rather than
-    /// falling through to the composer behind it — it simply does nothing.
-    /// **R66 R5** re-states this: the row now shares a highlight block with the
-    /// clickable tier row, and this row still handles nothing.
-    ///
-    /// R66 R2 removed the row's `w_full`, so the block's width is decided by
-    /// whichever of the two rows is wider rather than always by the card band.
-    ///
-    /// The `debug_selector` sits on the *inner* truncated box rather than on the
-    /// full-width row, so the measured bounds are the model name's own text run.
-    /// That is what makes the centring assertion (A3) meaningful: a full-width
-    /// row would be centred by construction.
     fn render_model_row(&self, colors: ThemeColors) -> AnyElement {
         div()
             .flex()
@@ -1442,13 +903,6 @@ impl ThinkingSlider {
     }
 }
 
-/// Tier-name colour for one model state. Split out of the view so the
-/// measured §4.1 rule is directly testable.
-///
-/// R58 R5: the Off position is **unmeasured**. It is not a tier and never the
-/// strongest, so it falls to [`TIER_LABEL_BASE`] — the same visual as the
-/// lowest tier. That is a deliberate placeholder, not a measurement; see
-/// spec §5 M1/M2.
 fn tier_label_color_for(selected: Option<usize>, strongest: Option<usize>) -> Rgba {
     match (selected, strongest) {
         (Some(selected), Some(strongest)) if selected == strongest => TIER_LABEL_STRONG,
@@ -1478,7 +932,6 @@ mod tests {
         open_slider_with(cx, tier_list, false, current, default)
     }
 
-    /// Opens the slider with an explicit Off capability (R58 R2).
     fn open_slider_with(
         cx: &mut TestAppContext,
         tier_list: Vec<String>,
@@ -1522,13 +975,6 @@ mod tests {
             .expect("slider window is open")
     }
 
-    /// Reads the mounted slider's persisted choice name (R58 R3).
-    fn choice_of(window: &WindowHandle<ThinkingSlider>, cx: &TestAppContext) -> Option<String> {
-        window
-            .read_with(cx, |slider, _| slider.choice_name().map(str::to_string))
-            .expect("slider window is open")
-    }
-
     /// Window-space x of dot `index` for a mounted track.
     fn dot_x(track: Bounds<Pixels>, index: usize, count: usize) -> Pixels {
         track.left() + px(dot_center_offset(index, count))
@@ -1549,135 +995,6 @@ mod tests {
             let model = ThinkingSliderModel::new(list, false, "medium", "medium");
             assert_eq!(model.dot_count(), expected);
         }
-    }
-
-    /// R58 R1: with Off shown the dot count is `efforts.len() + 1` and Off
-    /// occupies position 0. The tier list itself is untouched, which is what
-    /// keeps Off out of `efforts` (R3).
-    #[test]
-    fn off_position_adds_one_dot_and_leaves_the_tier_list_alone() {
-        let model = ThinkingSliderModel::new(
-            tiers(&["low", "medium", "high"]),
-            true,
-            OFF_CHOICE_NAME,
-            "low",
-        );
-        assert!(model.shows_off());
-        assert_eq!(model.dot_count(), 4, "three efforts plus the Off position");
-        assert_eq!(
-            model.tiers(),
-            tiers(&["low", "medium", "high"]).as_slice(),
-            "Off must never be appended to the effort list"
-        );
-        assert!(
-            model
-                .tiers()
-                .iter()
-                .all(|tier| !matches!(tier.as_str(), "off" | "none" | "disabled"))
-        );
-        assert_eq!(model.selected_position(), Some(0), "Off is the far left");
-        assert!(model.is_off());
-        assert_eq!(model.choice_name(), Some(OFF_CHOICE_NAME));
-        assert_eq!(model.label(), OFF_LABEL);
-        assert_eq!(
-            model.tier(),
-            None,
-            "Off is not a tier, so it reports no tier name"
-        );
-    }
-
-    /// R58 R2: without a declared disabled operation there is no Off position,
-    /// and the dot count is exactly `efforts.len()`.
-    #[test]
-    fn no_off_position_without_the_disabled_capability() {
-        let model = ThinkingSliderModel::new(
-            tiers(&["low", "medium", "high"]),
-            false,
-            // Even a persisted `"disabled"` cannot conjure the position: the
-            // provider would reject the request, so the slider falls back.
-            OFF_CHOICE_NAME,
-            "low",
-        );
-        assert!(!model.shows_off());
-        assert_eq!(model.dot_count(), 3);
-        assert!(!model.is_off());
-        assert_ne!(model.choice_name(), Some(OFF_CHOICE_NAME));
-        assert_eq!(
-            model.choice_name(),
-            Some("low"),
-            "an unusable disabled preference falls back to the default tier"
-        );
-    }
-
-    /// R58 R3: selecting position `i` yields the tier `efforts[i - 1]` when Off
-    /// is shown, and `efforts[i]` when it is not. Selecting position 0 yields
-    /// `"disabled"` — a choice name, never an effort.
-    #[test]
-    fn selecting_positions_maps_off_to_disabled_and_tiers_to_efforts() {
-        let mut with_off =
-            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), true, "medium", "medium");
-        assert_eq!(
-            with_off.selected_position(),
-            Some(2),
-            "medium is position 2"
-        );
-        assert_eq!(with_off.select(0), Some(OFF_CHOICE_NAME.to_string()));
-        assert!(with_off.is_off());
-        assert_eq!(with_off.tier(), None);
-        assert_eq!(with_off.select(1), Some("low".to_string()));
-        assert_eq!(with_off.select(2), Some("medium".to_string()));
-        assert_eq!(with_off.select(3), Some("high".to_string()));
-        // Out of range changes nothing.
-        assert_eq!(with_off.select(4), None);
-        assert_eq!(with_off.select(9), None);
-        assert_eq!(with_off.tier(), Some("high"));
-
-        let mut without_off =
-            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), false, "low", "low");
-        assert_eq!(without_off.selected_position(), Some(0));
-        assert_eq!(without_off.select(0), None, "already selected");
-        assert_eq!(without_off.select(2), Some("high".to_string()));
-    }
-
-    /// R58 R4: `"disabled"` in the persisted preference maps to the Off
-    /// position, and `"provider_default"` maps to no position at all (R6).
-    #[test]
-    fn persisted_preference_maps_onto_the_off_position() {
-        let off = ThinkingSliderModel::new(tiers(&["low", "high"]), true, "disabled", "low");
-        assert!(off.is_off());
-        assert_eq!(off.selected_position(), Some(0));
-        assert_eq!(off.choice_name(), Some(OFF_CHOICE_NAME));
-        assert!(!off.is_provider_default());
-
-        // R6: provider default is a third state, not a position.
-        let default =
-            ThinkingSliderModel::new(tiers(&["low", "high"]), true, "provider_default", "low");
-        assert!(!default.is_off());
-        assert!(default.is_provider_default());
-        assert_eq!(default.selected_position(), None, "nothing is selected");
-        assert_eq!(default.choice_name(), None);
-        assert_eq!(default.label(), PROVIDER_DEFAULT_LABEL);
-        assert_eq!(default.dot_count(), 3, "the ladder still renders");
-    }
-
-    /// R58 R1/R5: the Off position never takes the strongest tier's gradient —
-    /// it is the lowest visual, so its label stays the base colour.
-    #[test]
-    fn off_takes_the_lowest_tier_visual() {
-        let off = ThinkingSliderModel::new(tiers(&["low", "high"]), true, "disabled", "low");
-        assert_eq!(
-            tier_label_color_for(off.selected_position(), off.strongest_position()),
-            TIER_LABEL_BASE
-        );
-        // The strongest position with Off shown is the last tier, not Off.
-        assert_eq!(off.strongest_position(), Some(2));
-        assert_eq!(
-            track_fill_style(
-                off.selected_position().unwrap_or_default(),
-                off.strongest_position()
-            ),
-            TrackFillStyle::Flat
-        );
     }
 
     #[test]
@@ -1727,17 +1044,6 @@ mod tests {
         assert_eq!(model.tier(), None);
         assert_eq!(model.selected_position(), None);
         assert_eq!(model.default_tier(), None);
-    }
-
-    /// R58 R2: Off alone is not a ladder. A profile that declares the disabled
-    /// operation but no efforts still renders no slider (R12), because there is
-    /// nothing to slide between.
-    #[test]
-    fn off_alone_does_not_make_a_slider() {
-        let model = ThinkingSliderModel::new(Vec::new(), true, OFF_CHOICE_NAME, "");
-        assert!(model.shows_off());
-        assert_eq!(model.dot_count(), 1, "the Off position is the only dot");
-        assert!(model.tiers().is_empty());
     }
 
     #[test]
@@ -1830,232 +1136,6 @@ mod tests {
         );
     }
 
-    // ---- R65: the fill layer's left cap ----------------------------------
-
-    /// `dot_center_offset` for a six-tier ladder, read off the formula before
-    /// R65 gave the fill layer a radius. R65 is a paint-only change and must
-    /// not move a single dot (spec §5 R2/R3, §6 A4).
-    const R65_SIX_TIER_BASELINE: [f32; 6] = [12.0, 47.8, 83.6, 119.4, 155.2, 191.0];
-
-    /// The same baseline with Off shown — seven positions, matching spec §4b's
-    /// per-tier table.
-    const R65_SEVEN_TIER_BASELINE: [f32; 7] = [12.0, 41.83, 71.67, 101.5, 131.33, 161.17, 191.0];
-
-    /// R65 A4: every tier's dot centre is identical to the pre-change value,
-    /// with and without the Off position.
-    ///
-    /// The literals above are the *pre-change* outputs, not a re-evaluation of
-    /// the formula, so this test can actually fail if `dot_center_offset` or
-    /// the frozen constants move. Recomputing them here would make it
-    /// tautological.
-    #[test]
-    fn r65_a4_dot_centres_match_the_pre_change_baseline() {
-        for (index, expected) in R65_SIX_TIER_BASELINE.iter().enumerate() {
-            let actual = dot_center_offset(index, 6);
-            assert!(
-                (actual - expected).abs() <= 0.01,
-                "R65 A4: six-tier dot {index} moved to {actual} from the \
-                 pre-change baseline {expected}"
-            );
-        }
-        for (index, expected) in R65_SEVEN_TIER_BASELINE.iter().enumerate() {
-            let actual = dot_center_offset(index, 7);
-            assert!(
-                (actual - expected).abs() <= 0.01,
-                "R65 A4: seven-tier dot {index} moved to {actual} from the \
-                 pre-change baseline {expected}"
-            );
-        }
-        // A one-dot ladder centres its single dot, and the strongest dot's
-        // knob stays flush with the measured right edge (R3: 203px is a hard
-        // bound).
-        assert!((dot_center_offset(0, 1) - 101.5).abs() <= 0.01);
-        assert_eq!(
-            dot_center_offset(5, 6) + THINKING_KNOB_DIAMETER / 2.0,
-            THINKING_TRACK_WIDTH
-        );
-    }
-
-    /// R65 §4b/R4b: the flat fill's **effective drawn width** is
-    /// `max(dot_center_offset, THINKING_TRACK_HEIGHT)`.
-    ///
-    /// The padding is what keeps the cap radius from being clamped down: any
-    /// quad narrower than `THINKING_TRACK_HEIGHT` would clamp
-    /// `FILL_LEFT_CAP_RADIUS` to `width / 2`, and the resulting 6px corner pokes
-    /// outside the track's own left cap (spec §4b's corrected arithmetic). With
-    /// the padding the clamp ceiling is `min(24, 24) / 2 = 12`.
-    ///
-    /// This pins the **arithmetic the spec determined** (the effective width and
-    /// the clamp), NOT the painted cap. `capture_screenshot` would need a
-    /// `HeadlessRenderer` this harness does not have — spec §6 says exactly
-    /// that, and the shape proof is a native pixel scan. Do not read this test
-    /// as covering A1/A2/A3.
-    ///
-    /// R67 §4 correction: "not observable" is only true of the *rasterized*
-    /// frame. `Window::painted_quads()` reads the scene's quads without a
-    /// renderer, so a quad's `corner_radii` (what this arithmetic feeds) **is**
-    /// observable in tests — see the R67 A3–A6 tests below, which assert on
-    /// painted fills. This test stays arithmetic-only because that is what the
-    /// spec asked it to pin, not because the paint is unreachable.
-    #[test]
-    fn r65_the_fill_is_padded_to_the_track_height_before_the_cap_radius() {
-        assert_eq!(FILL_LEFT_CAP_RADIUS, 12.0);
-        assert_eq!(FILL_LEFT_CAP_RADIUS, THINKING_TRACK_HEIGHT / 2.0);
-
-        // The lowest tier's raw offset is 12px — below the 24px the cap needs,
-        // so it is padded and the radius is no longer clamped.
-        let narrowest = dot_center_offset(0, 6);
-        assert_eq!(narrowest, 12.0, "the lowest tier's raw fill is 12px wide");
-        assert_eq!(
-            fill_effective_width(0, 6),
-            THINKING_TRACK_HEIGHT,
-            "R4b: the narrow fill is padded to the track height"
-        );
-        let clamped =
-            FILL_LEFT_CAP_RADIUS.min(fill_effective_width(0, 6).min(THINKING_TRACK_HEIGHT) / 2.0);
-        assert_eq!(
-            clamped, FILL_LEFT_CAP_RADIUS,
-            "R4b: the padded quad holds the full cap radius, unclamped"
-        );
-
-        // Every other tier is at least two radii wide, so it needs no padding
-        // and its cap is a full semicircle either way.
-        for index in 1..6 {
-            let width = dot_center_offset(index, 6);
-            assert!(
-                width >= FILL_LEFT_CAP_RADIUS * 2.0,
-                "tier {index}'s fill ({width}px) is narrower than the full cap"
-            );
-            assert_eq!(
-                fill_effective_width(index, 6),
-                width,
-                "tier {index} is wide enough, so it is drawn at its raw offset"
-            );
-        }
-    }
-
-    /// R65 R4b/R4c: the padded case is exactly the "narrow" case, and only it
-    /// rounds the fill's right corners.
-    ///
-    /// R4c's disc is the lowest tier / Off; R4b's padding is what makes it a
-    /// disc rather than a lopsided shape. No `is_off` special case exists — the
-    /// predicate is purely geometric.
-    #[test]
-    fn r65_only_the_padded_fill_takes_a_right_cap() {
-        // Position 0 of a six-tier ladder: raw 12px, padded to 24, both caps.
-        assert!(fill_has_right_cap(0, 6), "the lowest tier is a disc");
-        assert_eq!(fill_effective_width(0, 6), THINKING_TRACK_HEIGHT);
-        // Every wider tier keeps a square right end under the knob.
-        for index in 1..6 {
-            assert!(
-                !fill_has_right_cap(index, 6),
-                "tier {index} is wide enough to keep a square right end"
-            );
-        }
-        // With Off shown, position 0 is the padded one and position 1 (the
-        // lowest effort) is already wider than the track height.
-        assert!(fill_has_right_cap(0, 7));
-        assert!(!fill_has_right_cap(1, 7));
-    }
-
-    /// R65 R1/R4d: the gradient's first segment carries the left cap and its
-    /// **last** segment the right cap; the middle one carries neither.
-    ///
-    /// The initial R65 pass gave only `index == 0` a radius, which left the
-    /// gradient ending on a square corner 12px past the track's right cap
-    /// (spec §4b's second defect).
-    #[test]
-    fn r65_the_gradient_caps_its_first_and_last_segments_only() {
-        let last = TRACK_GRADIENT.len() - 2;
-        assert_eq!(last, 1, "the measured gradient has two segments");
-
-        assert!(gradient_segment_has_left_cap(0));
-        assert!(
-            !gradient_segment_has_right_cap(0),
-            "the first segment abuts"
-        );
-        assert!(gradient_segment_has_right_cap(last));
-        assert!(
-            !gradient_segment_has_left_cap(last),
-            "the last segment abuts"
-        );
-
-        // Every interior segment carries no cap at all, so the halves stay
-        // seamless.
-        for index in 1..last {
-            assert!(!gradient_segment_has_left_cap(index));
-            assert!(!gradient_segment_has_right_cap(index));
-        }
-        assert_eq!(FILL_LEFT_CAP_RADIUS, THINKING_TRACK_HEIGHT / 2.0);
-    }
-
-    /// R65 A4, rendered: the fill layer still begins flush with the track's
-    /// left edge and still spans exactly
-    /// `max(dot_center_offset, THINKING_TRACK_HEIGHT)` for every tier.
-    ///
-    /// A corner radius is paint-only, so it must not move the fill; the only
-    /// width change R65 makes is the R4b padding, which is asserted here as the
-    /// effective width. This says nothing about the painted cap, which this
-    /// harness cannot observe.
-    #[gpui_kit::test]
-    async fn r65_a4_the_fill_keeps_its_left_edge_and_width_at_every_tier(cx: &mut TestAppContext) {
-        let ladder = tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]);
-        let strongest = ladder.len() - 1;
-        for (selected, tier_name) in ladder.iter().enumerate() {
-            let window = open_slider(cx, ladder.clone(), tier_name, "medium");
-            cx.run_until_parked();
-            let mut visual = VisualTestContext::from_window(window.into(), cx);
-            let track = visual
-                .debug_bounds("thinking-slider-track")
-                .expect("mounted track");
-            let expected = fill_effective_width(selected, ladder.len());
-
-            if selected == strongest {
-                // The strongest tier takes the gradient: its first segment
-                // must still start at the track's left edge, and the segment
-                // widths must still sum to the measured track width. The
-                // measured stops and their positions are unchanged (R2).
-                let first = visual
-                    .debug_bounds(GRADIENT_SEGMENT_SELECTORS[0])
-                    .expect("mounted first gradient segment");
-                let second = visual
-                    .debug_bounds(GRADIENT_SEGMENT_SELECTORS[1])
-                    .expect("mounted second gradient segment");
-                assert!(
-                    (f32::from(first.left() - track.left())).abs() <= 0.5,
-                    "R65 A4: the gradient's first segment must begin at the \
-                     track's left edge: segment {:?} vs track {:?}",
-                    first.left(),
-                    track.left()
-                );
-                let spanned = f32::from(first.size.width) + f32::from(second.size.width);
-                assert!(
-                    (spanned - THINKING_TRACK_WIDTH).abs() <= 1.0,
-                    "R65 A4/R2: the gradient must still span the measured \
-                     track: {spanned}px != {THINKING_TRACK_WIDTH}px"
-                );
-                continue;
-            }
-
-            let fill = visual
-                .debug_bounds("thinking-slider-fill-flat")
-                .expect("a non-strongest tier renders the flat fill");
-            assert!(
-                (f32::from(fill.left() - track.left())).abs() <= 0.5,
-                "R65 A4: the fill must stay flush with the track's left edge \
-                 at tier {selected}: fill {:?} vs track {:?}",
-                fill.left(),
-                track.left()
-            );
-            assert!(
-                (f32::from(fill.size.width) - expected).abs() <= 0.5,
-                "R65 A4/R4b: tier {selected}'s fill must span the effective \
-                 width = {expected}px, got {}",
-                f32::from(fill.size.width)
-            );
-        }
-    }
-
     // ---- rendered geometry and interaction -------------------------------
 
     #[gpui_kit::test]
@@ -2076,141 +1156,6 @@ mod tests {
             assert!(visual.debug_bounds("thinking-slider-card").is_some());
             assert!(visual.debug_bounds("thinking-slider-track").is_some());
         }
-    }
-
-    #[gpui_kit::test]
-    async fn a_model_without_tiers_renders_no_slider(cx: &mut TestAppContext) {
-        let window = open_slider(cx, Vec::new(), "medium", "medium");
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert_eq!(rendered_dot_count(&mut visual), 0);
-        assert!(visual.debug_bounds("thinking-slider-card").is_none());
-        assert!(visual.debug_bounds("thinking-slider-track").is_none());
-        // R58 R7: the reset control is gone from every state.
-        assert!(visual.debug_bounds("thinking-slider-reset").is_none());
-    }
-
-    /// R58 R7: the reset control no longer exists, and its removal is a
-    /// structural change rather than a hidden element.
-    #[gpui_kit::test]
-    async fn the_reset_control_is_removed(cx: &mut TestAppContext) {
-        let window = open_slider(
-            cx,
-            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-            "medium",
-            "high",
-        );
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert!(visual.debug_bounds("thinking-slider-card").is_some());
-        assert!(
-            visual.debug_bounds("thinking-slider-reset").is_none(),
-            "R58 R7 removes the reset control entirely"
-        );
-        // The header still renders its tier label (R62 R1 removed only the bolt).
-        assert!(visual.debug_bounds("thinking-slider-label").is_some());
-    }
-
-    /// R58 R1/A1: with Off shown the track renders `efforts.len() + 1` dots and
-    /// the leftmost dot is the Off position.
-    #[gpui_kit::test]
-    async fn off_adds_a_leftmost_dot_when_the_model_supports_it(cx: &mut TestAppContext) {
-        let window = open_slider_with(
-            cx,
-            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-            true,
-            OFF_CHOICE_NAME,
-            "medium",
-        );
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert_eq!(
-            rendered_dot_count(&mut visual),
-            7,
-            "six efforts plus the Off position"
-        );
-        // The knob sits on the leftmost dot, i.e. Off.
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-        let knob = visual
-            .debug_bounds("thinking-slider-knob")
-            .expect("mounted knob");
-        let off_x = dot_x(track, 0, 7);
-        assert!(
-            (f32::from(knob.center().x) - f32::from(off_x)).abs() <= 1.0,
-            "the knob must rest on the Off position at {off_x:?}, not {:?}",
-            knob.center()
-        );
-        assert!(
-            window
-                .read_with(cx, |slider, _| slider.is_off())
-                .unwrap_or(false)
-        );
-        assert_eq!(choice_of(&window, cx), Some(OFF_CHOICE_NAME.to_string()));
-    }
-
-    /// R58 R2/A2: without the disabled capability the Off position is absent
-    /// and the dot count is exactly `efforts.len()`.
-    #[gpui_kit::test]
-    async fn no_off_dot_without_the_disabled_capability(cx: &mut TestAppContext) {
-        let window = open_slider_with(
-            cx,
-            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-            false,
-            "minimal",
-            "medium",
-        );
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert_eq!(rendered_dot_count(&mut visual), 6);
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-        let knob = visual
-            .debug_bounds("thinking-slider-knob")
-            .expect("mounted knob");
-        let first_x = dot_x(track, 0, 6);
-        assert!(
-            (f32::from(knob.center().x) - f32::from(first_x)).abs() <= 1.0,
-            "without Off, the leftmost dot is the first effort"
-        );
-        assert!(
-            !window
-                .read_with(cx, |slider, _| slider.is_off())
-                .unwrap_or(true)
-        );
-        assert_eq!(choice_of(&window, cx), Some("minimal".to_string()));
-    }
-
-    /// R58 R6: `provider_default` renders the ladder with nothing selected —
-    /// no knob and no fill — rather than pretending Off is selected.
-    #[gpui_kit::test]
-    async fn provider_default_renders_with_no_selection(cx: &mut TestAppContext) {
-        let window = open_slider_with(
-            cx,
-            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-            true,
-            "provider_default",
-            "medium",
-        );
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert_eq!(rendered_dot_count(&mut visual), 7);
-        assert!(
-            visual.debug_bounds("thinking-slider-knob").is_none(),
-            "provider_default selects no position"
-        );
-        assert!(
-            visual.debug_bounds("thinking-slider-fill-flat").is_none(),
-            "provider_default fills no track"
-        );
-        assert!(
-            window
-                .read_with(cx, |slider, _| slider.is_provider_default())
-                .unwrap_or(false)
-        );
-        assert_eq!(choice_of(&window, cx), None);
     }
 
     #[gpui_kit::test]
@@ -2254,945 +1199,10 @@ mod tests {
         );
     }
 
-    // ---- R62: the three-row card ----------------------------------------
-
-    /// Opens the card for a six-tier model at `medium`.
-    fn open_three_row_card(cx: &mut TestAppContext) -> WindowHandle<ThinkingSlider> {
-        open_slider(
-            cx,
-            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-            "medium",
-            "medium",
-        )
-    }
-
-    /// R62 A1: the card no longer mounts the bolt icon.
-    ///
-    /// A bare "the bolt's selector is absent" assertion would be vacuous — the
-    /// pre-R62 bolt never carried a `debug_selector`, so that check would pass
-    /// on the old layout too. The proof is therefore **geometric**: the title
-    /// group is exactly its two known children (`tier name + TITLE_GROUP_GAP +
-    /// chevron`) wide. The removed bolt was a 16px icon preceded by the group's
-    /// 4px gap, so a re-added bolt would widen the group by 20px and fail the
-    /// width identity below.
-    ///
-    /// The chevron keeps an explicit selector so the identity has two measured
-    /// terms rather than one measured and one assumed.
-    #[gpui_kit::test]
-    async fn r62_a1_the_title_group_has_no_bolt_icon(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert!(
-            visual.debug_bounds("thinking-slider-card").is_some(),
-            "the card itself must still mount, or this test proves nothing"
-        );
-        let group = visual
-            .debug_bounds("thinking-slider-title-group")
-            .expect("mounted title group");
-        let label = visual
-            .debug_bounds("thinking-slider-label")
-            .expect("mounted tier name");
-        let chevron = visual
-            .debug_bounds("thinking-slider-chevron")
-            .expect("mounted chevron");
-        let children_width =
-            f32::from(label.size.width) + TITLE_GROUP_GAP + f32::from(chevron.size.width);
-        let group_width = f32::from(group.size.width);
-        assert!(
-            (group_width - children_width).abs() <= 1.0,
-            "R62 A1: the title group must contain only the tier name and the \
-             chevron. Group width {group_width}px vs its two children \
-             {children_width}px (label {} + gap {TITLE_GROUP_GAP} + chevron \
-             {}). A difference of ~20px means a 16px bolt icon and its gap are \
-             back in the row.",
-            f32::from(label.size.width),
-            f32::from(chevron.size.width)
-        );
-        // R62 R1: `BOLT_SVG` and its helper are gone from the module, so no
-        // selector for a bolt can exist.
-        assert!(
-            visual.debug_bounds("thinking-slider-bolt").is_none(),
-            "R62 R1: the bolt icon must not be mounted in the card"
-        );
-        // The other title-row parts survive the removal.
-        assert!(visual.debug_bounds("thinking-slider-title").is_some());
-        assert!(
-            visual.debug_bounds("thinking-slider-model").is_some(),
-            "R62 R2 row 2 renders the model name"
-        );
-    }
-
-    /// R62 A2: the tier name and the model name occupy two vertically
-    /// separated rows.
-    ///
-    /// This is the structural claim R62 R2 makes — before R62 the two runs
-    /// shared one row, so this assertion is exactly the one that could not have
-    /// held on the old layout.
-    #[gpui_kit::test]
-    async fn r62_a2_tier_and_model_names_sit_on_separate_rows(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let tier_name = visual
-            .debug_bounds("thinking-slider-label")
-            .expect("mounted tier name");
-        let model_name = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model name");
-        assert!(
-            tier_name.bottom() <= model_name.top(),
-            "R62 A2: the tier name (bottom {:?}) must sit entirely above the \
-             model name (top {:?})",
-            tier_name.bottom(),
-            model_name.top()
-        );
-        // R62 R2 row order: the tier row is first, the model row second.
-        assert!(
-            tier_name.top() < model_name.top(),
-            "R62 R2: the tier name is row 1 and the model name row 2: \
-             tier={tier_name:?} model={model_name:?}"
-        );
-        // R62 R5: the model row is still inside the card and above the track.
-        let card = visual
-            .debug_bounds("thinking-slider-card")
-            .expect("mounted card");
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-        assert!(
-            model_name.bottom() <= track.top() && track.bottom() <= card.bottom(),
-            "R62 R2: the row order is tier, model, track: card={card:?} \
-             model={model_name:?} track={track:?}"
-        );
-    }
-
-    /// R62 A3: both text rows are horizontally centred inside the card.
-    ///
-    /// "Centred" is measured against the **card's** centre, not against the
-    /// row's own bounds: the rows span the card's content width by design, so
-    /// asserting a full-width box is centred would be vacuous. The tier claim is
-    /// made on the `tier name + chevron` group, which is the unit R2 centres.
-    #[gpui_kit::test]
-    async fn r62_a3_both_text_rows_are_centred(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let card = visual
-            .debug_bounds("thinking-slider-card")
-            .expect("mounted card");
-        let card_center = card.center().x;
-        // Anti-vacuity guard: a box as wide as the card's content band would be
-        // centred by construction, so each measured box must be genuinely
-        // narrower than that band for the centring claim to mean anything.
-        let content_band = f32::from(card.size.width) - CARD_INSET * 2.0;
-        let half_tolerance = 1.0;
-        for (label, selector) in [
-            ("tier name + chevron group", "thinking-slider-title-group"),
-            ("model name", "thinking-slider-model"),
-        ] {
-            let row = visual
-                .debug_bounds(selector)
-                .unwrap_or_else(|| panic!("mounted {label}"));
-            assert!(
-                f32::from(row.size.width) < content_band,
-                "R62 A3: the {label} must be shrink-to-fit ({:.1}px) inside the \
-                 {content_band}px content band, or its centring is vacuous",
-                f32::from(row.size.width)
-            );
-            let offset = f32::from(row.center().x) - f32::from(card_center);
-            assert!(
-                offset.abs() <= half_tolerance,
-                "R62 A3: the {label} must be centred in the card: its centre \
-                 {:?} is {offset}px from the card's centre {card_center:?} \
-                 (card={card:?} row={row:?})",
-                row.center().x
-            );
-        }
-    }
-
-    /// R62 A4: row 1 still emits `ThinkingSliderTitleActivated` on click.
-    ///
-    /// R62 R3 requires the two-level drill-down semantics to be unchanged, so
-    /// this asserts the same event the pre-R62 title row emitted. The event is
-    /// observed on the mounted entity itself, which is the production path.
-    #[gpui_kit::test]
-    async fn r62_a4_the_title_row_still_emits_title_activated(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let activated = Arc::new(AtomicUsize::new(0));
-        let captured = activated.clone();
-        let slider = window.entity(cx).expect("slider entity");
-        cx.update(|cx| {
-            cx.subscribe(&slider, move |_, _: &ThinkingSliderTitleActivated, _| {
-                captured.fetch_add(1, Ordering::SeqCst);
-            })
-            .detach();
-        });
-        cx.run_until_parked();
-
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let title = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted title row");
-        visual.simulate_click(title.center(), Modifiers::default());
-        visual.run_until_parked();
-
-        assert_eq!(
-            activated.load(Ordering::SeqCst),
-            1,
-            "R62 A4: clicking row 1 must emit exactly one \
-             ThinkingSliderTitleActivated"
-        );
-    }
-
-    /// R62 R3: the model row does **not** emit the drill-down event.
-    ///
-    /// This is the other half of the R3 decision (row 2 is inert). Without it,
-    /// "row 1 emits" would still hold if both rows emitted.
-    #[gpui_kit::test]
-    async fn r62_r3_the_model_row_is_inert(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let activated = Arc::new(AtomicUsize::new(0));
-        let captured = activated.clone();
-        let slider = window.entity(cx).expect("slider entity");
-        cx.update(|cx| {
-            cx.subscribe(&slider, move |_, _: &ThinkingSliderTitleActivated, _| {
-                captured.fetch_add(1, Ordering::SeqCst);
-            })
-            .detach();
-        });
-        cx.run_until_parked();
-
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let model_name = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model name");
-        let tier_before = tier_of(&window, cx);
-        visual.simulate_click(model_name.center(), Modifiers::default());
-        visual.run_until_parked();
-
-        assert_eq!(
-            activated.load(Ordering::SeqCst),
-            0,
-            "R62 R3: the model row must not open the model list"
-        );
-        assert_eq!(
-            tier_of(&window, cx),
-            tier_before,
-            "R62 R3: the model row must not change the selected tier either"
-        );
-    }
-
-    /// R62 A5: the card keeps the measured `THINKING_CARD_WIDTH`.
-    ///
-    /// R6 freezes the width and §4 forbids shrinking the card, so the taller
-    /// three-row layout must not have traded width for height.
-    #[gpui_kit::test]
-    async fn r62_a5_the_card_keeps_its_width(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let card = visual
-            .debug_bounds("thinking-slider-card")
-            .expect("mounted card");
-        assert!(
-            (f32::from(card.size.width) - THINKING_CARD_WIDTH).abs() <= 1.0,
-            "R62 A5/R6: card width {} != frozen {THINKING_CARD_WIDTH}",
-            f32::from(card.size.width)
-        );
-        assert_eq!(THINKING_CARD_WIDTH, 254.5);
-        // The track is unchanged too (R57 froze the bottom row).
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-        assert!(
-            (f32::from(track.size.width) - THINKING_TRACK_WIDTH).abs() <= 1.0,
-            "R57's bottom row is unchanged: track width {} != {THINKING_TRACK_WIDTH}",
-            f32::from(track.size.width)
-        );
-    }
-
-    /// R62 A6: the card's shadow is no longer `shadow_sm`.
-    ///
-    /// `shadow_sm` is a GPUI framework method that writes a `Vec<BoxShadow>`
-    /// straight into the element's style, so the value is asserted on the same
-    /// builder the card uses: `card_shadow` must produce `shadow_lg`'s two
-    /// layers, and must differ from `shadow_sm`'s. `StyleRefinement`'s fields
-    /// are `Option`-wrapped by the derive, which is why the shadow is read
-    /// through the style accessor rather than compared as a whole.
-    #[test]
-    fn r62_a6_the_card_shadow_is_stronger_than_shadow_sm() {
-        let large = card_shadow(div()).style().box_shadow.clone();
-        let small = div().shadow_sm().style().box_shadow.clone();
-        let large = large.expect("card_shadow sets a box shadow");
-        let small = small.expect("shadow_sm sets a box shadow");
-        assert_ne!(
-            large, small,
-            "R62 A6/R4: the card's shadow must no longer be shadow_sm"
-        );
-        // `shadow_lg` is Tailwind's two-layer 10px/4px offset pair; the larger
-        // blur is the value that distinguishes it from `shadow_sm`'s 3px/2px.
-        assert_eq!(
-            large.len(),
-            2,
-            "shadow_lg is a two-layer shadow, got {large:?}"
-        );
-        let widest_blur = large
-            .iter()
-            .map(|shadow| f32::from(shadow.blur_radius))
-            .fold(0.0_f32, f32::max);
-        assert!(
-            widest_blur >= 15.0,
-            "R62 R4: the card's shadow must be visibly wider than shadow_sm's \
-             3px blur; got a widest blur of {widest_blur}px"
-        );
-        // The stronger tier is a strict escalation: the largest blur of the
-        // chosen shadow exceeds the largest blur `shadow_sm` offers.
-        let widest_small = small
-            .iter()
-            .map(|shadow| f32::from(shadow.blur_radius))
-            .fold(0.0_f32, f32::max);
-        assert!(
-            widest_blur > widest_small,
-            "R62 R4: {widest_blur}px blur must exceed shadow_sm's {widest_small}px"
-        );
-    }
-
-    /// R62 R4: the surface stays **opaque**. The separation comes from the
-    /// shadow alone; R4 explicitly forbids a translucent background.
-    #[test]
-    fn r62_r4_the_card_background_stays_opaque() {
-        let colors = vega_theme::Theme::light().colors;
-        assert_eq!(
-            colors.bg_elevated.a, 1.0,
-            "R62 R4: the card's surface token must stay fully opaque"
-        );
-        assert_eq!(colors.bg_elevated, measured_rgba(0xFFFFFFFF));
-        // Dark mode too, so the rule is not appearance-dependent.
-        assert_eq!(vega_theme::Theme::dark().colors.bg_elevated.a, 1.0);
-    }
-
-    /// R62 M1: the three-row card's content height, reported as an assertion so
-    /// a future change to any row's height is visible rather than silent.
-    ///
-    /// The height is measured from the card's top edge to the track's bottom
-    /// edge plus the bottom padding, rather than read from `card.size.height`.
-    /// In this harness the card is the window's **root** view, so a fixed-width
-    /// flex column stretches to the window's height; the content-driven height
-    /// is the number M1 is about, and it is what the production mount (where
-    /// the card sits in a shrink-to-fit absolute layer) renders.
-    ///
-    /// **Measured on the rendered frame: 106px** (the production mount in
-    /// `model_picker_levels.rs` reads 108px; see the note below). The sum is
-    /// `CARD_PADDING_TOP + 2 text rows + track + 2 × CARD_ROW_GAP +
-    /// CARD_PADDING_BOTTOM` = 12 + 21 + 21 + 24 + 16 + 14 = 108. The text rows
-    /// render at 21px rather than the 20px [`CARD_TEXT_ROW_HEIGHT`] floor
-    /// because the 13px `SIDEBAR` line box is 21px; the floor is a minimum, not
-    /// a fixed height, which is exactly what keeps the text from being clipped.
-    ///
-    /// The pre-R62 card was 12 + 24 + 8 + 24 + 14 = 82px, so the card grows
-    /// **26px** taller and covers that much more of the 37px utility bar
-    /// (R62 R5, M1 — measured as 55px into the bar on the production mount).
-    #[gpui_kit::test]
-    async fn r62_m1_the_card_height_is_the_three_row_sum(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let card = visual
-            .debug_bounds("thinking-slider-card")
-            .expect("mounted card");
-        let title = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted title row");
-        let model_name = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model row");
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-
-        // The paddings and gaps, measured on the rendered frame.
-        assert!(
-            (f32::from(title.top() - card.top()) - CARD_PADDING_TOP).abs() <= 1.0,
-            "R62 M1: the top padding is CARD_PADDING_TOP ({CARD_PADDING_TOP}px), \
-             got {}",
-            f32::from(title.top() - card.top())
-        );
-        let gap_above_model = f32::from(model_name.top() - title.bottom());
-        let gap_above_track = f32::from(track.top() - model_name.bottom());
-        assert!(
-            (gap_above_model - CARD_ROW_GAP).abs() <= 1.0
-                && (gap_above_track - CARD_ROW_GAP).abs() <= 1.0,
-            "R62 R2: the row gap is CARD_ROW_GAP ({CARD_ROW_GAP}px) in both \
-             gaps, got {gap_above_model}px and {gap_above_track}px"
-        );
-
-        // The content-driven height: card top to track bottom, plus the bottom
-        // padding the track's bounds cannot include.
-        let content_height = f32::from(track.bottom() - card.top()) + CARD_PADDING_BOTTOM;
-        // The two text rows are read from the frame, not assumed to be the
-        // floor: `min_h` means the rendered height is the larger of the floor
-        // and the line box, and M1 is about what actually renders.
-        let text_rows = f32::from(title.size.height) + f32::from(model_name.size.height);
-        let expected = CARD_PADDING_TOP
-            + text_rows
-            + THINKING_TRACK_HEIGHT
-            + CARD_ROW_GAP * 2.0
-            + CARD_PADDING_BOTTOM;
-        assert!(
-            (content_height - expected).abs() <= 1.0,
-            "R62 M1: the card's content height is {content_height}px; its three \
-             rows ({text_rows}px of text) plus padding sum to {expected}px"
-        );
-        // The floor holds: neither text row collapsed below it.
-        for (label, row) in [("title", title), ("model", model_name)] {
-            assert!(
-                f32::from(row.size.height) >= CARD_TEXT_ROW_HEIGHT - 1.0,
-                "R62 R2: the {label} row ({:?}) must be at least \
-                 CARD_TEXT_ROW_HEIGHT ({CARD_TEXT_ROW_HEIGHT}px)",
-                row.size.height
-            );
-        }
-
-        // The pre-R62 two-row card, for the R5 growth claim: one title row that
-        // shared its line with the model name, then the track.
-        let two_row = CARD_PADDING_TOP
-            + THINKING_TRACK_HEIGHT
-            + CARD_ROW_GAP
-            + THINKING_TRACK_HEIGHT
-            + CARD_PADDING_BOTTOM;
-        assert_eq!(two_row, 82.0, "the pre-R62 card measured 82px");
-        assert_eq!(
-            content_height - two_row,
-            26.0,
-            "R62 R5/M1: the card grows 26px taller (two text rows plus the \
-             second gap, minus the row height the old title row shared), so it \
-             covers 26px more of the utility bar — accepted by R62 R5"
-        );
-    }
-
-    /// R62 R6: a long model name ellipsises inside the card instead of spilling
-    /// past its edge.
-    ///
-    /// The card's width is frozen, so an unbounded model name would either
-    /// stretch the card or paint outside it. `min_w_0` + `truncate` is what
-    /// keeps it inside; this asserts the rendered text run stays within the
-    /// card's content band.
-    #[gpui_kit::test]
-    async fn r62_r6_a_long_model_name_stays_inside_the_card(cx: &mut TestAppContext) {
-        let long_name = "gpt-6-astra-ultra-extended-preview-2026-09-14-build-0001";
-        let long_name_owned = long_name.to_string();
-        let window = cx.update(|cx| {
-            cx.set_global(vega_theme::Theme::light());
-            cx.open_window(WindowOptions::default(), move |_, cx| {
-                cx.new(|cx| {
-                    ThinkingSlider::new(
-                        long_name_owned,
-                        tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-                        false,
-                        "medium",
-                        "medium",
-                        cx,
-                    )
-                })
-            })
-            .expect("long-name slider window")
-        });
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let card = visual
-            .debug_bounds("thinking-slider-card")
-            .expect("mounted card");
-        let model_name = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model name");
-        assert!(
-            (f32::from(card.size.width) - THINKING_CARD_WIDTH).abs() <= 1.0,
-            "R62 R6: a long model name must not widen the card: {} != \
-             {THINKING_CARD_WIDTH}",
-            f32::from(card.size.width)
-        );
-        assert!(
-            model_name.left() >= card.left() && model_name.right() <= card.right(),
-            "R62 R6: the model name ({model_name:?}) must stay inside the card \
-             ({card:?}) and ellipsise rather than spill"
-        );
-    }
-
-    // ---- R66: the title block, the labels, and the tier-name table ---------
-
-    /// R66 A1 (spec §5): [`tier_display_label`] returns the reference's own
-    /// label for each of the nine ladder ids, quoted verbatim from
-    /// `composer.mode.local.reasoning.<tier>.label`.
-    ///
-    /// The table is written out here rather than derived from
-    /// [`TIER_LADDER`], so the two non-trivial mappings (`low` → `Light`,
-    /// `xhigh` → `Extra High`) are pinned as literals a future "cleanup" cannot
-    /// silently normalise.
-    #[test]
-    fn r66_a1_tier_display_label_matches_the_reference_table() {
-        for (effort, expected) in [
-            ("none", "None"),
-            ("minimal", "Minimal"),
-            ("low", "Light"),
-            ("medium", "Medium"),
-            ("high", "High"),
-            ("xhigh", "Extra High"),
-            ("max", "Max"),
-            ("ultra", "Ultra"),
-            ("persistent", "Persistent"),
-        ] {
-            assert_eq!(
-                tier_display_label(effort),
-                expected,
-                "R66 A1: `{effort}` must display as `{expected}`"
-            );
-        }
-        // The two deliberate divergences, called out on their own so a
-        // "correction" to the obvious reading fails loudly.
-        assert_eq!(tier_display_label("low"), "Light", "not `Low`");
-        assert_eq!(tier_display_label("xhigh"), "Extra High", "not `XHigh`");
-    }
-
-    /// R66 A2 (spec §5): an id outside the table takes the capitalisation
-    /// fallback — the first letter is uppercased and the rest is untouched.
-    ///
-    /// Vega's efforts are a configurable `Vec<String>`, so this path is real,
-    /// not defensive.
-    #[test]
-    fn r66_a2_unknown_ids_are_capitalised() {
-        assert_eq!(tier_display_label("somecustom"), "Somecustom");
-        assert_eq!(tier_display_label("Custom"), "Custom");
-        assert_eq!(tier_display_label("a"), "A");
-        assert_eq!(tier_display_label(""), "", "an empty id stays empty");
-        // Only the first character moves: no lowercasing of the tail, so an
-        // already-camel id keeps its shape.
-        assert_eq!(tier_display_label("megaHigh"), "MegaHigh");
-        // A multi-byte first character is a `char`, not a byte.
-        assert_eq!(tier_display_label("élevé"), "Élevé");
-    }
-
-    /// R66 A3 (spec §5): the two label constants are English, matching the
-    /// reference's composer namespace.
-    ///
-    /// **R67 R8** updates the Off label from `None` to `Off`. The test keeps its
-    /// R66 name because the claim it makes (the two title labels are ASCII
-    /// English, not the old CJK) is unchanged; only the Off string moved. The
-    /// `Off` value is pinned here as a literal, so a revert to `None` — or back
-    /// to `关闭` — fails loudly.
-    #[test]
-    fn r66_a3_the_title_labels_are_english() {
-        assert_eq!(OFF_LABEL, "Off", "R67 R8: Vega's own label for its Off");
-        assert_eq!(PROVIDER_DEFAULT_LABEL, "Default");
-        // R66 R7's note: the Settings-page key is a different namespace and
-        // must not have been used.
-        assert_ne!(PROVIDER_DEFAULT_LABEL, "Model default");
-        // No CJK left in either label (R66 §3's complaint).
-        for label in [OFF_LABEL, PROVIDER_DEFAULT_LABEL] {
-            assert!(
-                label.is_ascii(),
-                "R66 §3: `{label}` must be an ASCII English label"
-            );
-        }
-    }
-
-    /// R66 A4 (spec §5, R8): the **persisted** choice name is unchanged.
-    ///
-    /// It is a storage contract, not a display string: `reasoning.toml` stores
-    /// it in `ReasoningProfile.preference` and `core.rs` maps it to
-    /// `ReasoningChoice::Disabled`. R66 changes only what is shown.
-    #[test]
-    fn r66_a4_the_off_choice_name_is_unchanged() {
-        assert_eq!(OFF_CHOICE_NAME, "disabled");
-        assert_ne!(
-            OFF_LABEL, OFF_CHOICE_NAME,
-            "the display label and the persisted name are now different strings"
-        );
-        let model = ThinkingSliderModel::new(tiers(&["low", "high"]), true, OFF_CHOICE_NAME, "low");
-        assert_eq!(
-            model.choice_name(),
-            Some(OFF_CHOICE_NAME),
-            "R8: the Off position still persists `disabled`"
-        );
-        assert_eq!(model.label(), OFF_LABEL, "R8: while showing `Off`");
-    }
-
-    /// R66 R10/R12: [`ThinkingSliderModel::label`] displays the mapped tier
-    /// name while the model keeps reporting the raw effort id.
-    #[test]
-    fn r66_the_model_label_maps_the_id_but_keeps_the_persisted_one() {
-        let model =
-            ThinkingSliderModel::new(tiers(&["minimal", "low", "max"]), false, "low", "low");
-        assert_eq!(model.label(), "Light", "R10: `low` displays as `Light`");
-        assert_eq!(
-            model.tier(),
-            Some("low"),
-            "R12: the persisted effort id is untouched"
-        );
-        assert_eq!(model.choice_name(), Some("low"));
-
-        let strongest =
-            ThinkingSliderModel::new(tiers(&["minimal", "low", "max"]), false, "max", "low");
-        assert_eq!(strongest.label(), "Max", "R9/A9: `max` displays as `Max`");
-        assert_eq!(strongest.tier(), Some("max"));
-    }
-
-    /// R66 A5 (spec §5): the **one** highlight container's bounds contain both
-    /// text rows' bounds.
-    ///
-    /// This is the structural claim of R1: a single block spanning the tier row
-    /// *and* the model row, rather than the pre-R66 arrangement in which the
-    /// tier row carried the background alone.
-    ///
-    /// Containment is asserted with explicit `<=` comparisons rather than
-    /// `Bounds::is_contained_within`, which uses a strict `<` on the
-    /// bottom-right corner: the block has no vertical padding (R66 R4), so the
-    /// model row's bottom edge coincides with the block's and the strict form
-    /// would reject the very layout R1 asks for.
-    ///
-    /// **This test measures geometry, not paint.** It asserts where the block
-    /// *is*, not what it *fills*; the fill is covered by the R67 A3–A6 tests
-    /// below, which read `Window::painted_quads()`. (`capture_screenshot` would
-    /// need a `HeadlessRenderer` this harness does not have, but
-    /// `painted_quads()` reads `rendered_frame.scene.quads` directly and needs
-    /// no renderer — see spec §4.)
-    #[gpui_kit::test]
-    async fn r66_a5_the_highlight_block_contains_both_rows(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-
-        let block = visual
-            .debug_bounds("thinking-slider-title-block")
-            .expect("mounted title block");
-        let tier_row = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted tier row");
-        let model_row = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model row");
-
-        for (label, row) in [("tier row", tier_row), ("model row", model_row)] {
-            assert!(
-                block.left() <= row.left()
-                    && row.right() <= block.right()
-                    && block.top() <= row.top()
-                    && row.bottom() <= block.bottom(),
-                "R66 A5: the highlight block ({block:?}) must contain the {label} \
-                 ({row:?})"
-            );
-        }
-
-        // R1: one block, not two. The tier row's top and the model row's bottom
-        // are the block's own edges, so nothing separates them.
-        assert!(
-            block.top() <= tier_row.top() && model_row.bottom() <= block.bottom(),
-            "R66 R1: the block spans from the tier row through the model row"
-        );
-    }
-
-    /// R66 R2 (spec §2): the highlight block hugs its content instead of
-    /// stretching to the card's content band.
-    ///
-    /// The pre-R66 title row was `w_full`, so its background was the full 203px
-    /// band (the user's 403px full-row measurement). R2 requires the block's
-    /// width to come from the wider row plus the horizontal padding, which is
-    /// asserted as an arithmetic identity rather than a magic number.
-    ///
-    /// The measured widths are reported in the failure messages so a regression
-    /// prints the number that moved.
-    #[gpui_kit::test]
-    async fn r66_r2_the_highlight_block_hugs_its_content(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-
-        let block = visual
-            .debug_bounds("thinking-slider-title-block")
-            .expect("mounted title block");
-        let card = visual
-            .debug_bounds("thinking-slider-card")
-            .expect("mounted card");
-        let tier_row = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted tier row");
-        let model_row = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model row");
-
-        let content_band = THINKING_CARD_WIDTH - CARD_INSET * 2.0;
-        assert!(
-            f32::from(block.size.width) < f32::from(card.size.width) - 1.0,
-            "R66 R2: the block ({}px) must not stretch to the card width \
-             ({}px) — the pre-R66 `w_full` row did",
-            f32::from(block.size.width),
-            f32::from(card.size.width)
-        );
-        assert!(
-            f32::from(block.size.width) <= content_band + 1.0,
-            "R66 R2: the block ({}px) must stay inside the {content_band}px \
-             content band",
-            f32::from(block.size.width)
-        );
-
-        let widest_row = f32::from(tier_row.size.width).max(f32::from(model_row.size.width));
-        let expected = widest_row + TITLE_HIGHLIGHT_PADDING_X * 2.0;
-        assert!(
-            (f32::from(block.size.width) - expected).abs() <= 1.0,
-            "R66 R2: the block must be the wider row plus its padding: got \
-             {}px, expected {expected}px (tier row {}px, model row {}px, \
-             padding {TITLE_HIGHLIGHT_PADDING_X}px each side)",
-            f32::from(block.size.width),
-            f32::from(tier_row.size.width),
-            f32::from(model_row.size.width)
-        );
-    }
-
-    /// R66 A6 (spec §5, R4): the frozen geometry is unchanged by the block.
-    ///
-    /// R4 forbids changing the card width, the two row heights, the gap between
-    /// the rows, the slider position or the card height. The block therefore
-    /// carries **horizontal** padding only; this test pins the vertical rhythm
-    /// and the two measured widths against the same values the R62 tests use.
-    #[gpui_kit::test]
-    async fn r66_a6_the_frozen_geometry_is_unchanged(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-
-        let card = visual
-            .debug_bounds("thinking-slider-card")
-            .expect("mounted card");
-        let block = visual
-            .debug_bounds("thinking-slider-title-block")
-            .expect("mounted title block");
-        let tier_row = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted tier row");
-        let model_row = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model row");
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-        let knob = visual
-            .debug_bounds("thinking-slider-knob")
-            .expect("mounted knob");
-
-        // Card and track: the R57/R62 measured widths.
-        assert!(
-            (f32::from(card.size.width) - THINKING_CARD_WIDTH).abs() <= 1.0,
-            "R66 R4: card width {} != frozen {THINKING_CARD_WIDTH}",
-            f32::from(card.size.width)
-        );
-        assert!(
-            (f32::from(track.size.width) - THINKING_TRACK_WIDTH).abs() <= 1.0
-                && (f32::from(track.size.height) - THINKING_TRACK_HEIGHT).abs() <= 1.0,
-            "R66 R4: the slider is unchanged: track {:?}",
-            track.size
-        );
-        assert!(
-            (f32::from(knob.size.width) - THINKING_KNOB_DIAMETER).abs() <= 1.0,
-            "R66 R4: the knob is unchanged: {:?}",
-            knob.size
-        );
-
-        // The vertical rhythm: top padding, the row gap above the model row
-        // (now the block's internal gap), the gap above the track, and both
-        // row heights. R4 freezes all of them.
-        assert!(
-            (f32::from(block.top() - card.top()) - CARD_PADDING_TOP).abs() <= 1.0,
-            "R66 R4: the block adds no top padding: block {:?} card {:?}",
-            block.top(),
-            card.top()
-        );
-        for (label, gap) in [
-            (
-                "between the tier row and the model row",
-                f32::from(model_row.top() - tier_row.bottom()),
-            ),
-            (
-                "between the model row and the track",
-                f32::from(track.top() - model_row.bottom()),
-            ),
-        ] {
-            assert!(
-                (gap - CARD_ROW_GAP).abs() <= 1.0,
-                "R66 R4: the gap {label} is CARD_ROW_GAP ({CARD_ROW_GAP}px), \
-                 got {gap}px"
-            );
-        }
-        for (label, row) in [("tier", tier_row), ("model", model_row)] {
-            assert!(
-                f32::from(row.size.height) >= CARD_TEXT_ROW_HEIGHT - 1.0,
-                "R66 R4: the {label} row ({:?}) must be at least \
-                 CARD_TEXT_ROW_HEIGHT ({CARD_TEXT_ROW_HEIGHT}px)",
-                row.size.height
-            );
-        }
-        // The card's content height is the R62 M1 sum, unchanged: the block's
-        // horizontal padding cannot move it.
-        let content_height = f32::from(track.bottom() - card.top()) + CARD_PADDING_BOTTOM;
-        let expected = CARD_PADDING_TOP
-            + f32::from(tier_row.size.height)
-            + f32::from(model_row.size.height)
-            + CARD_ROW_GAP * 2.0
-            + THINKING_TRACK_HEIGHT
-            + CARD_PADDING_BOTTOM;
-        assert!(
-            (content_height - expected).abs() <= 1.0,
-            "R66 R4: the card's content height is {content_height}px, expected \
-             {expected}px — the block must not have changed it"
-        );
-    }
-
-    /// R66 A7 (spec §5, R5 — the critical regression): merging the two rows into
-    /// one visual block must **not** merge their interactions.
-    ///
-    /// Clicking the tier row emits `ThinkingSliderTitleActivated`; clicking the
-    /// model row emits nothing. Both halves are asserted in one test because
-    /// either alone is satisfiable by the wrong implementation: "the tier row
-    /// emits" also holds if both emit, and "the model row is inert" also holds
-    /// if neither does.
-    ///
-    /// This is the assertion that catches the most likely mistake in R66 — a
-    /// click handler moved from the tier row onto the shared container, which
-    /// would make the model row clickable and break R62 R3.
-    #[gpui_kit::test]
-    async fn r66_a7_the_block_does_not_merge_the_row_interactions(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let activated = Arc::new(AtomicUsize::new(0));
-        let captured = activated.clone();
-        let slider = window.entity(cx).expect("slider entity");
-        cx.update(|cx| {
-            cx.subscribe(&slider, move |_, _: &ThinkingSliderTitleActivated, _| {
-                captured.fetch_add(1, Ordering::SeqCst);
-            })
-            .detach();
-        });
-        cx.run_until_parked();
-
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let model_row = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model row");
-        let tier_before = tier_of(&window, cx);
-        visual.simulate_click(model_row.center(), Modifiers::default());
-        visual.run_until_parked();
-
-        assert_eq!(
-            activated.load(Ordering::SeqCst),
-            0,
-            "R66 R5 / R62 R3: clicking the model row must not drill down"
-        );
-        assert_eq!(
-            tier_of(&window, cx),
-            tier_before,
-            "R66 R5: the model row must not change the selected tier either"
-        );
-
-        // Now the tier row, on the same mounted card: it must still drill down.
-        let tier_row = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted tier row");
-        visual.simulate_click(tier_row.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            activated.load(Ordering::SeqCst),
-            1,
-            "R66 R5 / R59 R3: clicking the tier row must still emit exactly one \
-             ThinkingSliderTitleActivated"
-        );
-    }
-
-    /// R66 R5: the highlight container itself handles nothing.
-    ///
-    /// A7 clicks the model row's own bounds. This is the complementary check:
-    /// the block has no `id`, no cursor and no handler, so a click on the part
-    /// of the block that lies outside both rows (the horizontal padding) cannot
-    /// drill down either. Together they rule out "the handler moved to the
-    /// container" rather than merely "the handler is somewhere on the model
-    /// row".
-    #[gpui_kit::test]
-    async fn r66_r5_the_highlight_container_is_inert(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let activated = Arc::new(AtomicUsize::new(0));
-        let captured = activated.clone();
-        let slider = window.entity(cx).expect("slider entity");
-        cx.update(|cx| {
-            cx.subscribe(&slider, move |_, _: &ThinkingSliderTitleActivated, _| {
-                captured.fetch_add(1, Ordering::SeqCst);
-            })
-            .detach();
-        });
-        cx.run_until_parked();
-
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let block = visual
-            .debug_bounds("thinking-slider-title-block")
-            .expect("mounted title block");
-        let tier_row = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted tier row");
-        // A point inside the block but outside the tier row: the block's left
-        // padding, at the tier row's own height.
-        let padding_point = gpui_kit::point(block.left() + px(1.0), tier_row.center().y);
-        assert!(
-            block.contains(&padding_point) && !tier_row.contains(&padding_point),
-            "this test only means something on the block's padding: block={block:?} \
-             tier_row={tier_row:?} point={padding_point:?}"
-        );
-        visual.simulate_click(padding_point, Modifiers::default());
-        visual.run_until_parked();
-
-        assert_eq!(
-            activated.load(Ordering::SeqCst),
-            0,
-            "R66 R5: the highlight container must carry no click handler of its \
-             own"
-        );
-    }
-
-    // ---- R67: the hover fill and the Off label ----------------------------
-
-    /// A point far from the card. Every hover assertion below enters the block
-    /// **from here**, because GPUI detects hover on a *transition*: the div's
-    /// mouse-move listener compares `hitbox.is_hovered(window)` against the
-    /// previous frame's state and only notifies on a change. A test that began
-    /// with the pointer already on the block would read the un-hovered paint and
-    /// prove nothing.
-    fn away_from_the_card() -> Point<Pixels> {
-        gpui_kit::point(px(600.), px(600.))
-    }
-
     /// Moves the pointer and lets the resulting frame settle.
     fn move_pointer(visual: &mut VisualTestContext, position: Point<Pixels>) {
         visual.simulate_mouse_move(position, None, Modifiers::default());
         visual.run_until_parked();
-    }
-
-    /// The painted scene, plus the window's scale factor.
-    ///
-    /// `Window::painted_quads()` reads `rendered_frame.scene.quads` directly and
-    /// needs **no** `HeadlessRenderer`, so unlike `capture_screenshot` it works
-    /// in this harness (spec §4). It is the R67 evidence for "what is painted".
-    ///
-    /// The quads' bounds are in **scaled** pixels (2× on this machine), unlike
-    /// [`VisualTestContext::debug_bounds`], which is logical. The scale factor is
-    /// returned so callers can bring the two into the same space.
-    fn painted_scene(
-        visual: &mut VisualTestContext,
-        window: WindowHandle<ThinkingSlider>,
-    ) -> (Vec<Quad>, f32) {
-        visual
-            .update_window(window.into(), |_, window, _| {
-                (window.painted_quads(), window.scale_factor())
-            })
-            .expect("the window must still be open to read its painted quads")
     }
 
     /// Whether two colours are the same fill.
@@ -3218,29 +1228,6 @@ mod tests {
         .all(|(actual, expected)| (actual - expected).abs() <= 1.0 / 255.0)
     }
 
-    /// The `bg_hover`-coloured quads, in **logical** pixels.
-    ///
-    /// `bg_hover` is the only fill the title block can paint, and no other
-    /// element in this card uses it, so this list is exactly "the highlight".
-    fn hover_fills(quads: &[Quad], scale: f32) -> Vec<Bounds<f32>> {
-        let expected = Hsla::from(vega_theme::Theme::light().colors.bg_hover);
-        quads
-            .iter()
-            .filter_map(|quad| quad.background.as_solid().map(|solid| (quad, solid)))
-            .filter(|(_, solid)| same_colour(*solid, expected))
-            .map(|(quad, _)| Bounds {
-                origin: Point {
-                    x: quad.bounds.left().as_f32() / scale,
-                    y: quad.bounds.top().as_f32() / scale,
-                },
-                size: Size {
-                    width: quad.bounds.size.width.as_f32() / scale,
-                    height: quad.bounds.size.height.as_f32() / scale,
-                },
-            })
-            .collect()
-    }
-
     /// Whether `outer` (logical) covers `inner` (logical), allowing for the
     /// device-pixel snapping `painted_quads` applies.
     fn covers(outer: &Bounds<f32>, inner: &Bounds<Pixels>) -> bool {
@@ -3249,243 +1236,6 @@ mod tests {
             && outer.right() >= f32::from(inner.right()) - TOLERANCE
             && outer.top() <= f32::from(inner.top()) + TOLERANCE
             && outer.bottom() >= f32::from(inner.bottom()) - TOLERANCE
-    }
-
-    /// R67 A1 (spec §4): the Off label is `Off`, and the two strings it must not
-    /// be confused with are unchanged.
-    ///
-    /// R67 R8 changes only the **display** label. `OFF_CHOICE_NAME` is the
-    /// persistence contract (`reasoning.toml` stores it; `core.rs` maps it to
-    /// `ReasoningChoice::Disabled`) and R9 forbids touching it;
-    /// `PROVIDER_DEFAULT_LABEL` was not questioned in R67 (R10).
-    #[test]
-    fn r67_a1_the_off_label_is_off() {
-        assert_eq!(
-            OFF_LABEL, "Off",
-            "R8: Vega's own label for its Off position"
-        );
-        assert_eq!(
-            OFF_CHOICE_NAME, "disabled",
-            "R9: the persisted choice name is a storage contract"
-        );
-        assert_eq!(PROVIDER_DEFAULT_LABEL, "Default", "R10: untouched by R67");
-        assert_ne!(
-            OFF_LABEL, OFF_CHOICE_NAME,
-            "the display label and the persisted name are different strings"
-        );
-        assert_ne!(OFF_LABEL, "关闭", "R12: the CJK label must not come back");
-    }
-
-    /// R67 A2 (spec §4): the **tier** table was not collaterally changed while
-    /// fixing the Off label.
-    ///
-    /// This is the guard for the single easiest mistake in R67 R11: reading the
-    /// user's "null → off" as an edit to `tier_display_label`'s `"none"` row.
-    /// That row is the display name of the effort tier `none`, a different thing
-    /// from Vega's Off position, and it must stay `None`.
-    ///
-    /// [`r66_a1_tier_display_label_matches_the_reference_table`] remains the
-    /// full-table authority (all nine ids, quoted as literals); this test pins
-    /// only the three ids R67 A2 names, so it is a guard rather than a
-    /// duplicate.
-    #[test]
-    fn r67_a2_the_tier_table_survives_the_off_label_change() {
-        assert_eq!(
-            tier_display_label("none"),
-            "None",
-            "R11: the `none` **tier** keeps its own label; only the Off \
-             position's label moved to `Off`"
-        );
-        assert_eq!(tier_display_label("low"), "Light", "R11: not `Low`");
-        assert_eq!(
-            tier_display_label("xhigh"),
-            "Extra High",
-            "R11: not `XHigh`"
-        );
-    }
-
-    /// R67 A3 (spec §4, R1): the block's grey is **not persistent**.
-    ///
-    /// R66 R3 painted `bg_hover` whenever the card was open. R67 R1 requires the
-    /// fill to be absent unless the pointer is over the block, which is the
-    /// claim this test makes: with the pointer parked far from the card, no
-    /// `bg_hover` quad covers the block.
-    ///
-    /// The quads' bounds are scaled pixels; `covers` compares them against
-    /// `debug_bounds`, which is logical, after dividing by the scale factor.
-    #[gpui_kit::test]
-    async fn r67_a3_the_highlight_is_not_persistent(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let block = visual
-            .debug_bounds("thinking-slider-title-block")
-            .expect("mounted title block");
-
-        move_pointer(&mut visual, away_from_the_card());
-        let (quads, scale) = painted_scene(&mut visual, window);
-        // Anti-vacuity: an empty scene would satisfy the assertion below for the
-        // wrong reason.
-        assert!(
-            !quads.is_empty(),
-            "the harness must be painting quads, or this test proves nothing"
-        );
-        let fills = hover_fills(&quads, scale);
-        assert!(
-            fills.iter().all(|fill| !covers(fill, &block)),
-            "R67 R1: with the pointer away from the card the title block must not \
-             paint `bg_hover`; found {fills:?} over the block {block:?} \
-             ({} quads painted)",
-            quads.len()
-        );
-    }
-
-    /// R67 A4 (spec §4, R3): hovering the **tier row** lights one block covering
-    /// both rows.
-    ///
-    /// R3's hit area is the whole block, not one row: a fill that contains the
-    /// model row's bounds as well as the tier row's is the proof that this is
-    /// one block over two rows rather than a row-local hover. The padding case
-    /// (the third hit area R3 names) is asserted here too, since it is the same
-    /// block hover reached at a point neither row's own hitbox covers.
-    #[gpui_kit::test]
-    async fn r67_a4_hovering_the_tier_row_lights_the_whole_block(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let block = visual
-            .debug_bounds("thinking-slider-title-block")
-            .expect("mounted title block");
-        let tier_row = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted tier row");
-        let model_row = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model row");
-
-        // R67 R2/M1: hover is a transition, so enter from outside the block.
-        move_pointer(&mut visual, away_from_the_card());
-        move_pointer(&mut visual, tier_row.center());
-
-        let (quads, scale) = painted_scene(&mut visual, window);
-        let fills = hover_fills(&quads, scale);
-        assert!(
-            !quads.is_empty(),
-            "the harness must be painting quads, or this test proves nothing"
-        );
-        assert_eq!(
-            fills.len(),
-            1,
-            "R67 R3: one block, not two fills; got {fills:?}"
-        );
-        assert!(
-            covers(&fills[0], &tier_row) && covers(&fills[0], &model_row),
-            "R67 R3: the hover fill must cover the tier row AND the model row \
-             (one block over both); fill {:?}, tier row {tier_row:?}, model row \
-             {model_row:?}",
-            fills[0]
-        );
-
-        // R3's third hit area: the block's own horizontal padding, which lies
-        // outside the tier row's hitbox. The block's hover still lights, because
-        // `hit_test` collects every hitbox under the pointer and a child's
-        // `HitboxBehavior::Normal` does not shadow its parent's (spec §2 M2).
-        let padding_point = gpui_kit::point(block.left() + px(1.0), tier_row.center().y);
-        assert!(
-            block.contains(&padding_point) && !tier_row.contains(&padding_point),
-            "this phase only means something on the block's padding: \
-             block={block:?} tier_row={tier_row:?} point={padding_point:?}"
-        );
-        move_pointer(&mut visual, away_from_the_card());
-        move_pointer(&mut visual, padding_point);
-        let (quads, scale) = painted_scene(&mut visual, window);
-        let fills = hover_fills(&quads, scale);
-        assert_eq!(
-            fills.len(),
-            1,
-            "R67 R3: hovering the block's padding must light the same single \
-             block; got {fills:?}"
-        );
-        assert!(
-            covers(&fills[0], &tier_row) && covers(&fills[0], &model_row),
-            "R67 R3: the padding hover must cover both rows too; fill {:?}",
-            fills[0]
-        );
-    }
-
-    /// R67 A5 (spec §4, R3): hovering the **model row** lights the same single
-    /// block over both rows.
-    ///
-    /// R62 R3 keeps this row inert for *clicks*; R67 R3 says it still counts as
-    /// part of the block for *hover*. The two claims are independent, and
-    /// `r66_r5_the_highlight_container_is_inert` / `r66_a7_...` pin the click
-    /// half.
-    #[gpui_kit::test]
-    async fn r67_a5_hovering_the_model_row_lights_the_whole_block(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let tier_row = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted tier row");
-        let model_row = visual
-            .debug_bounds("thinking-slider-model")
-            .expect("mounted model row");
-
-        move_pointer(&mut visual, away_from_the_card());
-        move_pointer(&mut visual, model_row.center());
-
-        let (quads, scale) = painted_scene(&mut visual, window);
-        let fills = hover_fills(&quads, scale);
-        assert!(
-            !quads.is_empty(),
-            "the harness must be painting quads, or this test proves nothing"
-        );
-        assert_eq!(
-            fills.len(),
-            1,
-            "R67 R3: one block, not two fills; got {fills:?}"
-        );
-        assert!(
-            covers(&fills[0], &tier_row) && covers(&fills[0], &model_row),
-            "R67 R3: hovering the model row must light the block over BOTH rows; \
-             fill {:?}, tier row {tier_row:?}, model row {model_row:?}",
-            fills[0]
-        );
-    }
-
-    /// R67 A6 (spec §4, R1/R3): the fill reverts when the pointer leaves.
-    ///
-    /// A3 proves "absent when never hovered" and A4 proves "present when
-    /// hovered"; this test proves the two are the same element's two states, by
-    /// observing both on one mounted card.
-    #[gpui_kit::test]
-    async fn r67_a6_the_highlight_reverts_when_the_pointer_leaves(cx: &mut TestAppContext) {
-        let window = open_three_row_card(cx);
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let tier_row = visual
-            .debug_bounds("thinking-slider-title")
-            .expect("mounted tier row");
-
-        move_pointer(&mut visual, away_from_the_card());
-        move_pointer(&mut visual, tier_row.center());
-        let (quads, scale) = painted_scene(&mut visual, window);
-        assert_eq!(
-            hover_fills(&quads, scale).len(),
-            1,
-            "precondition: the block must be lit before this test can observe it \
-             going dark"
-        );
-
-        move_pointer(&mut visual, away_from_the_card());
-        let (quads, scale) = painted_scene(&mut visual, window);
-        let fills = hover_fills(&quads, scale);
-        assert!(
-            fills.is_empty(),
-            "R67 R1: the fill must be gone once the pointer leaves the block; \
-             still painted: {fills:?}"
-        );
     }
 
     #[gpui_kit::test]
@@ -3516,84 +1266,6 @@ mod tests {
                 "click on dot {index}"
             );
         }
-    }
-
-    /// R58 R3: clicking the leftmost dot with Off shown emits `"disabled"` —
-    /// the choice name that maps to `ReasoningChoice::Disabled` — and clicking
-    /// the next dot emits the first effort. The Off position must never
-    /// surface as an effort.
-    #[gpui_kit::test]
-    async fn clicking_the_off_dot_selects_disabled(cx: &mut TestAppContext) {
-        let window = open_slider_with(
-            cx,
-            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-            true,
-            "medium",
-            "medium",
-        );
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-        let count = 7;
-
-        // `medium` is position 3 with Off at 0.
-        assert_eq!(choice_of(&window, cx), Some("medium".to_string()));
-        visual.simulate_click(
-            gpui_kit::point(dot_x(track, 0, count), track.center().y),
-            Modifiers::default(),
-        );
-        visual.run_until_parked();
-        assert_eq!(
-            choice_of(&window, cx),
-            Some(OFF_CHOICE_NAME.to_string()),
-            "the leftmost dot is the Off position"
-        );
-        assert!(
-            window
-                .read_with(cx, |slider, _| slider.is_off())
-                .unwrap_or(false),
-            "Off is not a tier"
-        );
-        assert_eq!(tier_of(&window, cx), None);
-
-        // The first effort sits one dot to the right of Off.
-        visual.simulate_click(
-            gpui_kit::point(dot_x(track, 1, count), track.center().y),
-            Modifiers::default(),
-        );
-        visual.run_until_parked();
-        assert_eq!(choice_of(&window, cx), Some("minimal".to_string()));
-        assert!(
-            !window
-                .read_with(cx, |slider, _| slider.is_off())
-                .unwrap_or(true)
-        );
-    }
-
-    /// R58 R3/A4: without Off, clicking dot `i` still selects `efforts[i]` —
-    /// the R57 behaviour is unchanged.
-    #[gpui_kit::test]
-    async fn clicking_a_dot_without_off_still_selects_the_effort(cx: &mut TestAppContext) {
-        let window = open_slider(
-            cx,
-            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-            "medium",
-            "medium",
-        );
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-        visual.simulate_click(
-            gpui_kit::point(dot_x(track, 0, 6), track.center().y),
-            Modifiers::default(),
-        );
-        visual.run_until_parked();
-        assert_eq!(tier_of(&window, cx), Some("minimal".to_string()));
-        assert_eq!(choice_of(&window, cx), Some("minimal".to_string()));
     }
 
     #[gpui_kit::test]
@@ -3726,58 +1398,6 @@ mod tests {
             tier_of(&window, cx),
             Some("xhigh".to_string()),
             "release resolves the tier under the pointer"
-        );
-    }
-
-    /// R58 R1/R3: a drag onto the Off dot selects `"disabled"`, the same as a
-    /// click. The position is part of the same gesture as the tiers.
-    #[gpui_kit::test]
-    async fn dragging_onto_off_selects_disabled(cx: &mut TestAppContext) {
-        let window = open_slider_with(
-            cx,
-            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
-            true,
-            "minimal",
-            "medium",
-        );
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let track = visual
-            .debug_bounds("thinking-slider-track")
-            .expect("mounted track");
-        let count = 7;
-
-        // Position 1 is the first effort (`minimal`).
-        visual.simulate_mouse_down(
-            gpui_kit::point(dot_x(track, 1, count), track.center().y),
-            MouseButton::Left,
-            Modifiers::default(),
-        );
-        visual.run_until_parked();
-        assert_eq!(choice_of(&window, cx), Some("minimal".to_string()));
-        // GPUI consumes the first move past its 2 px threshold to create the
-        // drag, so that move carries no `drag_move`; the next one does.
-        visual.simulate_mouse_move(
-            gpui_kit::point(dot_x(track, 2, count), track.center().y),
-            Some(MouseButton::Left),
-            Modifiers::default(),
-        );
-        visual.run_until_parked();
-        visual.simulate_mouse_move(
-            gpui_kit::point(dot_x(track, 0, count), track.center().y),
-            Some(MouseButton::Left),
-            Modifiers::default(),
-        );
-        visual.run_until_parked();
-        assert_eq!(
-            choice_of(&window, cx),
-            Some(OFF_CHOICE_NAME.to_string()),
-            "dragging onto the leftmost dot selects Off"
-        );
-        assert!(
-            window
-                .read_with(cx, |slider, _| slider.is_off())
-                .unwrap_or(false)
         );
     }
 

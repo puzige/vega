@@ -10,11 +10,11 @@
 
 Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
-**2026-09-25 用户更新（Issue #149）**：按 [移除真实 E2E 规格](docs/vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
+**2026-09-25 用户更新**：按 [移除真实 E2E 规格](docs/vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
 
 ## 最高原则：SDD（Spec-Driven Development）
 
-**2026-09-22 用户更新（Issue #140）**：按 [测试依赖隔离规格](docs/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 将 Git/Shell 业务分支测试迁移到进程内测试替身，保留真实业务与安全断言，并以适配层集成测试验证真实进程行为。该明确授权优先于下文要求每个业务场景均走真实 E2E 的旧约束；不得把 mock 证据标作真实进程验收。
+**2026-09-22 用户更新**：按 [测试依赖隔离规格](docs/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 将 Git/Shell 业务分支测试迁移到进程内测试替身，保留真实业务与安全断言，并以适配层集成测试验证真实进程行为。该明确授权优先于下文要求每个业务场景均走真实 E2E 的旧约束；不得把 mock 证据标作真实进程验收。
 
 **Spec 先行，代码不允许先于 spec。** 所有实现工作必须对应 [`docs/`](docs/) 中的具体规格章节。设计文档以本仓库 `docs/` 为准（主索引见 [README](README.md#状态)）。
 
@@ -64,21 +64,21 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 提交与 PR
 
-- 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 [vega-features.md](docs/vega-features.md)）
+- 提交格式：`feat(scope): <一句话>` / `fix(scope): <一句话>`（功能点 ID 见 [features](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
 - PR 必须附：本卡功能点测试命令与云端原始输出（运行前标记待 CI 验证） + 与 spec 的偏离说明（必须为无）；**不附本地全量测试**（全量门禁由云端 `pr-check` 承担）
 - 合并方式：由 Codex squash merge。**用户手测通过后才删除本卡远端功能分支及本地分支/worktree**；合并时保留，取代旧的合并后立即删分支规则。
 - **合并由 Codex 主动完成**：确认待合并最新 head 的 required check 绿后合入 master，完成后才把卡片改为 `In review` 等待用户手测；PR 不使用自动关闭 Issue 的关键字。
 
-## 验证门禁与云端 CI（2026-09-25 用户裁决，Issue #175、#179、#183、#188）
+## 验证门禁与云端 CI（2026-09-25 用户裁决，相关规格）
 
-**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [Issue #188 规格](docs/vega-issue-188-parallel-ci-checks.md)（在 [Issue #183](docs/vega-issue-183-nextest-ci.md) 测试运行器基础上并行 Clippy 与 nextest）；云端门禁拆分的历史背景见 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md)。
+**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [相关规格](docs/vega-issue-188-parallel-ci-checks.md)（在 [相关规格](docs/vega-issue-183-nextest-ci.md) 测试运行器基础上并行 Clippy 与 nextest）；云端门禁拆分的历史背景见 [相关规格](docs/vega-issue-123-pr-check-pipeline.md)。
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
 - `.github/workflows/pr-check.yml`：仅在 `pull_request`（base `master`）运行两个无相互依赖的 `macos-latest` job：Clippy job 顺序运行 `cargo fmt --all -- --check` 和 `cargo clippy --workspace --all-targets -- -D warnings`，Nextest job 运行 `cargo nextest run --workspace`。两者使用 Rust 1.98.0；Clippy job 安装 `rustfmt` / `clippy`。轻量汇总 job 的 required check 名固定为 `check (fmt, clippy, test)`，依赖两个执行 job，以 `always()` 运行；仅两者结果均为 `success` 才通过，失败、取消或跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。任何失败都使 required check 失败。保留 `contents: read`、执行 job 的 60 分钟超时和同 ref 并发取消；使用 `Swatinem/rust-cache@v2` 在两个执行 job 中恢复 master CICD 的 `vega-master-build` 缓存，但 PR 不写缓存；不使用归档、分片、额外 build 或手动 dispatch。
 - `.github/workflows/cicd.yml`（GitHub Actions 名称 `master`）：push 到 master（PR merge 后）直接调用 `release.yml` 共用发布流程，固定事件 SHA 自动分配 patch 版本、打包并发布 Release；与 PR check 使用相同 `shared-key: vega-master-build`，仅自动 master 发布写缓存。rust-cache 的实际缓存还依赖 runner 平台、工具链和 Cargo 输入，因此只有兼容的缓存条目会命中。
-- 2026-09-25 用户裁决（Issue #181）：每次合入 master 自动 patch 发布；保留人工 stable tag 与手动重跑，共用发布串行队列 `queue: max`，不取消正在运行的发布。先 draft，资产完整才 publish；同 SHA 幂等、正式资产不可覆盖，拒绝逆序发布。见 [发版指南](docs/vega-release.md)。
-- 历史 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md) 与 [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
+- 2026-09-25 用户裁决：每次合入 master 自动 patch 发布；保留人工 stable tag 与手动重跑，共用发布串行队列 `queue: max`，不取消正在运行的发布。先 draft，资产完整才 publish；同 SHA 幂等、正式资产不可覆盖，拒绝逆序发布。见 [发版指南](docs/vega-release.md)。
+- 历史 [相关规格](docs/vega-issue-123-pr-check-pipeline.md) 与 [相关规格](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [相关规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。调度器的移除不代表允许本地编译；本地验证遵守顶部的快速 check 限制。
 - `.config/nextest.toml` 用于云端 PR gate：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
 - **本地仅做快速静态 check，功能点测试与全量门禁只交云端 `pr-check`**（2026-10-16 用户更新，取代本地定向测试要求）。任务级 production-root 回归与测试矩阵仍须编写；保留既有安全断言、失败输出及任务验收矩阵，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
@@ -118,7 +118,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 **推论与正确做法：**
 
 - **焦点归属不能靠截图判断**。composer 等控件用 `focus_visible`（仅键盘导航时可见），鼠标点击后的截图看不出焦点在哪。要验证焦点，读**代码链路**或用 GPUI `TestAppContext`（见下）。
-- **焦点行为的权威验证方式是生产测试**。GPUI 测试可直接注入并断言真实焦点状态：`window.update(cx, |_, w, cx| handle.focus(w, cx))` 后用 `handle.contains_focused(w, cx)` 断言，`window.focus_next(cx)` 可验证键盘导航路径。范例：`crates/vega/src/window/workspace.rs` 的 `r51_inactive_close_follows_parent_focus_and_group_hover`。
+- **焦点行为的权威验证方式是生产测试**。GPUI 测试可直接注入并断言真实焦点状态：`window.update(cx, |_, w, cx| handle.focus(w, cx))` 后用 `handle.contains_focused(w, cx)` 断言，`window.focus_next(cx)` 可验证键盘导航路径。范例：`crates/vega/src/window/workspace.rs` 的 `_inactive_close_follows_parent_focus_and_group_hover`。
 - **合成鼠标事件仍可用于**：悬停（tooltip 会出现）、点击按钮触发无焦点依赖的动作。但依赖焦点状态的交互（tab 键盘激活、`focus_visible` 样式）不可用此法验证。
 - **原生像素验收仍有效**，用于颜色/几何/布局：截图 + 像素测量是可靠证据（如暗色下 tab pill 填充 `(39,39,39)` 与 `0.03×255+0.97×32=38.61` 吻合）。不可靠的只有**依赖焦点的**那部分。
 - 验收报告须区分「行为已验证（生产测试）」与「像素外观已验证（截图）」；不要把前者当作后者。
@@ -127,7 +127,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 原生验收的操作方法：六个必踩的坑（2026-09-14/15 实测）
 
-R62 验收耗时远超预期，全部时间花在**定位窗口和坐标**上，与产品无关。以下每条都真实发生过一次，照做可省一整轮。
+ 验收耗时远超预期，全部时间花在**定位窗口和坐标**上，与产品无关。以下每条都真实发生过一次，照做可省一整轮。
 
 ### 坑 1 · `pgrep -f '<path>'` 会匹配到自己
 
@@ -161,15 +161,15 @@ ZCode 自己的窗口标题是 `Vega Desktop`，界面上也有 `Full access` �
 
 **改用**：每次都从 `CGWindowListCopyWindowInfo` 现读 origin，再加窗口内相对偏移。
 
-### 坑 6 · 点不开某个 UI 时，先查数据前提，再调坐标（R66 实测）
+### 坑 6 · 点不开某个 UI 时，先查数据前提，再调坐标（实测）
 
-R66 验收时我反复打不开滑块卡片，**花了十几轮在调整点击坐标**，全是白费。真实原因是数据前提不满足：`~/.config/vega/reasoning.toml` 只给 `glm-5.3-flash` 声明了档位，而当时选中的模型是 `deepseek-v4-flash` —— 按 R57 R12，**无档位的模型不渲染滑块卡片**。
+ 验收时我反复打不开滑块卡片，**花了十几轮在调整点击坐标**，全是白费。真实原因是数据前提不满足：`~/.config/vega/reasoning.toml` 只给 `glm-5.3-flash` 声明了档位，而当时选中的模型是 `deepseek-v4-flash` —— 按规则，**无档位的模型不渲染滑块卡片**。
 
 **规则**：某个 UI 元素反复点不开时，**先确认它的渲染前提**（该模型的配置、该路由的状态、该 feature 开关），再去调坐标。前提不满足时，坐标怎么调都不会有反应。
 
 配置位置速查：reasoning 档位在 `~/.config/vega/reasoning.toml`（**不在** `~/Library/Application Support/ai.vega/` 的数据库里，也不在任何 `.toml` 仓库文件里）。
 
-## GPUI 圆角：`overflow_hidden` 不裁圆角，且半径会被钳制（R65 实测）
+## GPUI 圆角：`overflow_hidden` 不裁圆角，且半径会被钳制（实测）
 
 两条都必须记住，各自踩过一次坑。
 
@@ -179,7 +179,7 @@ R66 验收时我反复打不开滑块卡片，**花了十几轮在调整点击�
 
 **给父元素加 `.rounded(N).overflow_hidden()` 不会把子元素裁成圆角。** `rounded` 只作用于元素**自己的背景**。
 
-需要圆角的子元素必须**自己带 `rounded`**。R65 的滑块填充左端方角就是这个原因——它一直指望父级轨道裁剪，而那条路在 GPUI 里不存在。
+需要圆角的子元素必须**自己带 `rounded`**。 的滑块填充左端方角就是这个原因——它一直指望父级轨道裁剪，而那条路在 GPUI 里不存在。
 
 ### 2 · 圆角半径按 quad 尺寸钳制
 
@@ -190,23 +190,23 @@ let max = cmp::min(size.width, size.height) / 2.;
 // 每个角实际半径 = min(设定值, max)
 ```
 
-**窄元素上设大半径会被静默压小。** R65 首轮我写"12px 宽的填充设半径 12，钳到 6 就是半圆"——错。真半圆需要半径 = 高度的一半（12），钳到 6 只能得到 6px 圆角，于是填充戳出轨道 6px。
+**窄元素上设大半径会被静默压小。**  首轮我写"12px 宽的填充设半径 12，钳到 6 就是半圆"——错。真半圆需要半径 = 高度的一半（12），钳到 6 只能得到 6px 圆角，于是填充戳出轨道 6px。
 
 **正确做法**：先把元素宽度撑到 `>= 2 × 目标半径`（本例撑到高度 24），再设半径。多出的宽度要确保被后绘的元素盖住。
 
-## 规格里出现数值断言时，必须当场验算（R65 教训）
+## 规格里出现数值断言时，必须当场验算（经验）
 
-R65 首轮规格里我写了"半径钳到 6.0 视觉上就是左半圆"，**没有验算**。实际是填充左界 x=6 而圆点左界 x=12，露出 6px。这个未验算的断言直接导致首轮修复无效，浪费一整轮实现 + 打包 + 验收。
+ 首轮规格里我写了"半径钳到 6.0 视觉上就是左半圆"，**没有验算**。实际是填充左界 x=6 而圆点左界 x=12，露出 6px。这个未验算的断言直接导致首轮修复无效，浪费一整轮实现 + 打包 + 验收。
 
 **规则**：规格中凡是出现半径、坐标、宽度、差值等**数值断言**，必须在写规格时就逐行算一遍，并把算术表附在规格里。不要用"视觉上""大概"这类词替代计算。
 
-## 改「形状/对称性」类缺陷时，先列全所有产生该形状的代码路径（R65 教训）
+## 改「形状/对称性」类缺陷时，先列全所有产生该形状的代码路径（经验）
 
-R65 修滑块填充左端时，我没问"另一端呢"。实际上产生这个形状的有 **flat + gradient 两个分支 × 左右两端 = 4 个角**，我只改了其中一个，于是最强档渐变右端仍是方角（用户第二次复验才发现）。
+ 修滑块填充左端时，我没问"另一端呢"。实际上产生这个形状的有 **flat + gradient 两个分支 × 左右两端 = 4 个角**，我只改了其中一个，于是最强档渐变右端仍是方角（用户第二次复验才发现）。
 
 **规则**：这类缺陷开工前先枚举所有代码路径与所有端/角，逐一核对，并在验收判据里**为每一个都写一条**。
 
-## GPUI 绘制顺序：弹出层必须 `deferred`（R64 实测）
+## GPUI 绘制顺序：弹出层必须 `deferred`（实测）
 
 **在带边框的卡片里挂浮层，卡片边框会画在浮层之上。** 这是 GPUI 的绘制顺序决定的，不是 z-index 问题，`occlude()` 解决不了。
 
@@ -220,24 +220,24 @@ if self.is_border_visible() {
 }
 ```
 
-**`occlude()` 只影响鼠标命中测试**，不影响绘制顺序——`div.rs:1208` 的 `Div::occlude` 只做 `interactivity().occlude_mouse()`，即设 `HitboxBehavior::BlockMouse`。R61/R62 给每个浮层都加了 `occlude()` 并据此认为层级已处理，**这个推断是错的**（R64 §2 记录了错误链条）。
+**`occlude()` 只影响鼠标命中测试**，不影响绘制顺序——`div.rs:1208` 的 `Div::occlude` 只做 `interactivity().occlude_mouse()`，即设 `HitboxBehavior::BlockMouse`。/ 给每个浮层都加了 `occlude()` 并据此认为层级已处理，**这个推断是错的**（ §2 记录了错误链条）。
 
 **正确做法**：浮层包一层 `gpui_kit::deferred(...).with_priority(2)`。语义是*"delay the painting of its child until after all of its ancestors, **while keeping its layout as part of the current element tree**"*（`elements/deferred.rs:11`）——布局不变、只把绘制挪到祖先之后，由 `window.rs:3343` 的 `paint_deferred_draws()` 在 `root_element.paint()` 之后执行。
 
 注意两点：
 
-- **`deferred` 不改变坐标**。`defer_draw` 会记录 `absolute_offset`（`window.rs:4105`）。R59 曾记录"deferred 导致卡片落在 x 1232.5"——那是它把 deferred 包在 `max_w + mx_auto` 的**外层盒子**里所致（R61 已删该结构），不是 deferred 本身。
+- **`deferred` 不改变坐标**。`defer_draw` 会记录 `absolute_offset`（`window.rs:4105`）。 曾记录"deferred 导致卡片落在 x 1232.5"——那是它把 deferred 包在 `max_w + mx_auto` 的**外层盒子**里所致（ 已删该结构），不是 deferred 本身。
 - **仓库里已有正确先例**：`branch_selector.rs:997`、`render_file_dropdown`（`render.rs:702`）、侧栏菜单。新增浮层时照抄这个模式。
 
-**验收方法**：浮层类改动不能只看"内容对不对"。必须做一次**像素行扫描**：取浮层中部一行，确认其中没有其他层画上来的元素（R64 用 `vfind`/`vscan` 定位到 `rgb(232,232,232)` = `border_subtle` 的连续 run）。
+**验收方法**：浮层类改动不能只看"内容对不对"。必须做一次**像素行扫描**：取浮层中部一行，确认其中没有其他层画上来的元素（ 用 `vfind`/`vscan` 定位到 `rgb(232,232,232)` = `border_subtle` 的连续 run）。
 
-## GPUI hover：`.hover()` 不带 `.id()` 就永不重绘（R67 实测）
+## GPUI hover：`.hover()` 不带 `.id()` 就永不重绘（实测）
 
 **给一个匿名 div 加 `.hover(...)`，它永远不会变色。** 必须同时给它 `.id(...)`。
 
 原因：GPUI 只在元素拥有 **element state** 时才注册 hover 翻转的重绘监听（`gpui-pre-0.3.4/src/elements/div.rs:2783`），而 element state 只在 `Element::id()` 返回 `Some` 时存在（`div.rs:1848`，id 来自 `interactivity.element_id`，即 `.id(...)`）。绘制分支（`div.rs:3391-3405`）在有 hitbox 时读 `hitbox.is_hovered(window)`，无 hitbox 时退化到 element state——匿名 div 没有 element state。
 
-R67 的临时探针实测（同一份代码，只差一个 `.id()`）：
+ 的临时探针实测（同一份代码，只差一个 `.id()`）：
 
 ```
 ANONYMOUS: base        renders=1 bg=BLUE
@@ -248,13 +248,13 @@ STATEFUL:  hover-child renders=2 bg=RED    ← 生效
 STATEFUL:  left        renders=3 bg=BLUE   ← 退出还原
 ```
 
-**这条最阴的地方是它静默**：不报错、不 panic，只是永远不亮。若把某个原本常驻的底色改成 hover 态（R67 就是），漏掉 `.id()` 会得到一个**比改动前更糟**的结果。
+**这条最阴的地方是它静默**：不报错、不 panic，只是永远不亮。若把某个原本常驻的底色改成 hover 态（ 就是），漏掉 `.id()` 会得到一个**比改动前更糟**的结果。
 
-**加 `.id()` 不等于加交互。** id 只注册一个 `HitboxBehavior::Normal` 的 hitbox，不注册任何监听器；R66 R5 约束的是**点击行为**，`r66_r5_the_highlight_container_is_inert` 在加了 id 之后仍通过。
+**加 `.id()` 不等于加交互。** id 只注册一个 `HitboxBehavior::Normal` 的 hitbox，不注册任何监听器；  约束的是**点击行为**，`_the_highlight_container_is_inert` 在加了 id 之后仍通过。
 
 **顺带**：hover 命中父块时，指针落在带自己 hitbox 的**子元素**上也一样有效——`hit_test` 收集指针下所有 hitbox，`HitboxBehavior::Normal` 不遮挡后面的（`window.rs:1095`）。所以"整块 hover"不必给每行单独加 hover。
 
-## 测试平台能观测绘制：用 `painted_quads()`，不是 `capture_screenshot`（R67 实测）
+## 测试平台能观测绘制：用 `painted_quads()`，不是 `capture_screenshot`（实测）
 
 旧注释说"测试平台没有 headless renderer，所以绘制结果不可观测"——**只对了一半**，别再用它当借口跳过绘制断言。
 
@@ -272,20 +272,20 @@ let quads = visual
 - **`painted_quads` 的 bounds 是缩放像素**（本机 2×），`debug_bounds` 是逻辑像素。要按 `window.scale_factor()` 换算后才能互相比较。
 - **`Background` 的 `tag`/`solid` 字段是 `pub(crate)`**，外部无法 `match Background::Solid(..)`。用公开的 `Background::as_solid()` 取 `Hsla`，再比色。
 
-R67 因此把"hover 才亮"从"看截图差不多"变成了可证伪的生产测试（`r67_a3..a6`）。
+ 因此把"hover 才亮"从"看截图差不多"变成了可证伪的生产测试（`_a3..a6`）。
 
-## 验证 hover 类改动不能用点击（R67 实测）
+## 验证 hover 类改动不能用点击（实测）
 
 `scripts/native-drive.swift` 只做点击。**hover 态不能靠它验证**——点标题行会进二级列表，点别处又测不到 hover。需要一个 **move-only** 驱动：激活 → `CGEvent(mouseMoved)` 移动（不要 down/up）→ 截图。
 
-另外：hover 是**翻转**触发的，所以移动要分两步（先到块外的起点，再到目标点），一步直接落在目标上可能不触发。R67 的驱动先移到窗口左下角再移到目标。
+另外：hover 是**翻转**触发的，所以移动要分两步（先到块外的起点，再到目标点），一步直接落在目标上可能不触发。 的驱动先移到窗口左下角再移到目标。
 
-## GPUI 点击外部关闭：`on_mouse_down_out` 会与 mouse-up 触发器互相打架（R68 实测）
+## GPUI 点击外部关闭：`on_mouse_down_out` 会与 mouse-up 触发器互相打架（实测）
 
 `on_mouse_down_out` 是"点击外部关闭"的正确原语。三条实测结论：
 
 - **不需要 `.id()`**（与 `.hover()` 相反，见上一节）；
-- **在 `gpui_kit::deferred` 包裹下照常工作**，不影响 R64 的绘制顺序修复；
+- **在 `gpui_kit::deferred` 包裹下照常工作**，不影响的绘制顺序修复；
 - 跑在 **capture 阶段**，且只在指针位于该元素 bounds **之外**时触发。
 
 ### 坑：触发器的开关在 mouse-up，会被 out 处理器吃掉
@@ -309,23 +309,23 @@ R67 因此把"hover 才亮"从"看截图差不多"变成了可证伪的生产测
 
 弹窗自己仍要保留一个 bubble 阶段的 `.on_mouse_down(stop_propagation())`，否则点弹窗内部会穿透到**祖先**的外部点击处理器（如 composer 卡片自己的）。它与 capture 阶段的 out 处理器**阶段不同、互不冲突**，两个都要有。
 
-## 对齐参考实现时，先确认 CSS 变体作用域（R68 教训）
+## 对齐参考实现时，先确认 CSS 变体作用域（经验）
 
 参考实现的 CSS 里有大量 `[data-vega-window-type=browser]` / `=electron` 变体块。**同一组 token 在不同变体下值不同**，取错会得出完全反向的结论。
 
-R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-height: 36` 等值，写下"行高该 32→36、内边距差一倍"；而 Codex **桌面截图**实测行高 28.5、行内边距只差 2px——**真正的缺陷是卡片宽度差 30%**。若照第一版做，会把行高改大（反向优化）而没修宽度。
+曾发生过：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-height: 36` 等值，写下"行高该 32→36、内边距差一倍"；而 Codex **桌面截图**实测行高 28.5、行内边距只差 2px——**真正的缺陷是卡片宽度差 30%**。若照第一版做，会把行高改大（反向优化）而没修宽度。
 
 **方法**：
 
 1. 取 token 时**连 selector 一起记录**，确认它属于哪个变体；
-2. **用截图交叉验证**：先找一个已知量校准截图的缩放比例（R68 用 Vega 自身的 32px 行高：实测 64px 行距 ÷ 32 = 2×），再按比例读其它量；
+2. **用截图交叉验证**：先找一个已知量校准截图的缩放比例（用 Vega 自身的 32px 行高：实测 64px 行距 ÷ 32 = 2×），再按比例读其它量；
 3. 两者矛盾时，**以产品截图为准**，并把这个矛盾写进报告。
 
 ## 架构红线（速记，详见 exec-guide）
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
 - 跨 crate 共享类型只放 `vega_conversation::types`
-- API key 只存配置根下独立的 owner-only 明文凭据文件（R10），不写 config.toml/项目文件/日志；不访问旧 Keychain
+- API key 只存配置根下独立的 owner-only 明文凭据文件，不写 config.toml/项目文件/日志；不访问旧 Keychain
 - 非测试代码禁止 `unwrap()`/`expect()`
 - schema 只增不删，走 `migrations/` 递增文件
 - **代码中禁止任何注释**（`///`/`//!`/行内 `//`/`/* */`）：注释说明必要 = 命名或结构没写好，去改命名/拆函数/提类型。仅 `unsafe` 块的 `// SAFETY:` 例外（2026-09-23 用户裁决，详见 exec-guide §3/§4）

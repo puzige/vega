@@ -257,8 +257,7 @@ impl SseAssembler {
     pub(crate) fn absorb_tool_call(&mut self, call: &serde_json::Value) {
         let index = call.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
         let fragment = self.tools.entry(index).or_default();
-        // A7-03: CPA/hy3 repeats `name: ""` on argument-only continuations.
-        // Empty fields mean "no update", not "erase the start fragment".
+
         if let Some(id) = str_field(call, "id").filter(|id| !id.is_empty()) {
             fragment.id = id.to_string();
         }
@@ -307,8 +306,6 @@ impl SseAssembler {
     }
 
     pub(crate) fn flush_tools(&mut self) -> Result<Vec<ProviderEvent>, VegaError> {
-        // A7-03: never turn an incomplete wire fragment into an unnamed tool
-        // proposal. Validate the whole batch before exposing any call.
         if self
             .tools
             .values()

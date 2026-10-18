@@ -87,7 +87,6 @@ pub(crate) fn current_cache_matches(
     opened_thread_id == Some(finished_thread_id) && cached_thread_id == Some(finished_thread_id)
 }
 
-/// Outcome of one off-thread hydration page read (S8-T45/C7).
 pub(crate) type HistoryPageOutcome = Result<HistoryPage, HistoryPageFailure>;
 
 /// Typed hydration failure: the read failed closed with a store/IO reason.
@@ -111,11 +110,6 @@ impl From<vega_conversation::types::ConversationError> for HistoryPageFailure {
     }
 }
 
-/// Scroll-up hydration worker (S8-T45/C7): reads one keyset page below
-/// `request.before` off the UI thread. The database connection is owned by
-/// the store global on the main thread, so each request opens a short-lived
-/// read connection to the same file; the store crate owns all SQLite and the
-/// UI stays on typed projections only.
 pub(crate) fn run_history_page_worker(
     database_path: std::path::PathBuf,
     request: HistoryPageRequested,

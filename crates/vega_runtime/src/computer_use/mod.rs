@@ -1064,74 +1064,10 @@ impl std::fmt::Debug for Target {
 pub mod test_support {
     use super::{Capability, ComputerUseControl, ComputerUseError, Target};
 
-    pub async fn install_desktop(
-        run: &super::ComputerUseRun,
-        windows: Vec<super::DesktopTarget>,
-        results: Vec<vega_mcp::ManagedResult>,
-        permissions: Vec<serde_json::Value>,
-    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-        let actions = run.install_desktop_fixture(windows, results).await;
-        run.set_desktop_permissions_fixture(permissions).await;
-        actions
-    }
-
-    pub async fn desktop_calls(run: &super::ComputerUseRun) -> Vec<(String, serde_json::Value)> {
-        run.fixture_calls().await
-    }
-
     pub fn connected_desktop() -> Result<ComputerUseControl, ComputerUseError> {
         let control = ComputerUseControl::new();
         let epoch = control.begin(Capability::Desktop)?;
         control.connected(epoch, Capability::Desktop, Target::DesktopCatalog)?;
-        Ok(control)
-    }
-
-    pub fn pending_browser() -> Result<ComputerUseControl, ComputerUseError> {
-        let control = ComputerUseControl::new();
-        let epoch = control.begin(Capability::Browser)?;
-        control.offer_browser(
-            epoch,
-            Target::Browser {
-                connection: "fixture".into(),
-                index: 1,
-                title: "Owned fixture".into(),
-                url: "https://fixture.invalid".into(),
-            },
-        )?;
-        Ok(control)
-    }
-
-    pub fn permission_failure() -> Result<ComputerUseControl, ComputerUseError> {
-        let control = ComputerUseControl::new();
-        let epoch = control.begin(Capability::Desktop)?;
-        control.fail(epoch, ComputerUseError::Permissions);
-        control.stop();
-        control.finish_cleanup();
-        Ok(control)
-    }
-
-    pub fn permission_failure_for(
-        accessibility: bool,
-        screen_recording: bool,
-    ) -> Result<ComputerUseControl, ComputerUseError> {
-        let class = match (accessibility, screen_recording) {
-            (false, false) => super::diagnostics::Class::PermissionsMissing,
-            (false, true) => super::diagnostics::Class::AccessibilityPermissionMissing,
-            (true, false) => super::diagnostics::Class::ScreenRecordingPermissionMissing,
-            (true, true) => super::diagnostics::Class::Protocol,
-        };
-        let control = ComputerUseControl::new();
-        let epoch = control.begin(Capability::Desktop)?;
-        control.fail(
-            epoch,
-            super::diagnostics::failure(
-                Capability::Desktop,
-                super::diagnostics::Stage::Permissions,
-                class,
-            ),
-        );
-        control.stop();
-        control.finish_cleanup();
         Ok(control)
     }
 

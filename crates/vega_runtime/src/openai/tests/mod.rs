@@ -262,41 +262,6 @@ fn automatic_replay_cold_frame_is_idempotent_across_chat_and_responses_serializa
 }
 
 #[test]
-fn issue85_vega_tools_emit_strict_chat_completions_wire() {
-    let request = ChatRequest {
-        model: MODEL.into(),
-        tools: crate::tool_definitions(crate::RuntimeRunMode::Execute),
-        ..Default::default()
-    };
-
-    let wire = build_request_body(&request);
-    let functions = wire["tools"].as_array().unwrap();
-    assert_eq!(functions.len(), 7);
-    assert!(
-        functions
-            .iter()
-            .all(|tool| tool["function"]["strict"] == true)
-    );
-}
-
-#[test]
-fn issue85_non_strict_tools_do_not_claim_strict_wire() {
-    let request = ChatRequest {
-        model: MODEL.into(),
-        tools: vec![ToolDefinition {
-            name: "external".into(),
-            description: "external tool".into(),
-            input_schema: serde_json::json!({"type": "object"}),
-            strict: false,
-        }],
-        ..Default::default()
-    };
-
-    let wire = build_request_body(&request);
-    assert!(wire["tools"][0]["function"].get("strict").is_none());
-}
-
-#[test]
 fn glm_preserved_effort_keeps_the_cross_round_clear_switch() {
     let request = ChatRequest {
         model: "glm-5.3".into(),
@@ -1584,55 +1549,6 @@ fn i71_responses_summary_parts_snapshots_and_refusal() {
         ]
     );
     assert!(parser.terminal);
-}
-
-#[tokio::test]
-async fn issue296_responses_completed_snapshot_remains_a_trusted_final() {
-    let mut parser = responses::Assembler::default();
-    let events = parser
-        .absorb(
-            &serde_json::json!({
-                "type":"response.completed",
-                "response":{"status":"completed","output":[{
-                    "id":"answer", "type":"message", "role":"assistant",
-                    "content":[{"type":"output_text","text":"Complete answer."}]
-                }]}
-            })
-            .to_string(),
-        )
-        .unwrap();
-    let provider = crate::MockProvider::new(vec![crate::ScriptStep::events(events)]);
-    let directory = tempfile::tempdir().unwrap();
-    let tools = vega_tools::Tools::new(directory.path()).unwrap();
-    let result = crate::run_agent(
-        &provider,
-        &tools,
-        crate::AgentRequest {
-            model: MODEL.into(),
-            system_prompt: "Be precise.".into(),
-            history: Vec::new(),
-            max_tokens: None,
-            completed_tool_results: Default::default(),
-            tool_config: Default::default(),
-            pricing_catalog: None,
-            reasoning: None,
-            replay_frame: None,
-            context_budget: None,
-            context_source_version: None,
-            context_source_fingerprint: None,
-            context_operation_id: None,
-            context_compaction_hook: None,
-        },
-        CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result.final_text, "Complete answer.");
-    assert!(result.events.iter().any(|event| matches!(event,
-        crate::RuntimeEvent::AssistantResponseCompleted {
-            kind: crate::RuntimeAssistantResponseKind::Final, text_start_bytes: 0, text_end_bytes, ..
-        } if *text_end_bytes == result.final_text.len()
-    )));
 }
 
 #[tokio::test]

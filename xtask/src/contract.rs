@@ -1,8 +1,3 @@
-//! S8-T43 (A2-04) frozen measurement contracts — SDD C1/C2/C6 + §1 status
-//! vocabulary. T48/T49/T50 only consume these; the names, units, round
-//! counts, percentile math, and thresholds below are frozen and MUST NOT
-//! change after the baseline freeze (SDD contract preamble).
-
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -95,10 +90,6 @@ pub const C2_EXTENSION_ROUNDS: usize = 20;
 /// The stored measurement is always raw bytes; MB/MiB are display-only.
 pub const P8_THRESHOLD_BYTES: u64 = 100_000_000;
 
-// ─── C6 — P1/P2 (SDD §7) ─────────────────────────────────────────────────────
-
-/// C6 daily-PR feedback run: 10 s @ 1,000 deltas/s (the 5-minute release
-/// soak stays with T48/T49; same schema, not terminal evidence).
 pub const C6_STREAM_SECONDS: u64 = 10;
 pub const C6_INJECT_RATE_PER_S: u64 = 1_000;
 /// C6 P2 gate: p99 receive-to-render < 16.000 ms (one 60 Hz frame budget).
@@ -127,17 +118,8 @@ pub const C6_LITERAL_120FPS_MIN_HZ: f64 = 120.0;
 
 pub const STATUS_PERFORMANCE_GATE_FAILED: &str = "performance gate failed";
 pub const STATUS_HARDWARE_PENDING: &str = "hardware pending";
-/// The only §1 pass-shaped word allowed in the bench context: the xtask
-/// short runs measure a deterministic mock/temp-home fixture, so a passing
-/// gate is a fixture pass — never terminal evidence (T48/T49 own the soak).
 pub const STATUS_ENGINEERING_FIXTURE_PASSED: &str = "engineering fixture passed";
 
-// ─── frozen math ─────────────────────────────────────────────────────────────
-
-/// Nearest-rank percentile over an ascending-sorted sample list, integer µs
-/// domain: `rank = ceil(pct/100 × n)` clamped to `[1, n]`, empty → 0. This
-/// exact function is the frozen percentile math (SDD §7 机械判定); the unit
-/// tests pin its behavior so T48 cannot quietly redefine it.
 pub fn percentile(sorted: &[u64], pct: u64) -> u64 {
     if sorted.is_empty() {
         return 0;

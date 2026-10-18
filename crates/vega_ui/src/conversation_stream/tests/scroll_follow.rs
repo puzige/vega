@@ -1,10 +1,5 @@
 use super::*;
 
-// S8-T44: the P4 anchor semantics (贴底跟随 / 上翻 detach / 回底 resume) are
-// delegated to the pinned GPUI variable-height list's native Tail follow.
-// The pure state machine is gone; these tests pin the delegation constants
-// and the pure hydration gate that still lives on the model.
-
 #[test]
 fn bottom_epsilon_matches_the_native_follow_resume_tolerance() {
     // The list re-engages tail-follow within 1px of the bottom; our top-edge

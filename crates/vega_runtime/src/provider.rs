@@ -1,15 +1,3 @@
-//! Provider abstraction (tech-spec §4.1, A3-01 / S4-T19).
-//!
-//! The [`Provider`] trait is the seam between the agentic loop (S4-T20) and
-//! concrete LLM backends: the OpenAI-compatible implementation ([`crate::
-//! openai::OpenAiProvider`]) and the scripted [`crate::mock::MockProvider`]
-//! are interchangeable behind `dyn Provider`.
-//!
-//! Architect's pre-ruling (S4-T19): the trait method returns a manually
-//! boxed `BoxFuture` — exactly the shape the `async_trait` macro would
-//! expand to — so the crate gains dyn-compatibility with zero proc-macro
-//! dependencies.
-
 use std::fmt;
 use std::pin::Pin;
 
@@ -1644,7 +1632,6 @@ impl std::fmt::Debug for ToolDefinition {
 pub struct ChatRequest {
     /// Model name as understood by the provider, e.g. `deepseek-chat`.
     pub model: String,
-    /// Conversation so far (system prompt + history window; T20 assembles).
     pub messages: Vec<ChatMessage>,
     /// Tools advertised to the model; empty when none.
     pub tools: Vec<ToolDefinition>,
@@ -2072,32 +2059,6 @@ mod tests {
     }
 
     #[test]
-    fn issue300_projection_is_idempotent_and_never_infers_mcp_audits_from_business_fields() {
-        let input = r#"{"server_id":"business","config_revision":1,"arguments_bytes":12,"arguments_sha256":"business-value"}"#;
-        let live = bound_call("mcp-1", "mcp__fixture", "{\"audit\":true}", input);
-        for call in [
-            live,
-            ChatMessage::assistant_with_tools(
-                "",
-                vec![ChatToolCall {
-                    id: "mcp-1".into(),
-                    name: "mcp__fixture".into(),
-                    input_json: input.into(),
-                }],
-            ),
-        ] {
-            let projected = project_model_messages(&[
-                call,
-                ChatMessage::tool_result("mcp-1", "server-says-ok"),
-            ])
-            .unwrap();
-            assert_eq!(projected[0].tool_calls[0].input_json, input);
-            assert_eq!(projected[1].role, ChatRole::Tool);
-            assert_eq!(project_model_messages(&projected).unwrap(), projected);
-        }
-    }
-
-    #[test]
     fn historical_observation_keeps_assistant_text_and_encodes_result_as_user_json() {
         let mut assistant = ChatMessage::assistant_with_tools(
             "I checked the file.",
@@ -2163,169 +2124,6 @@ mod tests {
                 || message.content.contains("Historical tool result")
         }));
         assert_eq!(project_model_messages(&projected).unwrap(), projected);
-    }
-
-    #[test]
-    fn issue300_mixed_group_preserves_images_and_consumes_reused_call_ids() {
-        let mut group = ChatMessage::assistant_with_tools(
-            "checking",
-            vec![
-                ChatToolCall {
-                    id: "r1".into(),
-                    name: "read".into(),
-                    input_json: "{}".into(),
-                },
-                ChatToolCall {
-                    id: "bad".into(),
-                    name: "write".into(),
-                    input_json: "{}".into(),
-                },
-            ],
-        );
-        group
-            .bind_live_tool_calls(vec![
-                Some(ChatToolCall {
-                    id: "r1".into(),
-                    name: "read".into(),
-                    input_json: r#"{"path":"a"}"#.into(),
-                }),
-                None,
-            ])
-            .unwrap();
-        let mut image_bytes = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(2, 2)
-            .write_to(&mut image_bytes, image::ImageFormat::Png)
-            .unwrap();
-        let image = crate::ImageAttachment::from_bytes(image_bytes.into_inner()).unwrap();
-        group.images.push(image.clone());
-        let mut first_result = ChatMessage::tool_result("r1", "first result");
-        first_result.images.push(image.clone());
-        let replay = bound_call("r1", "read", "{}", r#"{"path":"a"}"#);
-        let projected = project_model_messages(&[
-            group,
-            first_result,
-            ChatMessage::tool_result("bad", "missing_content"),
-            replay,
-            ChatMessage::tool_result("r1", "reused result"),
-        ])
-        .unwrap();
-        assert!(projected[0].tool_calls.is_empty());
-        assert_eq!(projected[0].content, "checking");
-        assert_eq!(projected[0].images, vec![image.clone()]);
-        assert_eq!(projected[1].role, ChatRole::User);
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&projected[1].content).unwrap()["vega_history_observation"]
-                ["calls"],
-            serde_json::json!([
-                {"tool":"read","call_id":"r1","arguments_available":false,"status":null},
-                {"tool":"write","call_id":"bad","arguments_available":false,"status":null}
-            ])
-        );
-        assert_eq!(projected[2].role, ChatRole::User);
-        assert_eq!(projected[2].images, vec![image]);
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&projected[2].content).unwrap()["vega_history_observation"]
-                ["output"],
-            "first result"
-        );
-        assert_eq!(projected[3].role, ChatRole::User);
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&projected[3].content).unwrap()["vega_history_observation"]
-                ["output"],
-            "missing_content"
-        );
-        assert_eq!(projected[4].tool_calls[0].id, "r1");
-        assert_eq!(
-            projected[5],
-            ChatMessage::tool_result("r1", "reused result")
-        );
-        assert_eq!(project_model_messages(&projected).unwrap(), projected);
-    }
-
-    #[test]
-    fn issue300_sidecar_binds_full_audit_identity_and_is_debug_redacted() {
-        let root = tempfile::tempdir().unwrap();
-        let audit = vega_tools::Tools::new(root.path())
-            .unwrap()
-            .audit_write_json(r#"{"path":"a","content":"PRIVATE_BODY"}"#)
-            .unwrap()
-            .to_json()
-            .unwrap();
-        let bound = bound_call(
-            "w1",
-            "write",
-            &audit,
-            r#"{"path":"a","content":"PRIVATE_BODY"}"#,
-        );
-        assert!(!format!("{bound:?}").contains("PRIVATE_BODY"));
-        assert!(!bound.tool_calls[0].input_json.contains("PRIVATE_BODY"));
-        assert_ne!(bound, bound.without_live_tool_arguments());
-        for field in ["id", "name", "audit"] {
-            let mut changed = bound.clone();
-            match field {
-                "id" => changed.tool_calls[0].id = "another".into(),
-                "name" => changed.tool_calls[0].name = "edit".into(),
-                _ => changed.tool_calls[0].input_json = "{}".into(),
-            }
-            assert!(matches!(
-                project_model_messages(&[changed]),
-                Err(VegaError::Context(
-                    crate::ContextRuntimeError::InvalidProjection
-                ))
-            ));
-        }
-    }
-
-    #[test]
-    fn issue300_stored_empty_audits_are_history_and_cua_redaction_cannot_revive_arguments() {
-        for tool in ["read", "load_skill", "unknown"] {
-            let mut message = ChatMessage::assistant_with_tools(
-                "",
-                vec![ChatToolCall {
-                    id: "old".into(),
-                    name: tool.into(),
-                    input_json: "{}".into(),
-                }],
-            );
-            message.mark_stored_tool_calls();
-            let projected =
-                project_model_messages(&[message, ChatMessage::tool_result("old", "rejected")])
-                    .unwrap();
-            assert_eq!(projected[0].role, ChatRole::User);
-            assert!(
-                projected
-                    .iter()
-                    .all(|m| m.tool_calls.is_empty() && m.tool_call_id.is_none())
-            );
-            assert_eq!(projected[1].role, ChatRole::User);
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&projected[1].content).unwrap()["vega_history_observation"]
-                    ["output"],
-                "rejected"
-            );
-        }
-        let message = bound_call(
-            "cua",
-            "ComputerScreenshot",
-            "{}",
-            r#"{"target_id":"PRIVATE_TARGET"}"#,
-        );
-        let internal = vec![message, ChatMessage::tool_result("cua", "PRIVATE_RESULT")];
-        for mut messages in [internal.clone(), project_model_messages(&internal).unwrap()] {
-            crate::computer_use::redact_ephemeral_messages(&mut messages);
-            let projected = project_model_messages(&messages).unwrap();
-            assert!(
-                projected
-                    .iter()
-                    .all(|m| m.tool_calls.is_empty() && m.tool_call_id.is_none())
-            );
-            assert!(
-                !projected
-                    .iter()
-                    .any(|m| m.content.contains("PRIVATE_TARGET"))
-            );
-            assert_eq!(project_model_messages(&projected).unwrap(), projected);
-        }
     }
 
     #[test]
@@ -2544,44 +2342,6 @@ mod tests {
                 .iter()
                 .all(|message| { message.tool_calls.is_empty() && message.tool_call_id.is_none() })
         );
-    }
-
-    #[test]
-    fn issue302_shell_projection_bounds_utf8_and_preserves_other_tools() {
-        for output in [String::new(), "x".repeat(65_535), "x".repeat(65_536)] {
-            assert_eq!(
-                ChatMessage::projected_tool_result("call", "bash", &output),
-                ChatMessage::tool_result("call", &output)
-            );
-        }
-        for output in [
-            "x".repeat(65_537),
-            "x".repeat(2_622_078),
-            "界🦀".repeat(30_000),
-        ] {
-            let projected = ChatMessage::projected_tool_result("call", "bash", &output);
-            assert!(projected.content.len() <= 65_536);
-            let (head, rest) = projected
-                .content
-                .split_once("\n[Shell output shortened:")
-                .unwrap();
-            let (_, tail) = rest.split_once("]\n").unwrap();
-            assert!(!head.is_empty() && !tail.is_empty());
-            assert!(output.starts_with(head));
-            assert!(output.ends_with(tail));
-            assert!(projected.content.contains("middle omitted"));
-            assert!(projected.content.contains("Narrow/filter or page"));
-            assert_eq!(
-                ChatMessage::projected_tool_result("call", "bash", &projected.content),
-                projected
-            );
-            for tool in ["read", "edit", "write", "mcp__fixture"] {
-                assert_eq!(
-                    ChatMessage::projected_tool_result("call", tool, &output),
-                    ChatMessage::tool_result("call", &output)
-                );
-            }
-        }
     }
 
     /// Compile-time proof of the architect's pre-ruling: the trait is

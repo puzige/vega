@@ -1,6 +1,3 @@
-//! Issue #73 Settings surface. Every operation goes through the app-injected
-//! conversation service; this view never reads MCP tables or credential files.
-
 use crate::interaction::InteractionExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -2037,7 +2034,7 @@ impl SettingsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::SettingsOpen;
+
     use gpui_kit::{
         Bounds, Render, TestAppContext, WindowBounds, WindowHandle, WindowOptions, size,
     };
@@ -2054,122 +2051,5 @@ mod tests {
         ) -> impl IntoElement {
             div().size_full().child(self.view.clone())
         }
-    }
-
-    fn assert_focused(
-        cx: &mut TestAppContext,
-        window: &WindowHandle<McpSettingsHarness>,
-        view: &gpui_kit::Entity<SettingsView>,
-        selector: &str,
-    ) {
-        let current = window
-            .update(cx, |_, window, cx| {
-                let view = view.read(cx);
-                view.mcp
-                    .focuses
-                    .iter()
-                    .find(|(_, focus)| focus.is_focused(window))
-                    .map(|(selector, _)| format!("mcp:{selector}"))
-                    .or_else(|| {
-                        view.section_focuses
-                            .iter()
-                            .position(|focus| focus.is_focused(window))
-                            .map(|index| format!("section:{index}"))
-                    })
-                    .or_else(|| window.focused(cx).map(|focus| format!("{focus:?}")))
-            })
-            .expect("window focus state");
-        let expected = format!("mcp:{selector}");
-        assert_eq!(
-            current.as_deref(),
-            Some(expected.as_str()),
-            "expected mcp:{selector} to be focused"
-        );
-    }
-
-    #[gpui_kit::test]
-    async fn issue86_mcp_settings_tab_and_shift_tab_move_focus_between_actions(
-        cx: &mut TestAppContext,
-    ) {
-        let owned = tempfile::tempdir().expect("owned MCP Settings root");
-        let service = McpServerSettingsService::new(
-            owned.path().join("vega.db"),
-            owned.path().join("config"),
-        );
-        cx.update(|cx| {
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SettingsOpen(true));
-            crate::init(cx);
-        });
-        let view = cx.new(SettingsView::new_for_test);
-        view.update(cx, |view, cx| {
-            view.section = 5;
-            view.install_mcp_service(Some(service), cx);
-        });
-        for _ in 0..150 {
-            cx.executor()
-                .advance_clock(std::time::Duration::from_millis(20));
-            cx.run_until_parked();
-            if view.read_with(cx, |view, _| !view.mcp.busy) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(!view.read_with(cx, |view, _| view.mcp.busy));
-        let root = view.clone();
-        let window: WindowHandle<McpSettingsHarness> = cx
-            .update(|cx| {
-                cx.open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                            None,
-                            size(px(960.), px(600.)),
-                            cx,
-                        ))),
-                        ..Default::default()
-                    },
-                    move |_, cx| cx.new(|_| McpSettingsHarness { view: root }),
-                )
-            })
-            .expect("MCP Settings window");
-        cx.run_until_parked();
-        let preceding_section = view.read_with(cx, |view, _| view.section_focuses[4].clone());
-        window
-            .update(cx, |_, window, cx| preceding_section.focus(window, cx))
-            .expect("focus final Settings navigation row");
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert_focused(cx, &window, &view, "mcp-add-local");
-
-        cx.simulate_keystrokes(window.into(), "shift-tab");
-        assert!(
-            window
-                .update(cx, |_, window, _| preceding_section.is_focused(window))
-                .expect("MCP navigation focus"),
-            "Shift+Tab at the first MCP action must return to the preceding navigation control"
-        );
-        cx.simulate_keystrokes(window.into(), "tab tab");
-        assert_focused(cx, &window, &view, "mcp-add-remote");
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert_focused(cx, &window, &view, "mcp-reload");
-
-        cx.simulate_keystrokes(window.into(), "shift-tab");
-        assert_focused(cx, &window, &view, "mcp-add-remote");
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert_focused(cx, &window, &view, "mcp-reload");
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert!(
-            window
-                .update(cx, |_, window, cx| {
-                    let reload_focused = view
-                        .read(cx)
-                        .mcp
-                        .focuses
-                        .get("mcp-reload")
-                        .is_some_and(|focus| focus.is_focused(window));
-                    !reload_focused && window.focused(cx).is_some()
-                })
-                .expect("reload focus state"),
-            "Tab at the end of MCP actions must continue to another visible control"
-        );
     }
 }

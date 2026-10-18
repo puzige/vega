@@ -187,11 +187,6 @@ impl ConversationStream {
             && self.model_selection_pending.is_none()
     }
 
-    /// Requests a durable turn. Draft/history/user echo remain untouched until
-    /// the controller observes durable `MessageStarted` for this exact run.
-    /// An in-flight model selection (R1) also blocks submit: the next send
-    /// must run on either the old or the new authoritative model, never a
-    /// value that raced the durable write.
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
         if !self.can_submit_message(cx) {
             return;
@@ -282,27 +277,17 @@ impl ConversationStream {
         }
     }
 
-    /// Enter / Cmd+Enter in the Composer context ([`SendMessage`] binding;
-    /// ui-spec §4.4 v0.18, Issue #66).
     pub(crate) fn on_send_action(
         &mut self,
         _: &SendMessage,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // R5: while a platform IME composition is active, Enter belongs to the
-        // input method (candidate confirmation) and must never submit. This is
-        // defence in depth behind the platform-layer interception and matches
-        // the existing scoped guards in `composer_actions.rs`.
         if self.input.read(cx).is_composing() {
             cx.propagate();
             return;
         }
-        // R4: `SendMessage` is a ConversationStream action, so it is reachable
-        // from every control inside the `Composer` key context. Enter must only
-        // submit while the composer text input owns focus; on any other control
-        // (notably the `+` button, which activates on Enter via `on_key_down`)
-        // the key must propagate instead of being swallowed as a submit.
+
         if !self.input.read(cx).focus_handle(cx).is_focused(window) {
             cx.propagate();
             return;
@@ -355,9 +340,6 @@ impl ConversationStream {
             .update(cx, |input, cx| input.set_text(&recalled, cx));
     }
 
-    /// R57 P2b: the only remaining caller is the `+`-menu thread-mode row
-    /// (`composer_actions.rs`); the bottom-row dropdown that used to call it
-    /// is gone.
     pub(crate) fn request_mode(&mut self, mode: ThreadMode, cx: &mut Context<Self>) {
         if self.model_selection_pending.is_some() {
             return;
@@ -371,9 +353,6 @@ impl ConversationStream {
         }
     }
 
-    /// R57 P2b: the only remaining caller is the `+`-menu permission row
-    /// (`composer_actions.rs`); the bottom-row dropdown that used to call it
-    /// is now static status text.
     pub(crate) fn request_permission_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
         if self.model_selection_pending.is_some() {
             return;

@@ -29,7 +29,6 @@ impl std::fmt::Debug for ToolCall {
 pub enum Approval {
     /// Approved for this call only.
     Once,
-    /// Persisted project-level rule (S5).
     Always,
     /// Denied.
     Deny,
@@ -76,8 +75,6 @@ pub enum ToolCallStatus {
 }
 
 impl ToolCallStatus {
-    /// Parses the exact persisted `tool_calls.status` DDL vocabulary
-    /// (S8-T45 hydration reads durable rows; unknown values fail closed).
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "pending_approval" => Some(Self::PendingApproval),
@@ -494,7 +491,6 @@ pub enum ToolCardResultProjection {
     Corrupt,
 }
 
-/// Strictly reduces a shared safe proposal to the fields T27 may retain.
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
     if vega_runtime::is_subagent_tool(&call.tool) {
         if call.input_json != "{}"

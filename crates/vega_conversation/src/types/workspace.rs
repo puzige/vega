@@ -52,11 +52,6 @@ pub struct BranchSnapshot {
     pub branches: Vec<BranchItem>,
 }
 
-/// Bounded `@file` candidate projection (A2-12, S8-T47): project-relative
-/// file paths for the composer reference selector. Produced by the app
-/// layer from a gitignore-aware bounded walk (deterministic lexicographic
-/// order, hard entry cap), handed to the IO-free selector as a typed
-/// snapshot. No filesystem access happens behind this type.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileIndexSnapshot {
     pub entries: Vec<String>,
@@ -124,9 +119,6 @@ impl FileReferenceFailureCode {
     }
 }
 
-/// Provider/model/thinking selection state for the composer selector
-/// (A2-14, R2). The exact capability projection is supplied by the app
-/// boundary; the composer never guesses a wire protocol from a URL/model.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ComposerDefaults {
     /// Selected model id (empty = no explicit selection yet).
@@ -278,7 +270,6 @@ impl std::fmt::Debug for CommitDraft {
     }
 }
 
-/// Stable content-free failure vocabulary for T34.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitErrorCode {
     InvalidRoot,

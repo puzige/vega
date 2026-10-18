@@ -1,4 +1,3 @@
--- Issue #73: configuration metadata only. Credential values remain in the
 -- owner-only keystore; no provider key or OAuth token belongs in SQLite.
 CREATE TABLE mcp_servers (
   id TEXT PRIMARY KEY,

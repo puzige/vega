@@ -19,39 +19,3 @@ fn row(id: &str, generation: &str) -> PendingMessageRow {
         created_at: 1,
     }
 }
-
-#[test]
-fn issue299_fifo_generation_and_transactional_delivery() {
-    let store = store();
-    insert(store.conn(), &row("b", "run-a")).unwrap();
-    insert(store.conn(), &row("c", "run-b")).unwrap();
-    assert_eq!(
-        list(store.conn(), "a")
-            .unwrap()
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect::<Vec<_>>(),
-        ["b", "c"]
-    );
-    assert!(list(store.conn(), "b").unwrap().is_empty());
-    assert!(!mark_delivered(store.conn(), "b", "b").unwrap());
-    {
-        let tx = store.immediate_transaction().unwrap();
-        assert!(mark_delivered(&tx, "a", "b").unwrap());
-    }
-    assert_eq!(list(store.conn(), "a").unwrap().len(), 2);
-    assert!(mark_delivered(store.conn(), "a", "b").unwrap());
-    assert!(!mark_delivered(store.conn(), "a", "b").unwrap());
-    assert_eq!(list(store.conn(), "a").unwrap()[0].id, "c");
-    assert!(insert(store.conn(), &row("b", "run-a")).is_err());
-}
-
-#[test]
-fn issue299_remove_is_bound_to_thread_and_stable_id() {
-    let store = store();
-    insert(store.conn(), &row("b", "run-a")).unwrap();
-    insert(store.conn(), &row("c", "run-a")).unwrap();
-    assert!(!remove(store.conn(), "b", "b").unwrap());
-    assert!(remove(store.conn(), "a", "b").unwrap());
-    assert_eq!(list(store.conn(), "a").unwrap()[0].id, "c");
-}

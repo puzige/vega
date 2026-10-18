@@ -18,12 +18,11 @@
     </linearGradient>
   </defs>
 
-  <!-- R17: the tile is exactly 832px centered in a transparent 1024px canvas. -->
+
   <rect x="96" y="96" width="832" height="832" rx="190" fill="url(#tile-light)"/>
   <rect x="98" y="98" width="828" height="828" rx="188" fill="none" stroke="#FFFFFF" stroke-opacity="0.82" stroke-width="4"/>
 
-  <!-- The three paths below are the canonical R17 geometry. Keep them in sync with
-       the dark and mono variants; color and contact shadows are appearance-only. -->
+
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">
     <!-- Same-path rim pass: a restrained contour bevel, not an interior glyph. -->
     <path d="M316 316 L512 512 L316 686" stroke="url(#sapphire-rim)" stroke-opacity="0.34" stroke-width="94"/>

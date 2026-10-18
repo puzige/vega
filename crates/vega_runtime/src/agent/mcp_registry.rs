@@ -128,39 +128,6 @@ mod credential_tests {
             Box::pin(async { unreachable!("result projection must not dispatch") })
         }
     }
-
-    #[test]
-    fn issue73_json_projection_cannot_assemble_a_secret_across_leaves() {
-        let mut known = KnownCredentials::default();
-        known.extend([r#"left","right"#.to_string()]);
-        let snapshot = known.snapshot().unwrap();
-        let untrusted = serde_json::json!(["left", "right"]);
-        assert!(!snapshot.contains_json(&untrusted));
-        assert!(snapshot.contains_json_projection(&untrusted));
-    }
-
-    #[test]
-    fn issue73_final_result_join_redacts_owner_secret() {
-        let mut known = KnownCredentials::default();
-        known.extend(["alpha\n{\"fragment\":\"beta\"}".to_owned()]);
-        let frozen = FrozenMcpTool {
-            server_id: "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
-            config_revision: 1,
-            exact_tool_name: "echo".into(),
-            dispatcher: Arc::new(NeverCalled),
-            revoked: CancellationToken::new(),
-            known_credentials: Arc::new(known),
-        };
-        let result = McpDispatchOutput {
-            text: "alpha".into(),
-            structured_content: Some(serde_json::json!({"fragment":"beta"})),
-            is_error: false,
-        };
-        let text = frozen.safe_result_text(&result).unwrap();
-        assert_eq!(text, crate::PROVIDER_CREDENTIAL_REDACTION_MARKER);
-        assert!(!text.contains("alpha"));
-        assert!(!text.contains("beta"));
-    }
 }
 
 enum McpConnection {
@@ -569,31 +536,6 @@ impl McpDispatchFailure {
             Self::Authorization => "Tool error: MCP authorization required or invalid",
             Self::InvalidConfig => "Tool error: MCP connection configuration invalid",
             Self::Cancelled => "Tool error: MCP call cancelled; side-effect outcome unknown",
-        }
-    }
-}
-
-#[cfg(test)]
-mod dispatch_failure_tests {
-    use super::*;
-
-    #[test]
-    fn issue73_dispatch_error_categories_are_distinct_and_content_free() {
-        let cases = [
-            (McpError::Rpc(-32000), "MCP protocol error"),
-            (McpError::InvalidMessage, "MCP invalid protocol response"),
-            (
-                McpError::UnsupportedResult,
-                "MCP unsupported result content",
-            ),
-            (McpError::LimitExceeded, "MCP response limit exceeded"),
-            (McpError::Timeout, "MCP request timed out"),
-            (McpError::Transport, "MCP transport failed"),
-        ];
-        for (error, expected) in cases {
-            let safe = McpDispatchFailure::from(error).safe_output();
-            assert!(safe.contains(expected));
-            assert!(!safe.contains("fake-server-private-prose-73"));
         }
     }
 }

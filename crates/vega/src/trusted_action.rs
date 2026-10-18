@@ -1,20 +1,13 @@
 use std::sync::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Commit is the frozen T34 seam sharing this coordinator.
+#[allow(dead_code)]
 pub(crate) enum TrustedActionKind {
     BranchSwitch,
     ArtifactOpen,
     Commit,
-    /// A2-14/R1: pending model-selection persistence. Shares the single-flight
-    /// coordinator so submit/plan/commit/branch stay blocked until the
-    /// authoritative `threads.model` write settles.
     ModelSelection,
-    /// A7-01: provider/model and owner-only credential readiness before a
-    /// composer submission may materialize or start a run.
     AgentPreflight,
-    /// #74: exact reviewed Skill pin after draft materialization, before any
-    /// provider request. Stop releases this owner and discards late results.
     SkillSelection,
     /// Conversation context settings and manual summary operations own the
     /// same single-flight gate as sends and model changes until workers drain.

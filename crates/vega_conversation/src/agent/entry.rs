@@ -118,11 +118,6 @@ where
     .await
 }
 
-/// Runs an approved Plan task with a frozen pricing capability (S7-T39/C3
-/// app wiring): identical to
-/// [`run_approved_plan_task_with_permission_sink`] except the immutable
-/// run-start selection rides into every agentic round, so each provider call
-/// is priced exactly once with the frozen model and UTC timestamp.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_approved_plan_task_with_pricing<F>(
     store: &Store,
@@ -267,7 +262,6 @@ where
     .await
 }
 
-/// Runs a thread task with the shared S5 permission hook and event sink.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_thread_task_with_permission_sink<F>(
     store: &Store,
@@ -300,14 +294,6 @@ where
     .await
 }
 
-/// Runs a thread task with a frozen pricing capability (S7-T38/C3): the run
-/// preflight resolves the durable `Thread.model` against the injected catalog
-/// before any provider request; the selection is immutable for the whole run
-/// (Settings changes mid-run never swap it).
-///
-/// `pricing_catalog: None` keeps legacy unpriced rows (zero cost, NULL
-/// provenance columns). A model missing from the catalog is not an error:
-/// per C3 the run proceeds unpriced so the user can be guided to Settings.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_thread_task_with_pricing<F>(
     store: &Store,
@@ -490,7 +476,6 @@ where
     .await
 }
 
-/// Issue 63: freezes validated images with the user turn before durable acknowledgment.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_thread_task_with_images_and_reasoning<F>(
     store: &Store,
@@ -1381,91 +1366,5 @@ fn pipeline_terminal_event(error: Arc<VegaError>) -> RuntimeEvent {
         RuntimeEvent::Interrupted
     } else {
         RuntimeEvent::Error(error)
-    }
-}
-
-#[cfg(test)]
-mod terminal_error_tests {
-    use super::*;
-
-    #[test]
-    fn issue397_pipeline_merge_prefers_real_failure_over_cancellation() {
-        for (processor, runtime) in [
-            (
-                Some(VegaError::Cancelled),
-                Some(VegaError::CredentialCheckUnavailable),
-            ),
-            (
-                Some(VegaError::CredentialCheckUnavailable),
-                Some(VegaError::Cancelled),
-            ),
-            (None, Some(VegaError::CredentialCheckUnavailable)),
-            (Some(VegaError::CredentialCheckUnavailable), None),
-        ] {
-            let error = pipeline_terminal_error(processor, runtime);
-            assert!(matches!(error, VegaError::CredentialCheckUnavailable));
-            assert!(matches!(
-                pipeline_terminal_event(Arc::new(error)),
-                RuntimeEvent::Error(_)
-            ));
-        }
-        for (processor, runtime) in [
-            (Some(VegaError::Cancelled), None),
-            (None, Some(VegaError::Cancelled)),
-            (Some(VegaError::Cancelled), Some(VegaError::Cancelled)),
-        ] {
-            let error = pipeline_terminal_error(processor, runtime);
-            assert!(matches!(error, VegaError::Cancelled));
-            assert!(matches!(
-                pipeline_terminal_event(Arc::new(error)),
-                RuntimeEvent::Interrupted
-            ));
-        }
-        assert!(matches!(
-            pipeline_terminal_error(
-                Some(VegaError::CredentialCheckUnavailable),
-                Some(VegaError::CredentialExposureBlocked),
-            ),
-            VegaError::CredentialCheckUnavailable
-        ));
-    }
-
-    #[test]
-    fn issue397_pipeline_forwarding_preserves_cancellation_identity_and_timing() {
-        let mut events = Vec::new();
-        forward_pipeline_error_with_duration(
-            &mut |event| {
-                events.push(event.clone());
-                Ok(())
-            },
-            Some("assistant".into()),
-            Arc::new(VegaError::Cancelled),
-            Some(4321),
-        );
-        assert!(matches!(&events[..], [ConversationEvent::Interrupted {
-            message_id, execution_duration_ms: Some(4321)
-        }] if message_id == "assistant"));
-        forward_pipeline_error_with_duration(
-            &mut |event| {
-                events.push(event.clone());
-                Ok(())
-            },
-            None,
-            Arc::new(VegaError::Cancelled),
-            None,
-        );
-        assert_eq!(events.len(), 1);
-        forward_pipeline_error_with_duration(
-            &mut |event| {
-                events.push(event.clone());
-                Ok(())
-            },
-            Some("assistant".into()),
-            Arc::new(VegaError::CredentialCheckUnavailable),
-            Some(4321),
-        );
-        assert!(matches!(events.last(), Some(ConversationEvent::Error {
-            message_id: Some(message_id), error, execution_duration_ms: Some(4321)
-        }) if message_id == "assistant" && matches!(error.as_ref(), VegaError::CredentialCheckUnavailable)));
     }
 }

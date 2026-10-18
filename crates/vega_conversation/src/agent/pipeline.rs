@@ -575,13 +575,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             "frozen context model changed".into(),
         ));
     }
-    // #76 correction: the app worker has already checked that this frozen
-    // provider/model is the unique enabled selection. Direct callers with no
-    // frozen provider stay unbudgeted; a model ID alone cannot select a
-    // provider policy. Legacy per-thread rows have no provider identity, so
-    // they are never a runtime fallback. Read
-    // the model policy once in this accepted-turn snapshot; tool rounds reuse
-    // the resulting immutable ContextBudget in AgentRequest.
+
     let context_policy = reasoning
         .as_ref()
         .map(|selection| {
@@ -839,7 +833,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         )
         .map_err(runtime_store_error)?;
     }
-    // R1/R4: claim inside the accepted first-user transaction, before assistant insertion.
+
     let title_request = if !uses_existing_user && continuation.is_none() && title_eligible_payload {
         match config.automatic_title.clone() {
             Some(request)

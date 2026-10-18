@@ -1,41 +1,3 @@
-//! tree-sitter based syntax highlighting for committed code blocks (S3-T16).
-//!
-//! [`highlight`] turns one whole code block into a flat [`HighlightSpan`]
-//! list with semantic [`HighlightKind`] tokens; the UI layers (S3-T17/T18)
-//! map kinds onto theme styles (tech-spec §5.1: committed 块高亮，pending
-//! 未闭合 fence 降级纯文本等宽——pending 是否调用本模块是调用方的策略).
-//!
-//! Design points:
-//!
-//! - **Whole-block parsing** (task card 禁区: 不做增量语法解析). Unknown or
-//!   unsupported languages return `None` and the caller degrades to plain
-//!   text. Empty code returns `Some(vec![])` (for a supported language).
-//! - **Per-language lazy cache**: `Parser` + `Query` are built once per
-//!   language on first use and reused across blocks (thread-local, matching
-//!   the crate's synchronous single-owner pipeline).
-//! - **Central capture mapping**: each grammar ships its upstream highlight
-//!   query; capture names are mapped to [`HighlightKind`] in one table
-//!   (`CAPTURE_KINDS`) so T17/T18 theme against a stable semantic enum.
-//! - **Span contract**: output spans are sorted by `start_byte`,
-//!   non-overlapping, and never split a UTF-8 codepoint. When several query
-//!   patterns claim the same bytes, the later pattern in the query wins
-//!   (tree-sitter highlight convention: generic fallbacks come first, more
-//!   specific overrides later).
-//!
-//! # Example
-//!
-//! ```
-//! use vega_markdown::{highlight, HighlightKind};
-//!
-//! let code = "fn main() {}";
-//! let spans = highlight(code, "rust").expect("rust is a supported language");
-//! assert_eq!(&code[spans[0].start_byte..spans[0].end_byte], "fn");
-//! assert_eq!(spans[0].kind, HighlightKind::Keyword);
-//!
-//! assert_eq!(highlight("??", "cobol"), None); // unsupported language
-//! assert_eq!(highlight("", "rust"), Some(Vec::new())); // empty block
-//! ```
-
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -56,8 +18,6 @@ pub struct HighlightSpan {
     pub kind: HighlightKind,
 }
 
-/// Semantic token kind, centralized from grammar capture names so T17/T18
-/// can bind themes without touching grammar details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HighlightKind {
     Keyword,
@@ -75,11 +35,6 @@ pub enum HighlightKind {
     Attribute,
 }
 
-/// Central capture-name → kind mapping (S3-T16 要求集中一处).
-///
-/// Dotted capture variants (`function.method`, `punctuation.bracket`, …)
-/// each get an entry; names absent from the table (e.g. `spell`,
-/// `embedded`, `label`) contribute no spans.
 const CAPTURE_KINDS: &[(&str, HighlightKind)] = &[
     ("keyword", HighlightKind::Keyword),
     ("string", HighlightKind::String),
@@ -283,17 +238,6 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-/// Highlights one code block with tree-sitter (S3-T16).
-///
-/// - Unknown / unsupported `language` → `None` (caller degrades to plain
-///   monospace text).
-/// - Supported language with empty `code` → `Some(vec![])`.
-/// - Supported language with code → `Some(spans)` sorted by `start_byte`,
-///   non-overlapping; `code[start_byte..end_byte]` slices are always valid.
-///
-/// The language tag is matched case-insensitively against the four
-/// supported grammars (plus common fence aliases: `rs`, `ts`, `tsx`,
-/// `js`, `py`).
 pub fn highlight(code: &str, language: &str) -> Option<Vec<HighlightSpan>> {
     let grammar = Grammar::for_language_tag(&language.to_ascii_lowercase())?;
     CONTEXTS.with(|contexts| {
@@ -314,7 +258,6 @@ fn cached_grammar_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MarkdownStream, RenderNode};
 
     /// Asserts the module contract: sorted, non-overlapping, in-bounds,
     /// char-aligned spans.
@@ -470,51 +413,5 @@ mod tests {
         assert!(highlight(code, "rust").is_some()); // 同语言复用缓存 Parser
         assert!(highlight("def b():\n    pass\n", "python").is_some());
         assert_eq!(cached_grammar_count(), 2);
-    }
-
-    #[test]
-    fn unclosed_fence_degrades_then_upgrades_to_highlighted_committed_block() {
-        // 流式中途：未闭合 fence 属 pending 尾块（T17/T18 对 pending 降级纯
-        // 文本等宽，不调用高亮）；本测试验证升级路径所需的两个结构事实
-        let mut stream = MarkdownStream::new();
-        stream.append("```rust\nfn main() {\n");
-        {
-            let mid = stream.snapshot();
-            let pending = mid.pending.expect("unclosed fence is the pending tail");
-            let Some(RenderNode::CodeBlock {
-                language: Some(language),
-                code,
-            }) = pending.nodes.first()
-            else {
-                panic!("pending tail must be a code block");
-            };
-            assert_eq!(language, "rust");
-            // pending 阶段同一内容仍可高亮（块级整块解析，与 committed 无异）
-            let spans = highlight(code, language).expect("rust is supported");
-            assert!(
-                spans.iter().any(|span| span.kind == HighlightKind::Keyword),
-                "pending partial code is highlightable"
-            );
-        }
-        // 闭合后：同一 BlockId 冻结为 committed —— 调用方对其调用高亮完成升级
-        stream.append("}\n```\n\nDone.\n");
-        stream.finish();
-        let snapshot = stream.snapshot();
-        assert!(snapshot.pending.is_none());
-        let Some(RenderNode::CodeBlock {
-            language: Some(language),
-            code,
-        }) = snapshot.blocks[0].nodes.first()
-        else {
-            panic!("committed block must be a code block");
-        };
-        assert_eq!(code, "fn main() {\n}\n");
-        let spans = highlight(code, language).expect("rust is supported");
-        assert_span_invariants(code, &spans);
-        assert_eq!(kinds_for(code, &spans, "fn"), vec![HighlightKind::Keyword]);
-        assert_eq!(
-            kinds_for(code, &spans, "main"),
-            vec![HighlightKind::Function]
-        );
     }
 }

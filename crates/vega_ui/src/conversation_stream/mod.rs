@@ -1,60 +1,3 @@
-//! Virtualized conversation stream (S3-T18 → S8-T44): message-block UI over
-//! a [`vega_markdown::MarkdownStream`] — a variable-height `list` of
-//! semantic items (one item = one user/assistant/tool/permission/plan/
-//! artifact/summary entry at natural height) with native tail-following, a
-//! Composer (multi-line input + send) for local user echoes, and the S3 demo
-//! injection driven by the public mock replayer
-//! ([`vega_markdown::MockReplay`]).
-//!
-//! Layering (tech-spec §5.1/§5.3 — the self-built parts of this card):
-//!
-//! ```text
-//! MockReplay (mock 回放器，vega_markdown) ─▶ MarkdownStream.append(delta)
-//!     ├─ committed blocks (BlockId stable, frozen) ─▶ StreamModel diff by
-//!     │                                              (block_id, version):
-//!     │                                              only new/invalidated
-//!     │                                              blocks materialize
-//!     │                                              into StreamLines
-//!     │                                              (committed code blocks
-//!     │                                              highlight via T16)
-//!     └─ pending tail block                        ─▶ light re-flatten,
-//!                                                    plain monospace
-//! list(item_ix) ─▶ per-item natural-height elements built by cloning cached
-//!                  StreamLines (frozen items never re-materialize — P3;
-//!                  the mutable tail re-measures via explicit invalidation)
-//! ```
-//!
-//! - **消息块结构 (T18)**: the stream is a list of [`StreamEntry`]s — user
-//!   messages (bg_elevated rounded card + 「你」 label, 独立渲染路径挂
-//!   StreamSnapshot 外侧，架构师裁决) alternating with assistant turns (no
-//!   card, direct markdown flow). One `MarkdownStream` per assistant turn.
-//! - **差量渲染**: each assistant turn's [`StreamModel::sync`] materializes a
-//!   committed block exactly once per `(block_id, version)`; frozen blocks
-//!   keep their [`StreamLine`]s for the lifetime of the stream, so streaming
-//!   appends only touch the tail (spike counter method: frozen
-//!   re-materializations stay 0).
-//! - **高亮整合 (T18)**: committed code blocks map [`HighlightSpan`] kinds
-//!   onto the existing ui-spec §2 tokens (no new color values; the mapping
-//!   table is [`code_token_style`]); pending/unclosed fences and unsupported
-//!   languages degrade to plain monospace (tech-spec §5.1).
-//! - **锚定跟随 (P4)**: pure state machine [`anchor::step`] — pinned at the
-//!   bottom it follows new content; scrolling up more than one viewport
-//!   detaches; returning to the bottom re-engages.
-//! - **Composer (T18 最小版)**: fixed 3-row multi-line [`TextInput`] + send
-//!   button; Cmd+Enter and the button share one submit handler; empty input
-//!   disables send. A send appends a user entry (local echo, no LLM).
-//! - **动效禁令 (tech-spec §5.4)**: streaming nodes get NO entrance
-//!   animation — none is introduced anywhere in this pipeline.
-//! - **变高虚拟化 (S8-T44/C4)**: the top-level conversation is a GPUI
-//!   variable-height `list`; one item per semantic entry at natural height.
-//!   Text wraps (CJK/emoji/inline code included) — no content is ever
-//!   truncated to force a height. 24px remains only inside cards' compact
-//!   subrows (diff lines, card lines, C4 rule 1). The P4 anchor is the
-//!   list's native Tail follow (贴底跟随 / 上翻 detach / 回底 resume).
-//!
-//! The stream is memory-only (S3 has no message persistence): opening a
-//! thread constructs empty entries; restarting clears the conversation.
-
 mod privacy;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 mod attachments;
@@ -155,13 +98,6 @@ pub(crate) const ANCHOR_EPSILON_PX: f32 = 1.0;
 /// conversation list is variable-height and never uses this value.
 pub(crate) const ROW_HEIGHT: f32 = 24.0;
 
-/// Message hover-copy actions (Issue #78 follow-up) are temporarily disabled:
-/// the reserved action row below every message reads as an ugly, layout-coupled
-/// affordance in the installed build. The plumbing (`MessageCopy`, the `Copy`
-/// icon and the renderer) stays in place so the interaction can be re-enabled
-/// by flipping this single flag once the placement is redesigned. While false,
-/// `message_with_copy` returns the message body unchanged and no action row is
-/// reserved, so geometry matches the pre-#144 baseline exactly.
 pub(crate) const MESSAGE_COPY_ACTIONS_ENABLED: bool = false;
 
 /// Demo injection pacing: the 16ms tick polls; the injected count follows
@@ -199,8 +135,6 @@ pub struct ComposerSubmitted {
     pub images: Vec<ImageAttachment>,
     pub thread_id: String,
     pub content: String,
-    /// Pure UI intent for an unpersisted R69 draft. The app pins only after
-    /// readiness/materialization and a fresh worker-side consent CAS.
     pub skill_intent: Option<SkillSelectionIntent>,
     /// Run-start reasoning snapshot captured from the displayed exact
     /// provider/model projection. Raw reasoning text is never part of this
@@ -253,9 +187,6 @@ pub struct OpenCommitPanelRequested {
     pub project_id: String,
 }
 
-/// Bounded `@file` index request (A2-12): the composer selector opened and
-/// needs a fresh bounded walk of the project root. The app layer walks on a
-/// worker thread and hands back the typed [`FileIndexSnapshot`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileIndexRequested {
     pub thread_id: String,
@@ -299,10 +230,6 @@ pub struct WorkspaceToolTerminal {
     pub project_id: String,
 }
 
-/// Scroll-up hydration request (S8-T45/C7): the viewport reached the top of
-/// the list while older durable history may exist. `before` is the keyset
-/// cursor (the oldest loaded `seq`); the app layer reads the page off the UI
-/// thread and hands back the typed projection. The stream carries no SQLite.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPageRequested {
     pub thread_id: String,
@@ -322,19 +249,6 @@ pub struct MessageLocationRequested {
     pub restore_anchor: Option<ThreadScrollAnchor>,
 }
 
-/// Composer `@file` suggestion dropdown open/close/bookkeeping is UI-local;
-/// only the accepted completion flows out of the selector model.
-///
-/// Bounded `@file` selector state (A2-12): pure model + bounded snapshot,
-/// driven by the app layer's typed index projection.
-///
-/// Thinking-tier choice for the current provider/model (A2-14, R57 P3).
-///
-/// R57 P3 gives this event its single remaining emitter: the thinking-tier
-/// slider mounted in the model popup. The app validates the tier against its
-/// own reasoning authority, persists it as the profile's `preference` through
-/// the existing reasoning save path, and re-projects the authoritative profile
-/// back through [`ConversationStream::apply_reasoning_profile`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposerDefaultsRequested {
     pub thread_id: String,

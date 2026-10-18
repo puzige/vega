@@ -1,12 +1,3 @@
-//! Read-only per-task cost summary card (S7-T40/A10-06, C4 contract).
-//!
-//! The card renders a bounded [`TaskCostSummary`] projection produced by
-//! `vega_conversation::summary`; it never reads SQLite and never computes a
-//! cost formula. Unavailable facts (no usage rows, unpriced rows, restart
-//! without duration) render as `—`, never as a fabricated zero. Styling
-//! mirrors the ui-spec §4.2 tool-card frame: 8px radius, 1px `border-subtle`,
-//! no shadow, all colors from the theme tokens.
-
 #[cfg(test)]
 use gpui_kit::prelude::*;
 #[cfg(test)]

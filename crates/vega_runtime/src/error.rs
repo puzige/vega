@@ -1,5 +1,3 @@
-//! Unified error model (tech-spec §7, A3-01 / S4-T19).
-
 use std::fmt;
 
 use thiserror::Error;

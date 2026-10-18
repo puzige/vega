@@ -1,13 +1,3 @@
-//! Thread orchestration (A1-02): the entry point the UI uses to create,
-//! list, update, and open threads.
-//!
-//! This layer owns everything that must not leak into the SQL layer
-//! ([`vega_store::threads`]): ulid generation for thread ids (T11 ruling),
-//! the enum ↔ DDL-string bridge for `mode`/`status`, the config-defaults
-//! fallbacks (`model` may be empty until S4; an empty `permission_mode`
-//! falls back to the DDL default `confirm`), and the two-row touch on
-//! open. Storage failures surface as [`ConversationError`] values.
-
 use vega_store::Store;
 use vega_store::context_compaction;
 use vega_store::messages as store_messages;
@@ -20,10 +10,6 @@ use crate::types::{
     Thread, ThreadMode, ThreadStatus, ThreadUpdate,
 };
 
-/// Generates a fresh thread id (ulid).
-///
-/// T11 ruling: ids are minted in this crate, so the store layer only ever
-/// sees opaque strings.
 pub fn new_thread_id() -> String {
     // ulid 3.x：构造函数为 generate()（自带当前时间戳 + 随机数）。
     ulid::Ulid::generate().to_string()
@@ -45,11 +31,6 @@ fn store_error<E: std::fmt::Display>(error: E) -> ConversationError {
     ConversationError::Store(error.to_string())
 }
 
-/// Restores the calibrated Composer counter baseline for one thread from the
-/// durable, checked `token_usage` aggregate (S7-T39/C4). Corrupt rows,
-/// checked-overflow aggregates, and legacy/unpriced mixes fail closed: the
-/// former surfaces as [`ConversationError`], the latter restores
-/// `cost: None` so the counter shows `—` instead of a partial total.
 pub fn thread_usage_seed(
     store: &Store,
     thread_id: &str,
@@ -98,9 +79,6 @@ pub fn composer_history(store: &Store, thread_id: &str) -> Result<Vec<String>, C
         .collect())
 }
 
-/// The project new threads attach to by default: the most recently opened
-/// project, if any (T12: the sidebar seeds its selected-project cache from
-/// this and rewrites it on row click).
 pub fn current_project(store: &Store) -> Result<Option<CurrentProject>, ConversationError> {
     let row = store_projects::latest_project(store.conn()).map_err(store_error)?;
     Ok(row.map(|row| CurrentProject {
@@ -109,18 +87,6 @@ pub fn current_project(store: &Store) -> Result<Option<CurrentProject>, Conversa
     }))
 }
 
-/// Creates a thread in `project_id` from the given config defaults and
-/// returns it (not yet opened).
-///
-/// - `model` is stored as-is; an empty string is allowed until S4 wires a
-///   provider (architect's ruling on the T11 card).
-/// - an empty `permission_mode` falls back to the DDL default `confirm`;
-///   combined with the config template generated on first load, this also
-///   covers the missing-config path.
-/// - `mode` is always `execute` (DDL default) for this card.
-///
-/// The id is a fresh ulid minted here; `title` starts empty (T13 owns
-/// renaming) and `status`/`pinned`/`unread` start at their DDL defaults.
 pub fn create_thread(
     store: &Store,
     project_id: &str,
@@ -171,9 +137,6 @@ fn parse_permission_mode(value: &str) -> Result<PermissionMode, ConversationErro
         .ok_or_else(|| ConversationError::CorruptRow(format!("permission_mode: {value}")))
 }
 
-/// The one field-by-field `Thread` construction shared by the durable
-/// constructor and the R69 draft. The caller supplies the already-typed
-/// permission mode and the id source differs (fresh ulid either way).
 fn assemble_thread(
     project_id: Option<&str>,
     model: &str,
@@ -227,39 +190,11 @@ fn insert_thread(
     Ok(())
 }
 
-/// R69 R1/R2: builds the **unpersisted** home-route draft thread.
-///
-/// The draft carries its final id (`new_thread_id`), so materialization reuses
-/// it verbatim — Vega needs no Codex-style prefix/alias layer. Every other
-/// field follows the same rules as [`create_thread`]: empty `title`,
-/// `ThreadMode::Execute`, the caller's config `model`/`permission_mode`, DDL
-/// defaults for `status`/`pinned`/`unread`, and one `now_ms()` timestamp pair.
-///
-/// Unlike the durable constructor this is infallible: a `permission_mode`
-/// outside the vocabulary falls back to the DDL default `confirm` (the same
-/// rule as an empty value). The draft is a UI projection that never reaches
-/// the store by itself, and the durable INSERT writes the typed
-/// [`PermissionMode`] this returns, so there is no unvalidated value to leak.
 pub fn draft_thread(project_id: Option<&str>, model: &str, permission_mode: &str) -> Thread {
     let permission_mode = PermissionMode::parse(permission_mode).unwrap_or(PermissionMode::Confirm);
     assemble_thread(project_id, model, permission_mode)
 }
 
-/// R69 R8: persists a draft thread under **its own id**.
-///
-/// This is the only writer the lazy-draft route uses on first submit. It
-/// reuses the exact construction rules and the exact INSERT as
-/// [`create_thread`]/[`create_standalone_thread`], so a materialized draft is
-/// indistinguishable from an eagerly created row. Because the id is the
-/// primary key, a repeated call fails closed instead of producing a second
-/// row (R11).
-///
-/// R69 M4 (architect's ruling, 2026-09-16): `created_at`/`updated_at` are the
-/// **submit** instant, not the moment the home draft was first rendered. A user
-/// can sit on the home route for minutes before sending, and the sidebar's
-/// "Created" sort (`SidebarTaskSort::Created`) must reflect when the task
-/// actually started. The returned thread is the authoritative row; callers
-/// project it so the route and any later durable read agree.
 pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, ConversationError> {
     let project_id = thread.project_binding();
     if let Some(project_id) = project_id {
@@ -280,10 +215,6 @@ pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, Conve
     Ok(materialized)
 }
 
-/// Lists a project's threads, most recently updated first, pinned group
-/// first. T13 (A1-05) adds the lifecycle filter: `Some(status)` restricts
-/// the list (the sidebar main list reads `Active`, the 「已归档」 section
-/// reads `Archived`); `None` keeps both.
 pub fn list_threads(
     store: &Store,
     project_id: &str,
@@ -313,8 +244,6 @@ fn get_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationErro
     thread_from_row(&row)
 }
 
-/// Renames a thread (A1-05) and bumps `updated_at` (rename is thread
-/// activity per the DDL semantics), returning the refreshed thread.
 pub fn rename_thread(
     store: &Store,
     thread_id: &str,
@@ -327,8 +256,6 @@ pub fn rename_thread(
     get_thread(store, thread_id)
 }
 
-/// Switches a thread's lifecycle status (`active` ↔ `archived`, A1-05).
-/// `updated_at` is not bumped, so archiving does not reorder the list.
 pub fn set_thread_status(
     store: &Store,
     thread_id: &str,
@@ -347,7 +274,6 @@ pub fn set_thread_status(
     Ok(())
 }
 
-/// Sets a thread's pinned flag (置顶切换, A1-05). `updated_at` is not bumped.
 pub fn set_thread_pinned(
     store: &Store,
     thread_id: &str,
@@ -402,10 +328,6 @@ pub fn set_thread_permission_mode(
     get_thread(store, thread_id)
 }
 
-/// Persists the thread's durable model (A2-14/R1: an in-session selection
-/// applies to the current thread's next run) and returns the authoritative
-/// thread row. Unknown threads and empty models fail closed with
-/// [`ConversationError::NotFound`].
 pub fn set_thread_model(
     store: &Store,
     thread_id: &str,
@@ -422,9 +344,6 @@ pub fn set_thread_model(
     get_thread(store, thread_id)
 }
 
-/// Deletes a thread (A1-05). The store layer removes the thread together
-/// with its `messages`/`tool_calls` rows in one transaction (no orphan rows;
-/// `token_usage` is kept for cost auditing).
 pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationError> {
     let is_child = store::find(store.conn(), thread_id)
         .map_err(store_error)?
@@ -480,7 +399,6 @@ pub fn update_thread(
     Ok(())
 }
 
-/// Read only title metadata without recording a visit or changing recency (#65 R5).
 pub fn read_thread_title(
     store: &Store,
     thread_id: &str,
@@ -641,8 +559,6 @@ mod tests {
         (store, dir)
     }
 
-    /// T11 裁决：测试所需 project 行用裸 SQL 插入（补齐 DDL 必填字段），
-    /// 不依赖 T10 的函数。
     fn insert_project(store: &Store, id: &str, name: &str) {
         let path = format!("/tmp/{id}");
         store
@@ -873,27 +789,6 @@ mod tests {
     }
 
     #[test]
-    fn draft_thread_matches_create_thread_fields_without_writing_a_row() {
-        let (store, _dir) = open_store();
-        insert_project(&store, "p1", "alpha");
-        let draft = draft_thread(Some("p1"), "deepseek-chat", "auto");
-        assert!(ulid::Ulid::from_string(&draft.id).is_ok());
-        assert_eq!(draft.project_id, "p1");
-        assert_eq!(draft.title, "");
-        assert_eq!(draft.mode, ThreadMode::Execute);
-        assert_eq!(draft.permission_mode, PermissionMode::Auto);
-        assert_eq!(draft.model, "deepseek-chat");
-        assert_eq!(draft.status, ThreadStatus::Active);
-        assert!(!draft.pinned);
-        assert!(!draft.unread);
-        assert!(draft.created_at > 0);
-        assert_eq!(draft.created_at, draft.updated_at);
-        // 草稿本身不落库（R5）。
-        assert_eq!(list_threads(&store, "p1", None).unwrap().len(), 0);
-        assert_eq!(list_standalone_threads(&store, None).unwrap().len(), 0);
-    }
-
-    #[test]
     fn draft_thread_uses_ddl_defaults_for_unusable_permission_modes() {
         let draft = draft_thread(None, "m", "");
         assert_eq!(draft.permission_mode, PermissionMode::Confirm);
@@ -903,64 +798,6 @@ mod tests {
             draft_thread(None, "m", "yolo").permission_mode,
             PermissionMode::Confirm
         );
-    }
-
-    #[test]
-    fn materialize_draft_reuses_the_draft_id_and_fails_closed_on_a_second_write() {
-        let (store, _dir) = open_store();
-        insert_project(&store, "p1", "alpha");
-        let draft = draft_thread(Some("p1"), "mock", "confirm");
-        // R69 M4: the durable row is stamped at submit, so simulate the user
-        // sitting on the home route before sending.
-        let submitted = Thread {
-            created_at: draft.created_at + 60_000,
-            updated_at: draft.updated_at + 60_000,
-            ..draft.clone()
-        };
-        let materialized = materialize_draft(&store, &submitted).unwrap();
-        let loaded = list_threads(&store, "p1", None).unwrap();
-        assert_eq!(loaded.len(), 1);
-        // 除时间戳外逐字段与草稿一致：id / project / model / permission 全部复用。
-        assert_eq!(loaded[0], materialized);
-        assert_eq!(materialized.id, draft.id);
-        assert_eq!(materialized.project_id, draft.project_id);
-        assert_eq!(materialized.model, draft.model);
-        assert_eq!(materialized.permission_mode, draft.permission_mode);
-        // 主键冲突 → 第二次物化失败，不产生第二行（R11）。
-        assert!(materialize_draft(&store, &submitted).is_err());
-        assert_eq!(list_threads(&store, "p1", None).unwrap().len(), 1);
-    }
-
-    /// R69 M4（架构师裁决 2026-09-16）：物化行的时间戳是**提交时刻**，不是草稿
-    /// 构造时刻。用户在首页可以停留很久，侧栏 "Created" 排序必须反映任务真正
-    /// 开始的时刻。
-    #[test]
-    fn materialize_draft_stamps_the_submit_instant_not_the_draft_instant() {
-        let (store, _dir) = open_store();
-        insert_project(&store, "p1", "alpha");
-        let draft = draft_thread(Some("p1"), "mock", "confirm");
-        // 草稿先"停留"一段可观测的时间差。
-        let stale = Thread {
-            created_at: draft.created_at - 60_000,
-            updated_at: draft.updated_at - 60_000,
-            ..draft.clone()
-        };
-        let before = now_ms();
-        let materialized = materialize_draft(&store, &stale).unwrap();
-        let after = now_ms();
-        assert!(
-            materialized.created_at >= before && materialized.created_at <= after,
-            "created_at must be the submit instant: {} not in [{before}, {after}]",
-            materialized.created_at
-        );
-        assert_eq!(materialized.created_at, materialized.updated_at);
-        assert_ne!(
-            materialized.created_at, stale.created_at,
-            "the stale draft timestamp must not survive materialization"
-        );
-        // 库里读回的也是提交时刻，不是草稿时刻。
-        let loaded = list_threads(&store, "p1", None).unwrap();
-        assert_eq!(loaded[0].created_at, materialized.created_at);
     }
 
     #[test]

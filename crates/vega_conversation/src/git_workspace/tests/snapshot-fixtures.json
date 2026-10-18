@@ -4453,7 +4453,7 @@
         ],
         "input": null,
         "overflow": false,
-        "stdout": "# branch.oid (initial)\u0000# branch.head main\u0000? bidi\u202ename.txt\u0000? line\nname.txt\u0000? tab\tname.txt\u0000"
+        "stdout": "# branch.oid (initial)\u0000# branch.head main\u0000? bidi‮name.txt\u0000? line\nname.txt\u0000? tab\tname.txt\u0000"
       },
       {
         "args": [

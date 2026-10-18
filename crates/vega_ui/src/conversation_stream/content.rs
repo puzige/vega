@@ -77,13 +77,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Appends the read-only per-task cost summary card of one finished
-    /// assistant message (S7-T40/C4). The typed projection arrives from the
-    /// app layer via `vega_conversation::summary`; the stream never queries
-    /// SQLite and never computes a cost formula. Applications are keyed by
-    /// the assistant message id and first-wins: duplicates and later stale
-    /// projections of the same task are ignored, and projections of foreign
-    /// threads are dropped.
     pub fn apply_task_summary(&mut self, summary: TaskCostSummary, cx: &mut Context<Self>) {
         if self.summary_cards.contains_key(&summary.message_id) {
             return;
@@ -100,14 +93,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Applies one typed history page (S8-T45/C7). The first page fills the
-    /// empty route-open stream; later pages PREPEND above the loaded history
-    /// when the user scrolls up. Pages are converted through the typed
-    /// projections only — no SQLite ever runs in this crate — and duplicate
-    /// durable cards (summary/plan/tool) reconcile first-wins. Prepends keep
-    /// the viewport anchored at the page boundary (uniform row heights make
-    /// the pixel adjustment exact), and in-flight entry indices shift so a
-    /// streaming run keeps writing into its own turn.
     pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
         let subagents = page.subagents.clone();
         let was_empty = self.entries.is_empty();
@@ -781,43 +766,26 @@ impl ConversationStream {
         self.thread.permission_mode
     }
 
-    /// The thinking choice this composer projects (`provider_default`,
-    /// `disabled`, or a declared effort). R57 P3 acceptance reads it to prove
-    /// a slider selection became the composer's authoritative state rather
-    /// than only moving the knob.
     #[doc(hidden)]
     pub fn thinking_choice(&self) -> &str {
         &self.composer_defaults.thinking
     }
 
-    /// The exact reasoning capability projection this composer currently
-    /// carries, or `None` when the model has no profile. R57 P3 acceptance
-    /// reads it to prove the slider's tier list is the model's own
-    /// `ReasoningProfile.efforts` rather than a fixed ladder.
     #[doc(hidden)]
     pub fn reasoning_profile(&self) -> Option<&ReasoningProfileProjection> {
         self.composer_defaults.reasoning.as_ref()
     }
 
-    /// The mounted tier slider (R57 P3). The application acceptance harness
-    /// reads its live tier and dot count to prove the composer's projection
-    /// reached the real component.
     #[doc(hidden)]
     pub fn thinking_slider(&self) -> Entity<ThinkingSlider> {
         self.thinking_slider.clone()
     }
 
-    /// Which model-picker level is mounted, if any (R59). The application
-    /// acceptance harness reads it to prove the two levels are mutually
-    /// exclusive and that a tier-only round trip leaves the slider mounted.
     #[doc(hidden)]
     pub fn model_picker_level(&self) -> ModelPickerLevel {
         self.model_picker_level
     }
 
-    /// Number of configured model options the selector offers (#60 R1). R57 P3
-    /// acceptance waits on it because the popup (and therefore the slider it
-    /// hosts) only opens once the app published the catalog projection.
     #[doc(hidden)]
     pub fn model_options_len(&self) -> usize {
         self.model_options.len()
@@ -836,9 +804,6 @@ impl ConversationStream {
         self.active_agent_message.is_some()
     }
 
-    /// Number of hydrated durable entries the stream currently carries
-    /// (S8-T45/C7 observability for the app-layer fence tests; the row
-    /// layout itself stays crate-private).
     pub fn hydrated_entry_count(&self) -> usize {
         self.entries
             .iter()
@@ -1160,8 +1125,6 @@ impl ConversationStream {
     /// Applies an already-durable shared lifecycle event. The UI never reads
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
-        // S7-T39: the bounded meter projection consumes the same accepted
-        // events (fence below) before ownership moves into the render path.
         self.feed_meter(&event, cx);
         self.clear_recovered_retry(&event);
         let phase = match &event {
@@ -1460,12 +1423,7 @@ impl ConversationStream {
                     self.push_corrupt_tool(call_id, cx);
                 }
             }
-            ConversationEvent::ToolCallOutput { .. } => {
-                // T26 emits a post-commit bounded output immediately before
-                // Finished. Ignore it here: write/edit chunks can contain the
-                // strict success JSON (including the opaque checkpoint ref),
-                // and terminal projection is the sole card decode boundary.
-            }
+            ConversationEvent::ToolCallOutput { .. } => {}
             ConversationEvent::ToolCallFinished { call_id, result } => {
                 self.timeout_permission_for_call(&call_id, cx);
                 self.finish_user_question(&call_id, cx);

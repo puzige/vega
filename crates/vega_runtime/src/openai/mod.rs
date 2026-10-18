@@ -1,15 +1,3 @@
-//! OpenAI-compatible streaming chat provider (tech-spec §4.1, A3-02 / S4-T19).
-//!
-//! POSTs `{base_url}/chat/completions` with `stream: true` and
-//! `stream_options: { "include_usage": true }`, parses the SSE stream with
-//! `eventsource-stream`, aggregates `delta.tool_calls` fragments by index
-//! (emitting [`ProviderEvent::ToolUse`] only once fragments complete), and
-//! recovers the final usage chunk before `data: [DONE]`.
-//!
-//! Red line: the API key is only ever placed into the `Authorization`
-//! request header — it never reaches logs, `Debug` output, or error messages
-//! (server bodies echoing it are redacted best-effort).
-
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::pin::Pin;

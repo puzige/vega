@@ -1,37 +1,3 @@
-//! The isolated release probe subprocess (SDD §2/C1, §3/C2, §7/C6).
-//!
-//! The parent re-executes the release-built xtask binary with the hidden
-//! `__probe` subcommand:
-//!
-//! - `xtask __probe c1 --hold-ms <ms>` — boots a real GPUI window with the
-//!   REAL application root view composition (`Sidebar` + routed
-//!   `ConversationStream` with its enabled-state empty Composer through the
-//!   production boot path: `vega_ui::init` key bindings, `sidebar::init`
-//!   store open/migration at the platform data root, production theme seed),
-//!   registers a pinned GPUI next-frame callback, flushes EXACTLY ONE strict
-//!   single-line `VEGA_C1_MILESTONE {…}` JSON milestone, idles for the C2
-//!   hold window (empty single window, no tasks), then exits normally on its
-//!   own — no kill involved.
-//! - `xtask __probe p2 --out <path> --seconds <s> --rate <r>` — same real
-//!   root; drives the production UI controller entry
-//!   (`ConversationStream::apply_event`, the same entry the app's agent pump
-//!   uses) with bounded batches at `rate` deltas/s for `seconds`,
-//!   timestamping each batch at receive and associating it with the first
-//!   frame that contains it; writes the C6 stream JSON report and exits.
-//!
-//! Isolation (C3): the parent runs the probe with a temp `HOME`, so
-//! `vega_store::paths::data_dir()` resolves inside the sandbox and the store
-//! is a preseeded throwaway SQLite — zero real profile, zero Keychain, zero
-//! provider, zero network.
-//!
-//! Deviation note (recorded in docs/vega-s8-t43-baseline.md + the PR): the
-//! production `vega` binary itself has no milestone seam, and this card's
-//! red line forbids touching crates/ — so the subprocess is the release
-//! xtask binary linking the real `vega_ui`/`vega_theme`/`vega_store`
-//! components and mirroring the production window composition. The
-//! `VegaWindow` shell (agent/commit/branch controllers) is not part of the
-//! idle first-frame scene; the measured views are the production views.
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, TryRecvError};

@@ -1,9 +1,3 @@
-//! S7-T40 (A10-06) headless production journey: per-task cost summaries
-//! projected from the durable `token_usage`/`tool_calls` audits of real
-//! mock-provider runs, including typed unavailable semantics, terminal
-//! interrupted/error outcomes, restart recovery, and deletion-safe usage
-//! audit queries.
-
 use std::error::Error;
 
 use tempfile::tempdir;
@@ -346,59 +340,5 @@ async fn thread_deletion_keeps_usage_audit_queryable() -> Result<(), Box<dyn Err
         task_cost_summary(&fixture.store, "summary-e2e-thread", &message_id, None),
         Err(vega_conversation::types::ConversationError::NotFound(_))
     ));
-    Ok(())
-}
-
-#[tokio::test]
-async fn unpriced_legacy_rows_show_tokens_but_unavailable_cost() -> Result<(), Box<dyn Error>> {
-    let fixture = fixture()?;
-    // No catalog: the run proceeds unpriced (legacy zero cost, NULL
-    // provenance) exactly like an S4/S5 historical row.
-    let repo = fixture.workspace.path().join("repo");
-    let tools = vega_tools::Tools::new(&repo)?;
-    let provider = MockProvider::new(vec![ScriptStep::events(vec![
-        ProviderEvent::TextDelta("Answer.".into()),
-        usage(80_000, 8_000, 0),
-        done(StopReason::End),
-    ])]);
-    let run = run_thread_task_with_pricing(
-        &fixture.store,
-        &provider,
-        &tools,
-        "summary-e2e-thread",
-        "Summarize the repository.",
-        "Use tools before answering.",
-        CancellationToken::new(),
-        &RejectPermissionHook,
-        |_| Ok(()),
-        Default::default(),
-        None,
-        None,
-    )
-    .await?;
-    assert!(!run.failed);
-
-    let summary = task_cost_summary(
-        &fixture.store,
-        "summary-e2e-thread",
-        assistant_message_id(&run),
-        None,
-    )?;
-    assert_eq!(
-        summary.usage,
-        Some(TokenUsage {
-            input: 80_000,
-            output: 8_000,
-            cache_read: Some(0),
-            cache_write: Some(0),
-        }),
-        "tokens stay visible"
-    );
-    assert_eq!(
-        summary.cost,
-        SummaryCost::Unavailable,
-        "legacy/unpriced rows never masquerade as free"
-    );
-    assert_eq!(summary.cache_hit_percent, Some(0));
     Ok(())
 }

@@ -19,13 +19,9 @@ impl Render for VegaWindow {
         // viewport auto-collapse rule (ui-spec §1).
         let sidebar_visible =
             !cx.global::<SidebarCollapsed>().0 && !self.auto_collapsed(window, cx);
-        // T13 delete confirmation overlay: rendered above everything (window
-        // root, absolute) while a delete is pending (裁决②).
+
         let pending_delete = cx.global::<PendingDeleteConfirm>().0.clone();
 
-        // Settings opens inside the content area (T09 layout change of the
-        // T08 view switching): the sidebar stays visible unless collapsed.
-        // 路由收敛（T12 + T17）：内容区 = 设置 or 会话流 or §4.6 空态。
         let settings_open = cx.global::<SettingsOpen>().0;
         if self.diff_controller.active.as_ref().is_some_and(|active| {
             settings_open || !Self::diff_route_is_current(&active.identity, cx)
@@ -181,19 +177,12 @@ impl Render for VegaWindow {
         } else {
             // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
             let returning_from_settings = self.settings_view.take().is_some();
-            // R69 R1/R4: the home route (no opened thread) installs — or
-            // reuses — the window's single unpersisted draft thread and
-            // renders the real ConversationStream over it. `OpenedThread`
-            // becomes `Some(draft)`, so the route identity is a task route
-            // everywhere downstream while the draft stays a home route in the
-            // navigation history (`Projection::route`).
+
             let thread = self.resolve_route_thread(cx);
             self.update_message_location_route(Some(&thread.id));
             let draft_route = self.is_draft_route(&thread.id);
             {
                 {
-                    // S3-T17：会话流视图（每线程一个实体，切换会话时重建；
-                    // MarkdownStream 内存态构造，不落库）。
                     let cached = self
                         .agent_controller
                         .active_stream_for_thread(&thread.id)
@@ -245,11 +234,7 @@ impl Render for VegaWindow {
                                 self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
                                 self.bind_conversation_stream(&view, window, cx);
                             }
-                            // A8-01: the same draft id intentionally keeps
-                            // the same stream (and Composer input/focus), but
-                            // project selection may have changed around it.
-                            // Only the window-owned unpersisted draft may
-                            // cross that project boundary in place.
+
                             let needs_rebind = draft_route
                                 && view.read(cx).route_project_id() != thread.project_id;
                             let label = if needs_rebind {
@@ -294,10 +279,7 @@ impl Render for VegaWindow {
                                 stream.set_draft_route(draft_route, cx);
                                 stream.set_project_label(label, cx);
                             });
-                            // A2-14/R1: this frame only projects the durable
-                            // thread and the already loaded in-memory model
-                            // catalog. Config IO is scheduled below on a
-                            // worker, so render never reads config.toml.
+
                             let model_options = self.model_options_for_pricing();
                             view.update(cx, |stream, cx| {
                                 stream.apply_thread(thread.clone(), cx);
@@ -306,22 +288,12 @@ impl Render for VegaWindow {
                             self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
                             self.agent_controller.delegated_unbound.remove(&thread.id);
                             self.bind_conversation_stream(&view, window, cx);
-                            // R69 R7: a draft has no durable history by
-                            // definition, so the whole hydration block is
-                            // skipped. Running it would surface a visible
-                            // controller error — `recoverable_approved_instruction`
-                            // returns `NotFound` for a row that does not exist
-                            // and the `?` chain turns that into the error bar.
-                            // The empty state is applied directly instead.
+
                             let initial = if draft_route {
                                 None
                             } else {
                                 Some(match &cx.global::<VegaStore>().0 {
                                     Ok(store) => (|| {
-                                        // S8-T45/C7: the controller is rebuilt first,
-                                        // one repair pass normalizes rows the killed
-                                        // process left incomplete, and only then is
-                                        // the newest durable page projected.
                                         let hydration =
                                             vega_conversation::history::restart_history_page(
                                                 store,
@@ -338,19 +310,11 @@ impl Render for VegaWindow {
                                             vega_conversation::plans::recoverable_approved_instruction(
                                                 store, &thread.id,
                                             )?;
-                                        // S7-T39/C4: the calibrated counter baseline
-                                        // comes from the conversation checked aggregate
-                                        // query exactly once per route open; the meter
-                                        // itself never touches SQLite afterwards.
+
                                         let usage = vega_conversation::threads::thread_usage_seed(
                                             store, &thread.id,
                                         )?;
-                                        // S7-T40 restart recovery: token/cost/cache/
-                                        // tool count re-project from the durable
-                                        // audits; duration stays `—` (no finished
-                                        // timestamp in `messages`, C4). The hydrated
-                                        // page carries the same summary reference and
-                                        // first-wins dedup keeps exactly one card.
+
                                         let summary =
                                             vega_conversation::summary::latest_task_summary(
                                                 store, &thread.id, None,
@@ -414,13 +378,7 @@ impl Render for VegaWindow {
                     // the next visible frame so newly saved providers/models
                     // become selectable without rebuilding the session.
                     self.start_model_catalog_load(cx);
-                    // R69/R6 correction: the draft still has no durable row,
-                    // so artifact access remains excluded. Branch access is
-                    // different: `artifact_project_root` resolves the
-                    // selected project row, and the existing branch
-                    // controller can therefore list/switch its repository
-                    // without materializing the draft. Standalone drafts are
-                    // rejected by `ensure_branch_route` itself.
+
                     if !draft_route {
                         self.ensure_artifact_route(&thread, stream.clone(), cx);
                     }
@@ -501,9 +459,6 @@ impl Render for VegaWindow {
                     .child(self.render_sidebar_resizer(colors, cx))
             })
             .child(
-                // R21 uses a flat split shell. Settings brings its own full-height
-                // navigation rail and content column; conversation/empty routes
-                // share this flush white surface.
                 div()
                     .debug_selector(|| "main-content-panel".into())
                     .flex_1()
@@ -530,18 +485,10 @@ impl Render for VegaWindow {
                     )
                     .child(div().flex_1().min_h_0().child(content)),
             )
-            // R46 §2.1: the shell slots belong to the window, not to a column.
-            // They paint after every sidebar/rail/pane so they stay on top,
-            // and before the palette and the delete-confirm overlay so those
-            // full-window surfaces keep their precedence. Maximizing a dock
-            // keeps them mounted (its x must not change); that pane's header
-            // reserves the cluster's trailing band per §2.1.1. Settings keeps
-            // its own full-height chrome and hides the shell header entirely.
             .children((!settings_open).then(|| self.render_shell_slot_cluster(window, cx)))
             .on_mouse_move(cx.listener(Self::resize_sidebar))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_sidebar_resize))
             .children(self.palette.view.clone())
-            // T13 删除确认弹层：最后绘制以覆盖全窗口；遮罩点击 / Esc 取消。
             .children(
                 pending_delete.map(|thread| {
                     render_delete_confirm_overlay(&thread, self.sidebar.clone(), colors)
@@ -599,14 +546,6 @@ impl VegaWindow {
         }
     }
 
-    /// R46 §2.1: the three shell slots are a window-level trailing cluster.
-    /// They pin to the window's top-right corner, outside every column, rail
-    /// and pane, so no panel state can move their x coordinate. The cluster
-    /// keeps R45's frozen internals: three 28×28 controls, 6px gaps, fixed
-    /// Environment → Terminal(⌘J) → Right order, and disabled slots keeping
-    /// their grid. Vertical placement centers it in the 46px main header band,
-    /// on the Codex `--padding-toolbar` trailing inset (8px) that the
-    /// `SHELL_SLOT_CLUSTER_RESERVE` token also builds on.
     fn render_shell_slot_cluster(
         &mut self,
         window: &mut Window,
@@ -631,13 +570,6 @@ impl VegaWindow {
             .flex()
             .items_center()
             .gap(px(6.))
-            // The cluster is window chrome and owns its pixels. Anchoring it to
-            // the window's top-right corner puts it over the right pane's own
-            // trailing controls, and without this a press on a *disabled* slot
-            // would fall through and activate whatever sits underneath instead
-            // of staying inert (R45: activation ignored, grid kept). It also
-            // keeps the narrow Environment overlay's full-window dismissal
-            // backdrop from racing slot 1's own toggle.
             .occlude()
             .child(
                 shell_icon_button(
@@ -687,11 +619,6 @@ impl VegaWindow {
             .into_any_element()
     }
 
-    /// R12/R69: the main header's title for the current route.
-    ///
-    /// The draft route keeps the pre-R69 home title. A draft has an empty
-    /// title by construction, so without this branch the header would read
-    /// `未命名任务` on the page the user has not started yet.
     pub(crate) fn main_header_title(&self, cx: &App) -> String {
         let thread = cx.global::<OpenedThread>().0.clone();
         let Some(thread) = thread else {
@@ -720,12 +647,6 @@ impl VegaWindow {
             .gap_2()
             .border_b_1()
             .border_color(colors.border_subtle)
-            // R46: the window-anchored slot cluster no longer renders inside
-            // this element, so reserve its exact trailing width (3×28px slots
-            // on 2×6px gaps plus the shared 8px toolbar trailing inset) to
-            // keep the title clear of it. No negative margin and no coordinate
-            // special case. The main header hosts no local actions, so it does
-            // not add the pane-header ownership gutter (R47 §2.1).
             .pr(px(Layout::SHELL_SLOT_CLUSTER_RESERVE))
             .when(!sidebar_visible, |header| {
                 header

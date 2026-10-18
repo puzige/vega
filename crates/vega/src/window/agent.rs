@@ -94,7 +94,6 @@ impl VegaWindow {
         self.start_message_location_worker(stream, worker_request, cx);
     }
 
-    /// #65 R6: independent of primary Finished/generation/route polling.
     pub(crate) fn watch_automatic_titles(
         &mut self,
         database: std::path::PathBuf,
@@ -230,11 +229,6 @@ impl VegaWindow {
                 .is_some_and(|(cached_id, cached)| cached_id == thread_id && cached == stream)
     }
 
-    /// Scroll-up hydration (S8-T45/C7): one page read per request on a
-    /// worker thread; the store global itself stays on the main thread. The
-    /// route fence is checked before spawning so a request from a stale
-    /// view never reaches the store, and again on completion so a page that
-    /// finished after a route switch is dropped (A→B→A 晚到页丢弃).
     pub(crate) fn request_history_page(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -792,9 +786,6 @@ impl VegaWindow {
             return;
         };
 
-        // #60 R2/R3: missing prices are not a send gate. Runtime and meter
-        // share this one immutable optional snapshot; provider/permission
-        // validation still runs independently through its existing path.
         let pricing_catalog = self.pricing_controller.catalog_for_run(&thread.model);
 
         let permission_queue = stream.read(cx).permission_queue();
@@ -846,17 +837,14 @@ impl VegaWindow {
                     message_id: pending_id,
                 }
             });
-        // R8: an accepted run is mirrored into the app-wide thread liveness
-        // projection immediately, so the sidebar row lights up while the
-        // worker is still preparing its first durable message.
+
         vega_ui::sidebar::set_thread_running(thread_id, true, cx);
         self.agent_controller.preparation_stream = None;
         self.begin_context_primary_owner(generation, cx);
         stream.update(cx, ConversationStream::begin_composer_run);
         self.ensure_agent_artifact_route(&thread, &stream, cx);
         self.begin_artifact_agent_generation(generation, &stream);
-        // S7-T39/C3: the provisional estimator freezes the run-start
-        // selection; it never re-reads pricing files or the live authority.
+
         let meter_estimator = pricing_catalog.clone().and_then(|catalog| {
             vega_conversation::types::RunUsageEstimator::new(&thread.model, catalog)
         });
@@ -880,9 +868,7 @@ impl VegaWindow {
             .entry(thread_id.to_string())
             .or_default()
             .clone();
-        // A8-02: register synchronously before spawn. The worker closure owns
-        // the token through its last tool/provider call, even if this window
-        // cancels or closes before the worker can acknowledge termination.
+
         let worker_activity = vega_ui::sidebar::register_project_worker(&thread.project_id, cx);
         let replay_registry = cx
             .try_global::<crate::app_agent::AppReplaySessions>()
@@ -1195,10 +1181,7 @@ impl VegaWindow {
                 return;
             }
         };
-        // A7-01: hold the existing draft/input in memory while a bounded
-        // worker reads the owned config and credential store. Materialization
-        // and agent start happen only after this typed readiness result; no
-        // config or keystore IO is performed on the UI submit path.
+
         let Some(lease) = self
             .trusted_actions
             .acquire(TrustedActionKind::AgentPreflight, 0, 0)
@@ -1741,15 +1724,8 @@ impl VegaWindow {
             });
             return;
         }
-        // R69 R8-R11: first submit materializes the lazy draft under its own
-        // id only after readiness passes. Route identity is untouched
-        // (`OpenedThread.0.id` and the `stream_view` key are unchanged), so
-        // the cached stream — with its composer text and focus — is never
-        // rebuilt. A materialization failure keeps the draft installed and
-        // surfaces the existing controller error for retry.
+
         if let Some(draft) = self.draft_for_route(&thread_id) {
-            // #60 R2: provider readiness was checked above; optional prices
-            // must not prevent the first submit from materializing this ID.
             if self.materialize_draft(&draft, cx).is_err() {
                 stream.update(cx, |stream, cx| {
                     stream.reject_composer_submission(cx);

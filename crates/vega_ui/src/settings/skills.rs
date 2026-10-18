@@ -1,6 +1,3 @@
-//! Issue #74 Skills Settings. This view only talks to the conversation-owned
-//! service; no Skill path, file or SQLite row is trusted on the UI thread.
-
 use crate::interaction::InteractionExt;
 use std::path::PathBuf;
 #[cfg(test)]

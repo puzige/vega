@@ -1,12 +1,7 @@
-//! Provider usage audit over the existing `token_usage` table: one row per
-//! provider call (S4-T19) plus the S7-T38 (C5) price-audit columns and the
-//! checked thread/message aggregates.
-
 pub mod dashboard;
 
 use rusqlite::{Connection, params};
 
-/// Exact pricing version stamped on rows priced by the S7 integer engine.
 pub const PRICED_VERSION: &str = "pricing_v1";
 
 /// Insertable token accounting fields.
@@ -25,12 +20,9 @@ pub struct NewTokenUsage<'a> {
     pub cache_read_tokens: u64,
     /// Cache-write tokens.
     pub cache_write_tokens: u64,
-    /// Integer microcents (S4 placeholder is zero; S7 rows are priced).
     pub cost_microcents: i64,
     /// Unix milliseconds.
     pub created_at: i64,
-    /// Exact pricing version that priced this row (`pricing_v1`); `None` keeps
-    /// the legacy/unpriced semantics of the S4 zero placeholder (C5).
     pub pricing_version: Option<&'a str>,
     /// Exact rate profile used by the quote (`base` | `peak_utc_weekly`);
     /// `None` for legacy rows.

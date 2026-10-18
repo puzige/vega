@@ -142,9 +142,6 @@ impl VegaWindow {
         .detach();
     }
 
-    /// Called only after provider readiness and R69 materialization. A
-    /// reviewed UI intent is not authority; this worker rechecks and CAS-pins
-    /// before any agent/provider start.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_skill_pin_before_agent(
         &mut self,

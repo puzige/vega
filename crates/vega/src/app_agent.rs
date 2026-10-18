@@ -215,13 +215,7 @@ pub(crate) struct ActiveAgentRun {
     pub(crate) computer_use_owner: String,
     pub(crate) pending_user_content: Option<String>,
     pub(crate) pending_approved_instruction: Option<String>,
-    /// Live wall-clock measurement of this run (S7-T40). It exists only in
-    /// run memory: the summary card shows it while the run is alive and `—`
-    /// after a restart, because `messages` has no finished timestamp (C4).
     pub(crate) started: Instant,
-    /// Assistant message id of the run's durable terminal event, if any
-    /// (S7-T40 summary projection key; `None` when the run failed before a
-    /// message ever started).
     pub(crate) terminal_message_id: Option<String>,
     /// Safe, run-owned terminal diagnosis. The raw provider body remains in
     /// the ephemeral event and is never copied to this controller state.
@@ -383,8 +377,6 @@ impl PricingController {
         }
     }
 
-    /// #60 R3: accounting is optional. Freeze only committed authority;
-    /// an unsaved/retry draft must never affect a running call's estimate.
     pub(crate) fn catalog_for_run(&self, model: &str) -> Option<PricingCatalog> {
         let authority = match &self.state {
             PricingControllerState::Ready { authority, .. } => authority,
@@ -556,9 +548,6 @@ impl AppAgentController {
         active.pending_user_content.take()
     }
 
-    /// Records the run's terminal assistant message id from the durable
-    /// terminal event (S7-T40 summary projection key). Duplicate or later
-    /// events overwrite in place; the id is only consumed at run finish.
     pub(crate) fn observe_terminal_message(
         &mut self,
         generation: u64,
@@ -931,9 +920,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     user_questions: vega_conversation::agent::UserQuestionQueue,
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<AgentUpdate>,
-    // S7-T39/C3: frozen run-start pricing selection handed off with run
-    // ownership; the worker never re-reads pricing files or the live
-    // authority mid-run.
+
     pricing_catalog: Option<vega_conversation::PricingCatalog>,
     // Owned config path selected by the app/controller. The worker must never
     // fall back to process-global config while checking the frozen owner.
@@ -1006,8 +993,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
         let mut replay_route_fingerprint = None;
-        // Issue #114: agentic turn guardrail from `[agent] turn_limit`
-        // (0 = unlimited). Absent config (legacy callers/tests) stays unlimited.
+
         let turn_limit = config.as_ref().map_or(0, |config| config.agent.turn_limit);
         if let Some(config) = &config
             && (config.agent.desktop_use_enabled || config.agent.browser_use_enabled)
@@ -1093,9 +1079,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             )?,
             (None, None) => vega_runtime::FrozenReasoning::unknown(provider_name, &thread.model),
         };
-        // Provider construction stays below the reference resolver so an
-        // unresolved @file can terminate with zero provider requests or
-        // construction, preserving R5's fail-closed boundary.
+
         let mut provider_known_credential = None::<String>;
         let provider_credential_reader: Option<CredentialReader> = config_path
             .as_deref()
@@ -1272,13 +1256,9 @@ pub(crate) fn run_agent_worker_with_mcp(
             PendingAgentRun::Automation(_) => return Err(()),
             PendingAgentRun::UserMessage(submission) => {
                 let content = submission.content;
-                // #65 R2: freeze only composer text, before expanding referenced files.
+
                 let title_source = content.clone();
-                // A2-12: resolve `@path` tokens against the project root and
-                // inject the referenced file contents ahead of the user text
-                // (bounded: 8 files, 16 KiB each, 48 KiB total). A failure is
-                // fail-closed: no provider is constructed and no request is
-                // started with the unresolved user text.
+
                 let refs = match vega_tools::reference::resolve_bounded_references(
                     &project_path,
                     &content,

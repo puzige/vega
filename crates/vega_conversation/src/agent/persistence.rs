@@ -24,9 +24,6 @@ pub struct PersistenceActorConfig {
     pub(crate) steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
     pub(crate) computer_use: Option<vega_runtime::computer_use::ComputerUseRun>,
     pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
-    /// Maximum agentic turns (provider round-trips) for this run; `0` means
-    /// unlimited (Issue #114, mirrors Claude Code's `--max-turns`). Carried
-    /// from `[agent] turn_limit` in config.toml through to the runtime.
     pub turn_limit: u32,
     pub(crate) credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     pub(crate) owner_credential_reader: Option<vega_runtime::CredentialReader>,
@@ -128,8 +125,6 @@ impl PersistenceActorConfig {
         self
     }
 
-    /// Sets the maximum number of agentic turns for this run; `0` means
-    /// unlimited (Issue #114).
     pub fn with_turn_limit(mut self, limit: u32) -> Self {
         self.turn_limit = limit;
         self

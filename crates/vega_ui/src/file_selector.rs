@@ -1,18 +1,3 @@
-//! IO-free bounded `@file` selector model (A2-12, S8-T47).
-//!
-//! Pure state only: the candidate list arrives as a typed projection
-//! ([`FileIndexSnapshot`], capped at [`FILE_INDEX_LIMIT`] entries) supplied
-//! by the app layer, which walks the project root on a worker thread. The
-//! selector never touches the filesystem and never sends a provider request.
-//!
-//! Keyboard contract (ui-spec §6 全可达): an `@` token in the composer opens
-//! the list; Up/Down move the highlight (clamped), Enter/Tab accept
-//! first-wins (the first candidate is pre-highlighted), and Esc closes
-//! without inserting anything. The composer focus chain stays untouched —
-//! the dropdown is rendered by the conversation stream, actions are scoped
-//! to the `FileSelect` key context so they shadow the composer bindings
-//! only while the list is open.
-
 use gpui_kit::actions;
 use vega_conversation::types::FileIndexSnapshot;
 

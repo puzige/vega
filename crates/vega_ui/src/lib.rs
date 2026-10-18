@@ -1,11 +1,3 @@
-//! GPUI views: sidebar with the projects/sessions blocks (T09 shell +
-//! T12 content), settings skeleton (A1-10), shared input components, and the
-//! S3-T17 virtualized conversation stream.
-//!
-//! The T10/T11 temporary full-page projects/threads views were retired in
-//! T12; their data functions live on in `vega_store` / `vega_conversation`
-//! and the sidebar blocks render the lists now.
-
 pub mod artifact_card;
 pub mod automation_editor;
 pub mod branch_selector;
@@ -33,12 +25,6 @@ use gpui_kit::{App, KeyBinding};
 
 gpui_kit::actions!(vega_ui, [DismissEnvironmentOverlay]);
 
-/// Registers the key bindings required by the vega_ui input components
-/// (editing keys for [`text_input::TextInput`]), the T13 inline-rename
-/// submit key (scoped to the `ThreadRename` key context so it cannot clash
-/// with other views), and the T18 Composer keys (Enter = newline,
-/// Cmd+Enter = send, scoped to `Composer`). Call once at app startup; the
-/// settings actions are bound by the `vega` binary itself.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(
@@ -105,10 +91,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-k", command_palette::OpenPalette, None),
         KeyBinding::new("cmd-o", command_palette::OpenWorkspacePicker, None),
         KeyBinding::new("cmd-j", command_palette::ToggleWorkspaceTerminal, None),
-        // R45 Environment overlay dismissal. The handler consumes the action
-        // only while the narrow overlay is open and otherwise propagates, so
-        // scoped component escapes (palette, file selector, menus) keep their
-        // turns in the binding order.
         KeyBinding::new("escape", DismissEnvironmentOverlay, None),
         KeyBinding::new("down", command_palette::PaletteNext, Some("CommandPalette")),
         KeyBinding::new(
@@ -286,8 +268,6 @@ pub fn init(cx: &mut App) {
             settings::PreviousProviderAction,
             Some("ProviderSettings"),
         ),
-        // T13 行内重命名：Enter 提交（作用域 ThreadRename；Esc 取消通过
-        // 重命名编辑器拦截全局 CloseSettings 动作实现，见 sidebar.rs）。
         KeyBinding::new("enter", sidebar::ConfirmRename, Some("ThreadRename")),
         // Session rows expose low-frequency actions through one compact menu
         // trigger. The row keeps its own key context while the menu is open,
@@ -323,11 +303,6 @@ pub fn init(cx: &mut App) {
             sidebar::CloseThreadActions,
             Some("ThreadActionsMenu"),
         ),
-        // Issue #66（ui-spec §4.4 v0.18 冻结，A2-11）：Enter=发送、
-        // Shift+Enter=换行、Cmd+Enter=发送（兼容既有绑定）。作用域 Composer
-        // ——仅在 Composer 输入聚焦时生效，不影响设置表单与行内重命名。
-        // 更深 context 的浮层（FileSelect / ComposerActions / ModelSelector /
-        // PermissionCard）仍优先拿到 Enter；IME 组合态由 on_send_action 守卫。
         KeyBinding::new("enter", conversation_stream::SendMessage, Some("Composer")),
         KeyBinding::new("shift-enter", text_input::InsertNewline, Some("Composer")),
         KeyBinding::new(
@@ -370,12 +345,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("space", plan_card::PlanActivate, Some("PlanCard")),
         KeyBinding::new("tab", plan_card::PlanNext, Some("PlanCard")),
         KeyBinding::new("shift-tab", plan_card::PlanPrevious, Some("PlanCard")),
-        // R57 P2b 移除了底部行的模式/权限下拉，`ThreadSettings` 作用域与其
-        // `ActivateThreadSetting` 绑定不再有承载控件（`+` 菜单行直接用鼠标/
-        // Enter 键处理）。整组绑定删除，不留无宿主的作用域。
-        // A2-12 `@file` 选择器（S8-T47）：作用域 FileSelect，仅当下拉打开
-        // 时由 Composer 输入行携带该上下文，Enter/Tab=接受（first-wins）、
-        // Up/Down=移动高亮、Esc=取消；关闭时这些键回落到既有绑定。
         KeyBinding::new("enter", file_selector::AcceptFile, Some("FileSelect")),
         KeyBinding::new("tab", file_selector::AcceptFile, Some("FileSelect")),
         KeyBinding::new("up", file_selector::PreviousFile, Some("FileSelect")),
@@ -401,10 +370,6 @@ pub fn init(cx: &mut App) {
             Some("FileSelectRetry"),
         ),
         KeyBinding::new("escape", file_selector::CancelFile, Some("FileSelectRetry")),
-        // A2-14 模型选择器（S8-T47）：Enter/Space 开合与接受、Up/Down 移动、
-        // Esc 关闭。R57 P2b 移除了底部行的模式/权限下拉与思考 chip，其
-        // CompactComposerSettings / ThinkingLevel 绑定随之删除；思考档位改由
-        // P3 的滑块组件承担。
         KeyBinding::new(
             "enter",
             conversation_stream::ActivateModel,

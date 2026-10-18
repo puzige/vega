@@ -21,17 +21,9 @@ pub enum ProjectsBlockEvent {
 
 impl EventEmitter<ProjectsBlockEvent> for ProjectsBlock {}
 
-/// The 「项目」 block: registered projects (name + branch suffix, non-git
-/// rows show no suffix), click = select (`touch_last_opened`), [+] add via
-/// the platform folder picker, per-row remove, and a name / recently-opened
-/// sort toggle (in-memory per T12 ruling; drag ordering is deferred). The
-/// collapse state persists in config (`ui.projects_collapsed`).
-///
-/// Independent component struct so T13 can add inline row actions here.
 pub struct ProjectsBlock {
     /// Cached rows, refreshed from the store after every mutation.
     pub(crate) projects: Vec<Project>,
-    /// Sort order — in-memory only (T12 ruling: 不持久化).
     pub(crate) sort: ProjectSort,
     /// Inline error message (ui-spec §4.6); empty until a failure occurs.
     pub(crate) error: Option<String>,
@@ -274,9 +266,6 @@ impl ProjectsBlock {
         }
     }
 
-    /// Unregisters the project and detaches its tasks in the store's A8-02
-    /// transaction. The route change observes the same draft-navigation and
-    /// task-mutation fences as other Sidebar writes; no files are touched.
     pub(super) fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
             self.error = Some("任务正在保存，请稍后重试移除项目".into());
@@ -312,10 +301,6 @@ impl ProjectsBlock {
         }
     }
 
-    /// Opens the platform folder picker and registers the picked folder
-    /// (T10 logic, relocated). The picker answers asynchronously (oneshot);
-    /// the future runs on the foreground executor, so every store access
-    /// stays on the main thread.
     pub(crate) fn open_picker(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -495,7 +480,6 @@ impl ProjectsBlock {
                     )),
             )
             .child(
-                // [+] 添加：T10 的系统文件夹选择器逻辑原样复用。
                 div()
                     .px_1()
                     .rounded_md()
@@ -512,8 +496,6 @@ impl ProjectsBlock {
             .into_any_element()
     }
 
-    /// The sort toggle (名称 / 最近打开, T10 capability kept) + the project
-    /// rows. Row = name (truncate) + branch suffix (git only) + remove.
     fn render_body(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         let selected = cx.global::<SelectedProject>().0.clone();
         div()
@@ -535,7 +517,7 @@ impl ProjectsBlock {
                 let project_id = project.id.clone();
                 let remove_id = project.id.clone();
                 let is_selected = selected.as_deref() == Some(project.id.as_str());
-                // 分支后缀：仅 git 目录显示（T12 卡：非 git 不显示）。
+
                 let branch = self.branch_suffix(project).map(str::to_owned);
                 div()
                     .flex()
@@ -546,8 +528,6 @@ impl ProjectsBlock {
                     .text_size(px(Typography::SIDEBAR))
                     .when(is_selected, move |row| row.bg(colors.bg_active))
                     .child(
-                        // 可点击主体与移除按钮是兄弟节点，避免嵌套命中
-                        // 一次点击触发两个操作（T10 经验）。
                         div()
                             .flex()
                             .items_center()
@@ -608,7 +588,6 @@ impl ProjectsBlock {
             .into_any_element()
     }
 
-    /// 名称 / 最近打开 chips (T10 capability, sidebar-compact form).
     fn render_sort_row(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         div()
             .flex()

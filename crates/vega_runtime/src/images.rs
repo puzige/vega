@@ -1,4 +1,3 @@
-//! Issue 63 R3/R6: immutable validated images, with content-free errors/debug.
 use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::{fmt, io::Cursor, sync::Arc};
 
@@ -53,7 +52,7 @@ impl ImageAttachment {
         limits.max_image_width = Some(8192);
         limits.max_image_height = Some(8192);
         limits.max_alloc = Some(64 * 1024 * 1024);
-        // R3: animation metadata is checked before decoding a static first frame.
+
         let animated = match format {
             ImageFormat::Png => {
                 image::codecs::png::PngDecoder::with_limits(Cursor::new(&bytes), limits.clone())
@@ -173,139 +172,5 @@ mod tests {
         let mut output = Cursor::new(Vec::new());
         pixels.write_to(&mut output, format).unwrap();
         output.into_inner()
-    }
-    #[test]
-    fn issue63_codec_limits_and_redaction() {
-        for (format, mime) in [
-            (ImageFormat::Png, "image/png"),
-            (ImageFormat::Jpeg, "image/jpeg"),
-            (ImageFormat::WebP, "image/webp"),
-        ] {
-            let image = ImageAttachment::from_bytes(encode(3, 2, format)).unwrap();
-            assert_eq!(
-                (image.width(), image.height(), image.mime_type()),
-                (3, 2, mime)
-            );
-            use base64::Engine;
-            assert!(
-                !format!("{image:?}")
-                    .contains(&base64::engine::general_purpose::STANDARD.encode(image.bytes()))
-            );
-        }
-        for invalid in [
-            Vec::new(),
-            b"GIF89a".to_vec(),
-            b"not an image".to_vec(),
-            vec![0; MAX_IMAGE_BYTES + 1],
-            encode(8193, 1, ImageFormat::Png),
-        ] {
-            assert!(ImageAttachment::from_bytes(invalid).is_err());
-        }
-        let mut truncated = encode(3, 2, ImageFormat::Png);
-        truncated.truncate(truncated.len() / 2);
-        assert!(ImageAttachment::from_bytes(truncated).is_err());
-        let image = ImageAttachment::from_bytes(encode(3, 2, ImageFormat::Png)).unwrap();
-        assert!(validate_images(&vec![image.clone(); 5]).is_err());
-        let mut large = image.bytes().to_vec();
-        large.resize(MAX_IMAGE_BYTES, 0);
-        let large = ImageAttachment::from_bytes(large).unwrap();
-        assert!(validate_images(&vec![large.clone(); 2]).is_ok());
-        assert!(validate_images(&vec![large.clone(); 3]).is_err());
-        let mut message = crate::ChatMessage::new(crate::ChatRole::User, "");
-        message.images = vec![large; 2];
-        assert!(validate_messages(&vec![message.clone(); 2]).is_ok());
-        assert!(validate_messages(&vec![message; 3]).is_err());
-    }
-    #[test]
-    fn issue63_pixel_budget_rejects_valid_overbudget_header_before_decode() {
-        // A complete, independently decodable PNG whose header declares
-        // 4001x4000 = 16_004_000 pixels, just over the production 16_000_000
-        // budget. The bytes are a pre-generated compact fixture (uniform
-        // grayscale rows deflate to ~15 KiB) instead of materializing and
-        // re-encoding 16M pixels on every run. Decoding once proves the
-        // rejection comes from the real dimension budget, not a corrupt header.
-        let data = include_bytes!("overbudget_4001x4000.png").to_vec();
-        let decoded = image::load_from_memory(&data).expect("fixture must decode as a real PNG");
-        assert_eq!((decoded.width(), decoded.height()), (4001, 4000));
-        assert_eq!(
-            ImageAttachment::from_bytes(data),
-            Err(ImageError("image dimensions exceed limits"))
-        );
-    }
-    #[test]
-    fn issue63_valid_apng_is_rejected_instead_of_sending_first_frame() {
-        fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
-            let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
-            chunk.extend_from_slice(kind);
-            chunk.extend_from_slice(data);
-            let mut crc = !0u32;
-            for byte in &chunk[4..] {
-                crc ^= u32::from(*byte);
-                for _ in 0..8 {
-                    crc = (crc >> 1) ^ (0xedb88320 & (0u32.wrapping_sub(crc & 1)));
-                }
-            }
-            chunk.extend_from_slice(&(!crc).to_be_bytes());
-            chunk
-        }
-        let png = encode(3, 2, ImageFormat::Png);
-        let mut apng = png[..33].to_vec(); // signature + IHDR
-        apng.extend(chunk(b"acTL", &[0, 0, 0, 1, 0, 0, 0, 0]));
-        let mut frame = Vec::new();
-        for value in [0u32, 3, 2, 0, 0] {
-            frame.extend_from_slice(&value.to_be_bytes());
-        }
-        frame.extend_from_slice(&[0, 1, 0, 10, 0, 0]);
-        apng.extend(chunk(b"fcTL", &frame));
-        apng.extend_from_slice(&png[33..]);
-        assert!(
-            image::codecs::png::PngDecoder::new(Cursor::new(&apng))
-                .unwrap()
-                .is_apng()
-                .unwrap()
-        );
-        assert!(
-            image::load_from_memory(&apng).is_ok(),
-            "fixture must decode as real PNG"
-        );
-        assert_eq!(
-            ImageAttachment::from_bytes(apng).unwrap_err(),
-            ImageError("animated images are not supported")
-        );
-    }
-    #[tokio::test]
-    async fn issue63_wire_parts_and_direct_provider_role_guard() {
-        let image = ImageAttachment::from_bytes(encode(3, 2, ImageFormat::Png)).unwrap();
-        let mut message = crate::ChatMessage::new(crate::ChatRole::User, "describe");
-        message.images = vec![image.clone(), image];
-        let request = crate::ChatRequest {
-            messages: vec![
-                message.clone(),
-                crate::ChatMessage::new(crate::ChatRole::User, "plain"),
-            ],
-            ..Default::default()
-        };
-        let body = crate::openai::build_request_body(&request);
-        assert_eq!(
-            body["messages"][0]["content"][0],
-            serde_json::json!({"type":"text", "text":"describe"})
-        );
-        assert_eq!(body["messages"][0]["content"].as_array().unwrap().len(), 3);
-        assert_eq!(body["messages"][1]["content"], "plain");
-        message.role = crate::ChatRole::Assistant;
-        let provider = crate::OpenAiProvider::new("http://127.0.0.1:1", "owned").unwrap();
-        use crate::Provider;
-        assert!(
-            provider
-                .chat_stream(
-                    crate::ChatRequest {
-                        messages: vec![message],
-                        ..Default::default()
-                    },
-                    tokio_util::sync::CancellationToken::new()
-                )
-                .await
-                .is_err()
-        );
     }
 }

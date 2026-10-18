@@ -119,8 +119,6 @@ impl Tools {
         self
     }
 
-    /// Strictly parse provider JSON without executing it. T26 must complete
-    /// permission handling before passing the prepared value to execution.
     pub fn prepare_bash_json(&self, raw_input: &str) -> Result<PreparedBash, BashError> {
         let (command, timeout_ms) =
             parse_bash_input(raw_input).map_err(|_| BashError::new(BashErrorCode::InvalidInput))?;

@@ -66,9 +66,9 @@ description: "Codex 与 Vega 共用的 Vega 看板交付流程。用于建卡、
 
 - **Codex、Vega 和子 agent 本地不运行 Vega 代码，不编译、构建、打包或执行任何测试**，包括定向 `cargo check`、Clippy、test/nextest。只做快速低 CPU 的差异、格式和静态检查；skill frontmatter 静态校验可执行。
 - 自动测试断言仍须编写，执行只交 GitHub Actions，未运行如实写“待 CI 验证”。基线漂移或冲突解决影响结果时更新方案/用例，由 Actions 重验新提交，不沿用旧 head 结果。
-- 按 [#149 规格](../../../docs/vega-issue-149-remove-real-e2e.md) 保留进程内业务、安全、存储和 UI 回归，不新增真实外部进程/网络/应用 E2E 门禁；不能删除保留范围内测试、ignore、放宽断言或自动重试换绿。代码注释只允许执行总纲规定的 `unsafe` 邻接 `// SAFETY:` 一行。
+- 按 [相关规格](../../../docs/vega-issue-149-remove-real-e2e.md) 保留进程内业务、安全、存储和 UI 回归，不新增真实外部进程/网络/应用 E2E 门禁；不能删除保留范围内测试、ignore、放宽断言或自动重试换绿。代码注释只允许执行总纲规定的 `unsafe` 邻接 `// SAFETY:` 一行。
 - Codex 审查后开 PR，关联 Issue/spec，附测试命令、云端原始输出（未运行标待 CI）及规格偏离说明。**不用自动关闭 Issue 的关键字**；审查与 CI 期间仍 In progress。
-- CI 启动后 **每 5 分钟查询一次**，禁止短轮询或 watch。收到完成/失败通知或用户要求即时查看时可立即查询；失败由 Codex 读日志分析、修订方案/委派修复，新一轮恢复 5 分钟间隔。CI 拓扑见 AGENTS.md 和 [#188 规格](../../../docs/vega-issue-188-parallel-ci-checks.md)。
+- CI 启动后 **每 5 分钟查询一次**，禁止短轮询或 watch。收到完成/失败通知或用户要求即时查看时可立即查询；失败由 Codex 读日志分析、修订方案/委派修复，新一轮恢复 5 分钟间隔。CI 拓扑见 AGENTS.md 和 [相关规格](../../../docs/vega-issue-188-parallel-ci-checks.md)。
 - 仅当待合并的**最新 head**通过 required check `check (fmt, clippy, test)`，Codex 才主动 squash merge master，不绕过失败、分支保护或权限。合并后改 **In review**并读回，停下等用户纯手动验收；Issue 保持开放，本卡远端分支和本地分支/worktree 保留，合并时不清理。
 - 打包、发布走云端，应用入口遵守 AGENTS.md。代码合并不代表已安装，不为本卡验收在本地运行 Vega。
 

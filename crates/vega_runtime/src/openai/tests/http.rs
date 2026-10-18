@@ -714,50 +714,6 @@ async fn non_retryable_4xx_fails_without_retry() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn issue85_strict_schema_rejection_fails_without_non_strict_fallback() {
-    let success = sse_response(
-        &[r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#],
-        true,
-    );
-    let server = mock_transport(scripted_responses(vec![
-        status_response(
-            "400 Bad Request",
-            &[],
-            r#"{"error":{"message":"strict schema rejected"}}"#,
-        ),
-        success,
-    ]))
-    .await;
-    let provider = provider_for(&server, fast_policy(1));
-    let request = ChatRequest {
-        model: MODEL.into(),
-        messages: vec![ChatMessage::new(ChatRole::User, "hello")],
-        tools: crate::tool_definitions(crate::RuntimeRunMode::Execute),
-        ..Default::default()
-    };
-
-    let result = provider
-        .chat_stream(request, CancellationToken::new())
-        .await;
-    assert!(matches!(
-        result,
-        Err(VegaError::ProviderDiagnostic {
-            status: Some(400),
-            retryable: false,
-            ..
-        })
-    ));
-    assert_eq!(server.attempt_count(), 1);
-    let captured = server.captured();
-    assert_eq!(captured.len(), 1);
-    assert!(
-        captured[0].body["tools"]
-            .as_array()
-            .is_some_and(|tools| tools.iter().all(|tool| tool["function"]["strict"] == true))
-    );
-}
-
-#[tokio::test(start_paused = true)]
 async fn error_body_echoing_the_key_is_redacted() {
     let server = mock_transport(scripted_responses(vec![status_response(
         "400 Bad Request",

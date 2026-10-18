@@ -809,7 +809,6 @@ async fn persist_child_terminal(
 mod tests {
     use super::*;
     use serde_json::json;
-    use vega_runtime::RuntimeSubagentHook;
 
     struct Host;
     impl SubagentHost for Host {

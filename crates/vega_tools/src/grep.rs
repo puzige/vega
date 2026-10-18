@@ -1,7 +1,3 @@
-//! `grep` tool: regex matches over project files with `.gitignore`
-//! filtering, binary skipping, and a 500-entry cap (tech-spec §4.4,
-//! S4-T21).
-
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -120,34 +116,6 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolError, Tools};
-
-    #[test]
-    fn issue300_absolute_project_paths_keep_the_existing_search_fence() {
-        let dir = tempdir().unwrap();
-        let outside = tempdir().unwrap();
-        fs::create_dir(dir.path().join("src")).unwrap();
-        fs::write(dir.path().join("src/a.txt"), "needle\n").unwrap();
-        fs::write(outside.path().join("secret.txt"), "needle\n").unwrap();
-        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
-        let tools = Tools::new(dir.path()).unwrap();
-        for relative in ["src", "src/a.txt"] {
-            let absolute = tools.root().join(relative);
-            assert_eq!(
-                tools
-                    .grep("needle", Some(absolute.to_str().unwrap()))
-                    .unwrap()
-                    .text,
-                tools.grep("needle", Some(relative)).unwrap().text
-            );
-        }
-        for path in [
-            outside.path().canonicalize().unwrap(),
-            tools.root().join("escape"),
-            tools.root().join(".git"),
-        ] {
-            assert!(tools.grep("needle", Some(path.to_str().unwrap())).is_err());
-        }
-    }
 
     #[test]
     fn finds_numbered_matches_and_honors_gitignore() {

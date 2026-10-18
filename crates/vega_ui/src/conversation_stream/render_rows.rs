@@ -3,10 +3,6 @@ use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
 
-/// Materializes a user echo block (T18 消息块结构): the 「你」 label, one
-/// line per source line (blank lines preserved as empty spans), and a
-/// trailing spacer. The item model renders these as ONE natural-height bubble
-/// ([`user_message_item`]); the flat form stays for row accounting and tests.
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];
     let trimmed = text.trim_end_matches('\n');
@@ -27,9 +23,6 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     lines
 }
 
-/// #117: the compaction row's icon and color. Every state shares one glyph
-/// (Lucide `text-select`), so the row never changes shape as the operation
-/// advances; only failure is recolored and the label carries the transition.
 pub(crate) fn context_compaction_visual(
     status: vega_conversation::types::ContextCompactionStatus,
     colors: &ThemeColors,
@@ -51,10 +44,6 @@ pub(crate) fn context_compaction_label(
     context_control::status_label_for(status, failure).to_owned()
 }
 
-/// Renders one visible semantic entry as a single variable-height list item
-/// (S8-T44/C4: 一项=一个 user/assistant/tool/permission/plan/artifact/
-/// summary item 的自然高度). Per-frame: clone-only element assembly from
-/// cached materialization — no markdown re-materialization here (P3).
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
     render_entry_internal(entry, window, cx, None, false)
 }
@@ -1036,10 +1025,6 @@ fn render_table_selectable(
         .into_any_element()
 }
 
-// ─── text runs (block-level styled text, S8-T44) ─────────────────────────────
-
-/// Base run style for a message-body text block: 14px at 1.6 line height
-/// (ui-spec §3), window default family, caller's color.
 pub(crate) fn message_run_style(color: Rgba) -> TextStyle {
     TextStyle {
         font_size: AbsoluteLength::Pixels(px(Typography::CONVERSATION)),
@@ -1409,18 +1394,6 @@ pub(crate) fn sample_document(blocks: usize) -> String {
     doc
 }
 
-// (split_deltas moved to vega_markdown::replay — T18 公共回放器基建)
-
-/// The group includes the message, the gap and the action row, keeping the
-/// pointer path continuous. Opacity preserves the exact rest/hover geometry.
-///
-/// Temporarily disabled by [`MESSAGE_COPY_ACTIONS_ENABLED`] (Issue #78
-/// follow-up): the reserved action row read as an ugly, layout-coupled
-/// affordance, so while the flag is false the body is returned unchanged and
-/// no row is reserved. The plumbing below is retained so the interaction can
-/// be re-enabled by flipping that one flag; keeping the branch here (rather
-/// than at the call site) also keeps `MessageCopy` and the `Copy` icon
-/// reachable for the compiler.
 fn message_with_copy(
     body: AnyElement,
     copy: &MessageCopy,

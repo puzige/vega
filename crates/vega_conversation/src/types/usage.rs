@@ -1,6 +1,5 @@
 use super::*;
 
-/// Exact pricing provenance attached to a priced usage event (S7-T38/C3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsagePricing {
     /// Engine version that priced the row (e.g. `pricing_v1`).
@@ -26,10 +25,6 @@ pub struct TokenUsage {
     pub cache_write: Option<u64>,
 }
 
-/// Durable terminal outcome of one summarized assistant task (S7-T40).
-///
-/// Derived from the persisted `messages.status` DDL vocabulary, never from a
-/// UI claim, so the card can never present a running task as finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskSummaryOutcome {
     /// The message converged (`messages.status = 'done'`).
@@ -40,11 +35,6 @@ pub enum TaskSummaryOutcome {
     Failed,
 }
 
-/// Checked cost total of a per-task summary (S7-T40/C4).
-///
-/// Mirrors `vega_store::token_usage::AggregateCost`: `Priced` only when every
-/// aggregated row carries the exact priced version, otherwise the total is
-/// unavailable rather than a partial sum that would look trustworthy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryCost {
     /// Every provider-call row of the task is priced (may be zero microcents).
@@ -53,13 +43,6 @@ pub enum SummaryCost {
     Unavailable,
 }
 
-/// Bounded, typed per-task cost summary (S7-T40/A10-06, C4 contract).
-///
-/// All fields are projected by `vega_conversation` from the durable
-/// `token_usage`/`tool_calls` audits plus the live wall-clock duration; the
-/// UI never queries SQLite and never computes a cost formula. Unavailable
-/// facts stay typed (`None`/`Unavailable`) and must render as `—`, never as
-/// a fabricated zero.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TaskCostSummary {
     /// Summarized assistant message id (durable recovery key).

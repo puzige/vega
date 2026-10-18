@@ -1,6 +1,3 @@
-//! Headless MCP protocol, transport, and bounded OAuth client. UI consent and
-//! persistent credential ownership remain with the later #73 integration layer.
-
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;

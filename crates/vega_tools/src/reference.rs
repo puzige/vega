@@ -1,29 +1,3 @@
-//! Bounded `@file` context injection (A2-12, S8-T47).
-//!
-//! The composer may reference project files with `@relative/path` tokens.
-//! This module is the sole authority for turning those tokens into injected
-//! context, with every bound fail-closed:
-//!
-//! - **确定性文件序**: the candidate index walks the project root through the
-//!   shared gitignore-aware walker ([`crate::tools`]) and is sorted
-//!   lexicographically; fuzzy filtering preserves that order.
-//! - **ignore 规则 / repo root 边界**: the index only walks ignored-respecting
-//!   entries, and every resolved reference goes through the path fence
-//!   ([`resolve_in_root`]) — `..` traversal, absolute injection, and
-//!   symlink escapes are [`ToolError::PathEscape`].
-//! - **symlink**: symlinked entries never enter the index, and a referenced
-//!   path whose final component is a symlink is rejected.
-//! - **non-UTF8**: identical to the read tool's normative semantics — a NUL
-//!   probe rejects binary files ([`ToolError::BinaryFile`]); other decodable
-//!   text degrades lossily.
-//! - **数量/字节上限**: distinct references per message, per-file bytes, and
-//!   total injected bytes are hard caps; any violation fails the whole
-//!   resolution so the caller can refuse the run with **zero provider
-//!   requests**.
-//!
-//! The module is headless and reuses the existing dependency set (the
-//! `ignore` crate walker); no new dependency is introduced.
-
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -130,12 +104,6 @@ pub fn bounded_file_index(root: &Path, limit: usize) -> Result<Vec<String>, Tool
     })
 }
 
-/// Walks a project root with the R5 path, retained-bytes, yielded-item and
-/// cooperative wall budgets. The checks run before and after each serial
-/// walker item; they must be cheap and side-effect free. The yielded-item
-/// count is what this `ignore::Walk` API exposes after its own ignore matcher;
-/// internal readdir work is not individually observable. No partial snapshot
-/// is returned on cancellation or any budget failure.
 pub fn bounded_file_index_with_budget(
     root: &Path,
     limit: usize,

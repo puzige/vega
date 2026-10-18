@@ -17,14 +17,6 @@ struct Projection {
     project: Option<String>,
     thread: Option<Thread>,
     settings: bool,
-    /// R69 R4: whether `thread` is this window's unpersisted home draft.
-    ///
-    /// The draft is a real task route for every downstream consumer
-    /// (`OpenedThread.0.id`, the `stream_view` cache key), but it stays the
-    /// **home** route in navigation history. That is what makes
-    /// back/forward return to the same draft id instead of resolving a
-    /// nonexistent durable row (`NavigationService::resolve` would report
-    /// `InvalidRoute` and prune the entry).
     draft: bool,
 }
 impl Projection {
@@ -146,8 +138,6 @@ pub(crate) fn bind_shortcuts(window: AnyWindowHandle, root: WeakEntity<VegaWindo
 }
 
 impl VegaWindow {
-    /// The current draft id, if any. Navigation reads this to keep the draft
-    /// route classified as the home route (R69 R4).
     fn draft_id(&self) -> Option<&str> {
         self.draft.as_ref().map(|draft| draft.id.as_str())
     }

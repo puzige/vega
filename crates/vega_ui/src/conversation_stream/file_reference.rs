@@ -127,10 +127,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Follows the caret into/out of an `@token` (A2-12). The first `@` in a
-    /// session triggers exactly one bounded index request; later opens
-    /// re-filter a complete accepted snapshot locally. No token closes and
-    /// fences the selector without allowing a late result to reopen it.
     pub(crate) fn sync_at_query(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
         if self.thread.is_standalone() {
             self.file_selector_wanted = false;

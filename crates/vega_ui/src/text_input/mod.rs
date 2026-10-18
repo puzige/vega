@@ -1,27 +1,3 @@
-//! Minimal text input for GPUI (single-line and fixed-row multi-line).
-//!
-//! Implemented following the official paradigm in the gpui source tree at the
-//! pinned rev (`crates/gpui/examples/input.rs`): a [`TextInput`] entity holds
-//! the editing state, a private [`TextElement`] shapes/paints the line and
-//! registers the platform input handler, and editing keys are wired through
-//! actions so the platform IME keeps working.
-//!
-//! Deviations from the example (required by the T08 dependency ruling "zero
-//! additional dependencies"):
-//! - character boundaries instead of `unicode_segmentation` grapheme
-//!   boundaries (single-line inputs for this skeleton never need ZWJ clusters);
-//! - optional password-style masking: the field displays one `•` per content
-//!   character and never paints the real value; cut/copy are refused on
-//!   masked fields so credentials cannot leave the app through the clipboard.
-//!
-//! S3-T18 Composer extension: `new_multiline` builds a bounded multi-line
-//! input (Enter inserts `\n` via the [`InsertNewline`] action — 架构师裁定
-//! Enter=换行、Cmd+Enter=发送; paste preserves line breaks). Multi-line
-//! display paints one shaped visual line per `\n` segment (plus soft wraps)
-//! stacked top-down: the default is 1~8 行自适应高度 + 超出 8 行后按光标
-//! 跟随的内滚视口 (visual-wrap viewport, cursor-follow), while callers can
-//! select a narrower minimum/maximum row range for a bounded form field.
-
 use std::ops::Range;
 
 use gpui_kit::prelude::*;
@@ -79,8 +55,6 @@ pub struct TextInput {
     content_revision: u64,
     placeholder: SharedString,
     masked: bool,
-    /// Multi-line mode (S3-T18 Composer): Enter inserts `\n`, paste keeps
-    /// line breaks, and the element paints `rows` stacked lines.
     multiline: bool,
     /// Visible row count, dynamically clamped to the configured row range.
     rows: usize,
@@ -99,10 +73,6 @@ pub struct TextInput {
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     mouse_selection: Option<mouse_selection::MouseSelection>,
-    /// R62 R10: suppress the single-line box chrome so the input can live
-    /// inside a menu row that already draws the surface (the utility bar's
-    /// two dropdown search fields). The element, editing keys, IME handling
-    /// and placeholder behaviour are unchanged.
     bare_chrome: bool,
     editor_scroll: Option<(Range<usize>, u64, usize)>,
     scrollable_editor: bool,

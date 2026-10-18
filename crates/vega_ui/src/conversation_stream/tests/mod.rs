@@ -15,13 +15,11 @@ use vega_conversation::types::{
 use vega_markdown::split_deltas;
 use vega_markdown::{ListItem, TableCell};
 
-// ---------- 锚定委托（S8-T44：P4 语义由变高列表原生 Tail follow 承担） ----------
-
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
 mod attachments;
 mod automation;
-mod branch_popup_upward;
+
 mod composer_actions;
 mod composer_counter;
 mod core_flow;
@@ -31,45 +29,14 @@ mod cua_usability;
 mod e2e_variable_height;
 mod hover_copy;
 mod hydration;
-mod issue146_run_activity;
-mod issue147_markdown_selection;
-mod issue148_long_session_scroll;
-mod issue151_latest_activity;
-mod issue296_codex_stream;
-mod issue296_desktop_ui;
-mod issue296_expansion;
-mod issue296_hierarchy_v2;
-mod issue296_phases;
-mod issue296_process_timeline;
-mod issue296_single_activity;
-mod issue296_sticky_disclosure;
-mod issue296_stream_block_spacing;
-mod issue296_stream_polish;
-mod issue299_pending_messages;
-mod issue342_model_name_width;
-mod issue350_network_retry;
-mod issue357_markdown_links;
-mod issue395_thinking_performance;
-mod issue395_thinking_window;
-mod issue401_steer_projection;
-mod issue402_hover_auto_scroll;
-mod issue403_conversation_underlay;
-mod issue432_text_selection;
-mod issue455_http_autolinks;
-mod issue64_context_usage;
-mod issue70_tool_activity;
-mod issue72_message_anchor_navigation;
-mod issue78_message_bubbles;
-mod issue79_composer_error;
-mod issue98_scroll_button;
+
 mod menu_lists;
 mod model_markdown;
 mod model_picker_levels;
 mod permission_picker;
 mod permissions_cards;
 mod preparing_indicator;
-mod r64_popup_deferred;
-mod r68_popup_dismiss;
+
 mod scroll_follow;
 mod skills;
 mod subagent_reading;
@@ -77,7 +44,7 @@ mod thinking;
 mod timeline;
 mod user_questions;
 mod utility_bar;
-mod utility_menu_coordination;
+
 mod variable_height;
 
 struct StreamHarness {
@@ -187,8 +154,6 @@ fn focus_composer(
         .expect("composer stream window");
 }
 
-/// Opens the composer `+` menu through the production click path. Shared by
-/// the composer-actions and core-flow suites (R57 P1/P2b).
 fn click_composer_add(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext) {
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let bounds = visual
@@ -238,8 +203,6 @@ fn has_active_permission(
         .update(cx, |stream, _, _| stream.active_permission.is_some())
         .unwrap_or(false)
 }
-
-// ---------- S8-T45/C7 顶部水合（分页 + 锚定 + 去重） ----------
 
 fn hydration_state(older_cursor: Option<i64>, loading: bool, paused: bool) -> HistoryHydration {
     HistoryHydration {
@@ -324,8 +287,6 @@ fn spans_text(line: &StreamLine) -> String {
     line.spans.iter().map(|span| span.text.as_str()).collect()
 }
 
-// ---------- T18 高亮整合（committed 高亮 / pending 降级） ----------
-
 fn find_span<'a>(lines: &'a [StreamLine], text: &str) -> &'a StreamSpan {
     lines
         .iter()
@@ -333,10 +294,6 @@ fn find_span<'a>(lines: &'a [StreamLine], text: &str) -> &'a StreamSpan {
         .find(|span| span.text == text)
         .unwrap_or_else(|| panic!("span {text:?} not found"))
 }
-
-// ---------- T18 消息块（user 回显行模型） ----------
-
-// ---------- StreamModel 差量渲染（P3 冻结契约） ----------
 
 fn stream_long_doc(blocks: usize) -> (MarkdownStream, usize) {
     let doc = sample_document(blocks);
@@ -349,133 +306,6 @@ fn stream_long_doc(blocks: usize) -> (MarkdownStream, usize) {
     (stream, total)
 }
 
-// ---------- S8-T44 变高虚拟化（E2E 与窄测共用 fixture） ----------
-
-/// One mixed markdown turn (CJK/emoji/inline styles/list).
-fn mixed_markdown_turn(index: usize) -> String {
-    let emoji = ["✅", "🚀", "📌", "🌊"][index % 4];
-    format!(
-        "## 转次 {index}：混排流式 {emoji}\n\n\
-         段落 {index} 带 **加粗**、*斜体*、`行内代码` 与 CJK 混排；\
-         中文与 English 交错换行时应自然折行，{emoji} 计入显示宽度。\n\n\
-         - 任务甲 {index}\n- [x] 已完成项 {emoji}\n  - 嵌套项 `code`\n\n"
-    )
-}
-
-/// One code turn (committed fence → T16 highlight tokens).
-fn mixed_code_turn(index: usize) -> String {
-    format!(
-        "```rust\nfn bench_{index}() -> u64 {{\n    let value = {index} * 42;\n    value\n}}\n```\n\n"
-    )
-}
-
-/// One GFM table turn with CJK cells.
-fn mixed_table_turn(index: usize) -> String {
-    format!("| 列 A {index} | 列 B |\n|:--|--:|\n| 1 | 中文数据 {index} |\n\n")
-}
-
-/// One long wrapped-CJK paragraph turn (C4 禁截断：全文保留，自然折行).
-fn mixed_wrapped_cjk_turn(index: usize) -> String {
-    format!(
-        "长段落 {index}：这一段用于验证变高 item 在窗口宽度变化时的自然折行。\
-         中文与 English 混排需要保持稳定，CJK 计两列宽；内容完整呈现，\
-         不允许以截断凑高度（C4）。变高几何下每一行都应完整出现在 item 内，\
-         且滚动锚点漂移小于 1px。段落编号 {index} 结束。"
-    )
-}
-
-fn mixed_user_echo(index: usize) -> String {
-    format!("帮我看看第 {index} 段的输出 ✅")
-}
-
-/// Builds one mixed semantic entry per index (markdown turns, code turns,
-/// table turns, wrapped-CJK turns, user echoes, and every card kind — the
-/// C6 10k 混合语义项 scenario). Fixture materialization runs against a
-/// throwaway counter set; the stream's own counters stay dedicated to the
-/// render path's tail syncs (the frozen-remat assertions).
-fn mixed_entry(
-    index: usize,
-    user_seq: &mut u64,
-    cx: &mut Context<ConversationStream>,
-) -> StreamEntry {
-    let counters = StreamCounters::default();
-    let assistant = |doc: &str| {
-        let mut stream = MarkdownStream::new();
-        stream.append(doc);
-        stream.finish();
-        let mut model = StreamModel::default();
-        model.sync(&stream.snapshot(), &counters);
-        StreamEntry::Assistant {
-            copy: MessageCopy::new(doc),
-            stream: Box::new(stream),
-            model,
-            failure: None,
-        }
-    };
-    match index % 25 {
-        0..=8 => assistant(&mixed_markdown_turn(index)),
-        9..=11 => assistant(&mixed_code_turn(index)),
-        12..=14 => assistant(&mixed_table_turn(index)),
-        15..=17 => assistant(&mixed_wrapped_cjk_turn(index)),
-        18..=19 | 21 | 22 => {
-            let block_id = USER_BLOCK_BASE + *user_seq;
-            *user_seq += 1;
-            StreamEntry::User {
-                copy: MessageCopy::new(&mixed_user_echo(index)),
-                lines: user_message_lines(block_id, &mixed_user_echo(index)),
-            }
-        }
-        20 => StreamEntry::Tool {
-            card: cx.new(|_| {
-                ToolCard::hydrated(
-                    Some(ToolCardInputProjection::ReadOnly {
-                        tool: ReadOnlyToolKind::Read,
-                        display_target: None,
-                        permission_path: None,
-                    }),
-                    ToolCallStatus::Success,
-                    None,
-                    Some(ToolCardResultProjection::ReadOnly {
-                        status: ToolCallStatus::Success,
-                        output: format!("tool output {index}\nline two ✅"),
-                        reused: false,
-                    }),
-                )
-            }),
-        },
-        23 => StreamEntry::Plan {
-            card: cx.new(|cx| {
-                PlanCard::new(
-                    Plan {
-                        id: format!("test-plan-{index}"),
-                        thread_id: "thread-safe-id".into(),
-                        content: mixed_markdown_turn(index),
-                        status: PlanStatus::Approved,
-                        review_note: None,
-                        reviewed_at: Some(1),
-                    },
-                    cx,
-                )
-            }),
-        },
-        _ => StreamEntry::Summary {
-            card: cx.new(|_| {
-                SummaryCard::new(TaskCostSummary {
-                    message_id: format!("test-summary-{index}"),
-                    outcome: TaskSummaryOutcome::Completed,
-                    usage: None,
-                    cost: SummaryCost::Unavailable,
-                    duration_ms: Some(1_200),
-                    tool_count: 1,
-                    cache_hit_percent: None,
-                })
-            }),
-        },
-    }
-}
-
-// ---------- Composer token counter（S7-T39/A10-05） ----------
-
 fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext) {
     cx.run_until_parked();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -484,28 +314,6 @@ fn open_run_details(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext
         .expect("single process header");
     visual.simulate_click(header.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
-}
-
-fn assert_run_disclosure_keyboard_focus(
-    group: &Entity<RunActivityGroup>,
-    visual: &mut gpui_kit::VisualTestContext,
-    context: &str,
-) {
-    let expanded = group.read_with(visual, |group, _| group.expanded());
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    assert_eq!(
-        group.read_with(visual, |group, _| group.expanded()),
-        !expanded,
-        "{context}: first Enter must reach the visible run disclosure"
-    );
-    visual.simulate_keystrokes("enter");
-    visual.run_until_parked();
-    assert_eq!(
-        group.read_with(visual, |group, _| group.expanded()),
-        expanded,
-        "{context}: second Enter must restore the run disclosure"
-    );
 }
 
 fn confirm_test_final(

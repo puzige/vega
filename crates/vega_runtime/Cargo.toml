@@ -11,7 +11,6 @@ vega_credentials = { workspace = true }
 http = { version = "=1.5.0", optional = true }
 image = { workspace = true }
 base64 = { workspace = true }
-# 网络组（exec-guide §5 白名单，S4-T19 首次激活）：OpenAI 兼容 SSE 流式 provider
 tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util", "sync"] }
 # macros：tokio::select!（cancel 竞争与退避睡眠）；rt：#[tokio::test] 的运行时
 tokio-util = { workspace = true }   # CancellationToken（tech-spec §4.1 cancel 参数）
@@ -20,18 +19,14 @@ reqwest = { workspace = true }      # rustls + json + stream（bytes_stream 供 
 eventsource-stream = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-# VegaError::Store（tech-spec §7 全枚举落 vega_runtime，T19 卡"按需引入"；bundled 仅 vega_store 启用）
 rusqlite = { workspace = true }
 vega_tools = { workspace = true }
 vega_mcp = { workspace = true }
-# S7-T38 冻结计价能力（run-start immutable selection；tech-spec §1 允许边）
 vega_token = { workspace = true }
 # Existing ULID facility used for durable compaction attempt identity.
 ulid = { workspace = true }
-# #73 alias/argument digests and #74 Skills content hashes; already-approved workspace crate.
 sha2 = { workspace = true }
 libc = { workspace = true }
-# Issue #74: exact user-approved YAML parser, locked at the pre-existing version.
 serde = { workspace = true, features = ["derive"] }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
 

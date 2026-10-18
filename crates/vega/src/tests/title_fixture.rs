@@ -1,4 +1,3 @@
-//! #65 approved fixture adaptation: body and auxiliary requests have separate scripts.
 use super::*;
 
 pub(super) struct PrimaryWithAuxiliaryFixture {
@@ -47,7 +46,6 @@ impl vega_runtime::Provider for PrimaryWithAuxiliaryFixture {
 
 #[test]
 fn automatic_title_fixture_preserves_body_rounds_and_counts_auxiliary_separately() {
-    use vega_runtime::Provider;
     let primary = Arc::new(vega_runtime::MockProvider::new_rounds(vec![
         vec![vega_runtime::ScriptStep::text("first body round")],
         vec![vega_runtime::ScriptStep::text("second body round")],

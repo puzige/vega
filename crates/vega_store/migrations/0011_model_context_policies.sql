@@ -1,4 +1,3 @@
--- Issue #76 correction: capacity and automatic compaction belong to the
 -- configured provider/model, not to an individual conversation. Older
 -- context_settings rows and all append-only checkpoints remain untouched.
 CREATE TABLE model_context_policies (

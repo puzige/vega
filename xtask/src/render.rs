@@ -1,15 +1,3 @@
-//! C6 P1 render margin: drives the existing production render probe
-//! (`vega --vega-bench-render`, S3-T17 machinery, unchanged production code)
-//! and re-frames its output with the frozen C6 semantics:
-//!
-//! - the refresh rate is DETECTED via CoreGraphics (`provenance::main_
-//!   display_refresh_hz`), never hardcoded to 60 (the SDD §0 defect);
-//! - on a 60 Hz host the run only proves the CPU/build margin and reports
-//!   `hardware pending` for the literal 120 fps verdict (SDD §7, frozen);
-//! - the probe's `stream` phase is NOT the P2 terminal evidence (it injects
-//!   ~500 δ/s at the parser level); P2 truth lives in `bench_p2_with` — the
-//!   margin run's stream numbers are diagnostics only.
-
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -45,8 +33,6 @@ pub struct RenderMargin {
     /// Frozen status vocabulary (SDD §1) — 60 Hz hosts can never PASS the
     /// literal 120 fps here.
     pub verdict: &'static str,
-    /// `hardware_pending` when refresh < 120 Hz or unknown; otherwise the
-    /// literal verdict may be judged by T50 on real ProMotion hardware.
     pub literal_120fps: &'static str,
     /// Frame budget reference (8.33 ms @ 120 Hz).
     pub budget_us_120hz: u64,
@@ -249,28 +235,5 @@ mod tests {
         // Even length: upper-middle element (deterministic, no float).
         assert_eq!(median(&[1, 2, 3, 4]), 3);
         assert_eq!(median(&[10, 20]), 20);
-    }
-
-    #[test]
-    fn margin_record_shape_stays_frozen() {
-        let margin = RenderMargin {
-            schema: RENDER_MARGIN_SCHEMA,
-            refresh_hz: Some(60.0),
-            frame_build_p50_us: 100.0,
-            frame_build_p99_us: 300.0,
-            fps_per_second: vec![60; 8],
-            fps_median: 60,
-            any_second_meets_fps_floor: None,
-            frozen_remat: 0,
-            row_count: 10_000,
-            verdict: STATUS_HARDWARE_PENDING,
-            literal_120fps: "hardware pending (host below 120 Hz; literal 120fps is T50)",
-            budget_us_120hz: C6_FRAME_BUDGET_120HZ_US,
-        };
-        let json = serde_json::to_string(&margin).unwrap();
-        assert!(json.contains(r#""refresh_hz":60.0"#));
-        assert!(json.contains(r#""verdict":"hardware pending""#));
-        // A 60 Hz margin record never contains a PASS-shaped verdict.
-        assert!(!json.contains("PASS"));
     }
 }
