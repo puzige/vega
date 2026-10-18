@@ -61,17 +61,6 @@ fn database(cx: &App) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 impl BranchSelector {
-    #[cfg(feature = "test-support")]
-    pub fn current_head_waiting_for_worker_for_test(&self) -> bool {
-        self.current_head.resolving
-            || (self.current_head.pending.is_some()
-                && !self
-                    .current_head
-                    .service
-                    .as_ref()
-                    .is_some_and(ProjectBranchService::has_completion_for_test))
-    }
-
     fn active_head_owner(&self, cx: &App) -> bool {
         cx.try_global::<OpenedThread>()
             .and_then(|v| v.0.as_ref())

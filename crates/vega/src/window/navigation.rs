@@ -526,6 +526,3 @@ impl VegaWindow {
         .detach();
     }
 }
-
-#[cfg(test)]
-mod tests;

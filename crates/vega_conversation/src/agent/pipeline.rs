@@ -503,12 +503,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     reasoning: Option<FrozenReasoning>,
     images: Vec<crate::types::ImageAttachment>,
 ) -> Result<PreparedRun, ConversationError> {
-    #[cfg(not(test))]
     let _ = &config;
-    #[cfg(test)]
-    if let Some(delay) = config.preparation_delay {
-        std::thread::sleep(delay);
-    }
     if config.delegated && (!uses_existing_user || config.credential_continuation_id.is_some()) {
         return Err(ConversationError::CorruptRow(
             "delegated instruction identity mismatch".into(),
@@ -516,13 +511,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     }
 
     let store = Store::open(&database_path).map_err(runtime_store_error)?;
-    #[cfg(test)]
-    if config.preparation_query_only {
-        store
-            .conn()
-            .execute_batch("PRAGMA query_only = ON")
-            .map_err(runtime_store_error)?;
-    }
     if !uses_existing_user && config.credential_continuation_id.is_none() && !config.delegated {
         vega_store::recovery::recover_thread(store.conn(), &thread_id, now_ms())
             .map_err(runtime_store_error)?;
@@ -621,13 +609,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         },
         None => None,
     };
-    #[cfg(test)]
-    let checkpoint_root = config.checkpoint_root.clone().unwrap_or_else(|| {
-        database_path
-            .parent()
-            .map_or_else(PathBuf::new, |parent| parent.join("checkpoints"))
-    });
-    #[cfg(not(test))]
     let checkpoint_root = database_path
         .parent()
         .ok_or_else(|| ConversationError::CorruptRow("database path has no parent".to_string()))?

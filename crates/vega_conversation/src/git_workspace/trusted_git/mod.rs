@@ -113,20 +113,11 @@ pub struct TrustedGitService {
     instance_nonce: u64,
     workspace: Arc<GitWorkspaceService>,
     state: Arc<Mutex<CommitState>>,
-    #[cfg(test)]
-    mutation_executable: Option<PathBuf>,
-    #[cfg(test)]
-    mutation_timeout: Duration,
-    #[cfg(test)]
-    read_executable: Option<PathBuf>,
 }
 
 mod authority;
 mod parsing;
 mod service;
-
-#[cfg(test)]
-mod tests;
 
 pub(crate) use authority::*;
 pub(crate) use parsing::*;

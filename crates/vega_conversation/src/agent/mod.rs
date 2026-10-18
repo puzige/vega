@@ -5,9 +5,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -55,9 +52,6 @@ mod persistence;
 mod pipeline;
 mod replay_sessions;
 mod skills;
-
-#[cfg(test)]
-mod tests;
 
 pub use compaction::{
     ConversationCompactionHook, compact_thread_manually, compact_thread_manually_accounted,

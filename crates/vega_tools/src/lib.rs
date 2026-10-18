@@ -28,8 +28,7 @@ pub use error::{
     BashError, BashErrorCode, EditFailureContext, MutationError, MutationErrorCode, ToolError,
 };
 pub use mutation::{InvalidMutation, PrepareMutationError, PreparedEdit, PreparedWrite};
-#[cfg(feature = "test-support")]
-pub use output::collect_bash_output_for_test;
+
 pub use output::{
     BASH_LINE_MIDDLE_MARKER, BASH_MAX_BYTES_PER_SIDE, BASH_MAX_LINE_BYTES, BASH_MAX_LINES_PER_SIDE,
     BASH_OUTPUT_MIDDLE_MARKER, BASH_READ_CHUNK_BYTES, BashOutput, LINE_TRUNCATION_MARKER,
@@ -42,9 +41,6 @@ pub use project_instructions::{
 pub use tools::{ReadState, Tools};
 
 mod text_file;
-
-#[cfg(any(test, feature = "test-support"))]
-pub use bash::BashTestExecutor;
 
 mod credentials;
 pub use credentials::ToolCredentialPolicy;

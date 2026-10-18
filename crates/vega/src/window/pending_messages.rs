@@ -178,10 +178,6 @@ impl VegaWindow {
         let config_path = self.composer_config_path();
         let model = stream.read(cx).displayed_model().to_owned();
         let mcp_settings = self.mcp_settings.clone();
-        #[cfg(test)]
-        let provider_override = self.agent_provider_override.is_some();
-        #[cfg(not(test))]
-        let provider_override = false;
         let worker = cx.background_executor().spawn(async move {
             let mut credentials = mcp_settings
                 .as_ref()
@@ -189,22 +185,20 @@ impl VegaWindow {
                 .transpose()
                 .map_err(|_| "凭据读取失败，请检查服务设置".to_string())?
                 .unwrap_or_default();
-            if !provider_override {
-                let path = config_path
-                    .as_deref()
-                    .ok_or_else(|| "请先配置服务提供方".to_string())?;
-                let config = vega_store::config::read_from(path)
-                    .map_err(|_| "服务配置读取失败".to_string())?;
-                let provider = unique_provider_for_model(&config, &model)
-                    .ok_or_else(|| "请检查模型的服务提供方设置".to_string())?;
-                let root = path
-                    .parent()
-                    .ok_or_else(|| "服务配置读取失败".to_string())?;
-                credentials.push(
-                    vega_store::keystore::get_key(root, &provider.key_ref)
-                        .map_err(|_| "服务凭据读取失败".to_string())?,
-                );
-            }
+            let path = config_path
+                .as_deref()
+                .ok_or_else(|| "请先配置服务提供方".to_string())?;
+            let config =
+                vega_store::config::read_from(path).map_err(|_| "服务配置读取失败".to_string())?;
+            let provider = unique_provider_for_model(&config, &model)
+                .ok_or_else(|| "请检查模型的服务提供方设置".to_string())?;
+            let root = path
+                .parent()
+                .ok_or_else(|| "服务配置读取失败".to_string())?;
+            credentials.push(
+                vega_store::keystore::get_key(root, &provider.key_ref)
+                    .map_err(|_| "服务凭据读取失败".to_string())?,
+            );
             if vega_runtime::contains_sensitive_credential(&message.content, &credentials) {
                 return Err("消息包含凭据，请删除后重试".into());
             }

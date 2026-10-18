@@ -27,11 +27,10 @@ use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
-    MeterSnapshot, PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan,
-    ProviderPreflightFailure, ReasoningChoice, ReasoningProfileProjection, ReasoningSupport,
-    RestoredUsage, RunFailureKind, RunUsageEstimator, SkillComposerMutation,
-    SkillComposerProjection, SkillSelectionIntent, TaskBackend, TaskCostSummary, Thread,
-    ThreadMode,
+    PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan, ProviderPreflightFailure,
+    ReasoningChoice, ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunFailureKind,
+    RunUsageEstimator, SkillComposerMutation, SkillComposerProjection, SkillSelectionIntent,
+    TaskBackend, TaskCostSummary, Thread, ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -291,9 +290,6 @@ mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;
 mod utility_bar;
-
-#[cfg(test)]
-mod tests;
 
 pub use core::ConversationStream;
 pub use core::ModelPickerLevel;

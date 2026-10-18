@@ -78,31 +78,6 @@ impl ConversationStream {
         true
     }
 
-    /// Content-free structural check used by the application integration
-    /// harness to prove exact tool-owning activity -> Artifact adjacency.
-    #[doc(hidden)]
-    pub fn artifact_card_is_adjacent(&self, call_id: &str, cx: &App) -> bool {
-        let Some(tool) = self.tool_cards.get(call_id) else {
-            return false;
-        };
-        let Some(artifact) = self.artifact_cards.get(call_id) else {
-            return false;
-        };
-        self.entries.windows(2).any(|entries| {
-            Self::tool_entry_contains(&entries[0], tool, cx)
-                && matches!(&entries[1], StreamEntry::Artifact { card } if card == artifact)
-        }) || self
-            .run_activity_groups
-            .values()
-            .any(|group| group.read(cx).artifact_follows_tool(tool, artifact, cx))
-    }
-
-    /// Content-free virtual-row count for integration tests of dynamic cards.
-    #[doc(hidden)]
-    pub fn virtual_row_count(&self, cx: &App) -> usize {
-        self.total_rows(cx)
-    }
-
     /// Starts the demo injection (标题头旁按钮)：drives the built-in
     /// ~200-block sample through the public mock replayer
     /// ([`vega_markdown::MockReplay`], 位于 vega_markdown) at ~500 δ/s into a

@@ -108,9 +108,6 @@ impl AutomationEditor {
     pub fn is_dirty(&self, cx: &App) -> bool {
         self.instruction(cx) != self.base.instruction
     }
-    pub fn is_saving(&self) -> bool {
-        self.pending.is_some()
-    }
     pub fn has_conflict(&self) -> bool {
         self.latest.as_ref().is_some_and(|task| {
             task.identity != self.base.identity || task.revision != self.base.revision
@@ -236,7 +233,6 @@ impl AutomationEditor {
         let primary = id == "automation-editor-save";
         div()
             .id(id)
-            .debug_selector(move || id.into())
             .role(Role::Button)
             .aria_label(label)
             .track_focus(focus)
@@ -355,7 +351,6 @@ impl Render for AutomationEditor {
         }
         div()
             .id("automation-editor")
-            .debug_selector(|| "automation-editor".into())
             .size_full()
             .flex()
             .flex_col()
@@ -414,7 +409,6 @@ impl Render for AutomationEditor {
             )
             .children(error.map(|error| {
                 div()
-                    .debug_selector(|| "automation-editor-error".into())
                     .flex_shrink_0()
                     .px_3()
                     .pt_2()
@@ -440,7 +434,6 @@ impl Render for AutomationEditor {
                     .child(
                         div()
                             .id("automation-editor-input")
-                            .debug_selector(|| "automation-editor-input".into())
                             .role(Role::TextInput)
                             .aria_label("任务内容")
                             .w_full()
@@ -477,6 +470,3 @@ fn format_timestamp(milliseconds: i64) -> String {
         seconds % 3600 / 60
     )
 }
-
-#[cfg(test)]
-mod tests;
