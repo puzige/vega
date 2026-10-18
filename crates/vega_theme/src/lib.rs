@@ -630,6 +630,16 @@ impl Layout {
     /// implementation drives both from a single `--thread-content-max-width`
     /// (48rem = 768px). The frozen test in this file fails if the two diverge.
     pub const COMPOSER_MAX_WIDTH: f32 = 768.0;
+    pub const AUTOMATION_HEIGHT: f32 = 36.0;
+    pub const AUTOMATION_INSET: f32 = 16.0;
+    pub const AUTOMATION_PADDING: f32 = 12.0;
+    pub const AUTOMATION_ICON_SIZE: f32 = 16.0;
+    pub const AUTOMATION_ACTION_SIZE: f32 = 28.0;
+    pub const AUTOMATION_RADIUS: f32 = 12.0;
+    pub const AUTOMATION_GAP: f32 = 4.0;
+    pub const AUTOMATION_COMPACT_WIDTH: f32 = 360.0;
+    pub const AUTOMATION_COMPACT_INSET: f32 = 8.0;
+    pub const AUTOMATION_COMPACT_PADDING: f32 = 6.0;
     /// Fixed wide-screen Environment rail width (304px card + 16px inset).
     pub const ENVIRONMENT_RAIL_WIDTH: f32 = 320.0;
     /// Width of the Environment card inside its rail.

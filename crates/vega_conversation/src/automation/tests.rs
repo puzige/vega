@@ -618,3 +618,190 @@ fn invalid_draft_command_rolls_back_thread_materialization() {
             .is_some()
     );
 }
+
+fn edit_task(task: &AutomationTask, instruction: &str) -> AutomationCommand {
+    AutomationCommand::Edit {
+        kind: task.kind,
+        identity: task.identity.clone(),
+        revision: task.revision,
+        instruction: instruction.into(),
+    }
+}
+
+#[test]
+fn editing_preserves_every_status_and_latest_accounting_without_resuming() {
+    for kind in [AutomationKind::Goal, AutomationKind::Loop] {
+        for status in [
+            AutomationStatus::Active,
+            AutomationStatus::Paused,
+            AutomationStatus::Blocked,
+            AutomationStatus::Complete,
+            AutomationStatus::Stopped,
+            AutomationStatus::Expired,
+            AutomationStatus::BudgetLimited,
+        ] {
+            let store = fixture();
+            let mut task = create(
+                &store,
+                if kind == AutomationKind::Goal {
+                    "/goal --budget 100 original"
+                } else {
+                    "/loop 1m original"
+                },
+            )
+            .remove(0);
+            task.status = status;
+            task.used_tokens = 25;
+            task.elapsed_ms = 9000;
+            task.reason = Some("existing state".into());
+            save(store.conn(), &task).unwrap();
+            let changed = command(
+                &store,
+                "thread",
+                &edit_task(&task, "新的目标\nhttps://example.com/path"),
+                5000,
+            )
+            .unwrap()
+            .remove(0);
+            let expected = AutomationTask {
+                instruction: "新的目标\nhttps://example.com/path".into(),
+                revision: task.revision + 1,
+                updated_at_ms: 5000,
+                ..task
+            };
+            assert_eq!(changed, expected);
+            assert_eq!(
+                command(
+                    &store,
+                    "thread",
+                    &edit_task(&changed, &changed.instruction),
+                    9000
+                )
+                .unwrap(),
+                vec![changed]
+            );
+        }
+    }
+}
+
+#[test]
+fn edits_compare_identity_revision_and_reject_invalid_text_without_writes() {
+    let store = fixture();
+    let first = create(&store, "/goal first").remove(0);
+    for text in [" ".to_string(), "字".repeat(5462)] {
+        assert!(command(&store, "thread", &edit_task(&first, &text), 2000).is_err());
+        assert_eq!(load(&store, "thread").unwrap(), vec![first.clone()]);
+    }
+    let second = command(&store, "thread", &edit_task(&first, "second"), 2000)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        command(&store, "thread", &edit_task(&first, "stale"), 3000).unwrap_err(),
+        "目标已更新，请载入最新内容后重试"
+    );
+    assert_eq!(load(&store, "thread").unwrap(), vec![second.clone()]);
+    command(
+        &store,
+        "thread",
+        &AutomationCommand::Control(AutomationKind::Goal, AutomationControl::Clear),
+        3000,
+    )
+    .unwrap();
+    let replacement = create(&store, "/goal replacement").remove(0);
+    assert!(
+        command(
+            &store,
+            "thread",
+            &edit_task(&second, "wrong identity"),
+            4000
+        )
+        .is_err()
+    );
+    assert_eq!(load(&store, "thread").unwrap(), vec![replacement]);
+}
+
+#[test]
+fn edit_uses_latest_terminal_status_and_late_usage_stays_with_identity_once() {
+    let store = fixture();
+    let task = create(&store, "/goal --budget 20 original").remove(0);
+    let claim = run(&store, AutomationKind::Goal, 1000);
+    report(
+        &store,
+        &claim,
+        json!({"status":"complete","reason":"Old objective done"}),
+    );
+    let edited = command(&store, "thread", &edit_task(&task, "new objective"), 2000)
+        .unwrap()
+        .remove(0);
+    assert!(!current_claim(&store, &claim).unwrap());
+    usage(&store, &claim, 1, 10, 15);
+    finish(&store, &claim, true, true, 4500, 5000).unwrap();
+    finish(&store, &claim, true, true, 4500, 5000).unwrap();
+    let current = load(&store, "thread").unwrap().remove(0);
+    assert_eq!(current.instruction, "new objective");
+    assert_eq!(current.revision, edited.revision);
+    assert_eq!((current.used_tokens, current.elapsed_ms), (25, 4500));
+    assert_eq!(current.status, AutomationStatus::BudgetLimited);
+    assert_eq!(due_kind(std::slice::from_ref(&current), 99999), None);
+
+    let second = fixture();
+    let task = create(&second, "/goal original").remove(0);
+    let claim = run(&second, AutomationKind::Goal, 1000);
+    report(
+        &second,
+        &claim,
+        json!({"status":"complete","reason":"Original done"}),
+    );
+    finish(&second, &claim, true, true, 100, 2000).unwrap();
+    let edited = command(&second, "thread", &edit_task(&task, "follow up text"), 3000)
+        .unwrap()
+        .remove(0);
+    assert_eq!(edited.status, AutomationStatus::Complete);
+    assert_eq!(edited.elapsed_ms, 100);
+}
+
+#[test]
+fn edits_are_atomic_on_storage_failure_and_version_limit() {
+    let store = fixture();
+    let mut task = create(&store, "/goal original").remove(0);
+    store.conn().execute_batch("CREATE TRIGGER reject_edit BEFORE UPDATE ON automation_tasks BEGIN SELECT RAISE(FAIL, 'owned failure'); END;").unwrap();
+    assert!(command(&store, "thread", &edit_task(&task, "changed"), 2000).is_err());
+    assert_eq!(load(&store, "thread").unwrap(), vec![task.clone()]);
+    store
+        .conn()
+        .execute_batch("DROP TRIGGER reject_edit;")
+        .unwrap();
+    task.revision = u64::try_from(i64::MAX).unwrap();
+    save(store.conn(), &task).unwrap();
+    assert!(command(&store, "thread", &edit_task(&task, "changed"), 2000).is_err());
+    assert_eq!(load(&store, "thread").unwrap(), vec![task]);
+}
+
+#[test]
+fn timing_snapshot_excludes_settled_claims_and_keeps_unknown_late_usage_enforced() {
+    let store = fixture();
+    let task = create(&store, "/goal --budget 100 original").remove(0);
+    let claim = run(&store, AutomationKind::Goal, 1000);
+    let active = activate_claim(&store, &claim).unwrap().unwrap();
+    let (before, running) = timing_snapshot(&store, "thread").unwrap();
+    assert_eq!(before[0].elapsed_ms, 0);
+    assert_eq!(running.unwrap().id, active.id);
+    command(&store, "thread", &edit_task(&task, "changed"), 2000).unwrap();
+    usage(&store, &active, 1, 10, 2);
+    finish(&store, &active, false, false, 4000, 3000).unwrap();
+    let (settled, running) = timing_snapshot(&store, "thread").unwrap();
+    assert!(running.is_none());
+    assert_eq!(settled[0].elapsed_ms, 4000);
+    assert_eq!(settled[0].used_tokens, 12);
+    assert!(!settled[0].usage_complete);
+    assert_eq!(settled[0].status, AutomationStatus::Paused);
+    assert!(
+        command(
+            &store,
+            "thread",
+            &AutomationCommand::Control(AutomationKind::Goal, AutomationControl::Resume),
+            5000
+        )
+        .is_err()
+    );
+}

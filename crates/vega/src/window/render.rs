@@ -53,6 +53,8 @@ impl Render for VegaWindow {
             self.close_branch_route(GitWorkspaceErrorCode::StaleGeneration, cx);
         }
         self.sync_workspace_route(cx);
+        self.sync_automation_workspace_size(window, cx);
+        self.sync_automation_editor_visibility(window, cx);
         if !settings_open
             && self.diff_controller.active.is_none()
             && self
@@ -359,6 +361,19 @@ impl Render for VegaWindow {
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.submit_composer(stream.clone(), request, cx);
                             })
+                            .detach();
+                            cx.subscribe_in(
+                                &view,
+                                window,
+                                |this, stream, request: &AutomationEditorRequested, window, cx| {
+                                    this.open_automation_editor(
+                                        stream.clone(),
+                                        request,
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            )
                             .detach();
                             cx.subscribe(
                                 &view,

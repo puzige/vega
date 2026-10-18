@@ -270,7 +270,6 @@ impl ConversationStream {
                             .child(render_rows::plain_error_notice(error, colors.danger))
                     }),
             )
-            .child(self.render_automation(cx))
             .when(self.thread.backend == TaskBackend::Native, |column| {
                 column.child(self.render_pending_status(cx))
             })
@@ -280,6 +279,7 @@ impl ConversationStream {
                 |column| column.child(self.render_pending_queue(cx)),
             )
             .children(self.active_user_question.clone())
+            .child(self.render_automation(cx))
             .child(
                 div()
                     .debug_selector(|| "composer-shell".into())

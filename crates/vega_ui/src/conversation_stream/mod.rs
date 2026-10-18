@@ -402,4 +402,4 @@ pub struct CredentialContinuationRequested {
 }
 
 mod automation;
-pub use automation::AutomationRequested;
+pub use automation::{AutomationEditorRequested, AutomationRequested, AutomationTiming};

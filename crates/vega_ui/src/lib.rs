@@ -7,6 +7,7 @@
 //! and the sidebar blocks render the lists now.
 
 pub mod artifact_card;
+pub mod automation_editor;
 pub mod branch_selector;
 pub mod command_palette;
 pub mod commit_panel;
@@ -39,6 +40,18 @@ gpui_kit::actions!(vega_ui, [DismissEnvironmentOverlay]);
 /// Cmd+Enter = send, scoped to `Composer`). Call once at app startup; the
 /// settings actions are bound by the `vega` binary itself.
 pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new(
+            "cmd-s",
+            automation_editor::SaveAutomation,
+            Some("AutomationEditor"),
+        ),
+        KeyBinding::new(
+            "escape",
+            automation_editor::CloseAutomationEditor,
+            Some("AutomationEditor"),
+        ),
+    ]);
     navigation::init(cx);
     cx.on_app_quit(|_| vega_conversation::terminal::shutdown_all())
         .detach();

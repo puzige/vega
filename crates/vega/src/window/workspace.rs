@@ -12,6 +12,7 @@ pub(super) enum TabKey {
     Terminal(u64),
     File(u64),
     Artifact(ArtifactCardId),
+    Automation(vega_ui::automation_editor::AutomationEditorKey),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +38,7 @@ pub(super) struct Workspace {
     terminal_error: bool,
     pub(super) tabs: Vec<(TabKey, bool)>,
     selected: [Option<TabKey>; 2],
+    automation_previous_maximized: Option<[bool; 2]>,
     tab_scroll: [ScrollHandle; 2],
     reveal_tabs: [bool; 2],
     window_size: Option<Size<Pixels>>,
@@ -580,6 +582,81 @@ impl VegaWindow {
         cx.notify();
     }
 
+    pub(super) fn show_automation_workspace(
+        &mut self,
+        key: vega_ui::automation_editor::AutomationEditorKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_workspace_route(cx);
+        self.workspace.open(TabKey::Automation(key.clone()));
+        self.sync_automation_workspace_size(window, cx);
+        let index = self
+            .workspace
+            .tabs
+            .iter()
+            .find(|(tab, _)| matches!(tab, TabKey::Automation(open) if open == &key))
+            .map_or(0, |(_, bottom)| usize::from(*bottom));
+        self.workspace_focus(index, window, cx);
+        self.sync_automation_editor_visibility(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn sync_automation_workspace_size(&mut self, window: &Window, cx: &App) {
+        let selected = matches!(self.workspace.selected[0], Some(TabKey::Automation(_)))
+            && !self.workspace.hidden[0];
+        if selected
+            && self.workspace_available_width(window, cx) < MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH
+        {
+            self.workspace
+                .automation_previous_maximized
+                .get_or_insert(self.workspace.maximized);
+            self.workspace.maximized = [true, false];
+        } else if let Some(previous) = self.workspace.automation_previous_maximized.take() {
+            self.workspace.maximized = previous;
+        }
+    }
+
+    pub(super) fn visible_automation_editors(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Vec<&vega_ui::automation_editor::AutomationEditorKey> {
+        let mut result = Vec::new();
+        if cx.global::<SettingsOpen>().0 {
+            return result;
+        }
+        for index in 0..2 {
+            if self
+                .workspace_fullscreen_index()
+                .is_some_and(|visible| visible != index)
+            {
+                continue;
+            }
+            let visible = if index == 0 {
+                self.right_workspace_rendered(window, cx)
+            } else {
+                self.bottom_workspace_selected_is_rendered(window)
+            };
+            if visible
+                && let Some(TabKey::Automation(key)) = &self.workspace.selected[index]
+                && self.workspace.route.as_ref() == Some(&key.thread_id)
+            {
+                result.push(key);
+            }
+        }
+        result
+    }
+
+    pub(super) fn close_automation_workspace(
+        &mut self,
+        key: &vega_ui::automation_editor::AutomationEditorKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_close_tab(&TabKey::Automation(key.clone()), window, cx);
+    }
+
     fn workspace_close_tab(&mut self, key: &TabKey, window: &mut Window, cx: &mut Context<Self>) {
         let index = self
             .workspace
@@ -597,6 +674,13 @@ impl VegaWindow {
             }
             TabKey::Diff => self.diff_controller.close(),
             TabKey::Artifact(_) => {}
+            TabKey::Automation(_) => {
+                self.sync_automation_workspace_size(window, cx);
+                self.sync_automation_editor_visibility(window, cx);
+                self.workspace_focus_composer(window, cx);
+                cx.notify();
+                return;
+            }
             TabKey::Image => {
                 self.close_image_preview(window, cx);
                 return;
@@ -632,6 +716,8 @@ impl VegaWindow {
     fn workspace_hide(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace.hidden[index] = true;
         self.workspace.maximized[index] = false;
+        self.sync_automation_workspace_size(window, cx);
+        self.sync_automation_editor_visibility(window, cx);
         self.workspace_focus_composer(window, cx);
         cx.notify();
     }
@@ -651,6 +737,12 @@ impl VegaWindow {
                 .map(|active| active.image.read(cx).name().to_owned())
                 .unwrap_or_default(),
             TabKey::Diff => "Review".into(),
+            TabKey::Automation(key) => if key.kind == AutomationKind::Goal {
+                "编辑目标"
+            } else {
+                "编辑循环"
+            }
+            .into(),
             TabKey::Terminal(id) => format!("终端 {id}"),
             TabKey::File(id) => self
                 .workspace
@@ -674,6 +766,13 @@ impl VegaWindow {
             TabKey::Diff | TabKey::File(_) => Icon::Document,
             TabKey::Terminal(_) => Icon::Terminal,
             TabKey::Artifact(_) => Icon::Summary,
+            TabKey::Automation(key) => {
+                if key.kind == AutomationKind::Goal {
+                    Icon::Goal
+                } else {
+                    Icon::Refresh
+                }
+            }
         }
     }
 
@@ -750,7 +849,12 @@ impl VegaWindow {
     }
 
     fn workspace_focus(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_automation_editor_visibility(window, cx);
         let focus = match self.workspace.selected[index].as_ref() {
+            Some(TabKey::Automation(key)) => self
+                .automation_editors
+                .get(key)
+                .map(|view| view.read(cx).focus_handle(cx)),
             Some(TabKey::Image) => self
                 .image_preview
                 .active
@@ -1323,6 +1427,10 @@ impl VegaWindow {
             .child(strip)
             .child(actions);
         let body = match selected {
+            Some(TabKey::Automation(key)) => self
+                .automation_editors
+                .get(&key)
+                .map(|view| view.clone().into_any_element()),
             Some(TabKey::Image) => self
                 .image_preview
                 .active

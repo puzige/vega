@@ -38,6 +38,9 @@ pub enum Icon {
     Queue,
     Steer,
     Trash,
+    Goal,
+    Pause,
+    Play,
     Connection,
     Wifi,
     Plug,
@@ -106,6 +109,9 @@ const MOUSE_POINTER_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" vie
 const KEYBOARD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M8 15h8"/></svg>"#;
 const QUEUE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v12a3 3 0 0 0 3 3h13m-4-4 4 4-4 4M9 5h11M9 10h7"/></svg>"#;
 const STEER_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5v5a3 3 0 0 0 3 3h13m-5-5 5 5-5 5"/></svg>"#;
+const GOAL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>"#;
+const PAUSE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14M16 5v14"/></svg>"#;
+const PLAY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 4 12 8-12 8Z"/></svg>"#;
 const TRASH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>"#;
 
 const HELP_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>"#;
@@ -196,7 +202,7 @@ fn icon_name(kind: Icon) -> IconName {
         | Icon::TextSelect => {
             unreachable!("inline SVG icons are handled before mapping")
         }
-        Icon::Queue | Icon::Steer | Icon::Trash => {
+        Icon::Queue | Icon::Steer | Icon::Trash | Icon::Goal | Icon::Pause | Icon::Play => {
             unreachable!("inline SVG icons are handled before mapping")
         }
     }
@@ -248,6 +254,9 @@ pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
         Icon::Queue => inline_icon(QUEUE_SVG, color, size),
         Icon::Steer => inline_icon(STEER_SVG, color, size),
         Icon::Trash => inline_icon(TRASH_SVG, color, size),
+        Icon::Goal => inline_icon(GOAL_SVG, color, size),
+        Icon::Pause => inline_icon(PAUSE_SVG, color, size),
+        Icon::Play => inline_icon(PLAY_SVG, color, size),
         _ => kit_icon(kind, color, size),
     };
     gpui_kit::div()

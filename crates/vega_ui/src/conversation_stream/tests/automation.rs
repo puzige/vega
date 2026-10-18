@@ -1,5 +1,5 @@
 use super::*;
-use gpui_kit::{Modifiers, VisualTestContext};
+use gpui_kit::{Modifiers, VisualTestContext, size};
 use vega_conversation::types::{
     AutomationCommand, AutomationControl, AutomationKind, AutomationProjection, AutomationStatus,
     AutomationTask,
@@ -137,9 +137,32 @@ async fn automation_status_actions_details_and_budget_focus_are_accessible(
         )
     });
     assert!(visible(window, "automation-goal-control", cx));
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let capture = opened.clone();
+    cx.update(|cx| {
+        cx.subscribe(&stream, move |_, event: &AutomationEditorRequested, _| {
+            capture
+                .lock()
+                .unwrap()
+                .push((event.thread_id.clone(), event.identity.clone()));
+        })
+        .detach()
+    });
     assert!(!visible(window, "automation-goal-instruction", cx));
     click(window, "automation-goal-details", cx);
-    assert!(visible(window, "automation-goal-instruction", cx));
+    assert_eq!(
+        opened.lock().unwrap().as_slice(),
+        &[("automation-ui".into(), "goal".into())]
+    );
+    assert!(!visible(window, "automation-goal-instruction", cx));
+    window
+        .update(cx, |_, window, cx| {
+            let focus = stream.read(cx).automation.focus["goal"][0].clone();
+            window.focus(&focus, cx);
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "space");
+    assert_eq!(opened.lock().unwrap().len(), 2);
     window
         .update(cx, |_, window, cx| {
             let focus = stream.read(cx).automation.focus["goal"][1].clone();
@@ -369,4 +392,229 @@ async fn automation_eligibility_observes_drafts_preflight_and_busy_state(cx: &mu
     );
     click(window, "automation-goal-control", cx);
     assert!(stream.read_with(cx, |stream, _| stream.automation_projection().busy));
+}
+
+#[gpui_kit::test]
+async fn compact_strips_join_composer_keep_actions_on_one_line_and_match_tab_order(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "automation-ui");
+    assert!(!visible(window, "automation-goal-strip", cx));
+    assert_eq!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("automation-strips")
+            .unwrap()
+            .size
+            .height,
+        px(0.)
+    );
+    let mut first = goal(AutomationStatus::Active);
+    first.instruction = "长中文目标\nhttps://example.com/very/long/path ".repeat(30);
+    let mut second = first.clone();
+    second.kind = AutomationKind::Loop;
+    second.identity = "loop".into();
+    second.token_budget = None;
+    second.interval_seconds = Some(60);
+    stream.update(cx, |stream, cx| {
+        stream.apply_automation(
+            AutomationProjection {
+                tasks: vec![first, second],
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let goal = visual.debug_bounds("automation-goal-strip").unwrap();
+    let loop_ = visual.debug_bounds("automation-loop-strip").unwrap();
+    let shell = visual.debug_bounds("composer-shell").unwrap();
+    assert_eq!(goal.size.height, px(Layout::AUTOMATION_HEIGHT));
+    assert_eq!(loop_.size.height, px(Layout::AUTOMATION_HEIGHT));
+    assert_eq!(
+        goal.size.width,
+        shell.size.width - px(2. * Layout::AUTOMATION_INSET)
+    );
+    assert_eq!(goal.left(), shell.left() + px(Layout::AUTOMATION_INSET));
+    assert_eq!(goal.bottom(), loop_.top());
+    assert_eq!(loop_.bottom(), shell.top());
+    for selectors in [
+        [
+            "automation-goal-clear",
+            "automation-goal-control",
+            "automation-goal-details",
+        ],
+        [
+            "automation-loop-clear",
+            "automation-loop-control",
+            "automation-loop-details",
+        ],
+    ] {
+        let bounds = selectors.map(|selector| visual.debug_bounds(selector).unwrap());
+        assert!(bounds.iter().all(|rect| rect.size
+            == size(
+                px(Layout::AUTOMATION_ACTION_SIZE),
+                px(Layout::AUTOMATION_ACTION_SIZE)
+            )));
+        assert!(
+            bounds
+                .windows(2)
+                .all(|pair| pair[0].right() <= pair[1].left() && pair[0].top() == pair[1].top())
+        );
+    }
+    drop(visual);
+    let focuses = stream.read_with(cx, |stream, _| stream.automation_focuses());
+    let expected = stream.read_with(cx, |stream, _| {
+        [2, 1, 0].map(|index| stream.automation.focus["goal"][index].clone())
+    });
+    assert_eq!(&focuses[..3], &expected);
+    window
+        .update(cx, |_, window, cx| window.focus(&expected[0], cx))
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "tab");
+    window
+        .update(cx, |_, window, _| assert!(expected[1].is_focused(window)))
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    window
+        .update(cx, |_, window, _| assert!(expected[0].is_focused(window)))
+        .unwrap();
+    stream.update(cx, |stream, cx| {
+        stream.thread.backend = TaskBackend::Codex;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("automation-strips")
+            .unwrap()
+            .size
+            .height,
+        px(0.)
+    );
+    assert!(!visible(window, "automation-goal-strip", cx));
+    assert!(!visible(window, "automation-loop-strip", cx));
+}
+
+#[gpui_kit::test]
+async fn strip_status_matrix_and_clock_updates_leave_history_quiet(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "automation-ui");
+    for status in [
+        AutomationStatus::Active,
+        AutomationStatus::Paused,
+        AutomationStatus::Blocked,
+        AutomationStatus::Complete,
+        AutomationStatus::BudgetLimited,
+        AutomationStatus::Stopped,
+        AutomationStatus::Expired,
+    ] {
+        let mut task = goal(status);
+        if status == AutomationStatus::BudgetLimited {
+            task.used_tokens = 100;
+        }
+        let control = task.can_control();
+        stream.update(cx, |stream, cx| {
+            stream.apply_automation(
+                AutomationProjection {
+                    tasks: vec![task],
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        assert_eq!(visible(window, "automation-goal-control", cx), control);
+        assert!(visible(window, "automation-goal-details", cx));
+        assert!(visible(window, "automation-goal-clear", cx));
+    }
+    stream.update(cx, |stream, cx| {
+        stream.apply_automation_timings(
+            HashMap::from([(
+                "goal".into(),
+                AutomationTiming {
+                    elapsed_ms: 1000,
+                    running: true,
+                },
+            )]),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+    let count = notifications.clone();
+    let _observation = cx.update(|cx| cx.observe(&stream, move |_, _| count.set(count.get() + 1)));
+    for elapsed_ms in [2000, 3000, 4000] {
+        stream.update(cx, |stream, cx| {
+            stream.apply_automation_timings(
+                HashMap::from([(
+                    "goal".into(),
+                    AutomationTiming {
+                        elapsed_ms,
+                        running: true,
+                    },
+                )]),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+    }
+    assert_eq!(notifications.get(), 0);
+    stream.update(cx, |stream, cx| {
+        stream.set_automation_editor_dirty(true, cx)
+    });
+    assert!(!stream.read_with(cx, |stream, cx| stream.automation_can_run(cx)));
+    stream.update(cx, |stream, cx| {
+        stream.set_automation_editor_dirty(false, cx)
+    });
+}
+
+#[gpui_kit::test]
+async fn narrow_workspace_strip_keeps_every_action_inside_its_bounds(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "automation-ui");
+    let visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(295.), px(900.)));
+    visual.run_until_parked();
+    window
+        .update(cx, |_, window, _| {
+            assert_eq!(window.viewport_size(), size(px(295.), px(900.)))
+        })
+        .unwrap();
+    for status in [
+        AutomationStatus::Active,
+        AutomationStatus::Paused,
+        AutomationStatus::BudgetLimited,
+    ] {
+        let mut task = goal(status);
+        task.instruction = "长中文目标与很长的URL https://example.com/".repeat(40);
+        stream.update(cx, |stream, cx| {
+            stream.set_workspace_width(295., cx);
+            stream.apply_automation(
+                AutomationProjection {
+                    tasks: vec![task],
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let strip = visual.debug_bounds("automation-goal-strip").unwrap();
+        let shell = visual.debug_bounds("composer-shell").unwrap();
+        assert_eq!(shell.size.width, px(231.));
+        assert_eq!(strip.size.width, px(215.));
+        let summary = visual.debug_bounds("automation-goal-summary").unwrap();
+        assert!(summary.size.width >= px(33.));
+        for selector in [
+            "automation-goal-clear",
+            "automation-goal-control",
+            "automation-goal-details",
+        ] {
+            if let Some(action) = visual.debug_bounds(selector) {
+                assert_eq!(action.size, size(px(28.), px(28.)));
+                assert!(action.left() >= strip.left() && action.right() <= strip.right());
+                assert!(action.top() >= strip.top() && action.bottom() <= strip.bottom());
+            } else {
+                assert_eq!(status, AutomationStatus::BudgetLimited);
+            }
+        }
+    }
 }

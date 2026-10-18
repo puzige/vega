@@ -679,6 +679,7 @@ async fn successful_durable_finish_does_not_cancel_pending_ui_terminal(
             global.runs.insert(
                 f.thread.id.clone(),
                 crate::automation_controller::AutomationRunOwner {
+                    started_at: None,
                     generation: 10,
                     owner,
                     claim: Some(claim.clone()),
@@ -747,4 +748,617 @@ async fn new_task_command_materializes_the_existing_draft_identity_before_runnin
     assert!(draft(&f, cx).is_empty());
     control(&f, AutomationKind::Goal, AutomationControl::Clear, cx);
     pump_test_app(cx, |cx| idle(&f, cx));
+}
+
+fn open_goal_editor(
+    f: &Fixture,
+    cx: &mut gpui_kit::TestAppContext,
+) -> Entity<vega_ui::automation_editor::AutomationEditor> {
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let bounds = visual.debug_bounds("automation-goal-details").unwrap();
+    visual.simulate_click(bounds.center(), Default::default());
+    visual.run_until_parked();
+    let task = automation::load(&f.store, &f.thread.id)
+        .unwrap()
+        .into_iter()
+        .find(|task| task.kind == AutomationKind::Goal)
+        .unwrap();
+    f.root.read_with(cx, |root, _| {
+        root.automation_editors[&vega_ui::automation_editor::AutomationEditorKey::for_task(&task)]
+            .clone()
+    })
+}
+
+fn edit_goal(
+    view: &Entity<vega_ui::automation_editor::AutomationEditor>,
+    instruction: &str,
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    view.update(cx, |view, cx| {
+        view.input()
+            .update(cx, |input, cx| input.set_text(instruction, cx))
+    });
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+async fn workspace_editor_saves_paused_goal_retains_drafts_and_rejects_credentials(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(MockProvider::new(Vec::new()));
+    let f = fixture(cx, provider.clone());
+    automation::command(
+        &f.store,
+        &f.thread.id,
+        &automation::parse_command("/goal --budget 100 original")
+            .unwrap()
+            .unwrap(),
+        automation::now_ms(),
+    )
+    .unwrap();
+    automation::command(
+        &f.store,
+        &f.thread.id,
+        &AutomationCommand::Control(AutomationKind::Goal, AutomationControl::Pause),
+        automation::now_ms(),
+    )
+    .unwrap();
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| idle(&f, cx));
+    let editor = open_goal_editor(&f, cx);
+    edit_goal(&editor, "first edit\nsecond line", cx);
+    let original_pane = gpui_kit::VisualTestContext::from_window(f.window.into(), cx)
+        .debug_bounds("right-workspace-pane")
+        .unwrap();
+    cx.update(|cx| cx.set_global(vega_ui::sidebar::SidebarExplicitlyShown(true)));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_resize(gpui_kit::size(gpui_kit::px(800.), gpui_kit::px(600.)));
+    visual.run_until_parked();
+    f.window
+        .update(cx, |root, window, cx| {
+            assert_eq!(
+                window.viewport_size(),
+                gpui_kit::size(gpui_kit::px(800.), gpui_kit::px(600.))
+            );
+            assert!(!root.auto_collapsed(window, cx));
+        })
+        .unwrap();
+    let main = visual.debug_bounds("main-content-panel").unwrap();
+    let expanded = visual.debug_bounds("automation-editor").unwrap();
+    let save = visual.debug_bounds("automation-editor-save").unwrap();
+    assert!(main.size.width < gpui_kit::px(610.));
+    assert_eq!(expanded.left(), main.left());
+    assert_eq!(expanded.size.width, main.size.width);
+    assert!(expanded.bottom() <= main.bottom());
+    assert!(save.left() >= expanded.left() && save.right() <= expanded.right());
+    assert!(save.top() >= expanded.top() && save.bottom() <= expanded.bottom());
+    assert!(visual.debug_bounds("right-workspace-pane").is_none());
+    assert!(visual.debug_bounds("composer-shell").is_none());
+    assert!(
+        !f.stream
+            .read_with(cx, |stream, cx| stream.automation_can_run(cx))
+    );
+    cx.simulate_keystrokes(f.window.into(), "escape");
+    cx.run_until_parked();
+    assert!(
+        f.stream
+            .read_with(cx, |stream, cx| stream.automation_can_run(cx))
+    );
+    let visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_resize(gpui_kit::size(gpui_kit::px(1200.), gpui_kit::px(900.)));
+    visual.run_until_parked();
+    f.window
+        .update(cx, |_, window, _| {
+            assert_eq!(
+                window.viewport_size(),
+                gpui_kit::size(gpui_kit::px(1200.), gpui_kit::px(900.))
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    f.window
+        .update(cx, |_, window, cx| {
+            assert!(
+                f.stream
+                    .read(cx)
+                    .composer_input()
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            )
+        })
+        .unwrap();
+    let reopened = open_goal_editor(&f, cx);
+    assert_eq!(
+        gpui_kit::VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("right-workspace-pane")
+            .unwrap()
+            .size
+            .width,
+        original_pane.size.width
+    );
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let main = visual.debug_bounds("main-content-panel").unwrap();
+    let restored = visual.debug_bounds("automation-editor").unwrap();
+    assert!(main.size.width >= gpui_kit::px(610.));
+    assert_eq!(restored.size.width, original_pane.size.width);
+    assert!(restored.size.width < main.size.width);
+    assert!(visual.debug_bounds("composer-shell").is_some());
+    assert_eq!(editor, reopened);
+    assert_eq!(
+        editor.read_with(cx, |view, cx| view.instruction(cx).to_string()),
+        "first edit\nsecond line"
+    );
+    cx.simulate_keystrokes(f.window.into(), "cmd-s");
+    pump_test_app(cx, |cx| {
+        !editor.read_with(cx, |view, _| view.is_saving()) && idle(&f, cx)
+    });
+    let saved = automation::load(&f.store, &f.thread.id).unwrap().remove(0);
+    assert_eq!(saved.instruction, "first edit\nsecond line");
+    assert_eq!(saved.status, AutomationStatus::Paused);
+    assert_eq!(saved.token_budget, Some(100));
+    assert!(!editor.read_with(cx, |view, cx| view.is_dirty(cx)));
+    assert!(provider.requests().is_empty());
+
+    edit_goal(&editor, "draft across navigation", cx);
+    cx.update(|cx| cx.set_global(OpenedThread(None)));
+    cx.run_until_parked();
+    assert!(
+        f.stream
+            .read_with(cx, |stream, cx| stream.automation_can_run(cx))
+    );
+    cx.update(|cx| cx.set_global(OpenedThread(Some(f.thread.clone()))));
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.stream_view
+                .as_ref()
+                .is_some_and(|(id, _)| *id == f.thread.id)
+        })
+    });
+    let reopened = open_goal_editor(&f, cx);
+    assert_eq!(reopened, editor);
+    assert_eq!(
+        editor.read_with(cx, |view, cx| view.instruction(cx).to_string()),
+        "draft across navigation"
+    );
+    f.root
+        .update(cx, |root, _| root.agent_provider_override = None);
+    edit_goal(&editor, "do not persist composer-test-key", cx);
+    editor.update(cx, |view, cx| view.save(cx));
+    pump_test_app(cx, |cx| {
+        !editor.read_with(cx, |view, _| view.is_saving()) && idle(&f, cx)
+    });
+    assert_eq!(automation::load(&f.store, &f.thread.id).unwrap()[0], saved);
+    assert!(editor.read_with(cx, |view, cx| view.is_dirty(cx)));
+    assert!(
+        gpui_kit::VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("automation-editor-error")
+            .is_some()
+    );
+    editor.update(cx, |view, cx| view.revert(cx));
+    assert!(!editor.read_with(cx, |view, cx| view.is_dirty(cx)));
+    let service = vega_conversation::McpServerSettingsService::new(
+        f.store.database_path().unwrap().to_path_buf(),
+        f._data.path().to_path_buf(),
+    );
+    let server = service
+        .create(vega_conversation::types::McpServerForm {
+            display_name: "Owned edit credential".into(),
+            transport: vega_conversation::types::McpServerTransport::Remote {
+                endpoint: "https://mcp.invalid/mcp".into(),
+                allow_loopback_http: false,
+                authorization: vega_conversation::types::McpRemoteAuthorization::Bearer,
+            },
+        })
+        .unwrap();
+    service
+        .set_bearer_secret(
+            &server.id,
+            server.config_revision,
+            "owned-mcp-edit-secret-value".into(),
+        )
+        .unwrap();
+    f.root
+        .update(cx, |root, _| root.mcp_settings = Some(service));
+    edit_goal(&editor, "reject owned-mcp-edit-secret-value", cx);
+    editor.update(cx, |view, cx| view.save(cx));
+    pump_test_app(cx, |cx| {
+        !editor.read_with(cx, |view, _| view.is_saving()) && idle(&f, cx)
+    });
+    assert_eq!(automation::load(&f.store, &f.thread.id).unwrap()[0], saved);
+    assert!(editor.read_with(cx, |view, cx| view.is_dirty(cx)));
+    edit_goal(&editor, "saved while navigating away", cx);
+    editor.update(cx, |view, cx| view.save(cx));
+    cx.update(|cx| cx.set_global(OpenedThread(None)));
+    pump_test_app(cx, |cx| {
+        !editor.read_with(cx, |view, _| view.is_saving()) && idle(&f, cx)
+    });
+    assert_eq!(
+        automation::load(&f.store, &f.thread.id).unwrap()[0].instruction,
+        "saved while navigating away"
+    );
+    assert!(!editor.read_with(cx, |view, cx| view.is_dirty(cx)));
+    assert!(provider.requests().is_empty());
+}
+
+#[gpui_kit::test]
+async fn editing_running_goal_cancels_only_after_commit_and_next_run_uses_new_instruction(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let provider = Arc::new(MockProvider::new_rounds(vec![
+        vec![ScriptStep::delay(Duration::from_secs(30))],
+        report_round("edited", true),
+        final_round(),
+    ]));
+    let f = fixture(cx, provider.clone());
+    submit(&f, "/goal original objective", cx);
+    pump_test_app(cx, |_| provider.requests().len() == 1);
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| {
+        f.stream.read_with(cx, |stream, _| {
+            !stream.automation_projection().tasks.is_empty()
+        })
+    });
+    let cancel = cx.update(|cx| {
+        cx.global::<AutomationGlobal>().runs[&f.thread.id]
+            .cancel
+            .clone()
+    });
+    let editor = open_goal_editor(&f, cx);
+    edit_goal(&editor, "new reviewed objective", cx);
+    f.store.conn().execute_batch("CREATE TRIGGER reject_edit BEFORE UPDATE ON automation_tasks BEGIN SELECT RAISE(FAIL, 'owned failure'); END;").unwrap();
+    editor.update(cx, |view, cx| view.save(cx));
+    pump_test_app(cx, |cx| !editor.read_with(cx, |view, _| view.is_saving()));
+    assert!(!cancel.is_cancelled());
+    assert_eq!(
+        automation::load(&f.store, &f.thread.id).unwrap()[0].instruction,
+        "original objective"
+    );
+    assert_eq!(provider.requests().len(), 1);
+    f.store
+        .conn()
+        .execute_batch("DROP TRIGGER reject_edit;")
+        .unwrap();
+    editor.update(cx, |view, cx| view.save(cx));
+    pump_test_app(cx, |cx| {
+        cancel.is_cancelled() && !editor.read_with(cx, |view, _| view.is_saving()) && idle(&f, cx)
+    });
+    assert_eq!(
+        automation::load(&f.store, &f.thread.id).unwrap()[0].instruction,
+        "new reviewed objective"
+    );
+    refresh(&f, cx);
+    pump_test_app_with_diagnostics(
+        cx,
+        |cx| {
+            automation::load(&f.store, &f.thread.id).unwrap()[0].status
+                == AutomationStatus::Complete
+                && idle(&f, cx)
+        },
+        |_| {
+            format!(
+                "requests={}, tasks={:?}",
+                provider.requests().len(),
+                automation::load(&f.store, &f.thread.id)
+            )
+        },
+    );
+    assert_eq!(provider.requests().len(), 3);
+    assert!(
+        provider.requests()[1]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("new reviewed objective"))
+    );
+    let task = automation::load(&f.store, &f.thread.id).unwrap().remove(0);
+    assert_eq!(task.used_tokens, 24);
+    assert!(task.elapsed_ms > 0);
+    assert!(
+        vega_store::automation::active_run(f.store.conn(), &f.thread.id)
+            .unwrap()
+            .is_none()
+    );
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| idle(&f, cx));
+    assert_eq!(
+        f.stream.read_with(cx, |stream, _| stream
+            .automation_timing(&task.identity)
+            .unwrap()
+            .elapsed_ms),
+        task.elapsed_ms
+    );
+    assert_eq!(provider.requests().len(), 3);
+}
+
+#[gpui_kit::test]
+async fn editing_attached_goal_does_not_cancel_user_or_loop_owned_run(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(MockProvider::new(Vec::new()));
+    let f = fixture(cx, provider.clone());
+    edit(&f, "keep new dispatch paused", cx);
+    automation::command(
+        &f.store,
+        &f.thread.id,
+        &automation::parse_command("/goal original")
+            .unwrap()
+            .unwrap(),
+        automation::now_ms(),
+    )
+    .unwrap();
+    automation::command(
+        &f.store,
+        &f.thread.id,
+        &automation::parse_command("/loop 1m inspect")
+            .unwrap()
+            .unwrap(),
+        automation::now_ms(),
+    )
+    .unwrap();
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| idle(&f, cx));
+    let editor = open_goal_editor(&f, cx);
+    for (index, source) in [None, Some(AutomationKind::Loop)].into_iter().enumerate() {
+        let claim = automation::claim(&f.store, &f.thread.id, source, automation::now_ms())
+            .unwrap()
+            .unwrap();
+        let claim = if source.is_some() {
+            automation::activate_claim(&f.store, &claim)
+                .unwrap()
+                .unwrap()
+        } else {
+            claim
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let owner = f.root.read_with(cx, |root, _| root.window_alive.clone());
+        let generation = u64::try_from(index + 10).unwrap();
+        cx.update(|cx| {
+            cx.update_global::<AutomationGlobal, _>(|global, _| {
+                global.runs.insert(
+                    f.thread.id.clone(),
+                    crate::automation_controller::AutomationRunOwner {
+                        generation,
+                        owner: Arc::downgrade(&owner),
+                        claim: Some(claim.clone()),
+                        cancel: cancel.clone(),
+                        started_at: Some(std::time::Instant::now()),
+                    },
+                );
+            })
+        });
+        edit_goal(&editor, &format!("changed while {source:?}"), cx);
+        editor.update(cx, |view, cx| view.save(cx));
+        pump_test_app(cx, |cx| {
+            !editor.read_with(cx, |view, _| view.is_saving()) && idle(&f, cx)
+        });
+        refresh(&f, cx);
+        pump_test_app(cx, |cx| idle(&f, cx));
+        assert!(!cancel.is_cancelled());
+        assert!(provider.requests().is_empty());
+        automation::finish(&f.store, &claim, true, true, 100, automation::now_ms()).unwrap();
+        cx.update(|cx| {
+            cx.update_global::<AutomationGlobal, _>(|global, _| {
+                global.finish_run(&f.thread.id, generation, &owner)
+            })
+        });
+        refresh(&f, cx);
+        pump_test_app(cx, |cx| idle(&f, cx));
+    }
+    assert_eq!(
+        automation::load(&f.store, &f.thread.id)
+            .unwrap()
+            .iter()
+            .find(|task| task.kind == AutomationKind::Goal)
+            .unwrap()
+            .elapsed_ms,
+        200
+    );
+}
+
+#[gpui_kit::test]
+async fn visible_peer_editor_blocks_dispatch_and_conflict_reload_resumes_eligibility(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(MockProvider::new_rounds(vec![
+        report_round("complete", true),
+        final_round(),
+    ]));
+    let f = fixture(cx, provider.clone());
+    edit(&f, "hold dispatch until editors open", cx);
+    automation::command(
+        &f.store,
+        &f.thread.id,
+        &automation::parse_command("/goal initial objective")
+            .unwrap()
+            .unwrap(),
+        automation::now_ms(),
+    )
+    .unwrap();
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| idle(&f, cx));
+    let first = open_goal_editor(&f, cx);
+    let other_root = cx.new(VegaWindow::new);
+    other_root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(f._data.path().join("config.toml"));
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
+    });
+    let retained = other_root.clone();
+    let other_window = cx.update(|cx| {
+        cx.open_window(Default::default(), move |_, _| retained)
+            .unwrap()
+    });
+    pump_test_app(cx, |cx| {
+        other_root.read_with(cx, |root, _| {
+            root.stream_view.is_some() && !root.model_catalog_loading
+        })
+    });
+    let other_stream =
+        other_root.read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+    let task = automation::load(&f.store, &f.thread.id).unwrap().remove(0);
+    other_root.update(cx, |root, cx| {
+        root.bind_automation(other_stream.clone(), f.thread.id.clone(), cx)
+    });
+    pump_test_app(cx, |cx| {
+        other_stream.read_with(cx, |stream, _| {
+            !stream.automation_projection().tasks.is_empty()
+        })
+    });
+    other_stream.update(cx, |_, cx| {
+        cx.emit(vega_ui::conversation_stream::AutomationEditorRequested {
+            thread_id: f.thread.id.clone(),
+            identity: task.identity.clone(),
+        })
+    });
+    cx.run_until_parked();
+    let second = other_root.read_with(cx, |root, _| {
+        root.automation_editors[&vega_ui::automation_editor::AutomationEditorKey::for_task(&task)]
+            .clone()
+    });
+    edit_goal(&second, "peer unsaved draft", cx);
+    edit(&f, "", cx);
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| idle(&f, cx));
+    assert!(provider.requests().is_empty());
+    assert!(!cx.update(|cx| {
+        cx.global::<AutomationGlobal>()
+            .streams_ready(&f.thread.id, cx)
+    }));
+    edit_goal(&first, "first window saved objective", cx);
+    first.update(cx, |view, cx| view.save(cx));
+    pump_test_app(cx, |cx| {
+        !first.read_with(cx, |view, _| view.is_saving()) && idle(&f, cx)
+    });
+    other_root.update(cx, |root, cx| {
+        root.bind_automation(other_stream.clone(), f.thread.id.clone(), cx)
+    });
+    pump_test_app(cx, |cx| second.read_with(cx, |view, _| view.has_conflict()));
+    assert_eq!(
+        second.read_with(cx, |view, cx| view.instruction(cx).to_string()),
+        "peer unsaved draft"
+    );
+    assert!(!second.read_with(cx, |view, cx| view.can_save(cx)));
+    assert!(provider.requests().is_empty());
+    second.update(cx, |view, cx| view.revert(cx));
+    cx.run_until_parked();
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| {
+        automation::load(&f.store, &f.thread.id).unwrap()[0].status == AutomationStatus::Complete
+            && idle(&f, cx)
+    });
+    assert_eq!(provider.requests().len(), 2);
+    assert!(
+        provider.requests()[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("first window saved objective"))
+    );
+    assert!(!second.read_with(cx, |view, cx| view.is_dirty(cx)));
+    other_window
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+
+    let loop_task = automation::command(
+        &f.store,
+        &f.thread.id,
+        &automation::parse_command("/loop 5m original loop")
+            .unwrap()
+            .unwrap(),
+        automation::now_ms(),
+    )
+    .unwrap()
+    .into_iter()
+    .find(|task| task.kind == AutomationKind::Loop)
+    .unwrap();
+    automation::command(
+        &f.store,
+        &f.thread.id,
+        &AutomationCommand::Control(AutomationKind::Loop, AutomationControl::Pause),
+        automation::now_ms(),
+    )
+    .unwrap();
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| idle(&f, cx));
+    f.stream.update(cx, |_, cx| {
+        cx.emit(vega_ui::conversation_stream::AutomationEditorRequested {
+            thread_id: f.thread.id.clone(),
+            identity: loop_task.identity.clone(),
+        })
+    });
+    cx.run_until_parked();
+    let loop_editor = f.root.read_with(cx, |root, _| {
+        root.automation_editors
+            [&vega_ui::automation_editor::AutomationEditorKey::for_task(&loop_task)]
+            .clone()
+    });
+    edit_goal(&loop_editor, "edited loop\nsecond line", cx);
+    loop_editor.update(cx, |view, cx| view.save(cx));
+    pump_test_app(cx, |cx| {
+        !loop_editor.read_with(cx, |view, _| view.is_saving()) && idle(&f, cx)
+    });
+    let saved_loop = automation::load(&f.store, &f.thread.id)
+        .unwrap()
+        .into_iter()
+        .find(|task| task.kind == AutomationKind::Loop)
+        .unwrap();
+    assert_eq!(saved_loop.instruction, "edited loop\nsecond line");
+    assert_eq!(saved_loop.status, AutomationStatus::Paused);
+    assert_eq!(saved_loop.interval_seconds, loop_task.interval_seconds);
+    assert_eq!(saved_loop.expires_at_ms, loop_task.expires_at_ms);
+    assert_eq!(provider.requests().len(), 2);
+    edit_goal(&loop_editor, "old identity draft", cx);
+    automation::command(
+        &f.store,
+        &f.thread.id,
+        &AutomationCommand::Control(AutomationKind::Loop, AutomationControl::Clear),
+        automation::now_ms(),
+    )
+    .unwrap();
+    automation::command(
+        &f.store,
+        &f.thread.id,
+        &automation::parse_command("/loop 10m replacement loop")
+            .unwrap()
+            .unwrap(),
+        automation::now_ms(),
+    )
+    .unwrap();
+    let replacement = automation::command(
+        &f.store,
+        &f.thread.id,
+        &AutomationCommand::Control(AutomationKind::Loop, AutomationControl::Pause),
+        automation::now_ms(),
+    )
+    .unwrap()
+    .into_iter()
+    .find(|task| task.kind == AutomationKind::Loop)
+    .unwrap();
+    refresh(&f, cx);
+    pump_test_app(cx, |cx| idle(&f, cx));
+    assert!(loop_editor.read_with(cx, |view, cx| view.has_conflict() && !view.can_save(cx)));
+    loop_editor.update(cx, |view, cx| view.revert(cx));
+    cx.run_until_parked();
+    let replacement_key = vega_ui::automation_editor::AutomationEditorKey::for_task(&replacement);
+    let previous_key = vega_ui::automation_editor::AutomationEditorKey::for_task(&loop_task);
+    let old_selector =
+        Box::leak(format!("workspace-tab-Automation({previous_key:?})").into_boxed_str());
+    let new_selector =
+        Box::leak(format!("workspace-tab-Automation({replacement_key:?})").into_boxed_str());
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds(old_selector).is_none());
+    assert!(visual.debug_bounds(new_selector).is_some());
+    f.root.read_with(cx, |root, cx| {
+        assert_eq!(
+            root.automation_editors[&replacement_key]
+                .read(cx)
+                .instruction(cx),
+            "replacement loop"
+        );
+    });
+    assert_eq!(
+        loop_editor.read_with(cx, |view, cx| view.instruction(cx).to_owned()),
+        "old identity draft"
+    );
+    assert_eq!(provider.requests().len(), 2);
 }
