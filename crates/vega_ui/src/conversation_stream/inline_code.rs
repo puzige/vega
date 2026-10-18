@@ -52,13 +52,24 @@ pub(super) fn interactive_text(
             .into_any_element()
         })
     } else {
-        InteractiveMarkdownText {
-            id: Some(link_element_id(&id_prefix, 0)),
-            text,
-            links,
-        }
-        .into_any_element()
+        interactive_styled_text(text, links, id_prefix)
     }
+}
+
+pub(super) fn interactive_styled_text(
+    text: StyledText,
+    links: Vec<LinkRange>,
+    id_prefix: String,
+) -> AnyElement {
+    if links.is_empty() {
+        return text.into_any_element();
+    }
+    InteractiveMarkdownText {
+        id: Some(link_element_id(&id_prefix, 0)),
+        text,
+        links,
+    }
+    .into_any_element()
 }
 
 struct InteractiveTextPrepaint {

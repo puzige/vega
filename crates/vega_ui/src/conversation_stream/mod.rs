@@ -368,6 +368,7 @@ mod run_notice;
 mod shimmer;
 mod sticky_disclosure;
 use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
+mod autolinks;
 mod inline_code;
 mod links;
 mod selection;

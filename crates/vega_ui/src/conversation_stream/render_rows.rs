@@ -20,11 +20,7 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
                 last: index + 1 == count,
             },
         );
-        line.spans = coalesce(vec![StreamSpan {
-            text: (*part).to_string(),
-            style: SpanStyle::Plain,
-            link: None,
-        }]);
+        line.spans = autolinks::text_spans(part);
         lines.push(line);
     }
     lines.push(StreamLine::new(block_id, LineKind::Spacer));
@@ -497,7 +493,7 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
         .text_color(colors.conversation_user)
         .flex()
         .flex_col();
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
         if !matches!(line.kind, LineKind::UserLine { .. }) {
             continue;
         }
@@ -513,7 +509,11 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
             let text = block_text(&line.spans, user_body_style(colors), colors);
             #[cfg(test)]
             USER_TEXT_LAYOUTS.with_borrow_mut(|layouts| layouts.push(text.layout().clone()));
-            body = body.child(text);
+            body = body.child(super::inline_code::interactive_styled_text(
+                text,
+                link_ranges(&line.spans),
+                format!("user-message-{}-{index}", line.block_id),
+            ));
         }
     }
     div()
@@ -573,8 +573,9 @@ fn selectable_user_message(
         if text.is_empty() {
             body = body.child(div().h(user_line_height()));
         } else {
-            let styled = block_text(&line.spans, user_body_style(colors), colors);
-            let selected = document.append_styled(&text, styled, "user-body");
+            let runs = block_text_runs(&line.spans, user_body_style(colors), colors);
+            let selected =
+                document.append_styled_runs(&text, runs, link_ranges(&line.spans), "user-body");
             body = body.child(selected);
         }
     }

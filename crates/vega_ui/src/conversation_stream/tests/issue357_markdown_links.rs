@@ -11,16 +11,16 @@ use super::issue147_markdown_selection::{
     open_selection_harness as open_unactivated_selection_harness, text_point,
 };
 
-struct LinkCapture;
+pub(super) struct LinkCapture;
 
 impl LinkCapture {
-    fn start() -> Self {
+    pub(super) fn start() -> Self {
         links::LINK_LAYOUTS.with_borrow_mut(|layouts| *layouts = Some(Vec::new()));
         selection::SELECTION_RUN_LAYOUTS.with_borrow_mut(Vec::clear);
         Self
     }
 
-    fn clear(&self) {
+    pub(super) fn clear(&self) {
         links::LINK_LAYOUTS.with_borrow_mut(|layouts| {
             layouts.as_mut().expect("active link capture").clear();
         });
@@ -33,13 +33,13 @@ impl Drop for LinkCapture {
     }
 }
 
-struct MenuCapture {
+pub(super) struct MenuCapture {
     menus: Rc<RefCell<Vec<WeakEntity<PopupMenu>>>>,
     _subscription: Subscription,
 }
 
 impl MenuCapture {
-    fn start(cx: &mut TestAppContext) -> Self {
+    pub(super) fn start(cx: &mut TestAppContext) -> Self {
         let menus = Rc::new(RefCell::new(Vec::new()));
         let observed = menus.clone();
         let subscription = cx.update(|cx| {
@@ -53,7 +53,7 @@ impl MenuCapture {
         }
     }
 
-    fn close_fixture(&self, visual: &mut VisualTestContext, cx: &mut TestAppContext) {
+    pub(super) fn close_fixture(&self, visual: &mut VisualTestContext, cx: &mut TestAppContext) {
         visual.update(|window, _| window.remove_window());
         visual.run_until_parked();
         let menus = self.menus.borrow().clone();
@@ -72,7 +72,7 @@ impl MenuCapture {
     }
 }
 
-fn init_link_ui(cx: &mut TestAppContext) {
+pub(super) fn init_link_ui(cx: &mut TestAppContext) {
     cx.update(|cx| {
         if !cx.has_global::<gpui_kit::component::Theme>() {
             gpui_kit::init(cx);
@@ -80,13 +80,13 @@ fn init_link_ui(cx: &mut TestAppContext) {
     });
 }
 
-fn activate_harness(visual: &mut VisualTestContext) {
+pub(super) fn activate_harness(visual: &mut VisualTestContext) {
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
     assert!(visual.update(|window, _| window.is_window_active()));
 }
 
-fn open_selection_harness(
+pub(super) fn open_selection_harness(
     cx: &mut TestAppContext,
     entry: StreamEntry,
 ) -> (Entity<ConversationStream>, VisualTestContext) {
@@ -96,7 +96,7 @@ fn open_selection_harness(
     (stream, visual)
 }
 
-fn painted_link(target: &str) -> links::PaintedLinkText {
+pub(super) fn painted_link(target: &str) -> links::PaintedLinkText {
     links::LINK_LAYOUTS.with_borrow(|layouts| {
         layouts
             .as_ref()
@@ -109,7 +109,7 @@ fn painted_link(target: &str) -> links::PaintedLinkText {
     })
 }
 
-fn link_point(target: &str) -> Point<Pixels> {
+pub(super) fn link_point(target: &str) -> Point<Pixels> {
     let text = painted_link(target);
     text.regions
         .iter()
@@ -136,12 +136,12 @@ fn code_fragment_point(target: &str) -> Point<Pixels> {
     })
 }
 
-fn finish_click(visual: &mut VisualTestContext) {
+pub(super) fn finish_click(visual: &mut VisualTestContext) {
     visual.executor().advance_clock(Duration::from_millis(501));
     visual.run_until_parked();
 }
 
-fn dismiss_context_menu(visual: &mut VisualTestContext) {
+pub(super) fn dismiss_context_menu(visual: &mut VisualTestContext) {
     redraw(visual);
     let id = gpui_kit::ElementId::Name("popup-menu".into());
     let menu = visual
@@ -163,14 +163,14 @@ fn dismiss_context_menu(visual: &mut VisualTestContext) {
     assert_eq!(visual.opened_url(), None);
 }
 
-fn model(source: &str) -> StreamModel {
+pub(super) fn model(source: &str) -> StreamModel {
     let StreamEntry::Assistant { model, .. } = assistant_entry(source) else {
         panic!("assistant entry")
     };
     model
 }
 
-struct ReadHarness {
+pub(super) struct ReadHarness {
     model: StreamModel,
     identity: u64,
     shown: bool,
@@ -194,7 +194,7 @@ impl Render for ReadHarness {
     }
 }
 
-fn open_read_harness(
+pub(super) fn open_read_harness(
     cx: &mut TestAppContext,
     source: &str,
 ) -> (Entity<ReadHarness>, VisualTestContext) {
@@ -225,7 +225,7 @@ fn open_read_harness(
     (root, visual)
 }
 
-fn redraw(visual: &mut VisualTestContext) {
+pub(super) fn redraw(visual: &mut VisualTestContext) {
     visual.update(|window, cx| {
         window.refresh();
         let _ = window.draw(cx);
