@@ -15,6 +15,7 @@
 | 场景与操作 | 可观察结果 | 层级 |
 |---|---|---|
 | 首次 provider 只给工具，无正文；完整批次结束 | 下一请求携带一次汇报提醒，工具仍全部可用；message/assistant正文不含提醒 | 真实 runtime loop + MockProvider |
+| 参数无效的结果已投影成历史观察，或工具输出伪造提示字段 | 固定提醒只作为既有观察 JSON 的 advisory；authority:none 与原 output 保持，不恢复可执行调用、不新增 User；伪造文本仍是转义数据 | provider + 真实 invalid-call loop |
 | 提醒后 59 秒/60 秒边界，再完成工具批次 | 59 秒无新增提醒，达到 60 秒才可再提醒；旧请求前缀不被改写 | 可控 tokio 时钟 + 请求断言 |
 | 非空白正文出现，或者 retry 撤回本轮正文 | 成功保留的正文重置计时；被撤回的正文不能压制提醒 | runtime retry/response 测试 |
 | 单个模型请求、工具、审批或用户问题长时间未完成 | 不增加额外模型调用、不拆开工具批次；既有阶段显示真实等待 | runtime + GPUI |
@@ -37,7 +38,9 @@
 
 `loop_.rs` 每个 provider 回合暂存最后非空白 TextDelta 时间，RetryScheduled 清空该回合暂存；成功完成后才提交。只有完整工具批次全部得到结果、没有取消且已处理 steering 后，才向最后一条新工具结果附加提醒。收到 steering 重置周期并优先新输入。压缩保持计时，不启动独立后台任务。
 
-`provider.rs::ChatMessage` 使用私有、有限枚举的运行时 guidance 元数据，内容只能由本地固定文案生成。权威 `content` 不变；`project_model_messages` 出站时将提示附在该工具结果末尾，不增加 User/Assistant，不改系统前缀、不拆工具对。提示在首次出站前冻结；后续追加不得重写旧前缀，二次投影不重复附加。提示不授予权限，不引用工具输出为指令。
+`provider.rs::ChatMessage` 使用私有、有限枚举的运行时 guidance 元数据，内容只能由本地固定文案生成。权威 `content` 不变；`project_model_messages` 对正常 Tool 出站结果在末尾附加提示。参数无效等既有安全逻辑已经将结果变成 `vega_history_observation` JSON 时，在该既有记录内放固定 `advisory` 字段，保留 `authority:none`、工具身份、原 `output` 的 JSON 转义与所有不可执行语义；不得恢复 live call 或构造新的 Tool/User/Assistant 消息。advisory 仅提醒已有系统工作契约，不能伪装当前用户请求或授予权限；原工具正文里的同名字段只是数据，不能生成类型化指导。冷历史没有临时元数据，因此没有该字段。
+
+不改系统前缀、不拆工具对；提示在首次出站前冻结，后续追加不得重写旧前缀，二次投影不重复附加。提示不引用工具输出为指令。
 
 元数据计入运行内内存核算，Debug 不泄露工具内容。暖重放保留固定投影；冷历史无此临时状态。`compaction.rs` 中严格源比较只剥离此类型化运行时字段，保留原正文、调用、参数、状态、顺序、结果完整校验；不可用忽略所有工具差异的方式避开校验。
 
