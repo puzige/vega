@@ -86,16 +86,6 @@ impl CommitPanel {
         self.model.stage()
     }
 
-    /// Returns the safe control focus projection used by controller/UI tests.
-    pub fn focused_control(&self) -> CommitPanelFocus {
-        self.model.focus()
-    }
-
-    /// Returns the bounded editable commit message projection.
-    pub fn commit_message(&self, cx: &App) -> String {
-        self.message.read(cx).text().to_owned()
-    }
-
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         self.disabled = disabled;
         cx.notify();

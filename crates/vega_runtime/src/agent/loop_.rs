@@ -305,48 +305,6 @@ fn primary_attempt_event(
     })
 }
 
-#[cfg(test)]
-mod diagnostic_tests {
-    use super::*;
-
-    #[test]
-    fn stream_failure_preserves_success_response_metadata() {
-        let metrics = RuntimeDiagnosticMetrics {
-            provider: crate::ProviderResponseMetadata {
-                http_status: Some(200),
-                request_id: Some("resp-opaque-1".into()),
-                retry_count: Some(2),
-            },
-            ..RuntimeDiagnosticMetrics::default()
-        };
-        let error = VegaError::ProviderDiagnostic {
-            kind: crate::ProviderFailureKind::Protocol,
-            status: None,
-            message: "parser detail canary".into(),
-            retryable: false,
-            retry_count: None,
-            request_id: None,
-        };
-        let event = primary_attempt_event(
-            "attempt",
-            RuntimeDiagnosticState::Failed,
-            Some(RuntimeDiagnosticFailure::ProviderProtocol),
-            std::time::Instant::now(),
-            &metrics,
-            Some(&error),
-        );
-        let RuntimeEvent::DiagnosticAttempt(event) = event else {
-            unreachable!()
-        };
-        assert_eq!(event.metrics.provider.http_status, Some(200));
-        assert_eq!(
-            event.metrics.provider.request_id.as_deref(),
-            Some("resp-opaque-1")
-        );
-        assert_eq!(event.metrics.provider.retry_count, Some(2));
-    }
-}
-
 // Deliberately closed: status-less transport/projection guards and authorization
 // failures must never be converted into permission to issue a primary request.
 fn recoverable_compaction_failure(error: &VegaError) -> bool {

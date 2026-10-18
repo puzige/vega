@@ -380,11 +380,6 @@ pub struct BashError {
 }
 
 impl BashError {
-    #[cfg(any(test, feature = "test-support"))]
-    pub const fn for_test(code: BashErrorCode) -> Self {
-        Self { code }
-    }
-
     pub(crate) const fn new(code: BashErrorCode) -> Self {
         Self { code }
     }

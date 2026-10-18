@@ -12,12 +12,6 @@ use vega_ui::artifact_card::ArtifactCard;
 use vega_ui::conversation_stream::*;
 
 pub(crate) const ARTIFACT_ROUTE_CAP: usize = 10_000;
-#[cfg(test)]
-pub(crate) static ARTIFACT_OPEN_WORKER_STARTS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
-pub(crate) static ARTIFACT_PREVIEW_WORKER_STARTS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ArtifactRouteIdentity {

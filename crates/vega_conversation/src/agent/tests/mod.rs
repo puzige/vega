@@ -1,89 +1,10 @@
+use super::*;
+use crate::types::{ConversationEvent, ToolCallStatus};
 use std::fs;
-use std::sync::atomic::AtomicUsize;
-use std::time::{Duration, Instant};
-
 use tempfile::tempdir;
 use vega_runtime::{MockProvider, ProviderEvent, ScriptStep, StopReason};
 
-use super::*;
-use crate::types::{ConversationEvent, ToolCallStatus};
-
-mod automatic_titles;
-mod automation;
-mod continuous_compaction;
-mod credential_continuation;
 mod external_grep;
-mod failure_paths;
-mod history_permissions;
-mod model_context;
-mod model_switch_summary;
-mod permissions;
-mod plan_approval;
-mod reasoning_replay;
-mod stream_persistence;
-mod terminal_history_compaction;
-mod tool_lifecycle;
-
-struct FixedPermissionHook {
-    calls: Arc<AtomicUsize>,
-    decision: PermissionDecision,
-}
-
-impl PermissionHook for FixedPermissionHook {
-    fn request(
-        &self,
-        _request: PermissionRequest,
-        _cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        let decision = self.decision.clone();
-        async move { Ok(decision) }.boxed()
-    }
-}
-
-fn permission_request(tool: &str, target: &str) -> PermissionRequest {
-    PermissionRequest {
-        call_id: "opaque-call".into(),
-        tool: tool.into(),
-        display_target: target.into(),
-        danger_rule_id: None,
-        danger_reason: None,
-        external: None,
-        acp_options: None,
-    }
-}
-
-fn setup() -> (Store, tempfile::TempDir, String) {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("lib.rs"), "// TODO: persist me\n").unwrap();
-    let store = Store::open(dir.path().join("vega.db")).unwrap();
-    store.migrate().unwrap();
-    let project = vega_store::projects::create(
-        store.conn(),
-        dir.path().to_str().unwrap(),
-        "fixture",
-        Some("master"),
-    )
-    .unwrap();
-    vega_store::threads::create(
-        store.conn(),
-        vega_store::threads::NewThread {
-            id: "thread-1",
-            project_id: &project.id,
-            title: "",
-            mode: "execute",
-            permission_mode: "confirm",
-            model: "mock-model",
-            status: "active",
-            pinned: false,
-            unread: false,
-            created_at: 1,
-            updated_at: 1,
-        },
-    )
-    .unwrap();
-    (store, dir, project.id)
-}
 
 fn setup_external(permission_mode: &str) -> (Store, tempfile::TempDir, tempfile::TempDir, String) {
     let project_dir = tempdir().unwrap();
@@ -151,6 +72,3 @@ fn scripted_provider(call_id: &str, input_json: &str) -> MockProvider {
         ])],
     ])
 }
-
-mod subagents;
-mod user_questions;

@@ -1147,27 +1147,6 @@ impl SettingsView {
     ) -> AnyElement {
         let label = label.into();
         let selector = selector.into();
-        let debug_name = if selector.starts_with("mcp-enable-") {
-            "mcp-enable"
-        } else if selector.starts_with("mcp-remove-") {
-            "mcp-remove"
-        } else if selector.starts_with("mcp-edit-") {
-            "mcp-edit"
-        } else if selector.starts_with("mcp-disable-") {
-            "mcp-disable"
-        } else if selector.starts_with("mcp-test-") {
-            "mcp-test"
-        } else if selector.starts_with("mcp-oauth-discover-") {
-            "mcp-oauth-discover"
-        } else if selector.starts_with("mcp-oauth-disconnect-") {
-            "mcp-oauth-disconnect"
-        } else if selector.starts_with("mcp-oauth-issuer-") {
-            "mcp-oauth-issuer"
-        } else if selector.starts_with("mcp-oauth-step-up-") {
-            "mcp-oauth-step-up"
-        } else {
-            ""
-        };
         let colors = theme(cx).colors;
         let selected = match &action {
             McpAction::Transport(choice) => self.mcp.transport == *choice,
@@ -1211,13 +1190,6 @@ impl SettingsView {
                 },
                 enabled,
             )
-            .debug_selector(move || {
-                if debug_name.is_empty() {
-                    selector.clone()
-                } else {
-                    debug_name.into()
-                }
-            })
             .track_focus(&focus)
             .tab_stop(true)
             .focus_visible(move |style| style.border_color(colors.accent))
@@ -1385,7 +1357,6 @@ impl SettingsView {
             .child(
                 div()
                     .id(format!("mcp-health-{id}"))
-                    .debug_selector(|| "mcp-health".into())
                     .text_color(
                         if matches!(
                             row.health,
@@ -1414,7 +1385,6 @@ impl SettingsView {
             card = card.child(
                 div()
                     .id("mcp-oauth-step-up-notice")
-                    .debug_selector(|| "mcp-oauth-step-up-notice".into())
                     .text_color(colors.warning)
                     .child(format!(
                         "工具调用因权限不足而失败；服务器请求新增权限：{}。点击「查看权限升级」核对总范围；失败调用不会自动重放。",
@@ -1445,7 +1415,6 @@ impl SettingsView {
             card = card.child(
                 div()
                     .id(format!("mcp-rejected-tools-{id}"))
-                    .debug_selector(|| "mcp-rejected-tools".into())
                     .text_color(colors.warning)
                     .child(format!("未采纳的工具：{}", rejected.join("、"))),
             );
@@ -1498,7 +1467,6 @@ impl SettingsView {
                     )),
             )
             .child(settings_field(
-                "mcp-field-name",
                 "名称",
                 None,
                 self.mcp.name_input.clone(),
@@ -1519,19 +1487,16 @@ impl SettingsView {
                         .child("参数按行传入；配置凭据后，程序仅能通过代理访问已授权的 API。"),
                 )
                 .child(settings_field(
-                    "mcp-field-executable",
                     "可执行文件",
                     None,
                     self.mcp.executable_input.clone(),
                     colors,
                 ))
                 .child(settings_field(
-                    "mcp-args-frame-field",
                     "参数（每行一个）",
                     None,
                     div()
                         .id("mcp-args-frame")
-                        .debug_selector(|| "mcp-args-frame".into())
                         .w_full()
                         .h(args_height)
                         .flex_shrink_0()
@@ -1540,23 +1505,19 @@ impl SettingsView {
                     colors,
                 ))
                 .child(settings_field(
-                    "mcp-working-directory-frame-field",
                     "工作目录",
                     None,
                     div()
                         .id("mcp-working-directory-frame")
-                        .debug_selector(|| "mcp-working-directory-frame".into())
                         .w_full()
                         .child(self.mcp.working_directory_input.clone()),
                     colors,
                 ))
                 .child(settings_field(
-                    "mcp-environment-frame-field",
                     "环境变量声明",
                     None,
                     div()
                         .id("mcp-environment-frame")
-                        .debug_selector(|| "mcp-environment-frame".into())
                         .w_full()
                         .h(environment_height)
                         .flex_shrink_0()
@@ -1572,14 +1533,12 @@ impl SettingsView {
                         ),
                     )
                     .child(settings_field(
-                        "mcp-field-env_variable",
                         "环境变量名",
                         None,
                         self.mcp.env_variable_input.clone(),
                         colors,
                     ))
                     .child(settings_field(
-                        "mcp-field-env_secret",
                         "环境密钥",
                         None,
                         self.mcp.env_secret_input.clone(),
@@ -1603,7 +1562,6 @@ impl SettingsView {
         } else {
             form = form
                 .child(settings_field(
-                    "mcp-field-endpoint",
                     "服务地址",
                     None,
                     self.mcp.endpoint_input.clone(),
@@ -1659,7 +1617,6 @@ impl SettingsView {
                 if saved {
                     form = form
                         .child(settings_field(
-                            "mcp-field-bearer",
                             "Bearer 密钥",
                             None,
                             self.mcp.bearer_input.clone(),
@@ -1675,7 +1632,7 @@ impl SettingsView {
                 }
             }
             if self.mcp.auth == McpAuthChoice::OAuth {
-                form = form.child(settings_field("mcp-field-client_id", "OAuth 客户端 ID", None, self.mcp.client_id_input.clone(), colors))
+                form = form.child(settings_field("OAuth 客户端 ID", None, self.mcp.client_id_input.clone(), colors))
                     .child(div().text_color(colors.warning).child("保存配置不会授权或启用；可在服务器卡片中显式发现发行方、审查回调与权限，再打开系统浏览器。不能把 Bearer token 冒充 OAuth。"));
             }
         }
@@ -1724,12 +1681,11 @@ impl SettingsView {
             McpConfirmation::DiscoverOAuth { .. } => "确认发现授权元数据",
             McpConfirmation::DisconnectOAuth { .. } => "确认断开本地授权",
         };
-        settings_section().id("mcp-confirmation").debug_selector(|| "mcp-confirmation".into()).p(px(Layout::SETTINGS_CONTENT_GAP))
+        settings_section().id("mcp-confirmation").p(px(Layout::SETTINGS_CONTENT_GAP))
             .rounded(px(Layout::PANEL_RADIUS)).border_1().border_color(colors.warning)
             .child(section_title("确认 MCP 操作", colors.text_primary))
             .child(div().child(row.form.display_name))
             .child(div().id("mcp-confirmation-authority")
-                .debug_selector(|| "mcp-confirmation-authority".into())
                 .flex().flex_col().gap_2().max_h(px(160.)).overflow_y_scroll()
                 .children(authority.into_iter().map(|line| div().text_color(colors.text_secondary).child(line))).scroll_edge_fade(colors.bg_base, ScrollFade::compact()))
             .when(matches!(action, McpConfirmation::Remove { .. }), |panel| panel.child(div().text_color(colors.warning).child("移除保留历史工具审计，仅清除本地凭据；远程服务授权可能仍有效，必要时请到该服务撤销。")))
@@ -1753,7 +1709,6 @@ impl SettingsView {
         let mut panel =
             div()
                 .id("mcp-oauth-discovery")
-                .debug_selector(|| "mcp-oauth-discovery".into())
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -1823,7 +1778,6 @@ impl SettingsView {
                 .is_some_and(|row| row.credential_configured);
         div()
             .id("mcp-oauth-preparation")
-            .debug_selector(|| "mcp-oauth-preparation".into())
             .flex()
             .flex_col()
             .min_w_0()
@@ -1844,7 +1798,6 @@ impl SettingsView {
             .child(
                 div()
                     .id("mcp-oauth-preparation-details")
-                    .debug_selector(|| "mcp-oauth-preparation-details".into())
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -1974,8 +1927,7 @@ impl SettingsView {
                     },
                     colors,
                 )
-                .id("mcp-message")
-                .debug_selector(|| "mcp-message".into()),
+                .id("mcp-message"),
             );
         }
         if let Some(confirmation) = self.mcp.confirmation.clone() {

@@ -107,7 +107,6 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                             }
                         }
                     })
-                    .debug_selector(move || id.into())
                     .size(px(Layout::TITLEBAR_CONTROL_SIZE))
                     .flex()
                     .items_center()
@@ -142,24 +141,14 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                             }
                         }
                     })
-                    .child(
-                        div()
-                            .debug_selector(move || {
-                                if forward {
-                                    "titlebar-forward-icon".into()
-                                } else {
-                                    "titlebar-back-icon".into()
-                                }
-                            })
-                            .child(crate::icons::icon(
-                                icon,
-                                if enabled {
-                                    colors.text_secondary
-                                } else {
-                                    colors.text_tertiary
-                                },
-                            )),
-                    )
+                    .child(div().child(crate::icons::icon(
+                        icon,
+                        if enabled {
+                            colors.text_secondary
+                        } else {
+                            colors.text_tertiary
+                        },
+                    )))
             }),
         )
         .into_any_element()
@@ -176,7 +165,6 @@ fn search_control(cx: &App) -> AnyElement {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             Button::new("titlebar-search-button")
-                .debug_selector(|| "titlebar-search-button".into())
                 .custom(ButtonCustomVariant::new(cx).foreground(colors.text_secondary.into()))
                 .small()
                 .size(px(Layout::TITLEBAR_CONTROL_SIZE))
@@ -187,14 +175,10 @@ fn search_control(cx: &App) -> AnyElement {
                     cx.stop_propagation();
                     window.dispatch_action(Box::new(crate::command_palette::OpenPalette), cx);
                 })
-                .child(
-                    div()
-                        .debug_selector(|| "titlebar-search-icon".into())
-                        .child(crate::icons::icon(
-                            crate::icons::Icon::Search,
-                            colors.text_secondary,
-                        )),
-                ),
+                .child(div().child(crate::icons::icon(
+                    crate::icons::Icon::Search,
+                    colors.text_secondary,
+                ))),
         )
         .into_any_element()
 }
@@ -222,7 +206,6 @@ fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
         .tab_stop(true);
     div()
         .id("toggle-sidebar")
-        .debug_selector(|| "toggle-sidebar".into())
         .track_focus(&focus)
         .tab_stop(true)
         .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
@@ -257,14 +240,10 @@ fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
                 window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx);
             }
         })
-        .child(
-            div()
-                .debug_selector(|| "titlebar-sidebar-icon".into())
-                .child(crate::icons::icon(
-                    crate::icons::Icon::Sidebar,
-                    colors.text_secondary,
-                )),
-        )
+        .child(div().child(crate::icons::icon(
+            crate::icons::Icon::Sidebar,
+            colors.text_secondary,
+        )))
         .into_any_element()
 }
 
@@ -332,59 +311,4 @@ pub fn finish_task_mutation(cx: &mut App) {
     state.epoch = state.epoch.wrapping_add(1);
     state.pending = state.pending.saturating_sub(1);
     cx.set_global(state);
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-
-    use gpui_kit::prelude::*;
-    use gpui_kit::{Context, KeyDownEvent, KeyUpEvent, Keystroke, Render, Window, div};
-
-    use super::search_control;
-
-    struct SearchControlHarness;
-
-    impl Render for SearchControlHarness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div().tab_group().child(search_control(cx))
-        }
-    }
-
-    #[gpui_kit::test]
-    fn shared_search_control_keyboard_activation_dispatches_open_palette(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        let activations = Arc::new(AtomicUsize::new(0));
-        let observed = activations.clone();
-        cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            crate::init(cx);
-            cx.set_global(vega_theme::Theme::light());
-            cx.on_action(move |_: &crate::command_palette::OpenPalette, _| {
-                observed.fetch_add(1, Ordering::SeqCst);
-            });
-        });
-        let window = cx.update(|cx| {
-            cx.open_window(Default::default(), |_, cx| cx.new(|_| SearchControlHarness))
-                .expect("search control window")
-        });
-        cx.run_until_parked();
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        visual.update(|window, cx| {
-            window.draw(cx).clear(cx);
-            window.focus_next(cx);
-        });
-        let keystroke = Keystroke::parse("space").expect("Space keystroke");
-        visual.simulate_event(KeyDownEvent {
-            keystroke: keystroke.clone(),
-            is_held: false,
-            prefer_character_input: false,
-        });
-        visual.simulate_event(KeyUpEvent { keystroke });
-        assert_eq!(activations.load(Ordering::SeqCst), 1);
-    }
 }

@@ -185,11 +185,9 @@ impl ImagePreview {
     pub(crate) fn thumbnail_sized(view: &Entity<Self>, size: f32, cx: &App) -> AnyElement {
         let colors = theme(cx).colors;
         let state = view.read(cx);
-        let click = view.clone();
         let key = view.clone();
         div()
             .id(("image-thumbnail", view.entity_id()))
-            .debug_selector(move || format!("image-thumbnail-{}", click.entity_id()))
             .track_focus(&state.thumbnail_focus)
             .tab_stop(true)
             .aria_label(format!("预览 {}", state.name))
@@ -246,12 +244,10 @@ impl Render for ImagePreview {
         )
         .size(px(Layout::IMAGE_PREVIEW_CONTROL))
         .track_focus(&self.save_focus)
-        .debug_selector(|| "image-preview-save".into())
         .focus_visible(move |s| s.border_1().border_color(colors.brand_primary))
         .when(self.busy, |el| el.opacity(0.5));
         let open = div()
             .id("image-open-with")
-            .debug_selector(|| "image-preview-open-with".into())
             .track_focus(&self.open_focus)
             .tab_stop(true)
             .relative()
@@ -292,7 +288,6 @@ impl Render for ImagePreview {
         let menu = self.applications.as_ref().map(|names| {
             div()
                 .id("image-applications")
-                .debug_selector(|| "image-preview-applications".into())
                 .absolute()
                 .top(px(Layout::IMAGE_PREVIEW_HEADER))
                 .right(px(Layout::IMAGE_PREVIEW_HEADER_PADDING))
@@ -316,7 +311,6 @@ impl Render for ImagePreview {
                 .children(names.iter().enumerate().map(|(index, name)| {
                     div()
                         .id(("image-app", index))
-                        .debug_selector(move || format!("image-preview-app-{index}"))
                         .track_focus(&self.application_focuses[index])
                         .tab_stop(true)
                         .h_8()
@@ -343,7 +337,6 @@ impl Render for ImagePreview {
         });
         div()
             .id("image-preview")
-            .debug_selector(|| "image-preview".into())
             .track_focus(&self.focus)
             .size_full()
             .min_w_0()
@@ -367,7 +360,6 @@ impl Render for ImagePreview {
             }))
             .child(
                 div()
-                    .debug_selector(|| "image-preview-header".into())
                     .h(px(Layout::IMAGE_PREVIEW_HEADER))
                     .flex_shrink_0()
                     .px(px(Layout::IMAGE_PREVIEW_HEADER_PADDING))
@@ -391,7 +383,6 @@ impl Render for ImagePreview {
             .when_some(self.status, |el, status| {
                 el.child(
                     div()
-                        .debug_selector(|| "image-preview-status".into())
                         .px_3()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_secondary)
@@ -410,28 +401,18 @@ impl Render for ImagePreview {
                     .child(match self.pixels.get() {
                         Some(pixels) => img(pixels.clone())
                             .id("image-preview-pixels")
-                            .debug_selector(|| "image-preview-pixels".into())
                             .size_full()
                             .max_w(px(self.image.width() as f32))
                             .max_h(px(self.image.height() as f32))
                             .object_fit(ObjectFit::Contain)
-                            .with_loading(|| {
-                                div()
-                                    .debug_selector(|| "image-preview-loading".into())
-                                    .child("加载中")
-                                    .into_any_element()
-                            })
+                            .with_loading(|| div().child("加载中").into_any_element())
                             .with_fallback(|| {
                                 div()
-                                    .debug_selector(|| "image-preview-error".into())
                                     .child("图片无法显示，请保存到本地后打开")
                                     .into_any_element()
                             })
                             .into_any_element(),
-                        None => div()
-                            .debug_selector(|| "image-preview-loading".into())
-                            .child("加载中")
-                            .into_any_element(),
+                        None => div().child("加载中").into_any_element(),
                     }),
             )
             .children(menu.map(|menu| deferred(menu).with_priority(2)))

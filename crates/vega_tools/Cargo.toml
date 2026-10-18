@@ -3,9 +3,6 @@ name = "vega_tools"
 version.workspace = true
 edition.workspace = true
 
-[features]
-test-support = []
-
 [dependencies]
 vega_credentials = { workspace = true }
 libc = { workspace = true }

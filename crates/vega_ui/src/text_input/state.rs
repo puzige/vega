@@ -29,11 +29,7 @@ impl TextInput {
             editor_scroll: None,
             scrollable_editor: false,
             scroll_fade_on_base: false,
-            #[cfg(test)]
-            painted_fade_metrics: None,
             total_visual_rows: 1,
-            #[cfg(test)]
-            painted_cursor_bounds: None,
         }
     }
 
@@ -81,16 +77,6 @@ impl TextInput {
     pub(crate) fn with_scroll_fade_on_base(mut self) -> Self {
         self.scroll_fade_on_base = true;
         self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn painted_cursor_bounds(&self) -> Option<Bounds<Pixels>> {
-        self.painted_cursor_bounds
-    }
-
-    #[cfg(test)]
-    pub(crate) fn painted_viewport_bounds(&self) -> Option<Bounds<Pixels>> {
-        self.last_bounds
     }
 
     pub fn with_bare_chrome(mut self) -> Self {
@@ -185,12 +171,6 @@ impl TextInput {
     /// Number of currently visible rows (always within the configured range).
     pub fn visible_rows(&self) -> usize {
         self.rows
-    }
-
-    /// First visual row in the bounded multi-line viewport.
-    #[cfg(test)]
-    pub(crate) fn first_visible_row(&self) -> usize {
-        self.first_visible_row
     }
 
     /// Whether Up should enter Composer history rather than move inside a

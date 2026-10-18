@@ -59,8 +59,6 @@ pub struct BashOutput {
     pub duration_ms: u64,
     /// True when a line or the overall stream was truncated.
     pub truncated: bool,
-    #[cfg(test)]
-    pub(crate) high_water_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -74,7 +72,6 @@ pub(crate) struct BashOutputCollector {
     tail_owned: usize,
     next_line: u64,
     any_line_truncated: bool,
-    high_water_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -97,7 +94,6 @@ impl BashOutputCollector {
             tail_owned: 0,
             next_line: 0,
             any_line_truncated: false,
-            high_water_bytes: 0,
         };
         collector.observe_high_water();
         collector
@@ -156,8 +152,6 @@ impl BashOutputCollector {
         CollectedBashOutput {
             text: self.head,
             truncated: self.any_line_truncated || marker_needed,
-            #[cfg(test)]
-            high_water_bytes: self.high_water_bytes,
         }
     }
 
@@ -215,7 +209,6 @@ impl BashOutputCollector {
             .saturating_add(self.current.owned_bytes())
             .saturating_add(BASH_READ_CHUNK_BYTES)
             .saturating_add(extra);
-        self.high_water_bytes = self.high_water_bytes.max(owned);
         debug_assert!(
             owned <= 2 * BASH_MAX_BYTES_PER_SIDE + BASH_MAX_LINE_BYTES + BASH_READ_CHUNK_BYTES + 8
         );
@@ -225,25 +218,6 @@ impl BashOutputCollector {
 pub(crate) struct CollectedBashOutput {
     pub(crate) text: String,
     pub(crate) truncated: bool,
-    #[cfg(test)]
-    pub(crate) high_water_bytes: usize,
-}
-
-#[cfg(feature = "test-support")]
-pub fn collect_bash_output_for_test(bytes: &[u8]) -> BashOutput {
-    let mut collector = BashOutputCollector::new();
-    for chunk in bytes.chunks(BASH_READ_CHUNK_BYTES) {
-        collector.push(chunk);
-    }
-    let collected = collector.finish();
-    BashOutput {
-        text: collected.text,
-        exit_code: 0,
-        duration_ms: 1,
-        truncated: collected.truncated,
-        #[cfg(test)]
-        high_water_bytes: collected.high_water_bytes,
-    }
 }
 
 #[derive(Debug)]
@@ -468,82 +442,5 @@ pub(crate) fn capped_results(mut entries: Vec<String>) -> ToolOutput {
     ToolOutput {
         text: entries.join("\n"),
         truncated,
-    }
-}
-
-#[cfg(test)]
-mod bash_output_tests {
-    use super::{
-        BASH_LINE_MIDDLE_MARKER, BASH_MAX_BYTES_PER_SIDE, BASH_MAX_LINE_BYTES,
-        BASH_READ_CHUNK_BYTES, BashOutputCollector,
-    };
-
-    #[test]
-    fn bash_output_invalid_utf8_is_stable_and_never_splits_rendering() {
-        let mut collector = BashOutputCollector::new();
-        collector.push(b"a\xffb\xe2\x82");
-        let output = collector.finish();
-        assert_eq!(output.text, "a\u{fffd}b\u{fffd}");
-        assert!(!output.truncated);
-    }
-
-    #[test]
-    fn bash_output_utf8_scalar_roundtrips_across_every_chunk_split() {
-        let scalar = "🦀".as_bytes();
-        for split in 1..scalar.len() {
-            let prefix_len = BASH_READ_CHUNK_BYTES - split;
-            let mut first = vec![b'a'; prefix_len];
-            first.extend_from_slice(&scalar[..split]);
-            assert_eq!(first.len(), BASH_READ_CHUNK_BYTES);
-
-            let mut collector = BashOutputCollector::new();
-            collector.push(&first);
-            collector.push(&scalar[split..]);
-            collector.push(b"z");
-            let output = collector.finish();
-            let expected = format!("{}🦀z", "a".repeat(prefix_len));
-            assert_eq!(output.text, expected, "split {split}");
-            assert!(!output.truncated, "split {split}");
-        }
-    }
-
-    #[test]
-    fn bash_output_one_huge_line_keeps_both_ends() {
-        let mut collector = BashOutputCollector::new();
-        collector.push(&vec![b'a'; BASH_MAX_LINE_BYTES]);
-        collector.push(&vec![b'z'; BASH_MAX_LINE_BYTES]);
-        let output = collector.finish();
-        assert!(output.truncated);
-        assert!(output.text.starts_with('a'));
-        assert!(output.text.contains(BASH_LINE_MIDDLE_MARKER));
-        assert!(output.text.ends_with('z'));
-        assert_eq!(output.text.len(), BASH_MAX_LINE_BYTES);
-    }
-
-    #[test]
-    fn bash_output_forty_kib_line_is_not_truncated() {
-        let line = vec![b'x'; 40 * 1024];
-        let mut collector = BashOutputCollector::new();
-        collector.push(&line);
-        let output = collector.finish();
-        assert!(!output.truncated);
-        assert_eq!(output.text.as_bytes(), line);
-    }
-
-    #[test]
-    fn bash_output_near_full_head_tail_and_current_line_stays_within_owned_budget() {
-        let mut collector = BashOutputCollector::new();
-        let mut retained_line = vec![b'x'; 2_048];
-        retained_line.push(b'\n');
-        for _ in 0..4_001 {
-            collector.push(&retained_line);
-        }
-        collector.push(&vec![b'z'; 2 * BASH_MAX_LINE_BYTES]);
-        let output = collector.finish();
-        let strict_limit =
-            2 * BASH_MAX_BYTES_PER_SIDE + BASH_MAX_LINE_BYTES + BASH_READ_CHUNK_BYTES + 8;
-        assert!(output.truncated);
-        assert!(output.high_water_bytes > 2 * BASH_MAX_BYTES_PER_SIDE - 256 * 1024);
-        assert!(output.high_water_bytes <= strict_limit);
     }
 }

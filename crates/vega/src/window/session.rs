@@ -385,16 +385,9 @@ impl VegaWindow {
         }
         let worker_request = request.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
-        #[cfg(test)]
-        let worker_gate = self.model_selection_worker_gate.take();
         let spawned = std::thread::Builder::new()
             .name("vega-thread-model".into())
             .spawn(move || {
-                #[cfg(test)]
-                if let Some(gate) = worker_gate {
-                    gate.wait();
-                }
-
                 let outcome = (|| {
                     let config = vega_store::config::read_from(&config_path)
                         .map_err(|error| error.to_string())?;
@@ -590,15 +583,9 @@ impl VegaWindow {
         self.model_catalog_loading = true;
         let generation = self.model_catalog_generation;
         let (sender, receiver) = mpsc::sync_channel(1);
-        #[cfg(test)]
-        let worker_gate = self.model_catalog_worker_gate.take();
         let worker = std::thread::Builder::new()
             .name("vega-model-catalog".into())
             .spawn(move || {
-                #[cfg(test)]
-                if let Some(gate) = worker_gate {
-                    gate.wait();
-                }
                 let result = vega_store::config::read_from(&config_path)
                     .map(|config| {
                         let mut models = Vec::new();

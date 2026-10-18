@@ -43,16 +43,12 @@ impl ConversationStream {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         div()
-            // Same width cap and centering as `composer-shell`; the bar itself
-            // takes the card width minus the frozen inset on both sides.
-            .debug_selector(|| "composer-utility-bar-row".into())
             .w_full()
             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
             .mx_auto()
             .flex()
             .child(
                 div()
-                    .debug_selector(|| "composer-utility-bar".into())
                     .flex_1()
                     .mx(px(Layout::COMPOSER_UTILITY_BAR_INSET))
                     .h(px(Layout::COMPOSER_UTILITY_BAR_HEIGHT))
@@ -86,7 +82,6 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-utility-backend")
-                    .debug_selector(|| "composer-utility-backend-chip".into())
                     .h(px(Layout::COMPOSER_UTILITY_CHIP_HEIGHT))
                     .px(px(Layout::COMPOSER_UTILITY_CHIP_PADDING_X))
                     .rounded_full()
@@ -126,7 +121,6 @@ impl ConversationStream {
         ];
         let mut menu = div()
             .id("composer-utility-backend-menu")
-            .debug_selector(|| "composer-utility-backend-menu".into())
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 if this.backend_selector_open {
                     this.backend_selector_open = false;
@@ -157,9 +151,6 @@ impl ConversationStream {
                     true,
                     colors,
                 )
-                .debug_selector(move || {
-                    format!("composer-utility-backend-option-{}", backend.as_str())
-                })
                 .text_color(colors.text_primary)
                 .on_mouse_up(
                     MouseButton::Left,
@@ -190,7 +181,6 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-utility-project")
-                    .debug_selector(|| "composer-utility-project-chip".into())
                     .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
                     .h(px(Layout::COMPOSER_UTILITY_CHIP_HEIGHT))
                     .px(px(Layout::COMPOSER_UTILITY_CHIP_PADDING_X))
@@ -210,15 +200,10 @@ impl ConversationStream {
                         cx.listener(Self::toggle_utility_projects),
                     )
                     .tooltip(move |_, cx| crate::icons::tooltip("切换项目", cx))
-                    .child(
-                        div()
-                            .debug_selector(|| "composer-utility-project-icon".into())
-                            .flex_shrink_0()
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Folder,
-                                colors.text_secondary,
-                            )),
-                    )
+                    .child(div().flex_shrink_0().child(crate::icons::icon(
+                        crate::icons::Icon::Folder,
+                        colors.text_secondary,
+                    )))
                     .child(div().min_w_0().max_w(px(180.0)).truncate().child(label)),
             )
             .when(self.utility_projects_open, |chip| {
@@ -242,15 +227,12 @@ impl ConversationStream {
             .map(|(index, (project_id, name))| {
                 let is_selected = selected.as_deref() == Some(project_id.as_str());
                 let activate_id = project_id.clone();
-                let selector_id = project_id.clone();
-                let check_id = format!("composer-utility-project-row-{project_id}-check");
                 menu_list::row_container(
                     ("composer-utility-project-row", index),
                     is_selected,
                     true,
                     colors,
                 )
-                .debug_selector(move || format!("composer-utility-project-row-{selector_id}"))
                 .text_color(if is_selected {
                     colors.text_primary
                 } else {
@@ -267,14 +249,9 @@ impl ConversationStream {
                     colors.text_secondary,
                 ))
                 .child(div().flex_1().min_w_0().truncate().child(name.clone()))
-                .child(menu_list::selection_marker(
-                    is_selected,
-                    move || check_id.clone(),
-                    colors,
-                ))
+                .child(menu_list::selection_marker(is_selected, colors))
             });
         let mut menu = div()
-            .debug_selector(|| "composer-utility-project-menu".into())
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 if this.utility_projects_open {
                     this.utility_projects_open = false;
@@ -298,7 +275,6 @@ impl ConversationStream {
             .shadow_sm()
             .child(menu_list::search_field(
                 &self.utility_project_search,
-                "composer-utility-project-search",
                 colors,
             ));
         if visible.is_empty() {
@@ -350,7 +326,6 @@ impl ConversationStream {
     fn render_utility_branch_chip(&self) -> AnyElement {
         div()
             .id("composer-utility-branch")
-            .debug_selector(|| "composer-utility-branch-chip".into())
             .flex()
             .items_center()
             .tooltip(|_, cx| crate::icons::tooltip("切换分支", cx))

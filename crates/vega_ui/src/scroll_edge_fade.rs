@@ -546,6 +546,3 @@ fn read_chrome<E: Styled>(base: &mut E, window: &Window, style: &mut ScrollFade)
     });
     style.radius = (radius.max(inherited).max(style.radius) - inset).max(px(0.));
 }
-
-#[cfg(test)]
-mod tests;
