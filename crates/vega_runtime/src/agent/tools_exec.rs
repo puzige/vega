@@ -56,6 +56,7 @@ pub(crate) enum PreparedRuntimeCall {
         target: Option<RuntimePermissionTarget>,
     },
     InvalidGrep(RuntimeToolCall),
+    CompletedGrep(RuntimeToolCall),
     MixedRejected(RuntimeToolCall),
     Skill {
         call: RuntimeToolCall,
@@ -129,6 +130,7 @@ impl PreparedRuntimeCall {
             | Self::ExternalRead { call, .. }
             | Self::Grep { call, .. }
             | Self::InvalidGrep(call)
+            | Self::CompletedGrep(call)
             | Self::Mcp { call, .. }
             | Self::Write { call, .. }
             | Self::Edit { call, .. }
@@ -175,6 +177,7 @@ impl PreparedRuntimeCall {
             Self::PinnedRead { execution, .. } => canonical_read_input(&execution.input_json)?,
             Self::ExternalRead { call, .. } => canonical_read_input(&call.input_json)?,
             Self::Grep { model_input, .. } => model_input.clone(),
+            Self::CompletedGrep(call) => call.input_json.clone(),
             Self::Readonly(call) => {
                 let input = parse_input(&call.name, &call.input_json).ok()?;
                 if call.name != "glob" {
@@ -680,6 +683,21 @@ fn prepare_skill_call(
     })
 }
 
+pub(crate) fn prepare_completed_grep(
+    tools: &vega_tools::Tools,
+    call: RuntimeToolCall,
+    prior: &CompletedToolCall,
+) -> PreparedRuntimeCall {
+    if prior.tool == call.name
+        && prior.input_json == call.input_json
+        && call.input_json.trim_start().starts_with('{')
+        && serde_json::from_str::<GrepInput>(&call.input_json).is_ok()
+    {
+        return PreparedRuntimeCall::CompletedGrep(call);
+    }
+    prepare_grep_call(tools, call)
+}
+
 fn prepare_grep_call(tools: &vega_tools::Tools, raw_call: RuntimeToolCall) -> PreparedRuntimeCall {
     if !raw_call.input_json.trim_start().starts_with('{') {
         return invalid_grep_call(raw_call);
@@ -707,7 +725,11 @@ fn prepare_grep_call(tools: &vega_tools::Tools, raw_call: RuntimeToolCall) -> Pr
         },
         display_target: path.to_owned(),
     });
-    let input_json = serde_json::json!({"pattern":input.pattern,"path":path}).to_string();
+    let input_json = if target.is_some() {
+        serde_json::json!({"pattern":input.pattern,"path":path}).to_string()
+    } else {
+        raw_call.input_json.clone()
+    };
     PreparedRuntimeCall::Grep {
         model_input: raw_call.input_json,
         call: RuntimeToolCall {
@@ -916,6 +938,9 @@ pub(crate) async fn authorize_call(
                     }),
                 ))),
             }
+        }
+        PreparedRuntimeCall::CompletedGrep(call) => {
+            Ok(Authorization::Terminal(conflict_result(call)))
         }
         PreparedRuntimeCall::MixedRejected(call) => Ok(Authorization::Terminal(terminal_result(
             call,
@@ -1312,9 +1337,14 @@ pub(crate) async fn wait_for_permission(
     let future = hook.request(prompt, prompt_cancel.clone());
     let waited = tokio::select! {
         biased;
-        _ = cancel.cancelled() => (RuntimeUserDecision::Timeout, true),
+        _ = prompt_cancel.cancelled() => (RuntimeUserDecision::Timeout, true),
         _ = tokio::time::sleep(timeout) => (RuntimeUserDecision::Timeout, false),
         decision = future => (decision.unwrap_or(RuntimeUserDecision::Timeout), false),
+    };
+    let waited = if prompt_cancel.is_cancelled() {
+        (RuntimeUserDecision::Timeout, true)
+    } else {
+        waited
     };
     prompt_cancel.cancel();
     waited
@@ -1537,6 +1567,7 @@ pub(crate) async fn execute_prepared_waiting(
                 cancel.is_cancelled(),
             ),
         },
+        PreparedRuntimeCall::CompletedGrep(call) => (conflict_result(&call), false),
         PreparedRuntimeCall::MixedRejected(call) => (
             terminal_result(
                 &call,

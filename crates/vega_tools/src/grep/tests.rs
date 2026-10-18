@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use regex::Regex;
 use tempfile::{TempDir, tempdir};
 use tokio_util::sync::CancellationToken;
 
-use super::{GREP_TEST_HOOK, GrepTestEvent};
+use super::{CredentialGuard, GREP_TEST_HOOK, GrepSearch, GrepTestEvent};
 use crate::{MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolCredentialPolicy, ToolError, Tools};
 
 struct Fixture {
@@ -791,14 +792,76 @@ fn issue426_invalid_regex_does_not_echo_sensitive_input() {
 #[test]
 fn issue426_external_non_utf8_locators_are_rejected_without_lossy_paths() {
     let fixture = Fixture::new();
+    let readable = fixture.external.join("bad-\u{fffd}.txt");
+    fs::write(&readable, "needle NON_UTF8_CONTENT_CANARY\n").unwrap();
     let name = std::ffi::OsString::from_vec(b"bad-\xff.txt".to_vec());
-    fs::write(fixture.external.join(name), "needle\n").unwrap();
-    let error = fixture
-        .tools()
-        .grep("needle", Some(fixture.external_input()))
+    let path = fixture.external.join(name);
+    assert!(path.to_str().is_none());
+    let tools = fixture.tools();
+    let regex = Regex::new("needle").unwrap();
+    let cancel = CancellationToken::new();
+    let guard = CredentialGuard::new(&tools);
+    let mut search = GrepSearch {
+        root: tools.root(),
+        regex: &regex,
+        matches: Vec::new(),
+        cancel: &cancel,
+        guard: &guard,
+        external: true,
+    };
+    let reads = Rc::new(Cell::new(0));
+    let observed = reads.clone();
+    let _hook = hook(move |_, _| observed.set(observed.get() + 1));
+    let error = search
+        .append(fs::File::open(&readable).unwrap(), &path)
         .unwrap_err();
     assert!(matches!(error, ToolError::InvalidInput(_)));
+    assert_eq!(
+        error.to_string(),
+        "invalid input: external grep paths must be valid UTF-8"
+    );
     assert!(!error.to_string().contains('\u{fffd}'));
+    for message in [error.to_string(), format!("{error:?}")] {
+        assert!(!message.contains('\u{fffd}'));
+        assert!(!message.contains("bad-"));
+        assert!(!message.contains("NON_UTF8_CONTENT_CANARY"));
+    }
+    assert!(search.matches.is_empty());
+    assert_eq!(reads.get(), 0);
+}
+
+#[test]
+fn issue426_external_utf8_locators_preserve_paths_through_fd_traversal() {
+    let fixture = Fixture::new();
+    let file = fixture.external.join("bad-\u{fffd}.txt");
+    fs::write(&file, "first\nneedle UTF8_CONTENT_CANARY\n").unwrap();
+    let canonical = file.canonicalize().unwrap();
+    let expected_descriptors = [
+        identity(&fs::metadata(&fixture.external).unwrap()),
+        identity(&fs::metadata(&file).unwrap()),
+    ];
+    let descriptors = Rc::new(RefCell::new(Vec::new()));
+    let observed = descriptors.clone();
+    let _hook = fd_hook(move |event, _, file| {
+        if matches!(
+            event,
+            GrepTestEvent::DirectoryEnumerated | GrepTestEvent::BeforeFileRead
+        ) {
+            observed
+                .borrow_mut()
+                .push(identity(&file.unwrap().metadata().unwrap()));
+        }
+    });
+    let output = fixture
+        .tools()
+        .grep("needle", Some(fixture.external_input()))
+        .unwrap();
+    assert_eq!(
+        output.text,
+        format!("{}:2:needle UTF8_CONTENT_CANARY", canonical.display())
+    );
+    assert!(!output.truncated);
+    assert_eq!(descriptors.borrow().as_slice(), &expected_descriptors);
 }
 
 #[test]

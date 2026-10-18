@@ -1,5 +1,6 @@
 use super::*;
 use crate::tool_card::{ToolActivityCategory, ToolActivityState};
+use gpui_kit::test::TestWindowExt;
 
 fn grep_call(id: &str, path: &str) -> ToolCall {
     ToolCall {
@@ -27,10 +28,10 @@ async fn issue426_grep_read_queue_mounts_and_resolves_existing_actions(cx: &mut 
     init_permission_test(cx);
     for (target, keys, expected) in [
         ("/external/note.txt", "enter", PermissionDecision::Once),
-        ("/external/search", "tab enter", PermissionDecision::Always),
+        ("/external/search", "tab space", PermissionDecision::Always),
         (
             "/external/rejected",
-            "tab tab enter",
+            "tab tab space",
             PermissionDecision::Deny { note: None },
         ),
     ] {
@@ -153,6 +154,8 @@ async fn issue426_grep_timeout_and_cancel_keep_real_terminal_state(cx: &mut Test
             }
             assert_eq!(decision.await.unwrap(), PermissionDecision::Timeout);
         }
+        cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
+            .unwrap();
         cx.run_until_parked();
         assert!(!has_active_permission(window, cx));
         assert!(!queue.has_pending());
@@ -172,6 +175,7 @@ async fn issue426_grep_timeout_and_cancel_keep_real_terminal_state(cx: &mut Test
                         },
                         cx,
                     );
+                    cancel.cancel();
                 }
                 stream.apply_event(
                     ConversationEvent::ToolCallFinished {
@@ -316,48 +320,55 @@ async fn issue426_invalid_grep_safe_card_keeps_failure_and_hides_audit_hash(
 #[gpui_kit::test]
 async fn issue426_grep_wrong_identity_fails_closed_without_relaxing_glob(cx: &mut TestAppContext) {
     init_permission_test(cx);
-    for (tool, input, request_tool, request_target) in [
+    for (tool, input, request_tool, request_target, expected_queued_mismatch) in [
         (
             "grep",
             serde_json::json!({"pattern":"PRIVATE_PATTERN_CANARY", "path":"/external/search"}),
             "grep",
             "/external/search",
+            false,
         ),
         (
             "grep",
             serde_json::json!({"pattern":"PRIVATE_PATTERN_CANARY", "path":"/external/search"}),
             "read",
             "/external/other",
+            true,
         ),
         (
             "grep",
             serde_json::json!({"pattern":"PRIVATE_PATTERN_CANARY", "path":"/external/search"}),
             "read",
             "grep-dir:v1:/external/search",
+            false,
         ),
         (
             "grep",
             serde_json::json!({"pattern":"PRIVATE_PATTERN_CANARY", "path":"relative/search"}),
             "read",
             "relative/search",
+            false,
         ),
         (
             "grep",
             serde_json::json!({"pattern":7, "path":"/external/search"}),
             "read",
             "/external/search",
+            true,
         ),
         (
             "grep",
             serde_json::json!({"path":"/external/search"}),
             "read",
             "/external/search",
+            true,
         ),
         (
             "glob",
             serde_json::json!({"pattern":"*", "path":"/external/search"}),
             "read",
             "/external/search",
+            true,
         ),
     ] {
         let (window, queue) = open_permission_stream(cx);
@@ -370,27 +381,47 @@ async fn issue426_grep_wrong_identity_fails_closed_without_relaxing_glob(cx: &mu
                 input_json: input.to_string(),
             },
         );
+        let (original_state, original_identity, original_text) = window
+            .update(cx, |stream, _, cx| {
+                let card = stream.tool_cards["wrong-grep"].read(cx);
+                (
+                    card.activity_state(),
+                    card.permission_identity()
+                        .map(|(tool, target)| (tool.to_owned(), target.to_owned())),
+                    card.visible_text(),
+                )
+            })
+            .unwrap();
         let mut request = read_request("wrong-grep", request_target);
         request.tool = request_tool.into();
         let decision = queue.request(request, CancellationToken::new());
+        assert_eq!(queue.has_pending(), expected_queued_mismatch);
         cx.run_until_parked();
         assert_eq!(decision.await.unwrap(), PermissionDecision::Timeout);
         assert!(!has_active_permission(window, cx));
         assert!(!queue.has_pending());
         window
             .update(cx, |stream, _, cx| {
+                assert!(stream.deferred_permission.is_none());
                 assert!(
-                    stream.tool_cards["wrong-grep"]
-                        .read(cx)
-                        .visible_text()
-                        .contains("Tool result corrupted")
+                    stream
+                        .entries
+                        .iter()
+                        .all(|entry| !matches!(entry, StreamEntry::Permission { .. }))
                 );
-                assert!(
-                    !stream.tool_cards["wrong-grep"]
-                        .read(cx)
-                        .visible_text()
-                        .contains("PRIVATE_PATTERN_CANARY")
-                );
+                let card = stream.tool_cards["wrong-grep"].read(cx);
+                if expected_queued_mismatch {
+                    assert!(card.visible_text().contains("Tool result corrupted"));
+                } else {
+                    assert_eq!(card.activity_state(), original_state);
+                    assert_eq!(
+                        card.permission_identity()
+                            .map(|(tool, target)| (tool.to_owned(), target.to_owned())),
+                        original_identity
+                    );
+                    assert_eq!(card.visible_text(), original_text);
+                }
+                assert!(!card.visible_text().contains("PRIVATE_PATTERN_CANARY"));
             })
             .unwrap();
     }
@@ -402,6 +433,12 @@ async fn issue426_grep_wrong_call_id_never_mounts_on_another_card(cx: &mut TestA
     let (window, queue) = open_permission_stream(cx);
     propose(window, cx, grep_call("owned-grep", "/external/search"));
     propose(window, cx, grep_call("other-grep", "/external/other"));
+    let (original_state, original_text) = window
+        .update(cx, |stream, _, cx| {
+            let card = stream.tool_cards["owned-grep"].read(cx);
+            (card.activity_state(), card.visible_text())
+        })
+        .unwrap();
     let decision = queue.request(
         read_request("other-grep", "/external/search"),
         CancellationToken::new(),
@@ -409,20 +446,40 @@ async fn issue426_grep_wrong_call_id_never_mounts_on_another_card(cx: &mut TestA
     cx.run_until_parked();
     assert_eq!(decision.await.unwrap(), PermissionDecision::Timeout);
     assert!(!has_active_permission(window, cx));
+    assert!(!queue.has_pending());
     window
         .update(cx, |stream, _, cx| {
+            let owned_card = stream.tool_cards["owned-grep"].read(cx);
             assert_eq!(
-                stream.tool_cards["owned-grep"]
-                    .read(cx)
-                    .permission_identity(),
+                owned_card.permission_identity(),
                 Some(("read", "/external/search"))
             );
-            assert!(
-                stream.tool_cards["other-grep"]
-                    .read(cx)
-                    .visible_text()
-                    .contains("Tool result corrupted")
+            assert_eq!(owned_card.activity_state(), original_state);
+            assert_eq!(owned_card.visible_text(), original_text);
+            assert!(!owned_card.visible_text().contains("PRIVATE_PATTERN_CANARY"));
+            let other_text = stream.tool_cards["other-grep"].read(cx).visible_text();
+            assert!(other_text.contains("Tool result corrupted"));
+            assert!(!other_text.contains("PRIVATE_PATTERN_CANARY"));
+        })
+        .unwrap();
+    let decision = queue.request(
+        read_request("owned-grep", "/external/search"),
+        CancellationToken::new(),
+    );
+    cx.run_until_parked();
+    assert!(has_active_permission(window, cx));
+    assert!(queue.has_pending());
+    window
+        .update(cx, |stream, _, _| {
+            assert_eq!(
+                stream.active_permission_call_id.as_deref(),
+                Some("owned-grep")
             );
         })
         .unwrap();
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(decision.await.unwrap(), PermissionDecision::Once);
+    cx.run_until_parked();
+    assert!(!has_active_permission(window, cx));
+    assert!(!queue.has_pending());
 }

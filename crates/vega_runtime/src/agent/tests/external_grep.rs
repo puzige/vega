@@ -94,6 +94,29 @@ impl RuntimePermissionHook for GrepHook {
     }
 }
 
+struct CancelPromptHook {
+    during_poll: bool,
+    decision: RuntimeUserDecision,
+}
+
+impl RuntimePermissionHook for CancelPromptHook {
+    fn request(
+        &self,
+        _prompt: RuntimePermissionPrompt,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
+        if !self.during_poll {
+            cancel.cancel();
+        }
+        let decision = self.decision.clone();
+        async move {
+            cancel.cancel();
+            Ok(decision)
+        }
+        .boxed()
+    }
+}
+
 fn grep_call(id: &str, input_json: String) -> ProviderEvent {
     ProviderEvent::ToolUse {
         id: id.into(),
@@ -782,7 +805,7 @@ async fn issue426_default_null_empty_and_internal_paths_use_readonly_frozen_grep
         .unwrap();
         assert!(hook.prompts.lock().unwrap().is_empty());
         assert_eq!(outcome.executed_tool_call_count, inputs.len());
-        for index in 0..inputs.len() {
+        for (index, input) in inputs.iter().enumerate() {
             let result = grep_finished(&outcome, &format!("default-{index}"));
             assert_eq!(result.status, RuntimeToolStatus::Success);
             assert_eq!(result.output, "local.txt:1:needle local");
@@ -796,10 +819,7 @@ async fn issue426_default_null_empty_and_internal_paths_use_readonly_frozen_grep
                 .flat_map(|message| &message.tool_calls)
                 .find(|call| call.id == format!("default-{index}"))
                 .unwrap();
-            assert_eq!(
-                serde_json::from_str::<Value>(&call.input_json).unwrap(),
-                serde_json::json!({"pattern":"needle","path":fixture.tools.root()})
-            );
+            assert_eq!(&call.input_json, input);
         }
         assert_eq!(
             grep_model_inputs(&provider, 1),
@@ -845,10 +865,17 @@ async fn issue426_internal_file_and_subdirectory_keep_project_relative_results()
     .unwrap();
     assert!(hook.prompts.lock().unwrap().is_empty());
     assert_eq!(outcome.executed_tool_call_count, inputs.len());
-    for index in 0..inputs.len() {
+    for (index, input) in inputs.iter().enumerate() {
         let result = grep_finished(&outcome, &format!("internal-{index}"));
         assert_eq!(result.status, RuntimeToolStatus::Success);
         assert_eq!(result.output, "source/code.txt:2:needle source");
+        let call = outcome
+            .messages
+            .iter()
+            .flat_map(|message| &message.tool_calls)
+            .find(|call| call.id == format!("internal-{index}"))
+            .unwrap();
+        assert_eq!(&call.input_json, input);
     }
     assert_eq!(
         grep_model_inputs(&provider, 1),
@@ -858,6 +885,90 @@ async fn issue426_internal_file_and_subdirectory_keep_project_relative_results()
             .map(|(index, input)| (format!("internal-{index}"), input.clone()))
             .collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn issue426_internal_grep_ledger_reuses_raw_input_and_rejects_changes_after_deletion() {
+    for absolute in [false, true] {
+        let fixture = GrepFixture::new();
+        let local = fixture.tools.root().join("local.txt");
+        let raw = if absolute {
+            grep_input("needle", &local)
+        } else {
+            r#"{ "path": "local.txt", "pattern": "needle" }"#.into()
+        };
+        let changed_pattern = raw.replace("needle", "changed");
+        let changed_path = raw.replace("local.txt", "missing.txt");
+        let provider = MockProvider::new_rounds(vec![
+            grep_round(vec![grep_call("internal-ledger", raw.clone())]),
+            grep_round(vec![grep_call("internal-ledger", raw.clone())]),
+            grep_round(vec![grep_call("internal-ledger", changed_pattern)]),
+            grep_round(vec![grep_call("internal-ledger", changed_path)]),
+            vec![ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }])],
+        ]);
+        let hook = GrepHook::new(Some(RuntimeUserDecision::Deny { note: None }));
+        let outcome = run_agent_with_permission_sink(
+            &provider,
+            &fixture.tools,
+            fixture.request(RuntimeRunMode::Ask, RuntimePermissionMode::ReadOnly),
+            CancellationToken::new(),
+            &hook,
+            move |event| {
+                if matches!(event, RuntimeEvent::ToolCallFinished(result) if result.call_id == "internal-ledger" && !result.reused) {
+                    fs::remove_file(&local).unwrap();
+                }
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+        assert!(hook.prompts.lock().unwrap().is_empty());
+        assert_eq!(outcome.executed_tool_call_count, 1);
+        let finished = outcome
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeEvent::ToolCallFinished(result) => Some(result),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(finished.len(), 2);
+        assert!(!finished[0].reused);
+        assert!(finished[1].reused);
+        for result in finished {
+            assert_eq!(result.status, RuntimeToolStatus::Success);
+            assert_eq!(result.output, "local.txt:1:needle local");
+        }
+        let conflicts = outcome
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeEvent::ToolCallConflict { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(conflicts.len(), 2);
+        for result in conflicts {
+            assert_eq!(result.status, RuntimeToolStatus::Failed);
+            assert_eq!(result.output, CALL_ID_CONFLICT_OUTPUT);
+            assert!(!result.reused);
+        }
+        assert_eq!(
+            grep_model_inputs(&provider, 1),
+            vec![("internal-ledger".into(), raw.clone())]
+        );
+        assert!(
+            outcome
+                .messages
+                .iter()
+                .flat_map(|message| &message.tool_calls)
+                .filter(|call| call.id == "internal-ledger")
+                .take(2)
+                .all(|call| call.input_json == raw)
+        );
+    }
 }
 
 #[tokio::test]
@@ -957,6 +1068,56 @@ async fn issue426_grep_cancellation_preserves_read_authorization_lifecycle() {
                     .iter()
                     .all(|token| token.is_cancelled())
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn issue426_prompt_token_cancellation_overrides_ready_approval_for_grep_and_read() {
+    for tool in ["grep", "read"] {
+        for during_poll in [false, true] {
+            for decision in [RuntimeUserDecision::Once, RuntimeUserDecision::Always] {
+                let fixture = GrepFixture::new();
+                let input = if tool == "grep" {
+                    grep_input("needle", &fixture.file)
+                } else {
+                    serde_json::json!({"path":fixture.file}).to_string()
+                };
+                let provider = grep_provider(vec![ProviderEvent::ToolUse {
+                    id: "prompt-cancel".into(),
+                    name: tool.into(),
+                    input_json: input,
+                }]);
+                let parent = CancellationToken::new();
+                let hook = CancelPromptHook {
+                    during_poll,
+                    decision,
+                };
+                let outcome = run_agent_with_permission_sink(
+                    &provider,
+                    &fixture.tools,
+                    fixture.request(RuntimeRunMode::Execute, RuntimePermissionMode::Confirm),
+                    parent.clone(),
+                    &hook,
+                    |_| async { Ok(()) },
+                )
+                .await
+                .unwrap();
+                assert!(!parent.is_cancelled());
+                assert_eq!(outcome.executed_tool_call_count, 0);
+                let result = grep_finished(&outcome, "prompt-cancel");
+                assert_eq!(result.status, RuntimeToolStatus::Rejected);
+                assert_eq!(result.output, "Tool error: permission denied");
+                assert!(!result.reused);
+                assert!(result.remember_rule.is_none());
+                let audit = result.approval.as_ref().unwrap();
+                assert_eq!(audit.decision, RuntimeApprovalDecision::Deny);
+                assert_eq!(audit.source, RuntimeApprovalSource::Timeout);
+                assert!(!outcome.events.iter().any(|event| matches!(
+                    event,
+                    RuntimeEvent::ToolCallApproved { .. } | RuntimeEvent::ToolCallRunning { .. }
+                )));
+            }
         }
     }
 }

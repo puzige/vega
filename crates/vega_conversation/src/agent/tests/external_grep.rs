@@ -4,6 +4,7 @@ use vega_runtime::{
     RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimePermissionTarget,
     RuntimeToolCall,
 };
+use vega_store::permissions as store_permissions;
 
 struct GrepPermissionHook {
     requests: Arc<Mutex<Vec<PermissionRequest>>>,
@@ -124,13 +125,83 @@ async fn issue426_pending_grep_cancellation_persists_without_approval_or_rules()
     assert_eq!(approval.decision, Approval::Deny);
     assert_eq!(approval.source, ApprovalSource::Timeout);
     assert!(
-        permissions::list_exact(store.conn(), &project_id)
+        store_permissions::list_exact(store.conn(), &project_id)
             .unwrap()
             .is_empty()
     );
     drop(store);
     let reopened = Store::open(data.path().join("vega.db")).unwrap();
     reload_grep_history(&reopened, &tools).await;
+}
+
+#[tokio::test]
+async fn issue426_internal_grep_raw_receipt_reuses_after_reopen_and_rejects_changed_input() {
+    let (store, project, data, _project_id) = setup_external("confirm");
+    let file = project.path().join("local.txt");
+    fs::write(&file, "needle RECEIPT_CANARY\n").unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let raw = r#"{ "path": "local.txt", "pattern": "needle" }"#;
+    let first = run_thread_task(
+        &store,
+        &scripted_provider("internal-receipt", raw),
+        &tools,
+        "thread-1",
+        "search",
+        "system",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let result = grep_terminal(&first, "internal-receipt");
+    assert_eq!(result.status, ToolCallStatus::Success);
+    assert_eq!(result.output, "local.txt:1:needle RECEIPT_CANARY");
+    assert!(!result.reused);
+    let original = tool_calls::find_state(store.conn(), "internal-receipt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(original.input_json, raw);
+    assert_eq!(original.status, "success");
+    drop(store);
+    let store = Store::open(data.path().join("vega.db")).unwrap();
+    fs::remove_file(&file).unwrap();
+    for (input, reuse) in [
+        (raw.to_owned(), true),
+        (raw.replace("needle", "changed"), false),
+        (raw.replace("local.txt", "missing.txt"), false),
+    ] {
+        let run = run_thread_task(
+            &store,
+            &scripted_provider("internal-receipt", &input),
+            &tools,
+            "thread-1",
+            "retry",
+            "system",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let retry = grep_terminal(&run, "internal-receipt");
+        assert_eq!(retry.reused, reuse);
+        if reuse {
+            assert_eq!(retry.status, ToolCallStatus::Success);
+            assert_eq!(retry.output, result.output);
+        } else {
+            assert_eq!(retry.status, ToolCallStatus::Failed);
+            assert_eq!(retry.output, vega_runtime::CALL_ID_CONFLICT_OUTPUT);
+        }
+        assert!(!run.events.iter().any(|event| matches!(
+            event,
+            ConversationEvent::ToolCallApproved { .. } | ConversationEvent::ToolCallRunning { .. }
+        )));
+        let saved = tool_calls::find_state(store.conn(), "internal-receipt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.input_json, original.input_json);
+        assert_eq!(saved.status, original.status);
+        assert_eq!(saved.approval, original.approval);
+        assert_eq!(saved.output_text, original.output_text);
+    }
+    reload_grep_history(&store, &tools).await;
 }
 
 #[test]
@@ -192,7 +263,7 @@ fn issue426_forged_pending_to_cancelled_is_always_rejected() {
         assert!(state.approval.is_none());
         assert!(state.output_text.is_none());
         assert!(
-            permissions::list_exact(store.conn(), &project_id)
+            store_permissions::list_exact(store.conn(), &project_id)
                 .unwrap()
                 .is_empty()
         );
@@ -295,16 +366,17 @@ async fn issue426_external_grep_decisions_persist_and_reopen_with_safe_cards() {
                 assert_eq!(result.output, "Tool error: permission denied");
                 assert!(!result.output.contains("MATCH_CANARY"));
             }
-            let recorded = requests.lock().unwrap();
-            assert_eq!(recorded.len(), usize::from(mode != "full_access"));
-            if let Some(request) = recorded.first() {
-                assert_eq!(request.call_id, "external-grep");
-                assert_eq!(request.tool, "read");
-                assert_eq!(request.display_target, path.to_str().unwrap());
-                assert!(request.danger_rule_id.is_none());
-                assert!(request.external.is_none());
+            {
+                let recorded = requests.lock().unwrap();
+                assert_eq!(recorded.len(), usize::from(mode != "full_access"));
+                if let Some(request) = recorded.first() {
+                    assert_eq!(request.call_id, "external-grep");
+                    assert_eq!(request.tool, "read");
+                    assert_eq!(request.display_target, path.to_str().unwrap());
+                    assert!(request.danger_rule_id.is_none());
+                    assert!(request.external.is_none());
+                }
             }
-            drop(recorded);
             let state = tool_calls::find_state(store.conn(), "external-grep")
                 .unwrap()
                 .unwrap();
@@ -324,7 +396,7 @@ async fn issue426_external_grep_decisions_persist_and_reopen_with_safe_cards() {
             let saved: serde_json::Value = serde_json::from_str(&state.input_json).unwrap();
             assert_eq!(saved["path"], path.to_str().unwrap());
             assert_eq!(saved["pattern"], "MATCH_CANARY");
-            let rules = permissions::list_exact(store.conn(), &project_id).unwrap();
+            let rules = store_permissions::list_exact(store.conn(), &project_id).unwrap();
             assert_eq!(rules.len(), usize::from(always));
             if always {
                 assert_eq!(rules[0].tool, "read");
@@ -365,9 +437,9 @@ async fn issue426_directory_always_is_exact_and_does_not_inherit_or_grant_bare_r
     fs::write(directory.join("note.txt"), "needle\n").unwrap();
     fs::write(child.join("child.txt"), "needle\n").unwrap();
     fs::write(sibling.join("other.txt"), "needle\n").unwrap();
-    permissions::insert_exact(
+    store_permissions::insert_exact(
         store.conn(),
-        permissions::InsertExactRule {
+        store_permissions::InsertExactRule {
             project_id: &project_id,
             tool: "read",
             pattern: directory.to_str().unwrap(),
@@ -404,7 +476,9 @@ async fn issue426_directory_always_is_exact_and_does_not_inherit_or_grant_bare_r
     );
     assert_eq!(requests.lock().unwrap().len(), 1);
     let signature = format!("grep-dir:v1:{}", directory.display());
-    assert!(permissions::matches_exact(store.conn(), &project_id, "read", &signature).unwrap());
+    assert!(
+        store_permissions::matches_exact(store.conn(), &project_id, "read", &signature).unwrap()
+    );
     drop(store);
     let reopened = Store::open(data.path().join("vega.db")).unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
@@ -475,7 +549,7 @@ async fn issue426_directory_always_is_exact_and_does_not_inherit_or_grant_bare_r
         );
     }
     assert_eq!(
-        permissions::list_exact(reopened.conn(), &project_id)
+        store_permissions::list_exact(reopened.conn(), &project_id)
             .unwrap()
             .len(),
         2
@@ -489,9 +563,9 @@ async fn issue426_file_grep_reuses_existing_exact_read_rule() {
     let outside = tempdir().unwrap();
     let path = outside.path().canonicalize().unwrap().join("note.txt");
     fs::write(&path, "needle\n").unwrap();
-    permissions::insert_exact(
+    store_permissions::insert_exact(
         store.conn(),
-        permissions::InsertExactRule {
+        store_permissions::InsertExactRule {
             project_id: &project_id,
             tool: "read",
             pattern: path.to_str().unwrap(),
@@ -687,7 +761,7 @@ async fn issue426_invalid_grep_fails_then_corrects_and_survives_store_reopen() {
             }
         }
         assert!(
-            permissions::list_exact(store.conn(), &project_id)
+            store_permissions::list_exact(store.conn(), &project_id)
                 .unwrap()
                 .is_empty()
         );
@@ -953,7 +1027,7 @@ fn issue426_always_target_is_bound_before_store_approval_or_rule_insertion() {
                 "pending_approval"
             }
         );
-        let rules = permissions::list_exact(store.conn(), &project_id).unwrap();
+        let rules = store_permissions::list_exact(store.conn(), &project_id).unwrap();
         assert_eq!(rules.len(), usize::from(valid));
         if valid {
             assert_eq!(rules[0].pattern, exact);
@@ -1114,7 +1188,7 @@ async fn issue426_invalid_grep_cancellation_before_and_after_approval_reloads() 
         );
         assert!(hook.requests.lock().unwrap().is_empty());
         assert!(
-            permissions::list_exact(store.conn(), &project_id)
+            store_permissions::list_exact(store.conn(), &project_id)
                 .unwrap()
                 .is_empty()
         );
@@ -1204,7 +1278,7 @@ async fn issue426_invalid_grep_incomplete_states_recover_and_reload() {
         );
         assert!(state.exit_code.is_none() && state.duration_ms.is_none());
         assert!(
-            permissions::list_exact(reopened.conn(), &project_id)
+            store_permissions::list_exact(reopened.conn(), &project_id)
                 .unwrap()
                 .is_empty()
         );
@@ -1472,7 +1546,7 @@ fn issue426_invalid_grep_proposal_and_approval_reject_tampered_envelopes() {
             }
         );
         assert!(
-            permissions::list_exact(store.conn(), &project_id)
+            store_permissions::list_exact(store.conn(), &project_id)
                 .unwrap()
                 .is_empty()
         );
@@ -1575,8 +1649,15 @@ async fn issue426_invalid_grep_reload_rejects_tampered_audit_feedback_source_and
         let approval_json = if audit.source == ApprovalSource::Legacy {
             "once".to_string()
         } else {
+            let source = match audit.source {
+                ApprovalSource::ReadonlyTool => "readonly_tool",
+                ApprovalSource::User => "user",
+                ApprovalSource::Timeout => "timeout",
+                ApprovalSource::Recovery => "recovery",
+                source => panic!("unexpected approval source: {source:?}"),
+            };
             serde_json::json!({
-                "decision":audit.decision.as_str(), "source":audit.source.as_str(),
+                "decision":audit.decision.as_str(), "source":source,
                 "note":audit.note, "danger":null,
             })
             .to_string()
@@ -1702,7 +1783,7 @@ async fn issue426_existing_relative_readonly_grep_and_glob_history_remains_valid
             )
             .unwrap();
             assert!(
-                permissions::list_exact(store.conn(), &project_id)
+                store_permissions::list_exact(store.conn(), &project_id)
                     .unwrap()
                     .is_empty()
             );
