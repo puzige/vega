@@ -1,5 +1,7 @@
 # Issue #300 — 通用工具接口与模型历史隔离
 
+2026-10-18 后续契约：[Issue #426 外部 grep](vega-issue-426-external-grep.md) 替代本页 grep 限项目内的历史边界：显式文件/目录可按 Read 权限搜索，null/空 path 仍只搜项目；目录范围、目标冻结和凭据保护以该卡为准。glob pattern 与 shell 边界不变。
+
 2026-10-17 后续契约：[Issue #435 自动推理回传](vega-issue-435-automatic-reasoning-replay.md) 仅将下文 live 原始参数的 run 内存寿命扩展为本应用内有界、经完整身份校验的 warm 会话内存，以支持跨用户轮协议回放；不新增原文落盘/日志，不改变审计、权限、幂等或凭据围栏。cold/压缩后的历史观察和 source 比较按该卡明确边界接线，不能借缓存恢复丢失的可执行参数。
 
 ## 授权、证据和范围

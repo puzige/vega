@@ -12,7 +12,9 @@
 
 > **2026-09-22 Issue #140 用户更新：** [Git/Shell 测试依赖隔离](vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 允许通过内部执行边界替身迁移业务分支测试，保留真实策略与安全断言，另用真实适配层集成测试验证 OS/Git 契约。该范围优先于 §7 的旧 E2E-first 限制；mockall 获批准用于本卡 dev-only 依赖（若需要），证据必须准确标注 mock/real。
 
-> **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools; glob/grep/bash boundaries are unchanged. Existing permission, Git/checkpoint protection and race checks remain.
+> **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools. Existing permission, Git/checkpoint protection and race checks remain.
+
+> **2026-10-18 Issue #426 supersession:** Explicit grep file/directory targets follow [the external grep contract](vega-issue-426-external-grep.md) and Read permissions. Default/null/empty searches remain project-root-only; glob patterns and bash boundaries are unchanged. Directory scope, target identity checks and credential protection remain mandatory.
 
 **版本** v1.1 · 2026-10-16 · 适用对象：Codex、Vega 及承接本仓任务的子 agent
 **关联**：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)（实现规格）· [vega-tech-risks.md](vega-tech-risks.md)（难点方案）· [vega-features.md](vega-features.md)（功能点 ID）· [vega-ui-spec.md](vega-ui-spec.md)（UI 准线）
