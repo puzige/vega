@@ -4,6 +4,14 @@ use sha2::{Digest, Sha256};
 
 const MCP_ARGUMENT_LIMIT: usize = 256 * 1024;
 const MCP_RESULT_LIMIT: usize = 256 * 1024;
+pub const GREP_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid grep input. Use {\"pattern\":\"TODO\",\"path\":null}. pattern must be a valid regular expression; path must be a readable file or directory, or null to search the project root. Other fields are unsupported.";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrepInput {
+    pattern: String,
+    path: Option<String>,
+}
 
 pub(crate) enum PreparedRuntimeCall {
     UserQuestion {
@@ -41,6 +49,13 @@ pub(crate) enum PreparedRuntimeCall {
         call: RuntimeToolCall,
         target: RuntimePermissionTarget,
     },
+    Grep {
+        call: RuntimeToolCall,
+        model_input: String,
+        prepared: vega_tools::PreparedGrep,
+        target: Option<RuntimePermissionTarget>,
+    },
+    InvalidGrep(RuntimeToolCall),
     MixedRejected(RuntimeToolCall),
     Skill {
         call: RuntimeToolCall,
@@ -112,6 +127,8 @@ impl PreparedRuntimeCall {
             | Self::InvalidBash { call, .. }
             | Self::InvalidMcp { call }
             | Self::ExternalRead { call, .. }
+            | Self::Grep { call, .. }
+            | Self::InvalidGrep(call)
             | Self::Mcp { call, .. }
             | Self::Write { call, .. }
             | Self::Edit { call, .. }
@@ -157,13 +174,13 @@ impl PreparedRuntimeCall {
             Self::Bash { prepared, .. } if prepared.timeout_ms() % 1000 == 0 => serde_json::json!({"command":prepared.command(),"timeout":prepared.timeout_ms()/1000}).to_string(),
             Self::PinnedRead { execution, .. } => canonical_read_input(&execution.input_json)?,
             Self::ExternalRead { call, .. } => canonical_read_input(&call.input_json)?,
+            Self::Grep { model_input, .. } => model_input.clone(),
             Self::Readonly(call) => {
                 let input = parse_input(&call.name, &call.input_json).ok()?;
-                match call.name.as_str() {
-                    "glob" => { required_str(&input, "pattern").ok()?; }
-                    "grep" => { required_str(&input, "pattern").ok()?; optional_str(&input, "path").ok()?; }
-                    _ => return None,
+                if call.name != "glob" {
+                    return None;
                 }
+                required_str(&input, "pattern").ok()?;
                 input.to_string()
             }
             Self::Skill { action: SkillToolAction::Load { name }, .. } => serde_json::json!({"name":name}).to_string(),
@@ -440,7 +457,8 @@ pub(crate) fn prepare_runtime_call(
                 ..raw_call
             }))
         }
-        "glob" | "grep" => Ok(PreparedRuntimeCall::Readonly(raw_call)),
+        "glob" => Ok(PreparedRuntimeCall::Readonly(raw_call)),
+        "grep" => Ok(prepare_grep_call(base_tools, raw_call)),
         "Write" | "Edit" | "write" | "edit" => {
             let tool = if matches!(raw_call.name.as_str(), "Write" | "write") {
                 vega_tools::MutationTool::Write
@@ -659,6 +677,61 @@ fn prepare_skill_call(
             ..raw_call
         },
         action,
+    })
+}
+
+fn prepare_grep_call(tools: &vega_tools::Tools, raw_call: RuntimeToolCall) -> PreparedRuntimeCall {
+    if !raw_call.input_json.trim_start().starts_with('{') {
+        return invalid_grep_call(raw_call);
+    }
+    let input = serde_json::from_str::<GrepInput>(&raw_call.input_json);
+    let prepared = input.ok().and_then(|input| {
+        tools
+            .prepare_grep(&input.pattern, input.path.as_deref())
+            .ok()
+            .map(|prepared| (input, prepared))
+    });
+    let Some((input, prepared)) = prepared else {
+        return invalid_grep_call(raw_call);
+    };
+    let Some(path) = prepared.path().to_str() else {
+        return invalid_grep_call(raw_call);
+    };
+    let target = (!prepared.path().starts_with(tools.root())).then(|| RuntimePermissionTarget {
+        call_id: raw_call.id.clone(),
+        tool: RuntimeMutatingTool::Read,
+        exact_pattern: if prepared.is_directory() {
+            format!("grep-dir:v1:{path}")
+        } else {
+            path.to_owned()
+        },
+        display_target: path.to_owned(),
+    });
+    let input_json = serde_json::json!({"pattern":input.pattern,"path":path}).to_string();
+    PreparedRuntimeCall::Grep {
+        model_input: raw_call.input_json,
+        call: RuntimeToolCall {
+            input_json,
+            ..raw_call
+        },
+        prepared,
+        target,
+    }
+}
+
+fn invalid_grep_call(raw_call: RuntimeToolCall) -> PreparedRuntimeCall {
+    let mut digest = Sha256::new();
+    digest.update(b"vega.grep.invalid-input.v1\0");
+    digest.update(raw_call.input_json.len().to_be_bytes());
+    digest.update(raw_call.input_json.as_bytes());
+    PreparedRuntimeCall::InvalidGrep(RuntimeToolCall {
+        input_json: serde_json::json!({
+            "audit_version":"grep_invalid_v1",
+            "raw_input_bytes":raw_call.input_json.len(),
+            "raw_input_sha256":format!("{:x}", digest.finalize()),
+        })
+        .to_string(),
+        ..raw_call
     })
 }
 
@@ -972,9 +1045,14 @@ pub(crate) async fn authorize_call(
             RuntimeToolStatus::Rejected,
             Some(run_mode_denial()),
         ))),
-        PreparedRuntimeCall::ExternalRead { call, target } => {
+        PreparedRuntimeCall::ExternalRead { call, target }
+        | PreparedRuntimeCall::Grep {
+            call,
+            target: Some(target),
+            ..
+        } => {
             if cancel.is_cancelled() {
-                return Ok(cancelled_permission(call));
+                return Ok(cancelled_permission(prepared.call()));
             }
             let known = exact_rules.contains(&RuntimeExactRule {
                 tool: RuntimeMutatingTool::Read,
@@ -1026,7 +1104,7 @@ pub(crate) async fn authorize_call(
                 danger: None,
             };
             if cancel.is_cancelled() {
-                return Ok(cancelled_permission(call));
+                return Ok(cancelled_permission(prepared.call()));
             }
             if decision == RuntimeApprovalDecision::Deny {
                 Ok(Authorization::Terminal(terminal_result(
@@ -1046,7 +1124,9 @@ pub(crate) async fn authorize_call(
         | PreparedRuntimeCall::Automation { .. }
         | PreparedRuntimeCall::Readonly(_)
         | PreparedRuntimeCall::InvalidRead(_)
-        | PreparedRuntimeCall::PinnedRead { .. } => {
+        | PreparedRuntimeCall::InvalidGrep(_)
+        | PreparedRuntimeCall::PinnedRead { .. }
+        | PreparedRuntimeCall::Grep { target: None, .. } => {
             if cancel.is_cancelled() {
                 return Ok(cancelled_permission(prepared.call()));
             }
@@ -1576,6 +1656,64 @@ pub(crate) async fn execute_prepared_waiting(
                 ),
             }
         }
+        PreparedRuntimeCall::Grep { call, prepared, .. } => {
+            let tools = base_tools.clone();
+            let worker_call = call.clone();
+            let worker_cancel = cancel.child_token();
+            #[cfg(test)]
+            let gate = READONLY_EXECUTION_GATE.with(|gate| gate.borrow_mut().take());
+            let mut task = tokio::task::spawn_blocking(move || {
+                if worker_cancel.is_cancelled() {
+                    return terminal_result(
+                        &worker_call,
+                        CANCELLED_BEFORE_EXECUTION_OUTPUT.to_owned(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    );
+                }
+                #[cfg(test)]
+                if let Some(gate) = gate {
+                    gate.started.send(()).expect("grep observer remains alive");
+                    gate.release
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("grep gate released within bound");
+                }
+                let output = tools.execute_grep(prepared, &worker_cancel);
+                if worker_cancel.is_cancelled() {
+                    terminal_result(
+                        &worker_call,
+                        "Tool error: grep cancelled".to_owned(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    )
+                } else {
+                    readonly_result(&worker_call, output.map_err(|error| error.to_string()))
+                }
+            });
+            let (result, waited_cancel) = wait_blocking_result(&call, &mut task, cancel).await;
+            if waited_cancel || cancel.is_cancelled() {
+                (
+                    terminal_result(
+                        &call,
+                        "Tool error: grep cancelled".to_owned(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                )
+            } else {
+                (result, false)
+            }
+        }
+        PreparedRuntimeCall::InvalidGrep(call) => (
+            terminal_result(
+                &call,
+                GREP_INVALID_INPUT_OUTPUT.to_owned(),
+                RuntimeToolStatus::Failed,
+                None,
+            ),
+            false,
+        ),
         PreparedRuntimeCall::PinnedRead { execution, .. } => {
             execute_readonly_waiting(base_tools, &execution, cancel).await
         }
@@ -1930,6 +2068,13 @@ pub(crate) fn execute_readonly(
             }
             _ => Err("permission gate rejected a non-readonly tool".to_string()),
         });
+    readonly_result(call, result)
+}
+
+fn readonly_result(
+    call: &RuntimeToolCall,
+    result: Result<vega_tools::ToolOutput, String>,
+) -> RuntimeToolResult {
     match result {
         Ok(output) => {
             let (text, line_truncated) = truncate_output_lines(&output.text);
@@ -2088,7 +2233,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "grep".into(),
-            description: "Search a regular expression within the project. Locate relevant symbols with a focused path and pattern before reading surrounding ranges. path may be project-relative or an absolute path inside the project; null searches the project root. External targets are unsupported. Example: {\"pattern\":\"TODO\",\"path\":null}.".into(),
+            description: "Search a regular expression in a file or directory. Locate relevant symbols with a focused path and pattern before reading surrounding ranges. path may be project-relative or absolute, including an external target with Read permission; null or empty searches only the project root. External directory permission covers only that exact search entry, not other paths or file reads. Example: {\"pattern\":\"TODO\",\"path\":null}.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":["string","null"]}},"required":["pattern","path"],"additionalProperties":false}),
             strict: true,
         },

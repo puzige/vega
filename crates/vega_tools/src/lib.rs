@@ -27,6 +27,7 @@ pub use codec::{
 pub use error::{
     BashError, BashErrorCode, EditFailureContext, MutationError, MutationErrorCode, ToolError,
 };
+pub use grep::PreparedGrep;
 pub use mutation::{InvalidMutation, PrepareMutationError, PreparedEdit, PreparedWrite};
 #[cfg(feature = "test-support")]
 pub use output::collect_bash_output_for_test;

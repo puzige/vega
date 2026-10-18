@@ -1115,6 +1115,11 @@ pub(crate) fn validate_runtime_proposal(
             .then_some(())
             .ok_or_else(|| safe_audit_error(&call.name));
     }
+    if call.name == "grep" && crate::types::grep_invalid_input_claim(&call.input_json) {
+        return crate::types::valid_grep_invalid_input(&call.input_json)
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if matches!(call.name.as_str(), "load_skill" | "read_skill_resource") {
         return super::pipeline::valid_skill_call_projection(&call.name, &call.input_json)
             .then_some(())
@@ -1295,8 +1300,19 @@ pub(crate) fn validate_runtime_approval_event(
     {
         return Err(safe_audit_error(&state.tool));
     }
+    if state.tool == "grep" && crate::types::grep_invalid_input_claim(&state.input_json) {
+        return (crate::types::valid_grep_invalid_input(&state.input_json)
+            && shared.decision == Approval::Once
+            && shared.source == ApprovalSource::ReadonlyTool
+            && shared.note.is_none()
+            && shared.danger.is_none()
+            && remember.is_none())
+        .then_some(())
+        .ok_or_else(|| safe_audit_error(&state.tool));
+    }
     if !approval_source_matches(
         &state.tool,
+        &state.input_json,
         RuntimeToolStatus::Success,
         shared.source,
         false,
@@ -1348,6 +1364,15 @@ pub(crate) fn target_matches_state(
     call_id: &str,
     target: &vega_runtime::RuntimePermissionTarget,
 ) -> bool {
+    if state.tool == "grep" {
+        return target.call_id == call_id
+            && target.tool == RuntimeMutatingTool::Read
+            && crate::types::grep_permission_target_matches(
+                &state.input_json,
+                &target.exact_pattern,
+                &target.display_target,
+            );
+    }
     let exact_matches_input = match state.tool.as_str() {
         "Read" | "read" => serde_json::from_str::<serde_json::Value>(&state.input_json)
             .ok()

@@ -45,14 +45,14 @@ Issue [#426](https://github.com/puzige/vega/issues/426) 要求 grep 能搜索明
 - 目录不继承旧裸 Read 规则，防止过去文件或失败目录 Read 的 Always 扩成递归授权。目录签名只授权同一入口的 grep，不授权 child read、其他入口或 mutation。跨调用 Always 是同类 canonical 路径授权，不保存历史 inode；每次调用仍重新 prepare 并核对其对象身份。
 - prepare 冻结 canonical 入口、文件/目录类型、dev/ino 和祖先链身份，可安全 open descriptor，但不得 probe binary、读取正文/ignore 或收集匹配。批准后、实际读取前复核；删除、更换 inode/类型/祖先或 symlink 重定向 fail closed。同 inode 原地内容更新不做内容锁。
 - 原始 alias 在执行时不重新解析；实际读取消费 prepared 对象。目录枚举、进入、树内 ignore 与正文打开都锚定获批目录 fd，逐组件 no-follow；仅 walker.follow_links(false) 或 pathname starts_with 不足。普通文件、nonblocking 和 descriptor 硬链接检查继续有效。
-- 取消覆盖审批前后、worker 起点和搜索循环；不在取消后返回成功，达到判定截断的第 501 条后停止读取更多匹配。
+- 取消覆盖审批前后、worker 起点和搜索循环；不在取消后返回成功，达到判定截断的第 501 条后停止读取更多匹配。未获授权时取消沿用现有 Read 的 Rejected / Deny / Timeout，不伪造批准或扩展全局状态机；批准后取消使用既有 Approved → Running → Cancelled，结果不包含未完成的搜索正文。
 
 ### 凭据与搜索原语
 
 - 直接凭据根/后代/别名拒绝；显式外部目录与凭据根祖先/后代重叠拒绝整次搜索。默认与既有项目内目录搜索按候选过滤，不因包含受保护目录而整体失败；受保护目录不得进入，项目根本身在保护根内仍拒绝。保留 path guard、保护目录对象身份和 fd 硬链接防护，FullAccess 不绕过。其他工具 guard 不改。
 - 项目内保持既有 ignore walker 的父/global/git exclude/hidden 语义，glob 的共享 walker 不改。外部目录仅加载获批树内、经 credential/hardlink/no-follow 检查的 `.gitignore`/`.ignore`；不加载树外父/global/gitdir/excludes 配置。文件名显式指定沿用原文件搜索行为。
 - 保留确定性排序、二进制跳过、500 条上限及原截断标记。该上限是结果数量，不声称总时间/字节/内存有界。grep 不记 ReadState，不授予写能力。
-- 错误可理解，状态区分 Failed/Rejected/Cancelled；无效 regex 不回显敏感 pattern。不得新增原始参数/内容日志。
+- 错误可理解，状态区分 Failed/Rejected/Cancelled；无效 regex 不回显敏感 pattern。无效 grep 保持普通只读失败语义，必须走 ReadonlyTool 自动批准 → Running → Failed 生命周期，而不是从 Pending 直接变 Failed；安全审计可使用严格字段/类型/摘要校验的 `grep_invalid_v1`，仅接受普通 Failed/Once/ReadonlyTool 固定失败反馈、批准后 Cancelled/Once/ReadonlyTool 固定取消反馈，以及现有启动恢复的 Rejected/Deny/Recovery 固定拒绝反馈或 Cancelled/Once/ReadonlyTool 固定恢复反馈；批准前取消还可使用既有 Rejected/Deny/Timeout 的固定权限拒绝反馈。不借兼容分支接受坏 envelope，不放宽全局状态机。不得新增原始参数/内容日志。
 
 ### 审计、持久化与权限卡
 
@@ -81,3 +81,5 @@ Issue [#426](https://github.com/puzige/vega/issues/426) 要求 grep 能搜索明
 ## 变更记录 / 证据
 
 - 2026-10-18 v4：在原 v1 审查基础上保留独立安全审查确认的目录精确签名、树内安全 ignore、默认凭据兼容性，补会话/权限卡完整接线、跨 agent 接口；因并发写入改用本会话独占分支，按用户明确选择继续实现并提交 PR。代码与自动回归尚待实现/Actions，真实搜索待用户手测。
+- 2026-10-18 v4.1：静态审查发现初稿将 Pending 直接置为 Failed/Cancelled，违反既有 Store/UI 状态机。明确无效输入走现有普通只读失败生命周期，批准前取消沿用 Read 的拒绝语义、批准后取消保留 Cancelled，并严格校验新拒绝审计 envelope；不扩展全局状态转换。仅据此修订本卡新写测试，既有安全断言不变。
+- 2026-10-18 v4.2：最终静态审查补齐 invalid envelope 的合法取消和启动恢复白名单，避免严格校验误拒现有 Store 恢复出的固定终态；字段、摘要、输出、来源及元数据的篡改校验继续保留。

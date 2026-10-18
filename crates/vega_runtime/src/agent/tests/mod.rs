@@ -1,3 +1,4 @@
+mod external_grep;
 mod long_task_progress;
 mod progress_recovery;
 mod tool_context;

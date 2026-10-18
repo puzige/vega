@@ -46,8 +46,6 @@ static TOOL_INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Read and explicitly configured mutation tools bound to one project root.
 ///
-/// File paths accept absolute targets or resolve relative to the root. Runtime
-/// permissions authorize external files; search/shell retain their own fences.
 /// Clones share read versions; separate conversations need separate ReadState.
 #[derive(Clone)]
 pub struct Tools {

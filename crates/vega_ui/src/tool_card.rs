@@ -427,7 +427,15 @@ impl ToolCard {
             return None;
         }
         let input = self.input.as_ref()?;
-        Some((input.tool()?, input.permission_target()?))
+        let tool = match input {
+            ToolCardInputProjection::ReadOnly {
+                tool: ReadOnlyToolKind::Grep,
+                permission_path: Some(_),
+                ..
+            } => "read",
+            _ => input.tool()?,
+        };
+        Some((tool, input.permission_target()?))
     }
 
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut gpui_kit::Context<Self>) {

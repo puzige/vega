@@ -23,6 +23,7 @@ mod composer_predictions;
 mod core_flow;
 mod hydration;
 
+mod issue426_external_grep;
 mod model_markdown;
 mod permissions_cards;
 

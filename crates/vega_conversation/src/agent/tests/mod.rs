@@ -12,6 +12,7 @@ mod automatic_titles;
 mod automation;
 mod continuous_compaction;
 mod credential_continuation;
+mod external_grep;
 mod failure_paths;
 mod history_permissions;
 mod model_context;

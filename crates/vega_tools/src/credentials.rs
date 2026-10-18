@@ -7,6 +7,7 @@ use vega_credentials::{CredentialBinding, CredentialBroker, ProxyLease, SecretRe
 
 pub struct ToolCredentialPolicy {
     pub(crate) protected_root: PathBuf,
+    pub(crate) protected_identity: (u64, u64),
     bindings: Vec<CredentialBinding>,
     reader: SecretReader,
 }
@@ -21,6 +22,9 @@ impl ToolCredentialPolicy {
         reader: SecretReader,
     ) -> Result<Self, ToolError> {
         let protected_root = root.canonicalize()?;
+        use std::os::unix::fs::MetadataExt;
+        let metadata = protected_root.metadata()?;
+        let protected_identity = (metadata.dev(), metadata.ino());
         for binding in &bindings {
             binding.validate().map_err(|_| {
                 ToolError::InvalidInput("Credential binding configuration is invalid".into())
@@ -28,6 +32,7 @@ impl ToolCredentialPolicy {
         }
         Ok(Self {
             protected_root,
+            protected_identity,
             bindings,
             reader,
         })

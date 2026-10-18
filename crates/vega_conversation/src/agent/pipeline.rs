@@ -1098,6 +1098,38 @@ pub(crate) fn validate_recovered_projection(
             "terminal tool call {call_id} has invalid safe projection"
         ))
     };
+    if tool == "grep"
+        && (crate::types::grep_invalid_input_claim(input_json)
+            || output == vega_runtime::GREP_INVALID_INPUT_OUTPUT)
+    {
+        let valid_terminal = match (status, approval.decision, approval.source) {
+            (RuntimeToolStatus::Failed, Approval::Once, ApprovalSource::ReadonlyTool) => {
+                output == vega_runtime::GREP_INVALID_INPUT_OUTPUT
+            }
+            (RuntimeToolStatus::Cancelled, Approval::Once, ApprovalSource::ReadonlyTool) => {
+                matches!(
+                    output,
+                    vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                        | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                )
+            }
+            (RuntimeToolStatus::Rejected, Approval::Deny, ApprovalSource::Recovery) => {
+                output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+            }
+            (RuntimeToolStatus::Rejected, Approval::Deny, ApprovalSource::Timeout) => {
+                output == "Tool error: permission denied"
+            }
+            _ => false,
+        };
+        return (crate::types::valid_grep_invalid_input(input_json)
+            && valid_terminal
+            && approval.note.is_none()
+            && approval.danger.is_none()
+            && exit_code.is_none()
+            && duration_ms.is_none())
+        .then(|| input_json.to_string())
+        .ok_or_else(corrupt);
+    }
     if status == RuntimeToolStatus::Rejected
         && approval.decision == Approval::Deny
         && approval.source == ApprovalSource::Validation
@@ -1185,7 +1217,7 @@ pub(crate) fn validate_recovered_projection(
             || duration_ms.is_some()
             || approval.danger.is_some()
             || approval.decision == Approval::Always
-            || !approval_source_matches(tool, status, approval.source, false)
+            || !approval_source_matches(tool, input_json, status, approval.source, false)
         {
             return Err(corrupt());
         }
@@ -1346,7 +1378,7 @@ pub(crate) fn validate_recovered_projection(
             if let Ok(valid) = vega_tools::WriteEditAudit::from_json(input_json) {
                 if !valid.tool().as_str().eq_ignore_ascii_case(tool)
                     || approval.source == ApprovalSource::Validation
-                    || !approval_source_matches(tool, status, approval.source, false)
+                    || !approval_source_matches(tool, input_json, status, approval.source, false)
                 {
                     return Err(corrupt());
                 }
@@ -1475,7 +1507,7 @@ pub(crate) fn validate_recovered_projection(
             if tool == "bash" && approval.source == ApprovalSource::Validation {
                 return Err(corrupt());
             }
-            if !approval_source_matches(tool, status, approval.source, false) {
+            if !approval_source_matches(tool, input_json, status, approval.source, false) {
                 return Err(corrupt());
             }
             if tool == "bash" && !bash_danger_audit_matches(input_json, approval) {
@@ -1704,6 +1736,7 @@ pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAud
 
 pub(crate) fn approval_source_matches(
     tool: &str,
+    input_json: &str,
     status: RuntimeToolStatus,
     source: ApprovalSource,
     invalid_projection: bool,
@@ -1730,6 +1763,19 @@ pub(crate) fn approval_source_matches(
         } else {
             source == ApprovalSource::ReadonlyTool
         };
+    }
+    if tool == "grep" && crate::types::grep_invalid_input_claim(input_json) {
+        return crate::types::valid_grep_invalid_input(input_json)
+            && matches!(
+                (status, source),
+                (
+                    RuntimeToolStatus::Failed | RuntimeToolStatus::Cancelled,
+                    ApprovalSource::ReadonlyTool
+                ) | (
+                    RuntimeToolStatus::Rejected,
+                    ApprovalSource::Recovery | ApprovalSource::Timeout
+                )
+            );
     }
     if invalid_projection {
         return status == RuntimeToolStatus::Rejected && source == ApprovalSource::Validation;
@@ -1788,7 +1834,25 @@ pub(crate) fn approval_source_matches(
                     | ApprovalSource::FullAccess
             ),
         },
-        "glob" | "grep" => {
+        "grep" => {
+            let external_source = if status == RuntimeToolStatus::Rejected {
+                source == ApprovalSource::User
+            } else {
+                matches!(
+                    source,
+                    ApprovalSource::User | ApprovalSource::Rule | ApprovalSource::FullAccess
+                )
+            };
+            (external_source && crate::types::grep_permission_path(input_json).is_some())
+                || (status == RuntimeToolStatus::Rejected
+                    && matches!(source, ApprovalSource::Recovery | ApprovalSource::Timeout))
+                || (status != RuntimeToolStatus::Rejected
+                    && matches!(
+                        source,
+                        ApprovalSource::ReadonlyTool | ApprovalSource::Legacy
+                    ))
+        }
+        "glob" => {
             (status == RuntimeToolStatus::Rejected
                 && matches!(source, ApprovalSource::Recovery | ApprovalSource::Timeout))
                 || (status != RuntimeToolStatus::Rejected
