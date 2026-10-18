@@ -16,6 +16,7 @@ impl ThreadsBlock {
                 for (sort, label) in [
                     (SidebarTaskSort::Updated, "更新时间"),
                     (SidebarTaskSort::Created, "创建时间"),
+                    (SidebarTaskSort::Manual, "手动排序"),
                 ] {
                     let mut preferences = snapshot.preferences.clone();
                     preferences.sort = sort;
@@ -98,6 +99,11 @@ impl ThreadsBlock {
             }
             OrganizationMenu::Project(id) => {
                 items.push(("移除项目".into(), MenuCommand::RemoveProject(id.clone())));
+                items.extend(
+                    self.reorder_menu_actions(&ReorderItem::Project(id.clone()))
+                        .into_iter()
+                        .map(|(label, action)| (label, MenuCommand::Apply(action))),
+                );
             }
         }
         items

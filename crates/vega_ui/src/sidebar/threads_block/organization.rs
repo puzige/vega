@@ -10,6 +10,9 @@ use vega_conversation::types::{
 };
 mod menu;
 mod projections;
+mod reorder;
+pub(super) use reorder::ReorderItem;
+use reorder::ReorderState;
 mod render;
 #[cfg(test)]
 mod tests;
@@ -18,6 +21,7 @@ pub(super) struct Organization {
     pub(super) snapshot: Option<SidebarOrganizationSnapshot>,
     projects: Entity<ProjectsBlock>,
     pending: bool,
+    reorder: ReorderState,
     refresh_queued: bool,
     generation: u64,
     project_threads_visible: HashMap<String, usize>,
@@ -185,6 +189,7 @@ impl ThreadsBlock {
             snapshot: None,
             projects,
             pending: false,
+            reorder: ReorderState::new(cx),
             refresh_queued: false,
             generation: 0,
             project_threads_visible: HashMap::new(),
@@ -512,8 +517,7 @@ impl ThreadsBlock {
         &self,
         thread_id: &str,
     ) -> Vec<(String, SidebarOrganizationAction)> {
-        let _ = thread_id;
-        Vec::new()
+        self.reorder_menu_actions(&ReorderItem::Thread(thread_id.into()))
     }
     fn edit_group(
         &mut self,

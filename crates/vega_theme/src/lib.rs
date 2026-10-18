@@ -491,6 +491,7 @@ impl Layout {
     /// Stable width reserved for project metadata in pinned task rows.
     pub const SIDEBAR_PROJECT_METADATA_WIDTH: f32 = 85.0;
     pub const SIDEBAR_SECTION_GAP: f32 = 12.0;
+    pub const SIDEBAR_REORDER_LINE_HEIGHT: f32 = 2.0;
     pub const COMPOSER_MAX_WIDTH: f32 = 768.0;
     pub const AUTOMATION_HEIGHT: f32 = 36.0;
     pub const AUTOMATION_INSET: f32 = 16.0;
