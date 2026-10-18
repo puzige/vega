@@ -97,8 +97,6 @@ pub(crate) const ANCHOR_EPSILON_PX: f32 = 1.0;
 /// conversation list is variable-height and never uses this value.
 pub(crate) const ROW_HEIGHT: f32 = 24.0;
 
-pub(crate) const MESSAGE_COPY_ACTIONS_ENABLED: bool = false;
-
 /// Demo injection pacing: the 16ms tick polls; the injected count follows
 /// `INJECT_RATE × elapsed` (≈500 δ/s 任务卡口径，自校正抵消主线程抖动).
 const INJECT_TICK: Duration = Duration::from_millis(16);

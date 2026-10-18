@@ -81,6 +81,10 @@ impl ConversationStream {
         self.thinking_bytes = checkpoint.thinking_bytes;
         self.thinking_blocks = checkpoint.thinking_blocks;
         self.active_segment_ordinal = checkpoint.segment_ordinal;
+        self.clear_final_copy(message_id);
+        if let Some(responses) = self.run_responses.get_mut(message_id) {
+            responses.rollback(text_start_bytes);
+        }
         let anchor = self.scroll_anchor_snapshot();
         for index in removed.into_iter().rev() {
             self.entries.remove(index);

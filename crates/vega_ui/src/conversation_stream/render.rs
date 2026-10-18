@@ -1541,21 +1541,30 @@ impl Render for ConversationStream {
                                                             pinned = group.read(cx).scroll_fade_pinned_indicator(Some(*segment));
                                                             RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx)
                                                         },
-                                                        Some(entry) => render_stream_entry(
-                                                            entry,
-                                                            this.entry_identities
-                                                                .get(index)
-                                                                .is_some_and(|identity| {
-                                                                    identity.message_id.is_some()
-                                                                }),
-                                                            stage_top_insets
-                                                                .get(&index)
-                                                                .copied()
-                                                                .unwrap_or(0.),
-                                                            window,
-                                                            cx,
-                                                            &this.selection_focus,
-                                                        ),
+                                                        Some(entry) => {
+                                                            let body = render_stream_entry(
+                                                                entry,
+                                                                this.entry_identities
+                                                                    .get(index)
+                                                                    .is_some_and(|identity| {
+                                                                        identity.message_id.is_some()
+                                                                    }),
+                                                                stage_top_insets
+                                                                    .get(&index)
+                                                                    .copied()
+                                                                    .unwrap_or(0.),
+                                                                window,
+                                                                cx,
+                                                                &this.selection_focus,
+                                                            );
+                                                            if let StreamEntry::Assistant { copy, .. } = entry
+                                                                && let Some(source) = this.final_copy_for_entry(index)
+                                                            {
+                                                                render_rows::message_with_copy(body, source, copy.id, false, theme(cx).colors)
+                                                            } else {
+                                                                body
+                                                            }
+                                                        },
                                                         None => div().into_any_element(),
                                                     }
                                                 };

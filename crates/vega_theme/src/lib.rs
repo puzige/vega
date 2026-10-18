@@ -346,6 +346,9 @@ impl Layout {
     pub const CONVERSATION_USER_RATIO: f32 = 0.7;
     pub const CONVERSATION_USER_PADDING: f32 = 16.0;
     pub const CONVERSATION_USER_BOTTOM: f32 = 48.0;
+    pub const COPY_ACTION_SIZE: f32 = 24.0;
+    pub const COPY_ACTION_GAP: f32 = 4.0;
+    pub const MESSAGE_COPY_FOOTER: f32 = Self::COPY_ACTION_SIZE + Self::COPY_ACTION_GAP;
     pub const SCREENSHOT_MAX_WIDTH: f32 = 360.0;
     pub const SCREENSHOT_MAX_HEIGHT: f32 = 240.0;
     pub const SCREENSHOT_MIN_WIDTH: f32 = 64.0;

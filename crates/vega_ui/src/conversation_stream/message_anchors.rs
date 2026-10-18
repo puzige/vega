@@ -184,7 +184,7 @@ impl ConversationStream {
                         StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx),
                         StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
                         StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
-                        _ => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()),
+                        _ => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()) + if self.final_copy_for_entry(index).is_some() { Layout::MESSAGE_COPY_FOOTER } else { 0. },
                     } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
             .collect::<Vec<_>>();
@@ -738,11 +738,7 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
         .enumerate()
         .map(|(index, line)| {
             let previous = index.checked_sub(1).map(|index| lines[index]);
-            if line.kind == LineKind::Code
-                && previous.is_some_and(|previous| {
-                    previous.kind == LineKind::Code && previous.block_id == line.block_id
-                })
-            {
+            if previous.is_some_and(|previous| line.continues_code_block(previous)) {
                 return 0.;
             }
             render_rows::markdown_block_gap(
@@ -753,11 +749,28 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
             )
         })
         .sum::<f32>();
+    let code_headers = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, line)| {
+            line.kind == LineKind::Code
+                && line.code_block.is_some()
+                && index
+                    .checked_sub(1)
+                    .is_none_or(|previous| !line.continues_code_block(lines[previous]))
+        })
+        .count() as f32
+        * (Layout::COPY_ACTION_SIZE
+            + Layout::COPY_ACTION_GAP
+            + 2.0 * Layout::MARKDOWN_CODE_PADDING);
     let content_height = model
         .committed_lines
         .iter()
         .chain(&model.pending_lines)
         .map(|line| {
+            if line.kind == LineKind::Code {
+                return Typography::CODE * Typography::CODE_LINE_HEIGHT;
+            }
             if let Some(table) = &line.table {
                 let inset =
                     if list_blocks.contains(&line.block_id) && line.kind != LineKind::ListItem {
@@ -798,7 +811,7 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
             chars.div_ceil(chars_per_line).max(1) as f32 * line_height
         })
         .sum::<f32>();
-    content_height + gaps
+    content_height + gaps + code_headers
 }
 
 pub(crate) fn estimate_stream_entry_height(

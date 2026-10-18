@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use mdstream::adapters::pulldown::{PulldownAdapter, PulldownAdapterOptions};
-use mdstream::{MdStream, Options, ReferenceDefinitionsMode, Update};
+use mdstream::{BlockKind, MdStream, Options, ReferenceDefinitionsMode, Update};
 use pulldown_cmark::Options as PulldownOptions;
 
 use crate::nodes::{RenderNode, render_nodes_from_events};
@@ -202,9 +202,23 @@ impl MarkdownStream {
 
         // pending 尾块：每次 append 后按 terminator 补全视图轻量重解析，不入冻结缓存
         match update.pending {
-            Some(pending) => {
+            Some(mut pending) => {
+                if pending.kind == BlockKind::CodeFence {
+                    pending.display = None;
+                }
                 let events = self.adapter.parse_pending(&pending);
-                let nodes = render_nodes_from_events(&events);
+                let mut nodes = render_nodes_from_events(&events);
+                if pending
+                    .display
+                    .as_deref()
+                    .is_some_and(|display| display != pending.raw.as_str())
+                    && crate::nodes::contains_code(&nodes)
+                {
+                    pending.display = None;
+                    let raw_events = self.adapter.parse_pending(&pending);
+                    let raw_nodes = render_nodes_from_events(&raw_events);
+                    crate::nodes::restore_code(&mut nodes, &raw_nodes);
+                }
                 let version = match self.pending.as_ref() {
                     Some(previous) if previous.block_id == pending.id.0 => previous.version + 1,
                     _ => 1,
