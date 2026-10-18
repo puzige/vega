@@ -12,14 +12,15 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## Rust 测试清零与 TEST-FIRST（当前规则）
 
-以 [Rust 测试清零与测试先行规格](docs/vega-rust-test-reset-tdd.md) 和 [执行指南 §7.2](docs/vega-exec-guide.md#72-test-first-与有效测试当前规则) 为准，适用于主 agent、子 agent、Feature 与 Bug，取代旧的“保留全部现存 Rust 测试”和“先实现再补测”操作要求：
+以 [Rust 测试开发/交付生命周期](docs/vega-rust-test-delivery-lifecycle.md) 和 [执行指南 §7.2](docs/vega-exec-guide.md#72-test-first-与有效测试当前规则) 为准，适用于主 agent、子 agent、Feature 与 Bug：**Rust 测试在开发阶段保留到 GREEN，最终交付树不保留测试**。Python 测试继续保留；[最初清零规格](docs/vega-rust-test-reset-tdd.md)中的旧保留要求以本次裁决为准。
 
 - **一次性清零**：从 `cf00946e` 删除整个 workspace（含 `xtask`）的现存 Rust 测试、可执行 doctest 及其独占支持/接线；不改生产行为、benchmark 或打包契约。保留 Python 发布、组件准备、delta 测试及 fixture；保留 Cargo/Nextest、fmt、Clippy 能力。不批量改写历史规格或报告，也不为清零人为造新测试/RED。
-- **守住合并基线**：保留现有有效测试不包括恢复 `master` 已清除的历史集合。旧分支先同步最新基线，逐项审查新增测试及必要支持；不得为解决冲突从旧 ref 整目录或整仓覆盖删除结果。历史测试的改名或改写不自动算新测试，确需新回归须独立先测后修并留证。纠偏范围见 [合并纠偏规格](docs/vega-rust-reset-reconciliation.md)。
-- **验收 → 测试 → 有效 RED → 最小实现 → 同一测试 GREEN**：生产实现尚未修改时先写齐本轮行为与失败边界测试，记录基线与测试补丁/提交；由 Codex 审查并建立/复用测试先行 draft PR 触发现有 Actions，确认目标行为缺失导致失败后才进入实现。最小缺失 API 可作接口缺失 RED，必须说明行为断言尚未执行；无关编译、依赖、网络或 runner 失败不算 RED。
+- **守住合并基线**：旧分支先同步最新基线，不从旧 ref 整目录或整仓恢复 `master` 已清除的测试集合。逐项审查本轮测试及必要支持的来源，开发 GREEN 后也须删测才能正式交付。历史测试改名/改写不自动算新回归，确需新回归独立先测后修并留证；纠偏历史见 [合并纠偏规格](docs/vega-rust-reset-reconciliation.md)。
+- **验收 → 测试 → 有效 RED → 最小实现 → 同一测试 GREEN → 删除测试 → 最终门禁 → 正式 PR**：生产实现尚未修改时先写齐本轮行为与失败边界测试，记录基线与测试补丁/提交；由 Codex 审查并建立/复用 draft PR 触发现有 Actions，确认目标行为缺失导致失败后才进入实现。最小缺失 API 可作接口缺失 RED，必须说明行为断言尚未执行；无关编译、依赖、网络或 runner 失败不算 RED。
+- **GREEN 后删测、PR 留证**：开发和实现期间保留 Rust 测试及必要接线；同一冻结测试云端 GREEN 且证据固定后，用独立提交删除 Rust 测试、可执行 doctest 及独占 fixture/mock/helper/feature/dev dependency。保留生产、benchmark 和通用 CI 能力，不通过删除失败或未执行测试逃避 GREEN。删测后的最新 head 完整门禁通过、确认 0 发现/0 执行后，才转正式 PR/申请合并；空集不是测试通过。
 - **冻结测试目标与预期，禁止实现后补测**：不按实现输出反推断言、不为报告/覆盖率追加用例、不放宽断言、不 ignore、不自动重试换绿。新需求、遗漏边界或新 Bug 必须停止本轮，记录独立验收变化并重新开始先测后修；不能用补测追认已完成实现。测试自身错误/接线修正须先留证审查且不改变验收含义，否则重新开轮。
 - **有效测试**：验证稳定/公开边界的可观察结果、必要副作用和业务/安全不变量；mock 只隔离外部依赖，不替代被测决策。不以源码字符串/符号存在、仅 mock 调用/机械转发、镜像算法、重复同义断言或内部字段覆盖率充数；调用次数只有本身属于契约且结合结果/终态才有效。新测试用行为命名，不把 issue/task 编号写入非文档代码。
-- **范围与证据**：纯文档/格式变更无行为变化时不强加测试；纯重构保留已有先行测试。交接/PR 留存可访问的 RED 基线、测试目标/补丁、原始失败与原因、后续实现顺序，以及相同测试的 GREEN 和最新 head 完整门禁；squash 后仍可审查。绿色 CI 不自动证明测试先行，空集也不是 Rust 测试通过。
+- **范围与证据**：纯文档/格式变更无行为变化时不强加测试；纯重构的验证测试也只在开发阶段保留到 GREEN，最终同样删除。交接/PR 固定可访问的测试源码/补丁、完整提交 SHA、RED 原始失败、实现顺序、带测试 GREEN、独立删测提交和最终 head 空集门禁；squash/删分支后仍能从 PR 找回原测试，不依赖本机临时文件或会过期的 artifact。绿色 CI 或提交顺序不自动证明测试先行，不用删测后的空集替代带测试 GREEN。
 
 **历史决策（2026-09-25）**：[移除真实 E2E 规格](docs/vega-issue-149-remove-real-e2e.md) 当时要求保留进程内测试。本次 Rust 清零取代其保留旧测试要求；外部依赖隔离、真实系统集成由用户手测的边界仍适用于后续测试，不恢复真实 E2E 自动门禁。
 
@@ -77,7 +78,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 - 提交格式：`feat(scope): <一句话>` / `fix(scope): <一句话>`（功能点 ID 见 [features](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
-- PR 必须附：本轮冻结测试目标、实现未改的 RED 基线/测试补丁与原始原因、实现顺序、相同测试 GREEN 和最新 head 门禁的云端命令/输出链接（未运行标待 CI 验证），以及 spec 偏离说明（必须为无）。文档/格式等无行为变化项说明不适用，不伪造 RED；不附本地全量测试。
+- PR 必须附：本轮冻结测试目标、实现未改的 RED 基线/测试源码或补丁与原始原因、实现顺序、带相同测试的 GREEN 提交与云端输出、独立删测提交及最终 head 空集完整门禁（未运行标待 CI 验证），以及 spec 偏离说明（必须为无）。测试源码与提交链接须可从 PR 找回；正式 PR 最终树无 Rust 测试。文档/格式等无行为变化项说明不适用，不伪造 RED；不附本地全量测试。
 - 合并方式：由 Codex squash merge。**用户手测通过后才删除本卡远端功能分支及本地分支/worktree**；合并时保留，取代旧的合并后立即删分支规则。
 - **合并由 Codex 主动完成**：确认待合并最新 head 的 required check 绿后合入 master，完成后才把卡片改为 `In review` 等待用户手测；PR 不使用自动关闭 Issue 的关键字。
 
@@ -92,7 +93,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 历史 [相关规格](docs/vega-issue-123-pr-check-pipeline.md) 与 [相关规格](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [相关规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 已删除；现存 `scripts/tests/` 是保留的 Python 脚本回归，不属于 Rust 清零。调度器的移除不代表允许本地编译；本地验证遵守顶部的快速 check 限制。
 - `.config/nextest.toml` 用于云端 PR gate：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
-- **本地仅做快速静态 check，功能点测试与全量门禁只交云端 `pr-check`**（2026-10-16 用户更新，取代本地定向测试要求）。有行为变化时必须先写有效测试/矩阵并确认 RED，再实现；本次清零后新增的有效测试不得随意删除或为提速加 ignore、放宽断言、自动重试到绿。空集放行仅处理无测试，不吞编译、发现或执行失败，也不证明 TDD 时序。
+- **本地仅做快速静态 check，功能点测试与全量门禁只交云端 `pr-check`**（2026-10-16 用户更新，取代本地定向测试要求）。有行为变化时必须先写有效测试/矩阵并确认 RED，再实现；同一测试 GREEN 后固定源码/提交与云端证据，再删除 Rust 测试及独占支持并验证最终空集 head，才转正式 PR。不得先删失败/未执行测试、加 ignore、放宽断言或重试到绿。空集放行不吞编译、发现或执行失败，不替代带测试 GREEN 或证明 TDD 时序。
 
 ## PR 检查轮询节奏（2026-10-15 用户裁决）
 

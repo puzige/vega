@@ -2,7 +2,7 @@
 
 2026-10-16 用户裁决：Codex 建卡并先接卡审查需求；Bug 由 Codex 排查并交付具体修复方案，再由 Vega 接卡实现。新功能默认由 Codex 实现。进入交付流程后按当前身份自动领取队列中最新的合格任务；该分工取代此前不区分执行者的取卡规则。
 
-当前测试顺序以 [Rust 清零与测试先行规格](vega-rust-test-reset-tdd.md) 和 [执行总纲 §7.2](vega-exec-guide.md#72-test-first-与有效测试当前规则) 为准：先写齐测试、确认 Actions 有效 RED，再冻结目标并实现、验证同一测试 GREEN；禁止实现后补测，验收变化须重开独立周期。
+当前测试顺序以 [Rust 测试开发/交付生命周期](vega-rust-test-delivery-lifecycle.md) 和 [执行总纲 §7.2](vega-exec-guide.md#72-test-first-与有效测试当前规则) 为准：**先写齐测试 → draft PR 确认 Actions 有效 RED → 冻结目标并实现 → 同一测试 GREEN → PR 固定测试源码/提交与证据 → 独立删测 → 最终空集门禁 → 正式 PR**。开发期间保留 Rust 测试，最终交付树不保留；Python 测试不变。禁止实现后补测，验收变化须重开周期。
 
 ## 信息各放哪里
 
@@ -53,7 +53,7 @@ Codex 接卡后先审查需求与既有 spec，写清场景、范围、非目标
 
 在同一 Issue 维护可识别的工作流记录，写清 **阶段、当前执行者、下一执行者、方案链接/版本、分支/提交和领取/交付时间**；历史保留，以最新有效交接为准。等待 Vega 时当前执行者写待领取，不能声称 Vega 已开工；不把模型名填成虚假 GitHub assignee。
 
-Codex 发布交接后改为 Ready 并读回确认；Vega 领取时核对版本、基线、范围和依赖，记录领取并改为 In progress。Vega 先在生产未改时交回测试补丁与基线并停止写入；Codex 审查并通过测试先行 draft PR 确认 Actions 有效 RED、冻结目标和预期，再明确交回实现。Vega 实现交付后在同卡回报改动、提交、静态检查、RED/GREEN 证据、待 CI 项、限制和耗时事实，交回 Codex 审查；两次交回均保持 In progress，阶段为等待 Codex 审查，当前执行者为待领取、下一执行者为 Codex，并停止写入。Codex 可按本角色队列规则自动接回。交接问题由 Codex 修订后重新交接，不由 Vega 自行决定。
+Codex 发布交接后改为 Ready 并读回确认；Vega 领取时核对版本、基线、范围和依赖，记录领取并改为 In progress。Vega 先在生产未改时交回测试补丁与基线并停止写入；Codex 审查并通过测试先行 draft PR 确认 Actions 有效 RED、冻结目标和预期，再明确交回实现。Vega 实现交付后在同卡回报改动、提交、静态检查、RED/GREEN 证据、待 CI 项、限制和耗时事实，交回 Codex 审查；两次交回均保持 In progress，阶段为等待 Codex 审查，当前执行者为待领取、下一执行者为 Codex，并停止写入。Codex 可按本角色队列规则自动接回。带测试 GREEN 经核实且原始源码/提交及云端证据固定在 PR 后，才按方案独立删除 Rust 测试与独占支持，再交回审查最终生产差异和空集 head；完整门禁通过才转正式 PR。删测阶段不放宽断言或绕过未执行测试。交接问题由 Codex 修订后重新交接，不由 Vega 自行决定。
 
 这些记录用于观察 Vega 的速度、返工、阻塞和能力边界；只记录可核实的时间与结果，不增加性能测量服务，也不把未测能力写成已验证。
 
@@ -79,8 +79,8 @@ Feature：Backlog → In progress（Codex 审查并组织实现）→ In review�
 
 - Codex、Vega 及子 agent **本地不运行 Vega 代码、不编译、构建、打包或执行测试**，包括定向 cargo check、Clippy、test/nextest；只做低 CPU、快速结束的差异、格式和静态检查。技能 frontmatter 等静态校验不属于运行 Vega。
 - 有行为变化时按执行总纲 §7.2 先写有效测试，再由 GitHub Actions 确认目标行为缺失的 RED；无关编译、依赖或 runner 失败不算 RED。冻结后不补测、不放宽断言、不 ignore 或重试换绿；新需求、遗漏边界或新 Bug 须先记录独立验收变化并重开先测后修周期。纯文档/格式不强加测试，本次 Rust 清零不造替代测试或 RED，保留 Python 测试。不新增真实外部进程/网络 E2E 门禁。
-- 集成旧任务分支前先同步最新 master，保留其已删除历史测试的结果；“保留当前测试”仅指当前有效测试，不授权整目录/整仓恢复旧集合。逐项审查真正新增的测试、必要支持和来源证据，改名/改写不自动算新增；确需新回归按 §7.2 独立先测后修。见 [合并纠偏规格](vega-rust-reset-reconciliation.md)。
-- Codex 在实现前建立/复用测试先行 draft PR 确认 RED，实现后审查同一测试 GREEN 和最新 head 门禁；保留 squash 后仍可访问的顺序及原始失败证据，最终绿色 CI 不能单独证明 TDD。未运行写“待 CI 验证”；空集写 `no Rust tests`，不称 Rust 测试通过。审查和 CI 期间保持 In progress，PR 不用自动关闭 Issue 的关键字。
+- 集成旧任务分支前先同步最新 master，不整目录/整仓恢复已删除历史测试。逐项审查本轮新增测试和必要支持的来源；它们仅在开发阶段保留到 GREEN，交付前删除。改名/改写不自动算新增，新回归按 §7.2 独立先测后修；合并纠偏历史见 [原记录](vega-rust-reset-reconciliation.md)。
+- Codex 在实现前建立/复用 draft PR 确认有效 RED，实现后审查带同一测试的 GREEN；把原始测试源码/补丁、完整提交 SHA 与 RED/GREEN run/job 固定在 PR，再独立删测并审查最终空集 head 门禁，通过后才转正式 PR/申请合并。squash/删分支后仍须能找回原测试，不依赖本机 `/tmp` 或会过期的 artifact。最终空集绿色不能替代带测试 GREEN 或证明 TDD；未运行写“待 CI 验证”，0 发现/0 执行写 `no Rust tests`，不称 Rust 测试通过。审查和 CI 期间仍 In progress，PR 不用自动关闭 Issue 的关键字。
 - CI 启动后 **每 5 分钟查询一次**；收到完成/失败通知或用户要求即时查看时可立即查询，不使用更短轮询或 watch。仅确认最新 head 的 required check `check (fmt, clippy, test)` 成功后，由 Codex squash merge master。
 - 合并后进入 In review，等待用户纯手动验收。发布/打包仍走云端，合并不代表应用已安装；合并时不提前删除任务分支/worktree。
 - 用户通过后 Codex 回写，确认本卡资源可安全清理并完成分支/worktree 清理，再关闭 Issue 并读回确认，最后更新 Done 并读回。失败则走反馈路径；未收到明确结论不得关闭、Done 或清理。清理或关闭受阻时保留 In review 并记录待收尾，不宣称完整交付，不能先 Done 再补清理。

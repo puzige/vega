@@ -29,12 +29,6 @@ pub(crate) struct AppReplaySessions(pub(crate) vega_conversation::agent::ReplayS
 
 impl Global for AppReplaySessions {}
 
-#[cfg(test)]
-#[derive(Default)]
-pub(crate) struct AgentWorkerStartProbe {
-    _private: (),
-}
-
 pub(crate) enum PendingAgentRun {
     Automation(Box<AutomationRunClaim>),
     UserMessage(UserSubmission),
@@ -848,45 +842,6 @@ pub(crate) fn map_reference_failure(error: &vega_tools::ToolError) -> FileRefere
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(crate) fn run_agent_worker(
-    database_path: std::path::PathBuf,
-    project_path: std::path::PathBuf,
-    thread: Thread,
-    run: PendingAgentRun,
-    permission_queue: vega_conversation::agent::PermissionQueue,
-    cancel: tokio_util::sync::CancellationToken,
-    sender: mpsc::SyncSender<AgentUpdate>,
-    pricing_catalog: Option<vega_conversation::PricingCatalog>,
-    config_path: Option<std::path::PathBuf>,
-    reasoning: Option<vega_runtime::FrozenReasoning>,
-    title_notifications: Option<mpsc::Sender<()>>,
-    provider_override: Option<Arc<dyn vega_runtime::Provider>>,
-    _worker_start_probe: Arc<AgentWorkerStartProbe>,
-) {
-    run_agent_worker_with_mcp(
-        database_path,
-        project_path,
-        thread,
-        run,
-        permission_queue,
-        vega_conversation::agent::UserQuestionQueue::new(),
-        cancel,
-        sender,
-        pricing_catalog,
-        config_path,
-        reasoning,
-        title_notifications,
-        None,
-        vega_tools::ReadState::default(),
-        None,
-        Vec::new(),
-        provider_override,
-        Some(vega_conversation::agent::ReplaySessionRegistry::new()),
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_agent_worker_with_mcp(
     database_path: std::path::PathBuf,
     project_path: std::path::PathBuf,
@@ -909,7 +864,6 @@ pub(crate) fn run_agent_worker_with_mcp(
     file_read_state: vega_tools::ReadState,
     queue_context: Option<PendingRunContext>,
     automation_pauses: Vec<AutomationTask>,
-    #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
     replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
 ) {
     let automation_claim = match &run {
@@ -986,27 +940,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 .map_err(|_| ())?;
             computer_use = Some(run);
         }
-        // Production must never turn an explicit config path with no unique
-        // enabled owner into a synthetic `unknown` policy. Legacy tests may
-        // inject a provider without a matching config, but an actual two-owner
-        // ambiguity remains forbidden even through that test seam.
-        #[cfg(test)]
-        let allow_test_override = provider_override.is_some()
-            && !config.as_ref().is_some_and(|config| {
-                config
-                    .providers
-                    .iter()
-                    .filter(|provider| {
-                        provider.enabled
-                            && provider.models.iter().any(|model| model == &thread.model)
-                    })
-                    .take(2)
-                    .count()
-                    > 1
-            });
-        #[cfg(not(test))]
-        let allow_test_override = false;
-        if config_path.is_some() && configured_provider.is_none() && !allow_test_override {
+        if config_path.is_some() && configured_provider.is_none() {
             return Err(());
         }
         let provider_name = configured_provider
@@ -1110,10 +1044,6 @@ pub(crate) fn run_agent_worker_with_mcp(
             Ok(known)
         });
         let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
-            #[cfg(test)]
-            if let Some(provider) = provider_override.clone() {
-                return Ok(provider);
-            }
             let provider = configured_provider.clone().ok_or(())?;
             let root = config_path
                 .as_deref()
@@ -1496,62 +1426,5 @@ pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
         "执行已设置的循环任务。"
     } else {
         "继续推进已设置的持续目标。"
-    }
-}
-
-#[cfg(test)]
-mod composer_prediction_authority_tests {
-    use super::composer_prediction_authority;
-
-    #[test]
-    fn prediction_authority_rejects_changed_ambiguous_disabled_or_revoked_provider() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config.toml");
-        let provider = vega_store::config::ProviderConfig {
-            name: "owned".into(),
-            base_url: "https://provider.invalid/v1".into(),
-            models: vec!["model".into()],
-            key_ref: "owned".into(),
-            enabled: true,
-            api: Default::default(),
-        };
-        vega_store::config::AppConfig {
-            providers: vec![provider.clone()],
-            ..Default::default()
-        }
-        .save_to(&path)
-        .unwrap();
-        vega_store::keystore::set_key(directory.path(), "owned", "synthetic-owned-key").unwrap();
-        let guard = composer_prediction_authority(
-            Some(path.clone()),
-            Some(provider.clone()),
-            "model".into(),
-        );
-        assert!(guard());
-        vega_store::config::update_from(&path, |config| {
-            config.agent.composer_predictions_enabled = false
-        })
-        .unwrap();
-        assert!(!guard());
-        vega_store::config::update_from(&path, |config| {
-            config.agent.composer_predictions_enabled = true
-        })
-        .unwrap();
-        assert!(guard());
-        vega_store::config::update_from(&path, |config| config.providers.push(provider.clone()))
-            .unwrap();
-        assert!(!guard());
-        vega_store::config::update_from(&path, |config| {
-            config.providers.pop();
-            config.providers[0].enabled = false;
-        })
-        .unwrap();
-        assert!(!guard());
-        vega_store::config::update_from(&path, |config| config.providers[0] = provider.clone())
-            .unwrap();
-        vega_store::keystore::set_key(directory.path(), "owned", "rotated-owned-key").unwrap();
-        assert!(!guard());
-        vega_store::keystore::delete_key(directory.path(), "owned").unwrap();
-        assert!(!guard());
     }
 }

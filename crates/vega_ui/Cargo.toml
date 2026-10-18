@@ -18,5 +18,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 gpui_kit = { workspace = true, features = ["test-support"] }
-tempfile.workspace = true
 vega_runtime.workspace = true

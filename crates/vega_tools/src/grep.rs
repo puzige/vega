@@ -12,9 +12,6 @@ use crate::tools::relative_display;
 
 mod descriptor;
 mod external;
-#[cfg(test)]
-#[path = "grep/tests.rs"]
-mod external_tests;
 
 use descriptor::{CredentialGuard, Identity};
 
@@ -180,8 +177,6 @@ impl GrepSearch<'_> {
                 .ok_or_else(|| invalid("external grep paths must be valid UTF-8"))?
                 .to_string()
         };
-        #[cfg(test)]
-        test_event(GrepTestEvent::BeforeFileRead, path, Some(&file));
         check_cancelled(self.cancel)?;
         if self.guard.blocks_file(&file)? {
             return Err(invalid("grep file is protected"));
@@ -198,8 +193,6 @@ impl GrepSearch<'_> {
             if reader.read_until(b'\n', &mut bytes)? == 0 {
                 break;
             }
-            #[cfg(test)]
-            test_event(GrepTestEvent::LineRead, path, Some(reader.get_ref()));
             check_cancelled(self.cancel)?;
             line_number += 1;
             trim_line_ending(&mut bytes);
@@ -242,92 +235,11 @@ fn binary_probe(file: &mut File) -> Result<bool, ToolError> {
     Ok(head.contains(&0))
 }
 
-#[cfg(test)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GrepTestEvent {
-    DirectoryEnumerated,
-    BeforeIgnoreRead,
-    BeforeFileRead,
-    LineRead,
-}
-
-#[cfg(test)]
-type GrepTestHook = Box<dyn FnMut(GrepTestEvent, &Path, Option<&File>)>;
-
-#[cfg(test)]
-thread_local! {
-    static GREP_TEST_HOOK: std::cell::RefCell<Option<GrepTestHook>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-fn test_event(event: GrepTestEvent, path: &Path, file: Option<&File>) {
-    GREP_TEST_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().as_mut() {
-            hook(event, path, file);
-        }
-    });
-}
-
 fn trim_line_ending(bytes: &mut Vec<u8>) {
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
     }
     if bytes.last() == Some(&b'\r') {
         bytes.pop();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-
-    use crate::Tools;
-
-    #[test]
-    fn absolute_project_paths_match_relative_paths_and_explicit_external_targets() {
-        let dir = tempdir().unwrap();
-        let outside = tempdir().unwrap();
-        fs::create_dir(dir.path().join("src")).unwrap();
-        fs::write(dir.path().join("src/a.txt"), "needle\n").unwrap();
-        fs::write(outside.path().join("secret.txt"), "needle\n").unwrap();
-        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
-        let tools = Tools::new(dir.path()).unwrap();
-        for relative in ["src", "src/a.txt"] {
-            let absolute = tools.root().join(relative);
-            assert_eq!(
-                tools
-                    .grep("needle", Some(absolute.to_str().unwrap()))
-                    .unwrap()
-                    .text,
-                tools.grep("needle", Some(relative)).unwrap().text
-            );
-        }
-        for path in [
-            outside.path().canonicalize().unwrap(),
-            tools.root().join("escape"),
-        ] {
-            assert_eq!(
-                tools
-                    .grep("needle", Some(path.to_str().unwrap()))
-                    .unwrap()
-                    .text,
-                format!(
-                    "{}:1:needle",
-                    outside
-                        .path()
-                        .canonicalize()
-                        .unwrap()
-                        .join("secret.txt")
-                        .display()
-                )
-            );
-        }
-        assert!(
-            tools
-                .grep("needle", Some(tools.root().join(".git").to_str().unwrap()))
-                .is_err()
-        );
     }
 }

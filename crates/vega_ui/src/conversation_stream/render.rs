@@ -236,7 +236,6 @@ impl ConversationStream {
             .child(self.render_automation(cx))
             .child(
                 div()
-                    .debug_selector(|| "composer-shell".into())
                     .on_drop(cx.listener(Self::drop_images))
                     .w_full()
                     .max_w(px(Layout::COMPOSER_MAX_WIDTH))
@@ -316,8 +315,7 @@ impl ConversationStream {
                                     }),
                                 )
                                 .size(px(Layout::TITLEBAR_CONTROL_SIZE))
-                                .track_focus(&self.action_focus[0])
-                                .debug_selector(|| "composer-add".into()),
+                                .track_focus(&self.action_focus[0]),
                             )
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_permission_status(cx))
@@ -343,7 +341,6 @@ impl ConversationStream {
                                     row.child(
                                         div()
                                             .id("composer-send")
-                                            .debug_selector(|| "composer-send".into())
                                             .aria_label("发送")
                                             .track_focus(&self.action_focus[1])
                                             .tab_stop(true)
@@ -422,7 +419,6 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-permission-status")
-                    .debug_selector(|| "composer-permission-status".into())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .flex_shrink_0()
                     .flex()
@@ -829,7 +825,6 @@ impl ConversationStream {
                                 gpui_kit::deferred(
                                     div()
                                         .id("context-usage-tooltip-popover")
-                                        .debug_selector(|| "context-usage-tooltip-popover".into())
                                         .on_hover(tooltip_hover)
                                         .on_mouse_down_out(cx.listener(
                                             |this, _: &MouseDownEvent, window, cx| {
@@ -865,7 +860,6 @@ impl ConversationStream {
         let accessible_label = display.accessibility_label();
         let control = div()
             .id("composer-context-usage-hover-target")
-            .debug_selector(|| "composer-context-usage-hover-target".into())
             .flex_shrink_0()
             .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
             .flex()
@@ -880,7 +874,6 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-context-usage")
-                    .debug_selector(|| "composer-context-usage".into())
                     .aria_label(accessible_label)
                     .focusable()
                     .track_focus(&self.context_usage_focus)
@@ -928,7 +921,6 @@ impl ConversationStream {
                     .focus_visible(move |style| style.bg(colors.bg_hover))
                     .child(
                         div()
-                            .debug_selector(|| "composer-context-usage-ring".into())
                             .size(px(16.0))
                             .flex_shrink_0()
                             .child(Self::context_usage_ring(display, colors)),
@@ -1007,7 +999,6 @@ impl ConversationStream {
         let help = format!("{}；{}", display.estimate_label(), display.capacity_label());
         div()
             .id("context-usage-tooltip")
-            .debug_selector(|| "context-usage-tooltip".into())
             .w(px(Layout::CONTEXT_USAGE_WIDTH))
             .p(px(Layout::CONTEXT_USAGE_PADDING))
             .flex()
@@ -1057,7 +1048,6 @@ impl ConversationStream {
                     .gap_3()
                     .children(display.percentage_value().map(|percentage| {
                         div()
-                            .debug_selector(|| "context-usage-tooltip-percentage".into())
                             .text_size(px(Typography::EMPTY_STATE_TITLE))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(status_color)
@@ -1072,7 +1062,6 @@ impl ConversationStream {
                             .child(div().child("估算已用 / 配置输入上限"))
                             .child(
                                 div()
-                                    .debug_selector(|| "context-usage-tooltip-compact".into())
                                     .text_color(colors.text_primary)
                                     .child(display.compact_usage_label()),
                             ),
@@ -1080,7 +1069,6 @@ impl ConversationStream {
             )
             .children(display.percentage_value().map(|_| {
                 div()
-                    .debug_selector(|| "context-usage-bar".into())
                     .h(px(6.))
                     .w_full()
                     .rounded_full()
@@ -1101,7 +1089,6 @@ impl ConversationStream {
             .children(
                 (display.model_input_limit.is_none() || over_limit).then(|| {
                     div()
-                        .debug_selector(|| "context-usage-tooltip-capacity".into())
                         .text_color(if over_limit {
                             colors.warning
                         } else {
@@ -1170,7 +1157,6 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-model")
-                    .debug_selector(|| "composer-model".into())
                     .aria_label(current.to_owned())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .track_focus(&self.model_focus)
@@ -1209,7 +1195,6 @@ impl ConversationStream {
                             .gap_1()
                             .child(
                                 div()
-                                    .debug_selector(|| "composer-model-label".into())
                                     .w(label_width)
                                     .min_w_0()
                                     .flex_shrink_1()
@@ -1245,7 +1230,6 @@ impl ConversationStream {
 
         gpui_kit::deferred(
             div()
-                .debug_selector(|| "composer-thinking-slider".into())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .absolute()
                 .bottom(gpui_kit::relative(1.0))
@@ -1267,7 +1251,6 @@ impl ConversationStream {
         gpui_kit::deferred(
             div()
                 .id("composer-model-menu")
-                .debug_selector(|| "composer-model-menu".into())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .absolute()
                 .bottom(gpui_kit::relative(1.0))
@@ -1299,7 +1282,6 @@ impl ConversationStream {
                 .child(
                     div()
                         .id("composer-model-rows")
-                        .debug_selector(|| "composer-model-rows".into())
                         .min_h_0()
                         .overflow_y_scroll()
                         .track_scroll(&self.model_menu_scroll)

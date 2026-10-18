@@ -174,32 +174,6 @@ impl PermissionCard {
         (&self.prompt.tool, &self.prompt.display_target)
     }
 
-    pub fn visible_text(&self) -> String {
-        let mut text = format!(
-            "Permission required {} {}",
-            self.prompt.display_tool(),
-            self.prompt.display_target
-        );
-        if let Some(reason) = &self.prompt.danger_reason {
-            text.push(' ');
-            text.push_str(reason);
-            text.push_str(
-                " Always allow still requires confirmation for future dangerous commands",
-            );
-        }
-        if let Some(options) = &self.prompt.acp_options {
-            for option in options {
-                text.push(' ');
-                text.push_str(&option.name);
-            }
-        } else if self.prompt.external {
-            text.push_str(" Allow once Reject");
-        } else {
-            text.push_str(" Allow once Always allow Reject");
-        }
-        text
-    }
-
     /// Whether another path already closed the first-wins latch.
     pub fn is_resolved(&self) -> bool {
         self.resolved || self.lease.as_ref().is_none_or(PermissionLease::is_resolved)
