@@ -450,7 +450,12 @@ impl ConversationStream {
                 }
             }
         }
-        for (message_id, responses) in restored_responses {
+        for (message_id, mut responses) in restored_responses {
+            if terminal_runs.get(&message_id).is_some_and(|(status, _)| {
+                *status == vega_conversation::history::AssistantStatus::Done
+            }) {
+                responses.refresh_final_copy(&message_id, &hydrated, &hydrated_identities);
+            }
             if let Some(group) = self.run_activity_groups.get(&message_id)
                 && terminal_runs.get(&message_id).is_some_and(|(status, _)| {
                     *status == vega_conversation::history::AssistantStatus::Done
@@ -1022,6 +1027,9 @@ impl ConversationStream {
         execution_duration_ms: Option<u64>,
         cx: &mut Context<Self>,
     ) {
+        if status != RunActivityStatus::Completed {
+            self.clear_final_copy(message_id);
+        }
         if let Some(group) = self.run_activity_groups.get(message_id).cloned() {
             if self
                 .active_agent_message
@@ -1189,6 +1197,11 @@ impl ConversationStream {
                     return;
                 }
                 let entry_index = *entry_index;
+                if self.clear_final_copy(&message_id)
+                    && let Some(group) = self.run_activity_groups.get(&message_id)
+                {
+                    group.update(cx, |group, cx| group.invalidate_final(cx));
+                }
                 let starts_visible_text = !self.active_segment_has_visible_text
                     && delta.chars().any(|character| !character.is_whitespace());
                 if starts_visible_text {

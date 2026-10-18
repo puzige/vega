@@ -421,12 +421,24 @@ impl ConversationStream {
                 .iter()
                 .flat_map(|focuses| focuses.iter().cloned()),
         );
-        let index = controls
+        let next = controls
             .iter()
             .position(|focus| focus.is_focused(window))
-            .unwrap_or(0);
-        let next = (index + if backwards { controls.len() - 1 } else { 1 }) % controls.len();
-        controls[next].focus(window, cx);
+            .and_then(|index| {
+                if backwards {
+                    index.checked_sub(1)
+                } else {
+                    index.checked_add(1)
+                }
+            })
+            .and_then(|index| controls.get(index));
+        if let Some(next) = next {
+            next.focus(window, cx);
+        } else if backwards {
+            window.focus_prev(cx);
+        } else {
+            window.focus_next(cx);
+        }
         cx.stop_propagation();
     }
 

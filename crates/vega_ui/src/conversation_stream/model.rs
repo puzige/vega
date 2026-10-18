@@ -175,6 +175,13 @@ pub(crate) struct StreamLine {
     pub depth: usize,
     pub spans: Vec<StreamSpan>,
     pub table: Option<Arc<StreamTable>>,
+    pub(crate) code_block: Option<Arc<StreamCodeBlock>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StreamCodeBlock {
+    pub(crate) language: Option<String>,
+    pub(crate) code: Arc<str>,
 }
 
 /// Cached styled cells; the first row is the header. Column geometry belongs
@@ -225,7 +232,18 @@ impl StreamLine {
             depth: 0,
             spans: Vec::new(),
             table: None,
+            code_block: None,
         }
+    }
+
+    pub(crate) fn continues_code_block(&self, previous: &Self) -> bool {
+        self.kind == LineKind::Code
+            && previous.kind == LineKind::Code
+            && self
+                .code_block
+                .as_ref()
+                .zip(previous.code_block.as_ref())
+                .is_some_and(|(current, previous)| Arc::ptr_eq(current, previous))
     }
 }
 
@@ -349,6 +367,10 @@ pub(crate) fn flatten_node(
             out.push(line);
         }
         RenderNode::CodeBlock { language, code } => {
+            let code_block = Arc::new(StreamCodeBlock {
+                language: language.clone(),
+                code: code.as_str().into(),
+            });
             let highlighted = match origin {
                 BlockOrigin::Committed => language
                     .as_deref()
@@ -366,6 +388,7 @@ pub(crate) fn flatten_node(
                 let line_start = offset;
                 let line_end = offset + code_line.len();
                 let mut line = StreamLine::new(block_id, LineKind::Code);
+                line.code_block = Some(code_block.clone());
                 line.depth = depth;
                 line.spans = coalesce(code_line_spans(
                     code,

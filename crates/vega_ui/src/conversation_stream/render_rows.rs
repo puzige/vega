@@ -166,11 +166,12 @@ fn render_entry_internal(
                 .into_any_element()
         }
         StreamEntry::User { lines, copy } => {
-            if let Some(focus) = focus {
+            let body = if let Some(focus) = focus {
                 selectable_user_message(lines, copy, focus, &colors, window, cx)
             } else {
-                message_with_copy(user_message_item(lines, &colors), copy, true, colors)
-            }
+                user_message_item(lines, &colors)
+            };
+            message_with_copy(body, copy, copy.id, true, colors)
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images, cx),
         StreamEntry::Screenshot { card } => card.clone().into_any_element(),
@@ -191,16 +192,12 @@ fn render_entry_internal(
                     cx,
                 )
             } else {
-                message_with_copy(
-                    markdown_item(
-                        model,
-                        failure.filter(|_| !suppress_run_notices),
-                        &colors,
-                        &format!("assistant-message-{}", copy.id),
-                    ),
-                    copy,
-                    false,
-                    colors,
+                markdown_message_item(
+                    model,
+                    failure.filter(|_| !suppress_run_notices),
+                    &colors,
+                    &format!("assistant-message-{}", copy.id),
+                    Some(copy.id),
                 )
             }
         }
@@ -347,6 +344,16 @@ pub(crate) fn markdown_item(
     colors: &ThemeColors,
     id_prefix: &str,
 ) -> AnyElement {
+    markdown_message_item(model, failure, colors, id_prefix, None)
+}
+
+fn markdown_message_item(
+    model: &StreamModel,
+    failure: Option<RunFailureKind>,
+    colors: &ThemeColors,
+    id_prefix: &str,
+    code_owner: Option<u64>,
+) -> AnyElement {
     let message_id = model
         .committed_lines
         .first()
@@ -359,7 +366,7 @@ pub(crate) fn markdown_item(
         .pt(px(Layout::CONVERSATION_BODY_TOP))
         .flex()
         .flex_col()
-        .children(markdown_blocks(model, colors, |line, index| {
+        .children(markdown_blocks(model, colors, code_owner, |line, index| {
             render_line(
                 line,
                 colors,
@@ -554,21 +561,25 @@ pub(crate) fn selectable_markdown_content(
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
     let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
     let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
-    let mut previous: Option<(u64, LineKind)> = None;
-    let blocks = markdown_blocks(model, colors, |line, index| {
+    let mut previous: Option<(u64, LineKind, Option<Arc<StreamCodeBlock>>)> = None;
+    let blocks = markdown_blocks(model, colors, Some(copy.id), |line, index| {
         if !matches!(line.kind, LineKind::Rule)
-            && let Some((previous_block, previous_kind)) = previous
+            && let Some((previous_block, previous_kind, previous_code)) = &previous
         {
-            let same_multiline_block = previous_block == line.block_id
-                && ((matches!(previous_kind, LineKind::Code)
-                    && matches!(line.kind, LineKind::Code))
-                    || (matches!(previous_kind, LineKind::ListItem)
+            let same_multiline_block = (*previous_kind == LineKind::Code
+                && line.kind == LineKind::Code
+                && previous_code
+                    .as_ref()
+                    .zip(line.code_block.as_ref())
+                    .is_some_and(|(previous, current)| Arc::ptr_eq(previous, current)))
+                || (*previous_block == line.block_id
+                    && (matches!(previous_kind, LineKind::ListItem)
                         && matches!(line.kind, LineKind::ListItem)));
             document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
         }
         let element = render_line_selectable(line, colors, &mut document, index, copy.id);
         if !matches!(line.kind, LineKind::Rule) {
-            previous = Some((line.block_id, line.kind));
+            previous = Some((line.block_id, line.kind, line.code_block.clone()));
         }
         element
     });
@@ -582,6 +593,7 @@ pub(crate) fn selectable_markdown_content(
 fn markdown_blocks(
     model: &StreamModel,
     colors: &ThemeColors,
+    code_owner: Option<u64>,
     mut render: impl FnMut(&StreamLine, usize) -> AnyElement,
 ) -> Vec<AnyElement> {
     let lines: Vec<_> = model
@@ -596,6 +608,7 @@ fn markdown_blocks(
         .collect();
     let mut blocks = Vec::new();
     let mut index = 0;
+    let mut code_ordinal = 0;
     while index < lines.len() {
         let line = lines[index];
         let previous = index.checked_sub(1).map(|index| lines[index]);
@@ -607,10 +620,7 @@ fn markdown_blocks(
         let mut content = vec![render(line, index)];
         index += 1;
         if line.kind == LineKind::Code {
-            while index < lines.len()
-                && lines[index].block_id == block_id
-                && lines[index].kind == LineKind::Code
-            {
+            while index < lines.len() && lines[index].continues_code_block(line) {
                 content.push(render(lines[index], index));
                 index += 1;
             }
@@ -624,28 +634,47 @@ fn markdown_blocks(
                 body.pl(px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT))
             });
         let body = if line.kind == LineKind::Code {
+            let ordinal = code_ordinal;
+            code_ordinal += 1;
+            let header = code_owner
+                .zip(line.code_block.as_ref())
+                .map(|(owner, code)| code_header(code, owner, ordinal, colors));
             body.child(
                 div()
-                    .id(gpui_kit::SharedString::from(format!(
-                        "markdown-code-{block_id}-{start}"
-                    )))
                     .w_full()
                     .min_w_0()
-                    .overflow_x_scroll()
                     .bg(colors.code_bg)
                     .rounded(px(Layout::TOOL_DETAIL_RADIUS))
-                    .p(px(Layout::MARKDOWN_CODE_PADDING))
+                    .px(px(Layout::MARKDOWN_CODE_PADDING))
+                    .pt(px(Layout::MARKDOWN_CODE_PADDING))
                     .flex()
+                    .flex_col()
+                    .when(header.is_some(), |body| {
+                        body.gap(px(Layout::COPY_ACTION_GAP))
+                    })
+                    .children(header)
                     .child(
                         div()
-                            .min_w_full()
-                            .flex_shrink_0()
+                            .id(gpui_kit::SharedString::from(format!(
+                                "markdown-code-scroll-{}-{block_id}-{start}",
+                                code_owner.unwrap_or_default(),
+                            )))
+                            .w_full()
+                            .min_w_0()
+                            .pb(px(Layout::MARKDOWN_CODE_PADDING))
+                            .overflow_x_scroll()
                             .flex()
-                            .flex_col()
-                            .items_start()
-                            .children(content),
-                    )
-                    .scroll_edge_fade(colors.code_bg, ScrollFade::compact()),
+                            .child(
+                                div()
+                                    .min_w_full()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_col()
+                                    .items_start()
+                                    .children(content),
+                            )
+                            .scroll_edge_fade(colors.code_bg, ScrollFade::compact()),
+                    ),
             )
         } else {
             body.children(content)
@@ -653,6 +682,45 @@ fn markdown_blocks(
         blocks.push(body.into_any_element());
     }
     blocks
+}
+
+fn code_header(
+    code: &StreamCodeBlock,
+    owner: u64,
+    ordinal: usize,
+    colors: &ThemeColors,
+) -> AnyElement {
+    let source = code.code.clone();
+    let selector = format!("markdown-code-copy-{owner}-{ordinal}");
+    div()
+        .w_full()
+        .min_w_0()
+        .h(px(Layout::COPY_ACTION_SIZE))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(Layout::COPY_ACTION_GAP))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.text_secondary)
+                .children(code.language.clone()),
+        )
+        .child(
+            crate::icons::icon_button(Icon::Copy, "复制代码", *colors, move |_, _, cx| {
+                if !source.is_empty() {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(source.to_string()));
+                }
+            })
+            .id(gpui_kit::SharedString::from(selector.clone()))
+            .size(px(Layout::COPY_ACTION_SIZE))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .focus_visible(|style| style.bg(colors.bg_active)),
+        )
+        .into_any_element()
 }
 
 pub(crate) fn markdown_block_gap(
@@ -696,27 +764,22 @@ pub(super) fn selection_context_menu(
     copy: &MessageCopy,
     copy_original: bool,
 ) -> AnyElement {
-    use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+    use gpui_kit::component::menu::PopupMenuItem;
 
     let copy_for_menu = copy.clone();
-    div()
-        .id(("message-selection-context-menu", copy.id))
-        .child(body)
-        .context_menu(move |menu, _, _| {
-            let selected = copy_for_menu.clone();
-            let original = copy_for_menu.clone();
-            menu.when(copy_original, |menu| {
-                menu.item(
-                    PopupMenuItem::new("复制原文").on_click(move |_, _, cx| original.copy(cx)),
-                )
-            })
-            .item(
-                PopupMenuItem::new("复制")
-                    .disabled(!copy_for_menu.has_selected_text())
-                    .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
-            )
+    super::selection_menu::SelectionMenu::new(copy.id, body, move |menu, _, _| {
+        let selected = copy_for_menu.clone();
+        let original = copy_for_menu.clone();
+        menu.when(copy_original, |menu| {
+            menu.item(PopupMenuItem::new("复制原文").on_click(move |_, _, cx| original.copy(cx)))
         })
-        .into_any_element()
+        .item(
+            PopupMenuItem::new("复制")
+                .disabled(!copy_for_menu.has_selected_text())
+                .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
+        )
+    })
+    .into_any_element()
 }
 
 fn render_line_selectable(
@@ -1319,19 +1382,16 @@ pub(crate) fn sample_document(blocks: usize) -> String {
     doc
 }
 
-fn message_with_copy(
+pub(super) fn message_with_copy(
     body: AnyElement,
     copy: &MessageCopy,
+    id: u64,
     user: bool,
     colors: ThemeColors,
 ) -> AnyElement {
-    if !MESSAGE_COPY_ACTIONS_ENABLED {
-        return body;
-    }
     if !copy.has_text() {
         return body;
     }
-    let id = copy.id;
     let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
     let source = copy.clone();
     div()
@@ -1339,22 +1399,35 @@ fn message_with_copy(
         .group(group.clone())
         .w_full()
         .flex_shrink_0()
+        .relative()
         .flex()
         .flex_col()
+        .when(!user, |body| body.pb(px(Layout::MESSAGE_COPY_FOOTER)))
         .child(body)
         .child(
             div()
-                .w_full()
+                .absolute()
+                .when(user, |row| {
+                    row.right_0().bottom(px(
+                        Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
+                    ))
+                })
+                .when(!user, |row| row.left_0().bottom_0())
                 .flex()
-                .when(user, |row| row.justify_end())
                 .child(
                     crate::icons::icon_button(
                         crate::icons::Icon::Copy,
-                        "复制消息",
+                        if user {
+                            "复制消息"
+                        } else {
+                            "复制最终回复"
+                        },
                         colors,
                         move |_, _, cx| source.copy(cx),
                     )
                     .id(("message-copy", id))
+                    .size(px(Layout::COPY_ACTION_SIZE))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .opacity(0.)
                     .group_hover(group, |style| style.opacity(1.))
                     .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),

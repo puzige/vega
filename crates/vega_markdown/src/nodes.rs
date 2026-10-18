@@ -97,6 +97,53 @@ pub(crate) fn render_nodes_from_events(events: &[Event<'_>]) -> Vec<RenderNode> 
     parse_blocks(events, &mut cursor)
 }
 
+pub(crate) fn contains_code(nodes: &[RenderNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        RenderNode::CodeBlock { .. } => true,
+        RenderNode::List(list) => list.items.iter().any(|item| contains_code(&item.children)),
+        RenderNode::BlockQuote { children } => contains_code(children),
+        _ => false,
+    })
+}
+
+pub(crate) fn restore_code(nodes: &mut [RenderNode], raw: &[RenderNode]) {
+    fn collect<'a>(nodes: &'a [RenderNode], codes: &mut Vec<&'a str>) {
+        for node in nodes {
+            match node {
+                RenderNode::CodeBlock { code, .. } => codes.push(code),
+                RenderNode::List(list) => {
+                    for item in &list.items {
+                        collect(&item.children, codes);
+                    }
+                }
+                RenderNode::BlockQuote { children } => collect(children, codes),
+                _ => {}
+            }
+        }
+    }
+    fn restore<'a>(nodes: &mut [RenderNode], codes: &mut impl Iterator<Item = &'a str>) {
+        for node in nodes {
+            match node {
+                RenderNode::CodeBlock { code, .. } => {
+                    if let Some(raw) = codes.next() {
+                        *code = raw.to_owned();
+                    }
+                }
+                RenderNode::List(list) => {
+                    for item in &mut list.items {
+                        restore(&mut item.children, codes);
+                    }
+                }
+                RenderNode::BlockQuote { children } => restore(children, codes),
+                _ => {}
+            }
+        }
+    }
+    let mut codes = Vec::new();
+    collect(raw, &mut codes);
+    restore(nodes, &mut codes.into_iter());
+}
+
 fn parse_blocks(events: &[Event<'_>], cursor: &mut usize) -> Vec<RenderNode> {
     let mut nodes = Vec::new();
     let mut stray: Vec<Inline> = Vec::new();
