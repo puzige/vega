@@ -4,6 +4,7 @@ mod cua_usability;
 mod long_task_progress;
 mod progress_recovery;
 mod steering;
+mod tool_context;
 use std::fs;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -282,18 +283,23 @@ async fn issue91_valid_primary_usage_prevents_premature_tool_round_compaction() 
 #[tokio::test]
 async fn issue91_usage_anchor_still_rejects_a_genuinely_large_tool_tail() {
     let project = tempdir().unwrap();
-    fs::write(
-        project.path().join("large.txt"),
-        format!("{}\n", "z".repeat(1_000)).repeat(50),
-    )
-    .unwrap();
-    let tools = vega_tools::Tools::new(project.path()).unwrap();
-    let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
-        ProviderEvent::ToolUse {
-            id: "read-large-tail".into(),
+    let line = "z".repeat(1_000);
+    let file = format!("{line}\n").repeat(50);
+    let expected_output = (1..=50)
+        .map(|number| format!("{number:>2} | {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut first = Vec::new();
+    for index in 0..6 {
+        let path = format!("large-{index}.txt");
+        fs::write(project.path().join(&path), &file).unwrap();
+        first.push(ProviderEvent::ToolUse {
+            id: format!("read-large-tail-{index}"),
             name: "read".into(),
-            input_json: r#"{"path":"large.txt"}"#.into(),
-        },
+            input_json: serde_json::json!({"path":path}).to_string(),
+        });
+    }
+    first.extend([
         ProviderEvent::Usage {
             input: 500,
             output: 80,
@@ -303,15 +309,18 @@ async fn issue91_usage_anchor_still_rejects_a_genuinely_large_tool_tail() {
         ProviderEvent::Done {
             stop_reason: StopReason::ToolUse,
         },
-    ])]]);
+    ]);
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(first)]]);
     let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::new(Mutex::new(Vec::new()));
     let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
     let budget = tool_round_context_budget(&req);
     req.context_budget = Some(budget);
     req.context_source_version = Some(1);
     req.context_compaction_hook = Some(Arc::new(TailPreservingCompactionHook {
         calls: calls.clone(),
-        observed: Arc::new(Mutex::new(Vec::new())),
+        observed: observed.clone(),
     }));
     let result = run_agent(&provider, &tools, req, CancellationToken::new()).await;
     assert!(
@@ -326,11 +335,57 @@ async fn issue91_usage_anchor_still_rejects_a_genuinely_large_tool_tail() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
+    let raw_first = crate::estimate_wire_context(&requests[0].messages, &requests[0].tools)
+        .unwrap()
+        .input_tokens;
+    assert!(raw_first < budget.trigger_tokens().unwrap());
+    let observed = observed.lock().unwrap();
+    let canonical_results = observed
+        .iter()
+        .filter(|message| message.role == ChatRole::Tool)
+        .collect::<Vec<_>>();
+    assert_eq!(canonical_results.len(), 6);
+    for (index, message) in canonical_results.iter().enumerate() {
+        assert_eq!(
+            message.tool_call_id.as_deref(),
+            Some(format!("read-large-tail-{index}").as_str())
+        );
+        assert_eq!(message.content, expected_output);
+    }
+    let mut projected = vec![requests[0].messages[0].clone()];
+    projected.extend(crate::project_model_messages(&observed).unwrap());
+    let projected_results = projected
+        .iter()
+        .filter(|message| message.role == ChatRole::Tool)
+        .collect::<Vec<_>>();
+    assert_eq!(projected_results.len(), 6);
+    for (index, message) in projected_results.iter().enumerate() {
+        let body = if index == 5 {
+            message.content.strip_suffix(PROGRESS_NOTICE).unwrap()
+        } else {
+            &message.content
+        };
+        assert!(body.len() <= 8_192 + 1_024);
+        assert!(!body.contains("vega_tool_result_reference"));
+        let (head, rest) = body.split_once("\n{\"vega_tool_preview\":").unwrap();
+        let (metadata, tail) = rest.split_once('\n').unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_str(&format!("{{\"vega_tool_preview\":{metadata}")).unwrap();
+        assert_eq!(head, &expected_output[..4_096]);
+        assert_eq!(tail, &expected_output[expected_output.len() - 4_096..]);
+        assert_eq!(metadata["vega_tool_preview"]["status"], "success");
+        assert_eq!(metadata["vega_tool_preview"]["truncated"], false);
+        assert_eq!(
+            metadata["vega_tool_preview"]["runtime_bytes"],
+            expected_output.len()
+        );
+    }
+    let raw_with_tail = crate::estimate_wire_context(&projected, &requests[0].tools)
+        .unwrap()
+        .input_tokens;
     assert!(
-        crate::estimate_wire_context(&requests[0].messages, &requests[0].tools)
-            .unwrap()
-            .input_tokens
-            < budget.trigger_tokens().unwrap()
+        500 + raw_with_tail - raw_first >= budget.trigger_tokens().unwrap(),
+        "the six distinct previews must exceed the anchored input trigger"
     );
 }
 
@@ -529,7 +584,7 @@ async fn issue91_duplicate_done_cannot_anchor_a_following_tool_round() {
     ]);
     let calls = Arc::new(AtomicUsize::new(0));
     let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
-    req.context_budget = Some(ContextBudget::new(11_000, 1_000, true).unwrap());
+    req.context_budget = Some(tool_round_context_budget(&req));
     req.context_source_version = Some(1);
     req.context_compaction_hook = Some(Arc::new(RecordingCompactionHook {
         calls: calls.clone(),
@@ -540,14 +595,25 @@ async fn issue91_duplicate_done_cannot_anchor_a_following_tool_round() {
         .await
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(outcome.events.iter().any(|event| matches!(
-        event,
-        RuntimeEvent::ContextAccountingUpdated(ContextAccountingDecision {
-            source: ContextAccountingSource::Estimated,
-            revision: 1,
-            ..
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(outcome.executed_tool_call_count, 1);
+    let decisions = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PrimaryPreflight =>
+            {
+                Some(decision)
+            }
+            _ => None,
         })
-    )));
+        .collect::<Vec<_>>();
+    assert_eq!(decisions.len(), 2);
+    assert!(decisions[0].predicted_input < decisions[0].trigger_tokens);
+    assert_eq!(decisions[1].source, ContextAccountingSource::Estimated);
+    assert_eq!(decisions[1].provider_input_baseline, None);
+    assert_eq!(decisions[1].revision, 1);
 }
 
 struct FixedHook {

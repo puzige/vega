@@ -2778,11 +2778,7 @@ where
                         result: conflict.clone(),
                     }
                 );
-                messages.push(ChatMessage::projected_tool_result(
-                    call.id,
-                    &call.name,
-                    &conflict.output,
-                ));
+                messages.push(ChatMessage::runtime_tool_result(&call, &conflict));
                 continue;
             }
             let validation_output = match &prepared {
@@ -2817,11 +2813,7 @@ where
                                 result: conflict.clone(),
                             }
                         );
-                        messages.push(ChatMessage::projected_tool_result(
-                            &call.id,
-                            &call.name,
-                            &conflict.output,
-                        ));
+                        messages.push(ChatMessage::runtime_tool_result(&call, &conflict));
                         continue;
                     }
                     terminal = prior.result;
@@ -2838,11 +2830,7 @@ where
                         result: terminal.clone(),
                     }
                 );
-                messages.push(ChatMessage::projected_tool_result(
-                    &call.id,
-                    &call.name,
-                    &terminal.output,
-                ));
+                messages.push(ChatMessage::runtime_tool_result(&call, &terminal));
                 completed.insert(
                     call.id.clone(),
                     CompletedToolCall {
@@ -2885,11 +2873,7 @@ where
                     result
                 };
                 recovery.observe(&call, &result);
-                messages.push(ChatMessage::projected_tool_result(
-                    &call.id,
-                    &call.name,
-                    &result.output,
-                ));
+                messages.push(ChatMessage::runtime_tool_result(&call, &result));
                 continue;
             }
             if let Some(prior) = completed.get(&call.id).cloned() {
@@ -2920,11 +2904,7 @@ where
                             result: conflict.clone(),
                         }
                     );
-                    messages.push(ChatMessage::projected_tool_result(
-                        call.id,
-                        &call.name,
-                        &conflict.output,
-                    ));
+                    messages.push(ChatMessage::runtime_tool_result(&call, &conflict));
                     continue;
                 }
                 emit!(events, sink, RuntimeEvent::ToolCallProposed(call.clone()));
@@ -2943,11 +2923,7 @@ where
                     }
                 );
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
-                messages.push(ChatMessage::projected_tool_result(
-                    call.id,
-                    &call.name,
-                    &result.output,
-                ));
+                messages.push(ChatMessage::runtime_tool_result(&call, &result));
                 continue;
             }
             if batch_policy == BatchPolicy::RejectOtherTools
@@ -2965,11 +2941,7 @@ where
                 user_questions::validate_redacted_result(&call, &mut result);
                 recovery.observe(&call, &result);
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
-                messages.push(ChatMessage::projected_tool_result(
-                    &call.id,
-                    &call.name,
-                    &result.output,
-                ));
+                messages.push(ChatMessage::runtime_tool_result(&call, &result));
                 completed.insert(
                     call.id.clone(),
                     CompletedToolCall {
@@ -3278,8 +3250,7 @@ where
                     pattern: target.exact_pattern.clone(),
                 });
             }
-            let mut model_result =
-                ChatMessage::projected_tool_result(&call.id, &call.name, &result.output);
+            let mut model_result = ChatMessage::runtime_tool_result(&call, &result);
             if project_observation
                 && result.status == RuntimeToolStatus::Success
                 && let Some(run) = &tool_config.computer_use

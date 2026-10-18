@@ -1005,86 +1005,106 @@ async fn runtime_guided_result(dir: &std::path::Path, recovery: bool) -> ChatMes
 
 #[tokio::test]
 async fn runtime_guidance_metadata_is_ignored_by_compaction_but_tool_tampering_is_not() {
-    for recovery in [false, true] {
-        for status in ["interrupted", "failed"] {
-            for tamper in ["none", "content", "reasoning", "call_id"] {
-                let (store, dir, _) = setup();
-                let reminder = runtime_guided_result(dir.path(), recovery).await;
-                seed_terminal_history(&store, status, true);
-                seed_followup(&store);
-                store
-                    .conn()
-                    .execute(
-                        "UPDATE tool_calls SET output_text = ?1 WHERE id = 'previous-read-1'",
-                        [&reminder.content],
-                    )
-                    .unwrap();
-                let source = load_source(store.conn(), "thread-1").unwrap();
-                let mut history =
-                    history_from_context_source_with_checkpoint(&source, None, "").unwrap();
-                let index = history
-                    .iter()
-                    .position(|message| message.tool_call_id.as_deref() == Some("previous-read-1"))
-                    .unwrap();
-                assert_eq!(history[index], reminder.without_runtime_guidance());
-                history[index] = reminder;
-                match tamper {
-                    "none" => {}
-                    "content" => history[index].content.push_str(" changed"),
-                    "reasoning" => {
-                        history[index].reasoning_content = Some("unexpected tool state".into())
-                    }
-                    "call_id" => history[index].tool_call_id = Some("other-call".into()),
-                    _ => unreachable!(),
-                }
-                let estimate =
-                    vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
-                let provider =
-                    MockProvider::new(final_response("Earlier observations summarized."));
-                let result = compact_history(&store, &provider, history, estimate, "current").await;
-                if tamper == "none" {
-                    let result = result.unwrap();
-                    assert_eq!(provider.requests().len(), 1);
-                    assert!(
-                        provider.requests()[0]
-                            .messages
-                            .iter()
-                            .all(|message| !message.content.contains("<vega_runtime_notice>"))
-                    );
-                    assert_eq!(load_source(store.conn(), "thread-1").unwrap(), source);
-                    let checkpoint = latest_checkpoint(store.conn(), "thread-1", "mock-model")
-                        .unwrap()
-                        .unwrap();
-                    drop(store);
-                    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
-                    let reloaded = load_source(reopened.conn(), "thread-1").unwrap();
-                    assert_eq!(reloaded, source);
-                    assert_eq!(
-                        history_from_context_source_with_checkpoint(
-                            &reloaded,
-                            Some(&checkpoint),
-                            ""
+    for large in [false, true] {
+        for recovery in [false, true] {
+            for status in ["interrupted", "failed"] {
+                for tamper in ["none", "content", "reasoning", "call_id"] {
+                    let (store, dir, _) = setup();
+                    if large {
+                        fs::write(
+                            dir.path().join("lib.rs"),
+                            format!("{}\n", "observed ".repeat(100)).repeat(30),
                         )
-                        .unwrap(),
-                        result.messages
-                    );
-                } else {
-                    let expected = if tamper == "call_id" {
-                        ContextRuntimeError::InvalidProjection
-                    } else {
-                        ContextRuntimeError::SourceChanged
-                    };
-                    assert!(
-                        matches!(result, Err(failure) if matches!(failure.error.as_ref(), VegaError::Context(error) if *error == expected)),
-                        "{status}: {tamper}"
-                    );
-                    assert!(provider.requests().is_empty(), "{status}: {tamper}");
-                    assert_eq!(load_source(store.conn(), "thread-1").unwrap(), source);
-                    assert!(
-                        latest_checkpoint(store.conn(), "thread-1", "mock-model")
+                        .unwrap();
+                    }
+                    let reminder = runtime_guided_result(dir.path(), recovery).await;
+                    if large {
+                        assert!(reminder.content.len() > 20_000);
+                        assert!(!reminder.content.contains("vega_tool_preview"));
+                        assert_ne!(
+                            reminder.without_runtime_guidance(),
+                            reminder.without_runtime_metadata()
+                        );
+                    }
+                    seed_terminal_history(&store, status, true);
+                    seed_followup(&store);
+                    store
+                        .conn()
+                        .execute(
+                            "UPDATE tool_calls SET output_text = ?1 WHERE id = 'previous-read-1'",
+                            [&reminder.content],
+                        )
+                        .unwrap();
+                    let source = load_source(store.conn(), "thread-1").unwrap();
+                    let mut history =
+                        history_from_context_source_with_checkpoint(&source, None, "").unwrap();
+                    let index = history
+                        .iter()
+                        .position(|message| {
+                            message.tool_call_id.as_deref() == Some("previous-read-1")
+                        })
+                        .unwrap();
+                    assert_eq!(history[index], reminder.without_runtime_metadata());
+                    history[index] = reminder;
+                    match tamper {
+                        "none" => {}
+                        "content" => history[index].content.push_str(" changed"),
+                        "reasoning" => {
+                            history[index].reasoning_content = Some("unexpected tool state".into())
+                        }
+                        "call_id" => history[index].tool_call_id = Some("other-call".into()),
+                        _ => unreachable!(),
+                    }
+                    let estimate =
+                        vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
+                    let provider =
+                        MockProvider::new(final_response("Earlier observations summarized."));
+                    let result =
+                        compact_history(&store, &provider, history, estimate, "current").await;
+                    if tamper == "none" {
+                        let result = result.unwrap();
+                        assert_eq!(provider.requests().len(), 1);
+                        assert!(
+                            provider.requests()[0]
+                                .messages
+                                .iter()
+                                .all(|message| !message.content.contains("<vega_runtime_notice>"))
+                        );
+                        assert_eq!(load_source(store.conn(), "thread-1").unwrap(), source);
+                        let checkpoint = latest_checkpoint(store.conn(), "thread-1", "mock-model")
                             .unwrap()
-                            .is_none()
-                    );
+                            .unwrap();
+                        drop(store);
+                        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+                        let reloaded = load_source(reopened.conn(), "thread-1").unwrap();
+                        assert_eq!(reloaded, source);
+                        assert_eq!(
+                            history_from_context_source_with_checkpoint(
+                                &reloaded,
+                                Some(&checkpoint),
+                                ""
+                            )
+                            .unwrap(),
+                            result.messages
+                        );
+                    } else {
+                        let expected = if tamper == "call_id" {
+                            ContextRuntimeError::InvalidProjection
+                        } else {
+                            ContextRuntimeError::SourceChanged
+                        };
+                        assert!(
+                            matches!(result, Err(failure) if matches!(failure.error.as_ref(), VegaError::Context(error) if *error == expected)),
+                            "{status}: {tamper}"
+                        );
+                        assert!(provider.requests().is_empty(), "{status}: {tamper}");
+                        assert_eq!(load_source(store.conn(), "thread-1").unwrap(), source);
+                        assert!(
+                            latest_checkpoint(store.conn(), "thread-1", "mock-model")
+                                .unwrap()
+                                .is_none()
+                        );
+                    }
                 }
             }
         }
@@ -1095,6 +1115,11 @@ async fn runtime_guidance_metadata_is_ignored_by_compaction_but_tool_tampering_i
 async fn stopped_or_failed_silent_run_reopens_and_compacts_without_persisting_runtime_guidance() {
     for failed in [false, true] {
         let (store, dir, _) = setup();
+        fs::write(
+            dir.path().join("lib.rs"),
+            format!("{}\n", "observed ".repeat(100)).repeat(30),
+        )
+        .unwrap();
         let tools = vega_tools::Tools::new(dir.path()).unwrap();
         let mut rounds = (0..3)
             .map(|index| {
@@ -1151,6 +1176,41 @@ async fn stopped_or_failed_silent_run_reopens_and_compacts_without_persisting_ru
                     && message.content.contains("<vega_runtime_notice>"))
         );
         let source = load_source(store.conn(), "thread-1").unwrap();
+        assert_eq!(source.tool_calls.len(), 3);
+        let full_output = source.tool_calls[0].output_text.as_ref().unwrap();
+        assert!(full_output.len() > 20_000);
+        assert!(
+            source
+                .tool_calls
+                .iter()
+                .all(|call| call.output_text.as_ref() == Some(full_output))
+        );
+        assert!(!full_output.contains("vega_tool_preview"));
+        assert!(!full_output.contains("vega_tool_result_reference"));
+        let history = history_from_context_source_with_checkpoint(&source, None, "").unwrap();
+        let cold = vega_runtime::project_model_messages(&history).unwrap();
+        assert!(
+            cold.iter()
+                .all(|message| !message.content.contains("vega_tool_result_reference"))
+        );
+        let historical_outputs = cold
+            .iter()
+            .filter_map(|message| serde_json::from_str::<serde_json::Value>(&message.content).ok())
+            .filter(|value| value["vega_history_observation"]["kind"] == "tool_result")
+            .collect::<Vec<_>>();
+        assert_eq!(historical_outputs.len(), 3);
+        for observation in historical_outputs {
+            let output = observation["vega_history_observation"]["output"]
+                .as_str()
+                .unwrap();
+            assert!(output.contains("vega_tool_preview"));
+            assert!(output.len() <= 8192 + 1024);
+            assert!(
+                observation["vega_history_observation"]
+                    .get("advisory")
+                    .is_none()
+            );
+        }
         assert!(
             source
                 .messages
@@ -1164,12 +1224,23 @@ async fn stopped_or_failed_silent_run_reopens_and_compacts_without_persisting_ru
                 .unwrap_or_default()
                 .contains("<vega_runtime_notice>")
         }));
+        let historical_estimate = vega_runtime::estimate_chat_context("system", &history, &[])
+            .unwrap()
+            .input_tokens;
+        let input_limit = historical_estimate + 3_000;
+        assert!(
+            vega_runtime::ContextBudget::new(input_limit, 1_000, true)
+                .unwrap()
+                .trigger_tokens()
+                .unwrap()
+                < historical_estimate
+        );
         vega_store::context_compaction::save_model_policy(
             store.conn(),
             &vega_store::context_compaction::ModelContextPolicy {
                 provider: "mock-provider".into(),
                 model: "mock-model".into(),
-                input_limit: Some(20_000),
+                input_limit: Some(input_limit),
                 output_reserve: Some(1_000),
                 automatic_compaction: true,
                 updated_at: 1,
@@ -1178,8 +1249,23 @@ async fn stopped_or_failed_silent_run_reopens_and_compacts_without_persisting_ru
         .unwrap();
         drop(store);
         let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        assert_eq!(load_source(reopened.conn(), "thread-1").unwrap(), source);
+        let read = |id: &str| {
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: id.into(),
+                    name: "read".into(),
+                    input_json: r#"{"path":"lib.rs"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])]
+        };
         let continued_provider = MockProvider::new_rounds(vec![
             final_response("Preserve earlier work and continue the task."),
+            read("current-first"),
+            read("current-reference"),
             final_response("Continued successfully."),
         ]);
         let continued = run_thread_task_with_permission_config_and_reasoning(
@@ -1200,19 +1286,59 @@ async fn stopped_or_failed_silent_run_reopens_and_compacts_without_persisting_ru
         .await
         .unwrap();
         assert!(!continued.failed && !continued.interrupted);
-        assert_eq!(continued_provider.requests().len(), 2);
+        assert_eq!(continued_provider.requests().len(), 4);
         assert_eq!(continued.content, "Continued successfully.");
         assert!(continued_provider.requests()[0].tools.is_empty());
         assert!(
-            continued_provider
-                .requests()
+            continued_provider.requests()[..2]
                 .iter()
                 .flat_map(|request| &request.messages)
                 .all(|message| !message.content.contains("<vega_runtime_notice>"))
         );
+        assert!(
+            continued_provider.requests()[1]
+                .messages
+                .iter()
+                .all(|message| !message.content.contains("silent-read-")
+                    && !message.content.contains("vega_tool_result_reference"))
+        );
+        let current_first = continued_provider.requests()[2]
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("current-first"))
+            .unwrap()
+            .content
+            .clone();
+        assert!(current_first.contains("vega_tool_preview"));
+        assert!(!current_first.contains("vega_tool_result_reference"));
+        let current_reference = continued_provider.requests()[3]
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("current-reference"))
+            .unwrap()
+            .content
+            .clone();
         assert_eq!(
-            load_source(reopened.conn(), "thread-1").unwrap().tool_calls,
+            serde_json::from_str::<serde_json::Value>(&current_reference).unwrap()["vega_tool_result_reference"]
+                ["call_id"],
+            "current-first"
+        );
+        let after = load_source(reopened.conn(), "thread-1").unwrap();
+        assert_eq!(after.tool_calls.len(), source.tool_calls.len() + 2);
+        assert_eq!(
+            after
+                .tool_calls
+                .iter()
+                .filter(|call| call.id.starts_with("silent-read-"))
+                .cloned()
+                .collect::<Vec<_>>(),
             source.tool_calls
+        );
+        assert!(
+            after
+                .tool_calls
+                .iter()
+                .all(|call| call.output_text.as_ref() == Some(full_output))
         );
     }
 }

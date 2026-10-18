@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::{RuntimeToolCall, RuntimeToolResult, RuntimeToolStatus};
@@ -118,65 +117,25 @@ impl ProgressRecovery {
     }
 }
 
-fn add_digest(hash: &mut Sha256, tag: u8, bytes: &[u8]) {
-    hash.update([tag]);
-    hash.update((bytes.len() as u64).to_le_bytes());
-    hash.update(bytes);
-}
-
-fn json_digest(hash: &mut Sha256, value: &Value) {
-    match value {
-        Value::Null => add_digest(hash, 0, &[]),
-        Value::Bool(value) => add_digest(hash, 1, &[u8::from(*value)]),
-        Value::Number(value) => add_digest(hash, 2, value.to_string().as_bytes()),
-        Value::String(value) => add_digest(hash, 3, value.as_bytes()),
-        Value::Array(values) => {
-            add_digest(hash, 4, &(values.len() as u64).to_le_bytes());
-            for value in values {
-                json_digest(hash, value);
-            }
-        }
-        Value::Object(values) => {
-            add_digest(hash, 5, &(values.len() as u64).to_le_bytes());
-            let sorted = values.iter().collect::<BTreeMap<_, _>>();
-            for (key, value) in sorted {
-                add_digest(hash, 6, key.as_bytes());
-                json_digest(hash, value);
-            }
-        }
-    }
-}
-
 fn call_digest(call: &RuntimeToolCall) -> [u8; 32] {
-    let mut hash = Sha256::new();
-    add_digest(
-        &mut hash,
-        0,
-        super::tools_exec::canonical_tool_name(&call.name).as_bytes(),
-    );
-    if let Ok(value) = serde_json::from_str::<Value>(&call.input_json) {
-        json_digest(&mut hash, &value);
-    } else {
-        add_digest(&mut hash, 7, call.input_json.as_bytes());
-    }
-    hash.finalize().into()
+    crate::tool_context::fingerprint_call(&call.name, &call.input_json)
 }
 
 fn result_evidence(result: &RuntimeToolResult) -> Evidence {
     let mut hash = Sha256::new();
-    add_digest(&mut hash, 0, result.output.as_bytes());
+    crate::tool_context::hash_field(&mut hash, 0, result.output.as_bytes());
     let status = match result.status {
         RuntimeToolStatus::Success => 0,
         RuntimeToolStatus::Failed => 1,
         RuntimeToolStatus::Rejected => 2,
         RuntimeToolStatus::Cancelled => 3,
     };
-    add_digest(&mut hash, 1, &[status]);
+    crate::tool_context::hash_field(&mut hash, 1, &[status]);
     if let Some(exit_code) = result.exit_code {
-        add_digest(&mut hash, 2, &exit_code.to_le_bytes());
+        crate::tool_context::hash_field(&mut hash, 2, &exit_code.to_le_bytes());
     }
     if let Some(truncated) = result.truncated {
-        add_digest(&mut hash, 3, &[u8::from(truncated)]);
+        crate::tool_context::hash_field(&mut hash, 3, &[u8::from(truncated)]);
     }
     Evidence {
         digest: hash.finalize().into(),

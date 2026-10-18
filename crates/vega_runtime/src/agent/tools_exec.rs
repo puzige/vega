@@ -1892,17 +1892,20 @@ pub(crate) fn execute_readonly(
             _ => Err("permission gate rejected a non-readonly tool".to_string()),
         });
     match result {
-        Ok(output) => RuntimeToolResult {
-            call_id: call.id.clone(),
-            output: truncate_output_lines(&output.text),
-            status: RuntimeToolStatus::Success,
-            reused: false,
-            exit_code: None,
-            duration_ms: None,
-            truncated: Some(output.truncated),
-            approval: None,
-            remember_rule: None,
-        },
+        Ok(output) => {
+            let (text, line_truncated) = truncate_output_lines(&output.text);
+            RuntimeToolResult {
+                call_id: call.id.clone(),
+                output: text,
+                status: RuntimeToolStatus::Success,
+                reused: false,
+                exit_code: None,
+                duration_ms: None,
+                truncated: Some(output.truncated || line_truncated),
+                approval: None,
+                remember_rule: None,
+            }
+        }
         Err(message) => RuntimeToolResult {
             call_id: call.id.clone(),
             output: format!("Tool error: {message}"),
@@ -2010,16 +2013,16 @@ pub(crate) fn optional_usize(input: &Value, key: &str) -> Result<Option<usize>, 
     }
 }
 
-pub(crate) fn truncate_output_lines(text: &str) -> String {
+pub(crate) fn truncate_output_lines(text: &str) -> (String, bool) {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= OUTPUT_HALF_LINES * 2 {
-        return text.to_string();
+        return (text.to_string(), false);
     }
     let mut kept = Vec::with_capacity(OUTPUT_HALF_LINES * 2 + 1);
     kept.extend_from_slice(&lines[..OUTPUT_HALF_LINES]);
     kept.push(OUTPUT_TRUNCATION_MARKER);
     kept.extend_from_slice(&lines[lines.len() - OUTPUT_HALF_LINES..]);
-    kept.join("\n")
+    (kept.join("\n"), true)
 }
 
 /// Returns the exact primary-wire tool schemas for one run mode.  Conversation
@@ -2030,7 +2033,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
         user_questions::definition(),
         ToolDefinition {
             name: "read".into(),
-            description: "Read a text file. path is relative to the project root or absolute; external files require permission. Output has line numbers: omit those prefixes when editing. Read an existing file before write/edit and read again if it changes. offset is one-based; null offset/limit uses the default range. Example: {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}. bash cd does not change this tool's project root.".into(),
+            description: "Read a text file. path is relative to the project root or absolute; external files require permission. Output has line numbers: omit those prefixes when editing. Read an existing file before write/edit and read again if it changes. Locate the relevant file/symbol first; prefer focused offset/limit ranges for large files. offset is one-based; null offset/limit uses the default range. Example: {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}. bash cd does not change this tool's project root.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{
                 "path":{"type":"string","description":"File path, relative to project root or absolute."},
                 "offset":{"type":["integer","null"],"minimum":1},
@@ -2040,13 +2043,13 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "glob".into(),
-            description: "Find files with a pattern relative to the project root. Absolute patterns and parent traversal are unsupported. Example: {\"pattern\":\"src/**/*.rs\"}.".into(),
+            description: "Find files with a pattern relative to the project root. Use a focused pattern before reading matching files. Absolute patterns and parent traversal are unsupported. Example: {\"pattern\":\"src/**/*.rs\"}.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"],"additionalProperties":false}),
             strict: true,
         },
         ToolDefinition {
             name: "grep".into(),
-            description: "Search a regular expression within the project. path may be project-relative or an absolute path inside the project; null searches the project root. External targets are unsupported. Example: {\"pattern\":\"TODO\",\"path\":null}.".into(),
+            description: "Search a regular expression within the project. Locate relevant symbols with a focused path and pattern before reading surrounding ranges. path may be project-relative or an absolute path inside the project; null searches the project root. External targets are unsupported. Example: {\"pattern\":\"TODO\",\"path\":null}.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":["string","null"]}},"required":["pattern","path"],"additionalProperties":false}),
             strict: true,
         },
@@ -2067,7 +2070,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
             },
             ToolDefinition {
                 name: "bash".into(),
-                description: "Run a non-empty command at the project root after approval, sandboxed unless Full access. timeout is a positive integer in seconds; null uses 120 seconds. A cd affects only this command. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+                description: "Run a non-empty command at the project root after approval, sandboxed unless Full access. timeout is a positive integer in seconds; null uses 120 seconds. A cd affects only this command. Filter large output and combine independent queries when useful; inspect omitted detail without automatically replaying commands with side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64}},"required":["command","timeout"],"additionalProperties":false}),
                 strict: true,
             },

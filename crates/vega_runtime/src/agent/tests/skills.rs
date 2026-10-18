@@ -2066,10 +2066,10 @@ async fn issue74_s18_model_load_compacts_near_configured_context_budget() {
                     input_json: r#"{"name":"reviewer"}"#.into(),
                 }],
             ));
-            messages.push(ChatMessage::tool_result(
-                "s18-load",
-                r#"{"name":"reviewer","status":"loaded"}"#,
-            ));
+            let mut result =
+                ChatMessage::tool_result("s18-load", r#"{"name":"reviewer","status":"loaded"}"#);
+            assert!(result.attach_progress_reminder());
+            messages.push(result);
         }
         crate::estimate_wire_context(&messages, &definitions)
             .unwrap()
@@ -2143,9 +2143,29 @@ async fn issue74_s18_model_load_compacts_near_configured_context_budget() {
     let observed = observed.lock().unwrap();
     assert!(observed.len() >= history.len());
     assert_eq!(&observed[..history.len()], history.as_slice());
+    assert_eq!(
+        observed
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("s18-load"))
+            .unwrap()
+            .content,
+        r#"{"name":"reviewer","status":"loaded"}"#
+    );
     drop(observed);
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("s18-load"))
+            .unwrap()
+            .content,
+        format!(
+            "{}{PROGRESS_NOTICE}",
+            r#"{"name":"reviewer","status":"loaded"}"#
+        )
+    );
     assert_eq!(
         crate::estimate_wire_context(&requests[0].messages, &requests[0].tools)
             .unwrap()
@@ -2396,10 +2416,10 @@ async fn issue73_issue74_m14_duplex_mcp_skill_registry_budget_and_authority() {
             input_json: r#"{"name":"reviewer"}"#.into(),
         }],
     ));
-    active.push(ChatMessage::tool_result(
-        "m14-load",
-        r#"{"name":"reviewer","status":"loaded"}"#,
-    ));
+    let mut activation_result =
+        ChatMessage::tool_result("m14-load", r#"{"name":"reviewer","status":"loaded"}"#);
+    assert!(activation_result.attach_progress_reminder());
+    active.push(activation_result);
     let initial_tokens = crate::estimate_wire_context(&initial, &definitions)
         .unwrap()
         .input_tokens;
@@ -2531,6 +2551,33 @@ async fn issue73_issue74_m14_duplex_mcp_skill_registry_budget_and_authority() {
     )));
     let requests = provider.requests();
     assert_eq!(requests.len(), 6);
+    assert_eq!(
+        requests[1]
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("m14-load"))
+            .unwrap()
+            .content,
+        format!(
+            "{}{PROGRESS_NOTICE}",
+            r#"{"name":"reviewer","status":"loaded"}"#
+        )
+    );
+    let post_summary = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PostSummaryTarget =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(post_summary.len(), 1);
+    assert_eq!(post_summary[0].predicted_input, retained_tokens);
+    assert!(post_summary[0].predicted_input <= post_summary[0].target_tokens);
     let frozen_system = &requests[1].messages[0].content;
     assert!(frozen_system.contains("PRIVATE M14 REVIEW RULE"));
     assert!(!frozen_system.contains("MUST NOT ACTIVATE"));

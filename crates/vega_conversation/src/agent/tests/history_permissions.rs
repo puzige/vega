@@ -3073,6 +3073,16 @@ async fn issue88_long_completed_tool_history_compacts_and_continues_same_run() {
 }
 
 fn seed_issue88_large_tool_result(store: &Store, input: &str, output: &str) {
+    seed_large_tool_result(store, "read", input, output, ApprovalSource::ReadonlyTool);
+}
+
+fn seed_large_tool_result(
+    store: &Store,
+    tool: &str,
+    input: &str,
+    output: &str,
+    approval_source: ApprovalSource,
+) {
     for (id, seq, role) in [
         ("earlier-user", 1_i64, "user"),
         ("earlier-assistant", 2_i64, "assistant"),
@@ -3099,7 +3109,7 @@ fn seed_issue88_large_tool_result(store: &Store, input: &str, output: &str) {
     let approval = ApprovalAudit {
         decision: Approval::Once,
         note: None,
-        source: ApprovalSource::ReadonlyTool,
+        source: approval_source,
         danger: None,
     }
     .to_json()
@@ -3110,11 +3120,66 @@ fn seed_issue88_large_tool_result(store: &Store, input: &str, output: &str) {
             r#"INSERT INTO tool_calls
              (id, thread_id, message_id, seq, tool, input_json, output_text, status,
               approval, created_at, finished_at, text_offset_bytes)
-             VALUES ('long-result', 'thread-1', 'earlier-assistant', 1, 'read', ?1, ?2,
-                     'success', ?3, 2, 2, 9)"#,
-            (input, output, &approval),
+             VALUES ('long-result', 'thread-1', 'earlier-assistant', 1, ?1, ?2, ?3,
+                     'success', ?4, 2, 2, 9)"#,
+            (tool, input, output, &approval),
         )
         .unwrap();
+}
+
+fn seed_large_external_tool_result(store: &Store, input: &str, output: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let arguments: serde_json::Value = serde_json::from_str(input).unwrap();
+    let preview = arguments
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(key, value)| {
+            assert_eq!(key, "path");
+            assert!(value.is_string());
+            format!("{key}: string")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let identity = crate::types::McpCallIdentity {
+        server_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        config_revision: 1,
+        exact_tool_name: "summary_fixture".into(),
+        arguments_bytes: input.len() as u64,
+        arguments_sha256: Sha256::digest(input.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        argument_preview: preview,
+    };
+    let call = crate::types::ToolCall {
+        id: "long-result".into(),
+        tool: identity.alias(),
+        input_json: serde_json::json!({
+            "server_id": identity.server_id,
+            "config_revision": identity.config_revision,
+            "tool": identity.exact_tool_name,
+            "arguments_bytes": identity.arguments_bytes,
+            "arguments_sha256": identity.arguments_sha256,
+            "argument_preview": identity.argument_preview,
+        })
+        .to_string(),
+    };
+    assert_eq!(
+        crate::types::McpCallIdentity::from_tool_call(&call),
+        Some(identity)
+    );
+    let output = format!("[Untrusted external MCP result]\n{output}");
+    assert!(output.len() <= 256 * 1024 + 64);
+    seed_large_tool_result(
+        store,
+        &call.tool,
+        &call.input_json,
+        &output,
+        ApprovalSource::User,
+    );
+    output
 }
 
 fn save_issue88_manual_settings(store: &Store) {
@@ -3195,10 +3260,43 @@ fn issue88_v1_checkpoint_remains_readable_under_v2_with_shared_wrapper() {
 #[tokio::test]
 async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_without_loss() {
     let (store, dir, _project_id) = setup();
-    let input = format!(r#"{{"path":"{}"}}"#, "i".repeat(20_000));
+    let path = "i".repeat(20_000);
+    let input = format!(r#"{{"path":"{path}"}}"#);
     let output = "0123456789abcdef".repeat(14_000);
-    seed_issue88_large_tool_result(&store, &input, &output);
+    let output = seed_large_external_tool_result(&store, &input, &output);
+    let read_approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ReadonlyTool,
+        danger: None,
+    }
+    .to_json()
+    .unwrap();
+    store
+        .conn()
+        .execute(
+            r#"INSERT INTO tool_calls
+             (id, thread_id, message_id, seq, tool, input_json, output_text, status,
+              approval, created_at, finished_at, text_offset_bytes)
+             VALUES ('long-input-read', 'thread-1', 'earlier-assistant', 2, 'read', ?1,
+                     'short complete read result', 'success', ?2, 2, 2, 9)"#,
+            (&input, &read_approval),
+        )
+        .unwrap();
     let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    assert_eq!(before.tool_calls.len(), 2);
+    let read_source = before
+        .tool_calls
+        .iter()
+        .find(|call| call.id == "long-input-read")
+        .unwrap();
+    assert_eq!(read_source.input_json, input);
+    assert!(read_source.input_json.len() > 20_000);
+    assert_eq!(read_source.tool, "read");
+    assert_eq!(
+        read_source.approval.as_deref(),
+        Some(read_approval.as_str())
+    );
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::TextDelta("bounded summary".into()),
         ProviderEvent::Done {
@@ -3236,7 +3334,7 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
         !requests[0]
             .messages
             .iter()
-            .any(|message| message.content.contains(&input))
+            .any(|message| message.content.contains(&input) || message.content.contains(&path))
     );
     assert!(requests[0].messages.iter().any(|message| {
         history_observation(message).is_some_and(|observation| {
@@ -3244,6 +3342,14 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
                 && observation["call_id"] == "long-result"
                 && observation["status"] == "success"
                 && observation["output"] == output
+        })
+    }));
+    assert!(requests[0].messages.iter().any(|message| {
+        history_observation(message).is_some_and(|observation| {
+            observation["kind"] == "tool_result"
+                && observation["call_id"] == "long-input-read"
+                && observation["status"] == "success"
+                && observation["output"] == "short complete read result"
         })
     }));
     let after = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
@@ -3300,31 +3406,42 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
             .iter()
             .any(|message| message.content == "fresh request after restart")
     );
-    assert!(primary.iter().all(|message| {
-        message.tool_call_id.as_deref() != Some("long-result")
-            && message
-                .tool_calls
-                .iter()
-                .all(|call| call.id != "long-result")
-    }));
+    for id in ["long-result", "long-input-read"] {
+        assert!(primary.iter().all(|message| {
+            message.tool_call_id.as_deref() != Some(id)
+                && message.tool_calls.iter().all(|call| call.id != id)
+        }));
+        assert_eq!(
+            reopened
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM tool_calls WHERE id = ?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "restart must not re-execute the historical tool"
+        );
+    }
     assert_eq!(
         reopened
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM tool_calls WHERE id = 'long-result'",
+                "SELECT COUNT(*) FROM context_checkpoints WHERE thread_id = 'thread-1'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
         1,
-        "restart must not re-execute the historical tool"
+        "restart must retain the one durable checkpoint"
     );
 }
 
 #[tokio::test]
 async fn claude_summary_preserves_reasoning_headroom_in_one_request() {
     let (store, _dir, _project_id) = setup();
-    seed_issue88_large_tool_result(
+    seed_large_external_tool_result(
         &store,
         r#"{"path":"lib.rs"}"#,
         &"0123456789abcdef".repeat(14_000),
@@ -3365,7 +3482,7 @@ async fn claude_summary_preserves_reasoning_headroom_in_one_request() {
 #[tokio::test]
 async fn claude_direct_request_has_no_fixed_byte_staging() {
     let (store, _dir, _project_id) = setup();
-    seed_issue88_large_tool_result(
+    seed_large_external_tool_result(
         &store,
         r#"{"path":"lib.rs"}"#,
         &"0123456789abcdef".repeat(14_000),
@@ -3405,7 +3522,7 @@ async fn claude_direct_request_has_no_fixed_byte_staging() {
 async fn claude_large_completed_summary_is_not_sliced_or_reduced() {
     let (store, _dir, _project_id) = setup();
     let output = "0123456789abcdef".repeat(14_000);
-    seed_issue88_large_tool_result(&store, r#"{"path":"lib.rs"}"#, &output);
+    let output = seed_large_external_tool_result(&store, r#"{"path":"lib.rs"}"#, &output);
     let provider = Issue88LargeRollingSummaryProvider {
         requests: std::sync::Mutex::new(Vec::new()),
     };
@@ -3464,7 +3581,7 @@ async fn claude_large_completed_summary_is_not_sliced_or_reduced() {
 async fn claude_summary_does_not_accumulate_partial_checkpoints() {
     let (store, _dir, _project_id) = setup();
     let output = "0123456789abcdef".repeat(14_000);
-    seed_issue88_large_tool_result(&store, r#"{"path":"lib.rs"}"#, &output);
+    let output = seed_large_external_tool_result(&store, r#"{"path":"lib.rs"}"#, &output);
     let provider = Issue91AccumulatingSummaryProvider {
         requests: std::sync::Mutex::new(Vec::new()),
     };
@@ -3517,7 +3634,7 @@ async fn claude_summary_does_not_accumulate_partial_checkpoints() {
 #[tokio::test]
 async fn claude_output_length_does_not_trim_or_commit_partial_summary() {
     let (store, _dir, _) = setup();
-    seed_issue88_large_tool_result(&store, "{}", &"0123456789abcdef".repeat(4_000));
+    seed_large_external_tool_result(&store, "{}", &"0123456789abcdef".repeat(4_000));
     let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     let provider = Issue91AdaptiveLengthProvider {
         attempts: std::sync::Mutex::new(Vec::new()),
@@ -3557,7 +3674,7 @@ async fn claude_output_length_does_not_trim_or_commit_partial_summary() {
 #[tokio::test]
 async fn claude_length_without_usage_preserves_predecessor() {
     let (store, _dir, _project_id) = setup();
-    seed_issue88_large_tool_result(
+    seed_large_external_tool_result(
         &store,
         r#"{"path":"lib.rs"}"#,
         &"0123456789abcdef".repeat(14_000),
@@ -3686,7 +3803,7 @@ async fn claude_repeated_input_overflow_never_starts_fifth_request() {
 #[tokio::test]
 async fn issue91_generic_invalid_summary_does_not_retry_a_splittable_source() {
     let (store, _dir, _project_id) = setup();
-    seed_issue88_large_tool_result(
+    seed_large_external_tool_result(
         &store,
         r#"{"path":"lib.rs"}"#,
         &"0123456789abcdef".repeat(14_000),
@@ -3794,7 +3911,7 @@ async fn claude_ptl_retry_failure_and_cancel_preserve_known_usage() {
         ),
     ] {
         let (store, _dir, _project_id) = setup();
-        seed_issue88_large_tool_result(
+        seed_large_external_tool_result(
             &store,
             r#"{"path":"lib.rs"}"#,
             &"0123456789abcdef".repeat(14_000),
@@ -3871,7 +3988,7 @@ async fn claude_ptl_retry_failure_and_cancel_preserve_known_usage() {
 #[tokio::test]
 async fn claude_source_mutation_rejects_checkpoint_and_retains_usage() {
     let (store, dir, _project_id) = setup();
-    seed_issue88_large_tool_result(
+    seed_large_external_tool_result(
         &store,
         r#"{"path":"lib.rs"}"#,
         &"0123456789abcdef".repeat(14_000),
@@ -4592,7 +4709,7 @@ async fn file_backed_recovery_reuses_write_edit_and_unknown_without_execution() 
 #[tokio::test]
 async fn codex_parity_packs_large_history_into_few_requests() {
     let (store, _dir, _) = setup();
-    seed_issue88_large_tool_result(&store, "{}", &"0123456789abcdef".repeat(14_000));
+    seed_large_external_tool_result(&store, "{}", &"0123456789abcdef".repeat(14_000));
     let provider = Issue91AccumulatingSummaryProvider {
         requests: std::sync::Mutex::new(Vec::new()),
     };
@@ -4866,7 +4983,7 @@ async fn codex_parity_realistic_images_repeat_budget_omission_and_corruption() {
 async fn claude_direct_summary_preserves_roles_and_uses_20k_cap() {
     let (store, _dir, _) = setup();
     let output = "0123456789abcdef".repeat(14_000);
-    seed_issue88_large_tool_result(&store, "{}", &output);
+    let output = seed_large_external_tool_result(&store, "{}", &output);
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::TextDelta("direct continuation".into()),
         ProviderEvent::Done {
@@ -5175,7 +5292,12 @@ async fn issue302_reopened_shell_projection_matches_compaction_and_preserves_sto
     assert_eq!(
         wire_history
             .iter()
-            .filter(|message| message.content.contains("Shell output shortened"))
+            .filter(|message| history_observation(message).is_some_and(
+                |observation| observation["kind"] == "tool_result"
+                    && observation["output"]
+                        .as_str()
+                        .is_some_and(|output| output.contains("vega_tool_preview"))
+            ))
             .count(),
         2
     );
@@ -5184,6 +5306,34 @@ async fn issue302_reopened_shell_projection_matches_compaction_and_preserves_sto
             .iter()
             .all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none())
     );
+    let legacy =
+        vega_runtime::ChatMessage::projected_tool_result("long-result", "bash", &output).content;
+    let mut head = 4096;
+    while !legacy.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = legacy.len() - 4096;
+    while !legacy.is_char_boundary(tail) {
+        tail += 1;
+    }
+    let expected_preview = format!(
+        "{}\n{}\n{}",
+        &legacy[..head],
+        serde_json::json!({"vega_tool_preview": {
+            "authority":"none", "source_bytes":legacy.len(), "omitted_bytes":tail - head,
+            "runtime_bytes":null, "status":null, "exit_code":null, "truncated":null,
+            "retrieve":"Inspect retained output or narrow/filter a safe command for detail. Do not automatically replay a command with side effects."
+        }}),
+        &legacy[tail..]
+    );
+    assert!(expected_preview.len() <= 8192 + 1024);
+    for message in &wire_history {
+        if let Some(observation) = history_observation(message)
+            && observation["kind"] == "tool_result"
+        {
+            assert_eq!(observation["output"], expected_preview);
+        }
+    }
     let user = history
         .iter()
         .find(|message| message.content == "message-3")
@@ -5225,7 +5375,7 @@ async fn issue302_reopened_shell_projection_matches_compaction_and_preserves_sto
     assert!(historical_result.tool_call_id.is_none());
     assert_eq!(
         history_observation(historical_result).unwrap()["output"],
-        vega_runtime::ChatMessage::projected_tool_result("long-result", "bash", &output).content
+        expected_preview
     );
     assert_eq!(
         vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap(),

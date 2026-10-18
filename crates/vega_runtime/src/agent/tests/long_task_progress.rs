@@ -443,7 +443,14 @@ async fn progress_does_not_limit_five_hundred_productive_rounds_or_fabricate_upd
             counted.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(vega_tools::BashOutput {
-                    text: command,
+                    text: if matches!(
+                        command.as_str(),
+                        "printf progress-0" | "printf progress-249" | "printf progress-499"
+                    ) {
+                        format!("{command}\n{}", "x".repeat(20_000))
+                    } else {
+                        command
+                    },
                     exit_code: 0,
                     duration_ms: 1,
                     truncated: false,
@@ -487,6 +494,32 @@ async fn progress_does_not_limit_five_hundred_productive_rounds_or_fabricate_upd
     ));
     let requests = provider.requests();
     assert_eq!(requests.len(), 501);
+    assert_eq!(
+        requests[500]
+            .messages
+            .iter()
+            .filter(|message| message.content.contains("vega_tool_preview"))
+            .count(),
+        3
+    );
+    assert!(
+        requests[500]
+            .messages
+            .iter()
+            .all(|message| !message.content.contains("vega_tool_result_reference"))
+    );
+    for index in [0, 249, 499] {
+        let id = format!("step-{index}");
+        let canonical = outcome
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(id.as_str()))
+            .unwrap();
+        assert_eq!(
+            canonical.content,
+            format!("printf progress-{index}\n{}", "x".repeat(20_000))
+        );
+    }
     assert_eq!(notice_count(&requests[500]), 1);
     assert_eq!(
         requests[500]

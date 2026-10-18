@@ -68,6 +68,7 @@ mod openai;
 mod permission;
 mod provider;
 mod retry;
+mod tool_context;
 
 pub use agent::{
     AgentOutcome, AgentRequest, BASH_INVALID_INPUT_OUTPUT, CALL_ID_CONFLICT_OUTPUT,

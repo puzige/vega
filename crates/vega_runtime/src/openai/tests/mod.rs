@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 mod computer_use;
 mod network_retry;
+mod tool_context;
 
 const KEY: &str = "vrg-test-key-123";
 const MODEL: &str = "test-model";

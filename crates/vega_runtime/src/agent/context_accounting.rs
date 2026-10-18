@@ -246,6 +246,130 @@ mod tests {
     }
 
     #[test]
+    fn tool_preview_and_reference_share_the_wire_usage_anchor_without_recharging_the_prefix() {
+        let pair = |id: &str| {
+            let call = crate::RuntimeToolCall {
+                id: id.into(),
+                name: "read".into(),
+                input_json: r#"{"path":"large.txt"}"#.into(),
+            };
+            let result = crate::RuntimeToolResult {
+                call_id: id.into(),
+                output: "complete evidence ".repeat(1_000),
+                status: crate::RuntimeToolStatus::Success,
+                reused: false,
+                exit_code: None,
+                duration_ms: None,
+                truncated: Some(false),
+                approval: None,
+                remember_rule: None,
+            };
+            [
+                ChatMessage::assistant_with_tools(
+                    "",
+                    vec![ChatToolCall {
+                        id: id.into(),
+                        name: "read".into(),
+                        input_json: call.input_json.clone(),
+                    }],
+                ),
+                ChatMessage::runtime_tool_result(&call, &result),
+            ]
+        };
+        let mut sent = request();
+        sent.messages.extend(pair("first"));
+        sent.messages.last_mut().unwrap().attach_progress_reminder();
+        let canonical = sent.messages.clone();
+        sent.messages = crate::project_model_messages(&canonical).unwrap();
+        let anchor = PendingInputAnchor::from_request(&sent)
+            .unwrap()
+            .unwrap()
+            .complete(123)
+            .unwrap();
+        let mut current = canonical.clone();
+        current.extend(pair("second"));
+        let projected = crate::project_model_messages(&current).unwrap();
+        assert_eq!(
+            crate::project_model_messages(&projected).unwrap(),
+            projected
+        );
+        assert_eq!(&projected[..sent.messages.len()], sent.messages.as_slice());
+        assert!(
+            projected
+                .last()
+                .unwrap()
+                .content
+                .contains("vega_tool_result_reference")
+        );
+        let canonical_decision = InputAnchor::decide(
+            Some(&anchor),
+            &current,
+            &sent.tools,
+            &sent.model,
+            sent.reasoning.as_ref(),
+            sent.max_tokens,
+            1,
+        )
+        .unwrap();
+        let projected_decision = InputAnchor::decide(
+            Some(&anchor),
+            &projected,
+            &sent.tools,
+            &sent.model,
+            sent.reasoning.as_ref(),
+            sent.max_tokens,
+            1,
+        )
+        .unwrap();
+        assert_eq!(canonical_decision, projected_decision);
+        assert_eq!(
+            canonical_decision.source,
+            super::super::ContextAccountingSource::UsageAnchored
+        );
+        assert_eq!(canonical_decision.baseline, Some(123));
+        let before = crate::estimate_wire_context(&canonical, &sent.tools)
+            .unwrap()
+            .input_tokens;
+        let after = crate::estimate_wire_context(&projected, &sent.tools)
+            .unwrap()
+            .input_tokens;
+        assert_eq!(canonical_decision.incremental, after - before);
+        assert_eq!(canonical_decision.predicted, 123 + after - before);
+        assert!(canonical_decision.incremental < 1_000);
+        let mut changed = current.clone();
+        changed[3].content.replace_range(8_000..8_001, "x");
+        assert_eq!(
+            InputAnchor::decide(
+                Some(&anchor),
+                &changed,
+                &sent.tools,
+                &sent.model,
+                sent.reasoning.as_ref(),
+                sent.max_tokens,
+                1
+            )
+            .unwrap()
+            .source,
+            super::super::ContextAccountingSource::Estimated
+        );
+        assert_eq!(
+            InputAnchor::decide(
+                Some(&anchor),
+                &current,
+                &sent.tools,
+                "changed-model",
+                sent.reasoning.as_ref(),
+                sent.max_tokens,
+                1
+            )
+            .unwrap()
+            .source,
+            super::super::ContextAccountingSource::Estimated
+        );
+        assert_eq!(canonical[3].content, "complete evidence ".repeat(1_000));
+    }
+
+    #[test]
     fn issue91_anchor_accounts_only_appended_tool_pair_and_rejects_changed_prefix() {
         let sent = request();
         let anchor = PendingInputAnchor::from_request(&sent)

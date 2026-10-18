@@ -770,7 +770,8 @@ fn tool_output_keeps_two_thousand_head_and_tail_lines() {
         .map(|index| format!("line-{index}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let truncated = truncate_output_lines(&text);
+    let (truncated, was_truncated) = truncate_output_lines(&text);
+    assert!(was_truncated);
     let lines: Vec<&str> = truncated.lines().collect();
     assert_eq!(lines.len(), 4_001);
     assert_eq!(lines[0], "line-0");
@@ -1030,7 +1031,7 @@ async fn issue302_large_bash_output_is_bounded_for_fresh_and_reused_model_result
         .find(|message| message.role == ChatRole::Tool)
         .unwrap();
     let body = projected.content.strip_suffix(PROGRESS_NOTICE).unwrap();
-    assert!(body.len() <= 65_536);
+    assert!(body.len() <= 8192 + 1024);
     assert!(body.contains("omitted"));
     assert!(body.starts_with(&output[..100]));
     assert!(body.ends_with(&output[output.len() - 100..]));
@@ -1042,8 +1043,27 @@ async fn issue302_large_bash_output_is_bounded_for_fresh_and_reused_model_result
     assert_eq!(reused.len(), 2);
     assert_eq!(reused[0], projected);
     let mut expected_reuse = projected.clone();
-    expected_reuse.content = body.to_string();
-    assert_eq!(reused[1], &expected_reuse);
+    assert!(body.contains("\"truncated\":false"));
+    expected_reuse.content = body.replace("\"truncated\":false", "\"truncated\":null");
+    assert_eq!(
+        reused[1].without_runtime_metadata(),
+        expected_reuse.without_runtime_metadata()
+    );
+    for message in outcome
+        .messages
+        .iter()
+        .filter(|message| message.role == ChatRole::Tool)
+    {
+        assert_eq!(
+            message.without_runtime_metadata(),
+            ChatMessage::projected_tool_result(
+                message.tool_call_id.clone().unwrap(),
+                "bash",
+                &output
+            )
+        );
+        assert!(message.content.len() <= 65_536);
+    }
     let finished = outcome
         .events
         .iter()
@@ -1060,6 +1080,8 @@ async fn issue302_large_bash_output_is_bounded_for_fresh_and_reused_model_result
     );
     assert!(!finished[0].reused);
     assert!(finished[1].reused);
+    assert_eq!(finished[0].truncated, Some(false));
+    assert_eq!(finished[1].truncated, None);
     assert!(
         outcome
             .events
@@ -1151,7 +1173,25 @@ async fn issue302_reused_validation_result_redacts_before_shell_projection() {
     );
     assert_eq!(
         observation["vega_history_observation"]["output"],
-        expected.content
+        format!(
+            "{}\n{}\n{}",
+            "x".repeat(4096),
+            serde_json::json!({"vega_tool_preview": {
+                "authority":"none", "source_bytes":expected.content.len(), "omitted_bytes":expected.content.len() - 8192,
+                "runtime_bytes":redacted.len(), "status":"rejected", "exit_code":null, "truncated":null,
+                "retrieve":"Inspect retained output or narrow/filter a safe command for detail. Do not automatically replay a command with side effects."
+            }}),
+            "x".repeat(4096)
+        )
+    );
+    assert_eq!(
+        outcome
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("prior-invalid-bash"))
+            .unwrap()
+            .without_runtime_metadata(),
+        expected
     );
     assert!(feedback.tool_call_id.is_none());
     assert!(!expected.content.contains(&secret[..16]));
