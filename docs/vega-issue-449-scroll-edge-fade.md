@@ -1,6 +1,6 @@
 # Issue #449：全局滚动边缘渐隐
 
-版本 v1 · 2026-10-18 · 来源 [#449](https://github.com/puzige/vega/issues/449)。用户先批准方案，再明确要求按本规格实施。基线 `75da678a69fa809159f922615e1137bb48b528ba`；任务分支 `feat/449-scroll-edge-fade`。关联 A2-04 / A2-11。
+版本 v1.2 · 2026-10-18 · 来源 [#449](https://github.com/puzige/vega/issues/449)。用户先批准方案，再明确要求按本规格实施。初始基线 `75da678a69fa809159f922615e1137bb48b528ba`，集成基线更新到 master 的 `abd5dc67`（包含历史来源编号清理及侧栏排序）；任务分支 `feat/449-scroll-edge-fade`。关联 A2-04 / A2-11。
 
 沿用 [设计守则](vega-design-guidelines.md)、[执行总纲](vega-exec-guide.md)、[角色工作流](vega-issue-workflow.md) 和 [#403 Composer 前景契约](vega-issue-403-conversation-underlay.md)。本卡明确覆盖“正文默认不加渐变”的默认视觉规则，仅增加滚动视口边缘的装饰；源文、消息状态与业务契约不变。
 
@@ -21,7 +21,7 @@
 | A3 | 两类虚拟列表；有变高消息、空高过程项、前后历史水合、流式追加、用户回看 | 依据真实列表状态，不用条数乘平均高度猜边界；不强开跟随、不抢位置、不遍历所有消息；未加载的历史不冒充可滚动内容 | 实际 UniformList / ListState 的生产渲染与既有 long_session / follow 回归 | 待实现 / CI |
 | A4 | 运行时 resize、筛选、切设置页、折叠工具、内容增减与主题切换 | 当帧布局后重算边界；短内容恢复无渐隐，无上帧残留；每个视口使用所属表面颜色 | 普通/虚拟组件 resize 与生产页面入口测试；浅深窄窗口手测 | 待实现 / CI / 手测 |
 | A5 | 渐隐处点击、拖选复制、Tab/方向键导航、拖滚动条；嵌套滚动到边界 | 装饰不命中、不获焦点、不拦事件；现有内部消费/边界冒泡不变；首尾标签和动作可完整露出；原文复制不变，键盘焦点可见 | 生产命中/焦点/scroll-wheel 回归，系统始终显示滚动条手测 | 待实现 / CI / 手测 |
-| A6 | 原生/Codex/子 Agent 会话中，真实运行/完成吸顶标题滚过渐隐区与 Composer；打开菜单/应用遮罩 | #403 的标题 < 渐隐/实色前景 < 合法上层顺序保持；遮住消息不误触；底部只绘既有48px过渡 | 保留 issue403 / sticky 真实生产场景；重叠 quad order 和遮挡点击断言 | 待实现 / CI / 手测 |
+| A6 | 原生/Codex/子 Agent 会话中，真实运行/完成吸顶标题滚过渐隐区与 Composer；打开菜单/应用遮罩 | 顶部当前吸顶标题不被淡化；#403 的底部标题 < 渐隐/实色前景 < 合法上层顺序保持；遮住消息不误触；底部只绘既有48px过渡 | 保留 issue403 / sticky 真实生产场景；顶部实际 pinned 标题与重叠 quad order、遮挡点击断言 | 待实现 / CI / 手测 |
 | A7 | 多行输入、附件、待发送、必要错误/隐私控制增减；贴底或回看时 resize | Composer 动态前景高度/末条安全余量、锚点与回到底部不变；末条可读可操作，不加业务占位消息 | 原有 issue403 / issue98 / message-anchor / follow 回归 | 待实现 / CI / 手测 |
 | A8 | TextInput 软换行和换行溢出；滚上下端；键盘编辑、选区与 marked text 位于边缘 | 用实际视觉行计算，不按原文换行数量猜；光标、活动选区/marked text 所在边退让；IME 几何、光标跟随及滚轮路径保留 | TextInput 生产 paint / selection / cursor 几何回归；真实输入法由用户检查 | 待实现 / CI / 手测 |
 | A9 | 进程内 vt100 产生无历史/短历史/有界长历史，滚历史首中尾，resize、清屏、alternate screen、输入回尾 | 真实最大历史随快照更新；起止边准确，容量不冒充历史；度量不改变滚动位置或多发命令；活动光标行不淡化 | vt100/TerminalSnapshot 进程内回归 + TerminalView 生产绘制，不启动 PTY/shell | 待实现 / CI / 手测 |
@@ -68,6 +68,7 @@ strength = clamp((D - 1) / F, 0, 1)
 2. 底部安全余量不得伪装业务消息或触发消息水合；末条内容仍能完整进入未遮挡区域。顶部边缘基于列表实际可读区域，不遮锚点轨道、预览、Composer 控件或状态。
 3. 两类虚拟列表复用原句柄与测量结果，真实首尾判断优先；禁止按条数乘平均行高、全量实例化或重新测量全部消息。已存在 `is_following_tail`、history cursors、splice/锚点/阅读保护语义不变。
 4. StickyDisclosure 保持本地标题 prepaint/paint，不重引全窗口 defer 绘制标题。不将整个渐隐/Composer 提升到全局 deferred，避免盖住应用遮罩。合法菜单保持原 deferred 优先级与裁剪作用域。绘制测试比较实际相交区域的 `order`，不强求无交集 quad 数组全序。
+5. 当前可见活动/阶段标题吸顶时，主会话顶部渐隐临时退让；没有吸顶标题时恢复普通顶部规则。可给既有 `StickyState` 增加 crate 内只读 pinned Cell 句柄，经 RunActivityGroup 的 group/segment accessor 传给既有可见行 renderer；本次 List prepaint 先清空局部句柄集合，只由实际渲染行填充，在子树同帧 prepaint/paint 后判断是否 pinned 并关闭该帧 top fade。不得扫描全部 entries、使用上帧 bool、全局状态/延后绘制或改变原标题与命中。生产回归覆盖普通内容→标题吸顶→离开/再布局后恢复，包括连续帧与真实列表复用。
 
 ### 4. 自绘输入框与终端
 
@@ -108,6 +109,10 @@ TerminalSnapshot 目前仅有当前 `scrollback`，新增实际最大历史的�
 
 上述目录中的直接相关状态字段、模块注册、进程内回归及既有 fixture 更新允许修改；发现清单外实际滚动入口须回报 Codex 补充本 spec 后再改。非滚动 truncate/overflow_hidden 不加渐隐。不得添加任何代码注释（仅仓规的 unsafe SAFETY 例外），不改无关旧注释。
 
+v1.1 额外允许 `conversation_stream/sticky_disclosure.rs` 仅为 §3.5 增加只读 pinned Cell accessor；`run_activity.rs` 和主列表的局部 guard 接线属于上述已列范围。原标题布局、局部绘制、裁剪及交互保持不变。
+
+v1.2 集成 master 的历史来源编号清理，保留其删除与语义命名，不恢复已删除的历史测试。新增回归使用语义模块、函数名与 fixture；本卡新增吸顶断言及必要最小 fixture 迁入 `conversation_stream/tests/scroll_edges.rs`，其余新增断言保留在所属生产模块。按 master 最新生产符号适配自动合并与冲突，A1–A10 行为与覆盖要求不变。验收矩阵中的历史测试名称仅用于说明既有行为；已由 master 删除的用例不再作为门禁前提，本卡对应要求由新增语义回归验证。
+
 ### 顺序与交付
 
 1. 共享度量/绘制与 A1–A5 回归，先接思考与工具详情验证嵌套和主题。
@@ -125,7 +130,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 ```
 
-本卡新增用例采用 `issue449_` 前缀便于日志定位；完整 gate 继续覆盖 #403、sticky、scroll_follow、选择复制与输入回归，不新建真实 E2E 门禁。CI 启动后每5分钟查询；完成/失败通知或用户即时要求可立即查询。仅最新 head 的 required check 成功才合并。
+本卡新增用例采用 `scroll_edge_` 前缀和语义模块名便于日志定位；完整 gate 使用最新 master 保留的回归，新增语义用例验证 Composer 前景、吸顶退让、滚动跟随与输入保护，不恢复已清理的历史用例，不新建真实 E2E 门禁。CI 启动后每5分钟查询；完成/失败通知或用户即时要求可立即查询。仅最新 head 的 required check 成功才合并。
 
 delivery 路径 `docs/vega-issue-449-scroll-edge-fade-delivery.md`，记录真实文件与接入清单、提交、静态检查退出码、待CI项/云端原始结果、耗时与偏离（应为无）。回滚为回退本卡集成提交，无数据迁移。用户验收前保留 Issue、分支与 worktree，不提前 Done/关闭/清理。
 
@@ -136,4 +141,4 @@ delivery 路径 `docs/vega-issue-449-scroll-edge-fade-delivery.md`，记录真�
 3. Native/Codex/子 Agent 长会话中滚过真实运行/完成吸顶标题，打开 Composer 菜单和应用级遮罩；检查前景层级、多行输入动态高度、末条与回到底部。
 4. 长输入软换行、光标与中文输入法在首末可见行，确认输入与候选位置、选区不被淡化；终端有/无历史、滚上下端与输入回尾，核对光标和显示。
 
-变更记录：2026-10-18，v1 根据用户批准的方案建立实现前规格和 A1–A10；当前尚无实现或运行验收结果。
+变更记录：2026-10-18，v1 根据用户批准的方案建立实现前规格和 A1–A10；v1.1 在对应接线实施前明确固定吸顶标题的顶部退让方式与最小文件归属，保留原有固定标题可读性要求；v1.2 在基线适配前明确继承 master 历史测试清理、语义测试归属与替代覆盖，产品行为不变。自动验收结果待 Actions。

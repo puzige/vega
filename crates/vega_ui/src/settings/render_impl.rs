@@ -1,5 +1,6 @@
 use super::*;
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use crate::settings::state::{
     PROVIDER_MODELS_FRAME_INSET, PROVIDER_MODELS_MAX_ROWS, PROVIDER_MODELS_MIN_ROWS,
 };
@@ -1277,7 +1278,12 @@ impl Render for SettingsView {
                                     })
                                     .when(self.section == 7, |body| {
                                         body.child(self.render_agents(cx))
-                                    }),
+                                    })
+                                    .tracked_scroll_edge_fade(
+                                        self.section_scrolls[self.section].clone(),
+                                        colors.bg_base,
+                                        ScrollFade::reading().enabled(self.section != 0),
+                                    ),
                             ),
                     ),
             )

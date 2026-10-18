@@ -1,5 +1,6 @@
 use super::*;
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use gpui_kit::Role;
 use vega_conversation::types::{
     SubagentOpenRequested, SubagentSnapshot, SubagentState, SubagentStopRequested,
@@ -251,7 +252,8 @@ impl Render for SubagentGroup {
                                     .text_color(colors.text_secondary)
                                     .child("Result truncated. Open conversation for full details."),
                             )
-                        }),
+                        })
+                        .scroll_edge_fade(colors.bg_base, ScrollFade::compact()),
                 );
             }
             if let Some(stream) = self.streams.get(&id) {

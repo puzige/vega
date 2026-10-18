@@ -1,4 +1,5 @@
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::MouseMoveEvent;
 use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
@@ -1702,6 +1703,11 @@ impl ThreadsBlock {
                         }
                         item
                     }),
+            )
+            .tracked_scroll_edge_fade(
+                self.actions_scroll.clone(),
+                colors.bg_elevated,
+                ScrollFade::compact(),
             )
             .into_any_element()
     }

@@ -1,3 +1,4 @@
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Entity, MouseButton, MouseUpEvent, ScrollHandle, div, px,
@@ -301,7 +302,13 @@ impl ToolActivityGroup {
                                     window,
                                     cx,
                                 )
-                            })),
+                            }))
+                            .tracked_scroll_edge_fade(
+                                scroll.clone(),
+                                colors.bg_base,
+                                ScrollFade::compact()
+                                    .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
+                            ),
                     )
                     .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
                     .into_any_element(),

@@ -1,5 +1,6 @@
 use super::*;
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use gpui_kit::SharedString;
 use vega_conversation::types::PrivacyReview;
 
@@ -83,7 +84,8 @@ impl ConversationStream {
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
-                .gap_2();
+                .gap_2()
+                .scroll_edge_fade(colors.bg_base, ScrollFade::compact());
             if review.findings.is_empty() {
                 rows = rows.child("未发现需要处理的凭据");
             }

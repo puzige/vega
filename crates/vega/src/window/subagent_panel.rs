@@ -1,5 +1,6 @@
 use super::*;
 use vega_ui::icons::{Icon, icon};
+use vega_ui::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
 pub(super) struct SubagentPanel {
     parent: Option<String>,
@@ -1030,7 +1031,12 @@ impl VegaWindow {
                 .track_scroll(&self.subagent_panel.scroll)
                 .flex()
                 .flex_col()
-                .gap_2();
+                .gap_2()
+                .tracked_scroll_edge_fade(
+                    self.subagent_panel.scroll.clone(),
+                    colors.bg_base,
+                    ScrollFade::reading(),
+                );
             for agent in rows {
                 let state = self.subagent_display_state(&agent);
                 let child = agent.agent_id.clone();

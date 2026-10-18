@@ -1,5 +1,6 @@
 //! Audited tool-call activities over strict `vega_conversation` projections.
 
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
@@ -1284,25 +1285,31 @@ fn render_detail(
         .bg(colors.code_bg)
         .border_1()
         .border_color(colors.border_subtle)
-        .child(
-            div()
-                .id(gpui_kit::SharedString::from(id))
-                .debug_selector(move || debug_selector.clone())
-                .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
-                .track_scroll(scroll)
-                .on_scroll_wheel(contain_disclosure_scroll(scroll))
-                .w_full()
-                .min_w_0()
-                .p(px(Layout::TOOL_DETAIL_PADDING))
-                .pr(px(
-                    Layout::TOOL_DETAIL_PADDING + Layout::DISCLOSURE_SCROLLBAR_GUTTER
-                ))
-                .overflow_x_hidden()
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .children(rows),
-        )
+        .map(|mut surface| {
+            let fade = ScrollFade::compact()
+                .rounded_parent(surface.style())
+                .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER));
+            surface.child(
+                div()
+                    .id(gpui_kit::SharedString::from(id))
+                    .debug_selector(move || debug_selector.clone())
+                    .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
+                    .track_scroll(scroll)
+                    .on_scroll_wheel(contain_disclosure_scroll(scroll))
+                    .w_full()
+                    .min_w_0()
+                    .p(px(Layout::TOOL_DETAIL_PADDING))
+                    .pr(px(
+                        Layout::TOOL_DETAIL_PADDING + Layout::DISCLOSURE_SCROLLBAR_GUTTER
+                    ))
+                    .overflow_x_hidden()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .children(rows)
+                    .tracked_scroll_edge_fade(scroll.clone(), colors.code_bg, fade),
+            )
+        })
         .child(disclosure_scrollbar(scroll, cx))
         .into_any_element()
 }

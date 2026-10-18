@@ -1,5 +1,6 @@
 use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use crate::tool_card::{ToolActivityCategory, sentence_initial};
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
 
@@ -152,6 +153,19 @@ pub(crate) struct RunActivityGroup {
 }
 
 impl RunActivityGroup {
+    pub(super) fn scroll_fade_pinned_indicator(
+        &self,
+        segment: Option<usize>,
+    ) -> Option<std::rc::Rc<std::cell::Cell<bool>>> {
+        match segment {
+            None => Some(self.sticky.pinned_indicator()),
+            Some(index) => self
+                .segments
+                .get(index)
+                .map(|segment| segment.sticky.pinned_indicator()),
+        }
+    }
+
     fn sync_thinking_visibility(&self, cx: &mut App) {
         for (index, segment) in self.segments.iter().enumerate() {
             let visible = if self.process_in_details() {
@@ -1317,7 +1331,13 @@ impl RunActivityGroup {
                             .flex()
                             .flex_col()
                             .gap_0()
-                            .children(details),
+                            .children(details)
+                            .tracked_scroll_edge_fade(
+                                scroll.clone(),
+                                colors.bg_base,
+                                ScrollFade::compact()
+                                    .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
+                            ),
                     )
                     .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
                     .child(
@@ -1797,7 +1817,13 @@ impl RunActivityGroup {
                             .flex()
                             .flex_col()
                             .gap_0()
-                            .children(details),
+                            .children(details)
+                            .tracked_scroll_edge_fade(
+                                scroll.clone(),
+                                colors.bg_base,
+                                ScrollFade::compact()
+                                    .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
+                            ),
                     )
                     .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
                     .into_any_element(),

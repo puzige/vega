@@ -1,4 +1,5 @@
 //! IO-free search panel; workers and route authority remain in the application.
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use crate::text_input::TextInput;
 use gpui_kit::{prelude::*, *};
 use vega_conversation::types::*;
@@ -333,7 +334,12 @@ impl Render for CommandPalette {
                                             }),
                                         )
                                 },
-                            )),
+                            ))
+                            .tracked_scroll_edge_fade(
+                                self.scroll.clone(),
+                                colors.bg_elevated,
+                                ScrollFade::compact(),
+                            ),
                     )
                     .when(self.loading, |view| {
                         view.child(

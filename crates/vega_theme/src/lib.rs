@@ -371,6 +371,9 @@ impl Layout {
     pub const MESSAGE_ANCHOR_PREVIEW_HEIGHT: f32 = 72.0;
     pub const READING_NAVIGATION_HEIGHT: f32 = 40.0;
     pub const CONVERSATION_BOTTOM_FADE_HEIGHT: f32 = 48.0;
+    pub const SCROLL_EDGE_FADE_COMPACT: f32 = 16.0;
+    pub const SCROLL_EDGE_FADE_READING: f32 = 24.0;
+    pub const SCROLL_EDGE_FADE_EPSILON: f32 = 1.0;
     pub const READING_NAVIGATION_PADDING: f32 = 4.0;
     pub const READING_NAVIGATION_PADDING_X: f32 = 12.0;
     pub const READING_NAVIGATION_GAP: f32 = 8.0;

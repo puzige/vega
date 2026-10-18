@@ -2,6 +2,7 @@ use super::attachments::ImagePreview;
 use super::*;
 use crate::icons::{Icon, icon};
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::{
     Anchor, Bounds, Div, Focusable, Global, Role, Stateful, anchored, canvas, deferred, point,
 };
@@ -885,21 +886,31 @@ impl ConversationStream {
                     .rounded(px(Layout::PENDING_MESSAGE_RADIUS))
                     .bg(colors.bg_elevated)
                     .overflow_hidden()
-                    .child(
-                        div()
-                            .id("pending-message-scroll")
-                            .debug_selector(|| "pending-message-scroll".into())
-                            .h(px(viewport_height))
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.pending_ui.scroll)
-                            .key_context("Composer")
-                            .on_action(cx.listener(Self::next_composer_control))
-                            .on_action(cx.listener(Self::previous_composer_control))
-                            .children(rows),
-                    )
+                    .map(|mut rail| {
+                        let fade = ScrollFade::compact()
+                            .rounded_parent(rail.style())
+                            .bottom_extension(px(Layout::PENDING_MESSAGE_OVERLAP));
+                        rail.child(
+                            div()
+                                .id("pending-message-scroll")
+                                .debug_selector(|| "pending-message-scroll".into())
+                                .h(px(viewport_height))
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.pending_ui.scroll)
+                                .key_context("Composer")
+                                .on_action(cx.listener(Self::next_composer_control))
+                                .on_action(cx.listener(Self::previous_composer_control))
+                                .children(rows)
+                                .tracked_scroll_edge_fade(
+                                    self.pending_ui.scroll.clone(),
+                                    colors.bg_elevated,
+                                    fade,
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .absolute()

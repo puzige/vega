@@ -1,4 +1,5 @@
 //! Interactive terminal viewport. The PTY owns editing, history and command execution.
+use crate::scroll_edge_fade::{ScrollFade, ScrollFadeMetrics};
 use crate::{
     conversation_stream::MONOFONT,
     icons::{Icon, icon_button},
@@ -420,6 +421,29 @@ fn paint_terminal(
                     cx,
                 );
             }
+            let mut fade = ScrollFadeMetrics::new(
+                bounds,
+                point(
+                    px(0.),
+                    line_height
+                        * snapshot.max_scrollback.saturating_sub(snapshot.scrollback) as f32,
+                ),
+                point(px(0.), line_height * snapshot.scrollback as f32),
+            );
+            if view.focus.is_focused(window)
+                && let Some((row, col)) = snapshot.cursor
+                && row < rows
+                && col < cols
+            {
+                fade = fade.protect(
+                    Bounds::new(
+                        point(bounds.left(), bounds.top() + line_height * row as f32),
+                        gpui_kit::size(bounds.size.width, line_height),
+                    ),
+                    ScrollFade::compact(),
+                );
+            }
+            fade.paint(colors.bg_base, ScrollFade::compact(), window);
             if view.focus.is_focused(window)
                 && let Some((row, col)) = snapshot.cursor
                 && row < rows
@@ -505,5 +529,103 @@ impl EntityInputHandler for TerminalView {
         _: &mut Context<Self>,
     ) -> Option<usize> {
         Some(0)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{Entity, PathBuf, TerminalStatus, TerminalView};
+    use gpui_kit::{
+        AppContext, Bounds, TestAppContext, WindowBounds, WindowHandle, WindowOptions, point, px,
+        size,
+    };
+    use vega_conversation::types::{TerminalSnapshot, TerminalTarget};
+
+    fn mount_unit_view(
+        status: TerminalStatus,
+        cx: &mut TestAppContext,
+    ) -> (Entity<TerminalView>, WindowHandle<TerminalView>) {
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            crate::init(cx);
+        });
+        let view = cx.new(|cx| TerminalView {
+            target: TerminalTarget::Directory(PathBuf::from("/tmp")),
+            focus: cx.focus_handle(),
+            session: None,
+            snapshot: Some(TerminalSnapshot {
+                generation: 0,
+                status,
+                cells: Vec::new(),
+                cursor: None,
+                application_cursor: false,
+                bracketed_paste: false,
+                scrollback: 0,
+                max_scrollback: 0,
+            }),
+            size: (0, 0),
+            marked: String::new(),
+            input_error: false,
+        });
+        let entity = view.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(640.), px(400.)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| entity,
+            )
+            .expect("mounted unit terminal window")
+        });
+        cx.run_until_parked();
+        (view, window)
+    }
+
+    #[gpui_kit::test]
+    fn scroll_edge_terminal_production_paint_tracks_real_history_and_protects_cursor(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, window) = mount_unit_view(TerminalStatus::Running, cx);
+        for (maximum, offset, cursor, expected) in [
+            (0, 0, None, 0),
+            (80, 0, None, 1),
+            (80, 40, None, 2),
+            (80, 80, None, 1),
+            (80, 0, Some((0, 0)), 0),
+        ] {
+            view.update(cx, |view, cx| {
+                let snapshot = view.snapshot.as_mut().unwrap();
+                snapshot.max_scrollback = maximum;
+                snapshot.scrollback = offset;
+                snapshot.cursor = cursor;
+                cx.notify();
+            });
+            window
+                .update(cx, |_, window, cx| {
+                    view.read(cx).focus.focus(window, cx);
+                })
+                .expect("focus terminal");
+            cx.run_until_parked();
+            window
+                .update(cx, |_, window, _| {
+                    assert_eq!(
+                        window
+                            .painted_quads()
+                            .iter()
+                            .filter(|quad| quad.background.as_solid().is_none())
+                            .count(),
+                        expected
+                    );
+                })
+                .expect("terminal fades");
+            view.read_with(cx, |view, _| {
+                assert!(view.session.is_none());
+                assert_eq!(view.snapshot.as_ref().unwrap().scrollback, offset);
+            });
+        }
     }
 }

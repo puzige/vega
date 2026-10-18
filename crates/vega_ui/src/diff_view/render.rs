@@ -1,5 +1,6 @@
 use super::*;
 use crate::icons::{Icon, icon_button};
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -96,7 +97,12 @@ impl Render for DiffView {
                             ),
                         )
                         .track_scroll(&self.scroll)
-                        .size_full(),
+                        .size_full()
+                        .tracked_scroll_edge_fade(
+                            self.scroll.clone(),
+                            colors.bg_base,
+                            ScrollFade::reading(),
+                        ),
                     )
                     .into_any_element()
             }
@@ -140,7 +146,12 @@ impl Render for DiffView {
                             ),
                         )
                         .track_scroll(&self.scroll)
-                        .size_full(),
+                        .size_full()
+                        .tracked_scroll_edge_fade(
+                            self.scroll.clone(),
+                            colors.bg_base,
+                            ScrollFade::reading(),
+                        ),
                     )
                     .into_any_element()
             };

@@ -1,3 +1,4 @@
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use vega_conversation::types::{AutomationCommand, AutomationKind, AutomationTask};
@@ -460,7 +461,8 @@ impl Render for AutomationEditor {
                             .gap_1()
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_secondary)
-                            .children(details.into_iter().map(|value| div().child(value))),
+                            .children(details.into_iter().map(|value| div().child(value)))
+                            .scroll_edge_fade(colors.bg_base, ScrollFade::compact()),
                     ),
             )
     }
