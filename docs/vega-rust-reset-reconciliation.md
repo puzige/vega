@@ -73,10 +73,10 @@
 | **合计** | **115** |
 
 - 历史删除差异以已审查的 #473 结果为参照，混合文件保留后续功能差异。两个功能新增的 12 个 Rust 文件全部与基线逐字节一致。
-- 保留实际调用者需要的 `MockProvider` / `ScriptStep`、HTTP 边界替身、GPUI dev-only feature、应用 fixture、只读执行同步屏障和卡片可见文本查询；删除无调用者的旧 fixture、专用模块、debug selector 与 dev dependency 接线。预测提示 selector 保留，不删除生产控件 ID、无障碍属性、事件和焦点行为。
+- 保留实际调用者需要的 `MockProvider` / `ScriptStep`、HTTP 边界替身、GPUI dev-only feature、应用 fixture、只读执行同步屏障和卡片可见文本查询；删除无调用者的旧 fixture、专用模块、debug selector 与 dev dependency 接线，不删除生产控件 ID、无障碍属性、事件和焦点行为。首个提交保留当时的预测提示 selector；随后快进到远端合并提交 `eb9f0d92`，接纳最新 master 的 #475（移除预测接受提示及其 selector），不以旧基线覆盖该产品改动。
 - 源码共 385 个 Rust 文件；371 个显式外部模块引用检查未发现缺失文件，字面量 `include*` 引用未发现缺失。旧版语法解析器有 61 个文件存在语法覆盖限制，不能据此宣称完整语法、类型、借用或运行正确；与基线比较未发现新增解析错误，格式解析与完整编译仍分别以 rustfmt 和云端门禁为准。
 - 63 个受保护文件的 SHA-256 均未变，涵盖 Python 脚本与 fixture、发布/PR/master workflows、Nextest 配置、迁移、资源与 benchmark。原云端检查结构、Python 命令、Nextest 版本、默认并发与 `retries=0` 不变。
-- `Cargo.lock` 的 924 个包名/版本/来源/checksum 元组完全不变；只删除 11 条 workspace 测试依赖边，不新增依赖边或升级包。运行时生产所用的 `tempfile` 保留，GPUI `test-support` 仅在需要的 dev dependency 开启。
+- `Cargo.lock` 的 924 个包名/版本/来源/checksum 元组完全不变；首轮删除 11 条 workspace 测试依赖边，CI 证明其中 UI → runtime 边仍有实际消费者，因此恢复该边，最终相对基线只删除 10 条，不新增依赖边或升级包。运行时生产所用的 `tempfile` 保留，GPUI `test-support` 仅在需要的 dev dependency 开启；conversation 的多线程 Tokio feature 同样只在 dev dependency 恢复。
 
 ### 本地已执行
 
@@ -93,4 +93,16 @@
 
 ### 云端验证
 
-待补充 PR 触发 GitHub Actions。必须取得本次 head 的 fmt、全目标 Clippy、Python 与 Nextest 原始结果及 required check，不能复用 #473 的绿色记录。此处 115 仅为源码定义数，Nextest 发现/执行/通过/失败/忽略/跳过数目前均未取得。
+补充 [PR #476](https://github.com/puzige/vega/pull/476) 已创建；不自行合并。
+
+首轮提交 `b8ac9a12` 的 [Actions 39149682357](https://github.com/puzige/vega/actions/runs/39149682357) **失败**：
+
+- fmt 通过；三组 Python 检查分别执行 5、15、14 个，共 34 个，均通过。
+- Clippy 和 Nextest 构建阶段报告 `E0599` / `E0432` / `E0433`。清理时误删了两个保留测试的必要 dev 接线：`vega_conversation` 的 Tokio `rt-multi-thread` feature（现存 provider 边界测试调用 `Runtime::new`），以及 `vega_ui` 对 `vega_runtime` 的直接依赖（现存测试导入 trait 和使用常量）。`UserQuestionQueue::request` 的 trait 未入 scope 是后一项的连带错误。
+- 此时没有取得 Nextest 发现清单，尚未进入 Rust 测试执行；不能写成 115 个测试通过或行为断言失败，也不是有效 TDD RED。
+
+远端合并提交 `eb9f0d92` 自动触发的 [Actions 39150109012](https://github.com/puzige/vega/actions/runs/39150109012) 也在相同两处依赖缺失处失败；该提交只同步 #475，没有包含本轮依赖修复，未把重复构建当作重试换绿。
+
+修复仅恢复实际消费者需要的 dev dependency/feature 及锁文件边，不修改 115 个测试的正文、属性、数据或预期，不恢复历史套件。修复后的格式、`git diff --check`、离线锁定 metadata 和独立测试内容哈希检查均退出码 0；相对 `eb9f0d92` 无 Rust 源码改动，924 个包元组与 63 个受保护文件仍不变。最新 master 的 #475 已通过远端合并提交同步。
+
+完整门禁仍须验证修复后的最新 head；不能复用 #473 或首轮部分成功记录。115 仍为源码定义数，Nextest 发现/执行/通过/失败/忽略/跳过数待最新云端原始日志。

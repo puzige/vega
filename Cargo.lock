@@ -8032,6 +8032,7 @@ dependencies = [
  "tracing",
  "vega_conversation",
  "vega_markdown",
+ "vega_runtime",
  "vega_store",
  "vega_theme",
 ]
