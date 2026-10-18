@@ -48,6 +48,69 @@ fn text(stream: &ConversationStream) -> String {
         .collect()
 }
 
+#[gpui_kit::test]
+async fn retry_phase_changes_only_after_valid_checkpoint_rollback(cx: &mut TestAppContext) {
+    let (_window, stream, _) = open_controller_stream(cx, "retry-phase");
+    stream.update(cx, |stream, cx| {
+        start(stream, cx);
+        stream.apply_event(
+            ConversationEvent::RunStarted {
+                message_id: "retry".into(),
+                started_at: Instant::now() - std::time::Duration::from_secs(22),
+            },
+            cx,
+        );
+        let group = stream.run_activity_groups["retry"].clone();
+        let started_at = group.read(cx).test_clock().0;
+        assert_eq!(group.read(cx).test_label(), "Waiting for response · 22s");
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "retry".into(),
+                delta: "Actual provider reasoning".into(),
+            },
+            cx,
+        );
+        assert_eq!(group.read(cx).test_label(), "Thinking · 22s");
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "retry".into(),
+                delta: "Partial response".into(),
+            },
+            cx,
+        );
+        assert_eq!(group.read(cx).test_label(), "Responding · 22s");
+        for (offset, attempt) in [(1, 1), (0, 0), (0, 6)] {
+            retry(stream, offset, attempt, cx);
+            assert_eq!(group.read(cx).test_label(), "Responding · 22s");
+            assert_eq!(text(stream), "Partial response");
+            assert!(stream.network_retry.is_none());
+        }
+        retry(stream, 0, 1, cx);
+        assert!(text(stream).is_empty());
+        assert_eq!(group.read(cx).test_clock().0, started_at);
+        assert_eq!(group.read(cx).test_label(), "Waiting for response · 22s");
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "retry".into(),
+                delta: "Retained response".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ResponseRetrying {
+                message_id: "stale-run".into(),
+                text_start_bytes: 0,
+                attempt: 1,
+                max_retries: 5,
+            },
+            cx,
+        );
+        assert_eq!(text(stream), "Retained response");
+        assert_eq!(group.read(cx).test_label(), "Responding · 22s");
+        assert!(stream.network_retry.is_none());
+    });
+}
+
 fn assert_retry_outside_stage(visual: &mut VisualTestContext) {
     let stage = visual.debug_bounds("run-timeline-segment-0").unwrap();
     let title = visual.debug_bounds("run-stage-title-0").unwrap();

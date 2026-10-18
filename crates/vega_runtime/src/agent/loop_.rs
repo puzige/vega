@@ -1117,6 +1117,7 @@ where
     let mut direct_user_skill_round = true;
     let mut input_anchor: Option<InputAnchor> = None;
     let mut primary_revision = 0_u64;
+    let mut progress = progress::ProgressReporter::new();
 
     if !skill_authority_current(skill_config.as_ref()) {
         cancel.cancel();
@@ -1833,6 +1834,7 @@ where
             cancel.cancel();
         }
         let response_text_start = final_text.len();
+        let mut response_last_visible = None;
         discard_reasoning_events(&mut events, 0);
         let reasoning_event_start = events.len();
         emit!(
@@ -2031,6 +2033,7 @@ where
                     discard_reasoning_events(&mut events, reasoning_event_start);
                     final_text.truncate(response_text_start);
                     assistant_text.clear();
+                    response_last_visible = None;
                     response_reasoning.clear();
                     reasoning_presence = None;
                     response_layout = None;
@@ -2054,6 +2057,9 @@ where
                     );
                 }
                 Ok(ProviderEvent::TextDelta(delta)) => {
+                    if delta.chars().any(|character| !character.is_whitespace()) {
+                        response_last_visible = Some(tokio::time::Instant::now());
+                    }
                     diagnostic_metrics.visible_output_bytes = Some(
                         diagnostic_metrics
                             .visible_output_bytes
@@ -2523,6 +2529,7 @@ where
         } else {
             None
         };
+        progress.observe_visible(response_last_visible);
         if !calls.is_empty() {
             emit!(
                 events,
@@ -2617,6 +2624,7 @@ where
                 }
                 crate::images::validate_messages(std::slice::from_ref(&input.message))?;
                 emit!(events, sink, RuntimeEvent::SteeringAccepted(input.clone()));
+                progress = progress::ProgressReporter::new();
                 context_operation_id = input.assistant_message_id.clone();
                 let interleaved_user_boundary = messages.len();
                 messages[0].begin_interleaved_user_round(interleaved_user_boundary);
@@ -3321,6 +3329,7 @@ where
                 ));
             }
         }
+        let mut steered = false;
         if !cancel.is_cancelled()
             && (tool_config.turn_limit == 0 || turn_index < tool_config.turn_limit)
             && let Some(source) = &tool_config.steering_source
@@ -3340,12 +3349,17 @@ where
             }
             crate::images::validate_messages(std::slice::from_ref(&input.message))?;
             emit!(events, sink, RuntimeEvent::SteeringAccepted(input.clone()));
+            progress = progress::ProgressReporter::new();
+            steered = true;
             context_operation_id = input.assistant_message_id.clone();
             let interleaved_user_boundary = messages.len();
             messages[0].begin_interleaved_user_round(interleaved_user_boundary);
             messages.push(input.message);
             final_text.clear();
             input_anchor = None;
+        }
+        if !steered && !cancel.is_cancelled() {
+            progress.after_tool_batch(messages.last_mut());
         }
         if batch_policy != BatchPolicy::SkillOnly {
             direct_user_skill_round = false;

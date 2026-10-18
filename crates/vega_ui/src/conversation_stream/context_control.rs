@@ -251,6 +251,11 @@ impl ConversationStream {
         }
         self.context_control.next_request =
             self.context_control.next_request.max(record.generation);
+        if let Some((_, group)) = &self.active_run_activity {
+            group.update(cx, |group, cx| {
+                group.set_compacting(record.status == Status::Compacting, cx)
+            });
+        }
         // R5: a failed/unpriced summary must remain visible in the cost meter.
         if self
             .meter

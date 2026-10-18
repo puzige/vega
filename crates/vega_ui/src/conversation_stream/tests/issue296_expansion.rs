@@ -812,7 +812,7 @@ async fn repeated_reasoning_and_commands_share_one_compact_stage(cx: &mut TestAp
                 .read(cx)
                 .test_clock()
                 .2
-                == run_activity::RunPhase::Thinking
+                == run_activity::RunPhase::Working
         );
         stream.apply_event(
             ConversationEvent::AssistantResponseStarted {

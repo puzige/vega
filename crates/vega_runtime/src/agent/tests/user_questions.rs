@@ -138,7 +138,11 @@ async fn answer_continues_all_modes_without_permission_approval() {
                 .iter()
                 .find(|message| message.role == ChatRole::Tool)
                 .unwrap();
-            let answers = UserQuestionAnswers::from_json(&result.content, &input()).unwrap();
+            let answers = UserQuestionAnswers::from_json(
+                result.content.strip_suffix(PROGRESS_NOTICE).unwrap(),
+                &input(),
+            )
+            .unwrap();
             assert_eq!(
                 answers.answers["approach"].answers,
                 ["Keep (Recommended)", "user_note: Keep spacing"]
