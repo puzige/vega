@@ -1,7 +1,5 @@
 use super::*;
 
-use vega_runtime::Provider;
-
 pub(super) struct PrimaryWithAuxiliaryFixture {
     primary: Arc<dyn vega_runtime::Provider>,
     auxiliary: vega_runtime::MockProvider,

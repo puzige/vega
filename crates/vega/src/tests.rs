@@ -7,6 +7,7 @@ use gpui_kit::{App, Entity};
 use tempfile::TempDir;
 use vega_conversation::types::*;
 use vega_store::Store;
+use vega_store::messages::{MessageRow, insert};
 use vega_theme::*;
 use vega_ui::conversation_stream::ConversationStream;
 use vega_ui::settings::SettingsOpen;

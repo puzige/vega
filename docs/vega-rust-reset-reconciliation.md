@@ -105,4 +105,6 @@
 
 修复仅恢复实际消费者需要的 dev dependency/feature 及锁文件边，不修改 115 个测试的正文、属性、数据或预期，不恢复历史套件。修复后的格式、`git diff --check`、离线锁定 metadata 和独立测试内容哈希检查均退出码 0；相对 `eb9f0d92` 无 Rust 源码改动，924 个包元组与 63 个受保护文件仍不变。最新 master 的 #475 已通过远端合并提交同步。
 
-完整门禁仍须验证修复后的最新 head；不能复用 #473 或首轮部分成功记录。115 仍为源码定义数，Nextest 发现/执行/通过/失败/忽略/跳过数待最新云端原始日志。
+依赖修复提交 `a3654b49` 的 [Actions 39151097510](https://github.com/puzige/vega/actions/runs/39151097510) 中，前述 conversation/UI 依赖错误消失，fmt 与 Python 检查通过；构建继续到应用测试时，发现共享测试根模块漏导入 `vega_store::messages::{MessageRow, insert}`（`E0422` / `E0425`），同时 `title_fixture` 中留下一个未使用的 `vega_runtime::Provider` 导入，触发 `-D warnings`。两项均为历史支持裁剪后的导入问题，没有执行 Rust 行为断言。
+
+后续修复仅在共享测试根模块补回明确导入、移除 fixture 的无用导入，不改冻结测试定义，也不放宽 lint。完整门禁仍须验证修复后的最新 head；不能复用 #473 或此前部分成功记录。115 仍为源码定义数，Nextest 发现/执行/通过/失败/忽略/跳过数待最新云端原始日志。
