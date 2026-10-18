@@ -1290,7 +1290,7 @@ pub use loop_::{
     run_agent_with_sink,
 };
 pub(crate) use tools_exec::*;
-pub use tools_exec::{tool_definitions, tool_names_equivalent};
+pub use tools_exec::{GREP_INVALID_INPUT_OUTPUT, tool_definitions, tool_names_equivalent};
 
 mod automation;
 pub use automation::RuntimeAutomationHook;

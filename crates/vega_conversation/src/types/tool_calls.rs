@@ -557,6 +557,17 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
             },
         );
     }
+    if call.tool == "grep" && grep_invalid_input_claim(&call.input_json) {
+        return if valid_grep_invalid_input(&call.input_json) {
+            ToolCardInputProjection::ReadOnly {
+                tool: ReadOnlyToolKind::Grep,
+                display_target: None,
+                permission_path: None,
+            }
+        } else {
+            ToolCardInputProjection::Corrupt
+        };
+    }
     match call.tool.as_str() {
         "Read" | "read" | "glob" | "grep" => {
             if serde_json::from_str::<serde_json::Value>(&call.input_json)
@@ -581,6 +592,8 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                                 .map(str::to_owned)
                         })
                         .filter(|path| std::path::Path::new(path).is_absolute())
+                } else if tool == ReadOnlyToolKind::Grep {
+                    grep_permission_path(&call.input_json)
                 } else {
                     None
                 };
@@ -1261,6 +1274,73 @@ pub(crate) fn is_terminal(status: ToolCallStatus) -> bool {
             | ToolCallStatus::Cancelled
     )
 }
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrepPermissionInput {
+    #[serde(rename = "pattern")]
+    _pattern: String,
+    path: String,
+}
+
+pub(crate) fn grep_permission_path(input_json: &str) -> Option<String> {
+    let input: GrepPermissionInput = serde_json::from_str(input_json).ok()?;
+    let path = input.path;
+    let parsed = std::path::Path::new(&path);
+    (parsed.is_absolute()
+        && parsed.file_name().is_some()
+        && !path.contains('\0')
+        && parsed.components().all(|component| match component {
+            std::path::Component::RootDir => true,
+            std::path::Component::Normal(name) => name
+                .to_str()
+                .is_some_and(|name| !name.eq_ignore_ascii_case(".git")),
+            _ => false,
+        })
+        && parsed.components().collect::<std::path::PathBuf>().to_str() == Some(path.as_str()))
+    .then_some(path)
+}
+
+pub(crate) fn grep_permission_target_matches(
+    input_json: &str,
+    exact_pattern: &str,
+    display_target: &str,
+) -> bool {
+    grep_permission_path(input_json).is_some_and(|path| {
+        path == display_target
+            && (exact_pattern == path
+                || exact_pattern.strip_prefix("grep-dir:v1:") == Some(path.as_str()))
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrepInvalidInputAudit {
+    audit_version: String,
+    #[serde(rename = "raw_input_bytes")]
+    _raw_input_bytes: u64,
+    raw_input_sha256: String,
+}
+
+pub(crate) fn grep_invalid_input_claim(input_json: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(input_json) {
+        Ok(input) => input.as_object().is_some_and(|object| {
+            ["audit_version", "raw_input_bytes", "raw_input_sha256"]
+                .iter()
+                .any(|key| object.contains_key(*key))
+        }),
+        Err(_) => input_json.contains("grep_invalid_v1"),
+    }
+}
+
+pub(crate) fn valid_grep_invalid_input(input_json: &str) -> bool {
+    serde_json::from_str::<GrepInvalidInputAudit>(input_json).is_ok_and(|input| {
+        input.audit_version == "grep_invalid_v1" && valid_skill_sha256(&input.raw_input_sha256)
+    })
+}
+
+#[cfg(test)]
+mod external_grep_tests;
 
 fn user_question_result_projection(
     input: &Result<UserQuestionInput, String>,

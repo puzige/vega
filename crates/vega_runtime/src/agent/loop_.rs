@@ -2687,6 +2687,10 @@ where
                 && call.name != crate::skills::LOAD_SKILL_TOOL_NAME
             {
                 prepare_mixed_rejection_call(tools, &tool_config, &capabilities, call)
+            } else if call.name == "grep"
+                && let Some(prior) = completed.get(&call.id)
+            {
+                Ok(prepare_completed_grep(tools, call, prior))
             } else {
                 prepare_runtime_call(tools, &tool_config, &capabilities, call)
             };
