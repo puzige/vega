@@ -2,6 +2,7 @@ mod cua_batch_projection;
 mod cua_read_progress;
 mod cua_usability;
 mod long_task_progress;
+mod progress_recovery;
 mod steering;
 use std::fs;
 use std::sync::Mutex;

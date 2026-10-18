@@ -1,6 +1,6 @@
 use super::*;
 
-const NOTICE: &str = "<vega_runtime_notice>";
+const NOTICE: &str = "Give the user a brief factual progress update";
 
 struct ProgressSteering(Mutex<Option<RuntimeSteeringInput>>);
 
@@ -208,6 +208,11 @@ async fn progress_reminders_follow_complete_batches_and_sixty_second_visible_cad
         requests.iter().map(notice_count).collect::<Vec<_>>(),
         [0, 1, 1, 2, 2, 2, 3]
     );
+    let combined = &requests[3].messages.last().unwrap().content;
+    assert!(combined.starts_with("1 | observed\n\n<vega_runtime_notice>"));
+    assert!(combined.contains("The same tool inputs produced the same successful result"));
+    assert!(combined.contains(NOTICE));
+    assert_eq!(combined.matches("<vega_runtime_notice>").count(), 1);
     assert_append_only_requests(&requests);
     assert!(requests.iter().all(|request| !request.tools.is_empty()));
     assert!(!outcome.failed && !outcome.interrupted);
@@ -483,6 +488,24 @@ async fn progress_does_not_limit_five_hundred_productive_rounds_or_fabricate_upd
     let requests = provider.requests();
     assert_eq!(requests.len(), 501);
     assert_eq!(notice_count(&requests[500]), 1);
+    assert_eq!(
+        requests[500]
+            .messages
+            .iter()
+            .filter(|message| message.content.contains("Review the confirmed facts"))
+            .count(),
+        31
+    );
+    for (completed_batches, request) in requests.iter().enumerate() {
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .filter(|message| message.content.contains("Review the confirmed facts"))
+                .count(),
+            completed_batches / 16
+        );
+    }
     assert_append_only_requests(&requests);
 }
 

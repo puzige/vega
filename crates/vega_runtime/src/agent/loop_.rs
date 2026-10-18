@@ -1118,6 +1118,7 @@ where
     let mut input_anchor: Option<InputAnchor> = None;
     let mut primary_revision = 0_u64;
     let mut progress = progress::ProgressReporter::new();
+    let mut recovery = progress_recovery::ProgressRecovery::default();
 
     if !skill_authority_current(skill_config.as_ref()) {
         cancel.cancel();
@@ -1232,6 +1233,7 @@ where
                         replay_candidate = None;
                         cold_current_user = None;
                         input_anchor = None;
+                        recovery = progress_recovery::ProgressRecovery::default();
                         continue;
                     }
                 }
@@ -1769,6 +1771,7 @@ where
                 force_provider_compaction = false;
                 automatic_compaction_failures = 0;
                 messages = next_messages;
+                recovery = progress_recovery::ProgressRecovery::default();
                 discard_reasoning_events(&mut events, 0);
                 emit!(events, sink, RuntimeEvent::ReasoningRetentionReleased);
                 if let Some(run) = &tool_config.computer_use {
@@ -2625,6 +2628,7 @@ where
                 crate::images::validate_messages(std::slice::from_ref(&input.message))?;
                 emit!(events, sink, RuntimeEvent::SteeringAccepted(input.clone()));
                 progress = progress::ProgressReporter::new();
+                recovery = progress_recovery::ProgressRecovery::default();
                 context_operation_id = input.assistant_message_id.clone();
                 let interleaved_user_boundary = messages.len();
                 messages[0].begin_interleaved_user_round(interleaved_user_boundary);
@@ -2765,6 +2769,7 @@ where
             tool_call_count += 1;
             if tool_config.foreign_call_ids.contains(&call.id) {
                 let conflict = conflict_result(&call);
+                recovery.observe(&call, &conflict);
                 emit!(
                     events,
                     sink,
@@ -2803,6 +2808,7 @@ where
                         )
                     {
                         let conflict = conflict_result(&call);
+                        recovery.observe(&call, &conflict);
                         emit!(
                             events,
                             sink,
@@ -2823,6 +2829,7 @@ where
                     terminal.truncated = None;
                 }
                 redact_runtime_tool_result(&tool_config, &mut terminal);
+                recovery.observe(&call, &terminal);
                 emit!(
                     events,
                     sink,
@@ -2877,6 +2884,7 @@ where
                     );
                     result
                 };
+                recovery.observe(&call, &result);
                 messages.push(ChatMessage::projected_tool_result(
                     &call.id,
                     &call.name,
@@ -2903,6 +2911,7 @@ where
                     )
                 {
                     let conflict = conflict_result(&call);
+                    recovery.observe(&call, &conflict);
                     emit!(
                         events,
                         sink,
@@ -2924,6 +2933,7 @@ where
                 result.truncated = None;
                 redact_runtime_tool_result(&tool_config, &mut result);
                 user_questions::validate_redacted_result(&call, &mut result);
+                recovery.observe(&call, &result);
                 emit!(
                     events,
                     sink,
@@ -2953,6 +2963,7 @@ where
                 let mut result = result;
                 redact_runtime_tool_result(&tool_config, &mut result);
                 user_questions::validate_redacted_result(&call, &mut result);
+                recovery.observe(&call, &result);
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
                 messages.push(ChatMessage::projected_tool_result(
                     &call.id,
@@ -2996,6 +3007,9 @@ where
                 .await?;
                 if matches!(&authorization, Authorization::Terminal(result) if result.status == RuntimeToolStatus::Cancelled && result.output == crate::computer_use::SUPERSEDED_CONTROL_OUTPUT)
                 {
+                    if let Authorization::Terminal(result) = &authorization {
+                        recovery.observe(&call, result);
+                    }
                     tool_call_count -= 1;
                     messages.push(ChatMessage::tool_result(
                         &call.id,
@@ -3153,6 +3167,7 @@ where
                                     .await?
                                     {
                                         input_anchor = None;
+                                        recovery = progress_recovery::ProgressRecovery::default();
                                         executed = execute_skill_call(
                                             config,
                                             &call,
@@ -3224,6 +3239,7 @@ where
             }
             redact_runtime_tool_result(&tool_config, &mut result);
             user_questions::validate_redacted_result(&call, &mut result);
+            recovery.observe(&call, &result);
             if call.name == "ComputerScreenshot"
                 && result.status == RuntimeToolStatus::Success
                 && !cancel.is_cancelled()
@@ -3350,6 +3366,7 @@ where
             crate::images::validate_messages(std::slice::from_ref(&input.message))?;
             emit!(events, sink, RuntimeEvent::SteeringAccepted(input.clone()));
             progress = progress::ProgressReporter::new();
+            recovery = progress_recovery::ProgressRecovery::default();
             steered = true;
             context_operation_id = input.assistant_message_id.clone();
             let interleaved_user_boundary = messages.len();
@@ -3360,6 +3377,11 @@ where
         }
         if !steered && !cancel.is_cancelled() {
             progress.after_tool_batch(messages.last_mut());
+            if let Some(guidance) = recovery.finish_batch()
+                && let Some(last) = messages.last_mut()
+            {
+                last.attach_recovery_guidance(guidance);
+            }
         }
         if batch_policy != BatchPolicy::SkillOnly {
             direct_user_skill_round = false;
