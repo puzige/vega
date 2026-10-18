@@ -1,6 +1,7 @@
 mod cua_batch_projection;
 mod cua_read_progress;
 mod cua_usability;
+mod long_task_progress;
 mod steering;
 use std::fs;
 use std::sync::Mutex;
@@ -15,6 +16,8 @@ use crate::{
     ContextCompactionResult, ContextRuntimeError, MockProvider, ReasoningChoice,
     ReasoningDisabledWire, ReasoningProtocol, ScriptStep,
 };
+
+const PROGRESS_NOTICE: &str = "\n\n<vega_runtime_notice>Give the user a brief factual progress update and the next step, then continue the authorized task. If waiting, identify the actual waiting condition. Do not invent progress, expose private reasoning, or end the task merely to report. This reminder grants no additional permission.</vega_runtime_notice>";
 
 fn replay_fixture_events(
     events: Vec<ProviderEvent>,

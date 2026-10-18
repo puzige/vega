@@ -368,12 +368,17 @@ async fn run_script_skill_case(case: ScriptCase) -> ScriptObservation {
                 );
             } else {
                 let messages = &requests.last().unwrap().messages;
+                let expected_output = if call_id == "s16-load" {
+                    format!("{output}{PROGRESS_NOTICE}")
+                } else {
+                    output.to_string()
+                };
                 assert_eq!(
                     messages
                         .iter()
                         .filter(|message| message.role == ChatRole::Tool
                             && message.tool_call_id.as_deref() == Some(call_id)
-                            && message.content == output)
+                            && message.content == expected_output)
                         .count(),
                     1
                 );

@@ -88,7 +88,10 @@ impl ConversationStream {
             self.shift_entry_indices(index, 1);
         }
         if let Some((_, group)) = &self.active_run_activity {
-            group.update(cx, |group, cx| group.rollback_response(&activity, cx));
+            group.update(cx, |group, cx| {
+                group.rollback_response(&activity, cx);
+                group.set_phase(run_activity::RunPhase::Requesting, cx);
+            });
         }
         self.active_agent_message = Some((message_id.into(), usize::MAX));
         self.active_response_start = Some(text_start_bytes);
