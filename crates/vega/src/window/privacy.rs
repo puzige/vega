@@ -76,6 +76,9 @@ impl VegaWindow {
             let _ = this.update(cx, |this, cx| {
                 let stale = this.agent_controller.next_generation != generation
                     || this.agent_controller.active.contains_key(&thread_id);
+                if !stale && result.as_ref().is_ok_and(|(_, page)| page.is_some()) {
+                    this.refresh_subagents_after_privacy(&thread_id, cx);
+                }
                 stream.update(cx, |stream, cx| {
                     if stale {
                         stream.apply_privacy_review(

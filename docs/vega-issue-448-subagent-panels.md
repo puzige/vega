@@ -3,6 +3,8 @@
 Status: SPEC FROZEN v1.2 · 2026-10-18 (Asia/Shanghai).
 Feature: A3-14. Baseline: `6e9a69c7` (#460).
 Branch: `feat/448-subagent-panels`.
+Integration baseline: `76906235` (#462, Working/Worked labels); acceptance and
+scope remain v1.2. CI must validate the integrated implementation head.
 
 ## User feedback and scope
 
@@ -107,6 +109,12 @@ and load generation. A load that began before a live child update must not
 overwrite that newer child. Detail selection and paging additionally bind the
 selected child and exact stream identity. Reopening a task reloads persisted
 state; never carry another task's selection or private data into it.
+
+After a successful privacy cleanup or display-exception change affecting this
+parent, invalidate panel reads and cached names/results/detail before reloading
+the approved display projection. A cache must not retain text that the existing
+privacy flow just removed. This is cache consistency with v1.1, not a new cleanup
+operation or permission path.
 
 Status falls back to the durable original delegated result. If that same child
 conversation is currently in a later user-owned run, its actual live Running /

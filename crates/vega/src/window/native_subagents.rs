@@ -96,6 +96,7 @@ impl VegaWindow {
                     parent.apply_subagent(snapshot.clone(), cx);
                     parent.bind_subagent_stream(&snapshot.parent_message_id, &thread_id, view, cx);
                 });
+                self.apply_subagent_panel_update(snapshot, cx);
                 if reply.send(Ok(())).is_err() {
                     cancel.cancel();
                 }
@@ -133,6 +134,7 @@ impl VegaWindow {
             }
             NativeSubagentUpdate::Updated(snapshot) => {
                 if snapshot.parent_thread_id == parent_id {
+                    self.apply_subagent_panel_update(snapshot.clone(), cx);
                     parent_stream.update(cx, |stream, cx| stream.apply_subagent(snapshot, cx));
                 }
             }
@@ -143,6 +145,7 @@ impl VegaWindow {
                 if snapshot.parent_thread_id != parent_id {
                     return;
                 }
+                self.apply_subagent_panel_update(snapshot.clone(), cx);
                 parent_stream.update(cx, |stream, cx| {
                     stream.apply_subagent(snapshot.clone(), cx);
                     stream.finish_subagent_usage(usage_complete, cx);
@@ -277,6 +280,9 @@ impl VegaWindow {
             &view,
             window,
             |this, stream, request: &ImagePreviewRequested, window, cx| {
+                if this.panel_image_requested(stream, cx) {
+                    return;
+                }
                 this.handle_image_preview(stream.clone(), request, window, cx);
             },
         )
@@ -471,10 +477,11 @@ impl VegaWindow {
             this.commit_panel_closed(panel.clone(), request, cx);
         })
         .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &view,
-            |this, stream, request: &SubagentOpenRequested, cx| {
-                this.open_subagent(stream.clone(), request, cx)
+            window,
+            |this, stream, request: &SubagentOpenRequested, window, cx| {
+                this.open_subagent_preview(stream.clone(), request, window, cx)
             },
         )
         .detach();

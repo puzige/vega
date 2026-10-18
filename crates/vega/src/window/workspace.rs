@@ -7,6 +7,7 @@ const MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT: f32 = 480.;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum TabKey {
+    Subagents,
     Diff,
     Image,
     Terminal(u64),
@@ -17,6 +18,7 @@ pub(super) enum TabKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceCreateAction {
+    Subagents,
     Review,
     NewTerminal,
 }
@@ -55,6 +57,31 @@ pub(super) struct Workspace {
 }
 
 impl VegaWindow {
+    pub(super) fn show_subagent_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_workspace_route(cx);
+        self.workspace.open(TabKey::Subagents);
+        self.workspace.menu = false;
+        self.environment_overlay_open = false;
+        self.sync_subagent_workspace_size(window, cx);
+        window.focus(&self.subagent_panel.focus, cx);
+        cx.notify();
+    }
+
+    pub(super) fn sync_subagent_workspace_size(&mut self, window: &Window, cx: &App) {
+        let selected =
+            self.workspace.selected[0] == Some(TabKey::Subagents) && !self.workspace.hidden[0];
+        if selected
+            && self.workspace_available_width(window, cx) < MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH
+        {
+            self.subagent_panel
+                .previous_maximized
+                .get_or_insert(self.workspace.maximized);
+            self.workspace.maximized = [true, false];
+        } else if let Some(previous) = self.subagent_panel.previous_maximized.take() {
+            self.workspace.maximized = previous;
+        }
+    }
+
     pub(super) fn show_image_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_workspace_route(cx);
         self.workspace.close(&TabKey::Image);
@@ -340,10 +367,12 @@ impl VegaWindow {
 
     /// Whether an existing artifact/file preview can be restored without fabricating content.
     pub(crate) fn workspace_has_preview(&self) -> bool {
-        self.workspace
-            .tabs
-            .iter()
-            .any(|(key, _)| matches!(key, TabKey::Artifact(_) | TabKey::File(_) | TabKey::Image))
+        self.workspace.tabs.iter().any(|(key, _)| {
+            matches!(
+                key,
+                TabKey::Artifact(_) | TabKey::File(_) | TabKey::Image | TabKey::Subagents
+            )
+        })
     }
 
     /// Whether the current project's most recent terminal tab is actually
@@ -565,7 +594,12 @@ impl VegaWindow {
             .tabs
             .iter()
             .rev()
-            .find(|(key, _)| matches!(key, TabKey::Artifact(_) | TabKey::File(_) | TabKey::Image))
+            .find(|(key, _)| {
+                matches!(
+                    key,
+                    TabKey::Artifact(_) | TabKey::File(_) | TabKey::Image | TabKey::Subagents
+                )
+            })
             .cloned()
         {
             if let TabKey::File(id) = key
@@ -666,6 +700,12 @@ impl VegaWindow {
             .map_or(0, |(_, bottom)| usize::from(*bottom));
         self.workspace.close(key);
         match key {
+            TabKey::Subagents => {
+                self.clear_subagent_detail(cx);
+                if let Some(previous) = self.subagent_panel.previous_maximized.take() {
+                    self.workspace.maximized = previous;
+                }
+            }
             TabKey::Terminal(id) => {
                 self.workspace.terminals.remove(id);
             }
@@ -730,6 +770,7 @@ impl VegaWindow {
 
     fn workspace_label(&self, key: &TabKey, cx: &App) -> String {
         match key {
+            TabKey::Subagents => "Subagents".into(),
             TabKey::Image => self
                 .image_preview
                 .active
@@ -762,6 +803,7 @@ impl VegaWindow {
 
     fn workspace_tab_icon(key: &TabKey) -> Icon {
         match key {
+            TabKey::Subagents => Icon::Bot,
             TabKey::Image => Icon::Camera,
             TabKey::Diff | TabKey::File(_) => Icon::Document,
             TabKey::Terminal(_) => Icon::Terminal,
@@ -836,6 +878,9 @@ impl VegaWindow {
 
     fn workspace_creation_actions(&self, cx: &App) -> Vec<WorkspaceCreateAction> {
         let mut actions = Vec::with_capacity(2);
+        if self.has_subagents(cx) {
+            actions.push(WorkspaceCreateAction::Subagents);
+        }
         if self.shell_project_thread(cx).is_some() {
             actions.push(WorkspaceCreateAction::Review);
         }
@@ -851,6 +896,7 @@ impl VegaWindow {
     fn workspace_focus(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_automation_editor_visibility(window, cx);
         let focus = match self.workspace.selected[index].as_ref() {
+            Some(TabKey::Subagents) => Some(self.subagent_panel.focus.clone()),
             Some(TabKey::Automation(key)) => self
                 .automation_editors
                 .get(key)
@@ -1025,9 +1071,7 @@ impl VegaWindow {
     }
 
     pub(super) fn toggle_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shell_project_id(cx).is_none()
-            || self.persistent_right_workspace_visible(window, cx)
-        {
+        if !self.environment_available(cx) || self.persistent_right_workspace_visible(window, cx) {
             return;
         }
         if self.environment_is_wide(window, cx) {
@@ -1041,9 +1085,9 @@ impl VegaWindow {
 
     fn render_environment(&mut self, overlay: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let Some(_) = self.shell_project_id(cx) else {
+        if !self.environment_available(cx) {
             return div().into_any_element();
-        };
+        }
         let project_label = self.shell_project_label(cx);
         let thread = self.shell_project_thread(cx);
         let close = icon_button(
@@ -1124,16 +1168,19 @@ impl VegaWindow {
                 }),
             ));
         }
-        card = card.child(environment_action(
-            "environment-terminal",
-            "Local terminal",
-            Icon::Terminal,
-            colors,
-            cx.listener(|this, _, window, cx| {
-                this.environment_overlay_open = false;
-                this.workspace_reveal_terminal(window, cx);
-            }),
-        ));
+        card = card.children(self.render_subagent_overview(cx));
+        if self.shell_project_id(cx).is_some() {
+            card = card.child(environment_action(
+                "environment-terminal",
+                "Local terminal",
+                Icon::Terminal,
+                colors,
+                cx.listener(|this, _, window, cx| {
+                    this.environment_overlay_open = false;
+                    this.workspace_reveal_terminal(window, cx);
+                }),
+            ));
+        }
         div()
             .id(if overlay {
                 "environment-overlay"
@@ -1384,6 +1431,9 @@ impl VegaWindow {
                     colors,
                     cx.listener(move |this, _, window, cx| {
                         this.image_preview.previous_maximized = None;
+                        if this.workspace.selected[index] == Some(TabKey::Subagents) {
+                            this.subagent_panel.previous_maximized = None;
+                        }
                         this.workspace.maximized[index] = !this.workspace.maximized[index];
                         this.workspace.reveal_tabs[index] = true;
                         this.workspace_focus(index, window, cx);
@@ -1427,6 +1477,7 @@ impl VegaWindow {
             .child(strip)
             .child(actions);
         let body = match selected {
+            Some(TabKey::Subagents) => Some(self.render_subagent_panel(window, cx)),
             Some(TabKey::Automation(key)) => self
                 .automation_editors
                 .get(&key)
@@ -1539,6 +1590,21 @@ impl VegaWindow {
         // R46 §2.1.1 keeps one owner for "which dock is fullscreen chrome":
         // the same helper decides the pane header's top-band reservation.
         let fullscreen = self.workspace_fullscreen_index();
+        let subagent_pane = (0..2).find(|index| {
+            self.workspace.selected[*index] == Some(TabKey::Subagents)
+                && !self.workspace.hidden[*index]
+                && (fullscreen == Some(*index)
+                    || (fullscreen.is_none() && if *index == 0 { right } else { bottom }))
+        });
+        self.set_subagent_preview_visible(
+            subagent_pane.is_some(),
+            if fullscreen.is_some() || subagent_pane == Some(1) {
+                available
+            } else {
+                width
+            },
+            cx,
+        );
         if right {
             self.environment_overlay_open = false;
         }
@@ -1547,12 +1613,12 @@ impl VegaWindow {
         }
         let environment_rail = fullscreen.is_none()
             && !right
-            && self.shell_project_id(cx).is_some()
+            && self.environment_available(cx)
             && environment_wide
             && !self.environment_collapsed;
         let environment_overlay = fullscreen.is_none()
             && !right
-            && self.shell_project_id(cx).is_some()
+            && self.environment_available(cx)
             && !environment_wide
             && self.environment_overlay_open;
         if let Some((_, stream)) = &self.stream_view {
@@ -1748,6 +1814,12 @@ impl VegaWindow {
                 .gap_1();
             for action in creation_actions {
                 menu = match action {
+                    WorkspaceCreateAction::Subagents => menu.child(workspace_button(
+                        "workspace-add-subagents",
+                        "Subagents",
+                        colors,
+                        cx.listener(|this, _, window, cx| this.open_subagent_panel(window, cx)),
+                    )),
                     WorkspaceCreateAction::Review => menu.child(workspace_button(
                         "workspace-add-review",
                         "Review · 工作区变更",

@@ -41,6 +41,7 @@ mod render;
 mod scroll_state;
 mod session;
 mod skills;
+mod subagent_panel;
 mod updater;
 mod workspace;
 
@@ -106,6 +107,7 @@ pub(crate) struct VegaWindow {
     /// Sidebar with the [新建任务] button, projects block, and sessions block.
     pub(crate) sidebar: Entity<Sidebar>,
     workspace: workspace::Workspace,
+    subagent_panel: subagent_panel::SubagentPanel,
     pub(crate) automation_editors: std::collections::HashMap<
         vega_ui::automation_editor::AutomationEditorKey,
         Entity<vega_ui::automation_editor::AutomationEditor>,
@@ -357,6 +359,7 @@ impl VegaWindow {
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),
             workspace: workspace::Workspace::default(),
+            subagent_panel: subagent_panel::SubagentPanel::new(cx),
             automation_editors: Default::default(),
             image_preview: image_preview::ImagePreviewController::new(cx),
             environment_collapsed: true,

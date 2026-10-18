@@ -36,6 +36,7 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) reading_preview: bool,
     pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
     pub(crate) subagent_parent_focus: FocusHandle,
     pub(crate) delegated_run_active: bool,
@@ -298,6 +299,23 @@ pub(crate) struct PendingEcho {
 }
 
 impl ConversationStream {
+    pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
+        if self.reading_preview == reading {
+            return;
+        }
+        self.reading_preview = reading;
+        for card in self.artifact_cards.values() {
+            card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
+        }
+        self.hydration.loading = false;
+        self.hydration.paused = false;
+        self.hydration.paused_direction = None;
+        self.foreground_height = px(0.);
+        self.measured_entry_heights.clear();
+        self.list.remeasure();
+        cx.notify();
+    }
+
     /// Projects the host column width without rebuilding composer state.
     pub fn set_workspace_width(&mut self, width: f32, cx: &mut Context<Self>) {
         let automation_compact = self.automation_compact();
@@ -489,6 +507,7 @@ impl ConversationStream {
         )
         .detach();
         Self {
+            reading_preview: false,
             subagent_groups: HashMap::new(),
             subagent_parent_focus: cx.focus_handle().tab_stop(true),
             delegated_run_active: false,

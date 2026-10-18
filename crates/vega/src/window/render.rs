@@ -54,6 +54,7 @@ impl Render for VegaWindow {
         }
         self.sync_workspace_route(cx);
         self.sync_automation_workspace_size(window, cx);
+        self.sync_subagent_workspace_size(window, cx);
         self.sync_automation_editor_visibility(window, cx);
         if !settings_open
             && self.diff_controller.active.is_none()
@@ -442,11 +443,13 @@ impl Render for VegaWindow {
                             stream.focus_composer(window, cx);
                         });
                     }
+                    stream.update(cx, |stream, cx| stream.set_reading_preview(false, cx));
                     stream.into_any_element()
                 }
             }
         };
 
+        self.sync_subagent_panel_route(cx);
         let content = if settings_open {
             content
         } else {
@@ -611,6 +614,7 @@ impl VegaWindow {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let project_route = self.shell_project_id(cx).is_some();
+        let environment_available = self.environment_available(cx);
         let right_visible = self.persistent_right_workspace_visible(window, cx);
         let environment_visible = if self.environment_is_wide(window, cx) {
             !self.environment_collapsed
@@ -640,11 +644,11 @@ impl VegaWindow {
                     Icon::Summary,
                     "切换环境",
                     None,
-                    project_route
+                    environment_available
                         && !right_visible
                         && self.workspace_fullscreen_index().is_none()
                         && environment_visible,
-                    project_route && !right_visible,
+                    environment_available && !right_visible,
                     colors,
                     cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
                 )
