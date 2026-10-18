@@ -52,6 +52,16 @@ Cloud execution uses the unchanged `.github/workflows/pr-check.yml`: `cargo fmt 
 
 RED/GREEN baseline, test commit/patch, original failure, implementation ordering, run/job links, counts if available, and latest-head gate are recorded in the PR and Issue. Not-yet-run checks are pending, not passed.
 
+## Recorded test-first evidence
+
+- Production unchanged at baseline `3a97f4d9`; spec and complete test patch committed as `9db5eb30f68b9b342441d73edb803472900bab48` before implementation.
+- Frozen test file: `crates/vega_ui/src/conversation_stream/tests/composer_picker.rs`; SHA-256 `604c9b91ece02aba76a9d58a84faf417d80e44d761267469eec6af97ed18c6b5`.
+- Test-first draft PR: https://github.com/puzige/vega/pull/480.
+- Effective RED: [Actions run](https://github.com/puzige/vega/actions/runs/39151902385), [Nextest original failure](https://github.com/puzige/vega/actions/runs/39151902385/job/117747095853). `cargo nextest run --workspace` executed 1,733 tests: 1,725 passed, exactly the eight new Composer regressions failed, and 3 were skipped. No new ignore/skip was added. Discovery count was not separately retrieved.
+- Original failures include long-model horizontal bounds `651px != 534px`, short-model bounds `651px != 675px`, narrow-footer bounds `215px != 173px`, and empty/draft/acceptance/switch states reporting `empty conversation renders composer-context-usage`. These are target-behavior assertion failures, not missing API, compilation, or runner failures.
+- Cloud format/all-target Clippy and the three existing Python checks passed. Local format and whitespace checks passed; no local code execution or compilation was performed.
+- Frozen-target and implementation authorization record: https://github.com/puzige/vega/pull/480#issuecomment-6253325263. A dedicated production subagent was admitted only after confirming effective RED. Tests remain unchanged; same-test GREEN and latest-head full gate are pending.
+
 ## Manual acceptance and rollback
 
 Using the official cloud-built application, check the affected long model name and a short name in both workspace layouts. Open the slider, enter the model list, close/reopen, and change models. Check that context/permission controls remain stationary for the same selected model, and that an extremely long name cannot push send/stop outside the Composer. In a new task, edit a draft: no usage indicator should exist. Send a message: the normal indicator and keyboard/click tooltip should become available. Open an existing conversation, then create another new task: the old tooltip must not persist. Check light/dark appearance and normal keyboard/Escape behavior.
@@ -60,4 +70,5 @@ Rollback is to revert this task's isolated production change, preserving underly
 
 ## Revision record
 
-- 2026-10-18: initial acceptance freeze and implementation plan under explicit user authorization to proceed directly. Cloud RED/GREEN and manual acceptance pending.
+- 2026-10-18: initial acceptance freeze and implementation plan under explicit user authorization to proceed directly.
+- 2026-10-18: recorded test-only commit and cloud effective RED before production implementation; test targets and assertions frozen. GREEN and manual acceptance pending.

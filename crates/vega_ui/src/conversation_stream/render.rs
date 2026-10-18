@@ -814,13 +814,14 @@ impl ConversationStream {
     }
 
     fn render_model_controls(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let has_content = !self.entries.is_empty();
         let (estimated_tokens, context_limit) = self.context_usage_source();
         let display = ContextUsageDisplay::new(estimated_tokens, context_limit);
         let colors = theme(cx).colors;
         let focused = self.context_usage_focus.contains_focused(window, cx);
         let hovered = self.context_usage_trigger_hovered || self.context_usage_tooltip_hovered;
-        let shown =
-            self.context_usage_open || (!self.context_usage_dismissed && (focused || hovered));
+        let shown = has_content
+            && (self.context_usage_open || (!self.context_usage_dismissed && (focused || hovered)));
         div()
             .relative()
             .min_w_0()
@@ -828,8 +829,10 @@ impl ConversationStream {
             .flex()
             .items_center()
             .gap_1()
-            .child(self.render_context_usage_indicator(&display, colors, cx))
-            .child(self.render_model_selector(cx))
+            .children(
+                has_content.then(|| self.render_context_usage_indicator(&display, colors, cx)),
+            )
+            .child(self.render_model_selector(window, cx))
             .children(shown.then(|| {
                 let tooltip_hover = cx.listener(|this, hovered: &bool, _, cx| {
                     this.context_usage_tooltip_hovered = *hovered;
@@ -1147,17 +1150,44 @@ impl ConversationStream {
             )
     }
 
-    fn render_model_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_model_selector(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let enabled = !self.trusted_action_busy
             && !self.model_selection_save_busy()
             && self.model_selection_pending.is_none();
 
+        let model = &self.composer_defaults.model;
         let current = model_trigger_label(
-            &self.composer_defaults.model,
+            model,
             self.model_picker_level,
             self.model_selection_pending.is_some(),
         );
+        let label_width = [
+            current,
+            model_trigger_label(model, ModelPickerLevel::Closed, false),
+        ]
+        .into_iter()
+        .chain(
+            self.thinking_slider
+                .read(cx)
+                .has_tiers()
+                .then(|| model_trigger_label(model, ModelPickerLevel::Slider, false)),
+        )
+        .flat_map(str::lines)
+        .map(|label| {
+            window
+                .text_system()
+                .shape_line(
+                    label.to_owned().into(),
+                    px(Typography::SIDEBAR),
+                    &[window.text_style().to_run(label.len())],
+                    None,
+                )
+                .width()
+        })
+        .max()
+        .unwrap_or_default()
+        .ceil();
         div()
             .relative()
             .flex()
@@ -1206,6 +1236,7 @@ impl ConversationStream {
                             .child(
                                 div()
                                     .debug_selector(|| "composer-model-label".into())
+                                    .w(label_width)
                                     .min_w_0()
                                     .flex_shrink_1()
                                     .truncate()

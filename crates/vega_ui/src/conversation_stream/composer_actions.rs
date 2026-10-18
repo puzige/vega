@@ -436,7 +436,9 @@ impl ConversationStream {
             self.input.read(cx).focus_handle(cx),
             self.action_focus[0].clone(),
         ];
-        controls.push(self.context_usage_focus.clone());
+        if self.thread.backend == TaskBackend::Native && !self.entries.is_empty() {
+            controls.push(self.context_usage_focus.clone());
+        }
         controls.push(self.model_focus.clone());
         if self.pending_queue.paused
             && !self.visible_pending_messages().is_empty()
