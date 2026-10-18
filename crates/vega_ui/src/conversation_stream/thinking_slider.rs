@@ -686,6 +686,7 @@ impl Render for ThinkingSlider {
 
         let track = div()
             .id("thinking-slider-track")
+            .debug_selector(|| "thinking-slider-track".into())
             .relative()
             .w(px(THINKING_TRACK_WIDTH))
             .h(px(THINKING_TRACK_HEIGHT))
@@ -790,6 +791,7 @@ impl ThinkingSlider {
     ) -> AnyElement {
         div()
             .id("thinking-slider-title")
+            .debug_selector(|| "thinking-slider-title".into())
             .flex()
             .items_center()
             .justify_center()

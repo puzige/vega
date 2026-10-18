@@ -13,6 +13,7 @@ use vega_conversation::types::{
 
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
+mod composer_picker;
 mod composer_predictions;
 
 mod issue426_external_grep;
@@ -154,5 +155,60 @@ impl Render for StreamHarness {
             .key_context("VegaWindow")
             .size_full()
             .child(self.stream.clone())
+    }
+}
+
+fn hydration_user(seq: i64, content: &str) -> HistoryEntry {
+    HistoryEntry::UserText {
+        seq,
+        message_id: format!("user-{seq}"),
+        content: content.into(),
+    }
+}
+
+fn hydration_assistant(seq: i64, content: &str) -> HistoryEntry {
+    HistoryEntry::AssistantText {
+        seq,
+        message_id: format!("assistant-{seq}"),
+        content: content.into(),
+        status: vega_conversation::history::AssistantStatus::Done,
+        execution_duration_ms: None,
+    }
+}
+
+fn hydration_page(entries: Vec<HistoryEntry>, older_cursor: Option<i64>) -> HistoryPage {
+    HistoryPage {
+        subagents: Vec::new(),
+        entries,
+        older_cursor,
+        newer_cursor: None,
+        newest_seq: None,
+    }
+}
+
+impl ConversationStream {
+    fn model_picker_level(&self) -> ModelPickerLevel {
+        self.model_picker_level
+    }
+
+    fn hydrated_entry_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    StreamEntry::User { .. }
+                        | StreamEntry::Assistant { .. }
+                        | StreamEntry::Tool { .. }
+                        | StreamEntry::ToolGroup { .. }
+                        | StreamEntry::Plan { .. }
+                        | StreamEntry::Summary { .. }
+                )
+            })
+            .count()
+    }
+
+    fn composer_submission_pending(&self) -> bool {
+        self.composer_submit_pending
     }
 }
