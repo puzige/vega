@@ -146,8 +146,6 @@ pub(crate) struct VegaWindow {
     /// Configured model ids projected from the worker-side config read. The
     /// selector intersects these with the in-memory Ready pricing authority.
     pub(crate) configured_models: Option<Vec<String>>,
-    #[cfg(test)]
-    pub(crate) model_selection_config_override: Option<PathBuf>,
     /// Exact provider/model reasoning projections loaded beside the model
     /// catalog. The stream receives a typed projection and performs no file
     /// IO of its own.
@@ -315,8 +313,6 @@ impl VegaWindow {
             trusted_actions: TrustedActionCoordinator::default(),
             window_alive: Arc::new(AtomicBool::new(true)),
             configured_models: None,
-            #[cfg(test)]
-            model_selection_config_override: None,
             configured_reasoning: None,
             configured_reasoning_error: None,
             configured_reasoning_authority: None,

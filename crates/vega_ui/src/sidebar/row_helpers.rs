@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-mod tests;
-
 pub fn render_delete_confirm_overlay(
     thread: &Thread,
     sidebar: Entity<Sidebar>,

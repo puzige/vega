@@ -3,9 +3,6 @@ use std::time::Duration;
 
 impl VegaWindow {
     pub(crate) fn start_updater(&mut self, cx: &mut Context<Self>) {
-        if cfg!(test) {
-            return;
-        }
         let receiver = self.updater.start();
         cx.spawn(async move |owner, cx| {
             loop {

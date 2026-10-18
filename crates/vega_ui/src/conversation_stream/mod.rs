@@ -316,6 +316,3 @@ pub struct CredentialContinuationRequested {
 
 mod automation;
 pub use automation::{AutomationEditorRequested, AutomationRequested, AutomationTiming};
-
-#[cfg(test)]
-mod tests;
