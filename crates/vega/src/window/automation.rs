@@ -1,7 +1,26 @@
 use super::*;
-use crate::automation_controller::{AutomationGlobal, ensure_global};
+use crate::automation_controller::{AutomationClockSnapshot, AutomationGlobal, ensure_global};
 
 impl VegaWindow {
+    pub(super) fn observe_automation_clock(
+        &self,
+        thread: &str,
+        generation: u64,
+        started_at: std::time::Instant,
+        cx: &mut Context<Self>,
+    ) {
+        ensure_global(cx);
+        cx.update_global::<AutomationGlobal, _>(|global, _| {
+            if let Some(run) = global.runs.get_mut(thread)
+                && run.generation == generation
+                && run.owner.ptr_eq(&Arc::downgrade(&self.window_alive))
+                && run.started_at.is_none()
+            {
+                run.started_at = Some(started_at);
+            }
+        });
+    }
+
     fn automation_database(&self, cx: &App) -> Option<PathBuf> {
         cx.global::<VegaStore>()
             .0
@@ -10,7 +29,7 @@ impl VegaWindow {
             .database_path()
             .map(std::path::Path::to_path_buf)
     }
-    fn automation_error(
+    pub(super) fn automation_error(
         &self,
         stream: &Entity<ConversationStream>,
         error: String,
@@ -56,6 +75,7 @@ impl VegaWindow {
                 &request.thread_id,
                 command,
                 Some(request.content.clone()),
+                None,
                 cx,
             );
         }
@@ -73,20 +93,31 @@ impl VegaWindow {
                 &request.thread_id,
                 request.command.clone(),
                 None,
+                None,
                 cx,
             );
         }
     }
-    fn change_automation(
+    pub(super) fn change_automation(
         &mut self,
         stream: Entity<ConversationStream>,
         thread: &str,
         command: AutomationCommand,
         original: Option<String>,
+        editor: Option<(
+            Entity<vega_ui::automation_editor::AutomationEditor>,
+            vega_ui::automation_editor::AutomationEditSubmission,
+        )>,
         cx: &mut Context<Self>,
     ) {
         ensure_global(cx);
         if stream.read(cx).task_backend() != TaskBackend::Native {
+            self.automation_edit_error(
+                &stream,
+                editor.as_ref(),
+                "自动任务仅适用于 Vega 原生任务".into(),
+                cx,
+            );
             return;
         }
         if let AutomationCommand::Status(kind) = command {
@@ -118,18 +149,37 @@ impl VegaWindow {
             .mutations
             .contains_key(thread)
         {
-            self.automation_error(&stream, "任务正在保存，请稍后重试".into(), cx);
+            self.automation_edit_error(
+                &stream,
+                editor.as_ref(),
+                "任务正在保存，请稍后重试".into(),
+                cx,
+            );
             return;
         }
         let Some(database) = self.automation_database(cx) else {
-            self.automation_error(&stream, "自动任务存储不可用，请重新打开会话".into(), cx);
+            self.automation_edit_error(
+                &stream,
+                editor.as_ref(),
+                "自动任务存储不可用，请重新打开会话".into(),
+                cx,
+            );
             return;
         };
         let draft = self.draft_for_route(thread);
         if draft.is_some() && !matches!(command, AutomationCommand::Create { .. }) {
-            self.automation_error(&stream, "尚未设置该任务".into(), cx);
+            self.automation_edit_error(&stream, editor.as_ref(), "尚未设置该任务".into(), cx);
             return;
         }
+        let edit_fence = match &command {
+            AutomationCommand::Edit {
+                kind,
+                identity,
+                revision,
+                ..
+            } => Some((*kind, identity.clone(), *revision)),
+            _ => None,
+        };
         let cancelled_kind = match command {
             AutomationCommand::Control(
                 kind,
@@ -193,13 +243,17 @@ impl VegaWindow {
                 .into_iter()
                 .filter(|task| pending_pauses.contains(&task.kind))
                 .collect();
-            vega_conversation::automation::pause_matching(
-                &store,
-                &worker_thread,
-                &pending,
-                "已由你暂停",
-            )?;
-            if let AutomationCommand::Create { instruction, .. } = &command {
+            if !matches!(command, AutomationCommand::Edit { .. }) {
+                vega_conversation::automation::pause_matching(
+                    &store,
+                    &worker_thread,
+                    &pending,
+                    "已由你暂停",
+                )?;
+            }
+            if let AutomationCommand::Create { instruction, .. }
+            | AutomationCommand::Edit { instruction, .. } = &command
+            {
                 let mut credentials = mcp_settings
                     .as_ref()
                     .map(|service| service.current_owner_credential_values())
@@ -238,6 +292,35 @@ impl VegaWindow {
                 }
             });
             let _ = this.update(cx, |this, cx| {
+                if let Some((view, submitted)) = &editor {
+                    view.update(cx, |view, cx| {
+                        view.finish_save(
+                            submitted,
+                            result
+                                .as_ref()
+                                .map(|(tasks, _)| tasks.clone())
+                                .map_err(Clone::clone),
+                            cx,
+                        )
+                    });
+                }
+                if let (Some((kind, identity, revision)), Ok((tasks, _))) = (&edit_fence, &result)
+                    && tasks.iter().any(|task| {
+                        task.kind == *kind
+                            && task.identity == *identity
+                            && task.revision != *revision
+                            && task.status == AutomationStatus::Active
+                    })
+                    && let Some(run) = cx.global::<AutomationGlobal>().runs.get(&thread)
+                    && run.claim.as_ref().is_some_and(|claim| {
+                        claim.source == Some(*kind)
+                            && claim.tasks.iter().any(|task| {
+                                task.identity == *identity && task.revision == *revision
+                            })
+                    })
+                {
+                    run.cancel.cancel();
+                }
                 if cx.global::<AutomationGlobal>().epoch(&thread) != epoch {
                     return;
                 }
@@ -274,7 +357,15 @@ impl VegaWindow {
                             .update(cx, |sidebar, cx| sidebar.reload_sessions(cx));
                         cx.notify();
                     }
-                    Err(error) => this.automation_error(&stream, error, cx),
+                    Err(error) => {
+                        if editor.is_some() {
+                            let mut projection = stream.read(cx).automation_projection().clone();
+                            projection.busy = false;
+                            stream.update(cx, |stream, cx| stream.apply_automation(projection, cx));
+                        } else {
+                            this.automation_error(&stream, error, cx);
+                        }
+                    }
                 }
             });
         })
@@ -445,7 +536,23 @@ impl VegaWindow {
             .global::<AutomationGlobal>()
             .runs
             .get(thread)
-            .and_then(|run| run.claim.clone().map(|claim| (run.generation, claim)));
+            .and_then(|run| {
+                run.claim
+                    .clone()
+                    .filter(|claim| claim.source.is_some())
+                    .map(|claim| (run.generation, claim))
+            });
+        let clock = cx
+            .global::<AutomationGlobal>()
+            .runs
+            .get(thread)
+            .and_then(|run| {
+                run.started_at.map(|started| AutomationClockSnapshot {
+                    generation: run.generation,
+                    started,
+                    claim_id: run.claim.as_ref().map(|claim| claim.id.clone()),
+                })
+            });
         let revoked: Vec<_> = cx
             .global::<AutomationGlobal>()
             .revoked
@@ -465,7 +572,7 @@ impl VegaWindow {
             let now = vega_conversation::automation::now_ms();
             #[cfg(test)]
             let now = now_override.unwrap_or(now);
-            let mut tasks = vega_conversation::automation::refresh(&store, &worker_thread, now)?;
+            let tasks = vega_conversation::automation::refresh(&store, &worker_thread, now)?;
             let eligible = eligible && counter.load(Ordering::SeqCst) == epoch;
             if eligible && !revoked.is_empty() {
                 let pending: Vec<_> = tasks
@@ -479,8 +586,10 @@ impl VegaWindow {
                     &pending,
                     "已由你暂停",
                 )?;
-                tasks = vega_conversation::automation::load(&store, &worker_thread)?;
             }
+            let sampled_at = std::time::Instant::now();
+            let (tasks, active_claim) =
+                vega_conversation::automation::timing_snapshot(&store, &worker_thread)?;
             let invalid_run = observed_run.and_then(|(generation, claim)| {
                 let finished =
                     vega_store::automation::run(store.conn(), &claim.thread_id, &claim.id)
@@ -504,13 +613,23 @@ impl VegaWindow {
             } else {
                 None
             };
-            Ok::<_, String>((tasks, claim, database, invalid_run))
+            Ok::<_, String>((
+                tasks,
+                claim,
+                database,
+                invalid_run,
+                active_claim,
+                sampled_at,
+            ))
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
-            let cleanup = result.as_ref().ok().and_then(|(_, claim, database, _)| {
-                claim.clone().map(|claim| (database.clone(), claim))
-            });
+            let cleanup = result
+                .as_ref()
+                .ok()
+                .and_then(|(_, claim, database, _, _, _)| {
+                    claim.clone().map(|claim| (database.clone(), claim))
+                });
             let mut accepted = false;
             let mut failed_start = false;
             let _ = this.update(cx, |this, cx| {
@@ -523,7 +642,7 @@ impl VegaWindow {
                             global.release(&thread, &this.window_alive)
                         });
                     }
-                    Ok((tasks, claim, _, invalid_run)) => {
+                    Ok((tasks, claim, _, invalid_run, active_claim, sampled_at)) => {
                         if let Some((generation, id)) = invalid_run
                             && let Some(run) = cx.global::<AutomationGlobal>().runs.get(&thread)
                             && run.generation == generation
@@ -532,17 +651,26 @@ impl VegaWindow {
                             run.cancel.cancel();
                         }
                         let current = cx.global::<AutomationGlobal>().epoch(&thread) == epoch;
+                        let timings = cx.global::<AutomationGlobal>().timing_projection(
+                            &thread,
+                            &tasks,
+                            active_claim.as_ref(),
+                            clock.as_ref(),
+                            sampled_at,
+                        );
                         if current
                             && !cx
                                 .global::<AutomationGlobal>()
                                 .mutations
                                 .contains_key(&thread)
+                            && let Some(timings) = timings
                         {
                             let error = if !cx.global::<AutomationGlobal>().ready {
                                 Some("自动任务恢复失败，请重启 Vega 后重试".into())
                             } else {
                                 stream.read(cx).automation_projection().error.clone()
                             };
+                            this.refresh_automation_editors(&thread, &tasks, &timings, cx);
                             stream.update(cx, |stream, cx| {
                                 stream.apply_automation(
                                     AutomationProjection {
@@ -551,7 +679,8 @@ impl VegaWindow {
                                         error,
                                     },
                                     cx,
-                                )
+                                );
+                                stream.apply_automation_timings(timings, cx);
                             });
                         }
                         if let Some(claim) = claim

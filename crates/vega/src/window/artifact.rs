@@ -280,6 +280,9 @@ impl VegaWindow {
             });
         }
         for event in batch.events {
+            if let ConversationEvent::RunStarted { started_at, .. } = &event {
+                self.observe_automation_clock(thread_id, generation, *started_at, cx);
+            }
             if matches!(
                 event,
                 ConversationEvent::ContextCompactionUsageUpdated { .. }

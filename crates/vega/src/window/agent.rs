@@ -809,6 +809,7 @@ impl VegaWindow {
             global.runs.insert(
                 thread_id.to_string(),
                 crate::automation_controller::AutomationRunOwner {
+                    started_at: None,
                     generation,
                     owner: Arc::downgrade(&self.window_alive),
                     claim,

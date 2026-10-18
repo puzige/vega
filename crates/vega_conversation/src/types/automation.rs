@@ -89,6 +89,12 @@ pub enum AutomationControl {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AutomationCommand {
+    Edit {
+        kind: AutomationKind,
+        identity: String,
+        revision: u64,
+        instruction: String,
+    },
     Status(AutomationKind),
     Control(AutomationKind, AutomationControl),
     Create {

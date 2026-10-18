@@ -297,10 +297,16 @@ pub(crate) struct PendingEcho {
 impl ConversationStream {
     /// Projects the host column width without rebuilding composer state.
     pub fn set_workspace_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        let automation_compact = self.automation_compact();
         let width_changed = self
             .workspace_width
             .is_some_and(|previous| (previous - width).abs() > 0.5);
         self.workspace_width = Some(width);
+        if automation_compact != self.automation_compact()
+            && !self.automation.projection.tasks.is_empty()
+        {
+            cx.notify();
+        }
         if width_changed && !self.entries.is_empty() {
             self.measured_entry_heights.clear();
             self.ensure_entry_identities();

@@ -25,6 +25,11 @@ impl TextInput {
             last_bounds: None,
             mouse_selection: None,
             bare_chrome: false,
+            editor_scroll: None,
+            scrollable_editor: false,
+            total_visual_rows: 1,
+            #[cfg(test)]
+            painted_cursor_bounds: None,
         }
     }
 
@@ -61,6 +66,23 @@ impl TextInput {
     pub fn with_tab_stop(mut self, tab_stop: bool) -> Self {
         self.focus_handle = self.focus_handle.tab_stop(tab_stop);
         self
+    }
+
+    pub fn with_editor_viewport(mut self) -> Self {
+        self.scrollable_editor = true;
+        self.min_rows = 1;
+        self.max_rows = 24;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn painted_cursor_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.painted_cursor_bounds
+    }
+
+    #[cfg(test)]
+    pub(crate) fn painted_viewport_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.last_bounds
     }
 
     /// R62 R10: drops the single-line box chrome (background, border, radius,
@@ -194,7 +216,7 @@ impl TextInput {
         if self.last_bounds.is_none() {
             self.rows = logical_rows;
         } else {
-            self.rows = self.rows.max(logical_rows).min(8);
+            self.rows = self.rows.max(logical_rows).min(self.max_rows);
         }
         let cursor_row = self.content[..self.cursor_offset()]
             .bytes()

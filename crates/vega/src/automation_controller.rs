@@ -5,7 +5,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use vega_conversation::types::*;
-use vega_ui::conversation_stream::ConversationStream;
+use vega_ui::conversation_stream::{AutomationTiming, ConversationStream};
 
 pub(crate) struct AutomationGlobal {
     pub(crate) ready: bool,
@@ -35,7 +35,15 @@ pub(crate) struct AutomationRunOwner {
     pub(crate) generation: u64,
     pub(crate) owner: Weak<AtomicBool>,
     pub(crate) claim: Option<AutomationRunClaim>,
+    pub(crate) started_at: Option<std::time::Instant>,
     pub(crate) cancel: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Clone)]
+pub(crate) struct AutomationClockSnapshot {
+    pub(crate) generation: u64,
+    pub(crate) started: std::time::Instant,
+    pub(crate) claim_id: Option<String>,
 }
 
 struct AutomationParticipant {
@@ -46,6 +54,77 @@ struct AutomationParticipant {
 impl Global for AutomationGlobal {}
 
 impl AutomationGlobal {
+    pub(crate) fn clock_is_current(
+        &self,
+        thread: &str,
+        generation: u64,
+        started: std::time::Instant,
+    ) -> bool {
+        self.runs
+            .get(thread)
+            .is_some_and(|run| run.generation == generation && run.started_at == Some(started))
+    }
+
+    pub(crate) fn timing_projection(
+        &self,
+        thread: &str,
+        tasks: &[AutomationTask],
+        active_claim: Option<&AutomationRunClaim>,
+        clock: Option<&AutomationClockSnapshot>,
+        sampled_at: std::time::Instant,
+    ) -> Option<HashMap<String, AutomationTiming>> {
+        if active_claim.is_some()
+            && clock.is_some_and(|clock| {
+                !self.clock_is_current(thread, clock.generation, clock.started)
+            })
+        {
+            return None;
+        }
+        let live = clock.filter(|clock| {
+            self.clock_is_current(thread, clock.generation, clock.started)
+                && active_claim.is_some_and(|claim| {
+                    claim.started
+                        && clock
+                            .claim_id
+                            .as_ref()
+                            .map_or(claim.source.is_none(), |id| *id == claim.id)
+                })
+        });
+        Some(
+            tasks
+                .iter()
+                .map(|task| {
+                    let running = live.is_some()
+                        && active_claim.is_some_and(|claim| {
+                            claim
+                                .tasks
+                                .iter()
+                                .any(|snapshot| snapshot.identity == task.identity)
+                        });
+                    let extra = if running {
+                        live.map_or(0, |clock| {
+                            u64::try_from(
+                                sampled_at
+                                    .saturating_duration_since(clock.started)
+                                    .as_millis(),
+                            )
+                            .unwrap_or(u64::MAX)
+                        })
+                    } else {
+                        0
+                    };
+                    (
+                        task.identity.clone(),
+                        AutomationTiming {
+                            elapsed_ms: task.elapsed_ms.saturating_add(extra),
+                            running,
+                        },
+                    )
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn register_stream(
         &mut self,
         thread: &str,
@@ -201,6 +280,7 @@ mod tests {
         global.runs.insert(
             "thread".into(),
             AutomationRunOwner {
+                started_at: None,
                 generation: 2,
                 owner: Arc::downgrade(&second),
                 claim: None,
@@ -218,5 +298,99 @@ mod tests {
         let newer = global.invalidate("thread");
         assert!(newer > old);
         assert_eq!(global.counter("thread").load(Ordering::SeqCst), newer);
+    }
+    #[test]
+    fn timing_projection_rejects_stale_run_and_settlement_never_adds_the_clock_twice() {
+        let store = vega_store::Store::open(":memory:").unwrap();
+        store.migrate().unwrap();
+        store.conn().execute_batch("INSERT INTO threads(id,model,created_at,updated_at) VALUES ('thread','model',1,1);").unwrap();
+        let tasks = vega_conversation::automation::command(
+            &store,
+            "thread",
+            &AutomationCommand::Create {
+                kind: AutomationKind::Goal,
+                instruction: "finish".into(),
+                token_budget: None,
+                interval_seconds: None,
+            },
+            1000,
+        )
+        .unwrap();
+        let claim = vega_conversation::automation::claim(
+            &store,
+            "thread",
+            Some(AutomationKind::Goal),
+            1000,
+        )
+        .unwrap()
+        .unwrap();
+        let claim = vega_conversation::automation::activate_claim(&store, &claim)
+            .unwrap()
+            .unwrap();
+        let owner = Arc::new(AtomicBool::new(true));
+        let started = std::time::Instant::now();
+        let clock = AutomationClockSnapshot {
+            generation: 1,
+            started,
+            claim_id: Some(claim.id.clone()),
+        };
+        let mut global = AutomationGlobal::default();
+        global.runs.insert(
+            "thread".into(),
+            AutomationRunOwner {
+                generation: 1,
+                owner: Arc::downgrade(&owner),
+                claim: Some(claim.clone()),
+                started_at: Some(started),
+                cancel: tokio_util::sync::CancellationToken::new(),
+            },
+        );
+        let sampled = started + std::time::Duration::from_secs(20);
+        let mut display = global
+            .timing_projection("thread", &tasks, Some(&claim), Some(&clock), sampled)
+            .unwrap();
+        assert_eq!(
+            display[&tasks[0].identity],
+            AutomationTiming {
+                elapsed_ms: 20_000,
+                running: true
+            }
+        );
+        global.finish_run("thread", 1, &owner);
+        if let Some(projected) =
+            global.timing_projection("thread", &tasks, Some(&claim), Some(&clock), sampled)
+        {
+            display = projected;
+        }
+        assert_eq!(display[&tasks[0].identity].elapsed_ms, 20_000);
+        vega_conversation::automation::finish(&store, &claim, true, true, 21_000, 2000).unwrap();
+        let (settled, active) =
+            vega_conversation::automation::timing_snapshot(&store, "thread").unwrap();
+        let display = global
+            .timing_projection("thread", &settled, active.as_ref(), Some(&clock), sampled)
+            .unwrap();
+        assert_eq!(
+            display[&tasks[0].identity],
+            AutomationTiming {
+                elapsed_ms: 21_000,
+                running: false
+            }
+        );
+        assert_eq!(
+            global
+                .timing_projection("thread", &settled, None, None, sampled)
+                .unwrap(),
+            display
+        );
+        let no_clock = global
+            .timing_projection("thread", &tasks, Some(&claim), None, sampled)
+            .unwrap();
+        assert_eq!(
+            no_clock[&tasks[0].identity],
+            AutomationTiming {
+                elapsed_ms: 0,
+                running: false
+            }
+        );
     }
 }

@@ -13,6 +13,7 @@ struct PrepaintState {
     selections: Vec<PaintQuad>,
     visible_rows: usize,
     first_visible_row: usize,
+    total_visual_rows: usize,
 }
 
 impl IntoElement for TextElement {
@@ -46,8 +47,12 @@ impl Element for TextElement {
         style.size.width = relative(1.).into();
         // One text line per row: single-line inputs are one row tall; a
         // multi-line input uses its bounded visible-row viewport.
-        let rows = self.input.read(cx).rows as f32;
-        style.size.height = (window.line_height() * rows).into();
+        let input = self.input.read(cx);
+        style.size.height = if input.scrollable_editor {
+            relative(1.).into()
+        } else {
+            (window.line_height() * input.rows as f32).into()
+        };
         (window.request_layout(style, [], cx), ())
     }
 
@@ -227,15 +232,26 @@ impl Element for TextElement {
             });
         }
 
+        let total_visual_rows = lines.len().max(1);
         let (visible_rows, first_visible_row) = if input.multiline {
             let total = lines.len().max(1);
-            let visible = total.clamp(input.min_rows, input.max_rows);
+            let visible = if input.scrollable_editor {
+                (f32::from(bounds.size.height) / f32::from(line_height)).floor() as usize
+            } else {
+                total
+            }
+            .clamp(input.min_rows, input.max_rows);
             let cursor_row = lines
                 .iter()
                 .rposition(|layout| cursor >= layout.start)
                 .unwrap_or_default();
             let mut first = input.first_visible_row.min(total.saturating_sub(visible));
-            if cursor_row < first {
+            if let Some((selection, revision, start)) = &input.editor_scroll
+                && *selection == input.selected_range
+                && *revision == input.content_revision
+            {
+                first = (*start).min(total.saturating_sub(visible));
+            } else if cursor_row < first {
                 first = cursor_row;
             } else if cursor_row >= first + visible {
                 first = cursor_row + 1 - visible;
@@ -271,7 +287,7 @@ impl Element for TextElement {
         let cursor = if selected_range.is_empty() {
             lines
                 .iter()
-                .rposition(|layout| cursor >= layout.start)
+                .rposition(|layout| cursor >= layout.start && cursor <= layout.start + layout.len)
                 .map(|row| {
                     let layout = &lines[row];
                     let display_cursor = input.display_offset_for_content_offset(cursor);
@@ -290,6 +306,7 @@ impl Element for TextElement {
         };
 
         PrepaintState {
+            total_visual_rows,
             lines,
             line_height,
             cursor,
@@ -333,6 +350,14 @@ impl Element for TextElement {
             );
         }
 
+        #[cfg(test)]
+        self.input.update(cx, |input, _| {
+            input.painted_cursor_bounds = prepaint
+                .cursor
+                .as_ref()
+                .filter(|_| focus_handle.is_focused(window))
+                .map(|cursor| cursor.bounds);
+        });
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
         {
@@ -347,6 +372,7 @@ impl Element for TextElement {
             input.last_bounds = Some(bounds);
             input.rows = prepaint.visible_rows;
             input.first_visible_row = prepaint.first_visible_row;
+            input.total_visual_rows = prepaint.total_visual_rows;
             if layout_changed {
                 cx.notify();
                 // Rows are learned from shaped visual lines during prepaint.
@@ -386,7 +412,25 @@ impl Render for TextInput {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move));
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .when(self.scrollable_editor, |input| {
+                input.size_full().min_h_0().on_scroll_wheel(cx.listener(
+                    |this, event: &gpui_kit::ScrollWheelEvent, window, cx| {
+                        let delta = f32::from(event.delta.pixel_delta(window.line_height()).y);
+                        let rows = (delta.abs() / f32::from(window.line_height())).ceil() as usize;
+                        let first = if delta > 0. {
+                            this.first_visible_row.saturating_sub(rows)
+                        } else {
+                            this.first_visible_row.saturating_add(rows)
+                        }
+                        .min(this.total_visual_rows.saturating_sub(this.rows));
+                        this.editor_scroll =
+                            Some((this.selected_range.clone(), this.content_revision, first));
+                        cx.stop_propagation();
+                        cx.notify();
+                    },
+                ))
+            });
         if !self.multiline {
             // R62 R10: a bare-chrome input draws no surface of its own; the
             // menu row around it already supplies background, border, radius

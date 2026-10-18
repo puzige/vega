@@ -104,6 +104,11 @@ pub struct TextInput {
     /// two dropdown search fields). The element, editing keys, IME handling
     /// and placeholder behaviour are unchanged.
     bare_chrome: bool,
+    editor_scroll: Option<(Range<usize>, u64, usize)>,
+    scrollable_editor: bool,
+    total_visual_rows: usize,
+    #[cfg(test)]
+    painted_cursor_bounds: Option<Bounds<Pixels>>,
 }
 
 mod element;

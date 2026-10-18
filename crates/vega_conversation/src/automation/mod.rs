@@ -51,6 +51,20 @@ pub fn load(store: &Store, thread: &str) -> Result<Vec<AutomationTask>, String> 
     load_from(store.conn(), thread)
 }
 
+pub fn timing_snapshot(
+    store: &Store,
+    thread: &str,
+) -> Result<(Vec<AutomationTask>, Option<AutomationRunClaim>), String> {
+    let tx = store.immediate_transaction().map_err(storage)?;
+    let tasks = load_from(&tx, thread)?;
+    let run = db::active_run(&tx, thread)
+        .map_err(storage)?
+        .map(|data| decode(&data))
+        .transpose()?;
+    tx.commit().map_err(storage)?;
+    Ok((tasks, run))
+}
+
 pub fn command(
     store: &Store,
     thread: &str,
@@ -94,6 +108,31 @@ fn command_in_transaction(
     let mut tasks = load_from(conn, thread)?;
     match command {
         AutomationCommand::Status(_) => {}
+        AutomationCommand::Edit {
+            kind,
+            identity,
+            revision,
+            instruction,
+        } => {
+            if instruction.trim().is_empty() || instruction.len() > 16384 {
+                return Err("请输入任务内容，最长 16 KiB".into());
+            }
+            let task = tasks
+                .iter_mut()
+                .find(|task| task.kind == *kind)
+                .filter(|task| task.identity == *identity && task.revision == *revision)
+                .ok_or("目标已更新，请载入最新内容后重试")?;
+            if task.instruction != *instruction {
+                task.revision = task
+                    .revision
+                    .checked_add(1)
+                    .filter(|value| i64::try_from(*value).is_ok())
+                    .ok_or("任务版本已达上限，请清除后重建")?;
+                task.instruction = instruction.clone();
+                task.updated_at_ms = now;
+                save(conn, task)?;
+            }
+        }
         AutomationCommand::Create {
             kind,
             instruction,

@@ -19,6 +19,7 @@ use vega_ui::sidebar::*;
 mod agent;
 mod artifact;
 mod automation;
+mod automation_editor;
 mod branch;
 mod commit;
 mod commit_reconcile;
@@ -104,6 +105,10 @@ pub(crate) struct VegaWindow {
     /// Sidebar with the [新建任务] button, projects block, and sessions block.
     pub(crate) sidebar: Entity<Sidebar>,
     workspace: workspace::Workspace,
+    pub(crate) automation_editors: std::collections::HashMap<
+        vega_ui::automation_editor::AutomationEditorKey,
+        Entity<vega_ui::automation_editor::AutomationEditor>,
+    >,
     image_preview: image_preview::ImagePreviewController,
     /// Explicit wide-rail choice. Width-driven hiding is derived separately
     /// from the live viewport so a resize never overwrites the user's choice.
@@ -351,6 +356,7 @@ impl VegaWindow {
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),
             workspace: workspace::Workspace::default(),
+            automation_editors: Default::default(),
             image_preview: image_preview::ImagePreviewController::new(cx),
             environment_collapsed: true,
             environment_overlay_open: false,
