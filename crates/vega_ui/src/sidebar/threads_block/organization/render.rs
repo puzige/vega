@@ -516,7 +516,9 @@ impl ThreadsBlock {
                         .child(div().pl(px(Layout::SIDEBAR_LABEL_INSET)).child(label)),
                 )
                 .child(
-                    observe_sidebar!(div().id("organization-pinned-scroll"))
+                    div()
+                        .id("organization-pinned-scroll")
+                        .debug_selector(|| "organization-pinned-scroll".into())
                         // Include the row surface outset inside the scroll clip.
                         .ml(px(-8.0))
                         .pl_2()

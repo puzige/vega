@@ -149,7 +149,12 @@ impl Fixture {
         })
     }
 
-    fn bounds(&self, cx: &mut TestAppContext, id: &str) -> Bounds<Pixels> {
+    fn bounds(&self, cx: &mut TestAppContext, id: &'static str) -> Bounds<Pixels> {
+        if id == "organization-pinned-scroll" {
+            return VisualTestContext::from_window(self.window.into(), cx)
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("missing observed element {id}"));
+        }
         self.node(cx, id)
             .unwrap_or_else(|| panic!("missing observed element {id}"))
             .bounds()
@@ -196,7 +201,11 @@ impl Fixture {
         let projects = self.bounds(cx, "organization-projects");
         if count == 0 {
             assert!(self.node(cx, "organization-pinned").is_none());
-            assert!(self.node(cx, "organization-pinned-scroll").is_none());
+            assert!(
+                VisualTestContext::from_window(self.window.into(), cx)
+                    .debug_bounds("organization-pinned-scroll")
+                    .is_none()
+            );
             let task = self
                 .row(cx, &self.project_task)
                 .expect("project task without pins");
@@ -276,6 +285,10 @@ fn pinned_content_grows_and_moves_projects_on_the_same_mount(cx: &mut TestAppCon
 #[gpui_kit::test]
 fn wheel_over_pinned_content_does_not_create_an_inner_offset(cx: &mut TestAppContext) {
     let fixture = Fixture::new(cx, 7, 7, 1000.);
+    near(
+        cx.read(|cx| fixture.sidebar.read(cx).sidebar_scroll.max_offset().y),
+        0.,
+    );
     let _ = fixture.assert_geometry(cx, 7);
     let content = fixture.bounds(cx, "organization-pinned-scroll");
     let projects = fixture.bounds(cx, "organization-projects");
