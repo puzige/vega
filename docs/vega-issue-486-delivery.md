@@ -2,7 +2,7 @@
 
 关联 [Issue #486](https://github.com/puzige/vega/issues/486)、[PR #491](https://github.com/puzige/vega/pull/491)。需求为 [v1](vega-issue-486-markdown-link-preview.md)，技术方案为 [v2](vega-issue-486-markdown-link-preview-implementation.md)。
 
-当前阶段：2026-10-19 已确认最小目标接口缺失 RED；第五轮云端已实际执行全部 42 个测试，41 通过、1 失败，22 个服务测试全部通过。滚轮输入修正已越过，唯一失败确认 scope 关闭后静止指针导致重新触发；生产补正已通过静态审查，待下一轮完整复验。已集成最新 master。尚无完整 GREEN、删测或合并结论。
+记录截止：2026-10-19 独立清理提交时。同一冻结验收已完整云端 GREEN：42 发现、42 执行、42 通过、0 失败/跳过；fmt、Clippy、Python 34 项及 required check 全部成功。原始源码/hash 和逐项日志已在 PR 固定后，才完成独立删测与生产投影审查。此清理提交的最终空集门禁、合并及用户 M01/M02 后续结果在 [PR #491](https://github.com/puzige/vega/pull/491) 与 Issue 记录，不在取得前预报成功。
 
 ## 顺序与可信来源
 
@@ -12,10 +12,10 @@
 | 先行测试 | `5d46a1955d0212182f128e46dec20c67898dce55` | 22 个服务、20 个 UI/模型定义，其中 18 个 GPUI；42 是静态定义数 |
 | 有效 RED | [Actions 39201250059](https://github.com/puzige/vega/actions/runs/39201250059) | 最小目标 API 缺失；全部 Rust 行为断言未执行 |
 | 生产实现 | [实现阶段交接](vega-issue-486-implementation-stage.md) | 完整代码已写出并经静态审查；未本地编译或运行 |
-| 同一测试 GREEN | 第五轮已执行 42 个，41 通过、1 失败 | 完整 GREEN 尚未获得 |
-| 独立删测 | 待 GREEN 及证据固定 | 未执行 |
-| 最终 head 完整门禁 | 待删测 | 未执行；须明确 Rust 0 发现/0 执行，不能代替上一阶段 GREEN |
-| 合并及用户 M01/M02 | 待最新 head 门禁 | 未合并、未手测 |
+| 同一测试 GREEN | [Actions 39208603579](https://github.com/puzige/vega/actions/runs/39208603579)、`8f53229bc0b7fb349657aabe0e01f2c4b595fbdd` | 42 发现/执行/通过，0 失败/跳过；完整 gate 成功 |
+| 独立删测 | [清理阶段](vega-issue-486-cleanup-stage.md) | 42 个定义、四文件及独占支持已移除，生产投影一致 |
+| 最终 head 完整门禁 | 清理提交后由原 CI 执行，准确结果固定于 PR | 必须明确 Rust 0 发现/0 执行，不能代替上一阶段 GREEN |
+| 合并及用户 M01/M02 | 最新门禁/合并结果见 PR，手测见 Issue | 用户实际手测尚待执行，未通过前不关闭或清理资源 |
 
 冻结测试可从 PR 和不可变提交直接找回，不依赖本机文件、分支名称或 Actions artifact：
 
@@ -88,6 +88,26 @@ Codex 与实现者分别核对 pinned `scroll_target`：`window.scroll("body-fra
 后续生产补正仅四行：在原有 liveness/scroll-close 分支 dismiss 后，将当前指针下可见目标同时写入 hovered 和 suppressed，再进入共享 pointer 路径。保留现有取消、generation、焦点恢复与正常流式更新；需要离开/重入后才重新触发。四份测试/fixture 与 `a2344ec4` 逐字相同，全部原断言保留。这是原先验收内的实现修正，没有新增用例或边界；新 head 门禁待复验。
 
 第五轮后续取得真实结果：[Nextest job](https://github.com/puzige/vega/actions/runs/39207961327/job/117914814785) 实际 42 执行、41 通过、1 失败、0 跳过，6.989 秒，失败为该冻结生命周期用例第 954 行 `scope`（关闭后 1000ms 断言）。22 个服务和 19 个 UI/模型项通过，fmt、[Clippy](https://github.com/puzige/vega/actions/runs/39207961327/job/117914815010)、Python 34 项成功，[required check](https://github.com/puzige/vega/actions/runs/39207961327/job/117915625497) 失败。[原始日志摘录](https://github.com/puzige/vega/pull/491#issuecomment-6260904561) 公开固定；没有重试旧 head，未进入删测。
+
+## 同一冻结验收完整 GREEN
+
+第六轮 [Actions 39208603579](https://github.com/puzige/vega/actions/runs/39208603579) 对带测试 head `8f53229bc0b7fb349657aabe0e01f2c4b595fbdd` 完整成功。该提交已包含 master `84baff54f98ffd0888858b447677b637be86c8cf`；清理授权前 fetch 确认没有基线漂移。
+
+- [Nextest 117916766750](https://github.com/puzige/vega/actions/runs/39208603579/job/117916766750)：42 发现、42 执行、42 通过、0 失败/跳过，14 个 binary，7.450 秒。全部 22 个服务、20 个 UI/模型均真实执行；主会话将原始 42 个 PASS 名称与冻结定义逐项比对，无缺失或替换。
+- [Clippy 117916766511](https://github.com/puzige/vega/actions/runs/39208603579/job/117916766511)：fmt 与 workspace/all-targets deny-warnings 成功。
+- Python 三组实际 5+15+14=34 个通过；[required check 117917764955](https://github.com/puzige/vega/actions/runs/39208603579/job/117917764955) 成功。
+
+[PR 完整 GREEN 原始摘录与不可变源码/hash](https://github.com/puzige/vega/pull/491#issuecomment-6261003738) 在删测授权之前固定，含全部 42 个 PASS 行及原始 summary，不依赖本机或过期 artifact。原始测试仍可从上文 `5d46a195` 找回；本次三份未改文件 hash 保持原值，最终 UI hash 为 `e58d73ee6c783a4a65e88e4f1720334b09d85114f07e068b982ba89d028f387d`，[GREEN 对应 UI 源码](https://github.com/puzige/vega/blob/8f53229bc0b7fb349657aabe0e01f2c4b595fbdd/crates/vega_ui/src/conversation_stream/link_preview_tests.rs)。三项测试接线修正的事前批准、原始及中间 hash 均保留。
+
+此后才授权独立删测。生产行为、公开契约、benchmark、Python 与 CI 能力必须保持；删测后最新 head 仍须完整 gate，准确记录 `no Rust tests`（0 发现/0 执行），不能把空集替代本阶段 GREEN。最终提交、该 gate 与合并状态在 PR 动态记录，不能在本次尚未取得时预写成功。
+
+## GREEN 后独立清理与生产审查
+
+[独立清理交接](vega-issue-486-cleanup-stage.md) 记录精确删除范围及受保护源码 hash。删除四份临时测试/fixture、42 个 Rust 测试定义、专用模块/feature/dev 依赖、观察接口和 opener 注入；保留生产服务内部 ports、真实 cx.open_url、控件 ID、焦点和无障碍消费者。主会话逐字重建生产投影，与 GREEN 源码相比恰好等于已批准的测试支持删除；其它生产文件与正常依赖保持不变。
+
+Cargo.lock 924→914，只删十个已审测试独占身份及三条专用边，无新包或保留版本/checksum 变化；重复名称引用只做同义规范化。主会话独立执行 fmt、diff 和完整 `cargo metadata --offline --locked --format-version 1` 均 exit 0，完整元数据解析出 914 个包，GPUI 与本功能均无 active test-support。376 个保留 Rust 文件中静态测试/专用支持为 0；这不是 Rust 编译、借用或执行结论。
+
+清理与 GREEN 保持两个独立提交，最新 head 必须重新运行原完整门禁并准确回报 `no Rust tests`。本页随清理提交固定；该后续 run/job、完整 SHA、准确空集/Python 计数与正式 PR/合并状态将固定在 PR，保留本页截止时尚未取得最终 gate 的事实。没有本地运行、编译、测试、打包或安装 Vega。
 
 ## 用户手测入口
 

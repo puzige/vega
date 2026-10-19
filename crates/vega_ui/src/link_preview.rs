@@ -1,4 +1,4 @@
-use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use gpui_kit::{
     base::{Align, Placement, Positioner, SelectableText},
@@ -14,12 +14,9 @@ use vega_theme::{Layout, Typography, theme};
 
 use crate::conversation_stream::links::{LinkRange, link_regions};
 
-type LinkOpener = Rc<dyn Fn(&str)>;
-
 #[derive(Clone, Default)]
 struct Dependencies {
     service: LinkPreviewService,
-    opener: Option<LinkOpener>,
 }
 
 #[derive(Default)]
@@ -260,14 +257,7 @@ fn acquire(window: &mut Window, cx: &mut App) -> Entity<Coordinator> {
 }
 
 pub(crate) fn open_target(target: &str, cx: &mut App) {
-    let opener = cx
-        .try_global::<Registry>()
-        .and_then(|registry| registry.dependencies.opener.clone());
-    if let Some(opener) = opener {
-        opener(target);
-    } else {
-        cx.open_url(target);
-    }
+    cx.open_url(target);
 }
 
 pub struct MarkdownReadingScope {
@@ -729,7 +719,6 @@ pub(crate) fn prepaint_link_targets(
                 .id(ElementId::Name(
                     format!("markdown-link-target-{key}").into(),
                 ))
-                .test_support()
                 .track_focus(&focus)
                 .tab_index(0)
                 .role(role)
@@ -1143,7 +1132,6 @@ fn build_card(
         .on_click(move |_, _, cx| open_target(&open_target_value, cx));
     let card = div()
         .id("markdown-link-preview")
-        .test_support()
         .occlude()
         .w(width)
         .max_h(height)
@@ -1170,7 +1158,6 @@ fn build_card(
                 .child(
                     div()
                         .id("link-preview-host")
-                        .test_support()
                         .role(Role::Label)
                         .aria_label(host.clone())
                         .min_w_0()
@@ -1208,7 +1195,6 @@ fn build_card(
         body = body.child(
             div()
                 .id("link-preview-image")
-                .test_support()
                 .flex_shrink_0()
                 .w(image_width)
                 .h(image_height)
@@ -1222,7 +1208,6 @@ fn build_card(
             body = body.child(
                 div()
                     .id("link-preview-title")
-                    .test_support()
                     .role(Role::Label)
                     .aria_label(title.clone())
                     .font_weight(FontWeight::MEDIUM)
@@ -1236,7 +1221,6 @@ fn build_card(
                 body = body.child(
                     div()
                         .id("link-preview-description")
-                        .test_support()
                         .role(Role::Label)
                         .aria_label(description.clone())
                         .text_color(colors.text_secondary)
@@ -1311,7 +1295,6 @@ fn build_card(
         body = body.child(
             div()
                 .id("link-preview-address")
-                .test_support()
                 .role(Role::Label)
                 .aria_label(target.clone())
                 .text_size(px(Typography::METADATA))
@@ -1337,50 +1320,4 @@ fn control(
         .flex_shrink_0()
         .px_2()
         .child(label)
-}
-
-#[cfg(test)]
-pub mod test_support {
-    use super::*;
-    pub struct LinkObservation {
-        pub occurrence: String,
-        pub target: String,
-        pub label: String,
-        pub description: String,
-        pub role: Role,
-        pub text_bounds: Vec<Bounds<Pixels>>,
-        pub icon_bounds: Vec<Bounds<Pixels>>,
-        pub focus: FocusHandle,
-    }
-    pub fn install_dependencies(
-        service: LinkPreviewService,
-        opener: Rc<dyn Fn(&str)>,
-        cx: &mut App,
-    ) {
-        registry(cx).dependencies = Dependencies {
-            service,
-            opener: Some(opener),
-        };
-    }
-    pub fn visible_links(window: &Window, cx: &App) -> Vec<LinkObservation> {
-        coordinator(window, cx)
-            .map(|entity| {
-                entity
-                    .read(cx)
-                    .visible
-                    .iter()
-                    .map(|link| LinkObservation {
-                        occurrence: link.key.clone(),
-                        target: link.target.clone(),
-                        label: link.label.clone(),
-                        description: link.description.clone(),
-                        role: link.role,
-                        text_bounds: link.text_bounds.clone(),
-                        icon_bounds: link.icon_bounds.clone(),
-                        focus: link.focus.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
 }

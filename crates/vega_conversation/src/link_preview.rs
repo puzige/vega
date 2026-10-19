@@ -630,19 +630,3 @@ fn sanitize_image(headers: &[(String, String)], bytes: &[u8]) -> Option<LinkPrev
         height: image.height(),
     })
 }
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support {
-    pub use super::ports::{
-        PreparedRequest, PreviewClock, PreviewResolver, PreviewTransport, TransportResponse,
-    };
-    use super::*;
-
-    pub fn service_with_ports(
-        resolver: Arc<dyn PreviewResolver>,
-        transport: Arc<dyn PreviewTransport>,
-        clock: Arc<dyn PreviewClock>,
-    ) -> LinkPreviewService {
-        LinkPreviewService::with_ports(resolver, transport, clock)
-    }
-}
