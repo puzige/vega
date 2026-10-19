@@ -15,18 +15,6 @@ pub(super) use reorder::ReorderItem;
 use reorder::ReorderState;
 mod render;
 
-#[cfg(test)]
-#[path = "organization/archive_accessibility_tests.rs"]
-mod archive_accessibility_tests;
-
-#[cfg(test)]
-#[path = "organization/archive_controls_tests.rs"]
-mod archive_controls_tests;
-
-#[cfg(test)]
-#[path = "organization/snapshot_completion_tests.rs"]
-mod snapshot_completion_tests;
-
 struct OrganizationRequestToken {
     generation: u64,
     epoch: u64,

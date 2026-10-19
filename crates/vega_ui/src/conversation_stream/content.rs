@@ -765,30 +765,6 @@ impl ConversationStream {
         self.active_agent_message.is_some()
     }
 
-    pub fn projected_entry_count(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn projected_assistant_messages(&self) -> Vec<(Option<String>, String)> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| match entry {
-                StreamEntry::Assistant { copy, .. } => Some((
-                    self.entry_identities
-                        .get(index)
-                        .and_then(|identity| identity.message_id.clone()),
-                    copy.original_text(),
-                )),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn controller_error_message(&self) -> Option<&str> {
-        self.controller_error.as_deref()
-    }
-
     pub fn has_pending_permission(&self) -> bool {
         self.permission_queue.has_pending()
     }

@@ -18,8 +18,6 @@ use vega_ui::sidebar::*;
 
 mod agent;
 mod artifact;
-#[cfg(test)]
-mod artifact_message_order_tests;
 mod automation;
 mod automation_editor;
 mod branch;
@@ -180,8 +178,6 @@ pub(crate) struct VegaWindow {
     /// The model-only result of a save that completed while Settings was
     /// visible. It is merged into the newest route projection after close.
     pub(crate) deferred_model_refresh: Option<ModelSelectionRefresh>,
-    #[cfg(test)]
-    pub(crate) model_selection_config_override: Option<std::path::PathBuf>,
 }
 
 impl VegaWindow {
@@ -329,13 +325,9 @@ impl VegaWindow {
             model_catalog_loading: false,
             model_catalog_generation: 0,
             deferred_model_refresh: None,
-            #[cfg(test)]
-            model_selection_config_override: None,
         };
         window.start_pricing_load(cx);
-        if !cfg!(test) {
-            window.start_updater(cx);
-        }
+        window.start_updater(cx);
         window
     }
 

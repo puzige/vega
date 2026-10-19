@@ -1121,7 +1121,6 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("{selector_prefix}{thread_id}").into(),
             ))
-            .debug_selector(|| format!("{selector_prefix}{thread_id}"))
             .aria_label(accessibility_label)
             .h(px(row_height))
             .ml(px(-surface_leading_outset))
@@ -1613,7 +1612,6 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("{action_prefix}thread-actions-menu-{thread_id}").into(),
             ))
-            .debug_selector(|| format!("{action_prefix}thread-actions-menu-{thread_id}"))
             .w(px(Layout::TASK_MENU_WIDTH))
             // The deferred popup is above sibling rows; its hitbox must stop them too.
             .occlude()
@@ -1654,9 +1652,6 @@ impl ThreadsBlock {
                             .id(ElementId::Name(
                                 format!("{action_prefix}thread-action-{thread_id}-{index}").into(),
                             ))
-                            .debug_selector(|| {
-                                format!("{action_prefix}thread-action-{thread_id}-{index}")
-                            })
                             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                             .flex_shrink_0()
                             .w_full()

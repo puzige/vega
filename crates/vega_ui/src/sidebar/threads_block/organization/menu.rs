@@ -114,7 +114,6 @@ impl ThreadsBlock {
         };
         let menu = div()
             .id("organization-menu")
-            .debug_selector(|| "organization-menu".into())
             .track_focus(&org.menu_focus)
             .occlude()
             .w(px(Layout::TASK_MENU_WIDTH))
