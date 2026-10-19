@@ -1123,6 +1123,7 @@ impl ThreadsBlock {
             ))
             .aria_label(accessibility_label)
             .h(px(row_height))
+            .flex_shrink_0()
             .ml(px(-surface_leading_outset))
             .flex()
             .items_center()

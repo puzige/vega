@@ -123,3 +123,4 @@ Unknown/StandardChat 默认支持工具请求周期内实际收到的 `reasoning
 - 主 agent 于 2026-10-19 19:00 UTC+8 审查后授权专职子 agent 生产实现；本周期 27 项数据与断言自此冻结，同一组测试取得 GREEN 后方可独立删除。
 - 生产实现提交 `0139e8d0f7d79383476824b696bad810a37f41e8`；[带测试 GREEN run](https://github.com/puzige/vega/actions/runs/39242802623) / [Nextest job](https://github.com/puzige/vega/actions/runs/39242802623/job/118027425612)：27 发现/执行、27 通过、0 跳过，格式、全目标 Clippy、Python 5/15/14 项及 required check 成功。主 agent 复核全部冻结源码/inline 段哈希一致，在 [PR 固定完整证据](https://github.com/puzige/vega/pull/495#issuecomment-6265953287) 后才授权独立删测；最终门禁另记，尚未以空集替代 GREEN。
 - 随本文本次独立提交删除开发期 Rust 测试及独占支持，保留全部已验证生产行为；依赖/通用 helpers 恢复生产基线。最终 head 的 0 发现/0 执行日志、required check 与合并状态在 PR 后续固定，再交用户手测，不用静态清点冒充云端结果。
+- 最终集成基线同步 `21a6404b31a8bfd4a7e1a91210e828597ec6f104`（#496），仅新增独立侧边栏行不收缩及交付文档，本卡生产路径无交集、字节未变。验收不变，新 head 重跑完整门禁；不复用旧空集结果，不把他卡测试计入本轮 27 项。
