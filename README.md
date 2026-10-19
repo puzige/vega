@@ -24,71 +24,71 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 📋 **（脚手架）、（侧边栏 & 项目模型）、（流式会话渲染）、（Runtime 核心）、（写工具、权限门禁与三模式）、（Diff 审阅 & 产物）已完成并验收；（Token 经济：定价目录、API 校准、流式计数与任务成本汇总）已完成自动化/Mock 验收（mock 账单零误差；真实账单 dogfood 为 `real provider/billing pending`）；（打磨 & 里程碑：性能埋点真值化、分页水合、Stop/Resume、P0 收口、1000 行重构）已收口为 `engineering fixture passed`——性能 gate（P7 首帧 / P8 空闲 RSS）按  冻结基线如实 `performance gate failed`，与  虚拟化、 调优一并 **deferred-to-final-optimization**（期末统一优化批，主人决策 2026-08-31）**。真实账单 <5%、ProMotion 120fps、真实仓库任务、7 天 dogfood 为 `human/hardware pending`，由  人类收口。真实 API/dogfood、人工 UI 与未达性能项边界见各 Sprint 验收报告。全部设计文档在 [`docs/`](docs/)：
 
-2026-09-25 更新：上面的 deferral 是历史验收记录；当前 P1 独立排期验证并加固现有可变高度长会话列表，范围与验收见 [相关规格](docs/vega-issue-148-long-session-scroll.md)。
+2026-09-25 更新：上面的 deferral 是历史验收记录；当前 P1 独立排期验证并加固现有可变高度长会话列表，范围与验收见 [相关规格](docs/148/vega-issue-148-long-session-scroll.md)。
 
 | 文档 | 内容 |
 |---|---|
-| [Chat compatibility](docs/vega-issue-494-chat-auto-adapt.md) | #494 模型差异内部适配、Step 工具回传及思考设置收敛；[分层说明](docs/vega-issue-494-model-adapter-review.html) / [交付记录](docs/vega-issue-494-delivery.md) |
-| [markdown link preview](docs/vega-issue-486-markdown-link-preview.md) | #486 链接外观与完整预览；真实列表借用修复已获五项行为 GREEN，最终门禁/手测见[修复交付记录](docs/vega-issue-486-crash-repair-delivery.md)、[Bug 方案](docs/vega-issue-486-list-state-borrow-crash.md)、[历史记录](docs/vega-issue-486-delivery.md) |
-| [composer predictions](docs/vega-issue-469-composer-predictions.md) | 下一轮输入建议、默认开关、键盘接受、IME 与异步生命周期契约 |
+| [Chat compatibility](docs/494/vega-issue-494-chat-auto-adapt.md) | #494 模型差异内部适配、Step 工具回传及思考设置收敛；[分层说明](docs/494/vega-issue-494-model-adapter-review.html) / [交付记录](docs/494/vega-issue-494-delivery.md) |
+| [markdown link preview](docs/486/vega-issue-486-markdown-link-preview.md) | #486 链接外观与完整预览；真实列表借用修复已获五项行为 GREEN，最终门禁/手测见[修复交付记录](docs/486/vega-issue-486-crash-repair-delivery.md)、[Bug 方案](docs/486/vega-issue-486-list-state-borrow-crash.md)、[历史记录](docs/486/vega-issue-486-delivery.md) |
+| [composer predictions](docs/469/vega-issue-469-composer-predictions.md) | 下一轮输入建议、默认开关、键盘接受、IME 与异步生命周期契约 |
 | [tool block codex parity](docs/vega-tool-block-codex-parity.md) | Shell 启动崩溃修复、Codex 工具列表对齐与运行时间保留 |
 | [review current status](docs/vega-review-current-status.md) | 当前本地交付、真实验收结果、待办和历史报告勘误入口 |
 | [prd](docs/vega-prd.md) | PRD v0.3.3：7 项锁定决策、模块 A1-A12、5 Phase 路线图 |
 | [acp codex research](docs/vega-acp-codex-research.md) | ACP 接入 Codex 调研：已确认的使用方式、协议与版本、架构改动及验收矩阵 |
 | [acp codex v1 spec](docs/vega-acp-codex-v1-spec.md) | A4 首版规格草案：新任务选择 Codex，完整执行、审批、停止、恢复及实施卡拆分 |
-| [codex task routing](docs/vega-issue-287-a4-c2b-codex-task-routing.md) |  Codex New Task 路由、session-before-prompt 顺序与验收矩阵 |
+| [codex task routing](docs/287/vega-issue-287-a4-c2b-codex-task-routing.md) |  Codex New Task 路由、session-before-prompt 顺序与验收矩阵 |
 | [issue workflow](docs/vega-issue-workflow.md) | 问题/需求的 GitHub Issue 收集、Project 流转与 PRD/spec 分工 |
-| [external grep](docs/vega-issue-426-external-grep.md) | grep 外部读取权限、目录范围、目标冻结与权限卡回归 |
-| [network retry](docs/vega-issue-350-network-retry.md) | 网络中断自动重试、当前回复回滚和重连状态契约 |
-| [ask user question](docs/vega-issue-445-ask-user-question.md) | Vega 原生结构化提问工具、Composer 分页、无限等待与问答历史契约 |
-| [multi agent](docs/vega-issue-448-multi-agent.md) | Native 并行子任务、独立子会话、权限与生命周期合同 |
-| [subagent startup diagnostics](docs/vega-issue-487-subagent-startup-diagnostics.md) | 子任务启动回执、准备事务与具体运行错误诊断修复规格 |
-| [subagent startup delivery](docs/vega-issue-487-subagent-startup-diagnostics-delivery.md) | 先行测试、云端复现、修复与交付证据 |
-| [hover auto scroll](docs/vega-issue-402-hover-auto-scroll.md) | 悬停正文不再触发滚动：上游补丁升级、行为契约与验收矩阵 |
-| [full access](docs/vega-issue-58-full-access.md) | 独立 Full access 模式、沙箱边界与生产链路验收 |
-| [markdown](docs/vega-issue-59-markdown.md) | Markdown 表格的结构化单元格与窄窗布局 |
-| [thinking](docs/vega-issue-61-thinking.md) | Thinking 流式展示、事件顺序与显示边界 |
-| [reasoning summary](docs/vega-issue-71-reasoning-summary.md) | 实时思考摘要标题、Responses 接入与内容回退 |
-| [model picker](docs/vega-issue-68-model-picker.md) | 无思考档位模型的菜单入口规格与测试矩阵 |
-| [model picker delivery](docs/vega-issue-68-model-picker-delivery.md) | 测试先行、门禁与原生验收记录 |
-| [tool activity](docs/vega-issue-70-tool-activity.md) | 紧凑工具活动分组、渐进展开与安全显示规格 |
-| [branch entry](docs/vega-issue-191-branch-entry.md) | 历史底行分支入口契约；入口要求由 取代，Git 安全语义保留 |
-| [composer footer no branch](docs/vega-issue-294-composer-footer-no-branch.md) | Composer 底行移除分支入口，保留新建任务 utility bar |
-| [composer footer no branch delivery](docs/vega-issue-294-composer-footer-no-branch-delivery.md) | 生产 GPUI 红绿回归、定向证据与用户手测状态 |
-| [branch list capacity](docs/vega-issue-191-branch-list-capacity.md) | 分支列表路径容量、资源上界与准确错误状态 |
-| [branch list capacity delivery](docs/vega-issue-191-branch-list-capacity-delivery.md) | 分支列表容量修复的定向测试、PR 与原生验收状态 |
-| [long session scroll](docs/vega-issue-148-long-session-scroll.md) | 长会话虚拟滚动的基线、稳定锚点与定向验收 |
-| [run diagnostics spec](docs/vega-issue-171-run-diagnostics-spec.md) | 运行诊断、失败分类与脱敏持久化规格 |
-| [run diagnostics delivery](docs/vega-issue-171-run-diagnostics-delivery.md) | 实现计划、定向验收与交付证据 |
-| [composer width](docs/vega-issue-100-composer-width.md) | Composer 与正文列统一为 768px（参考实现共用同一宽度 token） |
-| [scroll to bottom](docs/vega-issue-98-scroll-to-bottom.md) | 历史悬浮按钮契约；布局由 的固定阅读导航行取代，追尾行为保留 |
-| [tool activity delivery](docs/vega-issue-70-tool-activity-delivery.md) | 测试先行矩阵、门禁与原生验收记录 |
-| [skills](docs/vega-issue-74-skills.md) | Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
-| [skills delivery](docs/vega-issue-74-skills-delivery.md) | 测试先行验收矩阵（均未运行） |
-| [computer browser use](docs/vega-issue-75-computer-browser-use.md) | 受管 macOS 桌面、浏览器单标签与用户接管规格 |
-| [desktop access](docs/vega-issue-75-desktop-access.md) | 全窗口访问与应用目录身份 |
-| [window observation](docs/vega-issue-75-window-observation.md) | 只读截图、观察失败恢复与 live 工具卡修复 |
-| [computer browser delivery](docs/vega-issue-75-computer-browser-delivery.md) | 定向回归、协议限制与用户手测记录 |
-| [remove pi agent](docs/vega-issue-81-remove-pi-agent.md) | 移除 Pi Agent 凭据导入并保留 Provider 设置与通用 Skills 导入 |
-| [remove pi agent delivery](docs/vega-issue-81-remove-pi-agent-delivery.md) | 定向验收、规格更新和未完成门禁记录 |
-| [tool call limit](docs/vega-issue-114-tool-call-limit.md) | 把硬编码 tool call 上限改为可配的 agentic turn 上限（默认不限，对齐 Claude Code） |
-| [review focus](docs/vega-issue-192-review-focus.md) | 全局打开 Review 保留 Composer 焦点，显式激活 tab 才聚焦内容 |
-| [pr check pipeline](docs/vega-issue-123-pr-check-pipeline.md) | PR check + master build 云端流水线；门禁全部上云，删除本地 hooks/脚本 |
+| [external grep](docs/426/vega-issue-426-external-grep.md) | grep 外部读取权限、目录范围、目标冻结与权限卡回归 |
+| [network retry](docs/350/vega-issue-350-network-retry.md) | 网络中断自动重试、当前回复回滚和重连状态契约 |
+| [ask user question](docs/445/vega-issue-445-ask-user-question.md) | Vega 原生结构化提问工具、Composer 分页、无限等待与问答历史契约 |
+| [multi agent](docs/448/vega-issue-448-multi-agent.md) | Native 并行子任务、独立子会话、权限与生命周期合同 |
+| [subagent startup diagnostics](docs/487/vega-issue-487-subagent-startup-diagnostics.md) | 子任务启动回执、准备事务与具体运行错误诊断修复规格 |
+| [subagent startup delivery](docs/487/vega-issue-487-subagent-startup-diagnostics-delivery.md) | 先行测试、云端复现、修复与交付证据 |
+| [hover auto scroll](docs/402/vega-issue-402-hover-auto-scroll.md) | 悬停正文不再触发滚动：上游补丁升级、行为契约与验收矩阵 |
+| [full access](docs/58/vega-issue-58-full-access.md) | 独立 Full access 模式、沙箱边界与生产链路验收 |
+| [markdown](docs/59/vega-issue-59-markdown.md) | Markdown 表格的结构化单元格与窄窗布局 |
+| [thinking](docs/61/vega-issue-61-thinking.md) | Thinking 流式展示、事件顺序与显示边界 |
+| [reasoning summary](docs/71/vega-issue-71-reasoning-summary.md) | 实时思考摘要标题、Responses 接入与内容回退 |
+| [model picker](docs/68/vega-issue-68-model-picker.md) | 无思考档位模型的菜单入口规格与测试矩阵 |
+| [model picker delivery](docs/68/vega-issue-68-model-picker-delivery.md) | 测试先行、门禁与原生验收记录 |
+| [tool activity](docs/70/vega-issue-70-tool-activity.md) | 紧凑工具活动分组、渐进展开与安全显示规格 |
+| [branch entry](docs/191/vega-issue-191-branch-entry.md) | 历史底行分支入口契约；入口要求由 取代，Git 安全语义保留 |
+| [composer footer no branch](docs/294/vega-issue-294-composer-footer-no-branch.md) | Composer 底行移除分支入口，保留新建任务 utility bar |
+| [composer footer no branch delivery](docs/294/vega-issue-294-composer-footer-no-branch-delivery.md) | 生产 GPUI 红绿回归、定向证据与用户手测状态 |
+| [branch list capacity](docs/191/vega-issue-191-branch-list-capacity.md) | 分支列表路径容量、资源上界与准确错误状态 |
+| [branch list capacity delivery](docs/191/vega-issue-191-branch-list-capacity-delivery.md) | 分支列表容量修复的定向测试、PR 与原生验收状态 |
+| [long session scroll](docs/148/vega-issue-148-long-session-scroll.md) | 长会话虚拟滚动的基线、稳定锚点与定向验收 |
+| [run diagnostics spec](docs/171/vega-issue-171-run-diagnostics-spec.md) | 运行诊断、失败分类与脱敏持久化规格 |
+| [run diagnostics delivery](docs/171/vega-issue-171-run-diagnostics-delivery.md) | 实现计划、定向验收与交付证据 |
+| [composer width](docs/100/vega-issue-100-composer-width.md) | Composer 与正文列统一为 768px（参考实现共用同一宽度 token） |
+| [scroll to bottom](docs/98/vega-issue-98-scroll-to-bottom.md) | 历史悬浮按钮契约；布局由 的固定阅读导航行取代，追尾行为保留 |
+| [tool activity delivery](docs/70/vega-issue-70-tool-activity-delivery.md) | 测试先行矩阵、门禁与原生验收记录 |
+| [skills](docs/74/vega-issue-74-skills.md) | Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
+| [skills delivery](docs/74/vega-issue-74-skills-delivery.md) | 测试先行验收矩阵（均未运行） |
+| [computer browser use](docs/75/vega-issue-75-computer-browser-use.md) | 受管 macOS 桌面、浏览器单标签与用户接管规格 |
+| [desktop access](docs/75/vega-issue-75-desktop-access.md) | 全窗口访问与应用目录身份 |
+| [window observation](docs/75/vega-issue-75-window-observation.md) | 只读截图、观察失败恢复与 live 工具卡修复 |
+| [computer browser delivery](docs/75/vega-issue-75-computer-browser-delivery.md) | 定向回归、协议限制与用户手测记录 |
+| [remove pi agent](docs/81/vega-issue-81-remove-pi-agent.md) | 移除 Pi Agent 凭据导入并保留 Provider 设置与通用 Skills 导入 |
+| [remove pi agent delivery](docs/81/vega-issue-81-remove-pi-agent-delivery.md) | 定向验收、规格更新和未完成门禁记录 |
+| [tool call limit](docs/114/vega-issue-114-tool-call-limit.md) | 把硬编码 tool call 上限改为可配的 agentic turn 上限（默认不限，对齐 Claude Code） |
+| [review focus](docs/192/vega-issue-192-review-focus.md) | 全局打开 Review 保留 Composer 焦点，显式激活 tab 才聚焦内容 |
+| [pr check pipeline](docs/123/vega-issue-123-pr-check-pipeline.md) | PR check + master build 云端流水线；门禁全部上云，删除本地 hooks/脚本 |
 | [issues 58 59 61 delivery](docs/vega-issues-58-59-61-delivery.md) | //测试、原生模型回复与安装验收记录 |
 | [feature teardown](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
 | [features](docs/vega-features.md) | 功能点全表（Phase 1 P0 ×38） |
-| [auto update](docs/vega-issue-178-auto-update.md) | 自动更新调研方案（实现契约由 冻结） |
-| [independent update signing](docs/vega-issue-181-independent-update-signing.md) | 独立 Ed25519 更新签名、Applications 原位安装与旧版迁移 |
-| [auto update](docs/vega-issue-181-auto-update.md) | macOS 自动更新：设置、签名门禁、显式重启安装 |
-| [delivery](docs/vega-issue-181-delivery.md) | 自动更新交付状态、手测步骤与恢复方式 |
-| [ui redesign review](docs/vega-issue-296-ui-redesign-review.md) | UI v3 已批准方案总览：18点反馈统一设计 |
+| [auto update](docs/178/vega-issue-178-auto-update.md) | 自动更新调研方案（实现契约由 冻结） |
+| [independent update signing](docs/181/vega-issue-181-independent-update-signing.md) | 独立 Ed25519 更新签名、Applications 原位安装与旧版迁移 |
+| [auto update](docs/181/vega-issue-181-auto-update.md) | macOS 自动更新：设置、签名门禁、显式重启安装 |
+| [delivery](docs/181/vega-issue-181-delivery.md) | 自动更新交付状态、手测步骤与恢复方式 |
+| [ui redesign review](docs/296/vega-issue-296-ui-redesign-review.md) | UI v3 已批准方案总览：18点反馈统一设计 |
 | [design guidelines](docs/vega-design-guidelines.md) | 已批准统一设计守则 v2：平台依据、共享语言、基线与目标边界 |
-| [ui redesign v3](docs/vega-issue-296-ui-redesign-v3.md) | UI v3 详细 spec：18点映射、阶段/数据契约、冲突替代与验收 |
-| [single activity](docs/vega-issue-296-single-activity.md) | UI 验收修订：每轮单一动态过程、右侧 hover 展开及语义状态图标 |
-| [single activity delivery](docs/vega-issue-296-single-activity-delivery.md) | 单一过程入口的定向测试与独立审查证据 |
-| [v3 delivery](docs/vega-issue-296-v3-delivery.md) | UI v3 实施、定向验证、独立审查与交付状态 |
+| [ui redesign v3](docs/296/vega-issue-296-ui-redesign-v3.md) | UI v3 详细 spec：18点映射、阶段/数据契约、冲突替代与验收 |
+| [single activity](docs/296/vega-issue-296-single-activity.md) | UI 验收修订：每轮单一动态过程、右侧 hover 展开及语义状态图标 |
+| [single activity delivery](docs/296/vega-issue-296-single-activity-delivery.md) | 单一过程入口的定向测试与独立审查证据 |
+| [v3 delivery](docs/296/vega-issue-296-v3-delivery.md) | UI v3 实施、定向验证、独立审查与交付状态 |
 | [desktop ui unification](docs/vega-desktop-ui-unification.md) | 第一轮历史规格；新目标见 UI v3 已批准规格 |
-| [delivery](docs/vega-issue-296-delivery.md) | 组合验证、三片交付证据、原生手测边界 |
+| [delivery](docs/296/vega-issue-296-delivery.md) | 组合验证、三片交付证据、原生手测边界 |
 | [ui spec](docs/vega-ui-spec.md) | UI 规格与可测量验收准线 |
 | [screenshot parity](docs/vega-r21-screenshot-parity.md) | 当前 Codex 截图像素对标：可变 Sidebar、Environment、Settings、Composer 与浮层 |
 | [workspace panel polish](docs/vega-r22-workspace-panel-polish.md) | Workspace / Terminal Panel 工具栏分组、间距与对齐修复 |
@@ -142,9 +142,9 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 本项目采用 **SDD（Spec-Driven Development）**：spec 先行，代码不允许先于 spec。
 参与开发前必读 [`AGENTS.md`](AGENTS.md) 和 [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md)。
-自动测试保留进程内业务、安全、存储与 UI 回归；按 [2026-09-25 用户裁决](docs/vega-issue-149-remove-real-e2e.md) 优先 mock 外部依赖并保留业务断言，纯真实系统契约改由用户手测。
+自动测试保留进程内业务、安全、存储与 UI 回归；按 [2026-09-25 用户裁决](docs/149/vega-issue-149-remove-real-e2e.md) 优先 mock 外部依赖并保留业务断言，纯真实系统契约改由用户手测。
 
-交付节奏（2026-09-23 用户裁决）：接卡置 `In progress` → 实现（**本地只跑本卡功能点测试，不跑全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**；用户手测通过才回写/关 Issue/Done/清理，不通过退回 `In progress`。详见 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
+交付节奏（2026-09-23 用户裁决）：接卡置 `In progress` → 实现（**本地只跑本卡功能点测试，不跑全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**；用户手测通过才回写/关 Issue/Done，不通过退回 `In progress`；CI 通过并合并后允许自动删除已合并远端任务分支，证据/完整 SHA/patch 须可恢复，本地分支/worktree 依[安全清理规则](docs/vega-issue-workflow.md#分支与-worktree-清理规则)处理，不授权删除用户数据。详见 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
 
 ### 前置要求（macOS）
 
@@ -159,9 +159,9 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ### 质量门禁（云端 CI）
 
-**门禁全部在云端，本地 commit/push 不做任何强制检查、不排队、不锁 target**（当前 PR gate 见 [相关规格](docs/vega-issue-175-single-pr-check.md)；门禁迁移背景见 [相关规格](docs/vega-issue-123-pr-check-pipeline.md)）。本地不再安装 git hooks；`.githooks/`、`scripts/verify.py` 与 `cargo-lock` 调度器已删除。
+**门禁全部在云端，本地 commit/push 不做任何强制检查、不排队、不锁 target**（当前 PR gate 见 [相关规格](docs/175/vega-issue-175-single-pr-check.md)；门禁迁移背景见 [相关规格](docs/123/vega-issue-123-pr-check-pipeline.md)）。本地不再安装 git hooks；`.githooks/`、`scripts/verify.py` 与 `cargo-lock` 调度器已删除。
 
-PR check 与 master CICD 是两条独立 workflow（2026-09-22 拆分）。从 2026-09-24 起，PR check 保持单个无分片 job，并恢复 master 写入的 Cargo 缓存；两条 workflow 使用相同 `shared-key: vega-master-build`，PR 只读，master 是唯一写入方（[相关规格](docs/vega-issue-179-shared-pr-cicd-cache.md)）。
+PR check 与 master CICD 是两条独立 workflow（2026-09-22 拆分）。从 2026-09-24 起，PR check 保持单个无分片 job，并恢复 master 写入的 Cargo 缓存；两条 workflow 使用相同 `shared-key: vega-master-build`，PR 只读，master 是唯一写入方（[相关规格](docs/179/vega-issue-179-shared-pr-cicd-cache.md)）。
 
 | Workflow | 触发 | 检查 |
 |---|---|---|

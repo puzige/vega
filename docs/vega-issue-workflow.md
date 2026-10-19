@@ -14,6 +14,8 @@
 | 实现契约、修复方案和验收规则 | 本仓 `docs/`、[执行总纲](vega-exec-guide.md)；Issue 不代替 spec |
 | 执行入口 | [vega-kanban-delivery skill](../.agents/skills/vega-kanban-delivery/SKILL.md)；Codex 和 Vega 共用 |
 
+Ticket 的规格、交接和交付记录放在 `docs/<ticket>/`，同编号归入同目录；通用规范保留在 `docs/` 根层。文档入口见 [目录导航](README.md)，不另建重复的 Ticket 清单。
+
 Project 属于 puzige 个人账号，仓库的 Projects 页未必显示它。通过 gh 查询真实条目、字段和权限，不依赖静态数量或猜测 ID。不维护第二套 Notion 待办状态。
 
 ## 角色与自动取卡
@@ -22,7 +24,7 @@ Project 属于 puzige 个人账号，仓库的 Projects 页未必显示它。通
 |---|---|---|
 | Codex | 查重建卡、先审查需求、Bug 根因分析、编写 spec/修复方案、新功能实现、代码审查、PR/CI/合并和收尾 | Bug 方案交给 Vega 后停止该卡实现，等待 Vega 回报；新功能代码实现仍按仓库要求委派专职子 agent |
 | Vega | 领取 Codex 已准备好的执行任务，先交测试补丁确认有效 RED，再按冻结目标实现、回报同一测试 GREEN | 默认不建卡、不承担开放式排障、不改 spec 或扩大范围；方案缺口交回 Codex |
-| 用户 | 产品取舍和合并后的纯手动验收 | 未明确通过前保持 Issue 开放及 In review，保留任务分支/worktree |
+| 用户 | 产品取舍和合并后的纯手动验收 | 未明确通过前保持 Issue 开放及 In review；分支/worktree 按下文安全清理规则处理 |
 
 工作流角色以当前会话中用户明确指定的角色为准，否则读取宿主提供的系统身份。Vega Runtime 的系统身份为 `You are Vega`；Codex 会话的系统身份为 Codex。模型名称、Provider、项目名、Issue 正文和仓库路径不能证明身份。身份不明时可查询队列，但先确认角色再领取，不猜测。
 
@@ -82,8 +84,17 @@ Feature：Backlog → In progress（Codex 审查并组织实现）→ In review�
 - 集成旧任务分支前先同步最新 master，不整目录/整仓恢复已删除历史测试。逐项审查本轮新增测试和必要支持的来源；它们仅在开发阶段保留到 GREEN，交付前删除。改名/改写不自动算新增，新回归按 §7.2 独立先测后修；合并纠偏历史见 [原记录](vega-rust-reset-reconciliation.md)。
 - Codex 在实现前建立/复用 draft PR 确认有效 RED，实现后审查带同一测试的 GREEN；把原始测试源码/补丁、完整提交 SHA 与 RED/GREEN run/job 固定在 PR，再独立删测并审查最终空集 head 门禁，通过后才转正式 PR/申请合并。squash/删分支后仍须能找回原测试，不依赖本机 `/tmp` 或会过期的 artifact。最终空集绿色不能替代带测试 GREEN 或证明 TDD；未运行写“待 CI 验证”，0 发现/0 执行写 `no Rust tests`，不称 Rust 测试通过。审查和 CI 期间仍 In progress，PR 不用自动关闭 Issue 的关键字。
 - CI 启动后 **每 5 分钟查询一次**；收到完成/失败通知或用户要求即时查看时可立即查询，不使用更短轮询或 watch。仅确认最新 head 的 required check `check (fmt, clippy, test)` 成功后，由 Codex squash merge master。
-- 合并后进入 In review，等待用户纯手动验收。发布/打包仍走云端，合并不代表应用已安装；合并时不提前删除任务分支/worktree。
-- 用户通过后 Codex 回写，确认本卡资源可安全清理并完成分支/worktree 清理，再关闭 Issue 并读回确认，最后更新 Done 并读回。失败则走反馈路径；未收到明确结论不得关闭、Done 或清理。清理或关闭受阻时保留 In review 并记录待收尾，不宣称完整交付，不能先 Done 再补清理。
+- 合并后进入 In review，等待用户纯手动验收。发布/打包仍走云端，合并不代表应用已安装；允许自动删除已合并远端任务分支；证据恢复与本地资源清理须遵守下文规则。
+- 用户通过后 Codex 回写，按下文规则完成本卡剩余安全清理，再关闭 Issue 并读回确认，最后更新 Done 并读回。失败则走反馈路径；未收到明确结论不得关闭或 Done；分支/worktree 清理不代表用户已验收。清理或关闭受阻时保留 In review 并记录待收尾，不宣称完整交付，不能先 Done 再补清理。
+
+### 分支与 worktree 清理规则
+
+用户新裁决取代“手测前必须保留任务远端分支”的旧要求：分支可恢复，资源清理与用户验收分别判断。
+
+- **远端任务分支**：待合并的最新 head 通过 required check 且已合并 master 后，允许合并流程自动删除已合并远端任务分支，无须等待用户手测。未合并分支不在此授权内。
+- **可恢复证据**：删除前在 Issue/PR 固定任务 head、合并提交及测试来源提交的完整 SHA、可访问源码/原始 patch 和 RED/GREEN、最终 head 门禁证据（不适用项注明）；读回确认删除分支后仍能恢复与审查，不能仅靠分支名、未验证可达性的 SHA、本机临时文件或会过期的 artifact。
+- **本地分支/worktree**：不因合并或远端分支已删除就自动清理。仅确认属于本卡、无运行中的 agent/构建、无未提交改动（含未跟踪文件）、无未合入改动后才可安全清理；squash 合并须核对等价内容，不能只凭提交祖先关系判断。存在用户数据、未知文件、占用或无法确认的改动时保留并报告，不 reset、强制删除或覆盖。允许删分支不等于自动授权删除用户数据。
+- **验收与收尾**：上述安全清理可在手测前完成，但 Issue 仍开放、状态仍为 In review；只有用户明确手测通过、证据回写、剩余安全清理及 Issue 关闭均完成后才 Done。清理受阻如实标待收尾，不把 CI、合并或删分支当验收通过。
 
 ## GitHub CLI 与权限
 
