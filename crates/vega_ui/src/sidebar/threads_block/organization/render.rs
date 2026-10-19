@@ -197,7 +197,12 @@ impl ThreadsBlock {
         let Some((snapshot, show_archived, menu_open, projects_error)) =
             self.organization.as_ref().map(|org| {
                 (
-                    org.snapshot.clone(),
+                    org.snapshot.clone().map(|mut snapshot| {
+                        if let Some((_, order)) = &org.reorder.pointer_order {
+                            snapshot.preferences.manual_thread_order = order.clone();
+                        }
+                        snapshot
+                    }),
                     org.archive,
                     org.menu.is_some(),
                     org.projects.read(cx).error.clone(),
@@ -227,11 +232,18 @@ impl ThreadsBlock {
             .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
                 this.reset_reorder(window, cx);
             }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered {
+                    this.clear_reorder_projection(cx);
+                }
+            }))
             .capture_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                this.clear_reorder_projection(cx);
                 this.cancel_reorder(window, cx);
             }))
             .capture_key_down(
                 cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    this.clear_reorder_projection(cx);
                     if event.keystroke.key == "escape" {
                         this.cancel_reorder(window, cx);
                     }
