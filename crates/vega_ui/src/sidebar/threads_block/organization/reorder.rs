@@ -12,6 +12,7 @@ pub(super) struct ReorderState {
     targets: HashSet<String>,
     pub(super) focus: FocusHandle,
     pub(super) gesture: bool,
+    pub(super) pointer_order: Option<(ReorderItem, Vec<String>)>,
     source: Option<ReorderItem>,
     previous_focus: Option<FocusHandle>,
 }
@@ -23,6 +24,7 @@ impl ReorderState {
             targets: HashSet::new(),
             focus: cx.focus_handle(),
             gesture: false,
+            pointer_order: None,
             source: None,
             previous_focus: None,
         }
@@ -78,6 +80,39 @@ impl Render for ReorderDrag {
 }
 
 impl ThreadsBlock {
+    fn hold_reorder_projection(&mut self, item: &ReorderItem) {
+        let Some(org) = self.organization.as_mut() else {
+            return;
+        };
+        if org.reorder.gesture
+            || org
+                .reorder
+                .pointer_order
+                .as_ref()
+                .is_some_and(|(source, _)| source == item)
+        {
+            return;
+        }
+        org.reorder.pointer_order = org.snapshot.as_ref().map(|snapshot| {
+            (
+                item.clone(),
+                service::sorted_threads(&snapshot.threads, &snapshot.preferences)
+                    .into_iter()
+                    .map(|thread| thread.id)
+                    .collect(),
+            )
+        });
+    }
+
+    pub(super) fn clear_reorder_projection(&mut self, cx: &mut Context<Self>) {
+        if let Some(org) = self.organization.as_mut()
+            && !org.reorder.gesture
+            && org.reorder.pointer_order.take().is_some()
+        {
+            cx.notify();
+        }
+    }
+
     pub(super) fn prepare_reorder(&mut self) {
         let targets = self
             .organization
@@ -95,6 +130,7 @@ impl ThreadsBlock {
         if let Some(org) = self.organization.as_mut().filter(|org| org.reorder.gesture) {
             org.reorder.gesture = false;
             org.reorder.source = None;
+            org.reorder.pointer_order = None;
             org.reorder.previous_focus = None;
             cx.stop_active_drag(window);
         }
@@ -203,6 +239,7 @@ impl ThreadsBlock {
             return;
         };
         org.reorder.source = None;
+        org.reorder.pointer_order = None;
         cx.stop_active_drag(window);
         if let Some(focus) = org.reorder.previous_focus.take() {
             window.focus(&focus, cx);
@@ -217,10 +254,12 @@ impl ThreadsBlock {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.clear_reorder_projection(cx);
         let Some(org) = self.organization.as_mut().filter(|org| org.reorder.gesture) else {
             return;
         };
         org.reorder.gesture = false;
+        org.reorder.pointer_order = None;
         let source = org.reorder.source.take();
         let target = org
             .reorder
@@ -275,7 +314,29 @@ impl ThreadsBlock {
             });
         let drag_entity = cx.entity().downgrade();
         let drag_item = item.clone();
+        let hover_item = item.clone();
+        let pressed_item = item.clone();
         row.relative()
+            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                if event.pressed_button.is_none() {
+                    if this.organization.as_ref().is_some_and(|org| org.pending) {
+                        this.hold_reorder_projection(&hover_item);
+                    } else if this.organization.as_ref().is_some_and(|org| {
+                        org.reorder
+                            .pointer_order
+                            .as_ref()
+                            .is_some_and(|(source, _)| source != &hover_item)
+                    }) {
+                        this.clear_reorder_projection(cx);
+                    }
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, _| {
+                    this.hold_reorder_projection(&pressed_item);
+                }),
+            )
             .on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
                 drag_entity
                     .update(cx, |this, cx| {

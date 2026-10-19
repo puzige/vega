@@ -19,9 +19,9 @@ pub enum SidebarProjectView {
 /// Descending task timestamp used by project and timeline projections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SidebarTaskSort {
-    #[default]
     Updated,
     Created,
+    #[default]
     Manual,
 }
 /// Semantic group color; UI maps these to theme tokens.

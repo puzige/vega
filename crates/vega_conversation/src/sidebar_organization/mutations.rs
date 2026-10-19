@@ -34,10 +34,8 @@ pub(super) fn apply_in_transaction(
         .preferences
         .manual_thread_order
         .retain(|id| existing.contains(id.as_str()) && seen.insert(id.clone()));
-    state.revision = state
-        .revision
-        .checked_add(1)
-        .filter(|v| *v <= i64::MAX as u64)
+    state.preferences.sort = SidebarTaskSort::Manual;
+    state.revision = sql::next_revision(state.revision)
         .ok_or_else(|| SidebarOrganizationError::Limit("revision exhausted".into()))?;
     let rows = sql::OrganizationRows {
         revision: state.revision as i64,
