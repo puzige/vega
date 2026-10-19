@@ -1,6 +1,6 @@
 # #308 — 新消息置前与手动拖动统一顺序
 
-版本：v2.6，2026-10-19。状态：draft PR #484 首轮已执行；Codex 接回界面观察接线修正及 #483 基线同步，待现有 Actions 重验。测试尚未冻结。
+版本：v2.6（原冻结契约），2026-10-19。当前修复交接及状态见 [v2.7：GREEN 后审查修复与交付](vega-issue-308-review-repairs.md)。以下原41项契约、历史基线与证据保留；迁移编号以v2.7顺延0029为准，不再使用已被master占用的0028。
 Issue：https://github.com/puzige/vega/issues/308
 RED 生产行为基线：`ae35310fe7e1ddac2b79d7ec7bc55bcca2d6af2a`（#483）；首轮 CI 的历史基线为 `6c782a630ceb4c83f4f6b1e09bdc645ac8e87092`。
 任务分支：`feat/308-new-thread-order`；复用本卡保留的 sidebar-reorder worktree，原 `feat/308-sidebar-reorder` 分支保留。
