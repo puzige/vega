@@ -284,6 +284,7 @@ impl VegaWindow {
                 stream.apply_mcp_unavailable(&active.mcp_unavailable, cx)
             });
         }
+        let mut refresh_sidebar = false;
         for event in batch.events {
             if let ConversationEvent::RunStarted { started_at, .. } = &event {
                 self.observe_automation_clock(thread_id, generation, *started_at, cx);
@@ -313,6 +314,13 @@ impl VegaWindow {
                 self.agent_controller
                     .queue_delivered
                     .insert(pending_id.clone());
+            }
+            if let ConversationEvent::MessageStarted { message_id, .. } = &event {
+                refresh_sidebar |= self
+                    .agent_controller
+                    .active
+                    .get(thread_id)
+                    .is_some_and(|active| !active.message_ids.contains(message_id));
             }
             if let ConversationEvent::MessageStarted { seq, .. } = &event
                 && let Some(content) = self
@@ -349,6 +357,9 @@ impl VegaWindow {
             self.agent_controller
                 .observe_terminal_message(generation, thread_id, stream, &event);
             stream.update(cx, |stream, cx| stream.apply_event(event, cx));
+        }
+        if refresh_sidebar {
+            self.sidebar.update(cx, Sidebar::reload_sessions);
         }
         for update in batch.subagents {
             self.apply_subagent_update(thread_id, stream, update, cx);
