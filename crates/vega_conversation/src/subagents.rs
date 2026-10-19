@@ -35,10 +35,48 @@ impl Drop for LiveDelegation {
 }
 
 pub fn children(store: &Store, parent: &str) -> Result<Vec<SubagentSnapshot>, ConversationError> {
+    project_children(
+        store,
+        parent,
+        vega_store::subagents::list(store.conn(), parent, None)
+            .map_err(|error| ConversationError::Store(error.to_string()))?,
+    )
+}
+
+pub fn is_latest_execution(
+    store: &Store,
+    snapshot: &SubagentSnapshot,
+) -> Result<bool, ConversationError> {
+    Ok(
+        vega_store::subagents::find(store.conn(), &snapshot.agent_id)
+            .map_err(|error| ConversationError::Store(error.to_string()))?
+            .is_some_and(|row| {
+                row.child_message_id == snapshot.message_id
+                    && row.parent_thread_id == snapshot.parent_thread_id
+                    && row.parent_message_id == snapshot.parent_message_id
+            }),
+    )
+}
+
+pub(crate) fn history(
+    store: &Store,
+    parent: &str,
+) -> Result<Vec<SubagentSnapshot>, ConversationError> {
+    project_children(
+        store,
+        parent,
+        vega_store::subagents::history(store.conn(), parent)
+            .map_err(|error| ConversationError::Store(error.to_string()))?,
+    )
+}
+
+fn project_children(
+    store: &Store,
+    parent: &str,
+    rows: Vec<vega_store::subagents::DelegationRow>,
+) -> Result<Vec<SubagentSnapshot>, ConversationError> {
     let projection = crate::privacy::DisplayProjection::load(store, parent)?;
-    vega_store::subagents::list(store.conn(), parent, None)
-        .map_err(|error| ConversationError::Store(error.to_string()))?
-        .into_iter()
+    rows.into_iter()
         .map(|row| {
             Ok(SubagentSnapshot {
                 agent_id: row.child_thread_id,

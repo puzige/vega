@@ -25,6 +25,8 @@ pub struct ConversationStream {
     pub(crate) prediction_generation: u64,
     pub(crate) prediction_completed: Option<String>,
     pub(crate) reading_preview: bool,
+    pub(crate) subagent_executions:
+        HashMap<(String, String), vega_conversation::types::SubagentSnapshot>,
     pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
     pub(crate) subagent_parent_focus: FocusHandle,
     pub(crate) delegated_run_active: bool,
@@ -451,6 +453,7 @@ impl ConversationStream {
             prediction_completed: None,
             reading_preview: false,
             subagent_groups: HashMap::new(),
+            subagent_executions: HashMap::new(),
             subagent_parent_focus: cx.focus_handle().tab_stop(true),
             delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),

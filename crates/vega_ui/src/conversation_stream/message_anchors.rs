@@ -646,7 +646,7 @@ pub(super) fn estimate_entry_height(
     let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
     match entry {
         StreamEntry::Subagents { group } => {
-            group.read(cx).row_count() as f32 * Layout::DISCLOSURE_HEADER_HEIGHT
+            group.read(cx).row_count(cx) as f32 * Layout::DISCLOSURE_HEADER_HEIGHT
         }
         StreamEntry::RunActivity { group } => group.read(cx).estimated_header_height(),
         StreamEntry::RunActivitySegment { group, segment } => {

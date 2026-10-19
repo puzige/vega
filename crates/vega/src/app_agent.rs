@@ -363,6 +363,8 @@ pub(crate) enum PricingWorkerKind {
     Recovery,
 }
 
+type SubagentReleaseReply = tokio::sync::oneshot::Sender<Result<(), vega_runtime::VegaError>>;
+
 #[derive(Default)]
 pub(crate) struct AppAgentController {
     pub(crate) delegated_unbound: HashSet<String>,
@@ -371,6 +373,8 @@ pub(crate) struct AppAgentController {
     pub(crate) queue_continue: HashMap<String, bool>,
     pub(crate) queue_delivered: HashSet<String>,
     pub(crate) queue_operations: HashMap<String, u64>,
+    pub(crate) subagent_releases: HashMap<String, Vec<SubagentReleaseReply>>,
+    pub(crate) delegated_latest: HashMap<String, String>,
     next_queue_operation: u64,
     pub(crate) running_message_default_generation: u64,
     pub(crate) file_read_states: HashMap<String, vega_tools::ReadState>,

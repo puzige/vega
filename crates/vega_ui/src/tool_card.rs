@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, ScrollHandle, Task, div, px};
 use vega_conversation::types::{
-    Approval, InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, ToolCall, ToolCallStatus,
-    ToolCardInputProjection, ToolCardResultProjection, ToolResult, tool_card_input_projection,
-    tool_card_result_projection,
+    Approval, InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, SubagentOpenRequested,
+    SubagentSnapshot, SubagentState, ToolCall, ToolCallStatus, ToolCardInputProjection,
+    ToolCardResultProjection, ToolResult, tool_card_input_projection, tool_card_result_projection,
 };
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
@@ -146,7 +146,10 @@ pub struct ToolCard {
     running_started_at: Option<Instant>,
     running_elapsed_seconds: Option<u64>,
     elapsed_refresh_task: Option<Task<()>>,
+    execution: Option<SubagentSnapshot>,
 }
+
+impl gpui_kit::EventEmitter<SubagentOpenRequested> for ToolCard {}
 
 impl ToolCard {
     /// Creates a pending card from a durable safe proposal.
@@ -169,6 +172,7 @@ impl ToolCard {
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
+            execution: None,
         };
         card.refresh_summary();
         card
@@ -193,6 +197,7 @@ impl ToolCard {
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
+            execution: None,
         };
         card.refresh_summary();
         card
@@ -212,6 +217,7 @@ impl ToolCard {
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
+            execution: None,
         };
         card.refresh_summary();
         card
@@ -239,6 +245,7 @@ impl ToolCard {
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
+            execution: None,
         };
         card.refresh_summary();
         card
@@ -388,6 +395,9 @@ impl ToolCard {
                 self.status == ToolCallStatus::Approved
                     || self.status == ToolCallStatus::Running
                     || (result.reused && self.status == ToolCallStatus::PendingApproval)
+                    || (self.is_subagent_invocation()
+                        && result.status == ToolCallStatus::Failed
+                        && self.status == ToolCallStatus::PendingApproval)
             }
             ToolCallStatus::PendingApproval
             | ToolCallStatus::Approved
@@ -615,6 +625,9 @@ impl ToolCard {
         window: &mut gpui_kit::Window,
         cx: &mut App,
     ) -> AnyElement {
+        if card.read(cx).is_subagent_invocation() {
+            return Self::render_invocation(card, indented, window, cx);
+        }
         let colors = theme(cx).colors;
         let (title, leading_icon, leading_icon_color, expanded, expandable, detail) = {
             let card_ref = card.read(cx);
@@ -639,7 +652,8 @@ impl ToolCard {
             crate::disclosure::focus(disclosure_group.clone(), window, cx).tab_stop(expandable);
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
-            .group(disclosure_group.clone())
+            .group(disclosure_group.clone());
+        let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)
             .aria_label(format!(
@@ -716,6 +730,191 @@ impl ToolCard {
             .child(row)
             .when_some(expanded.then_some(detail).flatten(), move |card, detail| {
                 card.child(render_detail(
+                    detail,
+                    detail_id,
+                    &detail_scroll,
+                    &colors,
+                    cx,
+                ))
+            })
+            .into_any_element()
+    }
+
+    pub(crate) fn is_subagent_invocation(&self) -> bool {
+        matches!(&self.input, Some(ToolCardInputProjection::Subagent { tool, .. }) if matches!(tool.as_str(), "spawn_agent" | "followup_agent"))
+    }
+
+    pub(crate) fn subagent(&self) -> Option<&SubagentSnapshot> {
+        self.execution.as_ref().or(match &self.result {
+            Some(ToolCardResultProjection::Subagent { agent, .. }) => agent.as_deref(),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn apply_subagent(
+        &mut self,
+        snapshot: SubagentSnapshot,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
+        if self.subagent().is_some_and(|current| {
+            current.agent_id == snapshot.agent_id && current.message_id == snapshot.message_id
+        }) {
+            self.execution = Some(snapshot);
+            cx.notify();
+        }
+    }
+
+    fn render_invocation(
+        card: Entity<Self>,
+        indented: bool,
+        window: &mut gpui_kit::Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let current = card.read(cx);
+        let agent = current.subagent().cloned();
+        let title = match (&current.input, &agent) {
+            (Some(ToolCardInputProjection::Subagent { tool, .. }), Some(agent)) => format!(
+                "{} {}",
+                if tool == "spawn_agent" {
+                    "Delegate"
+                } else {
+                    "Continue"
+                },
+                agent.name
+            ),
+            (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
+            _ => "Delegate task".into(),
+        };
+        let status = agent.as_ref().map_or_else(
+            || match current.status {
+                ToolCallStatus::PendingApproval => "Pending",
+                ToolCallStatus::Approved => "Ready",
+                ToolCallStatus::Running => "Running",
+                ToolCallStatus::Cancelled => "Interrupted",
+                ToolCallStatus::Rejected => "Rejected",
+                ToolCallStatus::Failed => "Failed",
+                ToolCallStatus::Success => "Failed",
+            },
+            |agent| match agent.state {
+                SubagentState::Running => "Running",
+                SubagentState::Cancelling => "Stopping",
+                SubagentState::Completed => "Completed",
+                SubagentState::Failed => "Failed",
+                SubagentState::Interrupted => "Interrupted",
+            },
+        );
+        let error_detail = agent.is_none() && !current.output_rows.is_empty();
+        let expanded = error_detail && current.expanded;
+        let detail = expanded.then(|| ToolDetail {
+            title: None,
+            command: None,
+            output: current.output_rows.clone(),
+            footer: None,
+        });
+        let detail_scroll = current.detail_scroll.clone();
+        let detail_id = format!("tool-detail-{}", card.entity_id());
+        let enabled = agent.is_some() || error_detail;
+        let group: gpui_kit::SharedString =
+            format!("subagent-invocation-{}", card.entity_id()).into();
+        let focus = crate::disclosure::focus(group, window, cx).tab_stop(enabled);
+        let keyboard = card.clone();
+        let keyboard_agent = agent.clone();
+        let row = div()
+            .id(("subagent-invocation", card.entity_id()))
+            .role(gpui_kit::Role::Button)
+            .aria_label(format!("{title}, {status}"))
+            .when(error_detail, |row| row.aria_expanded(expanded))
+            .track_focus(&focus)
+            .tab_stop(enabled)
+            .focus_visible(move |row| row.bg(colors.bg_hover))
+            .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(Layout::CONVERSATION_INLINE_GAP))
+            .text_size(px(Typography::CONVERSATION))
+            .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+            .when(indented, |row| row.pl_4())
+            .when(enabled, |row| row.cursor_pointer())
+            .on_click(move |_, _, cx| {
+                if let Some(agent) = &agent {
+                    card.update(cx, |_, cx| {
+                        cx.emit(SubagentOpenRequested {
+                            source_thread_id: agent.parent_thread_id.clone(),
+                            thread_id: agent.agent_id.clone(),
+                        })
+                    });
+                    cx.stop_propagation();
+                } else if error_detail {
+                    card.update(cx, |card, cx| {
+                        card.expanded = !card.expanded;
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
+                }
+            })
+            .on_key_down(move |event, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    if let Some(agent) = &keyboard_agent {
+                        keyboard.update(cx, |_, cx| {
+                            cx.emit(SubagentOpenRequested {
+                                source_thread_id: agent.parent_thread_id.clone(),
+                                thread_id: agent.agent_id.clone(),
+                            })
+                        });
+                        cx.stop_propagation();
+                    } else if error_detail {
+                        keyboard.update(cx, |card, cx| {
+                            card.expanded = !card.expanded;
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    }
+                }
+            })
+            .child(crate::icons::sized_icon(
+                Icon::Bot,
+                colors.text_secondary,
+                Layout::ICON_SIZE,
+            ))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(colors.conversation_tool)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(if status == "Failed" {
+                        colors.danger
+                    } else {
+                        colors.text_secondary
+                    })
+                    .child(status),
+            )
+            .when(error_detail, |row| {
+                row.child(crate::icons::sized_icon(
+                    if expanded {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    colors.text_secondary,
+                    Layout::ICON_SIZE,
+                ))
+            });
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(row)
+            .when_some(detail, |view, detail| {
+                view.child(render_detail(
                     detail,
                     detail_id,
                     &detail_scroll,
@@ -1129,7 +1328,8 @@ fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> 
         ToolCardResultProjection::UserQuestion { output, .. } => {
             return output.text().lines().map(str::to_string).collect();
         }
-        ToolCardResultProjection::Bash { output, .. }
+        ToolCardResultProjection::Subagent { output, .. }
+        | ToolCardResultProjection::Bash { output, .. }
         | ToolCardResultProjection::ReadOnly { output, .. }
         | ToolCardResultProjection::Mcp { output, .. }
         | ToolCardResultProjection::ComputerUse { output, .. }

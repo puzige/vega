@@ -7,6 +7,16 @@ Integration baseline: `9555d9e8` (#462 Working/Worked labels and #464 Composer
 primary action); acceptance and scope remain v1.2. CI must validate the integrated
 implementation head.
 
+## Subsequent user decision
+
+On 2026-10-19, [the frozen subagent reuse and presentation specification](vega-issue-478-subagent-policy-and-reuse.md#8-界面行为用户最新裁决)
+supersedes inline aggregate child lists: the full list belongs only in the right
+Subagents pane. Each spawn/followup invocation in the parent transcript identifies
+only its invoked child and that exact execution's status, and opens the existing
+pane detail. Reuse does not rewrite previous invocation statuses. Existing pane
+navigation, permissions/questions, privacy, focus and ownership contracts below
+remain applicable unless that specification explicitly refines them.
+
 ## User feedback and scope
 
 The user reports that subagents appear only in the conversation stream, while
