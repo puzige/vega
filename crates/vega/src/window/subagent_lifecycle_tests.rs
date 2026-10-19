@@ -189,24 +189,24 @@ async fn already_open_detail_follows_reuse_with_history_and_ignores_stale_genera
             .is_some_and(|detail| !detail.loading)
     })
     .await;
-    let previous = root
-        .read(cx)
-        .subagent_panel
-        .detail
-        .as_ref()
-        .unwrap()
-        .stream
-        .clone()
-        .unwrap();
+    let previous = root.read_with(cx, |root, _| {
+        root.subagent_panel
+            .detail
+            .as_ref()
+            .unwrap()
+            .stream
+            .clone()
+            .unwrap()
+    });
     assert!(previous.update(cx, |stream, cx| stream.reveal_loaded_message("first", cx)));
     let (receipt, cancel) = fixture.admit(&root, &parent, cx);
     assert!(receipt.await.unwrap().is_ok());
     cx.run_until_parked();
-    let current = root
-        .read(cx)
-        .agent_controller
-        .active_stream_for_thread(&fixture.first.id)
-        .unwrap();
+    let current = root.read_with(cx, |root, _| {
+        root.agent_controller
+            .active_stream_for_thread(&fixture.first.id)
+            .unwrap()
+    });
     root.update(cx, |root, cx| {
         for event in [
             ConversationEvent::MessageStarted {
@@ -234,16 +234,12 @@ async fn already_open_detail_follows_reuse_with_history_and_ignores_stale_genera
             );
         }
     });
-    assert_eq!(
-        root.read(cx)
-            .subagent_panel
-            .detail
-            .as_ref()
-            .unwrap()
-            .stream
-            .as_ref(),
-        Some(&current)
-    );
+    root.read_with(cx, |root, _| {
+        assert_eq!(
+            root.subagent_panel.detail.as_ref().unwrap().stream.as_ref(),
+            Some(&current)
+        );
+    });
     assert!(
         current.update(cx, |stream, cx| stream.reveal_loaded_message("first", cx)),
         "opening a follow-up must retain the first execution's transcript"
@@ -310,12 +306,11 @@ async fn already_open_detail_follows_reuse_with_history_and_ignores_stale_genera
         window.click(format!("subagent-panel-stop-{}", fixture.first.id), cx);
     });
     cx.condition(&root, |_, _| cancel.is_cancelled()).await;
-    assert!(
-        root.read(cx)
-            .agent_controller
+    assert!(root.read_with(cx, |root, _| {
+        root.agent_controller
             .active
             .contains_key(&fixture.parent.id)
-    );
+    }));
 }
 
 #[gpui_kit::test]
