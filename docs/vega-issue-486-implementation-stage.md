@@ -75,6 +75,19 @@ A01–A12 的测试定义、矩阵和冻结清单位于测试阶段页；本阶�
 
 本轮静态比较确认自首个测试定义起的整个 UI 源尾部与原始冻结提交逐字一致，服务测试及两个 fixture 的原始 hash 也一致。fmt、diff、offline locked metadata 检查重新 exit 0；本轮没有本地编译/运行测试，没有 commit/push。原始 hash、两次批准及失败证据均保留，不能将 setup 修正或静态检查称为 GREEN。
 
+第四轮 Actions `39206888765` 在 `dceb3d4edc25e895750621040e30256af4938535` 实际执行 42 项：41 passed / 1 failed / 0 skipped，耗时 12.102s；22 个服务用例及 19 个 UI/模型用例成功。fmt、Clippy 与 Python 34 项成功。唯一失败为关闭生命周期用例 line 934 的 `wheel` reason；该用例在此终止，不声称其后 reason 分支已执行。原始日志 `/tmp/vega-486-ci-39206888765-nextest.log` 保留，仍无完整 GREEN。
+
+只读诊断确认 pinned GPUI Kit `scroll_target` 会先 render，再取目标 bounds 的中心并发送 MouseMove/ScrollWheel；340×240 正文区域中心约 `(170,144)` 被合法可进入的预览卡覆盖。原本输入实际滚向卡内，生产继续保留卡内滚动、不关闭，符合规格。静态布局给出卡宽 360、首行下方定位及无图片内容高度，正文右下内点约 `(339,263)` 仍暴露；这些是源码尺寸推导，没有冒充本地实际渲染测量。
+
+修改前主会话已公开批准唯一 wheel 输入坐标修正：[wheel setup 批准记录](https://github.com/puzige/vega/pull/491#issuecomment-6260786505)。仅该 reason 分支用与 pinned helper 完全相同的真实 render → MouseMove（无按键/default modifiers）→ render → ScrollWheel（原 `-30px` delta）→ render 序列；保留 `move_pointer` 内部在 MouseMove 后的帧，[序列精度批准记录](https://github.com/puzige/vega/pull/491#issuecomment-6260800193) 也在修改前公开。坐标取 `body-frame.bounds().bottom_right() - point(px(1.), px(1.))`；ScrollWheelEvent 完全限定，无新增 import。没有生产修改，没有改其他 reason、数据、断言、等待时长或 viewport。静态逐字比较确认工作树测试文件恰好为本轮基线加这一处批准的输入替换；其他三个文件保持原始冻结 hash。
+
+| UI 测试源阶段 | SHA-256 |
+|---|---|
+| import + ReleaseNotes setup 例外后 | `9b5feb4a71a628a061168dc521c9cb1bf5bd95b44d73e8ab3ed67beca254dd7a` |
+| 再应用批准的 wheel setup 例外后（完整 helper 帧序列） | `e58d73ee6c783a4a65e88e4f1720334b09d85114f07e068b982ba89d028f387d` |
+
+本轮修改基于主会话正常 merge 提交 `4a688fff326da7a94ff3d6e52bbe35e94e42cb67`，已包含 `origin/master` 的 `84baff54`（消息驱动会话排序），无冲突、无 history rewrite，fetch 后 `origin/master...HEAD` 为 0/8。fmt、diff、offline locked metadata 重新 exit 0；原始冻结 source、三次批准的接线/输入例外与每阶段 hash 均保留。没有本地编译/测试，没有 commit/push，也没有删测；主会话待云端验证完整门禁。
+
 ## 下一步与边界
 
 Codex 主会话审查完整树，提交到现有 draft PR #491 并运行原门禁。生产编译和行为仍可能由 CI 揭示需要修正的实现问题；不能将上述静态检查称为 GREEN。真实字体/像素、外网站点及默认浏览器结果仍待用户 M01/M02 手测。

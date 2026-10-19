@@ -892,11 +892,29 @@ fn scroll_scope_change_unmount_external_click_and_window_deactivation_close_imme
         match reason {
             "wheel" => cx
                 .update_window(test.window.into(), |_, window, cx| {
-                    window.scroll(
-                        "body-frame",
-                        ScrollDelta::Pixels(point(px(0.), px(-30.))),
+                    window.render_frame(cx);
+                    let position =
+                        window.find("body-frame").bounds().bottom_right() - point(px(1.), px(1.));
+                    window.dispatch_event(
+                        MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers: Modifiers::default(),
+                        }
+                        .to_platform_input(),
                         cx,
-                    )
+                    );
+                    window.render_frame(cx);
+                    window.dispatch_event(
+                        gpui_kit::ScrollWheelEvent {
+                            position,
+                            delta: ScrollDelta::Pixels(point(px(0.), px(-30.))),
+                            ..Default::default()
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    window.render_frame(cx);
                 })
                 .unwrap(),
             "programmatic" => test
