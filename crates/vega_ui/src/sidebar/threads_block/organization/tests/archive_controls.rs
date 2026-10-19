@@ -172,6 +172,16 @@ async fn sidebar_archive_toolbar_tab_enter_and_space_toggle_without_navigation_o
         .unwrap();
     for (key, shown) in [("enter", true), ("space", false)] {
         cx.simulate_keystrokes(f.window.into(), key);
+        f.window
+            .update(cx, |_, window, cx| {
+                window.dispatch_event(
+                    gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent {
+                        keystroke: gpui_kit::Keystroke::parse(key).unwrap(),
+                    }),
+                    cx,
+                );
+            })
+            .unwrap();
         cx.run_until_parked();
         assert_archive_rows(&f, cx, &rows, shown);
         assert_eq!(snapshot(&f), before);
