@@ -97,10 +97,12 @@ impl Provider for ScriptedProvider {
                 .push(body.clone());
         }
         let script = self.scripts.lock().expect("scripts").pop_front();
+        let responses_api = self.transport.responses_api;
         Box::pin(async move {
             encoded?;
             let script = script.expect("unexpected request");
             let mut assembler = sse::SseAssembler::default();
+            let mut response_assembler = responses::Assembler::default();
             let mut events = Vec::new();
             let mut complete = true;
             let payloads = script
@@ -109,7 +111,12 @@ impl Provider for ScriptedProvider {
                 .map(|chunk| chunk.to_string())
                 .chain(script.raw_payload);
             for payload in payloads {
-                match assembler.absorb(&payload) {
+                let parsed = if responses_api {
+                    response_assembler.absorb(&payload)
+                } else {
+                    assembler.absorb(&payload)
+                };
+                match parsed {
                     Ok(items) => events.extend(items.into_iter().map(Ok)),
                     Err(error) => {
                         events.push(Err(error));
@@ -120,7 +127,7 @@ impl Provider for ScriptedProvider {
             }
             if complete {
                 events.extend(script.extra.into_iter().map(Ok));
-                if script.finalize {
+                if script.finalize && !responses_api {
                     match assembler.finalize() {
                         Ok(items) => events.extend(items.into_iter().map(Ok)),
                         Err(error) => events.push(Err(error)),

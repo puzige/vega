@@ -206,14 +206,45 @@ async fn new_text_and_detail_state_survives_warm_and_is_rejected_when_environmen
                 frozen.choice = ReasoningChoice::Effort("high".into());
                 next.reasoning = Some(frozen);
             }
-            let mut frame = ReplayFrame::new(next.history.len(), ReasoningReplayPolicy::Unknown);
+            let mut frame = ReplayFrame::new(
+                next.history.len(),
+                if change == "api" {
+                    ReasoningReplayPolicy::ResponsesItems
+                } else {
+                    ReasoningReplayPolicy::Unknown
+                },
+            );
             frame.attach_route_fingerprint(if change == "route" { [8; 32] } else { [9; 32] });
             frame.attach_candidate(outcome.messages.clone(), environment);
             next.replay_frame = Some(frame);
-            let provider = ScriptedProvider::new(
-                "https://proxy.example/v1",
-                vec![Script::final_reply(json!({}))],
-            );
+            let script = if change == "api" {
+                Script {
+                    chunks: vec![json!({
+                        "type":"response.completed",
+                        "response":{
+                            "id":"completed-response",
+                            "status":"completed",
+                            "output":[{
+                                "id":"completed-message",
+                                "type":"message",
+                                "role":"assistant",
+                                "status":"completed",
+                                "content":[{"type":"output_text","text":"complete","annotations":[]}]
+                            }]
+                        }
+                    })],
+                    extra: Vec::new(),
+                    finalize: true,
+                    raw_payload: None,
+                    cancel: false,
+                }
+            } else {
+                Script::final_reply(json!({}))
+            };
+            let mut provider = ScriptedProvider::new("https://proxy.example/v1", vec![script]);
+            if change == "api" {
+                provider.transport = provider.transport.with_responses_api(true);
+            }
             let continued = crate::run_agent(&provider, &tools, next, CancellationToken::new())
                 .await
                 .expect("continued");
