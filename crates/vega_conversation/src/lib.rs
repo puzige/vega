@@ -50,3 +50,9 @@ pub mod privacy;
 pub mod automation;
 
 pub mod subagents;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod link_preview_test_support;
+
+#[cfg(test)]
+mod link_preview_tests;

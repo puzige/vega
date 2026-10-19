@@ -3,6 +3,9 @@ name = "vega_conversation"
 version.workspace = true
 edition.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 ring.workspace = true
 vega_credentials = { workspace = true }
@@ -24,3 +27,6 @@ ulid = { workspace = true }
 portable-pty.workspace = true
 vt100.workspace = true
 libc.workspace = true
+
+[dev-dependencies]
+image.workspace = true

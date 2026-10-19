@@ -35,6 +35,7 @@ Codex 在本卡按架构审查职责批准以下精确范围；不升级既有�
 - `html5ever = 0.27.0` 作为直接依赖加入 workspace 与 `vega_conversation`；该版本及传递依赖已在 lock 中。使用 tokenizer，不引入 DOM、CSS selector、浏览器或另一个 HTML parser。
 - `vega_conversation` 复用 workspace 的 `reqwest = 0.12.24`、`image = 0.25.10`、`futures`、`tokio`、`tokio-util`；URL 使用 reqwest 重导出的 `Url`，不引入第二份 URL 实现。
 - 开发期间允许 `gpui_kit` 的 dev-only `test-support`，以及现有 workspace 测试辅助能力；最终 GREEN 后清理测试独占依赖/feature，保留生产、benchmark、Python 与通用 CI 能力。
+- 为 UI 跨 crate 测试同一真实服务，允许临时 `vega_conversation/test-support` 只导出已有内部 resolver/transport/clock ports 与注入工厂；UI dev dependency 启用。生产模块保持私有，不增加替代业务判定，PreparedRequest 仍由生产策略生成批准地址；GREEN 后删除该导出/工厂/feature/dev edge，保留真实服务所需内部边界。
 - 不新增 favicon、GitHub API、第三方 unfurl、HTML regex 扫描器或新的配置依赖。遇到额外 crate 需求先交 Codex 审查，不能自行扩依赖。
 
 ## 4. 网页与图片服务
@@ -92,6 +93,7 @@ Codex 在本卡按架构审查职责批准以下精确范围；不升级既有�
 
 - 新 `MarkdownLinkPreviewLayer` 从 `vega_ui` 导出，挂在 `VegaWindow::render` 的现有 TextSelectionLayer 邻近，**每个 WindowId 恰好一个**。根层拥有 Entity，注册表只留弱引用；链接注册可见几何，不各自持有卡片/网络服务。
 - 协调器键为阅读 scope + occurrence + target，而非整段文本。根层 prepaint 完成可见目标登记并清扫已卸载触发器；会话 scope 切换关闭旧卡，相邻内容的普通流式更新保留有效锚点。
+- 该预览身份不替代原点击的文本/布局身份屏障：文本身份变化仍取消待打开动作。稳定预览和点击仲裁分开管理，不能为保持 hover 而放宽 #357 的误打开保护。
 - 根层使用 `Window::defer_draw`（仅在 prepaint 调用）绘制，Positioner side 负责避让/钳制；卡阻断自身点击穿透，但不阻断正文选择，不在每条链接的局部裁剪区域里画浮层。
 - 卡默认宽 360px、边距 12px、内距 12px；最大宽高始终小于窗口可用范围，高度最多 420px，超出内容局部滚动。内容宽 360−2×12=336px；图片按容器实际宽度等比收敛，不填充占位空白。
 - 状态为 Idle → Armed → Loading → Ready/Unavailable；加上离开延迟与 dismissed-until-reentry 标记。show 400ms、leave 150ms，由可控 executor 时钟测试。卡内停留或焦点保持时取消离开计时；切目标时更新 generation 并取消旧订阅。
