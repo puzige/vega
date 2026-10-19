@@ -653,8 +653,6 @@ impl ToolCard {
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
             .group(disclosure_group.clone());
-        #[cfg(test)]
-        let row = gpui_kit::test::TestSupportExt::test_support(row);
         let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)
@@ -909,8 +907,6 @@ impl ToolCard {
                     Layout::ICON_SIZE,
                 ))
             });
-        #[cfg(test)]
-        let row = gpui_kit::test::TestSupportExt::test_support(row).track_focus(&focus);
         div()
             .w_full()
             .min_w_0()

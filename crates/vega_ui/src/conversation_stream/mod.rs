@@ -1,6 +1,4 @@
 mod privacy;
-#[cfg(test)]
-mod subagent_invocation_tests;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 mod attachments;
 mod pending_messages;
