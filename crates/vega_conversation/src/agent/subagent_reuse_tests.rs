@@ -93,7 +93,31 @@ struct RecordingHost {
     cancel_tokens: Mutex<Vec<CancellationToken>>,
     reject_next: AtomicBool,
     admission_gate: Mutex<Option<CancellationToken>>,
+    cancelling_write_gate: Mutex<Option<Arc<CancellingWriteGate>>>,
     changed: Notify,
+}
+
+struct CancellingWriteGate {
+    database: PathBuf,
+    held: Mutex<Option<Store>>,
+}
+
+impl CancellingWriteGate {
+    fn hold(&self) -> Result<(), VegaError> {
+        let store =
+            Store::open(&self.database).map_err(|_| failure("test database unavailable"))?;
+        store
+            .conn()
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|_| failure("test write gate unavailable"))?;
+        *self.held.lock().unwrap() = Some(store);
+        Ok(())
+    }
+
+    fn release(&self) {
+        let store = self.held.lock().unwrap().take().unwrap();
+        store.conn().execute_batch("ROLLBACK").unwrap();
+    }
 }
 
 impl RecordingHost {
@@ -153,7 +177,12 @@ impl SubagentHost for RecordingHost {
         Ok(())
     }
 
-    fn updated(&self, _: SubagentSnapshot) -> Result<(), VegaError> {
+    fn updated(&self, snapshot: SubagentSnapshot) -> Result<(), VegaError> {
+        if snapshot.state == SubagentState::Cancelling
+            && let Some(gate) = self.cancelling_write_gate.lock().unwrap().clone()
+        {
+            gate.hold()?;
+        }
         Ok(())
     }
 
@@ -494,6 +523,55 @@ async fn busy_failed_interrupted_and_foreign_children_reject_without_mutation() 
             foreign.agent_id = "unowned-child".into();
             run.reject("foreign", &foreign, "Take over", "unknown_agent")
                 .await;
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn cancelling_child_rejects_followup_before_its_terminal_write_can_finish() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(CancellingWriteGate {
+        database: fixture.database.clone(),
+        held: Mutex::new(None),
+    });
+    *fixture.host.cancelling_write_gate.lock().unwrap() = Some(gate.clone());
+    fixture
+        .run(|run| async move {
+            let busy = run.spawn("spawn", "Worker", "Wait for receipt").await;
+            let cancelling = snapshot(
+                run.call("cancel", "cancel_agent", json!({"agent_id": busy.agent_id}))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(cancelling.state, SubagentState::Cancelling);
+            assert!(gate.held.lock().unwrap().is_some());
+            assert_eq!(run.executions(&busy.agent_id)[0].1, "cancelling");
+            run.reject(
+                "followup-while-cancelling",
+                &busy,
+                "More work",
+                "agent_busy",
+            )
+            .await;
+            assert_eq!(run.executions(&busy.agent_id).len(), 1);
+            assert_eq!(run.executions(&busy.agent_id)[0].1, "cancelling");
+            assert!(run.host.terminal.lock().unwrap().is_empty());
+            assert_eq!(run.provider.count(), 0);
+            assert_eq!(
+                vega_store::subagents::active_count(run.store().conn(), &run.parent, "parent-run")
+                    .unwrap(),
+                1
+            );
+            gate.release();
+            assert_eq!(
+                run.host.ended(&busy.message_id).await.state,
+                SubagentState::Interrupted
+            );
+            assert_eq!(
+                vega_store::subagents::active_count(run.store().conn(), &run.parent, "parent-run")
+                    .unwrap(),
+                0
+            );
         })
         .await;
 }
