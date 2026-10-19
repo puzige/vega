@@ -131,6 +131,7 @@ pub(crate) struct StreamSpan {
     pub text: String,
     pub style: SpanStyle,
     pub link: Option<String>,
+    pub link_occurrence: Option<usize>,
 }
 
 /// What a row represents (drives per-frame styling: font/bg/prefix).
@@ -269,11 +270,21 @@ pub(crate) fn display_width(text: &str) -> usize {
 pub(crate) fn flatten_inlines(spans: &[Inline], out: &mut Vec<StreamSpan>) {
     for span in spans {
         match span {
-            Inline::Text(text) => out.extend(autolinks::text_spans(text)),
+            Inline::Text(text) => {
+                let offset: usize = out.iter().map(|span| span.text.len()).sum();
+                let mut spans = autolinks::text_spans(text);
+                for span in &mut spans {
+                    if let Some(occurrence) = &mut span.link_occurrence {
+                        *occurrence += offset;
+                    }
+                }
+                out.extend(spans);
+            }
             Inline::Code(code) => out.push(StreamSpan {
                 text: code.clone(),
                 style: SpanStyle::Code,
                 link: None,
+                link_occurrence: None,
             }),
             Inline::Emphasis(inner) => restyle(out, inner, SpanStyle::Emphasis),
             Inline::Strong(inner) => restyle(out, inner, SpanStyle::Strong),
@@ -297,9 +308,11 @@ pub(crate) fn restyle(out: &mut Vec<StreamSpan>, inner: &[Inline], style: SpanSt
 
 fn restyle_link(out: &mut Vec<StreamSpan>, inner: &[Inline], url: &str) {
     let start = out.len();
+    let occurrence = out.iter().map(|span| span.text.len()).sum();
     restyle(out, inner, SpanStyle::Link);
     for span in &mut out[start..] {
         span.link = Some(url.to_owned());
+        span.link_occurrence = Some(occurrence);
     }
 }
 
@@ -312,7 +325,11 @@ pub(crate) fn coalesce(spans: Vec<StreamSpan>) -> Vec<StreamSpan> {
             continue;
         }
         match merged.last_mut() {
-            Some(last) if last.style == span.style && last.link == span.link => {
+            Some(last)
+                if last.style == span.style
+                    && last.link == span.link
+                    && last.link_occurrence == span.link_occurrence =>
+            {
                 last.text.push_str(&span.text)
             }
             _ => merged.push(span),
@@ -429,6 +446,7 @@ pub(crate) fn code_line_spans(
             text: code[start..end].to_string(),
             style: SpanStyle::Plain,
             link: None,
+            link_occurrence: None,
         }];
     };
     let mut spans = Vec::new();
@@ -444,12 +462,14 @@ pub(crate) fn code_line_spans(
                 text: code[cursor..span_start].to_string(),
                 style: SpanStyle::Plain,
                 link: None,
+                link_occurrence: None,
             });
         }
         spans.push(StreamSpan {
             text: code[span_start..span_end].to_string(),
             style: SpanStyle::Token(span.kind),
             link: None,
+            link_occurrence: None,
         });
         cursor = span_end;
     }
@@ -458,6 +478,7 @@ pub(crate) fn code_line_spans(
             text: code[cursor..end].to_string(),
             style: SpanStyle::Plain,
             link: None,
+            link_occurrence: None,
         });
     }
     spans

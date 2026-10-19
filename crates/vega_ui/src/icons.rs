@@ -392,3 +392,15 @@ pub fn shell_icon_button(
             },
         ))
 }
+
+pub(crate) fn link_icon(site: vega_conversation::types::LinkSiteKind, color: Rgba) -> AnyElement {
+    let name = match site {
+        vega_conversation::types::LinkSiteKind::Github => gpui_kit::assets::IconName::Github,
+        vega_conversation::types::LinkSiteKind::Mail => gpui_kit::assets::IconName::Mail,
+        vega_conversation::types::LinkSiteKind::Web => return icon(Icon::Globe, color),
+    };
+    KitIcon::new(name)
+        .with_size(px(Layout::ICON_SIZE))
+        .text_color(color)
+        .into_any_element()
+}

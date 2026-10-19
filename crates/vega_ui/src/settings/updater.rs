@@ -250,12 +250,21 @@ impl SettingsView {
                                 &self.updater_notes_scroll,
                             ))
                             .mt_2()
-                            .child(crate::conversation_stream::markdown_item(
-                                notes,
-                                None,
-                                &colors,
-                                &format!("updater-notes-{}", cx.entity_id()),
-                            ))
+                            .child(
+                                crate::link_preview::MarkdownReadingScope::new(
+                                    format!("updater-notes-{}", cx.entity_id()),
+                                    self.section_focuses[1].clone(),
+                                )
+                                .track_scroll(self.updater_notes_scroll.clone())
+                                .child(
+                                    crate::conversation_stream::markdown_item(
+                                        notes,
+                                        None,
+                                        &colors,
+                                        &format!("updater-notes-{}", cx.entity_id()),
+                                    ),
+                                ),
+                            )
                             .tracked_scroll_edge_fade(
                                 self.updater_notes_scroll.clone(),
                                 colors.bg_base,

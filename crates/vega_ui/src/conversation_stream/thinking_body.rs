@@ -469,6 +469,7 @@ impl PreparedBody {
                                 text: format!("{} ", line.marker),
                                 style: SpanStyle::Plain,
                                 link: None,
+                                link_occurrence: None,
                             }],
                             LineKind::Paragraph,
                             point(x, px(0.)),
@@ -488,6 +489,7 @@ impl PreparedBody {
                                     text: if checked { "[x]" } else { "[ ]" }.into(),
                                     style: SpanStyle::Plain,
                                     link: None,
+                                    link_occurrence: None,
                                 }],
                                 LineKind::Paragraph,
                                 point(x, px(0.)),
@@ -802,9 +804,10 @@ fn layout_text(
         .ceil()
         / style.scale);
     let runs = render_rows::block_text_runs(spans, text_style, &style.colors);
-    let run_index = inline_code::RunIndex::new(runs.clone());
-    let links = link_ranges(spans);
-    if runs.iter().any(|run| run.background_color.is_some()) {
+    let mut links = link_ranges(spans);
+    super::super::links::own_links(&mut links, &format!("thinking-{start}"));
+    let run_index = inline_code::RunIndex::new(runs.clone()).with_links(links.clone());
+    if !links.is_empty() || runs.iter().any(|run| run.background_color.is_some()) {
         let flow = inline_code::shape_flow(
             &text.clone().into(),
             &run_index,
