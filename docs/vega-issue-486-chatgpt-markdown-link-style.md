@@ -188,12 +188,12 @@ card(size="full", padding=0)
 | 项 | Vega（#357/#455 之后） | ChatGPT App |
 |---|---|---|
 | 链接色 | `SpanStyle::Link` → `colors.accent`（`#3478D8` / `#8FC7FF`） | 旧版 `TextLink` 继承正文色；新版正文 `a` 走 mention（蓝）；`data-primary` 才用 `--link-primary-text-color` |
-| 下划线 | 常显 1px 实线，颜色同 accent（`render_rows.rs:1116-1124`） | 旧版常显（文字色 70%）；新版 hover 才出（虚线 .5px） |
+| 下划线 | 常显 1px 实线，颜色同 accent（`render_rows.rs:1104-1111`） | 旧版常显（文字色 70%）；新版 hover 才出（虚线 .5px） |
 | hover | 只有指针变手形（`links.rs:99-101`），字形不变 | 下划线出现/颜色加深；`pointer:fine` 才启用 |
 | 焦点 | 正文无 tab stop（#357 明确不做） | `:focus-visible` 2px ring |
 | 虚线 | 不支持（GPUI `UnderlineStyle` 无 dash） | mention 用 `underline dashed` .5px |
 | 图标 | `Icon` 枚举无 GitHub；依赖里有 `icons/github.svg`，可新增映射 | 图标组件 + `s2/favicons` 远程取图 |
-| 代码块 | `colors.code_bg` + `TOOL_DETAIL_RADIUS` + `MARKDOWN_CODE_PADDING`，横向滚动 + 边缘淡出；无 Copy 按钮、无语言头 | 1px 边框 + `radius-md` + 独立底色 + 悬浮 Copy + 语言标签 + 延迟渲染 |
+| 代码块 | `code_bg` + `TOOL_DETAIL_RADIUS` + `MARKDOWN_CODE_PADDING` + 横向滚动 + 边缘淡出；**已有语言头与固定复制按钮**（`code_header`，#477/#479），无边框、无延迟渲染 | 1px 边框 + `radius-md` + 独立底色 + 悬浮 Copy + 语言标签 + `IntersectionObserver` 延迟渲染 |
 | 链接卡片 | 无 | GenUI 结构化卡片 |
 
 ## 六、如果要改，建议的最小步（未实施）
@@ -201,7 +201,7 @@ card(size="full", padding=0)
 1. **链接色与下划线分离**：正文链接保持 accent 文字色，下划线改 `accent` 的 70% 透明度版本，降低正文视觉噪声；这是纯 token 改动，不动交互。
 2. **hover 才显示下划线**：需要把 `apply_span_style` 的静态 `underline` 改为「按下划线由 hover 状态决定」。现有 `LinkInteraction.hovered` 已存在并在移动时 `window.refresh()`（`links.rs:172-178`），但 `block_text_runs` 在物化阶段一次性生成 runs，hover 状态没有进入 run 样式；要么把链接 run 的 underline 挪到绘制阶段按 hover 叠加，要么按 hover 重建该行 runs。**这会改动 #357 的「常显下划线」契约，需先改 spec。**
 3. **不要照搬虚线**：GPUI 无 dash 支持，自绘 dash 需要新绘制路径；收益（区分 mention）在 Vega 当前没有 mention 语义，建议先不做。
-4. **代码块补齐 Copy 与语言头**：与链接样式无关，但截图里的「预览 block」观感主要来自这两项；Vega 已有 `LineKind::Code` 与语言字段，可独立开卡。
+4. **代码块不要重复开卡**：#477/#479 已在 master 落地语言头 + 固定复制按钮（`code_header`，`render_rows.rs:687-724`）。与 ChatGPT 的剩余差异只有外壳（1px 边框、`radius-md`）和 `IntersectionObserver` 延迟渲染；后者在 Vega 的虚拟化流里是否需要另说。
 
 ## 附：取证命令
 
