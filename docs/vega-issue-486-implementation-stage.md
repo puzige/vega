@@ -88,6 +88,10 @@ A01–A12 的测试定义、矩阵和冻结清单位于测试阶段页；本阶�
 
 本轮修改基于主会话正常 merge 提交 `4a688fff326da7a94ff3d6e52bbe35e94e42cb67`，已包含 `origin/master` 的 `84baff54`（消息驱动会话排序），无冲突、无 history rewrite，fetch 后 `origin/master...HEAD` 为 0/8。fmt、diff、offline locked metadata 重新 exit 0；原始冻结 source、三次批准的接线/输入例外与每阶段 hash 均保留。没有本地编译/测试，没有 commit/push，也没有删测；主会话待云端验证完整门禁。
 
+第五轮 Actions `39207961327` 使用不可变提交 `a2344ec4ea933cbf7ee95090a0c17a74598f2948`；主会话授权本次补正时该轮仍运行中，本阶段不轮询/取消/重试，最终执行结果由主会话记录，不预称失败或 GREEN。等待期间按只读代码追踪证明一个既有 A09 生产缺陷：scope/target 替换使旧 key 从可见集合消失，liveness sweep 关闭并抑制旧 key；紧接着无条件 `pointer()` 将静止指针下的新 key 当作 hover 重入，清掉旧抑制并在 400ms 后重新武装。
+
+经主会话明确授权，本轮仅在既有 liveness/scroll-close 分支的 dismiss 后，若当前指针下仍有可见目标，就将 `hovered` 与 `suppressed` 一起设为该当前 key，再进入原有共享 pointer 路径。取消、generation、leave/reentry、普通流式布局及其他状态逻辑不变，没有新增状态或重构，没有测试改动。fetch 后任务分支与远端 0/0、最新 master 已在祖先链中；保留此前正常 merge。fmt、diff、offline locked metadata 重新 exit 0，四个当前测试/fixture hash 不变（UI 为 `e58d73ee6c783a4a65e88e4f1720334b09d85114f07e068b982ba89d028f387d`，另外三个仍为原始冻结值）。没有本地编译/测试，没有 commit/push，仍未进入删测阶段。
+
 ## 下一步与边界
 
 Codex 主会话审查完整树，提交到现有 draft PR #491 并运行原门禁。生产编译和行为仍可能由 CI 揭示需要修正的实现问题；不能将上述静态检查称为 GREEN。真实字体/像素、外网站点及默认浏览器结果仍待用户 M01/M02 手测。

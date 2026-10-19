@@ -2,7 +2,7 @@
 
 关联 [Issue #486](https://github.com/puzige/vega/issues/486)、[PR #491](https://github.com/puzige/vega/pull/491)。需求为 [v1](vega-issue-486-markdown-link-preview.md)，技术方案为 [v2](vega-issue-486-markdown-link-preview-implementation.md)。
 
-当前阶段：2026-10-19 已确认最小目标接口缺失 RED；第四轮云端已实际执行全部 42 个测试，41 通过、1 失败，22 个服务测试全部通过。剩余滚轮输入被卡片覆盖，已事前审查批准修正测试坐标；同时已集成最新 master，待下一轮完整复验。尚无完整 GREEN、删测或合并结论。
+当前阶段：2026-10-19 已确认最小目标接口缺失 RED；第五轮云端已实际执行全部 42 个测试，41 通过、1 失败，22 个服务测试全部通过。滚轮输入修正已越过，唯一失败确认 scope 关闭后静止指针导致重新触发；生产补正已通过静态审查，待下一轮完整复验。已集成最新 master。尚无完整 GREEN、删测或合并结论。
 
 ## 顺序与可信来源
 
@@ -12,7 +12,7 @@
 | 先行测试 | `5d46a1955d0212182f128e46dec20c67898dce55` | 22 个服务、20 个 UI/模型定义，其中 18 个 GPUI；42 是静态定义数 |
 | 有效 RED | [Actions 39201250059](https://github.com/puzige/vega/actions/runs/39201250059) | 最小目标 API 缺失；全部 Rust 行为断言未执行 |
 | 生产实现 | [实现阶段交接](vega-issue-486-implementation-stage.md) | 完整代码已写出并经静态审查；未本地编译或运行 |
-| 同一测试 GREEN | 第四轮已执行 42 个，41 通过、1 失败 | 完整 GREEN 尚未获得 |
+| 同一测试 GREEN | 第五轮已执行 42 个，41 通过、1 失败 | 完整 GREEN 尚未获得 |
 | 独立删测 | 待 GREEN 及证据固定 | 未执行 |
 | 最终 head 完整门禁 | 待删测 | 未执行；须明确 Rust 0 发现/0 执行，不能代替上一阶段 GREEN |
 | 合并及用户 M01/M02 | 待最新 head 门禁 | 未合并、未手测 |
@@ -80,6 +80,14 @@ Clippy 还发现测试未使用 `App` import。Codex [先公开原始证据并�
 Codex 与实现者分别核对 pinned `scroll_target`：`window.scroll("body-frame")` 先移动到 frame 中心，再发真实滚轮。该中心约 (170,144)，在本次 no-image 卡片覆盖范围内，实际没有向阅读区发送滚轮；保留卡内局部滚动符合冻结契约。已在编辑前[公开固定原始错误并批准最小输入修正](https://github.com/puzige/vega/pull/491#issuecomment-6260786505)：保持相同 render/MouseMove/render/ScrollWheel/render 和 -30px delta，只改用真实 frame 右下内侧 1px 的未遮挡阅读区坐标。没有改生产逻辑、断言、内容、时间或其它 reason。坐标依据来自静态几何审查，未冒称本地测量；[精确补充批准](https://github.com/puzige/vega/pull/491#issuecomment-6260800193) 明确保留 pinned `move_pointer` 内部的中间 frame。修正后继续交云端验证。
 
 测试修改前发现 master 已增加 `84baff54f98ffd0888858b447677b637be86c8cf`（#308）。主会话在干净 worktree 通过正常 merge 生成 `4a688fff326da7a94ff3d6e52bbe35e94e42cb67`，无冲突或历史重写，四份测试 hash 不变。下一轮完整门禁包含这项基线；旧结果不替代新 head 验证。原始、import-only 和 ReleaseNotes setup 后的源码/hash 继续保留，滚轮 setup 修正后 UI SHA-256 为 `e58d73ee6c783a4a65e88e4f1720334b09d85114f07e068b982ba89d028f387d`。主会话逐字确认仅该 wheel 分支输入准备不同，所有断言行和分支外全部字节相同，三个其它文件继续保持原 hash；三个 render 和两个真实平台事件均保留。fmt、diff、offline locked metadata 均 exit 0，未本地编译或运行。
+
+## 第五轮期间的关闭状态审查
+
+第五轮 [Actions 39207961327](https://github.com/puzige/vega/actions/runs/39207961327) 对不可变 head `a2344ec4ea933cbf7ee95090a0c17a74598f2948` 验证，包含最新 master 与批准的滚轮输入修正。等待云端期间，Codex 与实现者独立追踪同一个已冻结 A09 场景，确认 scope/target 替换后旧 key 被关闭，但无条件 pointer 更新把静止指针下的新 key 当成重新进入，400ms 后会再次武装。
+
+后续生产补正仅四行：在原有 liveness/scroll-close 分支 dismiss 后，将当前指针下可见目标同时写入 hovered 和 suppressed，再进入共享 pointer 路径。保留现有取消、generation、焦点恢复与正常流式更新；需要离开/重入后才重新触发。四份测试/fixture 与 `a2344ec4` 逐字相同，全部原断言保留。这是原先验收内的实现修正，没有新增用例或边界；新 head 门禁待复验。
+
+第五轮后续取得真实结果：[Nextest job](https://github.com/puzige/vega/actions/runs/39207961327/job/117914814785) 实际 42 执行、41 通过、1 失败、0 跳过，6.989 秒，失败为该冻结生命周期用例第 954 行 `scope`（关闭后 1000ms 断言）。22 个服务和 19 个 UI/模型项通过，fmt、[Clippy](https://github.com/puzige/vega/actions/runs/39207961327/job/117914815010)、Python 34 项成功，[required check](https://github.com/puzige/vega/actions/runs/39207961327/job/117915625497) 失败。[原始日志摘录](https://github.com/puzige/vega/pull/491#issuecomment-6260904561) 公开固定；没有重试旧 head，未进入删测。
 
 ## 用户手测入口
 

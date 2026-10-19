@@ -468,6 +468,10 @@ impl Element for MarkdownLinkPreviewLayer {
                     let restore = state.card_focused(window)
                         || old.is_some_and(|link| link.focus.is_focused(window));
                     state.dismiss(false, window, cx);
+                    if let Some(hovered) = state.pointer_link(window.mouse_position()) {
+                        state.hovered = Some(hovered.clone());
+                        state.suppressed = Some(hovered);
+                    }
                     closed = true;
                     if restore && let Some(fallback) = fallback {
                         window.focus(&fallback, cx);
