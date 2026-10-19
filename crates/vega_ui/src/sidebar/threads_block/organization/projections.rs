@@ -87,8 +87,6 @@ impl ThreadsBlock {
                     false,
                     cx,
                 ));
-            #[cfg(test)]
-            let header = header.debug_selector(|| format!("group-header-{}", group.id));
             body = body.child(header);
             if !collapsed {
                 let rows: Vec<_> = snapshot
@@ -344,8 +342,6 @@ impl ThreadsBlock {
                     false,
                     cx,
                 ));
-            #[cfg(test)]
-            let header = header.debug_selector(|| format!("project-header-{}", project.id));
             body = body.child(header);
             if !collapsed {
                 let rows: Vec<_> = sorted_threads(&self.threads, &preferences)

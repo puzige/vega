@@ -208,7 +208,7 @@ impl ThreadsBlock {
                     .child(title),
             )
             .children(items.into_iter().enumerate().map(|(index, (label, _))| {
-                let item = div()
+                div()
                     .id(ElementId::Name(format!("organization-menu-{index}").into()))
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .flex_shrink_0()
@@ -232,13 +232,8 @@ impl ThreadsBlock {
                             this.activate_organization_menu(index, window, cx);
                         }),
                     )
-                    .child(label);
-                #[cfg(test)]
-                let item = item.debug_selector(move || format!("organization-menu-{index}"));
-                item
+                    .child(label)
             }));
-        #[cfg(test)]
-        let menu = menu.debug_selector(|| "organization-menu".into());
         div()
             .absolute()
             .top_0()

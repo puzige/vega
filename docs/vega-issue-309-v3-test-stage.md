@@ -123,4 +123,53 @@
 
 主审和独立 reviewer 静态核实 GPUI 在 child canvas prepaint 之前已更新父控件 ScrollHandle.bounds，测量的是完整按钮而不是内缩 canvas。归档 Click 分支、archive_control 构造器与原 capture/hover/mouse 重排处理经字节比较不变；Stateful<Div> 返回及 Role::Button/on_click 不变。三份冻结测试 hash、Cargo/观察支持、store/conversation/runtime/应用外层/CI 均未改，未追加测试。fmt/diff 静态检查 exit 0，无新增注释/unwrap/expect。独立审查无阻挡，批准提交云端同批 GREEN，不宣称类型/行为已通过。
 
-本地仍未运行 Vega、编译、Clippy 或任何测试；本实现的云端结果待取得，GREEN 前不删测试。
+本地仍未运行 Vega、编译、Clippy 或任何测试；提交此实现时云端结果待取得，GREEN 前未删测试。
+
+## 同批完整 GREEN 与证据固定
+
+带测试实现提交 `daf2e20d5258ff694d6cec164ca2c0631bb7b364` 的 [Actions 39245493845](https://github.com/puzige/vega/actions/runs/39245493845) 已成功。
+
+| 云端 gate | 结果与原始来源 |
+|---|---|
+| Nextest | [118036287464](https://github.com/puzige/vega/actions/runs/39245493845/job/118036287464)：21 发现/21 执行/21 通过/0 失败/0 跳过/0 ignore，14 binaries，20.104s |
+| fmt / 全目标 Clippy | [118036286924](https://github.com/puzige/vega/actions/runs/39245493845/job/118036286924)：成功 |
+| Python 发布/组件准备/delta | 5+15+14 项成功，Nextest job 原始输出可核对 |
+| required check | [118037812109](https://github.com/puzige/vega/actions/runs/39245493845/job/118037812109)：成功 |
+
+[21 PASS 完整有界原始输出与固定索引](https://github.com/puzige/vega/pull/497#issuecomment-6266341150)已发布并精确读回，Nextest job 原始日志 SHA-256 `d87b0e8563aa106356fbaed6f5332d4f12d3ff68c69ac6c332339ccfd1856c75`。本报告三份测试 hash 与 RED 完全相同，测试/观察/Cargo 支持没有随实现改写；没有新增、删除、ignore、放宽或重试用例。
+
+全部 V1–V10 现已执行到底，包括 RED 未到达的项目移除/目录历史保留与滚动区外菜单命中/命令。该证据属于进程内 GPUI/owned 文件库，不代替用户在发布版本的真实手测，也不表示应用已经安装。
+
+只有在上述 GREEN 与原始测试/支持/RED/GREEN 固定后，才向专职执行者交接独立删测。删除范围仅本轮三模块 21 测试及 cfg(test) 观察/接线、UI 临时 dev dependency 和对应独占 lock 边；所有正式锚点、按钮测量、Window 定位、Tab/guard、archive Click/stateful/capture/顺序行为保留。最终空集完整门禁与独立删测审查仍待取得；PR 保持 Draft，Issue OPEN / In progress。
+
+## 上游前进后的同批复验
+
+清理执行者按交接条件先 fetch，发现 master 已到 `9cd84638912547914d23764b1c5de30e4997c117`，因此立即停止，未删除测试或支持。主审核查新上游为 #496 的任务行 `flex_shrink_0()`（组合几何相关）与 #495 的 Chat 兼容/思考设置；本卡验收、五文件、测试/支持/Cargo/CI 不变，无产品契约冲突。
+
+使用普通 merge 同步并保留原 RED/GREEN 历史，复验 head `18624060ae7c6ac4cb847bd551d6be97471fe08b`。三份测试 hash 与 #309 生产实现和原 GREEN 完全相同，上游改动完整保留；fmt/diff 静态检查 exit 0。[PR 同步记录](https://github.com/puzige/vega/pull/497#issuecomment-6266400539)固定停止清理原因与后续时序。由于实际组合布局前进，要求同一冻结测试和完整云端 gate 重新 GREEN，不能沿用旧 GREEN 删测或合并。
+
+复验 [Actions 39246684926](https://github.com/puzige/vega/actions/runs/39246684926) 已成功：[Nextest 118040208052](https://github.com/puzige/vega/actions/runs/39246684926/job/118040208052) 21 发现/21 执行/21 通过/0 失败/0 跳过/0 ignore、14 binaries、31.281s；[fmt/Clippy 118040208399](https://github.com/puzige/vega/actions/runs/39246684926/job/118040208399)、Python 5+15+14、[required check 118041893528](https://github.com/puzige/vega/actions/runs/39246684926/job/118041893528) 全部成功。
+
+[复验 21 PASS 原始输出与恢复清理授权](https://github.com/puzige/vega/pull/497#issuecomment-6266507653)已固定并读回，整轮原始日志 SHA-256 `d00e2ebdfbe40aff6a66484fefe5b0cfe3ca94d2e47c59c172506c1d88720541`。该结果是最新组合基线的同批 GREEN，不是重复碰绿或改变断言；现在才恢复本轮独立删测。
+
+## 独立删测与生产等价审查
+
+专职执行者在 `18624060` 的同批 GREEN 固定后，独立删除三模块 21 测试/2,528 行及其独占 fixture/helper、三模块接线、九处观察接线、UI dev test-support/tempfile 和对应 Cargo.lock 支持。正式文件的控件 ID、无障碍、焦点、事件、锚点/测量 canvas/Window 定位/guard/归档 Click/重排 capture 均保留。
+
+原支持反向补丁只有 render.rs 因正式实现插入而上下文不匹配，dry-run 未改文件；其余七路径精确反向移除，render.rs 仅删两处 cfg(test) observer，不整段覆盖。清理源补丁（不含主会话文档）SHA-256 `32f93c5d18bb403f3ea335a7df7d9390d60246692fdca7aa274f60fc71ab261d`。
+
+主审与独立 reviewer 均确认删测前后生产等价：剥离原测试接线/临时表达式包装后的六个生产源码逐字节相同；相对当前 master 的非文档差异仅 v3 允许五文件。Cargo.lock、UI Cargo.toml、Sidebar 外层及含 #496 行高修复的 threads_block.rs 与最新 master 字节一致。保留所有 #495/#496 上游、Python/fixture、CI/Nextest、store/runtime/应用外层，未夹带新生产行为。
+
+依赖清理为 924→914 包，既存包 version/source/checksum 不变，无新增依赖边；只移除十个测试独占包及 retained 包的 gpui→backtrace/proptest、UI→tempfile 边。最后本地 fmt/diff、静态残留扫描通过，workspace Rust test attributes 静态匹配为 0；真实 0发现/0执行仍须最终云端 gate 确认，不称本地测试通过。
+
+清理后五文件 SHA-256：
+
+| 文件 | SHA-256 |
+|---|---|
+| organization.rs | `b9ed2e15854203b2b84510525a9d06e56465238d156cd93ed7dbfae29cdc3d90` |
+| render.rs | `1e0d2da26ae1ea421caa01d9747d6c615714f8ea2ba343514c4d4ac45a1da6c6` |
+| projections.rs | `28a97429f4d4578627834de096a4c0ef93b702b766e43168923680811a98d668` |
+| menu.rs | `a97d95bcde5312386728a371a7a63063aa23c62cf0e513a25aac0edf2b234ad7` |
+| reorder.rs | `000384d2906d2ca322c7281d3ecf7f42b50d11a03d959c2e9a49fd3f28d56c8d` |
+
+下一步对独立清理后的最新 head 跑完整现有 PR gate。两轮同批 GREEN 不替代最终空集门禁；旧 #489/分支/worktree/备份继续保留。用户手测前不关闭 Issue、不 Done、不清理任务资源。

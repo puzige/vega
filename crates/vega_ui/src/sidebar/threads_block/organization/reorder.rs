@@ -316,14 +316,6 @@ impl ThreadsBlock {
         let drag_item = item.clone();
         let hover_item = item.clone();
         let pressed_item = item.clone();
-        #[cfg(test)]
-        let row = super::menu_placement_tests::observe_control(
-            row,
-            match &item {
-                ReorderItem::Project(id) => format!("project-header-{id}"),
-                ReorderItem::Thread(id) => format!("project-thread-row-{id}"),
-            },
-        );
         row.relative()
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
                 if event.pressed_button.is_none() {
