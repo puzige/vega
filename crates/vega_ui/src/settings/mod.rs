@@ -6,8 +6,7 @@ use gpui_kit::{
 use vega_conversation::types::{
     PricingDraftReason, PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice,
     PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection, ReasoningChoice,
-    ReasoningDisabledWire, ReasoningProfileProjection, ReasoningProtocol, ReasoningReplaySetting,
-    ReasoningSupport,
+    ReasoningProfileProjection, ReasoningSupport,
 };
 use vega_store::config::{self, AppConfig, ProviderConfig};
 use vega_store::context_compaction::ModelContextPolicy;
@@ -95,7 +94,6 @@ pub enum ReasoningSettingsErrorCode {
     Busy,
 }
 
-/// Typed projection of the independent reasoning.toml authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReasoningSettingsProjection {
     Loading,
@@ -121,22 +119,8 @@ pub struct ReasoningProfileSaveRequested {
     pub profile: ReasoningProfileProjection,
 }
 
-/// Requests a fresh worker-side reasoning.toml read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReasoningReloadRequested;
-
-/// User-selectable capability templates. A template only supplies an
-/// explicit declaration; it is never inferred from a provider URL or model
-/// name. The resulting fields remain editable before the worker saves them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReasoningTemplate {
-    OpenAi,
-    Zhipu,
-    DeepSeek,
-    GlmPreserved,
-    GlmInterleaved,
-    Responses,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PricingEditorKind {
@@ -164,25 +148,13 @@ pub(crate) enum PricingFocusTarget {
     Cancel,
 }
 
-/// Keyboard focus targets for the thinking capability editor. The target is
-/// rebuilt with the exact provider/model projection, so a stale failed draft
-/// cannot be applied to a different profile by index alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReasoningFocusTarget {
     Reload,
-    Advanced(usize),
-    Template {
+    Preference {
         index: usize,
-        template: ReasoningTemplate,
+        choice: ReasoningChoice,
     },
-    Protocol(usize),
-    Support(usize),
-    Effort {
-        index: usize,
-        effort: &'static str,
-    },
-    Preference(usize),
-    Disabled(usize),
 }
 
 /// Whether the settings view currently replaces the session placeholder.

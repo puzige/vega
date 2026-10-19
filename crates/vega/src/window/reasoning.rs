@@ -26,29 +26,19 @@ fn reasoning_profile_patch(
     if base.provider != candidate.provider || base.model != candidate.model {
         return Err(ReasoningSettingsErrorCode::Invalid);
     }
+    let mut preference_only = base.clone();
+    preference_only.preference = candidate.preference.clone();
+    if &preference_only != candidate
+        || !candidate.supports_preference()
+        || candidate.freeze().is_err()
+    {
+        return Err(ReasoningSettingsErrorCode::Invalid);
+    }
     let stored = authority
         .profile(&base.provider, &base.model)
         .map(ReasoningProfileProjection::from_store)
         .transpose()
-        .map_err(|_| ReasoningSettingsErrorCode::Invalid)?
-        .unwrap_or_else(|| ReasoningProfileProjection::unknown(&base.provider, &base.model));
-    let protocol = |protocol| match protocol {
-        ReasoningProtocol::OpenAiChatCompletions => "openai_chat_completions",
-        ReasoningProtocol::ZhipuChatCompletions => "zhipu_chat_completions",
-        ReasoningProtocol::DeepSeekChatCompletions => "deepseek_chat_completions",
-        ReasoningProtocol::ResponsesApi => "responses_api",
-        ReasoningProtocol::Unknown => "unknown",
-    };
-    let support = |support| match support {
-        ReasoningSupport::Required => "required",
-        ReasoningSupport::Optional => "optional",
-        ReasoningSupport::Unsupported => "unsupported",
-        ReasoningSupport::Unknown => "unknown",
-    };
-    let disabled_wire = candidate.disabled_wire.map(|wire| match wire {
-        ReasoningDisabledWire::ThinkingTypeDisabled => "thinking_type_disabled".to_string(),
-        ReasoningDisabledWire::ReasoningEffortNone => "reasoning_effort_none".to_string(),
-    });
+        .map_err(|_| ReasoningSettingsErrorCode::Invalid)?;
     let preference = match &candidate.preference {
         ReasoningChoice::ProviderDefault => "provider_default".to_string(),
         ReasoningChoice::Disabled => "disabled".to_string(),
@@ -57,23 +47,13 @@ fn reasoning_profile_patch(
     Ok(vega_store::reasoning::ReasoningProfilePatch {
         provider: candidate.provider.clone(),
         model: candidate.model.clone(),
-        protocol: (stored.protocol != candidate.protocol)
-            .then(|| protocol(candidate.protocol).into()),
-        support: (stored.support != candidate.support).then(|| support(candidate.support).into()),
-        efforts: (stored.efforts != candidate.efforts).then(|| candidate.efforts.clone()),
-        supports_disabled: (stored.supports_disabled != candidate.supports_disabled)
-            .then_some(candidate.supports_disabled),
-        disabled_wire: (stored.disabled_wire != candidate.disabled_wire).then_some(disabled_wire),
-        replay_profile: (base.replay_profile != candidate.replay_profile)
-            .then(|| candidate.replay_profile.as_store_str().to_string()),
-        preference: (stored.preference != candidate.preference).then_some(preference),
+        preference: stored
+            .as_ref()
+            .is_none_or(|stored| stored.preference != candidate.preference)
+            .then_some(preference),
     })
 }
 
-/// Result of one independent reasoning.toml save. An error may still carry a
-/// valid authority: for example, directory fsync can report an error after
-/// rename has already made the candidate visible. The app reconciles against
-/// this reread instead of assuming every error left the old bytes in place.
 struct ReasoningSaveWorkerResult {
     authority: Option<(
         vega_store::reasoning::ReasoningConfig,
@@ -87,7 +67,6 @@ enum ReasoningSaveOrigin {
     Composer,
 }
 
-/// One fully-validated reasoning.toml save ready to run on a worker.
 struct ReasoningSaveJob {
     generation: u64,
     operation_id: u64,
@@ -109,35 +88,38 @@ pub(super) fn read_reasoning_authority(
     vega_store::reasoning::read_authority_from(path)
 }
 
-fn project_reasoning_profiles(
-    config: &vega_store::reasoning::ReasoningConfig,
-) -> Result<Vec<ReasoningProfileProjection>, ()> {
-    config
-        .profiles
-        .iter()
-        .map(|profile| ReasoningProfileProjection::from_store(profile).map_err(|_| ()))
-        .collect()
-}
-
 fn reconcile_reasoning_profiles(
     config: &vega_store::reasoning::ReasoningConfig,
     catalog: Vec<ReasoningProfileProjection>,
+    provider_config: Option<&vega_store::config::AppConfig>,
 ) -> Result<Vec<ReasoningProfileProjection>, ()> {
-    if catalog.is_empty() {
-        return project_reasoning_profiles(config);
-    }
     catalog
         .into_iter()
         .map(|catalog_profile| {
-            let provider = catalog_profile.provider.clone();
-            let model = catalog_profile.model.clone();
+            let provider = catalog_profile.provider;
+            let model = catalog_profile.model;
             let configured = config
                 .profile(&provider, &model)
                 .map(ReasoningProfileProjection::from_store)
                 .transpose()
                 .map_err(|_| ())?;
-            crate::reasoning_capabilities::reconcile_catalog_profile(&catalog_profile, configured)
-                .map_err(|_| ())
+            let actual_provider = provider_config
+                .and_then(|config| {
+                    config.providers.iter().find(|candidate| {
+                        candidate.enabled
+                            && candidate.name == provider
+                            && candidate.models.contains(&model)
+                    })
+                })
+                .ok_or(())?;
+            crate::reasoning_capabilities::resolve_reasoning_profile(
+                &provider,
+                actual_provider.api,
+                &actual_provider.base_url,
+                &model,
+                configured,
+            )
+            .map_err(|_| ())
         })
         .collect()
 }
@@ -189,10 +171,6 @@ impl VegaWindow {
         self.model_catalog_loading = false;
     }
 
-    /// Returns the exact capability projection for one model in the current
-    /// uniquely-resolved catalog. Missing profiles are represented as
-    /// provider-default/unknown by the worker and therefore never become an
-    /// invented disabled choice.
     pub(crate) fn reasoning_profile_for_model(
         &self,
         model: &str,
@@ -434,8 +412,6 @@ impl VegaWindow {
         );
     }
 
-    /// Runs one validated reasoning.toml save on a worker thread.
-    ///
     /// Shared by both origins so they cannot drift on the durable contract:
     /// one pending owner, one compare-before-rename, one readback.
     fn start_reasoning_save(
@@ -565,15 +541,10 @@ impl VegaWindow {
             replay_identity_changed = previous_snapshot.as_ref() != Some(&snapshot);
             let catalog = self.configured_reasoning.take().unwrap_or_default();
             let fallback_catalog = catalog.clone();
-            match reconcile_reasoning_profiles(&config, catalog) {
+            match reconcile_reasoning_profiles(&config, catalog, self.loaded_replay_config.as_ref())
+            {
                 Ok(profiles) => self.configured_reasoning = Some(profiles),
                 Err(()) => {
-                    // A decoded authority should normally project losslessly
-                    // because the store validator and this conversion share
-                    // the same grammar. Keep the catalog rows visible if a
-                    // future conversion drift is introduced, but make the
-                    // authority unusable instead of treating them as a legal
-                    // provider-default profile.
                     self.configured_reasoning = Some(fallback_catalog);
                     error = Some(ReasoningSettingsErrorCode::Invalid);
                 }

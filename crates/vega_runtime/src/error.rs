@@ -179,11 +179,11 @@ pub enum VegaError {
     #[error("credential projection requires tool configuration repair ({tool_index})")]
     CredentialProjectionInvalid { tool_index: usize },
     #[error(
-        "this model returned reasoning state that cannot be replayed; choose a matching advanced protocol template and retry"
+        "this model returned reasoning state that cannot be replayed; retry or start a new conversation"
     )]
     ReasoningReplayUnsupported,
     #[error(
-        "the model response omitted required reasoning replay state; retry after checking the advanced protocol template"
+        "the model response omitted required reasoning replay state; retry or start a new conversation"
     )]
     ReasoningReplayIncomplete,
     /// A frozen provider/model thinking selection violated its explicit

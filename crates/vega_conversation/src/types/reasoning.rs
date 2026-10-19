@@ -1,29 +1,10 @@
-//! Shared typed projection for provider/model thinking capabilities.
-//!
-//! The runtime owns the headless frozen request type because the dependency
-//! direction cannot be reversed. Re-exporting it here keeps UI consumers on
-//! the existing conversation/types boundary; persistence remains raw store
-//! data and is converted at this seam.
-
 pub use vega_runtime::{
-    FrozenReasoning, ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire,
-    ReasoningProtocol, ReasoningReplayPolicy,
+    ChatCompatibility, FrozenReasoning, ReasoningBudgetScope, ReasoningChoice,
+    ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, ReasoningSupport,
+    chat_compatibility,
 };
 
 use vega_store::reasoning::ReasoningProfile;
-
-/// Explicit capability support state presented by Settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReasoningSupport {
-    /// Provider always enables thinking for this profile.
-    Required,
-    /// Provider allows either provider default or a declared choice.
-    Optional,
-    /// Provider does not support thinking controls.
-    Unsupported,
-    /// No protocol/capability declaration is available.
-    Unknown,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReasoningReplaySetting {
@@ -34,35 +15,9 @@ pub enum ReasoningReplaySetting {
     GlmPreserved,
     GlmInterleaved,
     ResponsesItems,
-    LegacyTextTools,
 }
 
 impl ReasoningReplaySetting {
-    fn from_store(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(Self::Auto),
-            "standard_chat" => Some(Self::StandardChat),
-            "deepseek_tools" => Some(Self::DeepSeekTools),
-            "glm_preserved" => Some(Self::GlmPreserved),
-            "glm_interleaved" => Some(Self::GlmInterleaved),
-            "responses_items" => Some(Self::ResponsesItems),
-            "legacy_text_tools" => Some(Self::LegacyTextTools),
-            _ => None,
-        }
-    }
-
-    pub fn as_store_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::StandardChat => "standard_chat",
-            Self::DeepSeekTools => "deepseek_tools",
-            Self::GlmPreserved => "glm_preserved",
-            Self::GlmInterleaved => "glm_interleaved",
-            Self::ResponsesItems => "responses_items",
-            Self::LegacyTextTools => "legacy_text_tools",
-        }
-    }
-
     pub fn runtime_policy(self) -> Option<ReasoningReplayPolicy> {
         match self {
             Self::Auto => None,
@@ -71,7 +26,6 @@ impl ReasoningReplaySetting {
             Self::GlmPreserved => Some(ReasoningReplayPolicy::GlmPreserved),
             Self::GlmInterleaved => Some(ReasoningReplayPolicy::GlmInterleaved),
             Self::ResponsesItems => Some(ReasoningReplayPolicy::ResponsesItems),
-            Self::LegacyTextTools => Some(ReasoningReplayPolicy::LegacyTextTools),
         }
     }
 }
@@ -83,15 +37,12 @@ pub struct ReasoningProfileProjection {
     pub provider: String,
     /// Exact model identifier.
     pub model: String,
-    /// Explicit protocol declaration.
     pub protocol: ReasoningProtocol,
     /// Capability support state.
     pub support: ReasoningSupport,
-    /// Declared effort subset.
     pub efforts: Vec<String>,
     /// Whether a true disabled operation is available.
     pub supports_disabled: bool,
-    /// Explicit disabled operation, if any.
     pub disabled_wire: Option<ReasoningDisabledWire>,
     pub replay_profile: ReasoningReplaySetting,
     /// Persisted user preference.
@@ -102,45 +53,26 @@ impl ReasoningProfileProjection {
     /// Converts the store representation without guessing undocumented values.
     pub fn from_store(profile: &ReasoningProfile) -> Result<Self, String> {
         profile.validate()?;
-        let protocol = match profile.protocol.as_str() {
-            "openai_chat_completions" => ReasoningProtocol::OpenAiChatCompletions,
-            "zhipu_chat_completions" => ReasoningProtocol::ZhipuChatCompletions,
-            "deepseek_chat_completions" => ReasoningProtocol::DeepSeekChatCompletions,
-            "responses_api" => ReasoningProtocol::ResponsesApi,
-            "unknown" => ReasoningProtocol::Unknown,
-            _ => return Err("reasoning protocol is not declared".to_string()),
-        };
-        let support = match profile.support.as_str() {
-            "required" => ReasoningSupport::Required,
-            "optional" => ReasoningSupport::Optional,
-            "unsupported" => ReasoningSupport::Unsupported,
-            "unknown" => ReasoningSupport::Unknown,
-            _ => return Err("reasoning support is not declared".to_string()),
-        };
-        let disabled_wire = match profile.disabled_wire.as_deref() {
-            Some("thinking_type_disabled") => Some(ReasoningDisabledWire::ThinkingTypeDisabled),
-            Some("reasoning_effort_none") => Some(ReasoningDisabledWire::ReasoningEffortNone),
-            None => None,
-            Some(_) => return Err("reasoning disabled wire is not declared".to_string()),
-        };
-        let preference = match profile.preference.as_str() {
+        let mut projection = Self::unknown(&profile.provider, &profile.model);
+        projection.preference = match profile.preference.as_str() {
             "provider_default" => ReasoningChoice::ProviderDefault,
             "disabled" => ReasoningChoice::Disabled,
             effort => ReasoningChoice::Effort(effort.to_string()),
         };
-        let replay_profile = ReasoningReplaySetting::from_store(&profile.replay_profile)
-            .ok_or_else(|| "reasoning replay profile is not declared".to_string())?;
-        Ok(Self {
-            provider: profile.provider.clone(),
-            model: profile.model.clone(),
-            protocol,
-            support,
-            efforts: profile.efforts.clone(),
-            supports_disabled: profile.supports_disabled,
-            disabled_wire,
-            replay_profile,
-            preference,
-        })
+        Ok(projection)
+    }
+
+    pub fn supports_preference(&self) -> bool {
+        match &self.preference {
+            ReasoningChoice::ProviderDefault => true,
+            ReasoningChoice::Disabled => self.supports_disabled,
+            ReasoningChoice::Effort(effort) => {
+                matches!(
+                    self.support,
+                    ReasoningSupport::Required | ReasoningSupport::Optional
+                ) && self.efforts.contains(effort)
+            }
+        }
     }
 
     /// Creates the immutable runtime choice used by one run.
@@ -172,8 +104,6 @@ impl ReasoningProfileProjection {
         Ok(frozen)
     }
 
-    /// Unknown profile projection used when no exact provider/model record is
-    /// present. The UI must show provider default rather than off.
     pub fn unknown(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             provider: provider.into(),
