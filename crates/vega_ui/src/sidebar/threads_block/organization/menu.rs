@@ -87,6 +87,7 @@ impl ThreadsBlock {
         };
         if let Some(org) = self.organization.as_mut() {
             org.menu = None;
+            org.menu_anchor = None;
         }
         match command {
             MenuCommand::Apply(action) => self.submit_organization(action, cx),
@@ -105,6 +106,9 @@ impl ThreadsBlock {
     pub(super) fn render_organization_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let Some(org) = &self.organization else {
+            return div().into_any_element();
+        };
+        let Some((position, anchor)) = org.menu_anchor else {
             return div().into_any_element();
         };
         let items = self.organization_menu_items();
@@ -139,6 +143,7 @@ impl ThreadsBlock {
                 cx.listener(|this, _, _, cx| {
                     if let Some(org) = this.organization.as_mut() {
                         org.menu = None;
+                        org.menu_anchor = None;
                     }
                     cx.notify();
                 }),
@@ -153,6 +158,7 @@ impl ThreadsBlock {
             .on_action(cx.listener(|this, _: &CloseSettings, _, cx| {
                 if let Some(org) = this.organization.as_mut() {
                     org.menu = None;
+                    org.menu_anchor = None;
                 }
                 cx.stop_propagation();
                 cx.notify();
@@ -176,7 +182,10 @@ impl ThreadsBlock {
                                 (org.menu_index + 1) % count
                             }
                         }
-                        "escape" => org.menu = None,
+                        "escape" => {
+                            org.menu = None;
+                            org.menu_anchor = None;
+                        }
                         "enter" | "space" => {
                             let index = org.menu_index;
                             this.activate_organization_menu(index, window, cx);
@@ -233,12 +242,9 @@ impl ThreadsBlock {
             .h_full()
             .child(
                 anchored()
-                    .anchor(Anchor::TopRight)
-                    .position_mode(AnchoredPositionMode::Local)
-                    .position(point(
-                        px(crate::sidebar::width(cx) - 16.),
-                        px(Typography::SIDEBAR_LINE_HEIGHT),
-                    ))
+                    .anchor(anchor)
+                    .position_mode(AnchoredPositionMode::Window)
+                    .position(position)
                     .snap_to_window_with_margin(px(8.))
                     .child(deferred(menu).with_priority(3)),
             )

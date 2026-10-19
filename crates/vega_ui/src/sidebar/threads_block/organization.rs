@@ -34,6 +34,7 @@ pub(super) struct Organization {
     project_threads_total: HashMap<String, usize>,
     editor: Option<GroupEditor>,
     menu: Option<OrganizationMenu>,
+    menu_anchor: Option<(gpui_kit::Point<gpui_kit::Pixels>, Anchor)>,
     menu_focus: FocusHandle,
     menu_index: usize,
     menu_scroll: gpui_kit::ScrollHandle,
@@ -200,6 +201,7 @@ impl ThreadsBlock {
             project_threads_total: HashMap::new(),
             editor: None,
             menu: None,
+            menu_anchor: None,
             menu_focus: cx.focus_handle(),
             menu_index: 0,
             menu_scroll: gpui_kit::ScrollHandle::new(),
@@ -564,6 +566,7 @@ impl ThreadsBlock {
         window.focus(&input.read(cx).focus_handle(cx), cx);
         org.editor = Some(GroupEditor { group_id, input });
         org.menu = None;
+        org.menu_anchor = None;
         self.error = None;
         cx.notify();
     }
