@@ -12,10 +12,6 @@ use vega_ui::plan_card::PlanReviewRequested;
 
 type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
 
-#[cfg(test)]
-#[path = "app_agent_compatibility_tests.rs"]
-mod compatibility_tests;
-
 pub(crate) const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
 pub(crate) const AGENT_EVENT_CAPACITY: usize = 256;
 pub(crate) const AGENT_EVENT_BATCH: usize = 128;

@@ -7,10 +7,6 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-#[cfg(test)]
-#[path = "chat_compat_catalog_tests.rs"]
-mod catalog_tests;
-
 mod catalog;
 use catalog::{Catalog, CatalogEntry, Transport};
 

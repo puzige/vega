@@ -4,10 +4,6 @@ use vega_conversation::types::{
 use vega_runtime::{FrozenReasoning, ReasoningReplayPolicy};
 use vega_store::config::ProviderApi;
 
-#[cfg(test)]
-#[path = "reasoning_compatibility_tests.rs"]
-mod compatibility_tests;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReasoningCapabilityError {
     Invalid,

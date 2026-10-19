@@ -1,8 +1,6 @@
 use super::reasoning_state::reasoning_choices;
 use super::*;
 use crate::interaction::InteractionExt;
-#[cfg(test)]
-use gpui_kit::TestSupportExt;
 
 impl SettingsView {
     pub(crate) fn render_reasoning(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -202,17 +200,13 @@ fn reasoning_option_with_focus(
     focus: Option<FocusHandle>,
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let label: gpui_kit::SharedString = label.into();
     let listener = std::rc::Rc::new(listener);
     let keyboard = listener.clone();
-    let button = settings_action_chrome(colors)
+    settings_action_chrome(colors)
         .id(id)
         .interactive(colors, true, selected)
         .focusable()
-        .tab_stop(true);
-    #[cfg(test)]
-    let button = button.aria_label(label.clone()).test_support();
-    button
+        .tab_stop(true)
         .when_some(focus, |button, focus| button.track_focus(&focus))
         .cursor_pointer()
         .focus_visible(move |style| style.border_color(colors.accent))
@@ -235,7 +229,7 @@ fn reasoning_option_with_focus(
                 cx.stop_propagation();
             }
         })
-        .child(label)
+        .child(label.into())
         .into_any_element()
 }
 

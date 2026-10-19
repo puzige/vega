@@ -48,8 +48,6 @@ pub mod computer_use;
 pub mod images;
 pub use images::ImageAttachment;
 pub use openai::OpenAiProvider;
-#[cfg(any(test, feature = "test-support"))]
-pub use openai::test_support;
 pub use permission::{
     RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeCapabilityOutcome,
     RuntimeDangerAudit, RuntimeDangerFacts, RuntimeExecuteEligibility, RuntimeExecutePermission,

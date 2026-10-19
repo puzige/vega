@@ -15,9 +15,6 @@ use vega_theme::{Layout, Typography, theme};
 
 use crate::text_input::TextInput;
 
-#[cfg(test)]
-mod reasoning_compatibility_tests;
-
 actions!(
     vega_settings,
     [

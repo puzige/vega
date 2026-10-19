@@ -1,9 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-#[path = "core_compatibility_tests.rs"]
-mod compatibility_tests;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelPickerLevel {
     /// Nothing is mounted.

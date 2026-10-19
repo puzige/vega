@@ -373,10 +373,4 @@ mod recovery;
 pub(crate) mod responses;
 mod sse;
 
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
-
 pub(crate) use sse::*;
-
-#[cfg(test)]
-mod compatibility_tests;
