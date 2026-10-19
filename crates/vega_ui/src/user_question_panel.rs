@@ -259,10 +259,7 @@ impl UserQuestionPanel {
         let button = div()
             .id(("question-action", index))
             .role(Role::Button)
-            .aria_label(label);
-        #[cfg(test)]
-        let button = gpui_kit::test::TestSupportExt::test_support(button);
-        button
+            .aria_label(label)
             .track_focus(&self.controls[index])
             .key_context("UserQuestionControl")
             .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
@@ -288,8 +285,11 @@ impl UserQuestionPanel {
                         this.act(action, window, cx)
                     }))
             })
-            .child(label)
-            .into_any_element()
+            .child(label);
+        #[cfg(test)]
+        let button =
+            gpui_kit::test::TestSupportExt::test_support(button).track_focus(&self.controls[index]);
+        button.into_any_element()
     }
 }
 
@@ -316,79 +316,79 @@ impl Render for UserQuestionPanel {
                     format!("Selected: {source_label}")
                 } else {
                     source_label.to_string()
-                });
-            #[cfg(test)]
-            let row = gpui_kit::test::TestSupportExt::test_support(row);
-            options = options.child(
-                row.track_focus(&self.option_focus[self.page][index])
-                    .key_context("UserQuestionOptions")
-                    .w_full()
-                    .min_w_0()
-                    .px_3()
-                    .py_2()
-                    .rounded(px(Layout::DISCLOSURE_RADIUS))
-                    .border_1()
-                    .border_color(colors.bg_elevated)
-                    .interactive(colors, enabled, selected)
-                    .focus_visible(|style| style.border_color(colors.accent))
-                    .when(enabled, |row| {
-                        row.cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
-                                    this.option_focus[this.page][index].focus(window, cx);
-                                    this.select(index, cx);
+                })
+                .track_focus(&self.option_focus[self.page][index])
+                .key_context("UserQuestionOptions")
+                .w_full()
+                .min_w_0()
+                .px_3()
+                .py_2()
+                .rounded(px(Layout::DISCLOSURE_RADIUS))
+                .border_1()
+                .border_color(colors.bg_elevated)
+                .interactive(colors, enabled, selected)
+                .focus_visible(|style| style.border_color(colors.accent))
+                .when(enabled, |row| {
+                    row.cursor_pointer()
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                this.option_focus[this.page][index].focus(window, cx);
+                                this.select(index, cx);
+                            }),
+                        )
+                        .on_key_down(cx.listener(Self::option_key))
+                        .on_action(cx.listener(move |this, _: &QuestionActivate, _, cx| {
+                            this.select(index, cx)
+                        }))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .items_start()
+                        .child(
+                            div()
+                                .w(px(Layout::ICON_SIZE))
+                                .flex_shrink_0()
+                                .when(selected, |marker| {
+                                    marker.child(icon(Icon::Check, colors.accent))
                                 }),
-                            )
-                            .on_key_down(cx.listener(Self::option_key))
-                            .on_action(cx.listener(move |this, _: &QuestionActivate, _, cx| {
-                                this.select(index, cx)
-                            }))
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .items_start()
-                            .child(
-                                div()
-                                    .w(px(Layout::ICON_SIZE))
-                                    .flex_shrink_0()
-                                    .when(selected, |marker| {
-                                        marker.child(icon(Icon::Check, colors.accent))
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(div().flex().flex_wrap().gap_2().child(label).when(
-                                        recommended,
-                                        |row| {
-                                            row.child(
-                                                div()
-                                                    .text_size(px(Typography::METADATA))
-                                                    .text_color(colors.text_secondary)
-                                                    .child("Recommended"),
-                                            )
-                                        },
-                                    ))
-                                    .when_some(
-                                        option.filter(|option| !option.description.is_empty()),
-                                        |row, option| {
-                                            row.child(
-                                                div()
-                                                    .text_color(colors.text_secondary)
-                                                    .child(option.description.clone()),
-                                            )
-                                        },
-                                    ),
-                            ),
-                    ),
-            );
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(div().flex().flex_wrap().gap_2().child(label).when(
+                                    recommended,
+                                    |row| {
+                                        row.child(
+                                            div()
+                                                .text_size(px(Typography::METADATA))
+                                                .text_color(colors.text_secondary)
+                                                .child("Recommended"),
+                                        )
+                                    },
+                                ))
+                                .when_some(
+                                    option.filter(|option| !option.description.is_empty()),
+                                    |row, option| {
+                                        row.child(
+                                            div()
+                                                .text_color(colors.text_secondary)
+                                                .child(option.description.clone()),
+                                        )
+                                    },
+                                ),
+                        ),
+                );
+            #[cfg(test)]
+            let row = gpui_kit::test::TestSupportExt::test_support(row)
+                .track_focus(&self.option_focus[self.page][index]);
+            options = options.child(row);
         }
         let note_visible = draft.note_visible;
         let note = draft.note.clone();

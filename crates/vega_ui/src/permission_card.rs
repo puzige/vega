@@ -625,10 +625,8 @@ fn permission_button(
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let focused = focus.is_focused(window);
-    let button = div().id(gpui_kit::SharedString::from(id));
-    #[cfg(test)]
-    let button = gpui_kit::test::TestSupportExt::test_support(button);
-    let button = button
+    let button = div()
+        .id(gpui_kit::SharedString::from(id))
         .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
         .flex()
         .items_center()
@@ -651,16 +649,17 @@ fn permission_button(
         .track_focus(&focus)
         .on_mouse_up(MouseButton::Left, listener)
         .child(label);
-    if primary {
-        button
-            .interaction_surface(
-                colors.accent,
-                colors.brand_primary_strong,
-                colors.accent,
-                true,
-            )
-            .into_any_element()
+    let button = if primary {
+        button.interaction_surface(
+            colors.accent,
+            colors.brand_primary_strong,
+            colors.accent,
+            true,
+        )
     } else {
-        button.interactive(colors, true, false).into_any_element()
-    }
+        button.interactive(colors, true, false)
+    };
+    #[cfg(test)]
+    let button = gpui_kit::test::TestSupportExt::test_support(button).track_focus(&focus);
+    button.into_any_element()
 }

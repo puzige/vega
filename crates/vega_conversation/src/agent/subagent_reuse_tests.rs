@@ -455,26 +455,27 @@ async fn completed_child_continues_with_history_and_keeps_both_results() {
             let completed = run.host.ended(&second.message_id).await;
             assert_eq!(completed.state, SubagentState::Completed);
             assert_eq!(completed.result, "Verified finding");
-            let requests = run.provider.requests.lock().unwrap();
-            let history = &requests[1].messages;
-            for (role, text) in [
-                (vega_runtime::ChatRole::User, "Inspect the parser"),
-                (vega_runtime::ChatRole::Assistant, "First finding"),
-                (vega_runtime::ChatRole::User, "Verify the finding"),
-            ] {
+            {
+                let requests = run.provider.requests.lock().unwrap();
+                let history = &requests[1].messages;
+                for (role, text) in [
+                    (vega_runtime::ChatRole::User, "Inspect the parser"),
+                    (vega_runtime::ChatRole::Assistant, "First finding"),
+                    (vega_runtime::ChatRole::User, "Verify the finding"),
+                ] {
+                    assert!(
+                        history
+                            .iter()
+                            .any(|message| message.role == role && message.content == text)
+                    );
+                }
                 assert!(
-                    history
+                    !requests[1]
+                        .tools
                         .iter()
-                        .any(|message| message.role == role && message.content == text)
+                        .any(|tool| matches!(tool.name.as_str(), "spawn_agent" | "followup_agent"))
                 );
             }
-            assert!(
-                !requests[1]
-                    .tools
-                    .iter()
-                    .any(|tool| matches!(tool.name.as_str(), "spawn_agent" | "followup_agent"))
-            );
-            drop(requests);
             assert_eq!(
                 run.executions(&first.agent_id),
                 vec![
