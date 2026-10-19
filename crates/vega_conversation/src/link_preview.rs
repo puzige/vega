@@ -1,9 +1,6 @@
 mod metadata;
 mod ports;
 
-#[cfg(feature = "test-support")]
-pub mod test_support;
-
 use std::{
     collections::{HashMap, VecDeque},
     io::Cursor,

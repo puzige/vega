@@ -1,6 +1,6 @@
 # #486 · ListState 崩溃修复交付记录
 
-2026-10-19。用户最新明确指示**“你直接实现 不用等 vega”**，覆盖已发布的 Ready/Vega 默认路由。产品需求 v1 不变，执行[崩溃修复方案 v1](vega-issue-486-list-state-borrow-crash.md) B01–B05。当前阶段：最小修复首轮 4 通过/1 失败，B04 前置布置已留证审查并仅作一处修正，待新 head 云端完整 GREEN；当前/下一执行者 Codex。Project In progress，尚未取得完整 GREEN 或发布结论。
+2026-10-19。用户最新明确指示**“你直接实现 不用等 vega”**，覆盖已发布的 Ready/Vega 默认路由。产品需求 v1 不变，执行[崩溃修复方案 v1](vega-issue-486-list-state-borrow-crash.md) B01–B05。记录截止独立删测阶段：完整行为 GREEN 已确认并在 PR 固定，独立清理已完成并经静态审查；当前/下一执行者 Codex。此时 Project In progress，最终空集门禁、合并、发布及用户手测待后续验证；最新结果以 [PR #493](https://github.com/puzige/vega/pull/493) 和 [Issue #486](https://github.com/puzige/vega/issues/486) 为准，不在取得前预填。
 
 该专职子 agent 在此前止点仅核对接口，未写测试或生产代码；现在按用户最新授权恢复。Codex 主会话负责协调、审查、集成和 PR/CI，子 agent 单独负责代码。上一交接及诊断保留为历史，不据此声称 Vega 已领取。
 
@@ -19,8 +19,8 @@
 | 本轮先行测试源码/hash | [先行测试阶段](vega-issue-486-crash-test-stage.md)，提交 `4b60f0b28eb1c7734d51dc1003d9141d45515872`；5 个新 GPUI 测试及外部 fixture 已冻结 |
 | 真实列表行为 RED | [run 39222176469](https://github.com/puzige/vega/actions/runs/39222176469)，实际 5 发现/5 执行/1 通过/4 失败/0 跳过；B01–B04 同一 ListState BorrowError，B05 通过 |
 | 冻结测试后的生产修复 | RED 已核实并[固定到新 PR #493](https://github.com/puzige/vega/pull/493#issuecomment-6262985052)后授权；[实现阶段](vega-issue-486-crash-implementation-stage.md)仅移动采样时机，源码已审查，行为待 CI |
-| 同一断言 GREEN | 首次 `cfb47565b20005302a9f370cdf1f2e1f2ef01551` 验证 4 通过/1 失败，不能算 GREEN；只修正 B04 前置布置后再验证，全部断言不变 |
-| 证据固定后独立删测 | 尚未执行 |
+| 同一断言 GREEN | `02d25a72f546d0b076be9d1bd28adf4de1cbc2d0` / [run 39224636493](https://github.com/puzige/vega/actions/runs/39224636493)：5 发现/执行/通过、0 失败/跳过；含事先审查的 B04 布置纠正，全部原断言不变 |
+| 证据固定后独立删测 | [完整 GREEN 与原始源码先在 PR 固定](https://github.com/puzige/vega/pull/493#issuecomment-6263358878)，之后完成[独立清理](vega-issue-486-crash-cleanup-stage.md)，最终生产仅保留批准的九行采样修复 |
 | 最新head完整空集门禁 | 尚未执行 |
 | 合并/云端发布/用户手测 | 尚未执行；已安装版本仍受原崩溃影响 |
 
@@ -39,5 +39,22 @@
 [原始失败及保留记录](https://github.com/puzige/vega/pull/493#issuecomment-6263165467)：B04 在原有签名断言处读到 `(0,18.5px)`，期望为 `(0,0px)`，尚未满足“实际滚动位置不变”的测试前提。主会话与执行者只读核对 pinned GPUI `ListStateInner::layout_items`：测量后到达内容底部会重新 `start_following`，短内容不足一屏时也属于底部；实际邻接物化增长后可重新贴底。生产 Render 在 list 渲染前同步 active model，邻接回复即使在视口下方也会真实物化。
 
 [审查与精确授权](https://github.com/puzige/vega/pull/493#issuecomment-6263202623)先于任何测试修改。只将 B04 首消息的既有段落重复次数 10→40，建立足够长、顶部稳定阅读的原定前提；不改变产品、操作、计时、断言或其它四项，不 mock/直接写滚动终态，不新增测试。这属于执行总纲 §7.2 的测试自身布置修正，不补测追认实现；原始源码、有效 RED 与首次失败全部保留。测试文件将产生新 hash，不能继续声称与原字节完全相同，具体修订记录见[测试阶段](vega-issue-486-crash-test-stage.md)。
+
+## 完整行为 GREEN 与固定来源
+
+纠正前置布置的提交 `02d25a72f546d0b076be9d1bd28adf4de1cbc2d0` 的 [run 39224636493](https://github.com/puzige/vega/actions/runs/39224636493) 全部成功。[Nextest](https://github.com/puzige/vega/actions/runs/39224636493/job/117967836963) 真实 5 发现、5 执行、5 通过、0 失败/跳过，14 binaries，0.813s；[fmt/Clippy](https://github.com/puzige/vega/actions/runs/39224636493/job/117967836573)、Python34、[required check](https://github.com/puzige/vega/actions/runs/39224636493/job/117969548894) 均成功。B04 原签名/物化/卡片断言完整通过，B03 四种路径及 B05 实际执行。
+
+主会话先将完整逐项 PASS、原始 run/job、全部提交顺序、测试纠正理由及源码固定到 [PR 原始证据](https://github.com/puzige/vega/pull/493#issuecomment-6263358878)，随后才授权独立删测。GREEN 源码可从不可变提交找回，不依赖工作目录或过期 artifact：
+
+- [GPUI 测试](https://github.com/puzige/vega/blob/02d25a72f546d0b076be9d1bd28adf4de1cbc2d0/crates/vega_ui/src/conversation_stream/link_preview_tests.rs)，SHA-256 `de18c58d1563b6eb797aa68286d2e2e4a75bdc5cbb66c916fd54048853624965`。
+- [外部 fixture](https://github.com/puzige/vega/blob/02d25a72f546d0b076be9d1bd28adf4de1cbc2d0/crates/vega_conversation/src/link_preview/test_support.rs)，SHA-256 `a83eba45519905a4a2e948500734d94d9d6142b93c8810eb0d8c31a6a3a0e331`。
+
+最终空集门禁不是上述五项行为通过的替代品。只允许删除明确独占的 Rust 测试/支持，保护采样修复及生产/benchmark/Python/CI/发布能力；不得在 GREEN 后夹带新生产行为。
+
+## 独立清理与最终树
+
+[清理阶段](vega-issue-486-crash-cleanup-stage.md)记录两份测试/fixture、cfg/feature/dev 接线、三个只读观察标记及十个测试独占锁条目的删除。主会话独立检查整个树相对生产基线的差异：除文档外，仅 `crates/vega_ui/src/link_preview.rs` 有批准的九行采样变更；服务、真实消息列表、FilePreview、正常清单/锁文件和全部其余路径与 `b32ad22e` 一致。
+
+最终 UI SHA-256 `6cca823ef7c09375c9af2d9267951ac62e7ecaecedab74f7ed2bd935315c50c6`；Cargo.lock 恢复 914 包及原字节，SHA-256 `d803cdb1cd420921fa47ce091155bb0db1ce0845ecfa4027b95b46ebe2db36f9`。快速 fmt/diff/完整离线 locked metadata 均退出 0；静态测试及独占支持残留为 0，不冒充 Nextest 实际发现/执行。删测提交后的最新 head 门禁由同一 PR 原流程执行，原始输出与准确空集计数在 PR/Issue 补齐后才合并。
 
 只允许本地低CPU格式、差异、静态和离线依赖元数据检查；不得本地运行Vega、编译、Clippy、测试、benchmark或打包。云端CI沿用既有fmt/Clippy/Python/Nextest/required，默认每5分钟查询，不修改门禁。不恢复上一轮42项全套，不追加实现后测试，不重试旧head换绿。最终仍须真实会话用户手测，不关闭Issue、不Done、不清理本卡分支/worktree。

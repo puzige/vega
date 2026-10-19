@@ -28,7 +28,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 | 文档 | 内容 |
 |---|---|
-| [markdown link preview](docs/vega-issue-486-markdown-link-preview.md) | #486 链接外观与完整预览；用户手测发现真实列表借用崩溃，见[Bug 修复方案](docs/vega-issue-486-list-state-borrow-crash.md)、[修复交付记录](docs/vega-issue-486-crash-repair-delivery.md)、[历史交付记录](docs/vega-issue-486-delivery.md) |
+| [markdown link preview](docs/vega-issue-486-markdown-link-preview.md) | #486 链接外观与完整预览；真实列表借用修复已获五项行为 GREEN，最终门禁/手测见[修复交付记录](docs/vega-issue-486-crash-repair-delivery.md)、[Bug 方案](docs/vega-issue-486-list-state-borrow-crash.md)、[历史记录](docs/vega-issue-486-delivery.md) |
 | [composer predictions](docs/vega-issue-469-composer-predictions.md) | 下一轮输入建议、默认开关、键盘接受、IME 与异步生命周期契约 |
 | [tool block codex parity](docs/vega-tool-block-codex-parity.md) | Shell 启动崩溃修复、Codex 工具列表对齐与运行时间保留 |
 | [review current status](docs/vega-review-current-status.md) | 当前本地交付、真实验收结果、待办和历史报告勘误入口 |
