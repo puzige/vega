@@ -1,5 +1,4 @@
 use super::*;
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use gpui_kit::{Bounds, Pixels, Point};
 use std::{cell::Cell, rc::Rc};
 
