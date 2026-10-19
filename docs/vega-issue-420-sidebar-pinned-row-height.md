@@ -4,7 +4,7 @@
 - Issue：[#420](https://github.com/puzige/vega/issues/420)。用户已明确授权当前主会话接管方案修订、审查与 PR/CI 职责；代码实现由专职子 agent 承担。
 - 生产基线：`39b706e2`；独立分支：`feat/420-sidebar-pinned-row-height-v2`。旧 v1 分支及 worktree 保留，不 force-push。
 - 规则：[AGENTS](../AGENTS.md)、[执行总纲](vega-exec-guide.md)、[设计守则](vega-design-guidelines.md)、[Rust 测试开发/交付生命周期](vega-rust-test-delivery-lifecycle.md)。
-- 状态：验收与测试方案先行；尚未取得本轮 Actions RED/GREEN 或用户手测证据。
+- 状态：同一冻结测试的 Actions RED/GREEN 已取得，独立删测与最终空集门禁阶段；用户手测仍待进行。完整证据见 §7 与 [PR #496](https://github.com/puzige/vega/pull/496)。
 
 ## 1. 根因、证据与边界
 
@@ -107,3 +107,20 @@ PR 必须链接生产基线、冻结测试源码/内容标识、RED run/job 与�
 - 冻结前独立审查补齐 A03 首条再次点击、明确 64/480px 内部位移；A04 固定同一挂载实例和先滚到底再取消置顶，明确 32→0px 偏移恢复；同时明确 A05 显示优先级与文件 Store 刷新等待。
 - 当前 API 核查确认可从零挂载；测试模块放在 sidebar 子模块，采用动态行 `.test_support()`/Window::find 与固定视口 selector，避免静态 selector 限制和 fade 类型冲突。不需要恢复旧 fixture 或新增生产 API。
 - 首轮 [Actions 39238731168](https://github.com/puzige/vega/actions/runs/39238731168) 在测试编译阶段失败，不计有效 RED；`Bounds<ScaledPixels>` 不能调用 `Bounds<DevicePixels>::to_pixels`，应按 scale factor 逐分量转换。当前 facade 宏不需要 `gpui_kit as gpui` 别名，删除该未使用导入。此为测试接线纠错，不改变冻结验收或断言数值；原始提交与日志保留在 PR #496。
+
+## 7. 本轮验证证据
+
+PR：[固定行高修复 #496](https://github.com/puzige/vega/pull/496)。所有执行均来自现有 GitHub Actions，本地未运行 Vega、编译、构建、打包、Clippy 或任何测试。
+
+| 阶段 | 提交与原始证据 | 实际结果 |
+|---|---|---|
+| 初始先行补丁 | [`c11a2743eb25c56b3b4c7befba0528ba05fe0309`](https://github.com/puzige/vega/commit/c11a2743eb25c56b3b4c7befba0528ba05fe0309)，[run 39238731168](https://github.com/puzige/vega/actions/runs/39238731168) | 测试 API/未用导入导致编译失败，行为断言未执行，不计 RED；保留原始失败 |
+| 不改验收的接线纠错及有效 RED | [`344a94f0be7eb4573fbc2375a42d658fbc012500`](https://github.com/puzige/vega/commit/344a94f0be7eb4573fbc2375a42d658fbc012500)，[run 39239881782 / Nextest](https://github.com/puzige/vega/actions/runs/39239881782/job/118017837024) | 4 发现、4 执行、0 通过、4 失败、0 跳过；真实行高六条 26.5px、七条 23px，期望 32px。Fmt、Clippy 和 Python 5+15+14=34 个通过 |
+| 有效 RED 后最小生产实现与同一测试 GREEN | [`c56ff793c1e4cf9ea3d56ede44f82743163943e3`](https://github.com/puzige/vega/commit/c56ff793c1e4cf9ea3d56ede44f82743163943e3)，[run 39240961416 / Nextest](https://github.com/puzige/vega/actions/runs/39240961416/job/118021360033)，[required check](https://github.com/puzige/vega/actions/runs/39240961416/job/118023026271) | 4 发现、4 执行、4 通过、0 失败、0 跳过，14 binaries，执行 11.390 秒；Fmt、全目标 Clippy、34 个 Python 测试和 required check 成功 |
+| 独立删测与最终交付门禁 | GREEN 证据固定后再提交，最新结果以 PR 原始 run 链接为准 | 仅删本轮测试/独占支持并保留单行生产修复；最终空集完整门禁待 CI，不把 0 测试称作测试通过 |
+
+有效 RED 与 GREEN 使用同一[冻结测试源码](https://github.com/puzige/vega/blob/c56ff793c1e4cf9ea3d56ede44f82743163943e3/crates/vega_ui/src/sidebar/pinned_rows_tests.rs)，Git blob `a99b9483e2b05708ff3369983e8db8fdb4b46c19`，SHA-256 `d1a349e202e9598e26723d7510601932f2162f3c3d0b096e9c74b8667086e5ff`。两提交间全部差异仅共享任务行一条 `.flex_shrink_0()`，主会话和独立审查确认测试内容、预期及支持未追改；原始测试从上述不可变提交找回，不依赖临时分支或会过期 artifact。日志未单独列 ignored，源码无 ignore，不猜测额外计数。
+
+本地已执行的快速静态检查：`cargo fmt --all -- --check`、`git diff --check`、`cargo metadata --no-deps --offline --locked --format-version 1`，退出码均为 0；锁文件静态审查确认开发期仅增加 10 个测试传递包，原 914 个包的版本/来源/checksum 未变。运行/悬停/操作图标的状态容器及几何已测，默认测试资源源不提供真实 SVG 像素验收，不能据此声称图标外观已验证。
+
+A01–A06 对应四组冻结测试均已在带测试 GREEN 执行；A07 原生系统/键盘/文字与图标像素、发布安装及重启验收仍待用户。规格无产品范围偏离；仅上述留证的测试 API 接线纠错。

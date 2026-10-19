@@ -1216,16 +1216,8 @@ impl ThreadsBlock {
                                 .text_color(colors.accent)
                                 .child(crate::icons::icon(crate::icons::Icon::Pin, colors.accent))
                         }))
-                        .child({
-                            let title = div();
-                            #[cfg(test)]
-                            let title = title.on_children_prepainted({
-                                let id = format!("{selector_prefix}title-{}", thread.id);
-                                move |_, window, cx| {
-                                    super::pinned_rows_tests::record_region(&id, window, cx);
-                                }
-                            });
-                            let title = title
+                        .child(
+                            div()
                                 .id(ElementId::Name(
                                     format!("{selector_prefix}title-{}", thread.id).into(),
                                 ))
@@ -1236,11 +1228,8 @@ impl ThreadsBlock {
                                 .when(thread.unread, |title| {
                                     title.font_weight(Typography::HEADING_CARD_WEIGHT)
                                 })
-                                .child(thread_title(thread));
-                            #[cfg(test)]
-                            let title = gpui_kit::TestSupportExt::test_support(title);
-                            title
-                        }),
+                                .child(thread_title(thread)),
+                        ),
                 );
             row = if actions_enabled {
                 row.child(self.render_row_actions(
@@ -1293,12 +1282,10 @@ impl ThreadsBlock {
         let keyboard_focused = self.focused_thread_action.as_deref() == Some(thread.id.as_str());
         let quick_actions_visible =
             self.hovered.as_deref() == Some(thread.id.as_str()) && !menu_open && !keyboard_focused;
-        let trigger = div().id(ElementId::Name(
-            format!("{action_prefix}thread-actions-{thread_id}").into(),
-        ));
-        #[cfg(test)]
-        let trigger = gpui_kit::TestSupportExt::test_support(trigger);
-        let mut trigger = trigger
+        let mut trigger = div()
+            .id(ElementId::Name(
+                format!("{action_prefix}thread-actions-{thread_id}").into(),
+            ))
             .relative()
             .size(px(Layout::SIDEBAR_ACTION_SIZE))
             .rounded_md()
@@ -1410,19 +1397,7 @@ impl ThreadsBlock {
         }
         trigger = trigger.absolute().right_0().top_0();
 
-        let group = div();
-        #[cfg(test)]
-        let group = group.on_children_prepainted({
-            let id = format!("{action_prefix}thread-slot-{thread_id}");
-            move |_, window, cx| {
-                super::pinned_rows_tests::record_region(&id, window, cx);
-            }
-        });
-        #[cfg(test)]
-        let group = gpui_kit::TestSupportExt::test_support(group.id(ElementId::Name(
-            format!("{action_prefix}thread-slot-{thread_id}").into(),
-        )));
-        let mut group = group
+        let mut group = div()
             .relative()
             .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
             .mr(px(Layout::SIDEBAR_ACTIONS_INSET))
@@ -1454,12 +1429,10 @@ impl ThreadsBlock {
         let running_selector_id = thread_id.clone();
         let running_selector_prefix = action_prefix.to_owned();
         let running_indicator = || {
-            let indicator = div().id(gpui_kit::SharedString::from(format!(
-                "{running_selector_prefix}thread-running-{running_selector_id}"
-            )));
-            #[cfg(test)]
-            let indicator = gpui_kit::TestSupportExt::test_support(indicator);
-            indicator
+            div()
+                .id(gpui_kit::SharedString::from(format!(
+                    "{running_selector_prefix}thread-running-{running_selector_id}"
+                )))
                 .size(px(Layout::SIDEBAR_ACTION_SIZE))
                 .aria_label("任务正在运行")
                 .flex_shrink_0()
@@ -1497,12 +1470,10 @@ impl ThreadsBlock {
             let pinned = thread.pinned;
             let pin_label = if pinned { "取消置顶" } else { "置顶" };
             let pin_thread_id = thread.id.clone();
-            let pin_button = div().id(ElementId::Name(
-                format!("{action_prefix}thread-pin-{thread_id}").into(),
-            ));
-            #[cfg(test)]
-            let pin_button = gpui_kit::TestSupportExt::test_support(pin_button);
-            let pin_button = pin_button
+            let pin_button = div()
+                .id(ElementId::Name(
+                    format!("{action_prefix}thread-pin-{thread_id}").into(),
+                ))
                 .aria_label(pin_label)
                 .tooltip(move |_, cx| crate::icons::tooltip(pin_label, cx))
                 .size(px(24.))
@@ -1528,12 +1499,10 @@ impl ThreadsBlock {
                         colors.text_secondary
                     },
                 ));
-            let archive_button = div().id(ElementId::Name(
-                format!("{action_prefix}thread-archive-{thread_id}").into(),
-            ));
-            #[cfg(test)]
-            let archive_button = gpui_kit::TestSupportExt::test_support(archive_button);
-            let archive_button = archive_button
+            let archive_button = div()
+                .id(ElementId::Name(
+                    format!("{action_prefix}thread-archive-{thread_id}").into(),
+                ))
                 .aria_label(if archived {
                     "恢复任务"
                 } else {
@@ -1640,12 +1609,11 @@ impl ThreadsBlock {
                 .map(|(label, _)| (label, false)),
         );
         let thread_id = thread.id.clone();
-        let menu = div().id(ElementId::Name(
-            format!("{action_prefix}thread-actions-menu-{thread_id}").into(),
-        ));
-        #[cfg(test)]
-        let menu = gpui_kit::TestSupportExt::test_support(menu);
-        menu.w(px(Layout::TASK_MENU_WIDTH))
+        div()
+            .id(ElementId::Name(
+                format!("{action_prefix}thread-actions-menu-{thread_id}").into(),
+            ))
+            .w(px(Layout::TASK_MENU_WIDTH))
             // The deferred popup is above sibling rows; its hitbox must stop them too.
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, window, cx| {
@@ -1681,12 +1649,10 @@ impl ThreadsBlock {
                     .map(|(index, (label, danger))| {
                         let thread_id = thread.id.clone();
                         let selected = self.actions_highlight == index;
-                        let item = div().id(ElementId::Name(
-                            format!("{action_prefix}thread-action-{thread_id}-{index}").into(),
-                        ));
-                        #[cfg(test)]
-                        let item = gpui_kit::TestSupportExt::test_support(item);
-                        let mut item = item
+                        let mut item = div()
+                            .id(ElementId::Name(
+                                format!("{action_prefix}thread-action-{thread_id}-{index}").into(),
+                            ))
                             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                             .flex_shrink_0()
                             .w_full()

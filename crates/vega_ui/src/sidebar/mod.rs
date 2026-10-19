@@ -697,7 +697,6 @@ impl Render for Sidebar {
                                 }
                             })
                             .id("sidebar-scroll")
-                            .debug_selector(|| "sidebar-scroll".into())
                             // Organization content keeps an 8px application-edge inset;
                             // Pinned row surfaces extend 8px left of the title column.
                             .ml(px(-4.0))
@@ -722,8 +721,6 @@ impl Render for Sidebar {
     }
 }
 
-#[cfg(test)]
-mod pinned_rows_tests;
 mod projects_block;
 mod row_helpers;
 mod threads_block;
