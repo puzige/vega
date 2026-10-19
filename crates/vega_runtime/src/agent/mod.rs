@@ -933,6 +933,11 @@ pub enum RuntimeDiagnosticFailure {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeDiagnosticMetrics {
+    pub runtime_stage: Option<&'static str>,
+    pub runtime_reason: Option<&'static str>,
+    pub sqlite_code: Option<i32>,
+    pub sqlite_extended_code: Option<i32>,
+    pub io_kind: Option<&'static str>,
     pub failure_tool_index: Option<u64>,
     pub failure_source: Option<&'static str>,
     pub failure_kind: Option<&'static str>,

@@ -31,6 +31,12 @@ pub enum RunFailureKind {
     ProviderTransport,
     /// An in-process runtime error rather than a provider HTTP failure.
     Runtime,
+    RuntimeStorage,
+    RuntimeStorageBusy,
+    RuntimeApprovalAudit,
+    RuntimeState,
+    RuntimeIo,
+    RuntimePipeline,
     #[allow(missing_docs)]
     CredentialExposureBlocked,
     CredentialCheckUnavailable,
@@ -85,6 +91,19 @@ impl RunFailureKind {
     pub(crate) fn from_diagnostic(
         metrics: &vega_store::run_diagnostics::DiagnosticMetrics,
     ) -> Self {
+        if let Some(reason) = metrics.runtime_reason.as_deref() {
+            return match reason {
+                "database" if matches!(metrics.sqlite_code, Some(5 | 6)) => {
+                    Self::RuntimeStorageBusy
+                }
+                "database" => Self::RuntimeStorage,
+                "approval_audit" => Self::RuntimeApprovalAudit,
+                "state" => Self::RuntimeState,
+                "io" => Self::RuntimeIo,
+                "pipeline" => Self::RuntimePipeline,
+                _ => Self::Runtime,
+            };
+        }
         match metrics.failure_kind.as_deref() {
             Some("quota") => Self::ProviderQuota,
             Some("authorization") => Self::ProviderAuthorization,
@@ -137,6 +156,18 @@ impl RunFailureKind {
             return Self::ContextOverLimit;
         }
         match error {
+            vega_runtime::VegaError::RuntimeFailure(detail) => match detail.reason {
+                vega_runtime::RuntimeFailureReason::Database
+                    if matches!(detail.sqlite_code, Some(5 | 6)) =>
+                {
+                    Self::RuntimeStorageBusy
+                }
+                vega_runtime::RuntimeFailureReason::Database => Self::RuntimeStorage,
+                vega_runtime::RuntimeFailureReason::ApprovalAudit => Self::RuntimeApprovalAudit,
+                vega_runtime::RuntimeFailureReason::State => Self::RuntimeState,
+                vega_runtime::RuntimeFailureReason::Io => Self::RuntimeIo,
+                vega_runtime::RuntimeFailureReason::Pipeline => Self::RuntimePipeline,
+            },
             vega_runtime::VegaError::ProviderPayloadTooLarge { .. } => Self::ProviderProtocol,
             vega_runtime::VegaError::ProviderDiagnostic {
                 kind: vega_runtime::ProviderFailureKind::OutputLimit,
@@ -286,6 +317,12 @@ impl RunFailureKind {
                 "The model returned reasoning state that cannot be continued. Choose a matching advanced protocol template, then retry.".into()
             }
             Self::Runtime => "The run failed. Check the runtime environment, then retry.".into(),
+            Self::RuntimeStorage => "The conversation could not be saved. Reopen it, then retry.".into(),
+            Self::RuntimeStorageBusy => "Conversation storage is busy. Wait for other tasks to finish, then retry.".into(),
+            Self::RuntimeApprovalAudit => "A tool record failed safety validation. Reopen the conversation, review its tool records, then retry.".into(),
+            Self::RuntimeState => "The saved conversation state could not be updated. Reopen it, then retry.".into(),
+            Self::RuntimeIo => "A local I/O operation failed. Check local access and available storage, then retry.".into(),
+            Self::RuntimePipeline => "The conversation worker stopped unexpectedly. Reopen the conversation, then retry.".into(),
             Self::Persisted => "This response failed. Check provider status, quota, or the runtime environment, then retry.".into(),
         }
     }

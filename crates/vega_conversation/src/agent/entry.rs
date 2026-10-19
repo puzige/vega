@@ -685,14 +685,21 @@ where
     {
         Ok(Ok(prepared)) => prepared,
         Ok(Err(ConversationError::Runtime(error))) => {
+            let error = match Arc::try_unwrap(error) {
+                Ok(error) => Arc::new(
+                    error.at_runtime_stage(vega_runtime::RuntimeFailureStage::RunPreparation),
+                ),
+                Err(error) => error,
+            };
             forward_pipeline_error(&mut event_sink, None, error.clone());
             return Err(ConversationError::Runtime(error));
         }
         Ok(Err(error)) => return Err(error),
         Err(error) => {
-            let error = Arc::new(persistence_actor_error(format!(
-                "preparation task join failed: {error}"
-            )));
+            let error = Arc::new(
+                persistence_actor_error(format!("preparation task join failed: {error}"))
+                    .at_runtime_stage(vega_runtime::RuntimeFailureStage::RunPreparation),
+            );
             forward_pipeline_error(&mut event_sink, None, error.clone());
             return Err(ConversationError::Runtime(error));
         }
@@ -970,6 +977,9 @@ where
             thread_id,
             run_id: &prepared.assistant_message_id,
             root_attempt_id: &root_attempt_id,
+            subagent_receipts: supervisor
+                .as_ref()
+                .map(super::subagents::Supervisor::receipt_observer),
         },
     )
     .boxed_local();

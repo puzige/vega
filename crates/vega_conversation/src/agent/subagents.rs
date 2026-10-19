@@ -16,6 +16,27 @@ struct AgentRecord {
     snapshot: SubagentSnapshot,
     call_id: String,
     cancel: CancellationToken,
+    receipt_persisted: CancellationToken,
+}
+
+#[derive(Clone)]
+pub(super) struct ReceiptObserver(Registry);
+
+impl ReceiptObserver {
+    pub(super) fn persisted(&self, event: &RuntimeEvent) {
+        if let RuntimeEvent::ToolCallFinished(result) = event
+            && result.status == RuntimeToolStatus::Success
+            && !result.reused
+            && let Ok(agents) = self.0.agents.lock()
+            && let Some(record) = agents
+                .values()
+                .find(|record| record.call_id == result.call_id)
+            && !record.cancel.is_cancelled()
+            && !record.snapshot.state.is_terminal()
+        {
+            record.receipt_persisted.cancel();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -225,6 +246,9 @@ impl Supervisor {
             registry: self.registry.clone(),
         })
     }
+    pub(super) fn receipt_observer(&self) -> ReceiptObserver {
+        ReceiptObserver(self.registry.clone())
+    }
     pub(super) async fn run<'a, T>(
         &mut self,
         mut parent: LocalBoxFuture<'a, T>,
@@ -303,6 +327,7 @@ impl Supervisor {
                 snapshot: snapshot.clone(),
                 call_id: call_id.clone(),
                 cancel: cancel.clone(),
+                receipt_persisted: CancellationToken::new(),
             },
         );
         Ok((snapshot, task, call_id, cancel))
@@ -565,62 +590,80 @@ fn child_lifecycle<'a>(
                 {
                     cancel.cancel();
                 }
-                let mut config = PersistenceActorConfig {
-                    delegated: true,
-                    delegated_parent: Some((
-                        snapshot.parent_thread_id.clone(),
-                        snapshot.parent_message_id.clone(),
-                    )),
-                    delegated_message_id: Some(snapshot.message_id.clone()),
-                    delegated_authority: Some(settings.authority.clone()),
-                    delegated_context_budget: settings.context_budget,
-                    automation_claim: settings.automation_claim.clone(),
-                    automation_hook: Some(usage_observer.clone()),
-                    owner_credential_reader: settings.owner_credential_reader.clone(),
-                    turn_limit: settings.turn_limit,
-                    user_questions: Some(Arc::new(questions.clone())),
-                    ..Default::default()
+                let receipt_persisted = registry.agents.lock().ok().and_then(|agents| {
+                    agents
+                        .get(&snapshot.agent_id)
+                        .map(|record| record.receipt_persisted.clone())
+                });
+                let ready = match receipt_persisted {
+                    Some(receipt_persisted) => tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => false,
+                        _ = receipt_persisted.cancelled() => true,
+                    },
+                    None => false,
                 };
-                if let Some(reader) = &config.owner_credential_reader {
-                    config.steering_source =
-                        Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
-                            database.clone(),
-                            tools.root().to_path_buf(),
-                            snapshot.agent_id.clone(),
-                            queue_generation,
-                            reader.clone(),
-                            cancel.clone(),
-                        )));
-                }
-                let scoped_provider = ChildProvider {
-                    inner: provider,
-                    reader: config.owner_credential_reader.clone(),
-                };
-                match Store::open(&database) {
-                    Ok(store) => {
-                        let child_host = host.clone();
-                        let id = snapshot.agent_id.clone();
-                        let run = snapshot.message_id.clone();
-                        super::entry::run_thread_task_with_automation_inner(
-                            &store,
-                            &scoped_provider,
-                            &tools,
-                            &snapshot.agent_id,
-                            &task,
-                            &settings.system_prompt,
-                            cancel.clone(),
-                            &permissions,
-                            move |event| child_host.event(&id, &run, event),
-                            config,
-                            Some(user_id),
-                            settings.pricing_catalog,
-                            settings.reasoning,
-                            Vec::new(),
-                            mcp,
-                        )
-                        .await
+                if !ready {
+                    cancel.cancel();
+                    Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)))
+                } else {
+                    let mut config = PersistenceActorConfig {
+                        delegated: true,
+                        delegated_parent: Some((
+                            snapshot.parent_thread_id.clone(),
+                            snapshot.parent_message_id.clone(),
+                        )),
+                        delegated_message_id: Some(snapshot.message_id.clone()),
+                        delegated_authority: Some(settings.authority.clone()),
+                        delegated_context_budget: settings.context_budget,
+                        automation_claim: settings.automation_claim.clone(),
+                        automation_hook: Some(usage_observer.clone()),
+                        owner_credential_reader: settings.owner_credential_reader.clone(),
+                        turn_limit: settings.turn_limit,
+                        user_questions: Some(Arc::new(questions.clone())),
+                        ..Default::default()
+                    };
+                    if let Some(reader) = &config.owner_credential_reader {
+                        config.steering_source =
+                            Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
+                                database.clone(),
+                                tools.root().to_path_buf(),
+                                snapshot.agent_id.clone(),
+                                queue_generation,
+                                reader.clone(),
+                                cancel.clone(),
+                            )));
                     }
-                    Err(_) => Err(ConversationError::Store("child storage unavailable".into())),
+                    let scoped_provider = ChildProvider {
+                        inner: provider,
+                        reader: config.owner_credential_reader.clone(),
+                    };
+                    match Store::open(&database) {
+                        Ok(store) => {
+                            let child_host = host.clone();
+                            let id = snapshot.agent_id.clone();
+                            let run = snapshot.message_id.clone();
+                            super::entry::run_thread_task_with_automation_inner(
+                                &store,
+                                &scoped_provider,
+                                &tools,
+                                &snapshot.agent_id,
+                                &task,
+                                &settings.system_prompt,
+                                cancel.clone(),
+                                &permissions,
+                                move |event| child_host.event(&id, &run, event),
+                                config,
+                                Some(user_id),
+                                settings.pricing_catalog,
+                                settings.reasoning,
+                                Vec::new(),
+                                mcp,
+                            )
+                            .await
+                        }
+                        Err(_) => Err(ConversationError::Store("child storage unavailable".into())),
+                    }
                 }
             }
         };

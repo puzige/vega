@@ -126,6 +126,11 @@ impl DiagnosticStopReason {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DiagnosticMetrics {
+    pub runtime_stage: Option<String>,
+    pub runtime_reason: Option<String>,
+    pub sqlite_code: Option<i32>,
+    pub sqlite_extended_code: Option<i32>,
+    pub io_kind: Option<String>,
     pub failure_tool_index: Option<u64>,
     pub failure_source: Option<String>,
     pub failure_kind: Option<String>,
@@ -231,10 +236,10 @@ pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, Diag
           thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state,
           failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens,
           cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes,
-          tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index
+          tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-          ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
+          ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
         )",
         params![
             event.thread_id,
@@ -313,6 +318,11 @@ pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, Diag
             event.metrics.failure_observed_items.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_observed_items" })?,
             event.metrics.failure_limit_items.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_limit_items" })?,
             event.metrics.failure_tool_index.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_tool_index" })?,
+            event.metrics.runtime_stage,
+            event.metrics.runtime_reason,
+            event.metrics.sqlite_code,
+            event.metrics.sqlite_extended_code,
+            event.metrics.io_kind,
 
         ],
     )?;
@@ -326,7 +336,7 @@ pub fn read_by_run(
 ) -> Result<Vec<DiagnosticEvent>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
     validate_identity(run_id, "run_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 AND run_id = ?2 ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind FROM run_diagnostic_events WHERE thread_id = ?1 AND run_id = ?2 ORDER BY id")?;
     let rows = statement.query_map(params![thread_id, run_id], read_row)?;
     rows.collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -339,7 +349,7 @@ pub fn read_by_thread(
     thread_id: &str,
 ) -> Result<Vec<DiagnosticEvent>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind FROM run_diagnostic_events WHERE thread_id = ?1 ORDER BY id")?;
     let rows = statement.query_map([thread_id], read_row)?;
     rows.collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -399,6 +409,7 @@ pub fn incomplete_attempt_ids(events: &[DiagnosticEvent]) -> Vec<String> {
 }
 
 fn validate(event: &NewDiagnosticEvent) -> Result<(), DiagnosticError> {
+    validate_runtime_details(&event.metrics)?;
     validate_identity(&event.thread_id, "thread_id")?;
     validate_identity(&event.run_id, "run_id")?;
     validate_identity(&event.attempt_id, "attempt_id")?;
@@ -547,6 +558,67 @@ fn validate_identity(value: &str, field: &'static str) -> Result<(), DiagnosticE
     }
 }
 
+fn validate_runtime_details(metrics: &DiagnosticMetrics) -> Result<(), DiagnosticError> {
+    let has_details = metrics.runtime_stage.is_some()
+        || metrics.runtime_reason.is_some()
+        || metrics.sqlite_code.is_some()
+        || metrics.sqlite_extended_code.is_some()
+        || metrics.io_kind.is_some();
+    if !has_details {
+        return Ok(());
+    }
+    if !matches!(
+        metrics.runtime_stage.as_deref(),
+        Some(
+            "run_preparation"
+                | "snapshot"
+                | "tool_proposal"
+                | "tool_approval"
+                | "tool_running"
+                | "tool_terminal"
+                | "event_pipeline"
+        )
+    ) {
+        return Err(DiagnosticError::InvalidField {
+            field: "runtime_stage",
+        });
+    }
+    if !matches!(
+        metrics.runtime_reason.as_deref(),
+        Some("database" | "approval_audit" | "state" | "io" | "pipeline")
+    ) {
+        return Err(DiagnosticError::InvalidField {
+            field: "runtime_reason",
+        });
+    }
+    match (metrics.sqlite_code, metrics.sqlite_extended_code) {
+        (None, None) => {}
+        (Some(primary), Some(extended))
+            if metrics.runtime_reason.as_deref() == Some("database")
+                && (1..=255).contains(&primary)
+                && extended > 0
+                && extended & 255 == primary => {}
+        _ => {
+            return Err(DiagnosticError::InvalidField {
+                field: "sqlite_code",
+            });
+        }
+    }
+    let valid_io_kind = match metrics.io_kind.as_deref() {
+        None => metrics.runtime_reason.as_deref() != Some("io"),
+        Some(
+            "not_found" | "permission_denied" | "already_exists" | "invalid_input" | "invalid_data"
+            | "timed_out" | "interrupted" | "unsupported" | "out_of_memory" | "storage_full"
+            | "other",
+        ) => metrics.runtime_reason.as_deref() == Some("io"),
+        Some(_) => false,
+    };
+    if !valid_io_kind {
+        return Err(DiagnosticError::InvalidField { field: "io_kind" });
+    }
+    Ok(())
+}
+
 fn is_ascii_id(value: &str, max: usize, allowed: &[u8]) -> bool {
     !value.is_empty() && value.len() <= max && value.bytes().all(|byte| allowed.contains(&byte))
 }
@@ -556,6 +628,11 @@ fn sql_i64(value: u64) -> Result<i64, std::num::TryFromIntError> {
 }
 
 struct RawEvent {
+    runtime_stage: Option<String>,
+    runtime_reason: Option<String>,
+    sqlite_code: Option<i32>,
+    sqlite_extended_code: Option<i32>,
+    io_kind: Option<String>,
     failure_tool_index: Option<i64>,
     failure_source: Option<String>,
     failure_kind: Option<String>,
@@ -592,6 +669,11 @@ struct RawEvent {
 
 fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEvent> {
     Ok(RawEvent {
+        runtime_stage: row.get(31)?,
+        runtime_reason: row.get(32)?,
+        sqlite_code: row.get(33)?,
+        sqlite_extended_code: row.get(34)?,
+        io_kind: row.get(35)?,
         id: row.get(0)?,
         thread_id: row.get(1)?,
         run_id: row.get(2)?,
@@ -630,7 +712,7 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
     type Error = DiagnosticError;
 
     fn try_from(raw: RawEvent) -> Result<Self, Self::Error> {
-        Ok(Self {
+        let event = Self {
             id: raw.id,
             event: NewDiagnosticEvent {
                 thread_id: raw.thread_id,
@@ -651,6 +733,11 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
                     })
                     .transpose()?,
                 metrics: DiagnosticMetrics {
+                    runtime_stage: raw.runtime_stage,
+                    runtime_reason: raw.runtime_reason,
+                    sqlite_code: raw.sqlite_code,
+                    sqlite_extended_code: raw.sqlite_extended_code,
+                    io_kind: raw.io_kind,
                     stop_reason: raw
                         .stop_reason
                         .as_deref()
@@ -683,7 +770,9 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
                     failure_limit_items: opt_u64(raw.failure_limit_items, "failure_limit_items")?,
                 },
             },
-        })
+        };
+        validate_runtime_details(&event.event.metrics)?;
+        Ok(event)
     }
 }
 
