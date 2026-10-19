@@ -11,6 +11,7 @@ pub fn budget_failure_message_ids(
         "SELECT run_id, attempt_id, failure_code, id FROM run_diagnostic_events
          WHERE thread_id = ?1 AND phase = 'run' AND state = 'failed'
          AND failure_code IN ('context_over_limit', 'reasoning_limit', 'unknown_safe_failure')
+         AND (failure_code <> 'unknown_safe_failure' OR runtime_reason IS NULL)
          ORDER BY id",
     )?;
     let roots = statement
@@ -73,6 +74,7 @@ pub fn compaction_failure_message_ids(
             'summary_aggregate_too_large', 'summary_images_unsupported',
             'summary_no_compactable_prefix', 'summary_already_attempted', 'unknown_safe_failure'
          )
+         AND (failure_code <> 'unknown_safe_failure' OR runtime_reason IS NULL)
          ORDER BY id",
     )?;
     let roots = statement
@@ -508,7 +510,7 @@ pub fn classified_failure_message_ids(
     thread_id: &str,
 ) -> Result<Vec<(String, DiagnosticMetrics)>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 AND phase = 'run' AND state = 'failed' AND failure_kind IS NOT NULL ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind FROM run_diagnostic_events WHERE thread_id = ?1 AND phase = 'run' AND state = 'failed' AND failure_kind IS NOT NULL ORDER BY id")?;
     let rows = statement.query_map([thread_id], read_row)?;
     let mut failures = Vec::new();
     for row in rows {

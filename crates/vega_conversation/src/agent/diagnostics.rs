@@ -65,6 +65,7 @@ pub(crate) struct ToolDiagnosticEvent<'a> {
     pub(crate) tool_call_id: &'a str,
     pub(crate) state: DiagnosticState,
     pub(crate) failure_code: Option<DiagnosticFailureCode>,
+    pub(crate) failure: Option<&'a vega_runtime::VegaError>,
     pub(crate) started_at: Instant,
     pub(crate) output_bytes: Option<u64>,
     pub(crate) truncated: Option<bool>,
@@ -183,6 +184,11 @@ impl DiagnosticsWriter {
             occurred_at: now_ms(),
             duration_ms: attempt.duration_ms,
             metrics: DiagnosticMetrics {
+                runtime_stage: attempt.metrics.runtime_stage.map(str::to_owned),
+                runtime_reason: attempt.metrics.runtime_reason.map(str::to_owned),
+                sqlite_code: attempt.metrics.sqlite_code,
+                sqlite_extended_code: attempt.metrics.sqlite_extended_code,
+                io_kind: attempt.metrics.io_kind.map(str::to_owned),
                 failure_tool_index: attempt.metrics.failure_tool_index,
                 failure_source: attempt
                     .metrics
@@ -226,6 +232,15 @@ impl DiagnosticsWriter {
 
     pub(crate) fn tool_event(&self, event: ToolDiagnosticEvent<'_>) {
         let tool_call_id = safe_tool_call_id(event.tool_call_id).map(str::to_owned);
+        let metrics = DiagnosticMetrics {
+            tool_output_bytes: event.output_bytes,
+            tool_truncated: event.truncated,
+            ..DiagnosticMetrics::default()
+        };
+        let metrics = match event.failure {
+            Some(error) => with_failure_metrics(metrics, error),
+            None => metrics,
+        };
         self.record(NewDiagnosticEvent {
             thread_id: event.thread_id.to_string(),
             run_id: event.run_id.to_string(),
@@ -241,11 +256,7 @@ impl DiagnosticsWriter {
                     u64::try_from(event.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
                 })
             }),
-            metrics: DiagnosticMetrics {
-                tool_output_bytes: event.output_bytes,
-                tool_truncated: event.truncated,
-                ..DiagnosticMetrics::default()
-            },
+            metrics,
         });
     }
 }
@@ -329,6 +340,11 @@ pub(crate) fn run_failure(error: &vega_runtime::VegaError) -> DiagnosticFailureC
 pub(crate) fn failure_metrics(error: &vega_runtime::VegaError) -> DiagnosticMetrics {
     let detail = error.diagnostic_metrics();
     let mut metrics = DiagnosticMetrics {
+        runtime_stage: detail.runtime_stage.map(str::to_owned),
+        runtime_reason: detail.runtime_reason.map(str::to_owned),
+        sqlite_code: detail.sqlite_code,
+        sqlite_extended_code: detail.sqlite_extended_code,
+        io_kind: detail.io_kind.map(str::to_owned),
         failure_tool_index: detail.failure_tool_index,
         failure_source: detail.failure_source.map(str::to_owned),
         failure_kind: detail.failure_kind.map(str::to_owned),
@@ -363,6 +379,11 @@ pub(crate) fn with_failure_metrics(
     error: &vega_runtime::VegaError,
 ) -> DiagnosticMetrics {
     let detail = failure_metrics(error);
+    metrics.runtime_stage = detail.runtime_stage;
+    metrics.runtime_reason = detail.runtime_reason;
+    metrics.sqlite_code = detail.sqlite_code;
+    metrics.sqlite_extended_code = detail.sqlite_extended_code;
+    metrics.io_kind = detail.io_kind;
     metrics.failure_source = detail.failure_source;
     metrics.failure_kind = detail.failure_kind;
     metrics.failure_scope = detail.failure_scope;

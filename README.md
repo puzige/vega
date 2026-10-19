@@ -40,6 +40,8 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [network retry](docs/vega-issue-350-network-retry.md) | 网络中断自动重试、当前回复回滚和重连状态契约 |
 | [ask user question](docs/vega-issue-445-ask-user-question.md) | Vega 原生结构化提问工具、Composer 分页、无限等待与问答历史契约 |
 | [multi agent](docs/vega-issue-448-multi-agent.md) | Native 并行子任务、独立子会话、权限与生命周期合同 |
+| [subagent startup diagnostics](docs/vega-issue-487-subagent-startup-diagnostics.md) | 子任务启动回执、准备事务与具体运行错误诊断修复规格 |
+| [subagent startup delivery](docs/vega-issue-487-subagent-startup-diagnostics-delivery.md) | 先行测试、云端复现、修复与交付证据 |
 | [hover auto scroll](docs/vega-issue-402-hover-auto-scroll.md) | 悬停正文不再触发滚动：上游补丁升级、行为契约与验收矩阵 |
 | [full access](docs/vega-issue-58-full-access.md) | 独立 Full access 模式、沙箱边界与生产链路验收 |
 | [markdown](docs/vega-issue-59-markdown.md) | Markdown 表格的结构化单元格与窄窗布局 |

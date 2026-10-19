@@ -163,8 +163,9 @@ impl PersistenceActor {
             let store = match Store::open(database_path) {
                 Ok(store) => store,
                 Err(error) => {
-                    let _ = ready.send(Err(error.to_string()));
-                    return Err(VegaError::Store(error));
+                    let _ = ready.send(Err(()));
+                    return Err(VegaError::Store(error)
+                        .at_runtime_stage(vega_runtime::RuntimeFailureStage::EventPipeline));
                 }
             };
             let _ = ready.send(Ok(()));
@@ -177,7 +178,12 @@ impl PersistenceActor {
                         let result =
                             messages::update_streaming_content(store.conn(), &message_id, &content)
                                 .map_err(VegaError::from)
-                                .and_then(|updated| ensure_message_updated(updated, &message_id));
+                                .and_then(|updated| ensure_message_updated(updated, &message_id))
+                                .map_err(|error| {
+                                    error.at_runtime_stage(
+                                        vega_runtime::RuntimeFailureStage::Snapshot,
+                                    )
+                                });
                         if result.is_ok() {
                             config.record_snapshot();
                         }
@@ -190,97 +196,101 @@ impl PersistenceActor {
                         ack,
                     } => {
                         config.delay_command();
-                        let result = config.check_event(&event).and_then(|()| {
-                            if matches!(event.as_ref(), RuntimeEvent::SteeringAccepted(_))
-                                && config
-                                    .steering_cancel
-                                    .as_ref()
-                                    .is_some_and(CancellationToken::is_cancelled)
-                            {
-                                return Err(VegaError::Cancelled);
-                            }
-                            let usage = match event.as_ref() {
-                                RuntimeEvent::UsageUpdated { usage, .. } => {
-                                    Some((usage.input, usage.output))
+                        let result = config
+                            .check_event(&event)
+                            .and_then(|()| {
+                                if matches!(event.as_ref(), RuntimeEvent::SteeringAccepted(_))
+                                    && config
+                                        .steering_cancel
+                                        .as_ref()
+                                        .is_some_and(CancellationToken::is_cancelled)
+                                {
+                                    return Err(VegaError::Cancelled);
                                 }
-                                RuntimeEvent::ContextCompactionUsageUpdated { usage } => {
-                                    Some((usage.usage.input, usage.usage.output))
-                                }
-                                _ => None,
-                            };
-                            if let RuntimeEvent::ContextCompactionStatusUpdated { status } =
-                                event.as_ref()
-                                && status.usage
-                                    == vega_runtime::ContextCompactionUsageState::Unknown
-                                && let Some(hook) = &config.automation_hook
-                            {
-                                hook.missing_usage();
-                            }
-                            let transaction = if usage.is_some()
-                                && (config.automation_claim.is_some()
-                                    || config.delegated_parent.is_some())
-                            {
-                                Some(store.immediate_transaction()?)
-                            } else {
-                                None
-                            };
-                            persist_runtime_event(
-                                &store,
-                                &project_id,
-                                &thread_id,
-                                &message_id,
-                                &model,
-                                is_plan,
-                                &content,
-                                &mut next_tool_seq,
-                                &event,
-                                execution_duration_ms,
-                            )?;
-                            if usage.is_some()
-                                && let Some((parent_thread, parent_message)) =
-                                    &config.delegated_parent
-                            {
-                                let cache_known = match event.as_ref() {
+                                let usage = match event.as_ref() {
                                     RuntimeEvent::UsageUpdated { usage, .. } => {
-                                        usage.cache_read.is_some() && usage.cache_write.is_some()
+                                        Some((usage.input, usage.output))
                                     }
                                     RuntimeEvent::ContextCompactionUsageUpdated { usage } => {
-                                        usage.usage.cache_read.is_some()
-                                            && usage.usage.cache_write.is_some()
+                                        Some((usage.usage.input, usage.usage.output))
                                     }
-                                    _ => false,
+                                    _ => None,
                                 };
-                                vega_store::subagents::attribute_usage(
-                                    store.conn(),
-                                    store.conn().last_insert_rowid(),
+                                if let RuntimeEvent::ContextCompactionStatusUpdated { status } =
+                                    event.as_ref()
+                                    && status.usage
+                                        == vega_runtime::ContextCompactionUsageState::Unknown
+                                    && let Some(hook) = &config.automation_hook
+                                {
+                                    hook.missing_usage();
+                                }
+                                let transaction = if usage.is_some()
+                                    && (config.automation_claim.is_some()
+                                        || config.delegated_parent.is_some())
+                                {
+                                    Some(store.immediate_transaction()?)
+                                } else {
+                                    None
+                                };
+                                persist_runtime_event(
+                                    &store,
+                                    &project_id,
                                     &thread_id,
-                                    parent_thread,
-                                    parent_message,
-                                    cache_known,
+                                    &message_id,
+                                    &model,
+                                    is_plan,
+                                    &content,
+                                    &mut next_tool_seq,
+                                    &event,
+                                    execution_duration_ms,
                                 )?;
-                            }
-                            if let (Some((input, output)), Some(claim)) =
-                                (usage, config.automation_claim.as_ref())
-                            {
-                                crate::automation::record_usage(
-                                    store.conn(),
-                                    claim,
-                                    store.conn().last_insert_rowid(),
-                                    input,
-                                    output,
-                                )
-                                .map_err(|message| {
-                                    VegaError::Tool {
-                                        tool: "automation".into(),
-                                        message,
-                                    }
-                                })?;
-                            }
-                            if let Some(transaction) = transaction {
-                                transaction.commit()?;
-                            }
-                            Ok(())
-                        });
+                                if usage.is_some()
+                                    && let Some((parent_thread, parent_message)) =
+                                        &config.delegated_parent
+                                {
+                                    let cache_known = match event.as_ref() {
+                                        RuntimeEvent::UsageUpdated { usage, .. } => {
+                                            usage.cache_read.is_some()
+                                                && usage.cache_write.is_some()
+                                        }
+                                        RuntimeEvent::ContextCompactionUsageUpdated { usage } => {
+                                            usage.usage.cache_read.is_some()
+                                                && usage.usage.cache_write.is_some()
+                                        }
+                                        _ => false,
+                                    };
+                                    vega_store::subagents::attribute_usage(
+                                        store.conn(),
+                                        store.conn().last_insert_rowid(),
+                                        &thread_id,
+                                        parent_thread,
+                                        parent_message,
+                                        cache_known,
+                                    )?;
+                                }
+                                if let (Some((input, output)), Some(claim)) =
+                                    (usage, config.automation_claim.as_ref())
+                                {
+                                    crate::automation::record_usage(
+                                        store.conn(),
+                                        claim,
+                                        store.conn().last_insert_rowid(),
+                                        input,
+                                        output,
+                                    )
+                                    .map_err(|_| {
+                                        VegaError::Tool {
+                                            tool: "automation".into(),
+                                            message: "usage persistence unavailable".into(),
+                                        }
+                                    })?;
+                                }
+                                if let Some(transaction) = transaction {
+                                    transaction.commit()?;
+                                }
+                                Ok(())
+                            })
+                            .map_err(|error| error.at_runtime_stage(runtime_event_stage(&event)));
                         if result.is_ok()
                             && let RuntimeEvent::SteeringAccepted(input) = event.as_ref()
                         {
@@ -297,10 +307,10 @@ impl PersistenceActor {
         });
         match opened.await {
             Ok(Ok(())) => {}
-            Ok(Err(display)) => {
+            Ok(Err(())) => {
                 return match task.await {
                     Ok(Err(error)) => Err(error),
-                    Ok(Ok(())) => Err(persistence_actor_error(display)),
+                    Ok(Ok(())) => Err(persistence_actor_error("DB actor open failed")),
                     Err(error) => Err(persistence_actor_error(format!(
                         "DB actor join failed after open error: {error}"
                     ))),
@@ -326,10 +336,14 @@ impl PersistenceActor {
         self.sender
             .send(PersistenceCommand::Snapshot { content, ack })
             .await
-            .map_err(|_| persistence_actor_error("DB actor stopped before snapshot"))?;
-        received
-            .await
-            .map_err(|_| persistence_actor_error("DB actor dropped snapshot acknowledgement"))?
+            .map_err(|_| {
+                persistence_actor_error("DB actor stopped before snapshot")
+                    .at_runtime_stage(vega_runtime::RuntimeFailureStage::Snapshot)
+            })?;
+        received.await.map_err(|_| {
+            persistence_actor_error("DB actor dropped snapshot acknowledgement")
+                .at_runtime_stage(vega_runtime::RuntimeFailureStage::Snapshot)
+        })?
     }
 
     pub(crate) async fn event(
@@ -338,6 +352,7 @@ impl PersistenceActor {
         content: String,
         execution_duration_ms: Option<i64>,
     ) -> Result<(), VegaError> {
+        let stage = runtime_event_stage(&event);
         let (ack, received) = oneshot::channel();
         self.sender
             .send(PersistenceCommand::Event {
@@ -347,10 +362,14 @@ impl PersistenceActor {
                 ack,
             })
             .await
-            .map_err(|_| persistence_actor_error("DB actor stopped before event persistence"))?;
-        received
-            .await
-            .map_err(|_| persistence_actor_error("DB actor dropped event acknowledgement"))?
+            .map_err(|_| {
+                persistence_actor_error("DB actor stopped before event persistence")
+                    .at_runtime_stage(stage)
+            })?;
+        received.await.map_err(|_| {
+            persistence_actor_error("DB actor dropped event acknowledgement")
+                .at_runtime_stage(stage)
+        })?
     }
 
     pub(crate) async fn close(self) -> Result<(), VegaError> {
@@ -379,11 +398,23 @@ pub(crate) struct PreparedRun {
     pub(crate) replay_lease: Option<super::ReplaySessionLease>,
 }
 
-pub(crate) fn persistence_actor_error(message: impl Into<String>) -> VegaError {
-    VegaError::Io(std::io::Error::other(format!(
-        "persistence actor: {}",
-        message.into()
-    )))
+pub(crate) fn persistence_actor_error(_message: impl Into<String>) -> VegaError {
+    VegaError::RuntimeFailure(vega_runtime::RuntimeFailureDetail::new(
+        vega_runtime::RuntimeFailureReason::Pipeline,
+    ))
+}
+
+fn runtime_event_stage(event: &RuntimeEvent) -> vega_runtime::RuntimeFailureStage {
+    use vega_runtime::RuntimeFailureStage as Stage;
+    match event {
+        RuntimeEvent::ToolCallProposed(_) => Stage::ToolProposal,
+        RuntimeEvent::ToolCallApproved { .. } => Stage::ToolApproval,
+        RuntimeEvent::ToolCallRunning { .. } => Stage::ToolRunning,
+        RuntimeEvent::ToolCallFinished(_)
+        | RuntimeEvent::ToolCallValidationRejected { .. }
+        | RuntimeEvent::ToolCallConflict { .. } => Stage::ToolTerminal,
+        _ => Stage::EventPipeline,
+    }
 }
 
 pub(crate) fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {

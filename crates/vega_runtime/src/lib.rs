@@ -37,7 +37,9 @@ pub use context::{
     ContextRuntimeError, SharedContextCompactionHook, classify_context, estimate_chat_context,
     estimate_wire_context,
 };
-pub use error::VegaError;
+pub use error::{
+    RuntimeFailureDetail, RuntimeFailureReason, RuntimeFailureStage, RuntimeIoKind, VegaError,
+};
 pub mod computer_use;
 pub mod images;
 pub use images::ImageAttachment;

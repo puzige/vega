@@ -515,6 +515,12 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         vega_store::recovery::recover_thread(store.conn(), &thread_id, now_ms())
             .map_err(runtime_store_error)?;
     }
+    let credential_values = match &config.owner_credential_reader {
+        Some(reader) => reader().map_err(|_| {
+            ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
+        })?,
+        None => Vec::new(),
+    };
     let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let thread = vega_store::threads::find(&transaction, &thread_id)
         .map_err(runtime_store_error)?
@@ -874,12 +880,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         .map_err(runtime_store_error)?;
     }
 
-    let credential_values = match &config.owner_credential_reader {
-        Some(reader) => reader().map_err(|_| {
-            ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-        })?,
-        None => Vec::new(),
-    };
     let legacy_credential_cleanup_detected =
         vega_store::context_compaction::redact_legacy_thread_content(
             &transaction,

@@ -11,6 +11,7 @@ pub(super) struct RuntimeEventContext<'a, F> {
     pub(super) thread_id: &'a str,
     pub(super) run_id: &'a str,
     pub(super) root_attempt_id: &'a str,
+    pub(super) subagent_receipts: Option<super::subagents::ReceiptObserver>,
 }
 
 pub(super) async fn process_runtime_events<F>(
@@ -32,6 +33,7 @@ where
         thread_id,
         run_id,
         root_attempt_id,
+        subagent_receipts,
     } = context;
     let mut message_id = message_id.to_owned();
     let mut pending_text = Vec::new();
@@ -56,6 +58,8 @@ where
                     )
                     .await
                     {
+                        let error = error
+                            .at_runtime_stage(vega_runtime::RuntimeFailureStage::EventPipeline);
                         cancel.cancel();
                         return Err(error);
                     }
@@ -78,6 +82,8 @@ where
             )
             .await
             {
+                let error =
+                    error.at_runtime_stage(vega_runtime::RuntimeFailureStage::EventPipeline);
                 cancel.cancel();
                 return Err(error);
             }
@@ -256,26 +262,51 @@ where
                             }
                             Ok(())
                         })(),
-                        Err(error) => Err(error),
+                        Err(error) => {
+                            record_tool_persistence_failure(
+                                diagnostics,
+                                thread_id,
+                                run_id,
+                                root_attempt_id,
+                                &event,
+                                &error,
+                                &mut tool_attempts,
+                            );
+                            Err(error)
+                        }
                     }
                 }
-                Err(error) => Err(error),
+                Err(error) => {
+                    let error =
+                        error.at_runtime_stage(vega_runtime::RuntimeFailureStage::EventPipeline);
+                    record_tool_persistence_failure(
+                        diagnostics,
+                        thread_id,
+                        run_id,
+                        root_attempt_id,
+                        &event,
+                        &error,
+                        &mut tool_attempts,
+                    );
+                    Err(error)
+                }
             }
         };
 
         match result {
             Ok(()) => {
+                if let Some(observer) = &subagent_receipts {
+                    observer.persisted(&event);
+                }
                 if let Some(ack) = ack {
                     let _ = ack.send(Ok(()));
                 }
             }
             Err(error) => {
+                let error =
+                    error.at_runtime_stage(vega_runtime::RuntimeFailureStage::EventPipeline);
                 if let Some(ack) = ack {
-                    let acknowledgement_error = if matches!(error, VegaError::Cancelled) {
-                        VegaError::Cancelled
-                    } else {
-                        persistence_actor_error(error.to_string())
-                    };
+                    let acknowledgement_error = error.acknowledgement_error();
                     let _ = ack.send(Err(acknowledgement_error));
                 }
                 cancel.cancel();
@@ -306,6 +337,7 @@ fn record_tool_lifecycle(
                 tool_call_id: &call.id,
                 state: vega_store::run_diagnostics::DiagnosticState::Started,
                 failure_code: None,
+                failure: None,
                 started_at,
                 output_bytes: None,
                 truncated: None,
@@ -328,6 +360,7 @@ fn record_tool_lifecycle(
                     tool_call_id: &result.call_id,
                     state: vega_store::run_diagnostics::DiagnosticState::Started,
                     failure_code: None,
+                    failure: None,
                     started_at,
                     output_bytes: None,
                     truncated: None,
@@ -361,6 +394,7 @@ fn record_tool_lifecycle(
                 tool_call_id: &result.call_id,
                 state,
                 failure_code: failure,
+                failure: None,
                 started_at,
                 output_bytes: Some(result.output.len() as u64),
                 truncated: result.truncated,
@@ -369,6 +403,59 @@ fn record_tool_lifecycle(
         }
         _ => {}
     }
+}
+
+fn record_tool_persistence_failure(
+    diagnostics: &super::diagnostics::DiagnosticsWriter,
+    thread_id: &str,
+    run_id: &str,
+    root_attempt_id: &str,
+    event: &RuntimeEvent,
+    error: &VegaError,
+    attempts: &mut std::collections::HashMap<String, (String, std::time::Instant)>,
+) {
+    let call_id = match event {
+        RuntimeEvent::ToolCallProposed(call) => &call.id,
+        RuntimeEvent::ToolCallApproved { call_id, .. }
+        | RuntimeEvent::ToolCallRunning { call_id } => call_id,
+        RuntimeEvent::ToolCallFinished(result)
+        | RuntimeEvent::ToolCallValidationRejected { result, .. }
+        | RuntimeEvent::ToolCallConflict { result, .. } => &result.call_id,
+        _ => return,
+    };
+    let (attempt_id, started_at) = attempts.remove(call_id).unwrap_or_else(|| {
+        let attempt_id = ulid::Ulid::generate().to_string();
+        let started_at = std::time::Instant::now();
+        diagnostics.tool_event(super::diagnostics::ToolDiagnosticEvent {
+            thread_id,
+            run_id,
+            root_attempt_id,
+            attempt_id: &attempt_id,
+            tool_call_id: call_id,
+            state: vega_store::run_diagnostics::DiagnosticState::Started,
+            failure_code: None,
+            failure: None,
+            started_at,
+            output_bytes: None,
+            truncated: None,
+            duration_ms: None,
+        });
+        (attempt_id, started_at)
+    });
+    diagnostics.tool_event(super::diagnostics::ToolDiagnosticEvent {
+        thread_id,
+        run_id,
+        root_attempt_id,
+        attempt_id: &attempt_id,
+        tool_call_id: call_id,
+        state: vega_store::run_diagnostics::DiagnosticState::Failed,
+        failure_code: Some(super::diagnostics::run_failure(error)),
+        failure: Some(error),
+        started_at,
+        output_bytes: None,
+        truncated: None,
+        duration_ms: None,
+    });
 }
 
 pub(crate) async fn flush_text_batch<F>(
@@ -452,13 +539,13 @@ pub(crate) fn persist_runtime_event(
                 message_id,
                 streamed_content,
             )
-            .map_err(|error| persistence_actor_error(error.to_string()))?;
+            .map_err(VegaError::from)?;
         }
         RuntimeEvent::AssistantResponseStarted { .. } => {}
         RuntimeEvent::SteeringAccepted(input) => {
             let tx = store.immediate_transaction()?;
             if !vega_store::pending_messages::mark_delivered(&tx, thread_id, &input.id)? {
-                return Err(persistence_actor_error("pending message already delivered"));
+                return Err(runtime_state_error());
             }
             ensure_message_updated(
                 messages::finish_streaming_in_transaction(
@@ -478,7 +565,7 @@ pub(crate) fn persist_runtime_event(
             )?;
             let seq = messages::next_seq(&tx, thread_id)?;
             if seq != input.user_message_seq {
-                return Err(persistence_actor_error("pending message order changed"));
+                return Err(runtime_state_error());
             }
             for (id, role, content, status, seq) in [
                 (
@@ -527,7 +614,7 @@ pub(crate) fn persist_runtime_event(
                 activation.version,
                 &activation.content_sha256,
             )
-            .map_err(|_| safe_audit_error("builtin_skill"))?;
+            .map_err(|error| storage_or_audit_error(error, "builtin_skill"))?;
         }
         RuntimeEvent::ScreenshotDelivered {
             call_id,
@@ -550,10 +637,9 @@ pub(crate) fn persist_runtime_event(
                         call_id,
                         image.bytes(),
                     )
-                    .map_err(|_| safe_audit_error("ComputerScreenshot"))
+                    .map_err(|error| storage_or_audit_error(error, "ComputerScreenshot"))
                 })
-                .map_err(|_| safe_audit_error("ComputerScreenshot"))?
-                .map_err(|_| safe_audit_error("ComputerScreenshot"))?;
+                .map_err(|_| safe_audit_error("ComputerScreenshot"))??;
         }
         RuntimeEvent::ToolRoundCompleted {
             response_id,
@@ -625,7 +711,7 @@ pub(crate) fn persist_runtime_event(
                     created_at: now_ms(),
                 },
             )
-            .map_err(|_| safe_audit_error("skill"))?;
+            .map_err(skill_store_error)?;
         }
         RuntimeEvent::ToolCallProposed(call) => {
             validate_runtime_proposal(call)?;
@@ -638,13 +724,7 @@ pub(crate) fn persist_runtime_event(
                         &call.input_json,
                     )
                 {
-                    return Err(VegaError::Tool {
-                        tool: call.name.clone(),
-                        message: format!(
-                            "call id '{}' collides with persisted owner/tool/input",
-                            call.id
-                        ),
-                    });
+                    return Err(runtime_state_error());
                 }
             } else {
                 tool_calls::insert_pending(
@@ -671,10 +751,10 @@ pub(crate) fn persist_runtime_event(
                 validate_reused_terminal(project_id, thread_id, &state, result)?;
             }
             if !result.reused {
-                let approval = result.approval.as_ref().ok_or_else(|| VegaError::Tool {
-                    tool: call.name.clone(),
-                    message: "validation rejection missing approval audit".to_string(),
-                })?;
+                let approval = result
+                    .approval
+                    .as_ref()
+                    .ok_or_else(|| safe_audit_error(&call.name))?;
                 let approval_json = approval_audit_from_runtime(approval)
                     .to_json()
                     .map_err(|_| safe_audit_error(&call.name))?;
@@ -702,12 +782,8 @@ pub(crate) fn persist_runtime_event(
         }
         RuntimeEvent::ToolCallConflict { call, result } => {
             validate_runtime_conflict_event(call, result)?;
-            let existing = tool_calls::find_identity(store.conn(), &call.id)?.ok_or_else(|| {
-                VegaError::Tool {
-                    tool: "persistence".to_string(),
-                    message: "call id conflict has no persisted identity".to_string(),
-                }
-            })?;
+            let existing = tool_calls::find_identity(store.conn(), &call.id)?
+                .ok_or_else(runtime_state_error)?;
             let is_same_identity = existing.thread_id == thread_id
                 && vega_runtime::tool_names_equivalent(&existing.tool, &call.name)
                 && tool_inputs_semantically_equal(
@@ -746,7 +822,7 @@ pub(crate) fn persist_runtime_event(
         RuntimeEvent::ToolCallRunning { call_id } => {
             let state = required_tool_state(store, call_id, thread_id)?;
             if state.status != "approved" {
-                return Err(safe_audit_error(&state.tool));
+                return Err(runtime_state_error());
             }
             tool_calls::mark_running(store.conn(), call_id).map_err(tool_transition_error)?;
         }
@@ -757,10 +833,10 @@ pub(crate) fn persist_runtime_event(
         RuntimeEvent::ToolCallFinished(result) if !result.reused => {
             let state = required_tool_state(store, &result.call_id, thread_id)?;
             if result.status == RuntimeToolStatus::Rejected {
-                let approval = result.approval.as_ref().ok_or_else(|| VegaError::Tool {
-                    tool: "permission".to_string(),
-                    message: "rejection missing approval audit".to_string(),
-                })?;
+                let approval = result
+                    .approval
+                    .as_ref()
+                    .ok_or_else(|| safe_audit_error("permission"))?;
                 let approval_json = approval_audit_from_runtime(approval)
                     .to_json()
                     .map_err(|_| safe_audit_error("permission"))?;
@@ -952,9 +1028,9 @@ pub(crate) fn persist_runtime_event(
                     now_ms(),
                     execution_duration_ms,
                 )
-                .map_err(|error| VegaError::Tool {
-                    tool: "plan".to_string(),
-                    message: error.to_string(),
+                .map_err(|error| match error {
+                    messages::PlanTransitionError::Store(error) => VegaError::Store(error),
+                    messages::PlanTransitionError::CorruptState => runtime_state_error(),
                 })?;
             } else {
                 ensure_message_updated(
@@ -1051,21 +1127,43 @@ fn persist_skill_snapshot(
             updated_at: now_ms(),
         },
     )
-    .map_err(|_| safe_audit_error("skill"))
+    .map_err(skill_store_error)
+}
+
+fn skill_store_error(error: vega_store::skills::SkillStoreError) -> VegaError {
+    match error {
+        vega_store::skills::SkillStoreError::Sql(error) => VegaError::Store(error),
+        _ => safe_audit_error("skill"),
+    }
+}
+
+fn storage_or_audit_error(error: impl Into<VegaError>, tool: &str) -> VegaError {
+    match error.into() {
+        VegaError::Store(error) if error.sqlite_error().is_some() => VegaError::Store(error),
+        _ => safe_audit_error(tool),
+    }
 }
 
 pub(crate) fn tool_transition_error(error: tool_calls::ToolCallTransitionError) -> VegaError {
-    VegaError::Tool {
-        tool: "persistence".to_string(),
-        message: error.to_string(),
+    match error {
+        tool_calls::ToolCallTransitionError::Store(error)
+        | tool_calls::ToolCallTransitionError::Permission(
+            vega_store::permissions::PermissionsError::Store(error),
+        ) => VegaError::Store(error),
+        _ => runtime_state_error(),
     }
 }
 
-pub(crate) fn safe_audit_error(tool: &str) -> VegaError {
-    VegaError::Tool {
-        tool: tool.to_string(),
-        message: "strict approval audit failed".to_string(),
-    }
+pub(crate) fn safe_audit_error(_tool: &str) -> VegaError {
+    VegaError::RuntimeFailure(vega_runtime::RuntimeFailureDetail::new(
+        vega_runtime::RuntimeFailureReason::ApprovalAudit,
+    ))
+}
+
+fn runtime_state_error() -> VegaError {
+    VegaError::RuntimeFailure(vega_runtime::RuntimeFailureDetail::new(
+        vega_runtime::RuntimeFailureReason::State,
+    ))
 }
 
 pub(crate) fn required_tool_state(
@@ -1073,15 +1171,9 @@ pub(crate) fn required_tool_state(
     call_id: &str,
     thread_id: &str,
 ) -> Result<tool_calls::ToolCallState, VegaError> {
-    let state = tool_calls::find_state(store.conn(), call_id)?.ok_or_else(|| VegaError::Tool {
-        tool: "persistence".to_string(),
-        message: "tool call state is missing".to_string(),
-    })?;
+    let state = tool_calls::find_state(store.conn(), call_id)?.ok_or_else(runtime_state_error)?;
     if state.thread_id != thread_id {
-        return Err(VegaError::Tool {
-            tool: "persistence".to_string(),
-            message: "tool call ownership mismatch".to_string(),
-        });
+        return Err(runtime_state_error());
     }
     Ok(state)
 }
@@ -1262,9 +1354,10 @@ pub(crate) fn validate_runtime_approval_event(
     audit: &vega_runtime::RuntimeApprovalAudit,
     remember: Option<&vega_runtime::RuntimePermissionTarget>,
 ) -> Result<(), VegaError> {
-    if state.status != "pending_approval"
-        || audit.decision == vega_runtime::RuntimeApprovalDecision::Deny
-    {
+    if state.status != "pending_approval" {
+        return Err(runtime_state_error());
+    }
+    if audit.decision == vega_runtime::RuntimeApprovalDecision::Deny {
         return Err(safe_audit_error(&state.tool));
     }
     let shared = approval_audit_from_runtime(audit);
@@ -1410,10 +1503,13 @@ pub(crate) fn validate_runtime_terminal(
     approval: &ApprovalAudit,
 ) -> Result<(), VegaError> {
     let result_approval = result.approval.as_ref().map(approval_audit_from_runtime);
-    if result_approval.as_ref() != Some(approval)
-        || result.call_id != call_id
+    if result.call_id != call_id
         || (result.status == RuntimeToolStatus::Rejected && state.status != "pending_approval")
         || (result.status != RuntimeToolStatus::Rejected && state.status != "running")
+    {
+        return Err(runtime_state_error());
+    }
+    if result_approval.as_ref() != Some(approval)
         || (result.status != RuntimeToolStatus::Rejected && result.remember_rule.is_some())
         || matches!(
             result.status,
@@ -1506,12 +1602,9 @@ pub(crate) fn validate_reused_terminal(
     Ok(())
 }
 
-pub(crate) fn ensure_message_updated(updated: usize, message_id: &str) -> Result<(), VegaError> {
+pub(crate) fn ensure_message_updated(updated: usize, _message_id: &str) -> Result<(), VegaError> {
     if updated == 0 {
-        Err(VegaError::Tool {
-            tool: "runtime".to_string(),
-            message: format!("streaming message row disappeared or became terminal: {message_id}"),
-        })
+        Err(runtime_state_error())
     } else {
         Ok(())
     }
