@@ -10,7 +10,7 @@
 
 独立验收变化、根因与先测后修计划见[真实列表崩溃诊断](vega-issue-486-list-state-borrow-crash.md)。本轮按用户“只做诊断”边界，仅记录文档和状态；未改生产/测试、未取得新RED/GREEN、未修复发布，不启动#309，也未交Ready触发实现。上文及下文保留原轮次截止时的历史证据，不能据旧门禁声称当前可交付。
 
-用户随后授权按 Bug 流程立即修复。新的执行交接及实时证据见[崩溃修复交付记录](vega-issue-486-crash-repair-delivery.md)和 Issue 最新交接：Codex 发布可执行方案后交 Ready 等待 Vega 先写真实列表测试；旧 42 项 GREEN 不作为新修复证据。
+用户随后授权按 Bug 流程立即修复，曾发布 Ready/Vega 交接，之后明确要求“你直接实现 不用等 vega”。当前由 Codex 组织专职子 agent 直接推进；新的执行归属和实时证据见[崩溃修复交付记录](vega-issue-486-crash-repair-delivery.md)与 Issue 最新交接。旧 42 项 GREEN 不作为新修复证据。
 
 ## 顺序与可信来源
 

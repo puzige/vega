@@ -14,9 +14,14 @@ use vega_theme::{Layout, Typography, theme};
 
 use crate::conversation_stream::links::{LinkRange, link_regions};
 
+#[cfg(test)]
+type LinkOpener = std::rc::Rc<dyn Fn(&str)>;
+
 #[derive(Clone, Default)]
 struct Dependencies {
     service: LinkPreviewService,
+    #[cfg(test)]
+    opener: Option<LinkOpener>,
 }
 
 #[derive(Default)]
@@ -257,6 +262,14 @@ fn acquire(window: &mut Window, cx: &mut App) -> Entity<Coordinator> {
 }
 
 pub(crate) fn open_target(target: &str, cx: &mut App) {
+    #[cfg(test)]
+    if let Some(opener) = cx
+        .try_global::<Registry>()
+        .and_then(|registry| registry.dependencies.opener.clone())
+    {
+        opener(target);
+        return;
+    }
     cx.open_url(target);
 }
 
@@ -1132,6 +1145,7 @@ fn build_card(
         .on_click(move |_, _, cx| open_target(&open_target_value, cx));
     let card = div()
         .id("markdown-link-preview")
+        .test_support()
         .occlude()
         .w(width)
         .max_h(height)
@@ -1195,6 +1209,7 @@ fn build_card(
         body = body.child(
             div()
                 .id("link-preview-image")
+                .test_support()
                 .flex_shrink_0()
                 .w(image_width)
                 .h(image_height)
@@ -1208,6 +1223,7 @@ fn build_card(
             body = body.child(
                 div()
                     .id("link-preview-title")
+                    .test_support()
                     .role(Role::Label)
                     .aria_label(title.clone())
                     .font_weight(FontWeight::MEDIUM)
@@ -1320,4 +1336,49 @@ fn control(
         .flex_shrink_0()
         .px_2()
         .child(label)
+}
+
+#[cfg(test)]
+pub mod test_support {
+    use super::*;
+
+    pub struct LinkObservation {
+        pub key: String,
+        pub target: String,
+        pub label: String,
+        pub description: String,
+        pub role: Role,
+        pub text_bounds: Vec<Bounds<Pixels>>,
+        pub icon_bounds: Vec<Bounds<Pixels>>,
+        pub focus: FocusHandle,
+    }
+
+    pub fn install_dependencies(service: LinkPreviewService, opener: LinkOpener, cx: &mut App) {
+        registry(cx).dependencies = Dependencies {
+            service,
+            opener: Some(opener),
+        };
+    }
+
+    pub fn visible_links(window: &Window, cx: &App) -> Vec<LinkObservation> {
+        coordinator(window, cx)
+            .map(|entity| {
+                entity
+                    .read(cx)
+                    .visible
+                    .iter()
+                    .map(|link| LinkObservation {
+                        key: link.key.clone(),
+                        target: link.target.clone(),
+                        label: link.label.clone(),
+                        description: link.description.clone(),
+                        role: link.role,
+                        text_bounds: link.text_bounds.clone(),
+                        icon_bounds: link.icon_bounds.clone(),
+                        focus: link.focus.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }

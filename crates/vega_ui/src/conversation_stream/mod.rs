@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod link_preview_tests;
+
 mod privacy;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 mod attachments;
