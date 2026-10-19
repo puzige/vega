@@ -144,7 +144,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 参与开发前必读 [`AGENTS.md`](AGENTS.md) 和 [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md)。
 自动测试保留进程内业务、安全、存储与 UI 回归；按 [2026-09-25 用户裁决](docs/vega-issue-149-remove-real-e2e.md) 优先 mock 外部依赖并保留业务断言，纯真实系统契约改由用户手测。
 
-交付节奏（2026-09-23 用户裁决）：接卡置 `In progress` → 实现（**本地只跑本卡功能点测试，不跑全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**；用户手测通过才回写/关 Issue/Done/清理，不通过退回 `In progress`。详见 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
+交付节奏（2026-09-23 用户裁决）：接卡置 `In progress` → 实现（**本地只跑本卡功能点测试，不跑全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**；用户手测通过才回写/关 Issue/Done，不通过退回 `In progress`；CI 通过并合并后允许自动删除已合并远端任务分支，证据/完整 SHA/patch 须可恢复，本地分支/worktree 依[安全清理规则](docs/vega-issue-workflow.md#分支与-worktree-清理规则)处理，不授权删除用户数据。详见 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
 
 ### 前置要求（macOS）
 
