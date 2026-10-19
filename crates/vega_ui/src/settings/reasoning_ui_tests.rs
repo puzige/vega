@@ -227,7 +227,7 @@ fn reload_and_conflict_feedback_remain_visible_across_model_navigation(cx: &mut 
                 .any(|label| label.contains("并发修改"))
         );
         let reload = settings.read(cx).reasoning_focuses[0].1.clone();
-        window.click(gpui_kit::ElementId::from(reload), cx);
+        window.click(gpui_kit::ElementId::from(&reload), cx);
     })
     .expect("reload after navigation");
     assert_eq!(*reloads.borrow(), 1);
