@@ -81,6 +81,11 @@ impl ProjectsBlock {
         view
     }
 
+    #[cfg(test)]
+    pub(super) fn disable_branch_probe(&mut self) {
+        self.branch_service = None;
+    }
+
     /// Re-reads the project list in the current sort order.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.invalidate_branches();

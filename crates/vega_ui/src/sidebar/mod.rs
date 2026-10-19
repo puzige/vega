@@ -721,6 +721,18 @@ impl Render for Sidebar {
     }
 }
 
+macro_rules! observe_sidebar {
+    ($element:expr) => {{
+        let element = $element;
+        #[cfg(test)]
+        let element = gpui_kit::TestSupportExt::test_support(element);
+        element
+    }};
+}
+
+#[cfg(test)]
+mod pinned_natural_height_tests;
+
 mod projects_block;
 mod row_helpers;
 mod threads_block;

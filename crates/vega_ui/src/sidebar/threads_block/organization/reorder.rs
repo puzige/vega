@@ -356,7 +356,13 @@ impl ThreadsBlock {
             })
             .child(
                 gpui_kit::canvas(
-                    move |bounds, window, _| {
+                    move |bounds, window, _cx| {
+                        #[cfg(test)]
+                        if let ReorderItem::Thread(id) = &bounds_item {
+                            crate::sidebar::pinned_natural_height_tests::record_row(
+                                id, bounds, window, _cx,
+                            );
+                        }
                         bounds_cache.borrow_mut().insert(
                             bounds_item,
                             RowBounds {
