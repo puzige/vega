@@ -260,6 +260,28 @@ impl Fixture {
         F: FnOnce(Run) -> Fut,
         Fut: Future<Output = T>,
     {
+        if let Some(parent) = messages::find(self.store.conn(), parent_message).unwrap() {
+            assert_eq!(parent.thread_id, self.parent.id);
+            assert_eq!(parent.role, "assistant");
+        } else {
+            messages::insert(
+                self.store.conn(),
+                &messages::MessageRow {
+                    id: parent_message.into(),
+                    thread_id: self.parent.id.clone(),
+                    seq: messages::next_seq(self.store.conn(), &self.parent.id).unwrap(),
+                    role: "assistant".into(),
+                    kind: "text".into(),
+                    content: String::new(),
+                    status: "streaming".into(),
+                    created_at: 1,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+        }
         let mut supervisor = Supervisor::new();
         let cancel = CancellationToken::new();
         let run = Run {
