@@ -4,7 +4,6 @@ use super::{
     set_thread_running,
 };
 use crate::settings::SettingsOpen;
-use gpui_kit as gpui;
 use gpui_kit::component::Root;
 use gpui_kit::test::{ElementSnapshot, TestWindowExt};
 use gpui_kit::{
@@ -460,14 +459,19 @@ fn assert_selected_quad(fixture: &Fixture, cx: &mut TestAppContext, row: Bounds<
         let scale = window.scale_factor();
         assert!(
             window.painted_quads().iter().any(|quad| {
-                let bounds = quad.bounds.to_pixels(scale);
+                let bounds = quad.bounds.map(|value| px(value.as_f32() / scale));
                 let matches = (bounds.left() - row.left()).abs() <= px(0.5)
                     && (bounds.top() - row.top()).abs() <= px(0.5)
                     && (bounds.size.width - row.size.width).abs() <= px(0.5)
                     && (bounds.size.height - row.size.height).abs() <= px(0.5)
                     && quad.background.as_solid() == Some(color);
                 if matches {
-                    contained(quad.content_mask.bounds.to_pixels(scale), row);
+                    contained(
+                        quad.content_mask
+                            .bounds
+                            .map(|value| px(value.as_f32() / scale)),
+                        row,
+                    );
                 }
                 matches
             }),

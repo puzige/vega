@@ -54,7 +54,7 @@ A05 按现有显示优先级分别测试静止、运行、悬停/操作、菜单
 ### 3.1 测试补丁（生产行为保持基线）
 
 1. 新建 `crates/vega_ui/src/sidebar/pinned_rows_tests.rs`，只写 A01–A06 所需 fixture、GPUI 测试和断言。行为命名，不将 issue/task 编号写入非文档代码。
-2. `crates/vega_ui/src/sidebar/mod.rs` 接入 `#[cfg(test)] mod pinned_rows_tests;`。测试作为 sidebar 子模块读取私有 `Sidebar.sessions_block`，不新增 getter 或生产公共 API；GPUI 测试宏通过模块内 `use gpui_kit as gpui;` 绑定底层展开路径。
+2. `crates/vega_ui/src/sidebar/mod.rs` 接入 `#[cfg(test)] mod pinned_rows_tests;`。测试作为 sidebar 子模块读取私有 `Sidebar.sessions_block`，不新增 getter 或生产公共 API；使用当前 facade 的 `#[gpui_kit::test]` 宏及测试 API，不添加未使用的别名导入。
 3. `crates/vega_ui/Cargo.toml` 仅增加开发阶段必需的 dev dependency：当前锁定 `gpui_kit = 0.6.1` 的 `test-support` feature，以及白名单内的 `tempfile`。允许该 feature 必需的传递测试依赖；不另加 GPUI 直接依赖，不升级既有包。`Cargo.lock` 仅记录这些测试 feature 所需解析边，并逐项审查。
 4. 几何观测只添加于现有节点：`sidebar/mod.rs` 的外层滚动容器及 `threads_block/organization/render.rs` 的分组/置顶视口使用固定 `debug_selector`；动态行在 `threads_block/organization/reorder.rs::render_reorder_row` 最终返回 `AnyElement` 前以 `#[cfg(test)]` 接入 `.test_support()`，保持原 `Interaction` 参数类型。`threads_block.rs` 的标题、状态、操作槽及必要时 `sidebar/row_helpers.rs` 使用同类测试观测。通过 `Window::find` 得到实际 prepaint bounds/可见性；完整可见另断言行被视口包含。视口不用 `.test_support()` 包裹，避免改变 scroll fade 所需类型。不得新增改变布局的 wrapper、固定高度、最小高度或收缩约束；观测支持必须不改变生产行为，GREEN 后一并删除。
 5. 测试在 GPUI `TestAppContext::open_window` 的 960×600 窗口中挂载 `component::Root → Sidebar::new`，用真实侧栏渲染链路测实际 bounds、滚动事件与 `OpenedThread.id` 终态。fixture 预先固定 ID 顺序，可经现有 ReorderThread 服务准备，不调用生产排序函数计算期望。不得用源码匹配、只看 style 参数、独立仿制 Flex 容器或镜像几何算法代替。
@@ -106,3 +106,4 @@ PR 必须链接生产基线、冻结测试源码/内容标识、RED run/job 与�
 - 用户明确授权当前主会话接管原等待 Codex 的方案/审查/集成工作，旧交接、分支和证据不覆盖。
 - 冻结前独立审查补齐 A03 首条再次点击、明确 64/480px 内部位移；A04 固定同一挂载实例和先滚到底再取消置顶，明确 32→0px 偏移恢复；同时明确 A05 显示优先级与文件 Store 刷新等待。
 - 当前 API 核查确认可从零挂载；测试模块放在 sidebar 子模块，采用动态行 `.test_support()`/Window::find 与固定视口 selector，避免静态 selector 限制和 fade 类型冲突。不需要恢复旧 fixture 或新增生产 API。
+- 首轮 [Actions 39238731168](https://github.com/puzige/vega/actions/runs/39238731168) 在测试编译阶段失败，不计有效 RED；`Bounds<ScaledPixels>` 不能调用 `Bounds<DevicePixels>::to_pixels`，应按 scale factor 逐分量转换。当前 facade 宏不需要 `gpui_kit as gpui` 别名，删除该未使用导入。此为测试接线纠错，不改变冻结验收或断言数值；原始提交与日志保留在 PR #496。
