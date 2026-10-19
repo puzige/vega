@@ -431,6 +431,13 @@ impl Element for MarkdownLinkPreviewLayer {
             window.with_element_state::<Entity<Coordinator>, _>(id, |_, _| ((), entity.clone()));
         }
         let (focus_changed, focused) = entity.update(cx, |state, cx| {
+            for link in &mut state.staged {
+                link.scroll = link
+                    .scopes
+                    .iter()
+                    .map(|scope| scope.scroll.stamp())
+                    .collect();
+            }
             let previous = std::mem::replace(&mut state.visible, std::mem::take(&mut state.staged));
             let mut closed = false;
             let current_key = state
@@ -702,7 +709,7 @@ pub(crate) fn prepaint_link_targets(
                 text_bounds: bounds.clone(),
                 icon_bounds: icons,
                 focus: focus.clone(),
-                scroll: scopes.iter().map(|scope| scope.scroll.stamp()).collect(),
+                scroll: Vec::new(),
                 scopes: scopes.clone(),
             });
             state.staged.last().map(|link| {
