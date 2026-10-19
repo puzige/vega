@@ -6,10 +6,12 @@ Production baseline: `ae35310fe7e1ddac2b79d7ec7bc55bcca2d6af2a`.
 
 ## Test-first phase
 
-Status: tests written; review and Actions RED pending. Production behavior has
-not changed. The only existing Rust changes are conditional module declarations
-for these new development tests. No historical test suite or dependency was
-restored.
+Status: initial test-first source reviewed and submitted; the first Actions
+run stopped at test compilation wiring, before discovery or execution. The
+SQLite integer wiring has been corrected; effective RED still awaits Actions.
+Production behavior has not changed. The only existing Rust changes are
+conditional module declarations for these new development tests. No historical
+test suite or dependency was restored.
 
 | Acceptance | Development test | Expected observation |
 | --- | --- | --- |
@@ -42,12 +44,31 @@ produce behavioral failures without requiring a new production interface.
 - `git diff --check`: exit 0. Static inventory contains six test definitions;
   no new dependencies, test scheduling seams, source-string assertions,
   sleeps, ignored tests or Rust comments were added.
-- Candidate source SHA-256 before main-agent freeze:
+- Initial test-first commit:
+  [`430838d76ae94893062b9339237637f3591ca44d`](https://github.com/puzige/vega/commit/430838d76ae94893062b9339237637f3591ca44d).
+- Initial source SHA-256:
   `subagents/tests.rs` =
   `8d8939f42e8ff5bc977493711f9a6ff9ab2b0c72f4a5dc49b530c9502c9a71a0`;
   `run_diagnostics/tests.rs` =
   `233b433703b4bc26e8f12f0591cd3b43b57b75e8fef6680bb244338c6cc5f5a4`.
-  Test-first commit remains pending main-agent review/commit.
+- First Actions attempt:
+  [run 39195618444](https://github.com/puzige/vega/actions/runs/39195618444),
+  [Nextest job](https://github.com/puzige/vega/actions/runs/39195618444/job/117877626900)
+  and [Clippy job](https://github.com/puzige/vega/actions/runs/39195618444/job/117877627016).
+  The store test passed `usize` to `pragma_update` and read `usize` from
+  `PRAGMA user_version`; rusqlite does not implement the required integer
+  conversions. Rust test discovery and execution did not complete, and no
+  discovery/execution counts were produced. This is a test-wiring failure,
+  not effective RED or root-cause evidence.
+- The wiring correction uses checked `i64` conversions for the migration index
+  and current migration count, and reads both schema versions as `i64`. The
+  six cases, triggers, expected values and acceptance meaning are unchanged.
+  Corrected source SHA-256: `subagents/tests.rs` remains
+  `8d8939f42e8ff5bc977493711f9a6ff9ab2b0c72f4a5dc49b530c9502c9a71a0`;
+  `run_diagnostics/tests.rs` =
+  `ca158e55e2c9babecd1454d982b135f573864a96a326d1fc90105295ccc70669`.
+  After this correction, rustfmt, workspace format check and diff check each
+  exited 0; no local compilation or tests ran.
 - Effective RED, causal numeric SQLite evidence, run/job and exact counts:
   pending Actions.
 - Production implementation, same-test GREEN, evidence retention, independent

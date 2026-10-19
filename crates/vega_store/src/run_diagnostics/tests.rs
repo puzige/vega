@@ -61,7 +61,11 @@ fn schema_upgrade_preserves_unknown_failures_and_rejects_untrusted_runtime_detai
             .expect("legacy migration");
         transaction.execute_batch(sql).expect("schema-27 migration");
         transaction
-            .pragma_update(None, "user_version", index + 1)
+            .pragma_update(
+                None,
+                "user_version",
+                i64::try_from(index + 1).expect("legacy version range"),
+            )
             .expect("legacy version");
         transaction.commit().expect("legacy migration commit");
         if rebuilds_threads {
@@ -71,7 +75,7 @@ fn schema_upgrade_preserves_unknown_failures_and_rejects_untrusted_runtime_detai
                 .expect("legacy foreign keys restored");
         }
     }
-    let version: usize = store
+    let version: i64 = store
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("schema-27 version");
@@ -144,11 +148,14 @@ fn schema_upgrade_preserves_unknown_failures_and_rejects_untrusted_runtime_detai
             "missing {name}"
         );
     }
-    let upgraded: usize = store
+    let upgraded: i64 = store
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("upgraded version");
-    assert_eq!(upgraded, crate::MIGRATIONS.len());
+    assert_eq!(
+        upgraded,
+        i64::try_from(crate::MIGRATIONS.len()).expect("current version range")
+    );
     let export =
         export_run(store.conn(), "legacy-thread", "legacy-assistant").expect("legacy export");
     let json: serde_json::Value = serde_json::from_str(&export).expect("legacy JSON");
