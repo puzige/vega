@@ -501,7 +501,8 @@ impl ThreadsBlock {
             .as_ref()
             .map(|thread| thread.id.clone());
         Some(
-            observe_sidebar!(div().id("organization-pinned"))
+            div()
+                .id("organization-pinned")
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
@@ -517,7 +518,6 @@ impl ThreadsBlock {
                 .child(
                     div()
                         .id("organization-pinned-scroll")
-                        .debug_selector(|| "organization-pinned-scroll".into())
                         // Include the row surface outset inside the scroll clip.
                         .ml(px(-8.0))
                         .pl_2()
@@ -706,7 +706,8 @@ impl ThreadsBlock {
         rows = rows.children(
             has_hidden.then(|| self.render_progressive_control(self.projects_expanded, cx)),
         );
-        observe_sidebar!(div().id("organization-projects"))
+        div()
+            .id("organization-projects")
             .flex()
             .flex_col()
             .child(header)

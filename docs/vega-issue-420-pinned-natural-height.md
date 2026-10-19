@@ -32,3 +32,15 @@
 遵守 AGENTS.md、执行指南及 Rust 测试开发/交付生命周期。本地只做fmt、diff、offline no-deps metadata等快速静态检查，不运行应用、编译、构建、Clippy或测试。
 
 云端沿用现有 PR gate：fmt、全目标 Clippy、三组 Python、Nextest workspace；每5分钟查询CI。保留 RED提交/源码与原始失败 → 最小实现 → 相同测试GREEN 的准确计数和链接；独立删除Rust测试/独占支持，最终head完整门禁确认Rust0发现/0执行后转正式PR合并。Issue不自动关闭，合并后In review等待用户手测，任务分支/worktree保留。回滚只经PR恢复本轮布局差异，不清除用户置顶数据。
+
+## 本轮云端证据
+
+PR [#501](https://github.com/puzige/vega/pull/501)。首轮 [39255654694](https://github.com/puzige/vega/actions/runs/39255654694) 为观测包装导致 fade 类型不匹配的编译失败，不计RED；改用固定 selector 读取真实 bounds。随后测试参数的多余借用仅做lint纠错，断言不变。
+
+- 有效RED：`4ca8da8f`，[39259001179](https://github.com/puzige/vega/actions/runs/39259001179)。4执行、0通过、4失败、0跳过；实际160px对比192/224/640/1632px。Clippy成功。
+- 最小实现：`f190ba54`，仅删除局部max-height/overflow/fade；[39260153873](https://github.com/puzige/vega/actions/runs/39260153873)行为4通过，Clippy因obsolete import失败，后续仅删除无用导入。
+- 完整带测试GREEN：`c54d4c52da8090570f5c1da7e9165ec8688445de`，[39261265115](https://github.com/puzige/vega/actions/runs/39261265115)，4执行、4通过、0跳过；Python5+15+14=34及fmt/Clippy/required check成功。
+- [同一冻结测试源码](https://github.com/puzige/vega/blob/c54d4c52da8090570f5c1da7e9165ec8688445de/crates/vega_ui/src/sidebar/pinned_natural_height_tests.rs)：blob `407499d6c10078a910b80b174da47882350e1e95`，SHA256 `893c592997f7c48643fce201caa57e19f72b32bbc54cce38b1421f3a99b424e1`；有效RED与GREEN之间未改测试目标、数据和断言。
+- 独立删测后最新空集完整门禁待CI，结果固定在PR；不把空集称为Rust测试通过。
+
+本地仅fmt/diff/offline metadata等静态检查成功，未运行Vega、编译或测试。发布安装和本轮用户手测仍待进行。
