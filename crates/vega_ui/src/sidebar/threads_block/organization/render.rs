@@ -1,5 +1,7 @@
 use super::*;
 use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
+use gpui_kit::{Bounds, Pixels, Point};
+use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone)]
 pub(super) enum Control {
@@ -18,6 +20,47 @@ pub(super) enum Control {
     ToggleSort,
 }
 impl ThreadsBlock {
+    pub(super) fn open_organization_menu(
+        &mut self,
+        menu: OrganizationMenu,
+        position: Point<Pixels>,
+        anchor: Anchor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_actions();
+        if let Some(org) = self.organization.as_mut() {
+            org.menu = Some(menu);
+            org.menu_anchor = Some((position, anchor));
+            org.menu_index = 0;
+            window.focus(&org.menu_focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn control_action_from_button(
+        &mut self,
+        action: Control,
+        bounds: Option<Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            Control::Menu(menu) => {
+                if let Some(bounds) = bounds {
+                    self.open_organization_menu(
+                        menu,
+                        bounds.bottom_right(),
+                        Anchor::TopRight,
+                        window,
+                        cx,
+                    );
+                }
+            }
+            action => self.control_action(action, window, cx),
+        }
+    }
+
     pub(super) fn control_action(
         &mut self,
         action: Control,
@@ -29,6 +72,7 @@ impl ThreadsBlock {
                 self.close_actions();
                 if let Some(org) = self.organization.as_mut() {
                     org.menu = None;
+                    org.menu_anchor = None;
                     if let Some(snapshot) = &org.snapshot {
                         let mut preferences = snapshot.preferences.clone();
                         preferences.view = view;
@@ -42,14 +86,7 @@ impl ThreadsBlock {
             Control::CollapseAll => {
                 self.submit_organization(SidebarOrganizationAction::CollapseAll, cx)
             }
-            Control::Menu(menu) => {
-                self.close_actions();
-                if let Some(org) = self.organization.as_mut() {
-                    org.menu = Some(menu);
-                    org.menu_index = 0;
-                    window.focus(&org.menu_focus, cx);
-                }
-            }
+            Control::Menu(_) => return,
             Control::Archive => {
                 if let Some(org) = self.organization.as_mut() {
                     org.archive = !org.archive;
@@ -125,7 +162,11 @@ impl ThreadsBlock {
             _ => label.clone(),
         };
         let keyboard_action = action.clone();
-        div()
+        let button_bounds =
+            matches!(&action, Control::Menu(_)).then(|| Rc::new(Cell::new(None::<Bounds<Pixels>>)));
+        let mouse_bounds = button_bounds.clone();
+        let keyboard_bounds = button_bounds.clone();
+        let control = div()
             .id(ElementId::Name(id.clone().into()))
             .focusable()
             .tab_stop(true)
@@ -165,19 +206,42 @@ impl ThreadsBlock {
                         return;
                     }
                     cx.stop_propagation();
-                    this.control_action(action.clone(), window, cx);
+                    this.control_action_from_button(
+                        action.clone(),
+                        mouse_bounds.as_ref().and_then(|bounds| bounds.get()),
+                        window,
+                        cx,
+                    );
                 }),
             )
             .on_key_down(
                 cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "enter" || event.keystroke.key == "space" {
                         cx.stop_propagation();
-                        this.control_action(keyboard_action.clone(), window, cx);
+                        this.control_action_from_button(
+                            keyboard_action.clone(),
+                            keyboard_bounds.as_ref().and_then(|bounds| bounds.get()),
+                            window,
+                            cx,
+                        );
                     }
                 }),
             )
             .child(label)
-            .into_any_element()
+            .when_some(button_bounds, |control, bounds| {
+                let button_geometry = gpui_kit::ScrollHandle::new();
+                control.relative().track_scroll(&button_geometry).child(
+                    gpui_kit::canvas(
+                        move |_, _, _| bounds.set(Some(button_geometry.bounds())),
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+            });
+        control.into_any_element()
     }
     pub(in crate::sidebar::threads_block) fn render_organization(
         &mut self,
@@ -232,6 +296,31 @@ impl ThreadsBlock {
                     }
                 }),
             )
+            .on_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    let modifiers = &event.keystroke.modifiers;
+                    if event.keystroke.key != "tab"
+                        || modifiers.control
+                        || modifiers.alt
+                        || modifiers.platform
+                        || modifiers.function
+                        || this.actions_open.is_some()
+                        || this.editing.is_some()
+                        || cx.has_active_drag()
+                        || this.organization.as_ref().is_none_or(|org| {
+                            org.menu.is_some() || org.editor.is_some() || org.reorder.gesture
+                        })
+                    {
+                        return;
+                    }
+                    if modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }),
+            )
             .flex()
             .flex_col()
             .gap(px(Layout::SIDEBAR_SECTION_GAP));
@@ -261,7 +350,11 @@ impl ThreadsBlock {
         let id = id.into();
         let label = label.into();
         let keyboard_action = action.clone();
-        div()
+        let button_bounds =
+            matches!(&action, Control::Menu(_)).then(|| Rc::new(Cell::new(None::<Bounds<Pixels>>)));
+        let mouse_bounds = button_bounds.clone();
+        let keyboard_bounds = button_bounds.clone();
+        let control = div()
             .id(ElementId::Name(id.clone().into()))
             .aria_label(label.clone())
             .focusable()
@@ -286,19 +379,42 @@ impl ThreadsBlock {
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.control_action(action.clone(), window, cx);
+                    this.control_action_from_button(
+                        action.clone(),
+                        mouse_bounds.as_ref().and_then(|bounds| bounds.get()),
+                        window,
+                        cx,
+                    );
                 }),
             )
             .on_key_down(
                 cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
-                        this.control_action(keyboard_action.clone(), window, cx);
+                        this.control_action_from_button(
+                            keyboard_action.clone(),
+                            keyboard_bounds.as_ref().and_then(|bounds| bounds.get()),
+                            window,
+                            cx,
+                        );
                     }
                 }),
             )
             .child(crate::icons::icon(kind, colors.text_secondary))
-            .into_any_element()
+            .when_some(button_bounds, |control, bounds| {
+                let button_geometry = gpui_kit::ScrollHandle::new();
+                control.relative().track_scroll(&button_geometry).child(
+                    gpui_kit::canvas(
+                        move |_, _, _| bounds.set(Some(button_geometry.bounds())),
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+            });
+        control.into_any_element()
     }
 
     pub(super) fn eligible_threads(&self, show_archived: bool) -> Vec<Thread> {
