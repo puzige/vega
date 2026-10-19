@@ -12,6 +12,7 @@ pub(super) fn text_spans(text: &str) -> Vec<StreamSpan> {
                 text: text[cursor..range.start].to_owned(),
                 style: SpanStyle::Plain,
                 link: None,
+                link_occurrence: None,
             });
         }
         let target = text[range.clone()].to_owned();
@@ -19,6 +20,7 @@ pub(super) fn text_spans(text: &str) -> Vec<StreamSpan> {
             text: target.clone(),
             style: SpanStyle::Link,
             link: Some(target),
+            link_occurrence: Some(range.start),
         });
         cursor = range.end;
     }
@@ -27,6 +29,7 @@ pub(super) fn text_spans(text: &str) -> Vec<StreamSpan> {
             text: text[cursor..].to_owned(),
             style: SpanStyle::Plain,
             link: None,
+            link_occurrence: None,
         });
     }
     spans

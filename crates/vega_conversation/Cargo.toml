@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+html5ever.workspace = true
+image.workspace = true
+reqwest.workspace = true
 ring.workspace = true
 vega_credentials = { workspace = true }
 vega_store = { workspace = true }
@@ -12,7 +15,7 @@ vega_mcp = { workspace = true }
 vega_tools = { workspace = true }
 vega_token = { workspace = true }
 tokio-util = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

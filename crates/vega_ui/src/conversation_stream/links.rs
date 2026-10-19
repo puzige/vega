@@ -1,4 +1,8 @@
-use std::{ops::Range, time::Duration};
+use std::{
+    hash::{Hash, Hasher},
+    ops::Range,
+    time::Duration,
+};
 
 use gpui_kit::{
     App, AppContext, Bounds, CursorStyle, ElementId, Entity, GlobalElementId, Hitbox, MouseButton,
@@ -9,7 +13,16 @@ use tokio_util::sync::CancellationToken;
 
 use super::model::StreamSpan;
 
-pub(crate) type LinkRange = (Range<usize>, String);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LinkRange {
+    pub range: Range<usize>,
+    pub target: String,
+    pub occurrence: usize,
+    pub label: String,
+    pub owner: String,
+    pub starts_here: bool,
+    pub text_identity: u64,
+}
 
 const MULTI_CLICK_DELAY: Duration = Duration::from_millis(500);
 const CLICK_SLOP: f32 = 4.;
@@ -46,35 +59,72 @@ struct LinkPress {
 }
 
 #[derive(Clone)]
-pub(super) struct LinkRegion {
+pub(crate) struct LinkRegion {
     pub bounds: Bounds<Pixels>,
     pub index: usize,
+    pub baseline: Pixels,
 }
 
 pub(crate) fn link_ranges(spans: &[StreamSpan]) -> Vec<LinkRange> {
+    let mut identity = std::hash::DefaultHasher::new();
+    for span in spans {
+        span.text.hash(&mut identity);
+    }
+    let text_identity = identity.finish();
     let mut offset = 0;
-    spans
-        .iter()
-        .filter_map(|span| {
-            let start = offset;
-            offset += span.text.len();
-            span.link
-                .as_ref()
-                .filter(|_| start < offset)
-                .map(|target| (start..offset, target.clone()))
-        })
-        .collect()
+    let mut links: Vec<LinkRange> = Vec::new();
+    for span in spans {
+        let start = offset;
+        offset += span.text.len();
+        if let Some(target) = span.link.as_ref().filter(|target| allowed_link(target))
+            && start < offset
+        {
+            let occurrence = span.link_occurrence.unwrap_or(start);
+            if let Some(previous) = links.last_mut()
+                && previous.occurrence == occurrence
+                && previous.target == *target
+                && previous.range.end == start
+            {
+                previous.range.end = offset;
+                previous.label.push_str(&span.text);
+            } else {
+                links.push(LinkRange {
+                    range: start..offset,
+                    target: target.clone(),
+                    occurrence,
+                    label: span.text.clone(),
+                    owner: String::new(),
+                    starts_here: true,
+                    text_identity,
+                });
+            }
+        }
+    }
+    links
 }
 
 pub(crate) fn fragment_link_ranges(links: &[LinkRange], fragment: &Range<usize>) -> Vec<LinkRange> {
     links
         .iter()
-        .filter_map(|(range, target)| {
-            let start = range.start.max(fragment.start);
-            let end = range.end.min(fragment.end);
-            (start < end).then(|| (start - fragment.start..end - fragment.start, target.clone()))
+        .filter_map(|link| {
+            let start = link.range.start.max(fragment.start);
+            let end = link.range.end.min(fragment.end);
+            (start < end).then(|| {
+                let mut result = link.clone();
+                result.range = start - fragment.start..end - fragment.start;
+                result.starts_here &= start == link.range.start;
+                result
+            })
         })
         .collect()
+}
+
+pub(crate) fn own_links(links: &mut [LinkRange], owner: &str) {
+    for link in links {
+        if link.owner.is_empty() {
+            link.owner = owner.into();
+        }
+    }
 }
 
 pub(crate) fn link_element_id(prefix: &str, ordinal: usize) -> ElementId {
@@ -92,14 +142,24 @@ pub(crate) fn register_link_interactions(
     if links.is_empty() {
         return;
     }
-    let regions = link_regions(&layout, &links, window.text_style().text_align);
+    crate::link_preview::paint_link_decorations(&layout, &links, window, cx);
+    let mut regions = link_regions(&layout, &links, window.text_style().text_align);
+    for (index, link) in links.iter().enumerate() {
+        if let Some(bounds) = crate::link_preview::icon_bounds(&layout, link) {
+            regions.push(LinkRegion {
+                bounds,
+                index,
+                baseline: bounds.bottom(),
+            });
+        }
+    }
     let hovered = link_index(&regions, window.mouse_position())
-        .filter(|index| allowed_link(&links[*index].1))
+        .filter(|index| allowed_link(&links[*index].target))
         .filter(|_| hitbox.is_hovered(window));
     if hovered.is_some() {
         window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
     }
-    let Some(id) = id.filter(|_| links.iter().any(|(_, target)| allowed_link(target))) else {
+    let Some(id) = id.filter(|_| links.iter().any(|link| allowed_link(&link.target))) else {
         return;
     };
     let identity = (layout.text(), links.clone());
@@ -148,12 +208,12 @@ pub(crate) fn register_link_interactions(
                 return;
             }
             let Some(index) = link_index(&down_regions, event.position)
-                .filter(|index| allowed_link(&down_links[*index].1))
+                .filter(|index| allowed_link(&down_links[*index].target))
             else {
                 return;
             };
             state.press = Some(LinkPress {
-                target: down_links[index].1.clone(),
+                target: down_links[index].target.clone(),
                 origin: event.position,
                 moved: false,
             });
@@ -170,7 +230,7 @@ pub(crate) fn register_link_interactions(
         }
         let _ = move_state.update(cx, |state, _| {
             let hovered = link_index(&move_regions, event.position)
-                .filter(|index| allowed_link(&move_links[*index].1))
+                .filter(|index| allowed_link(&move_links[*index].target))
                 .filter(|_| move_hitbox.is_hovered_at(event.position, window));
             if state.hovered != hovered {
                 state.hovered = hovered;
@@ -182,7 +242,7 @@ pub(crate) fn register_link_interactions(
                 let dx = f32::from(event.position.x - pressed.origin.x);
                 let dy = f32::from(event.position.y - pressed.origin.y);
                 if dx * dx + dy * dy > CLICK_SLOP * CLICK_SLOP
-                    || hovered.is_none_or(|index| move_links[index].1 != pressed.target)
+                    || hovered.is_none_or(|index| move_links[index].target != pressed.target)
                 {
                     pressed.moved = true;
                 }
@@ -211,7 +271,7 @@ pub(crate) fn register_link_interactions(
                 || event.modifiers.platform
                 || !up_hitbox.is_hovered_at(event.position, window)
                 || link_index(&regions, event.position)
-                    .is_none_or(|index| links[index].1 != pressed.target)
+                    .is_none_or(|index| links[index].target != pressed.target)
             {
                 return None;
             }
@@ -242,7 +302,7 @@ pub(crate) fn register_link_interactions(
                     if !cancellation.is_cancelled() && window.is_window_active() {
                         state.pending = None;
                         state.focus_out = None;
-                        cx.open_url(&target);
+                        crate::link_preview::open_target(&target, cx);
                     }
                 });
             });
@@ -251,7 +311,11 @@ pub(crate) fn register_link_interactions(
     });
 }
 
-fn link_regions(layout: &TextLayout, links: &[LinkRange], align: TextAlign) -> Vec<LinkRegion> {
+pub(crate) fn link_regions(
+    layout: &TextLayout,
+    links: &[LinkRange],
+    align: TextAlign,
+) -> Vec<LinkRegion> {
     let bounds = layout.bounds();
     let line_height = layout.line_height();
     let mut regions = Vec::new();
@@ -274,7 +338,8 @@ fn link_regions(layout: &TextLayout, links: &[LinkRange], align: TextAlign) -> V
                     TextAlign::Center => (bounds.size.width - width) / 2.,
                     TextAlign::Right => bounds.size.width - width,
                 };
-            for (index, (range, _)) in links.iter().enumerate() {
+            for (index, link) in links.iter().enumerate() {
+                let range = &link.range;
                 let from = range.start.max(offset + start);
                 let to = range.end.min(offset + end);
                 if from >= to {
@@ -286,6 +351,9 @@ fn link_regions(layout: &TextLayout, links: &[LinkRange], align: TextAlign) -> V
                     regions.push(LinkRegion {
                         bounds: Bounds::new(point(left, y), size(right - left, line_height)),
                         index,
+                        baseline: y
+                            + (line_height - line.ascent() - line.descent()) / 2.
+                            + line.ascent(),
                     });
                 }
             }

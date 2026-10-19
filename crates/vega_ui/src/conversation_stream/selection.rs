@@ -120,10 +120,9 @@ impl SelectionDocumentBuilder {
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
         let styled = StyledText::new(text.to_owned()).with_runs(runs.clone());
-        let paint_runs = runs
-            .iter()
-            .any(|run| run.background_color.is_some())
-            .then_some(runs);
+        let paint_runs = (runs.iter().any(|run| run.background_color.is_some())
+            || !links.is_empty())
+        .then_some(runs);
         self.append(text, styled, paint_runs, links, id_prefix)
     }
 
@@ -145,6 +144,8 @@ impl SelectionDocumentBuilder {
         self.next_run_order += 1;
         let runs = self.runs.clone();
         let selection_color = self.selection_color;
+        let mut links = links;
+        super::links::own_links(&mut links, &fragment_id_owner(id_prefix, order));
         let fragment_links = links.clone();
         let fragment_id = format!("{id_prefix}-selection-run-{order}");
         let fragment =
@@ -170,7 +171,7 @@ impl SelectionDocumentBuilder {
                 .into_any_element()
             };
         if let Some(paint_runs) = paint_runs {
-            super::inline_code::flow(text.into(), paint_runs, fragment)
+            super::inline_code::flow_with_links(text.into(), paint_runs, links, fragment)
         } else {
             SelectableStyledText {
                 id: ElementId::Name(format!("{id_prefix}-selection-run-{order}").into()),
@@ -240,6 +241,7 @@ struct SelectableStyledText {
 struct SelectablePrepaintState {
     lines: Option<Vec<WrappedLine>>,
     hitbox: Hitbox,
+    targets: Vec<gpui_kit::AnyElement>,
 }
 
 impl IntoElement for SelectableStyledText {
@@ -296,8 +298,22 @@ impl Element for SelectableStyledText {
         let lines = self.paint_runs.as_ref().and_then(|runs| {
             super::inline_code::shape(self.content.clone(), runs, self.text.layout(), window)
         });
-        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        SelectablePrepaintState { lines, hitbox }
+        let hitbox = window.insert_hitbox(
+            crate::link_preview::interactive_bounds(bounds, &self.links),
+            HitboxBehavior::Normal,
+        );
+        let targets = crate::link_preview::prepaint_link_targets(
+            id,
+            self.text.layout(),
+            &self.links,
+            window,
+            cx,
+        );
+        SelectablePrepaintState {
+            lines,
+            hitbox,
+            targets,
+        }
     }
 
     fn paint(
@@ -328,6 +344,9 @@ impl Element for SelectableStyledText {
         } else {
             self.text
                 .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);
+        }
+        for target in &mut prepaint.targets {
+            target.paint(window, cx);
         }
         window.set_cursor_style(CursorStyle::IBeam, &prepaint.hitbox);
         register_link_interactions(
@@ -709,4 +728,8 @@ fn multi_click_range(text: &str, offset: usize, count: usize) -> Option<Range<us
             end + character.len_utf8()
         });
     Some(start..end)
+}
+
+fn fragment_id_owner(prefix: &str, order: u64) -> String {
+    format!("{prefix}-{order}")
 }

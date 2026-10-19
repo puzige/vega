@@ -1,5 +1,7 @@
 # Issue #455 · 普通 HTTP/HTTPS 地址可点击
 
+> 2026-10-19：后续展示以 [#486 需求 v1](vega-issue-486-markdown-link-preview.md) 为准，替代本页 A02/C1 的常显实线与不新增图标要求，并加入完整悬停预览；该需求尚未实现。裸 URL 的识别边界、目标保真、原文/代码排除和增量处理契约不变，历史验收保留。
+
 来源：[Issue #455](https://github.com/puzige/vega/issues/455)。2026-10-18 用户明确要求实现；参考图为用户消息中的裸 GitHub 地址。本卡是新增识别能力，Codex 冻结规格后组织专职子 agent 实现，主会话负责审查、PR、CI 和集成。
 
 ## 根因与基线

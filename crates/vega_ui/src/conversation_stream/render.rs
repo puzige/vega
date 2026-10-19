@@ -1665,6 +1665,12 @@ impl Render for ConversationStream {
             })
             .into_any_element();
         counters.record_render(render_t0);
-        element
+        crate::link_preview::MarkdownReadingScope::new(
+            format!("conversation-{}", self.thread.id),
+            self.selection_focus.clone(),
+        )
+        .track_list(self.list.clone())
+        .fill_height()
+        .child(element)
     }
 }

@@ -494,6 +494,7 @@ impl Render for VegaWindow {
                     render_delete_confirm_overlay(&thread, self.sidebar.clone(), colors)
                 }),
             )
+            .child(vega_ui::link_preview::MarkdownLinkPreviewLayer)
     }
 }
 

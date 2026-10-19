@@ -256,6 +256,7 @@ impl ThinkingBlock {
             (state.focus.clone(), state.scroll.clone())
         };
         let content = Self::render_source(card.clone(), window, cx);
+        let scope_id = format!("thinking-{}", card.entity_id());
         div()
             .relative()
             .w_full()
@@ -265,7 +266,11 @@ impl ThinkingBlock {
             .on_action(move |_: &CopySelectedText, _, cx| {
                 card.update(cx, ThinkingBlock::copy_selected_source);
             })
-            .child(content)
+            .child(
+                crate::link_preview::MarkdownReadingScope::new(scope_id, focus.clone())
+                    .track_scroll(scroll.clone())
+                    .child(content),
+            )
             .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
             .into_any_element()
     }

@@ -443,9 +443,10 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
             // 空行保留一行正文行高的自然占位（非定高行模型）。
             body = body.child(div().h(user_line_height()));
         } else {
-            let text = block_text(&line.spans, user_body_style(colors), colors);
-            body = body.child(super::inline_code::interactive_styled_text(
+            let runs = block_text_runs(&line.spans, user_body_style(colors), colors);
+            body = body.child(super::inline_code::interactive_text(
                 text,
+                runs,
                 link_ranges(&line.spans),
                 format!("user-message-{}-{index}", line.block_id),
             ));
@@ -1047,19 +1048,6 @@ fn user_body_style(colors: &ThemeColors) -> TextStyle {
     }
 }
 
-/// Turns one logical line's spans into a wrapping [`StyledText`] block.
-/// Spans are byte-sliced into [`TextRun`]s per the materialization mapping;
-/// long text wraps inside the item (C4 禁截断), so an item's natural height
-/// covers every line it needs.
-pub(crate) fn block_text(
-    spans: &[StreamSpan],
-    default_style: TextStyle,
-    colors: &ThemeColors,
-) -> StyledText {
-    let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-    StyledText::new(text).with_runs(block_text_runs(spans, default_style, colors))
-}
-
 fn markdown_text(
     spans: &[StreamSpan],
     style: TextStyle,
@@ -1080,8 +1068,11 @@ pub(super) fn block_text_runs(
     let mut runs: Vec<TextRun> = Vec::with_capacity(spans.len());
     for span in spans {
         let mut style = default_style.clone();
-        apply_span_style(&mut style, span.style, colors);
-        if span.link.is_some() {
+        let linked = span.link.as_deref().is_some_and(super::links::allowed_link);
+        if span.style != SpanStyle::Link || linked {
+            apply_span_style(&mut style, span.style, colors);
+        }
+        if linked {
             apply_span_style(&mut style, SpanStyle::Link, colors);
         }
         runs.push(style.to_run(span.text.len()));
@@ -1102,11 +1093,10 @@ pub(crate) fn apply_span_style(style: &mut TextStyle, span: SpanStyle, colors: &
             style.background_color = Some(colors.conversation_code.into());
         }
         SpanStyle::Link => {
-            style.underline = Some(UnderlineStyle {
-                thickness: px(1.),
-                color: Some(colors.accent.into()),
-                wavy: false,
-            });
+            style.underline = None;
+            if style.font_weight < FontWeight::MEDIUM {
+                style.font_weight = FontWeight::MEDIUM;
+            }
             style.color = colors.accent.into();
         }
         // 高亮 token：等宽字体/字号与代码行基style一致，只覆写映射表给出的
