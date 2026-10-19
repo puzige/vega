@@ -1,5 +1,6 @@
 use super::*;
 use crate::native_subagents::NativeSubagentUpdate;
+use core::prelude::v1::test;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{TestAppContext, VisualTestContext};
 use tokio::sync::oneshot;
