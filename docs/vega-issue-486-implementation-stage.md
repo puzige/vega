@@ -1,6 +1,6 @@
 # Issue #486 · 实现阶段交接
 
-2026-10-19。执行者 `link_preview_executor`，worktree `vega-486-markdown-link-preview`，分支 `feat/486-markdown-link-preview`。生产实现已写入工作树，待 Codex 主会话审查、提交和云端验证；未 commit/push，没有修改冻结测试，也没有进入删测阶段。
+2026-10-19。执行者 `link_preview_executor`，worktree `vega-486-markdown-link-preview`，分支 `feat/486-markdown-link-preview`。首轮生产实现已由 Codex 主会话提交并 push 为 `b5b7faed5ea6cfe0048e0e07517a2d80f8949313`；执行者未 commit/push。当前补丁仅修正首轮 CI 的 GPUI API 错误及主会话明确批准的一个未使用测试 import，待复审/云端验证，没有进入删测阶段。
 
 ## 时序与验证状态
 
@@ -15,7 +15,7 @@
 | `cargo metadata --offline --locked --format-version 1 --no-deps` | exit 0；只读取清单，不编译 |
 | lock package identity 静态比较 | 与冻结提交相同，924 个 name/version/source/checksum 身份均未变化 |
 | 新增生产源码静态审阅 | 没有新增源代码注释，没有新增 `.unwrap()` / `.expect()`；没有同步 `runtime.block_on` |
-| 四个冻结文件 SHA-256 | 与冻结记录逐项一致，见下表 |
+| 四个冻结文件 SHA-256 | 首轮与冻结记录一致；本次唯一 import 例外及新 hash 另列，其他三个不变 |
 
 ## 实现落点
 
@@ -37,7 +37,7 @@
 
 窗口层的真实代理共同消费并记录 role、label、description；测试观察读取同一登记值。图标不单独占焦点。鼠标动作在按下至释放及重入前抑制预览，保留原 500ms 点击仲裁与 4px 拖选屏障。Escape 也抑制仅 Armed 的链接；焦点离开同样走 150ms 路径；窗口释放取消 Armed/Leaving/Active 全部 token。卡片固定站点/Open 头部，内容及长地址在卡内滚动，标题/摘要采用明确行高与 2/3 行限制。
 
-## 冻结测试完整性
+## 原始冻结测试完整性
 
 | 文件 | SHA-256 |
 |---|---|
@@ -47,6 +47,18 @@
 | `crates/vega_ui/src/conversation_stream/link_preview_thinking_fixture.rs` | `6683f075a1fcfd3185958d60393abc19a9d5e60573a01725513344ba07080ca6` |
 
 A01–A12 的测试定义、矩阵和冻结清单位于测试阶段页；本阶段未增加、删除、更名、放宽、ignore 或重试任何测试。UI 临时观察位于 `link_preview::test_support`；服务临时 re-export/factory 仍按已批准 `test-support` cfg 隔离，没有第二套策略、解析或缓存逻辑。
+
+## CI 首轮编译修正与批准的 import 例外
+
+[Actions 39204406299](https://github.com/puzige/vega/actions/runs/39204406299) 在首轮实现提交 `b5b7faed5ea6cfe0048e0e07517a2d80f8949313` 失败：fmt 成功，Python 34 项成功；Rust 尚未完成发现/执行，没有 GREEN。原始错误已由主会话固定于下方 PR 批准记录，`/tmp/vega-486-ci-39204406299.log` 仅为本地诊断副本。读取 pinned GPUI/AccessKit 后，仅作如下生产 API 修正：为 `ReadingScopeElement` 派生 `IntoElement`；将代理的 `.size(Size<Pixels>)` 改为同值 `.w/.h`；四个文本节点使用 pinned StyledText 本身采用的真实 `Role::Label`，保留原 label/内容与可访问语义。
+
+测试接线唯一例外在修改前获主会话明确批准并公开留证：[批准记录](https://github.com/puzige/vega/pull/491#issuecomment-6260399046)。只从 `crates/vega_ui/src/conversation_stream/link_preview_tests.rs:5` 的 `gpui_kit` import 删除未使用的 `App, `，没有 lint allow，没有改 fixture、数据、定义或断言。静态逐字比较确认当前文件恰好等于原始冻结文件删除这一处 import；42 个用例定义和断言全部保留。
+
+| 文件 | 原始冻结 SHA-256 | 本次仅 import 修正后的 SHA-256 |
+|---|---|---|
+| `crates/vega_ui/src/conversation_stream/link_preview_tests.rs` | `40c1d0cd5b87a38ecc43f85448c9453e578a42fd4aa890e1bbb87d00bebd167f` | `ac95026c77e216a344fb9af5a73c7b3c7206b31b214e286a00ead50312bdfcab` |
+
+其余三个冻结文件继续与原始表中的 hash 逐项一致。修正前工作树干净，已 fetch 并更新远端任务分支，无 history rewrite。修正后 fmt、diff、offline locked metadata 静态检查重新 exit 0；未本地编译/执行测试，待主会话提交后交云端复验。
 
 ## 下一步与边界
 

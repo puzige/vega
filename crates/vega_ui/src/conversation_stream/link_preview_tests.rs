@@ -2,7 +2,7 @@ use std::{cell::RefCell, io::Cursor, rc::Rc, time::Duration};
 
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, FontStyle, FontWeight, InputEvent,
+    AppContext, Context, Entity, FocusHandle, Focusable, FontStyle, FontWeight, InputEvent,
     IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     Point, Render, ScrollDelta, ScrollHandle, TestAppContext, VisualTestContext, Window,
     WindowHandle, div, point,

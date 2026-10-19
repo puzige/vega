@@ -55,6 +55,14 @@ UI 使用 scope、owner、occurrence 和精确 target 共同区分目标，真�
 
 静态审查不证明类型、借用、事件或行为执行正确；这些结论等待当前 PR 的完整云端门禁。规格偏离：无。
 
+## 首轮云端编译与接线修正
+
+实现提交 `b5b7faed5ea6cfe0048e0e07517a2d80f8949313` 的 [Actions 39204406299](https://github.com/puzige/vega/actions/runs/39204406299) 未完成 Rust 发现/执行；fmt 和 Python 34 个执行成功。UI 编译错误为 `ReadingScopeElement` 缺少 `IntoElement`、`.size(Size<Pixels>)` 不匹配、`Role::StaticText` 在 pinned API 不存在，按真实 API 分别修正为派生 `IntoElement`、同值宽/高和 `Role::Label`。
+
+Clippy 还发现测试未使用 `App` import。Codex [先公开原始证据并批准](https://github.com/puzige/vega/pull/491#issuecomment-6260399046)，再由专职实现者只删除这一处导入；没有变更测试定义、数据、fixture、事件或断言，没有 lint allow/ignore。主会话逐字比较证明当前文件恰好等于原文件删除 `App, `，其余字节全部相同。修正后 UI 测试 SHA-256 为 `ac95026c77e216a344fb9af5a73c7b3c7206b31b214e286a00ead50312bdfcab`；原始 SHA 及源码继续保留在本页，其余三份文件 hash 未变。
+
+该项属于已审查的测试接线错误修正，42 个冻结行为测试不变；首次实现编译失败不冒充原有效 RED 或行为失败。修正后仍待相同断言的云端 GREEN，尚未删测。
+
 ## 用户手测入口
 
 合并且自动发布完成后，M01 检查浅/深主题、窄窗口、跨行/表格及窗口四边：虚线确有间隙，图标对齐，hover 不改变正文布局，图片比例正确，卡片可进入且不越界；同时用 Tab、Enter、Escape 操作并核对拖选/复制。

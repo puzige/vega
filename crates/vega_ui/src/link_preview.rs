@@ -328,6 +328,7 @@ impl IntoElement for MarkdownReadingScope {
     }
 }
 
+#[derive(IntoElement)]
 pub struct ReadingScopeElement {
     scope: ReadingScope,
     body: AnyElement,
@@ -711,7 +712,8 @@ pub(crate) fn prepaint_link_targets(
                 .aria_label(label)
                 .aria_description(description)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                .size(bounds[0].size)
+                .w(bounds[0].size.width)
+                .h(bounds[0].size.height)
                 .into_any_element();
             proxy.prepaint_as_root(
                 bounds[0].origin,
@@ -1146,7 +1148,7 @@ fn build_card(
                     div()
                         .id("link-preview-host")
                         .test_support()
-                        .role(Role::StaticText)
+                        .role(Role::Label)
                         .aria_label(host.clone())
                         .min_w_0()
                         .flex_1()
@@ -1198,7 +1200,7 @@ fn build_card(
                 div()
                     .id("link-preview-title")
                     .test_support()
-                    .role(Role::StaticText)
+                    .role(Role::Label)
                     .aria_label(title.clone())
                     .font_weight(FontWeight::MEDIUM)
                     .line_clamp(2)
@@ -1212,7 +1214,7 @@ fn build_card(
                     div()
                         .id("link-preview-description")
                         .test_support()
-                        .role(Role::StaticText)
+                        .role(Role::Label)
                         .aria_label(description.clone())
                         .text_color(colors.text_secondary)
                         .line_clamp(3)
@@ -1287,7 +1289,7 @@ fn build_card(
             div()
                 .id("link-preview-address")
                 .test_support()
-                .role(Role::StaticText)
+                .role(Role::Label)
                 .aria_label(target.clone())
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_tertiary)
