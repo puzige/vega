@@ -6,12 +6,10 @@ Production baseline: `ae35310fe7e1ddac2b79d7ec7bc55bcca2d6af2a`.
 
 ## Test-first phase
 
-Status: initial test-first source reviewed and submitted; the first Actions
-run stopped at test compilation wiring, before discovery or execution. The
-SQLite integer wiring has been corrected; effective RED still awaits Actions.
-Production behavior has not changed. The only existing Rust changes are
-conditional module declarations for these new development tests. No historical
-test suite or dependency was restored.
+Status: effective RED reviewed by Codex, followed by production implementation.
+The same frozen six tests await Actions GREEN. The first Actions run stopped
+at test compilation wiring, before discovery or execution; its correction is
+recorded separately below. No historical test suite or dependency was restored.
 
 | Acceptance | Development test | Expected observation |
 | --- | --- | --- |
@@ -69,11 +67,61 @@ produce behavioral failures without requiring a new production interface.
   `ca158e55e2c9babecd1454d982b135f573864a96a326d1fc90105295ccc70669`.
   After this correction, rustfmt, workspace format check and diff check each
   exited 0; no local compilation or tests ran.
-- Effective RED, causal numeric SQLite evidence, run/job and exact counts:
-  pending Actions.
-- Production implementation, same-test GREEN, evidence retention, independent
-  test cleanup and final empty Rust gate: not started.
+- Effective RED after the wiring correction, before production implementation:
+  commit
+  [`eaf77b4b359dacea8b2a1753a4674110a60a9d08`](https://github.com/puzige/vega/commit/eaf77b4b359dacea8b2a1753a4674110a60a9d08),
+  [run 39196140806](https://github.com/puzige/vega/actions/runs/39196140806),
+  [Nextest job](https://github.com/puzige/vega/actions/runs/39196140806/job/117879223324),
+  [Clippy job](https://github.com/puzige/vega/actions/runs/39196140806/job/117879223149).
+  Six discovered/executed, one passed, five failed, zero skipped, 14 binaries.
+  The parent writer returned actual SQLite primary/extended codes `5`/`5`
+  while the child credential reader held the transaction. Child preparation
+  independently observed parent spawn state `running`, rather than `success`.
+  The storage/audit cases retained generic `Runtime`; migration lacked
+  `runtime_stage`. Stop and ordinary admission rejection passed. Format and
+  all-target Clippy succeeded; Python checks passed 5 + 15 + 14 = 34 cases.
+- Production implementation began only after Codex reviewed those results and
+  explicitly authorized phase 3. No test expectation or test source changed.
+- Same-test GREEN, independent test cleanup and the final empty Rust gate:
+  pending Actions and subsequent reviewed delivery phases.
 
-Historical incident classification remains unknown. A successful causal
-reproduction establishes the code-level contention mechanism and its repair;
-it cannot recover the old run's unrecorded original SQLite subtype.
+## Production implementation awaiting GREEN
+
+- Child startup waits on a conversation-private receipt signal. The event
+  processor releases the matching, non-reused successful call only after
+  persistence and event conversion succeed, immediately before its ACK.
+  Cancellation wins the wait and uses the existing durable terminal finalizer.
+- Preparation reads owner credentials before acquiring its immediate write
+  transaction. Legacy redaction and history validation remain transactional;
+  provider-boundary credential rereads remain active.
+- Runtime failures carry closed stage/reason/IO categories and numeric SQLite
+  codes without retaining SQL, paths, tool bodies or raw exception text. Actor
+  and acknowledgement boundaries preserve the original typed failure. Failed
+  critical tool events close their diagnostic attempts with that same detail.
+- Nullable detail columns use additive migration
+  `0028_runtime_failure_details.sql`. Insert, read, export and failure ownership
+  use the same fields; legacy unknown rows remain null and cannot acquire an
+  invented database diagnosis. Existing token/item column order is preserved.
+- Current failed-run messages distinguish busy storage, save failure, audit,
+  state, IO and worker failure. SQLite 5/6 asks the user to wait for other tasks
+  and retry; other storage errors do not assert disk/permission causes.
+
+Local static review at 2026-10-19 03:59:42 UTC / 11:59:42 Asia/Shanghai checked
+the three complete diagnostic SELECT lists: each has 36 columns in identical
+order, including unchanged item-count positions 28/29 and new positions 31–35.
+Rustfmt, `cargo fmt --all -- --check` and `git diff --check` exited 0. Both
+frozen test SHA-256 values still match the corrected test-first source. No
+local Vega execution, compilation, Clippy or test execution occurred.
+
+The existing automation usage-persistence API returns a string rather than a
+typed cause. This patch replaces that actor error text with a fixed safe
+message and retains the generic unknown fallback; it does not parse the string
+or invent a SQLite cause. Remaining transactional history/checkpoint work can
+still contend with other writers; this patch does not increase timeouts or
+retry mutations. Migration numbering must be reconciled if another branch adds
+the next schema version before integration.
+
+Historical incident classification remains unknown. The causal RED established
+the code-level contention and launch-order defects; it cannot recover the old
+run's unrecorded original SQLite subtype. The implementation remains unverified
+until the same frozen tests execute successfully in Actions.

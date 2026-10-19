@@ -2,9 +2,9 @@
 
 Issue: [#487](https://github.com/puzige/vega/issues/487). Baseline:
 `ae35310fe7e1ddac2b79d7ec7bc55bcca2d6af2a` (v0.1.170).
-Status: acceptance frozen v1.1, 2026-10-19 (Asia/Shanghai); causal reproduction
-and effective RED await Actions. Production implementation is not authorized
-until those results are reviewed.
+Status: acceptance frozen v1.1, 2026-10-19 (Asia/Shanghai). Codex reviewed
+effective Actions RED on `eaf77b4b359dacea8b2a1753a4674110a60a9d08` and authorized
+the dedicated executor's production implementation after that review.
 
 ## User request and evidence
 
@@ -29,6 +29,28 @@ preparation; preparation owns an immediate transaction while loading credentials
 and history; the parent independently persists the spawn result. Critical
 persistence errors cancel the parent and its children. The two-second timing
 matches the busy timeout but is only supporting evidence until reproduced.
+
+### Confirmed causal reproduction
+
+[Actions run 39196140806](https://github.com/puzige/vega/actions/runs/39196140806),
+[Nextest job 117879223324](https://github.com/puzige/vega/actions/runs/39196140806/job/117879223324),
+executed all six frozen tests against unchanged production: six discovered,
+six executed, one passed, five failed, zero skipped, across 14 binaries.
+Format and all-target Clippy passed in the separate job.
+
+The credential-boundary reproduction returned an actual SQLite primary and
+extended code pair of `5` / `5` (`BUSY`) from the competing parent writer.
+The normal parent/child run independently observed the parent receipt still
+`running` when child preparation began, rather than durable `success`.
+The storage/audit fault cases retained only generic `Runtime` classification;
+the migration case lacked `runtime_stage`. Cancellation and ordinary admission
+rejection already passed and must keep their behavior.
+
+This confirms the code-level transaction and launch-order defects and the
+diagnostic loss. It does not recover the original incident's discarded error
+code. The preceding run stopped at unsupported test-fixture `usize` SQLite
+conversions and is recorded separately as ineffective wiring failure; the
+checked `i64` correction changed no case, trigger or expected behavior.
 
 ## Acceptance before implementation
 

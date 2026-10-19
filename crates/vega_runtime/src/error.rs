@@ -2,6 +2,124 @@ use std::fmt;
 
 use thiserror::Error;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeFailureStage {
+    RunPreparation,
+    Snapshot,
+    ToolProposal,
+    ToolApproval,
+    ToolRunning,
+    ToolTerminal,
+    EventPipeline,
+}
+
+impl RuntimeFailureStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RunPreparation => "run_preparation",
+            Self::Snapshot => "snapshot",
+            Self::ToolProposal => "tool_proposal",
+            Self::ToolApproval => "tool_approval",
+            Self::ToolRunning => "tool_running",
+            Self::ToolTerminal => "tool_terminal",
+            Self::EventPipeline => "event_pipeline",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeFailureReason {
+    Database,
+    ApprovalAudit,
+    State,
+    Io,
+    Pipeline,
+}
+
+impl RuntimeFailureReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Database => "database",
+            Self::ApprovalAudit => "approval_audit",
+            Self::State => "state",
+            Self::Io => "io",
+            Self::Pipeline => "pipeline",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeIoKind {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    InvalidInput,
+    InvalidData,
+    TimedOut,
+    Interrupted,
+    Unsupported,
+    OutOfMemory,
+    StorageFull,
+    Other,
+}
+
+impl RuntimeIoKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::PermissionDenied => "permission_denied",
+            Self::AlreadyExists => "already_exists",
+            Self::InvalidInput => "invalid_input",
+            Self::InvalidData => "invalid_data",
+            Self::TimedOut => "timed_out",
+            Self::Interrupted => "interrupted",
+            Self::Unsupported => "unsupported",
+            Self::OutOfMemory => "out_of_memory",
+            Self::StorageFull => "storage_full",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl From<std::io::ErrorKind> for RuntimeIoKind {
+    fn from(kind: std::io::ErrorKind) -> Self {
+        match kind {
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            std::io::ErrorKind::AlreadyExists => Self::AlreadyExists,
+            std::io::ErrorKind::InvalidInput => Self::InvalidInput,
+            std::io::ErrorKind::InvalidData => Self::InvalidData,
+            std::io::ErrorKind::TimedOut => Self::TimedOut,
+            std::io::ErrorKind::Interrupted => Self::Interrupted,
+            std::io::ErrorKind::Unsupported => Self::Unsupported,
+            std::io::ErrorKind::OutOfMemory => Self::OutOfMemory,
+            std::io::ErrorKind::StorageFull => Self::StorageFull,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeFailureDetail {
+    pub stage: RuntimeFailureStage,
+    pub reason: RuntimeFailureReason,
+    pub sqlite_code: Option<i32>,
+    pub sqlite_extended_code: Option<i32>,
+    pub io_kind: Option<RuntimeIoKind>,
+}
+
+impl RuntimeFailureDetail {
+    pub fn new(reason: RuntimeFailureReason) -> Self {
+        Self {
+            stage: RuntimeFailureStage::EventPipeline,
+            reason,
+            sqlite_code: None,
+            sqlite_extended_code: None,
+            io_kind: None,
+        }
+    }
+}
+
 /// Unified Vega error (tech-spec §7).
 ///
 /// `Send + Sync` so it can cross await points and thread boundaries inside
@@ -9,6 +127,8 @@ use thiserror::Error;
 /// never carry the API key (red line: keys never reach logs or errors).
 #[derive(Error)]
 pub enum VegaError {
+    #[error("runtime operation failed")]
+    RuntimeFailure(RuntimeFailureDetail),
     #[error("provider frame exceeded parser capacity")]
     ProviderPayloadTooLarge {
         observed_bytes: usize,
@@ -102,6 +222,10 @@ pub enum VegaError {
 impl fmt::Debug for VegaError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RuntimeFailure(detail) => formatter
+                .debug_tuple("RuntimeFailure")
+                .field(detail)
+                .finish(),
             Self::ProviderPayloadTooLarge {
                 observed_bytes,
                 limit_bytes,
@@ -196,9 +320,50 @@ impl fmt::Debug for VegaError {
 }
 
 impl VegaError {
+    pub fn at_runtime_stage(self, stage: RuntimeFailureStage) -> Self {
+        let mut detail = match self {
+            Self::RuntimeFailure(detail) if detail.stage != RuntimeFailureStage::EventPipeline => {
+                return Self::RuntimeFailure(detail);
+            }
+            Self::RuntimeFailure(detail) => detail,
+            Self::Store(error) => {
+                let mut detail = RuntimeFailureDetail::new(RuntimeFailureReason::Database);
+                if let Some(error) = error.sqlite_error() {
+                    detail.sqlite_code = Some(error.extended_code & 255);
+                    detail.sqlite_extended_code = Some(error.extended_code);
+                }
+                detail
+            }
+            Self::Io(error) => {
+                let mut detail = RuntimeFailureDetail::new(RuntimeFailureReason::Io);
+                detail.io_kind = Some(error.kind().into());
+                detail
+            }
+            error => return error,
+        };
+        detail.stage = stage;
+        Self::RuntimeFailure(detail)
+    }
+
+    pub fn acknowledgement_error(&self) -> Self {
+        match self {
+            Self::Cancelled => Self::Cancelled,
+            Self::RuntimeFailure(detail) => Self::RuntimeFailure(*detail),
+            _ => Self::RuntimeFailure(RuntimeFailureDetail::new(RuntimeFailureReason::Pipeline)),
+        }
+    }
+
     pub fn diagnostic_metrics(&self) -> crate::RuntimeDiagnosticMetrics {
         let mut metrics = crate::RuntimeDiagnosticMetrics::default();
         let (source, kind, scope) = match self {
+            Self::RuntimeFailure(detail) => {
+                metrics.runtime_stage = Some(detail.stage.as_str());
+                metrics.runtime_reason = Some(detail.reason.as_str());
+                metrics.sqlite_code = detail.sqlite_code;
+                metrics.sqlite_extended_code = detail.sqlite_extended_code;
+                metrics.io_kind = detail.io_kind.map(RuntimeIoKind::as_str);
+                ("runtime", "unknown", None)
+            }
             Self::ProviderPayloadTooLarge {
                 observed_bytes,
                 limit_bytes,
