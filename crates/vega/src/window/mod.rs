@@ -327,7 +327,9 @@ impl VegaWindow {
             deferred_model_refresh: None,
         };
         window.start_pricing_load(cx);
-        window.start_updater(cx);
+        if !cfg!(test) {
+            window.start_updater(cx);
+        }
         window
     }
 

@@ -286,6 +286,9 @@ impl UserQuestionPanel {
                     }))
             })
             .child(label);
+        #[cfg(test)]
+        let button =
+            gpui_kit::test::TestSupportExt::test_support(button).track_focus(&self.controls[index]);
         button.into_any_element()
     }
 }
@@ -382,6 +385,9 @@ impl Render for UserQuestionPanel {
                                 ),
                         ),
                 );
+            #[cfg(test)]
+            let row = gpui_kit::test::TestSupportExt::test_support(row)
+                .track_focus(&self.option_focus[self.page][index]);
             options = options.child(row);
         }
         let note_visible = draft.note_visible;

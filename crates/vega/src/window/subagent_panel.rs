@@ -834,6 +834,8 @@ impl VegaWindow {
                 this.stop_panel_child(&child, generation, cx);
             }),
         );
+        #[cfg(test)]
+        let button = gpui_kit::test::TestSupportExt::test_support(button);
         Some(button.into_any_element())
     }
 
@@ -1127,6 +1129,10 @@ fn state_label(state: SubagentState) -> &'static str {
         SubagentState::Interrupted => "Interrupted",
     }
 }
+
+#[cfg(test)]
+#[path = "subagent_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 fn panel_button(
     id: impl Into<SharedString>,
