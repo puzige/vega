@@ -410,7 +410,7 @@ fn unchanged_list_scroll_preserves_preview_during_redraw_and_neighbor_stream_mat
             1,
             format!(
                 "[Target]({TARGET}){}",
-                "\n\nStable reading paragraph.".repeat(10)
+                "\n\nStable reading paragraph.".repeat(40)
             ),
         )]),
     );

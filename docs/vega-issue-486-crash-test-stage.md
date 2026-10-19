@@ -62,3 +62,15 @@
 未本地运行 Vega、编译、构建、Clippy、测试、benchmark 或打包。未 commit/push、开 PR 或操作 CI；主会话自己的修复方案/交付文档修改保持原样。
 
 **交回主审，停止写入。** 主审审查并固定测试提交/源码后建立新的 draft PR，沿用现有 fmt、Clippy、Python、Nextest 与 required check。全部发现/执行/通过/失败/跳过计数及有效 RED 仍为**待 CI**；只有实际 BorrowError 经核实并明确授权后，才能调整生产采样时机。修复后的布局、选择及异步 UI 断言也须由相同测试实际 GREEN，不能把本轮静态核对当作类型或行为验证。
+
+## B04 前置布置修正
+
+首次带修复尝试为 `cfb47565b20005302a9f370cdf1f2e1f2ef01551` 的 [Actions 39223251294](https://github.com/puzige/vega/actions/runs/39223251294)，[Nextest 117963298328](https://github.com/puzige/vega/actions/runs/39223251294/job/117963298328) 实际 5 执行、4 通过、1 失败、0 跳过；B01/B02/B03/B05 通过，没有 BorrowError。B04 在原滚动签名相等断言失败：实际从 `(0, 0px)` 变为 `(0, 18.5px)`。fmt、全目标 Clippy、Python 34 项通过。[原始失败先行留证](https://github.com/puzige/vega/pull/493#issuecomment-6263165467)，不是完整 GREEN。
+
+主审与执行方只读核对 pinned List::layout_items：短内容抵达底部时会重新启用 tail follow，邻接内容增长后产生真实滚动；输入栏测得高度也会更新列表底部 padding。原 B04 首消息仅重复 10 段，没有稳固满足“实际滚动状态不变”的既有前提。根据排版 token 估算，原首消息约 424px，改为 40 段后约 1579px，足以超过 720px 宿主视口；这些数值是静态估算，不是运行测量。邻接回复仍由 ConversationStream::render 的前置 model.sync 真实物化，现有物化文本断言保留。
+
+[具体修正经主审事先公开批准](https://github.com/puzige/vega/pull/493#issuecomment-6263202623)后，仅将 B04 的 `"\n\nStable reading paragraph.".repeat(10)` 改为 `.repeat(40)`。原目标、操作、计时、所有断言及其余四项测试不变，未写入滚动值或协调器终态，没有放宽实际滚动检测。全部生产代码、接线、外部 fixture 和 Cargo 文件逐字节不变。
+
+上表旧冻结 SHA-256 保留为原始来源；该一处批准修正后的 UI 测试 SHA-256 为 `de18c58d1563b6eb797aa68286d2e2e4a75bdc5cbb66c916fd54048853624965`。fixture 仍为 `a83eba45519905a4a2e948500734d94d9d6142b93c8810eb0d8c31a6a3a0e331`。
+
+修正前已 fetch/ff-only 更新，HEAD/远端任务分支均为上述 cfb47565，master 仍为 b32ad22e，执行前源码与 HEAD 一致；主会话的交付文档修改保留。最终 fmt、diff、精确单字符串替换及冻结 fixture/生产字节核对通过；未本地编译、执行测试或运行 Vega，执行方未 commit/push。新的 head 云端结果仍待主审取得；本次仅修正测试前置布置，不声称已完整 GREEN，不授权提前删测。
