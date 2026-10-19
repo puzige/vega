@@ -342,7 +342,7 @@ async fn manual_and_delegated_child_runs_have_one_owner_in_both_admission_orders
     assert!(receipt.await.unwrap().is_err());
     assert!(rejected_cancel.is_cancelled());
     assert!(!manual_cancel.is_cancelled());
-    root.update(cx, |root, _| {
+    root.update(cx, |root, cx| {
         assert_eq!(
             root.agent_controller
                 .active
@@ -361,7 +361,15 @@ async fn manual_and_delegated_child_runs_have_one_owner_in_both_admission_orders
                 .finish(manual_generation, &fixture.first.id, &manual_stream)
                 .is_some()
         );
+        root.finish_pending_run(&fixture.first.id, &manual_stream, true, cx);
     });
+    cx.condition(&root, |root, _| {
+        !root
+            .agent_controller
+            .queue_operations
+            .contains_key(&fixture.first.id)
+    })
+    .await;
     let (receipt, delegated_cancel) = fixture.admit(&root, &parent, cx);
     assert!(receipt.await.unwrap().is_ok());
     root.update(cx, |root, _| {
