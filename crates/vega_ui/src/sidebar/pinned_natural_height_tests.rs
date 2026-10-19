@@ -44,7 +44,7 @@ impl Fixture {
         let directory = tempfile::tempdir().expect("temporary Sidebar store");
         let project_path = directory.path().join("project");
         std::fs::create_dir(&project_path).expect("isolated project");
-        let store = Store::open(&directory.path().join("sidebar.db")).expect("file Store");
+        let store = Store::open(directory.path().join("sidebar.db")).expect("file Store");
         store.migrate().expect("Store migrations");
         let project = projects::create(
             store.conn(),
