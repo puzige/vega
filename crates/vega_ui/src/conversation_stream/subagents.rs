@@ -81,11 +81,14 @@ impl SubagentGroup {
             enabled,
             expanded,
         } = button;
-        div()
+        let button = div()
             .id(id.clone())
             .role(Role::Button)
             .aria_label(accessible_name)
-            .when_some(expanded, |button, expanded| button.aria_expanded(expanded))
+            .when_some(expanded, |button, expanded| button.aria_expanded(expanded));
+        #[cfg(test)]
+        let button = gpui_kit::test::TestSupportExt::test_support(button);
+        button
             .track_focus(&focus)
             .tab_stop(enabled)
             .border_1()

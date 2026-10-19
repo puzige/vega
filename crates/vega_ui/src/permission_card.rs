@@ -625,8 +625,10 @@ fn permission_button(
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let focused = focus.is_focused(window);
-    let button = div()
-        .id(gpui_kit::SharedString::from(id))
+    let button = div().id(gpui_kit::SharedString::from(id));
+    #[cfg(test)]
+    let button = gpui_kit::test::TestSupportExt::test_support(button);
+    let button = button
         .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
         .flex()
         .items_center()

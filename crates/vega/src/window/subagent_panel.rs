@@ -809,17 +809,17 @@ impl VegaWindow {
         }
         let generation = active.generation;
         let child = child.to_string();
-        Some(
-            panel_button(
-                format!("subagent-panel-stop-{child}"),
-                "Stop",
-                theme(cx).colors,
-                cx.listener(move |this, _, _, cx| {
-                    this.stop_panel_child(&child, generation, cx);
-                }),
-            )
-            .into_any_element(),
-        )
+        let button = panel_button(
+            format!("subagent-panel-stop-{child}"),
+            "Stop",
+            theme(cx).colors,
+            cx.listener(move |this, _, _, cx| {
+                this.stop_panel_child(&child, generation, cx);
+            }),
+        );
+        #[cfg(test)]
+        let button = gpui_kit::test::TestSupportExt::test_support(button);
+        Some(button.into_any_element())
     }
 
     fn subagent_load_error(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1079,6 +1079,10 @@ fn state_label(state: SubagentState) -> &'static str {
         SubagentState::Interrupted => "Interrupted",
     }
 }
+
+#[cfg(test)]
+#[path = "subagent_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 fn panel_button(
     id: impl Into<SharedString>,

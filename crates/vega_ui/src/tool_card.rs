@@ -639,7 +639,10 @@ impl ToolCard {
             crate::disclosure::focus(disclosure_group.clone(), window, cx).tab_stop(expandable);
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
-            .group(disclosure_group.clone())
+            .group(disclosure_group.clone());
+        #[cfg(test)]
+        let row = gpui_kit::test::TestSupportExt::test_support(row);
+        let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)
             .aria_label(format!(

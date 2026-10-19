@@ -256,10 +256,13 @@ impl UserQuestionPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        div()
+        let button = div()
             .id(("question-action", index))
             .role(Role::Button)
-            .aria_label(label)
+            .aria_label(label);
+        #[cfg(test)]
+        let button = gpui_kit::test::TestSupportExt::test_support(button);
+        button
             .track_focus(&self.controls[index])
             .key_context("UserQuestionControl")
             .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
@@ -306,16 +309,18 @@ impl Render for UserQuestionPanel {
                 .unwrap_or(source_label)
                 .to_string();
             let selected = draft.selected == Some(index);
+            let row = div()
+                .id(("question-option", index))
+                .role(Role::Button)
+                .aria_label(if selected {
+                    format!("Selected: {source_label}")
+                } else {
+                    source_label.to_string()
+                });
+            #[cfg(test)]
+            let row = gpui_kit::test::TestSupportExt::test_support(row);
             options = options.child(
-                div()
-                    .id(("question-option", index))
-                    .role(Role::Button)
-                    .aria_label(if selected {
-                        format!("Selected: {source_label}")
-                    } else {
-                        source_label.to_string()
-                    })
-                    .track_focus(&self.option_focus[self.page][index])
+                row.track_focus(&self.option_focus[self.page][index])
                     .key_context("UserQuestionOptions")
                     .w_full()
                     .min_w_0()
