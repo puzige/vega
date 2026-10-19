@@ -32,15 +32,18 @@ pub(super) fn styled_text(content: String, runs: Vec<TextRun>) -> AnyElement {
 pub(super) fn interactive_text(
     content: String,
     runs: Vec<TextRun>,
-    links: Vec<LinkRange>,
+    mut links: Vec<LinkRange>,
     id_prefix: String,
 ) -> AnyElement {
     if links.is_empty() {
         return styled_text(content, runs);
     }
-    let text = StyledText::new(content.clone()).with_runs(runs.clone());
-    if runs.iter().any(|run| run.background_color.is_some()) {
-        flow(content.into(), runs, move |range, content, runs| {
+    super::links::own_links(&mut links, &id_prefix);
+    flow_with_links(
+        content.into(),
+        runs,
+        links.clone(),
+        move |range, content, runs| {
             let fragment_links = fragment_link_ranges(&links, &range);
             InlineCodeText {
                 id: (!fragment_links.is_empty()).then(|| link_element_id(&id_prefix, range.start)),
@@ -50,110 +53,14 @@ pub(super) fn interactive_text(
                 links: fragment_links,
             }
             .into_any_element()
-        })
-    } else {
-        interactive_styled_text(text, links, id_prefix)
-    }
-}
-
-pub(super) fn interactive_styled_text(
-    text: StyledText,
-    links: Vec<LinkRange>,
-    id_prefix: String,
-) -> AnyElement {
-    if links.is_empty() {
-        return text.into_any_element();
-    }
-    InteractiveMarkdownText {
-        id: Some(link_element_id(&id_prefix, 0)),
-        text,
-        links,
-    }
-    .into_any_element()
-}
-
-struct InteractiveTextPrepaint {
-    hitbox: Hitbox,
+        },
+    )
 }
 
 struct InlineCodePrepaint {
     lines: Option<Vec<WrappedLine>>,
     hitbox: Option<Hitbox>,
-}
-
-struct InteractiveMarkdownText {
-    id: Option<ElementId>,
-    text: StyledText,
-    links: Vec<LinkRange>,
-}
-
-impl IntoElement for InteractiveMarkdownText {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for InteractiveMarkdownText {
-    type RequestLayoutState = ();
-    type PrepaintState = InteractiveTextPrepaint;
-
-    fn id(&self) -> Option<ElementId> {
-        self.id.clone()
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        self.text.request_layout(id, inspector, window, cx)
-    }
-
-    fn prepaint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        self.text
-            .prepaint(id, inspector, bounds, &mut (), window, cx);
-        InteractiveTextPrepaint {
-            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
-        }
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.text
-            .paint(id, inspector, bounds, &mut (), &mut (), window, cx);
-        register_link_interactions(
-            id,
-            prepaint.hitbox.clone(),
-            self.text.layout().clone(),
-            self.links.clone(),
-            window,
-            cx,
-        );
-    }
+    targets: Vec<AnyElement>,
 }
 
 struct InlineCodeText {
@@ -206,8 +113,19 @@ impl Element for InlineCodeText {
             .prepaint(id, inspector, bounds, &mut (), window, cx);
         InlineCodePrepaint {
             lines: shape(self.content.clone(), &self.runs, self.text.layout(), window),
-            hitbox: (!self.links.is_empty())
-                .then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal)),
+            hitbox: (!self.links.is_empty()).then(|| {
+                window.insert_hitbox(
+                    crate::link_preview::interactive_bounds(bounds, &self.links),
+                    HitboxBehavior::Normal,
+                )
+            }),
+            targets: crate::link_preview::prepaint_link_targets(
+                id,
+                self.text.layout(),
+                &self.links,
+                window,
+                cx,
+            ),
         }
     }
 
@@ -227,6 +145,9 @@ impl Element for InlineCodeText {
         } else {
             self.text
                 .paint(id, inspector, bounds, &mut (), &mut (), window, cx);
+        }
+        for target in &mut prepaint.targets {
+            target.paint(window, cx);
         }
         if let Some(hitbox) = prepaint.hitbox.clone() {
             register_link_interactions(
@@ -396,9 +317,18 @@ pub(super) fn flow(
     runs: Vec<TextRun>,
     fragment: impl Fn(Range<usize>, SharedString, Vec<TextRun>) -> AnyElement + 'static,
 ) -> AnyElement {
+    flow_with_links(content, runs, Vec::new(), fragment)
+}
+
+pub(super) fn flow_with_links(
+    content: SharedString,
+    runs: Vec<TextRun>,
+    links: Vec<LinkRange>,
+    fragment: impl Fn(Range<usize>, SharedString, Vec<TextRun>) -> AnyElement + 'static,
+) -> AnyElement {
     InlineFlow {
         content,
-        runs: Rc::new(RunIndex::new(runs)),
+        runs: Rc::new(RunIndex::new(runs).with_links(links)),
         fragment: Box::new(fragment),
     }
     .into_any_element()
@@ -407,6 +337,7 @@ pub(super) fn flow(
 pub(super) struct RunIndex {
     runs: Vec<(Range<usize>, TextRun)>,
     code: Vec<Range<usize>>,
+    links: Vec<LinkRange>,
 }
 
 impl RunIndex {
@@ -425,7 +356,16 @@ impl RunIndex {
             .filter(|(range, run)| !range.is_empty() && run.background_color.is_some())
             .map(|(range, _)| range.clone())
             .collect();
-        Self { runs, code }
+        Self {
+            runs,
+            code,
+            links: Vec::new(),
+        }
+    }
+
+    pub(super) fn with_links(mut self, links: Vec<LinkRange>) -> Self {
+        self.links = links;
+        self
     }
 
     pub(super) fn slice(&self, range: Range<usize>) -> Vec<TextRun> {
@@ -454,7 +394,15 @@ impl RunIndex {
     }
 
     fn padding(&self, range: Range<usize>) -> Pixels {
-        px(self.code_ranges(range).len() as f32 * Layout::MARKDOWN_INLINE_CODE_PADDING_X * 2.)
+        px(self.code_ranges(range.clone()).len() as f32
+            * Layout::MARKDOWN_INLINE_CODE_PADDING_X
+            * 2.
+            + self
+                .links
+                .iter()
+                .filter(|link| link.starts_here && range.contains(&link.range.start))
+                .count() as f32
+                * Layout::MARKDOWN_LINK_LEADING_WIDTH)
     }
 }
 
@@ -763,7 +711,16 @@ fn position_fragments(
         boundaries.push(code.start.max(range.start));
         boundaries.push(code.end.min(range.end));
     }
+    for link in &runs.links {
+        if link.range.start > range.start && link.range.start < range.end {
+            boundaries.push(link.range.start);
+        }
+        if link.range.end > range.start && link.range.end < range.end {
+            boundaries.push(link.range.end);
+        }
+    }
     boundaries.push(range.end);
+    boundaries.sort_unstable();
     boundaries.dedup();
     let mut fragments = Vec::new();
     let mut x = px(0.);
@@ -787,6 +744,13 @@ fn position_fragments(
             &fragment_runs,
             None,
         );
+        if runs
+            .links
+            .iter()
+            .any(|link| link.starts_here && link.range.start == range.start)
+        {
+            x += px(Layout::MARKDOWN_LINK_LEADING_WIDTH);
+        }
         x += padding;
         fragments.push(Fragment {
             range,

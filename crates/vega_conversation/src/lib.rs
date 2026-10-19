@@ -6,6 +6,7 @@ pub mod codex_tasks;
 mod composer_predictions;
 mod git_workspace;
 pub mod history;
+pub mod link_preview;
 pub mod plans;
 mod pricing;
 pub mod summary;

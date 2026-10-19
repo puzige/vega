@@ -7787,8 +7787,11 @@ name = "vega_conversation"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "html5ever",
+ "image",
  "libc",
  "portable-pty",
+ "reqwest",
  "ring",
  "serde",
  "serde_json",

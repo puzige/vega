@@ -13,6 +13,7 @@ pub struct FilePreview {
     preview: PaletteFilePreview,
     focus: FocusHandle,
     markdown: Option<crate::conversation_stream::StreamModel>,
+    scroll: ScrollHandle,
 }
 impl EventEmitter<RevealFileRequested> for FilePreview {}
 impl FilePreview {
@@ -34,6 +35,7 @@ impl FilePreview {
             None
         };
         Self {
+            scroll: ScrollHandle::new(),
             markdown,
             preview,
             focus: cx.focus_handle(),
@@ -126,11 +128,19 @@ impl Render for FilePreview {
                 div()
                     .id("file-preview-scroll")
                     .overflow_scroll()
+                    .track_scroll(&self.scroll)
                     .flex_1()
                     .min_h_0()
                     .p_3()
                     .text_size(px(Typography::CODE))
-                    .child(body)
+                    .child(
+                        crate::link_preview::MarkdownReadingScope::new(
+                            format!("file-preview-{}", cx.entity_id()),
+                            self.focus.clone(),
+                        )
+                        .track_scroll(self.scroll.clone())
+                        .child(body),
+                    )
                     .scroll_edge_fade(colors.bg_base, ScrollFade::reading()),
             )
     }

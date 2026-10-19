@@ -326,6 +326,19 @@ impl Motion {
 pub struct Layout;
 
 impl Layout {
+    pub const MARKDOWN_LINK_LEADING_WIDTH: f32 = 20.;
+    pub const MARKDOWN_LINK_ICON_GAP: f32 = 4.;
+    pub const MARKDOWN_LINK_DASH: f32 = 2.;
+    pub const MARKDOWN_LINK_DASH_GAP: f32 = 2.;
+    pub const MARKDOWN_LINK_DASH_THICKNESS: f32 = 1.;
+    pub const MARKDOWN_LINK_DASH_OFFSET: f32 = 2.;
+    pub const LINK_PREVIEW_WIDTH: f32 = 360.;
+    pub const LINK_PREVIEW_MARGIN: f32 = 12.;
+    pub const LINK_PREVIEW_PADDING: f32 = 12.;
+    pub const LINK_PREVIEW_MAX_HEIGHT: f32 = 420.;
+    pub const LINK_PREVIEW_RADIUS: f32 = 8.;
+    pub const LINK_PREVIEW_ACTION_HEIGHT: f32 = 28.;
+
     pub const IMAGE_PREVIEW_HEADER: f32 = 40.0;
     pub const IMAGE_PREVIEW_PADDING: f32 = 16.0;
     pub const IMAGE_PREVIEW_HEADER_PADDING: f32 = 12.0;

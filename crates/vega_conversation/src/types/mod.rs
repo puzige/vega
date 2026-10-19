@@ -92,3 +92,6 @@ pub use automation::*;
 
 mod subagents;
 pub use subagents::*;
+
+mod link_preview;
+pub use link_preview::*;

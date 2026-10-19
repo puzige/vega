@@ -10,6 +10,7 @@ pub mod file_preview;
 pub mod file_selector;
 pub mod image_preview;
 pub mod interaction;
+pub mod link_preview;
 pub mod menu_list;
 pub mod permission_card;
 pub mod plan_card;
