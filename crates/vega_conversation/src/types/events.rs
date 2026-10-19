@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "reasoning_failure_tests.rs"]
+mod reasoning_failure_tests;
+
 /// Why a conversation message finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationStopReason {

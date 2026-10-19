@@ -17,6 +17,9 @@ use crate::provider::{
 };
 use crate::retry::{RetryPolicy, parse_retry_after};
 
+#[cfg(test)]
+mod chat_compat_tests;
+
 /// Authorization scheme for OpenAI-compatible APIs (used for the single
 /// header construction below; tests reference this constant).
 const AUTH_SCHEME: &str = "Bearer";
