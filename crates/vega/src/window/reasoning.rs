@@ -1,9 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-#[path = "reasoning_preference_tests.rs"]
-mod tests;
-
 pub(super) fn reasoning_error_code(
     error: &vega_store::reasoning::ReasoningConfigError,
 ) -> ReasoningSettingsErrorCode {

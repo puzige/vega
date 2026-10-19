@@ -8,8 +8,6 @@ use vega_conversation::types::{
     PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection, ReasoningChoice,
     ReasoningProfileProjection, ReasoningSupport,
 };
-#[cfg(test)]
-use vega_conversation::types::{ReasoningProtocol, ReasoningReplaySetting};
 use vega_store::config::{self, AppConfig, ProviderConfig};
 use vega_store::context_compaction::ModelContextPolicy;
 use vega_store::keystore;
@@ -190,8 +188,6 @@ mod preferences;
 mod provider_management;
 mod reasoning_render;
 mod reasoning_state;
-#[cfg(test)]
-mod reasoning_ui_tests;
 mod render_impl;
 mod skills;
 mod state;

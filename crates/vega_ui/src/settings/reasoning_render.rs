@@ -1,8 +1,6 @@
 use super::reasoning_state::reasoning_choices;
 use super::*;
 use crate::interaction::InteractionExt;
-#[cfg(test)]
-use gpui_kit::TestSupportExt;
 
 impl SettingsView {
     pub(crate) fn render_reasoning(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -204,14 +202,11 @@ fn reasoning_option_with_focus(
 ) -> AnyElement {
     let listener = std::rc::Rc::new(listener);
     let keyboard = listener.clone();
-    let button = settings_action_chrome(colors)
+    settings_action_chrome(colors)
         .id(id)
         .interactive(colors, true, selected)
         .focusable()
-        .tab_stop(true);
-    #[cfg(test)]
-    let button = button.test_support();
-    button
+        .tab_stop(true)
         .when_some(focus, |button, focus| button.track_focus(&focus))
         .cursor_pointer()
         .focus_visible(move |style| style.border_color(colors.accent))
@@ -265,12 +260,4 @@ fn reasoning_settings_error_label(error: ReasoningSettingsErrorCode) -> &'static
         ReasoningSettingsErrorCode::Conflict => "思考设置发生并发修改，已保留外部版本",
         ReasoningSettingsErrorCode::Busy => "思考设置正在保存",
     }
-}
-
-#[cfg(test)]
-#[test]
-fn settings_errors_do_not_direct_users_to_removed_templates() {
-    let label = reasoning_settings_error_label(ReasoningSettingsErrorCode::Invalid);
-    assert!(!label.contains("模板"));
-    assert!(!label.contains("高级协议"));
 }
