@@ -61,7 +61,7 @@ fn body(endpoint: &str, model: &str, choice: &str, api: ProviderApi) -> Value {
     .expect("real encoder")
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn all_eight_catalog_dialects_encode_default_and_each_actual_control_from_new_preferences() {
     let cases = [
         (
@@ -170,7 +170,7 @@ fn all_eight_catalog_dialects_encode_default_and_each_actual_control_from_new_pr
     }
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn known_native_missing_maps_null_keys_and_uncontrollable_models_have_truthful_choices() {
     for (endpoint, model, efforts, disabled) in [
         (
@@ -253,7 +253,7 @@ fn known_native_missing_maps_null_keys_and_uncontrollable_models_have_truthful_c
     }
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn service_identity_and_model_ambiguity_do_not_spread_vendor_controls() {
     assert_eq!(
         control(&body(
@@ -446,7 +446,7 @@ async fn every_catalog_dialect_and_step_complete_a_real_tool_cycle_without_templ
     }
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn unknown_gpt_and_future_models_expose_all_six_efforts_and_send_the_exact_saved_choice() {
     for model in [
         "gpt-6-luna",
@@ -497,7 +497,7 @@ fn unknown_gpt_and_future_models_expose_all_six_efforts_and_send_the_exact_saved
     }
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn known_services_unknown_model_use_the_current_service_effort_dialect_without_swallowing_choice() {
     let model = "new-model-with-unknown-capabilities";
     for (endpoint, expected) in [

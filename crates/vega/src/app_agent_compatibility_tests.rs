@@ -1,6 +1,6 @@
 use super::*;
 
-#[test]
+#[::core::prelude::v1::test]
 fn replay_route_identity_changes_with_actual_api_endpoint_credential_and_owner_domain() {
     use std::path::Path;
     let provider = vega_store::config::ProviderConfig {

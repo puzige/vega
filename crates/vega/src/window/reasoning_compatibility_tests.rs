@@ -25,7 +25,7 @@ fn resolved(preference: &str) -> ReasoningProfileProjection {
     .expect("actual facts")
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn controller_saves_enabled_as_three_fields_and_reloads_through_actual_provider_facts() {
     let root = tempfile::tempdir().expect("owned controller fixture");
     let path = root.path().join(reasoning::REASONING_FILE_NAME);
@@ -85,7 +85,7 @@ fn controller_saves_enabled_as_three_fields_and_reloads_through_actual_provider_
     assert_eq!(format!("{:?}", frozen.choice), "Enabled");
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn old_reasoning_files_never_affect_actual_load_or_new_explicit_enabled_save() {
     for old in [
         "version=1\n[[profiles]]\nprovider='fixture'\nmodel='Qwen/Qwen3.5-9B'\nprotocol='openai_chat_completions'\nsupport='optional'\nefforts=['high']\npreference='high'",
@@ -130,7 +130,7 @@ fn old_reasoning_files_never_affect_actual_load_or_new_explicit_enabled_save() {
     }
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn preference_compare_and_swap_preserves_other_models_and_rejects_same_identity_changes_or_deletion()
  {
     let root = tempfile::tempdir().expect("owned CAS fixture");
@@ -197,7 +197,7 @@ fn preference_compare_and_swap_preserves_other_models_and_rejects_same_identity_
     assert!(!path.exists());
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn invalid_model_preference_stays_visible_and_can_be_repaired_without_accepting_capability_mutation()
  {
     let authority = ReasoningConfig {
