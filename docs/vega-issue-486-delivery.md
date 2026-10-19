@@ -63,6 +63,8 @@ Clippy 还发现测试未使用 `App` import。Codex [先公开原始证据并�
 
 该项属于已审查的测试接线错误修正，42 个冻结行为测试不变；首次实现编译失败不冒充原有效 RED 或行为失败。修正后仍待相同断言的云端 GREEN，尚未删测。
 
+第二轮 [Actions 39205170482](https://github.com/puzige/vega/actions/runs/39205170482)（`d6ec15f81e1bc25aff611693b2c07801276a74e5`）仍未进入 Rust 行为执行，fmt 与 Python 34 个成功。仅剩的编译错误是 `ReadingScopeElement: RenderOnce` 不满足；pinned 派生宏返回 `ViewElement<Self>`，因此改为与现有自定义元素一致的显式 `IntoElement<Element = Self>`。布局、行为与四份当前测试内容不变；[原始记录](https://github.com/puzige/vega/pull/491#issuecomment-6260506300)。
+
 ## 用户手测入口
 
 合并且自动发布完成后，M01 检查浅/深主题、窄窗口、跨行/表格及窗口四边：虚线确有间隙，图标对齐，hover 不改变正文布局，图片比例正确，卡片可进入且不越界；同时用 Tab、Enter、Escape 操作并核对拖选/复制。

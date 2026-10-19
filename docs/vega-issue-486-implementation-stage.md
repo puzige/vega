@@ -60,6 +60,8 @@ A01–A12 的测试定义、矩阵和冻结清单位于测试阶段页；本阶�
 
 其余三个冻结文件继续与原始表中的 hash 逐项一致。修正前工作树干净，已 fetch 并更新远端任务分支，无 history rewrite。修正后 fmt、diff、offline locked metadata 静态检查重新 exit 0；未本地编译/执行测试，待主会话提交后交云端复验。
 
+第二轮 Actions `39205170482` 在 `d6ec15f81e1bc25aff611693b2c07801276a74e5` 仍因 `ReadingScopeElement` 编译失败，未发现/执行 Rust 测试：`IntoElement` 派生实现要求 `RenderOnce`，不适用于此自定义 Element。按主会话明确指示及仓库 `MarkdownLinkPreviewLayer` / `InlineCodeText` 的现有模式，删除该 derive，显式实现 `type Element = Self; fn into_element(self) -> Self { self }`；没有实现 `RenderOnce`，没有改布局或交互。原始日志 `/tmp/vega-486-ci-39205170482.log` 保留；本轮仅该生产修正和本段报告，测试/fixture 零改动。修正前 fetch/update 干净分支；fmt、diff、hash 静态检查重新通过，UI 测试继续使用已批准的 `ac95026c77e216a344fb9af5a73c7b3c7206b31b214e286a00ead50312bdfcab`，其他三个仍为原始冻结 hash。未本地编译/测试、未 commit/push，GREEN 仍待云端验证。
+
 ## 下一步与边界
 
 Codex 主会话审查完整树，提交到现有 draft PR #491 并运行原门禁。生产编译和行为仍可能由 CI 揭示需要修正的实现问题；不能将上述静态检查称为 GREEN。真实字体/像素、外网站点及默认浏览器结果仍待用户 M01/M02 手测。

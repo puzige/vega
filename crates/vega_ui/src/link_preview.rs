@@ -328,10 +328,16 @@ impl IntoElement for MarkdownReadingScope {
     }
 }
 
-#[derive(IntoElement)]
 pub struct ReadingScopeElement {
     scope: ReadingScope,
     body: AnyElement,
+}
+
+impl IntoElement for ReadingScopeElement {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
 }
 
 impl Element for ReadingScopeElement {
