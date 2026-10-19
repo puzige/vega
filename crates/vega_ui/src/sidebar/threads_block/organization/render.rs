@@ -229,9 +229,10 @@ impl ThreadsBlock {
             )
             .child(label)
             .when_some(button_bounds, |control, bounds| {
-                control.relative().child(
+                let button_geometry = gpui_kit::ScrollHandle::new();
+                control.relative().track_scroll(&button_geometry).child(
                     gpui_kit::canvas(
-                        move |button_bounds, _, _| bounds.set(Some(button_bounds)),
+                        move |_, _, _| bounds.set(Some(button_geometry.bounds())),
                         |_, (), _, _| {},
                     )
                     .absolute()
@@ -403,9 +404,10 @@ impl ThreadsBlock {
             )
             .child(crate::icons::icon(kind, colors.text_secondary))
             .when_some(button_bounds, |control, bounds| {
-                control.relative().child(
+                let button_geometry = gpui_kit::ScrollHandle::new();
+                control.relative().track_scroll(&button_geometry).child(
                     gpui_kit::canvas(
-                        move |button_bounds, _, _| bounds.set(Some(button_bounds)),
+                        move |_, _, _| bounds.set(Some(button_geometry.bounds())),
                         |_, (), _, _| {},
                     )
                     .absolute()
