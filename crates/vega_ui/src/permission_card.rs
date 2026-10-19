@@ -659,7 +659,5 @@ fn permission_button(
     } else {
         button.interactive(colors, true, false)
     };
-    #[cfg(test)]
-    let button = gpui_kit::test::TestSupportExt::test_support(button).track_focus(&focus);
     button.into_any_element()
 }
