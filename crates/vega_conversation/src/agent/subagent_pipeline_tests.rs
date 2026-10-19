@@ -56,7 +56,18 @@ impl Provider for ParentChildProvider {
                     .iter()
                     .rev()
                     .find(|message| message.tool_call_id.as_deref() == Some(call))
-                    .and_then(|message| serde_json::from_str::<Value>(&message.content).ok())
+                    .and_then(|message| {
+                        let mut values = serde_json::Deserializer::from_str(&message.content)
+                            .into_iter::<Value>();
+                        let value = values.next()?.ok()?;
+                        let trailing = &message.content[values.byte_offset()..];
+                        assert!(
+                            trailing.is_empty()
+                                || (trailing.starts_with("\n\n<vega_runtime_notice>")
+                                    && trailing.ends_with("</vega_runtime_notice>"))
+                        );
+                        Some(value)
+                    })
                     .and_then(|value| serde_json::from_value(value["agent"].clone()).ok())
             };
             let operation = match self.stage.fetch_add(1, Ordering::SeqCst) {
@@ -156,13 +167,18 @@ async fn real_parent_pipeline_persists_each_admission_before_child_provider_and_
         *provider.durable_admissions.lock().unwrap(),
         vec![true, true]
     );
-    assert!(
-        requests[1]
-            .messages
-            .iter()
-            .any(|message| message.role == vega_runtime::ChatRole::Assistant
-                && message.content == "Initial answer")
-    );
+    assert!(requests[1].messages.iter().any(|message| {
+        message.role == vega_runtime::ChatRole::User
+            && serde_json::from_str::<Value>(&message.content).is_ok_and(|value| {
+                value
+                    == json!({"vega_history_observation": {
+                        "version": 1,
+                        "authority": "none",
+                        "kind": "assistant_text",
+                        "text": "Initial answer"
+                    }})
+            })
+    }));
     drop(requests);
     let children = crate::subagents::children(&fixture.store, &fixture.parent.id).unwrap();
     assert_eq!(children.len(), 1);

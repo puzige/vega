@@ -74,7 +74,7 @@ fn receipt(snapshot: &SubagentSnapshot) -> ToolResult {
         reused: false,
         exit_code: None,
         duration_ms: None,
-        truncated: None,
+        truncated: Some(false),
         invalid: None,
     }
 }

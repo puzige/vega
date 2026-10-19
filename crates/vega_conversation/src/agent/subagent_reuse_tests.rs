@@ -458,17 +458,26 @@ async fn completed_child_continues_with_history_and_keeps_both_results() {
             {
                 let requests = run.provider.requests.lock().unwrap();
                 let history = &requests[1].messages;
-                for (role, text) in [
-                    (vega_runtime::ChatRole::User, "Inspect the parser"),
-                    (vega_runtime::ChatRole::Assistant, "First finding"),
-                    (vega_runtime::ChatRole::User, "Verify the finding"),
-                ] {
+                for text in ["Inspect the parser", "Verify the finding"] {
                     assert!(
                         history
                             .iter()
-                            .any(|message| message.role == role && message.content == text)
+                            .any(|message| message.role == vega_runtime::ChatRole::User
+                                && message.content == text)
                     );
                 }
+                assert!(history.iter().any(|message| {
+                    message.role == vega_runtime::ChatRole::User
+                        && serde_json::from_str::<Value>(&message.content).is_ok_and(|value| {
+                            value
+                                == json!({"vega_history_observation": {
+                                    "version": 1,
+                                    "authority": "none",
+                                    "kind": "assistant_text",
+                                    "text": "First finding"
+                                }})
+                        })
+                }));
                 assert!(
                     !requests[1]
                         .tools
