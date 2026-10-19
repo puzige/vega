@@ -208,13 +208,19 @@ fn harness(cx: &mut TestAppContext, kind: HostKind, source: &str) -> Harness {
     let window = cx.open_window(size(px(600.), px(500.)), |_, cx| {
         Host::new(kind, source, cx)
     });
-    let composer = window
-        .read_with(cx, |host, cx| host.composer.read(cx).focus_handle(cx))
+    let (composer, scroll) = window
+        .read_with(cx, |host, cx| {
+            (host.composer.read(cx).focus_handle(cx), host.scroll.clone())
+        })
         .unwrap();
     cx.update_window(window.into(), |_, window, cx| {
         window.activate_window();
         window.focus(&composer, cx);
         window.render_frame(cx);
+        if matches!(kind, HostKind::ReleaseNotes) {
+            scroll.scroll_to_bottom();
+            window.render_frame(cx);
+        }
     })
     .unwrap();
     cx.run_until_parked();

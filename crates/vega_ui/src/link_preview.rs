@@ -14,10 +14,12 @@ use vega_theme::{Layout, Typography, theme};
 
 use crate::conversation_stream::links::{LinkRange, link_regions};
 
+type LinkOpener = Rc<dyn Fn(&str)>;
+
 #[derive(Clone, Default)]
 struct Dependencies {
     service: LinkPreviewService,
-    opener: Option<Rc<dyn Fn(&str)>>,
+    opener: Option<LinkOpener>,
 }
 
 #[derive(Default)]
@@ -480,6 +482,7 @@ impl Element for MarkdownLinkPreviewLayer {
             let changed = state.focused != focused;
             if changed
                 && !closed
+                && state.suppressed.as_ref() != state.hovered.as_ref()
                 && (state.suppressed.as_ref() == state.focused.as_ref()
                     || state.suppressed.as_ref() == focused.as_ref())
             {
@@ -502,19 +505,23 @@ impl Element for MarkdownLinkPreviewLayer {
                     let _ = bounds_state
                         .update(cx, |state, _| state.card_bounds = bounds.first().copied());
                 });
-            let positioned = Positioner::side(anchor)
+            let mut positioned = Positioner::side(anchor)
                 .placement(Placement::Bottom)
                 .align(Align::Start)
                 .offset(px(Layout::MARKDOWN_LINK_ICON_GAP))
                 .margin(px(Layout::LINK_PREVIEW_MARGIN))
                 .occlude()
-                .child(measured);
-            window.defer_draw(
-                positioned.into_any_element(),
-                point(px(0.), px(0.)),
-                100,
-                None,
+                .child(measured)
+                .into_any_element();
+            positioned.layout_as_root(
+                size(
+                    AvailableSpace::Definite(window.viewport_size().width),
+                    AvailableSpace::Definite(window.viewport_size().height),
+                ),
+                window,
+                cx,
             );
+            window.defer_draw(positioned, point(px(0.), px(0.)), 100, None);
         }
     }
     fn paint(
@@ -552,8 +559,15 @@ impl Element for MarkdownLinkPreviewLayer {
                 let suppressed = state.pointer_link(event.position);
                 state.hovered = suppressed.clone();
                 state.dismiss(false, window, cx);
-                if suppressed.is_some() {
-                    state.suppressed = suppressed;
+                if let Some(key) = suppressed {
+                    if event.button == MouseButton::Left
+                        && event.click_count == 1
+                        && !event.modifiers.modified()
+                        && let Some(link) = state.visible.iter().find(|link| link.key == key)
+                    {
+                        window.focus(&link.focus, cx);
+                    }
+                    state.suppressed = Some(key);
                 }
             });
         });
@@ -717,7 +731,6 @@ pub(crate) fn prepaint_link_targets(
                 .role(role)
                 .aria_label(label)
                 .aria_description(description)
-                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .w(bounds[0].size.width)
                 .h(bounds[0].size.height)
                 .into_any_element();

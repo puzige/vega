@@ -1,6 +1,6 @@
 # Issue #486 · 实现阶段交接
 
-2026-10-19。执行者 `link_preview_executor`，worktree `vega-486-markdown-link-preview`，分支 `feat/486-markdown-link-preview`。首轮生产实现已由 Codex 主会话提交并 push 为 `b5b7faed5ea6cfe0048e0e07517a2d80f8949313`；执行者未 commit/push。当前补丁仅修正首轮 CI 的 GPUI API 错误及主会话明确批准的一个未使用测试 import，待复审/云端验证，没有进入删测阶段。
+2026-10-19。执行者 `link_preview_executor`，worktree `vega-486-markdown-link-preview`，分支 `feat/486-markdown-link-preview`。首轮生产实现已由 Codex 主会话提交并 push 为 `b5b7faed5ea6cfe0048e0e07517a2d80f8949313`；执行者未 commit/push。当前补丁修正云端发现的 GPUI API/交互问题和主会话明确批准的测试接线例外，待复审/云端验证，没有进入删测阶段。
 
 ## 时序与验证状态
 
@@ -15,7 +15,7 @@
 | `cargo metadata --offline --locked --format-version 1 --no-deps` | exit 0；只读取清单，不编译 |
 | lock package identity 静态比较 | 与冻结提交相同，924 个 name/version/source/checksum 身份均未变化 |
 | 新增生产源码静态审阅 | 没有新增源代码注释，没有新增 `.unwrap()` / `.expect()`；没有同步 `runtime.block_on` |
-| 四个冻结文件 SHA-256 | 首轮与冻结记录一致；本次唯一 import 例外及新 hash 另列，其他三个不变 |
+| 四个冻结文件 SHA-256 | 首轮与冻结记录一致；批准的 import/ReleaseNotes setup 例外及各阶段 hash 另列，其他三个不变 |
 
 ## 实现落点
 
@@ -61,6 +61,19 @@ A01–A12 的测试定义、矩阵和冻结清单位于测试阶段页；本阶�
 其余三个冻结文件继续与原始表中的 hash 逐项一致。修正前工作树干净，已 fetch 并更新远端任务分支，无 history rewrite。修正后 fmt、diff、offline locked metadata 静态检查重新 exit 0；未本地编译/执行测试，待主会话提交后交云端复验。
 
 第二轮 Actions `39205170482` 在 `d6ec15f81e1bc25aff611693b2c07801276a74e5` 仍因 `ReadingScopeElement` 编译失败，未发现/执行 Rust 测试：`IntoElement` 派生实现要求 `RenderOnce`，不适用于此自定义 Element。按主会话明确指示及仓库 `MarkdownLinkPreviewLayer` / `InlineCodeText` 的现有模式，删除该 derive，显式实现 `type Element = Self; fn into_element(self) -> Self { self }`；没有实现 `RenderOnce`，没有改布局或交互。原始日志 `/tmp/vega-486-ci-39205170482.log` 保留；本轮仅该生产修正和本段报告，测试/fixture 零改动。修正前 fetch/update 干净分支；fmt、diff、hash 静态检查重新通过，UI 测试继续使用已批准的 `ac95026c77e216a344fb9af5a73c7b3c7206b31b214e286a00ead50312bdfcab`，其他三个仍为原始冻结 hash。未本地编译/测试、未 commit/push，GREEN 仍待云端验证。
+
+第三轮 Actions `39205794474` 在 `c1e8c64072102eec7110578ab4502fdff64fc7f0` 已完成编译、发现并执行 42 个 Rust 用例：28 passed / 14 failed / 0 skipped。其中服务 22 项全部成功，UI 为 6 成功 / 14 失败；这仍是失败门禁，不是 GREEN。原始日志 `/tmp/vega-486-ci-39205794474.log` 保留。12 个卡片场景在 pinned GPUI `element.rs:453` 报 `must call request_layout before prepaint`：`Window::defer_draw` 仅入队，后续 `prepaint_deferred_draws` 直接调用 prepaint。生产修正是在入队同一个 AnyElement 前调用 `layout_as_root`，以 viewport AvailableSpace 完成 request/computed layout；不提前 prepaint，不重复 prepaint。
+
+第三轮另一个 UI 失败为点击后重新聚焦 Composer 没有触发 blur 取消：此前代理 `prevent_default` 使普通点击一直保持 Composer 焦点。生产修正移除该抑制，普通单次无修饰左键点击按真实可见逻辑目标转焦（覆盖图标与后续片段），仍只在鼠标按下转焦，hover 不转焦；鼠标转焦期间保留 dismissed-until-reentry，避免点击同时重新触发预览。Clippy 的唯一报告 `Option<Rc<dyn Fn(&str)>>` type-complexity 改用 `LinkOpener` alias，没有 allow。上述修正待云端重验，未改断言。
+
+剩余 ReleaseNotes 场景的可见性诊断：fixture 的 340×240 阅读 viewport 内，208px label + 16px gap + 220px control basis 超过 group 内宽度，两组设置字段折行，加上 header/actions/disclosure 后，发行说明位于 viewport 下方。生产登记继续遵守 content mask，不登记屏外目标。最小 fixture 方案在修改前获主会话明确批准并公开留证：[ReleaseNotes setup 批准记录](https://github.com/puzige/vega/pull/491#issuecomment-6260646734)。只在既有 typed `read_with` 返回 tuple，增加外层 ScrollHandle clone；仅 ReleaseNotes 的初始首帧之后调用真实 `scroll_to_bottom` 并再 `render_frame`。`update_window` 的首参保持 AnyView，没有把它误当 Host。viewport、数据、所有 42 个用例函数体/断言/事件保持不变，其他宿主没有滚动动作。
+
+| UI 测试源阶段 | SHA-256 |
+|---|---|
+| 仅批准 App import 修正之后 | `ac95026c77e216a344fb9af5a73c7b3c7206b31b214e286a00ead50312bdfcab` |
+| 再应用批准的 ReleaseNotes setup 修正之后 | `9b5feb4a71a628a061168dc521c9cb1bf5bd95b44d73e8ab3ed67beca254dd7a` |
+
+本轮静态比较确认自首个测试定义起的整个 UI 源尾部与原始冻结提交逐字一致，服务测试及两个 fixture 的原始 hash 也一致。fmt、diff、offline locked metadata 检查重新 exit 0；本轮没有本地编译/运行测试，没有 commit/push。原始 hash、两次批准及失败证据均保留，不能将 setup 修正或静态检查称为 GREEN。
 
 ## 下一步与边界
 

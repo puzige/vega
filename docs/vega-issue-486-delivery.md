@@ -2,7 +2,7 @@
 
 关联 [Issue #486](https://github.com/puzige/vega/issues/486)、[PR #491](https://github.com/puzige/vega/pull/491)。需求为 [v1](vega-issue-486-markdown-link-preview.md)，技术方案为 [v2](vega-issue-486-markdown-link-preview-implementation.md)。
 
-当前阶段：2026-10-19 已确认最小目标接口缺失 RED，专职实现者已交回完整实现，Codex 完成静态集成审查；待同一冻结测试云端验证。尚无实现 GREEN、删测或合并结论。
+当前阶段：2026-10-19 已确认最小目标接口缺失 RED；第三轮云端已实际执行全部 42 个测试，28 通过、14 失败，22 个服务测试全部通过。正在修正 UI 布局/焦点和已先行批准的测试 setup 错误；尚无完整 GREEN、删测或合并结论。
 
 ## 顺序与可信来源
 
@@ -12,7 +12,7 @@
 | 先行测试 | `5d46a1955d0212182f128e46dec20c67898dce55` | 22 个服务、20 个 UI/模型定义，其中 18 个 GPUI；42 是静态定义数 |
 | 有效 RED | [Actions 39201250059](https://github.com/puzige/vega/actions/runs/39201250059) | 最小目标 API 缺失；全部 Rust 行为断言未执行 |
 | 生产实现 | [实现阶段交接](vega-issue-486-implementation-stage.md) | 完整代码已写出并经静态审查；未本地编译或运行 |
-| 同一测试 GREEN | 待实现与云端验证 | 未获得 |
+| 同一测试 GREEN | 第三轮已执行 42 个，28 通过、14 失败 | 完整 GREEN 尚未获得 |
 | 独立删测 | 待 GREEN 及证据固定 | 未执行 |
 | 最终 head 完整门禁 | 待删测 | 未执行；须明确 Rust 0 发现/0 执行，不能代替上一阶段 GREEN |
 | 合并及用户 M01/M02 | 待最新 head 门禁 | 未合并、未手测 |
@@ -64,6 +64,14 @@ Clippy 还发现测试未使用 `App` import。Codex [先公开原始证据并�
 该项属于已审查的测试接线错误修正，42 个冻结行为测试不变；首次实现编译失败不冒充原有效 RED 或行为失败。修正后仍待相同断言的云端 GREEN，尚未删测。
 
 第二轮 [Actions 39205170482](https://github.com/puzige/vega/actions/runs/39205170482)（`d6ec15f81e1bc25aff611693b2c07801276a74e5`）仍未进入 Rust 行为执行，fmt 与 Python 34 个成功。仅剩的编译错误是 `ReadingScopeElement: RenderOnce` 不满足；pinned 派生宏返回 `ViewElement<Self>`，因此改为与现有自定义元素一致的显式 `IntoElement<Element = Self>`。布局、行为与四份当前测试内容不变；[原始记录](https://github.com/puzige/vega/pull/491#issuecomment-6260506300)。
+
+## 第三轮实际执行与 UI 修正
+
+第三轮 [Actions 39205794474](https://github.com/puzige/vega/actions/runs/39205794474) 的 head 为 `c1e8c64072102eec7110578ab4502fdff64fc7f0`。[Nextest job](https://github.com/puzige/vega/actions/runs/39205794474/job/117908229739) 实际在 14 个测试 binary 中发现并执行全部 42 个测试：**28 通过、14 失败、0 跳过**，7.104 秒；22 个服务测试全部通过，UI/模型 6 通过、14 失败。fmt 与 Python 34 个执行通过。[原始结果及错误](https://github.com/puzige/vega/pull/491#issuecomment-6260612079) 已公开固定，不能称为完整 GREEN。
+
+12 项 UI 失败共同触发 pinned GPUI 的 `must call request_layout before prepaint`：延迟绘制队列只执行后续 prepaint，不负责初始布局。生产修正为对同一个浮层先 `layout_as_root` 再 `defer_draw`，不提前 prepaint。另一个失败证明普通单击未取得链接焦点，使之后回到输入框不能取消延迟打开；修正真实点击焦点，同时继续抑制鼠标点击触发预览，hover 本身不抢焦点。Clippy 只有 `Option<Rc<dyn Fn(&str)>>` 的 type complexity，改用等价类型别名，不添加 lint allow。
+
+剩余 ReleaseNotes 分支中，真实内容位于 340×240 裁剪视口下方，生产不注册不可见链接符合契约。Codex [在改动前公开审查并批准](https://github.com/puzige/vega/pull/491#issuecomment-6260646734) 仅修正现有 harness setup：从 typed `read_with` 同时取得 composer 和真实 ScrollHandle，首次 frame 后只对 ReleaseNotes 滚动到底部再绘制。保留视口、内容、测试定义、事件、断言和预期；不把错误 setup 迁就为生产侧注册离屏链接。主会话逐字重建两处已批准 setup 变换，确认除此之外其余字节不变；当前 UI 测试 SHA-256 为 `9b5feb4a71a628a061168dc521c9cb1bf5bd95b44d73e8ab3ed67beca254dd7a`，另外三份仍与原冻结 hash 相同。原始和 import-only 版本继续保留，当前源将随本轮修正一同提交。快速 fmt、diff、offline locked metadata 均 exit 0，没有本地编译或执行测试。
 
 ## 用户手测入口
 
