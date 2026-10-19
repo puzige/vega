@@ -275,14 +275,6 @@ impl ThreadsBlock {
             });
         let drag_entity = cx.entity().downgrade();
         let drag_item = item.clone();
-        #[cfg(test)]
-        let row = super::menu_placement_tests::observe_control(
-            row,
-            match &item {
-                ReorderItem::Project(id) => format!("project-header-{id}"),
-                ReorderItem::Thread(id) => format!("project-thread-row-{id}"),
-            },
-        );
         row.relative()
             .on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
                 drag_entity

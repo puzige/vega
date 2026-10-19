@@ -241,8 +241,6 @@ impl ThreadsBlock {
                     .size_full(),
                 )
             });
-        #[cfg(test)]
-        let control = super::menu_placement_tests::observe_control(control, id);
         control.into_any_element()
     }
     pub(in crate::sidebar::threads_block) fn render_organization(
@@ -416,8 +414,6 @@ impl ThreadsBlock {
                     .size_full(),
                 )
             });
-        #[cfg(test)]
-        let control = super::menu_placement_tests::observe_control(control, id);
         control.into_any_element()
     }
 

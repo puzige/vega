@@ -647,11 +647,6 @@ impl Render for Sidebar {
         let colors = theme(cx).colors;
         div()
             .id("sidebar")
-            .map(|sidebar| {
-                #[cfg(test)]
-                let sidebar = sidebar.debug_selector(|| "sidebar".into());
-                sidebar
-            })
             .flex()
             .flex_col()
             .w(px(width(cx)))
@@ -702,11 +697,6 @@ impl Render for Sidebar {
                                 }
                             })
                             .id("sidebar-scroll")
-                            .map(|scroll| {
-                                #[cfg(test)]
-                                let scroll = scroll.debug_selector(|| "sidebar-scroll".into());
-                                scroll
-                            })
                             // Organization content keeps an 8px application-edge inset;
                             // Pinned row surfaces extend 8px left of the title column.
                             .ml(px(-4.0))
