@@ -1,6 +1,6 @@
 # #486 · ListState 崩溃修复交付记录
 
-2026-10-19。用户最新明确指示**“你直接实现 不用等 vega”**，覆盖已发布的 Ready/Vega 默认路由。产品需求 v1 不变，执行[崩溃修复方案 v1](vega-issue-486-list-state-borrow-crash.md) B01–B05。当前阶段：5 个先行测试已写齐并静态审查，待新 draft PR 云端 RED；当前执行者 Codex，下一执行者 Codex 审查/CI。Project In progress，生产尚未修复，没有新 RED/GREEN 结论。
+2026-10-19。用户最新明确指示**“你直接实现 不用等 vega”**，覆盖已发布的 Ready/Vega 默认路由。产品需求 v1 不变，执行[崩溃修复方案 v1](vega-issue-486-list-state-borrow-crash.md) B01–B05。当前阶段：有效 RED 后的最小修复已写出并静态审查，待同一冻结测试云端 GREEN；当前/下一执行者 Codex。Project In progress，尚未取得 GREEN 或发布结论。
 
 该专职子 agent 在此前止点仅核对接口，未写测试或生产代码；现在按用户最新授权恢复。Codex 主会话负责协调、审查、集成和 PR/CI，子 agent 单独负责代码。上一交接及诊断保留为历史，不据此声称 Vega 已领取。
 
@@ -16,14 +16,20 @@
 
 | 阶段 | 结果/来源 |
 |---|---|
-| 本轮先行测试源码/hash | [先行测试阶段](vega-issue-486-crash-test-stage.md)：5 个新 GPUI 定义，真实 ConversationStream/ListState 与 FilePreview；源码/hash 已固定，未运行 |
-| 真实列表行为RED | 待新draft PR的原云端门禁；不得以最小缺失API或无关故障代替 |
-| 冻结测试后的生产修复 | 尚未授权 |
+| 本轮先行测试源码/hash | [先行测试阶段](vega-issue-486-crash-test-stage.md)，提交 `4b60f0b28eb1c7734d51dc1003d9141d45515872`；5 个新 GPUI 测试及外部 fixture 已冻结 |
+| 真实列表行为 RED | [run 39222176469](https://github.com/puzige/vega/actions/runs/39222176469)，实际 5 发现/5 执行/1 通过/4 失败/0 跳过；B01–B04 同一 ListState BorrowError，B05 通过 |
+| 冻结测试后的生产修复 | RED 已核实并[固定到新 PR #493](https://github.com/puzige/vega/pull/493#issuecomment-6262985052)后授权；[实现阶段](vega-issue-486-crash-implementation-stage.md)仅移动采样时机，源码已审查，行为待 CI |
 | 同一断言GREEN | 尚未取得 |
 | 证据固定后独立删测 | 尚未执行 |
 | 最新head完整空集门禁 | 尚未执行 |
-| 合并/云端发布/用户手测 | 尚未执行；原崩溃仍未修复 |
+| 合并/云端发布/用户手测 | 尚未执行；已安装版本仍受原崩溃影响 |
 
 主会话通读本轮 558 行测试和 183 行外部边界 fixture，并独立复核生产投影：仅移除明确 cfg/feature 接线、只读观察及三个标记后，生产代码与 `edeed517` 基线一致。锁文件仅增加获批的十个测试包（914→924），原包身份/来源/checksum 不变。子 agent 的格式、差异、完整 offline locked metadata 均退出 0；这些静态结果不是类型检查或行为 RED。
+
+## 本轮有效行为 RED
+
+测试先行提交 `4b60f0b28eb1c7734d51dc1003d9141d45515872` 的 [Nextest 原始日志](https://github.com/puzige/vega/actions/runs/39222176469/job/117959818844)真实运行 5 项、14 个 binaries，0.561s；B01–B04 都在 pinned `gpui-pre 0.3.4/src/elements/list.rs:561:16` 报 `RefCell already mutably borrowed`，B05 FilePreview 全部断言通过。列表用例因 panic 未达到后续断言，不能把它们写作已验证。没有编译、依赖、runner 或缺失 API 故障替代 RED。
+
+[Clippy job](https://github.com/puzige/vega/actions/runs/39222176469/job/117959818599) 的 fmt/全目标 Clippy 成功；Nextest job 的 Python 三组 5+15+14=34 实际执行通过，required 因真实行为失败而正确阻断。主会话先在 PR 固定原始错误、计数、不可变源码和 hash，再授权生产调整；不是根据绿色 CI 倒推测试先行。
 
 只允许本地低CPU格式、差异、静态和离线依赖元数据检查；不得本地运行Vega、编译、Clippy、测试、benchmark或打包。云端CI沿用既有fmt/Clippy/Python/Nextest/required，默认每5分钟查询，不修改门禁。不恢复上一轮42项全套，不追加实现后测试，不重试旧head换绿。最终仍须真实会话用户手测，不关闭Issue、不Done、不清理本卡分支/worktree。
