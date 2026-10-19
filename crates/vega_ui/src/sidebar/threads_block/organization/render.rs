@@ -279,8 +279,7 @@ impl ThreadsBlock {
         let label = label.into();
         let selected = matches!(action, Control::Archive)
             && self.organization.as_ref().is_some_and(|org| org.archive);
-        let keyboard_action = action.clone();
-        div()
+        let control = div()
             .id(ElementId::Name(id.clone().into()))
             .aria_label(label.clone())
             .debug_selector(|| id.clone())
@@ -308,23 +307,34 @@ impl ThreadsBlock {
                     .bg(colors.bg_active)
                     .border_1()
                     .border_color(colors.border_subtle)
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
+            });
+        let control = if matches!(action, Control::Archive) {
+            control
+                .role(gpui_kit::Role::Button)
+                .on_click(cx.listener(|this, _, window, cx| {
                     cx.stop_propagation();
-                    this.control_action(action.clone(), window, cx);
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.control_action(Control::Archive, window, cx);
+                }))
+        } else {
+            let keyboard_action = action.clone();
+            control
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.control_action(keyboard_action.clone(), window, cx);
-                    }
-                }),
-            )
-            .child(crate::icons::icon(kind, colors.text_secondary))
+                        this.control_action(action.clone(), window, cx);
+                    }),
+                )
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            this.control_action(keyboard_action.clone(), window, cx);
+                        }
+                    },
+                ))
+        };
+        control.child(crate::icons::icon(kind, colors.text_secondary))
     }
 
     pub(super) fn archive_control(
