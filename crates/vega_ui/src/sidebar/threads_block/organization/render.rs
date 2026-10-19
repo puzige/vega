@@ -130,7 +130,7 @@ impl ThreadsBlock {
             _ => label.clone(),
         };
         let keyboard_action = action.clone();
-        div()
+        let control = div()
             .id(ElementId::Name(id.clone().into()))
             .focusable()
             .tab_stop(true)
@@ -181,8 +181,10 @@ impl ThreadsBlock {
                     }
                 }),
             )
-            .child(label)
-            .into_any_element()
+            .child(label);
+        #[cfg(test)]
+        let control = super::menu_placement_tests::observe_control(control, id);
+        control.into_any_element()
     }
     pub(in crate::sidebar::threads_block) fn render_organization(
         &mut self,
@@ -333,6 +335,8 @@ impl ThreadsBlock {
                     },
                 ))
         };
+        #[cfg(test)]
+        let control = super::menu_placement_tests::observe_control(control, id);
         control.child(crate::icons::icon(kind, colors.text_secondary))
     }
 
