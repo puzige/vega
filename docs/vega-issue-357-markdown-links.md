@@ -1,5 +1,7 @@
 # Issue #357 · Markdown 链接的可见性与点击
 
+> 2026-10-19：[#486 需求 v1](vega-issue-486-markdown-link-preview.md) 已冻结后续链接外观与完整悬停预览，替代本页 C2/C6 的常显实线、常规字重及不设正文键盘焦点/预览的旧范围。当前功能尚未因此改变；目标、点击仲裁、选择复制与 hover 不重排契约继续保留，历史验收不改写。
+
 来源：[Issue #357](https://github.com/puzige/vega/issues/357)（标题「[Bug] Markdown 不能正确点击链接」，正文为空）。
 2026-10-14 用户报告：正文里的 Markdown 链接「既不展示链接，也不能点击，不会展示高亮」。
 
