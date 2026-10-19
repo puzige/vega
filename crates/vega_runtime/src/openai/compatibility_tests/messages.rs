@@ -87,21 +87,42 @@ async fn chat_reasoning_aliases_preserve_source_presence_and_original_text_throu
 
 #[tokio::test]
 async fn duplicate_equal_aliases_emit_one_thinking_delta_and_conflicts_fail_before_tools() {
-    let (outcome, provider) = run_scripts("https://proxy.example/v1", "custom-reasoner", vec![
-        Script::read("same", json!({"reasoning_content":"one raw","reasoning":"one raw","reasoning_text":"one raw"})),
-        Script::final_reply(json!({})),
-    ]).await;
+    let (_root, tools) = fixture();
+    let provider = ScriptedProvider::new(
+        "https://proxy.example/v1",
+        vec![
+            Script::read(
+                "same",
+                json!({"reasoning_content":"one raw","reasoning":"one raw","reasoning_text":"one raw"}),
+            ),
+            Script::final_reply(json!({})),
+        ],
+    );
+    let thinking = Arc::new(Mutex::new(String::new()));
+    let observed = thinking.clone();
+    let outcome = crate::run_agent_with_sink(
+        &provider,
+        &tools,
+        request("custom-reasoner"),
+        CancellationToken::new(),
+        move |event| {
+            if let RuntimeEvent::ThinkingDelta(text) = event {
+                observed
+                    .lock()
+                    .expect("thinking observation")
+                    .push_str(&text);
+            }
+            async { Ok(()) }
+        },
+    )
+    .await
+    .expect("runtime result");
     assert!(!outcome.failed);
     assert_eq!(outcome.executed_tool_call_count, 1);
-    let thinking = outcome
-        .events
-        .iter()
-        .filter_map(|event| match event {
-            RuntimeEvent::ThinkingDelta(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<String>();
-    assert_eq!(thinking, "one raw");
+    assert_eq!(
+        thinking.lock().expect("thinking observation").as_str(),
+        "one raw"
+    );
     let bodies = provider.bodies();
     assert_eq!(tool_messages(&bodies[1])[0]["reasoning_content"], "one raw");
     for (first, second) in [

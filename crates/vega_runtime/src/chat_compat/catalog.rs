@@ -255,30 +255,39 @@ impl Catalog {
         let Some(endpoint) = base_url.and_then(Endpoint::parse) else {
             return (None, None);
         };
-        let exact = self.models.iter().find(|entry| {
+        let matches_endpoint = |entry: &&CatalogEntry| {
             Endpoint::parse(&entry.base_url).is_some_and(|pattern| pattern.matches(&endpoint))
-        });
-        let service = exact.map(|entry| entry.provider.as_str()).or_else(|| {
-            for (alias, service) in [
-                ("https://api.together.xyz/v1", "together"),
-                ("https://api.deepseek.com/v1", "deepseek"),
-                ("https://api.z.ai/api/paas/v4", "zai"),
-                ("https://open.bigmodel.cn/api/paas/v4", "zai-coding-cn"),
-                (
-                    "https://open.bigmodel.cn/api/coding/paas/v4",
-                    "zai-coding-cn",
-                ),
-            ] {
-                if Endpoint::parse(alias).as_ref() == Some(&endpoint) {
-                    return Some(service);
+        };
+        let exact = self
+            .models
+            .iter()
+            .find(|entry| entry.id == model && matches_endpoint(entry));
+        let service = exact
+            .or_else(|| self.models.iter().find(matches_endpoint))
+            .map(|entry| entry.provider.as_str())
+            .or_else(|| {
+                for (alias, service) in [
+                    ("https://api.together.xyz/v1", "together"),
+                    ("https://api.deepseek.com/v1", "deepseek"),
+                    ("https://api.z.ai/api/paas/v4", "zai"),
+                    ("https://open.bigmodel.cn/api/paas/v4", "zai-coding-cn"),
+                    (
+                        "https://open.bigmodel.cn/api/coding/paas/v4",
+                        "zai-coding-cn",
+                    ),
+                ] {
+                    if Endpoint::parse(alias).as_ref() == Some(&endpoint) {
+                        return Some(service);
+                    }
                 }
-            }
-            None
-        });
-        let entry = service.and_then(|service| {
-            self.models
-                .iter()
-                .find(|entry| entry.provider == service && entry.id == model)
+                None
+            });
+        let entry = exact.or_else(|| {
+            service.and_then(|service| {
+                self.models
+                    .iter()
+                    .find(|entry| entry.provider == service && entry.id == model)
+            })
         });
         (service, entry)
     }

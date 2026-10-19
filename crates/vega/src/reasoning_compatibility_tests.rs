@@ -645,8 +645,7 @@ async fn warm_replay_uses_effective_profile_facts_even_when_other_environment_in
         request
             .history
             .push(ChatMessage::new(ChatRole::User, "continue"));
-        let mut frame =
-            vega_runtime::ReplayFrame::new(request.history.len() + 1, frozen.replay_policy);
+        let mut frame = vega_runtime::ReplayFrame::new(request.history.len(), frozen.replay_policy);
         frame.attach_route_fingerprint([6; 32]);
         frame.attach_candidate(first.messages.clone(), environment);
         request.replay_frame = Some(frame);

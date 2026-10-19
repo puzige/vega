@@ -206,8 +206,7 @@ async fn new_text_and_detail_state_survives_warm_and_is_rejected_when_environmen
                 frozen.choice = ReasoningChoice::Effort("high".into());
                 next.reasoning = Some(frozen);
             }
-            let mut frame =
-                ReplayFrame::new(next.history.len() + 1, ReasoningReplayPolicy::Unknown);
+            let mut frame = ReplayFrame::new(next.history.len(), ReasoningReplayPolicy::Unknown);
             frame.attach_route_fingerprint(if change == "route" { [8; 32] } else { [9; 32] });
             frame.attach_candidate(outcome.messages.clone(), environment);
             next.replay_frame = Some(frame);
