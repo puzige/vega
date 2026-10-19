@@ -120,6 +120,14 @@ impl OpenAiProvider {
         }
     }
 
+    fn request_body(&self, req: &ChatRequest) -> Result<serde_json::Value, VegaError> {
+        if self.responses_api {
+            responses::build_body(req)
+        } else {
+            Ok(build_request_body(req))
+        }
+    }
+
     async fn send_attempt(
         &self,
         body: &serde_json::Value,
@@ -164,11 +172,7 @@ impl OpenAiProvider {
                 });
             }
         }
-        let body = if self.responses_api {
-            responses::build_body(&req)?
-        } else {
-            build_request_body(&req)
-        };
+        let body = self.request_body(&req)?;
         let endpoint = if self.responses_api {
             "responses"
         } else {
@@ -507,4 +511,10 @@ mod recovery;
 pub(crate) mod responses;
 mod sse;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 pub(crate) use sse::*;
+
+#[cfg(test)]
+mod compatibility_tests;

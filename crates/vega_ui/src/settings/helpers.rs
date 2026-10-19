@@ -1,5 +1,7 @@
 use super::*;
 use crate::interaction::InteractionExt;
+#[cfg(test)]
+use gpui_kit::TestSupportExt;
 
 pub(crate) fn read_rate_inputs(inputs: &[Entity<TextInput>], cx: &App) -> PricingRateInputs {
     PricingRateInputs {
@@ -197,6 +199,15 @@ pub(crate) fn settings_status(
     color: gpui_kit::Rgba,
     colors: vega_theme::ThemeColors,
 ) -> Div {
+    let label = label.into();
+    #[cfg(test)]
+    let observed_label = label.clone();
+    let label_view = div().min_w_0().flex_1().child(label);
+    #[cfg(test)]
+    let label_view = label_view
+        .id(format!("settings-status-{observed_label}"))
+        .aria_label(observed_label)
+        .test_support();
     let icon = if color == colors.danger || color == colors.warning {
         crate::icons::Icon::Warning
     } else if color == colors.success {
@@ -231,7 +242,7 @@ pub(crate) fn settings_status(
                         .child(crate::icons::icon(icon, color)),
                 ),
         )
-        .child(div().min_w_0().flex_1().child(label.into()))
+        .child(label_view)
 }
 
 pub(crate) fn action_button(
@@ -260,7 +271,7 @@ pub(crate) fn action_button_owned(
         .unwrap_or_else(|| label.clone().into());
     let destructive = label == "删除";
     let primary = label.starts_with("保存");
-    settings_action_chrome(colors)
+    let button = settings_action_chrome(colors)
         .id(id)
         .interaction_surface(
             if enabled && primary {
@@ -284,7 +295,10 @@ pub(crate) fn action_button_owned(
             colors.border_subtle
         } else {
             gpui_kit::transparent_black().into()
-        })
+        });
+    #[cfg(test)]
+    let button = button.test_support();
+    button
         .when_some(focus, |button, focus| button.track_focus(&focus))
         .focus_visible(move |style| style.border_color(colors.accent))
         .when(enabled && destructive, |button| {

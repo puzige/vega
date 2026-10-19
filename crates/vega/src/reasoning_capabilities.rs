@@ -1,48 +1,16 @@
 use vega_conversation::types::{
-    ChatCompatibility, ReasoningChoice, ReasoningProfileProjection, ReasoningProtocol,
-    ReasoningReplaySetting, chat_compatibility,
+    ReasoningProfileProjection, ReasoningProtocol, ReasoningReplaySetting, chat_compatibility,
 };
 use vega_runtime::{FrozenReasoning, ReasoningReplayPolicy};
 use vega_store::config::ProviderApi;
 
+#[cfg(test)]
+#[path = "reasoning_compatibility_tests.rs"]
+mod compatibility_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReasoningCapabilityError {
     Invalid,
-}
-
-fn replay_setting(policy: ReasoningReplayPolicy) -> ReasoningReplaySetting {
-    match policy {
-        ReasoningReplayPolicy::StandardChat => ReasoningReplaySetting::StandardChat,
-        ReasoningReplayPolicy::DeepSeekTools => ReasoningReplaySetting::DeepSeekTools,
-        ReasoningReplayPolicy::GlmPreserved => ReasoningReplaySetting::GlmPreserved,
-        ReasoningReplayPolicy::GlmInterleaved => ReasoningReplaySetting::GlmInterleaved,
-        ReasoningReplayPolicy::ResponsesItems => ReasoningReplaySetting::ResponsesItems,
-        ReasoningReplayPolicy::Unknown => ReasoningReplaySetting::Auto,
-    }
-}
-
-fn capability_profile(
-    provider: &str,
-    model: &str,
-    capabilities: ChatCompatibility,
-) -> ReasoningProfileProjection {
-    let mut profile = ReasoningProfileProjection::unknown(provider, model);
-    profile.protocol = capabilities.protocol;
-    profile.replay_profile = replay_setting(capabilities.replay_policy);
-    profile.support = capabilities.support;
-    profile.efforts = capabilities
-        .efforts
-        .iter()
-        .map(|effort| (*effort).to_string())
-        .collect();
-    profile.supports_disabled = capabilities.supports_disabled;
-    profile.disabled_wire = capabilities.disabled_wire;
-    profile.preference = capabilities
-        .default_effort
-        .map_or(ReasoningChoice::ProviderDefault, |effort| {
-            ReasoningChoice::Effort(effort.to_string())
-        });
-    profile
 }
 
 pub(crate) fn resolve_reasoning_profile(
@@ -66,7 +34,9 @@ pub(crate) fn resolve_reasoning_profile(
     } else {
         chat_compatibility(Some(base_url), model).map_or_else(
             || ReasoningProfileProjection::unknown(provider, model),
-            |capabilities| capability_profile(provider, model, capabilities),
+            |capabilities| {
+                ReasoningProfileProjection::from_chat_compatibility(provider, model, capabilities)
+            },
         )
     };
     if let Some(configured) = configured {

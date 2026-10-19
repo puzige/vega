@@ -1,5 +1,9 @@
 use crate::provider::{ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy};
 
+#[cfg(test)]
+#[path = "chat_compat_catalog_tests.rs"]
+mod catalog_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningSupport {
     Required,

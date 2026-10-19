@@ -3,6 +3,9 @@ name = "vega_runtime"
 version.workspace = true
 edition.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 vega_credentials = { workspace = true }
 image = { workspace = true }
@@ -24,3 +27,6 @@ sha2 = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
+
+[dev-dependencies]
+tempfile.workspace = true

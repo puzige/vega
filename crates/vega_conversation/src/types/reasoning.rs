@@ -50,6 +50,37 @@ pub struct ReasoningProfileProjection {
 }
 
 impl ReasoningProfileProjection {
+    pub fn from_chat_compatibility(
+        provider: &str,
+        model: &str,
+        capabilities: ChatCompatibility,
+    ) -> Self {
+        let mut profile = Self::unknown(provider, model);
+        profile.protocol = capabilities.protocol;
+        profile.replay_profile = match capabilities.replay_policy {
+            ReasoningReplayPolicy::StandardChat => ReasoningReplaySetting::StandardChat,
+            ReasoningReplayPolicy::DeepSeekTools => ReasoningReplaySetting::DeepSeekTools,
+            ReasoningReplayPolicy::GlmPreserved => ReasoningReplaySetting::GlmPreserved,
+            ReasoningReplayPolicy::GlmInterleaved => ReasoningReplaySetting::GlmInterleaved,
+            ReasoningReplayPolicy::ResponsesItems => ReasoningReplaySetting::ResponsesItems,
+            ReasoningReplayPolicy::Unknown => ReasoningReplaySetting::Auto,
+        };
+        profile.support = capabilities.support;
+        profile.efforts = capabilities
+            .efforts
+            .iter()
+            .map(|effort| (*effort).to_string())
+            .collect();
+        profile.supports_disabled = capabilities.supports_disabled;
+        profile.disabled_wire = capabilities.disabled_wire;
+        profile.preference = capabilities
+            .default_effort
+            .map_or(ReasoningChoice::ProviderDefault, |effort| {
+                ReasoningChoice::Effort(effort.to_string())
+            });
+        profile
+    }
+
     /// Converts the store representation without guessing undocumented values.
     pub fn from_store(profile: &ReasoningProfile) -> Result<Self, String> {
         profile.validate()?;
