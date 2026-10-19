@@ -16,6 +16,10 @@ use reorder::ReorderState;
 mod render;
 
 #[cfg(test)]
+#[path = "organization/archive_accessibility_tests.rs"]
+mod archive_accessibility_tests;
+
+#[cfg(test)]
 #[path = "organization/archive_controls_tests.rs"]
 mod archive_controls_tests;
 

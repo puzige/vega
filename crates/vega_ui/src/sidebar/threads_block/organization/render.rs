@@ -273,7 +273,7 @@ impl ThreadsBlock {
         action: Control,
         hidden_until_hover: bool,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
         let colors = theme(cx).colors;
         let id = id.into();
         let label = label.into();
@@ -325,7 +325,25 @@ impl ThreadsBlock {
                 }),
             )
             .child(crate::icons::icon(kind, colors.text_secondary))
-            .into_any_element()
+    }
+
+    pub(super) fn archive_control(
+        &self,
+        hidden_until_hover: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        self.vector_control(
+            "organization-archive",
+            if self.organization.as_ref().is_some_and(|org| org.archive) {
+                "隐藏已归档"
+            } else {
+                "显示已归档"
+            },
+            crate::icons::Icon::Archive,
+            Control::Archive,
+            hidden_until_hover,
+            cx,
+        )
     }
 
     pub(super) fn eligible_threads(&self, show_archived: bool) -> Vec<Thread> {
@@ -444,18 +462,7 @@ impl ThreadsBlock {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(self.vector_control(
-                        "organization-archive",
-                        if show_archived {
-                            "隐藏已归档"
-                        } else {
-                            "显示已归档"
-                        },
-                        crate::icons::Icon::Archive,
-                        Control::Archive,
-                        !header_actions_visible,
-                        cx,
-                    ))
+                    .child(self.archive_control(!header_actions_visible, cx))
                     .child(self.vector_control(
                         "organization-new-session",
                         "新建独立任务",
