@@ -1058,7 +1058,7 @@ pub(crate) enum StreamEntry {
 impl StreamEntry {
     pub(crate) fn row_count(&self, cx: &App) -> usize {
         match self {
-            StreamEntry::Subagents { group } => group.read(cx).row_count(),
+            StreamEntry::Subagents { group } => group.read(cx).row_count(cx),
             StreamEntry::RunActivity { .. } => 1,
             StreamEntry::RunActivitySegment { group, segment } => {
                 group.read(cx).segment_row_count(*segment, cx)

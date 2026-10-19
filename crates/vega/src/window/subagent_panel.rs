@@ -218,6 +218,36 @@ impl VegaWindow {
         cx.notify();
     }
 
+    pub(super) fn rebind_subagent_detail(
+        &mut self,
+        child: &str,
+        stream: &Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(detail) = self
+            .subagent_panel
+            .detail
+            .as_mut()
+            .filter(|detail| detail.id == child)
+        else {
+            return;
+        };
+        if let Some(previous) = detail.stream.replace(stream.clone())
+            && previous != *stream
+        {
+            previous.update(cx, |previous, cx| previous.set_reading_preview(false, cx));
+        }
+        detail.loading = false;
+        detail.error = false;
+        detail.model = Some(stream.read(cx).displayed_model().to_owned());
+        stream.update(cx, |stream, cx| {
+            stream.set_reading_preview(self.subagent_panel.preview_visible, cx)
+        });
+        self.subagent_panel.history_epoch = self.subagent_panel.history_epoch.wrapping_add(1);
+        self.subagent_panel.selection = self.subagent_panel.selection.wrapping_add(1);
+        cx.notify();
+    }
+
     pub(super) fn apply_subagent_panel_update(
         &mut self,
         snapshot: SubagentSnapshot,
@@ -497,20 +527,7 @@ impl VegaWindow {
             .active_stream_for_thread(&owner.child)
             .or(retained);
         let stream = if let Some(stream) = cached {
-            if self.agent_controller.delegated_unbound.remove(&owner.child) {
-                let models = self.model_options_for_pricing();
-                let label = self
-                    .sidebar
-                    .read(cx)
-                    .project_label(&thread.project_id, cx)
-                    .unwrap_or_default();
-                stream.update(cx, |stream, cx| {
-                    stream.apply_model_options(models, cx);
-                    stream.set_project_label(label, cx);
-                });
-                self.apply_reasoning_profile_to_stream(&stream, &thread.model, cx);
-                self.bind_conversation_stream(&stream, window, cx);
-            }
+            self.bind_subagent_detail_stream(&owner.child, &stream, window, cx);
             stream
         } else {
             let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
@@ -844,11 +861,44 @@ impl VegaWindow {
             .into_any_element()
     }
 
+    fn bind_subagent_detail_stream(
+        &mut self,
+        child: &str,
+        stream: &Entity<ConversationStream>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.agent_controller.delegated_unbound.remove(child) {
+            return;
+        }
+        let models = self.model_options_for_pricing();
+        let model = stream.read(cx).displayed_model().to_owned();
+        let label = self
+            .sidebar
+            .read(cx)
+            .project_label(stream.read(cx).route_project_id(), cx)
+            .unwrap_or_default();
+        stream.update(cx, |stream, cx| {
+            stream.apply_model_options(models, cx);
+            stream.set_project_label(label, cx);
+        });
+        self.apply_reasoning_profile_to_stream(stream, &model, cx);
+        self.bind_conversation_stream(stream, window, cx);
+    }
+
     pub(super) fn render_subagent_panel(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some((child, stream)) = self.subagent_panel.detail.as_ref().and_then(|detail| {
+            detail
+                .stream
+                .clone()
+                .map(|stream| (detail.id.clone(), stream))
+        }) {
+            self.bind_subagent_detail_stream(&child, &stream, window, cx);
+        }
         let colors = theme(cx).colors;
         let mut root = div()
             .id("subagent-panel")

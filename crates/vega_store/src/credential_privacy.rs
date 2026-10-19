@@ -53,7 +53,7 @@ pub fn set_exception_checked(
 }
 
 pub fn fields(conn: &Connection, thread: &str) -> rusqlite::Result<Vec<(String, String, String)>> {
-    let mut query = conn.prepare("SELECT id,'message',content FROM messages WHERE thread_id=?1 UNION ALL SELECT id,'tool.input',input_json FROM tool_calls WHERE thread_id=?1 UNION ALL SELECT id,'tool.output',output_text FROM tool_calls WHERE thread_id=?1 AND output_text IS NOT NULL UNION ALL SELECT CAST(id AS TEXT),'summary',summary FROM context_checkpoints WHERE thread_id=?1 UNION ALL SELECT id,'plan.note',plan_review_note FROM messages WHERE thread_id=?1 AND plan_review_note IS NOT NULL UNION ALL SELECT id,'pending.model',model_content FROM pending_messages WHERE thread_id=?1 AND model_content IS NOT NULL UNION ALL SELECT id,'pending.content',json_extract(payload,'$.content') FROM pending_messages WHERE thread_id=?1 AND payload != '' AND json_valid(payload) AND json_type(payload,'$.content')='text' UNION ALL SELECT child_thread_id,'delegation.name',name FROM delegated_runs WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_thread_id,'delegation.task',task FROM delegated_runs WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_thread_id,'delegation.result',result FROM delegated_runs WHERE parent_thread_id=?1 OR child_thread_id=?1")?;
+    let mut query = conn.prepare("SELECT id,'message',content FROM messages WHERE thread_id=?1 UNION ALL SELECT id,'tool.input',input_json FROM tool_calls WHERE thread_id=?1 UNION ALL SELECT id,'tool.output',output_text FROM tool_calls WHERE thread_id=?1 AND output_text IS NOT NULL UNION ALL SELECT CAST(id AS TEXT),'summary',summary FROM context_checkpoints WHERE thread_id=?1 UNION ALL SELECT id,'plan.note',plan_review_note FROM messages WHERE thread_id=?1 AND plan_review_note IS NOT NULL UNION ALL SELECT id,'pending.model',model_content FROM pending_messages WHERE thread_id=?1 AND model_content IS NOT NULL UNION ALL SELECT id,'pending.content',json_extract(payload,'$.content') FROM pending_messages WHERE thread_id=?1 AND payload != '' AND json_valid(payload) AND json_type(payload,'$.content')='text' UNION ALL SELECT child_message_id,'delegation.name',name FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_message_id,'delegation.task',task FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_message_id,'delegation.result',result FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1")?;
     query
         .query_map([thread], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect()
@@ -70,7 +70,7 @@ pub fn source_fingerprint_in_transaction(
 ) -> rusqlite::Result<String> {
     let source = crate::context_compaction::load_source_version_in_transaction(conn, thread)?;
     let mut values = fields(conn, thread)?;
-    let mut query = conn.prepare("SELECT child_thread_id,json_array(parent_thread_id,parent_message_id,spawn_call_id,child_message_id,state,truncated,usage_complete,created_at) FROM delegated_runs WHERE parent_thread_id=?1 OR child_thread_id=?1")?;
+    let mut query = conn.prepare("SELECT child_message_id,json_array(child_thread_id,parent_thread_id,parent_message_id,request_call_id,ordinal,previous_child_message_id,kind,instruction_message_id,state,truncated,usage_complete,created_at) FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1")?;
     values.extend(
         query
             .query_map([thread], |row| {
@@ -156,11 +156,12 @@ where
         {
             continue;
         }
-        if conn.execute("UPDATE delegated_runs SET name=?1,task=?2,result=?3,truncated=?4 WHERE child_thread_id=?5 AND state NOT IN ('running','cancelling')", params![name,task,result,truncated,row.child_thread_id])? != 1 {
+        if conn.execute("UPDATE delegated_executions SET name=?1,task=?2,result=?3,truncated=?4 WHERE child_message_id=?5 AND state NOT IN ('running','cancelling')", params![name,task,result,truncated,row.child_message_id])? != 1 {
             return Err(rusqlite::Error::InvalidParameterName(
                 "conversation changed; review again".into(),
             ));
         }
+        conn.execute("UPDATE delegated_runs SET name=?1,task=?2,result=?3,truncated=?4 WHERE child_message_id=?5", params![name,task,result,truncated,row.child_message_id])?;
     }
     Ok(())
 }
@@ -177,7 +178,7 @@ where
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let source = source_fingerprint_in_transaction(&tx, thread)?;
     let running: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id=?1 AND status='streaming') OR EXISTS(SELECT 1 FROM delegated_runs WHERE (parent_thread_id=?1 OR child_thread_id=?1) AND state IN ('running','cancelling'))",
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id=?1 AND status='streaming') OR EXISTS(SELECT 1 FROM delegated_executions WHERE (parent_thread_id=?1 OR child_thread_id=?1) AND state IN ('running','cancelling'))",
         [thread],
         |row| row.get(0),
     )?;

@@ -16,11 +16,41 @@ fn failure(message: &str) -> VegaError {
     }
 }
 
+type ExecutionKey = (String, String);
+type AdmissionReply = oneshot::Sender<Result<serde_json::Value, VegaError>>;
+
+#[derive(Clone)]
+struct ContinuationBoundary {
+    message_id: String,
+    source_version: u64,
+    fingerprint: String,
+    thread: vega_store::threads::ThreadRow,
+}
+
 struct AgentRecord {
     snapshot: SubagentSnapshot,
     call_id: String,
     cancel: CancellationToken,
     receipt_persisted: CancellationToken,
+    occupied: bool,
+    admitted: bool,
+    committed: bool,
+    boundary: Option<ContinuationBoundary>,
+}
+
+struct AdmissionCall {
+    tool: String,
+    input: serde_json::Value,
+    waiters: Vec<AdmissionReply>,
+    outcome: Option<Result<serde_json::Value, String>>,
+}
+
+#[derive(Default)]
+struct RegistryState {
+    executions: BTreeMap<ExecutionKey, AgentRecord>,
+    latest: BTreeMap<String, String>,
+    calls: BTreeMap<String, AdmissionCall>,
+    ended: bool,
 }
 
 #[derive(Clone)]
@@ -31,10 +61,14 @@ impl ReceiptObserver {
         if let RuntimeEvent::ToolCallFinished(result) = event
             && result.status == RuntimeToolStatus::Success
             && !result.reused
-            && let Ok(agents) = self.0.agents.lock()
-            && let Some(record) = agents
-                .values()
-                .find(|record| record.call_id == result.call_id)
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.output)
+            && let Some(agent) = value.get("agent")
+            && let (Some(id), Some(message)) =
+                (agent["agent_id"].as_str(), agent["message_id"].as_str())
+            && let Ok(state) = self.0.state.lock()
+            && let Some(record) = state.executions.get(&(id.into(), message.into()))
+            && record.call_id == result.call_id
+            && record.admitted
             && !record.cancel.is_cancelled()
             && !record.snapshot.state.is_terminal()
         {
@@ -45,56 +79,201 @@ impl ReceiptObserver {
 
 #[derive(Clone)]
 struct Registry {
-    agents: Arc<Mutex<BTreeMap<String, AgentRecord>>>,
+    state: Arc<Mutex<RegistryState>>,
     changed: Arc<Notify>,
 }
 
 impl Registry {
-    fn discard(&self, id: &str) {
-        if let Ok(mut agents) = self.agents.lock() {
-            agents.remove(id);
+    fn active(&self) -> Result<(), VegaError> {
+        if self
+            .state
+            .lock()
+            .map_err(|_| failure("state unavailable"))?
+            .ended
+        {
+            Err(failure("parent_run_ended"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn begin_call(
+        &self,
+        call_id: &str,
+        tool: &str,
+        input: &serde_json::Value,
+        reply: AdmissionReply,
+    ) -> Result<bool, VegaError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| failure("state unavailable"))?;
+        if let Some(call) = state.calls.get_mut(call_id) {
+            if call.tool != tool || call.input != *input {
+                let _ = reply.send(Err(failure("call_id_conflict")));
+            } else if let Some(outcome) = &call.outcome {
+                let _ = reply.send(outcome.clone().map_err(|message| failure(&message)));
+            } else {
+                call.waiters.push(reply);
+            }
+            return Ok(false);
+        }
+        state.calls.insert(
+            call_id.into(),
+            AdmissionCall {
+                tool: tool.into(),
+                input: input.clone(),
+                waiters: vec![reply],
+                outcome: None,
+            },
+        );
+        Ok(true)
+    }
+
+    fn resolve_call(&self, call_id: &str, outcome: Result<serde_json::Value, VegaError>) -> bool {
+        let outcome = outcome.map_err(|error| error.to_string());
+        let mut delivered = false;
+        if let Ok(mut state) = self.state.lock()
+            && let Some(call) = state.calls.get_mut(call_id)
+        {
+            if call.outcome.is_some() {
+                return false;
+            }
+            call.outcome = Some(outcome.clone());
+            for waiter in std::mem::take(&mut call.waiters) {
+                delivered |= waiter
+                    .send(outcome.clone().map_err(|message| failure(&message)))
+                    .is_ok();
+            }
+        }
+        delivered
+    }
+
+    fn discard(&self, snapshot: &SubagentSnapshot, previous: Option<&ContinuationBoundary>) {
+        if let Ok(mut state) = self.state.lock() {
+            state
+                .executions
+                .remove(&(snapshot.agent_id.clone(), snapshot.message_id.clone()));
+            if state.latest.get(&snapshot.agent_id) == Some(&snapshot.message_id) {
+                if let Some(previous) = previous {
+                    state
+                        .latest
+                        .insert(snapshot.agent_id.clone(), previous.message_id.clone());
+                } else {
+                    state.latest.remove(&snapshot.agent_id);
+                }
+            }
         }
         self.changed.notify_waiters();
     }
-    fn snapshots(&self, ids: Option<&[String]>) -> Result<Vec<SubagentSnapshot>, VegaError> {
-        let agents = self
-            .agents
+
+    fn target(&self, id: &str, message: Option<&str>) -> Result<ExecutionKey, VegaError> {
+        let state = self
+            .state
             .lock()
             .map_err(|_| failure("state unavailable"))?;
-        match ids {
-            Some(ids) => ids
+        let latest = state
+            .latest
+            .get(id)
+            .ok_or_else(|| failure("unknown_agent"))?;
+        let message = if let Some(message) = message {
+            message
+        } else {
+            if state
+                .executions
+                .keys()
+                .filter(|(agent, _)| agent == id)
+                .count()
+                != 1
+            {
+                return Err(failure("execution_id_required"));
+            }
+            latest
+        };
+        let key = (id.into(), message.into());
+        if !state.executions.contains_key(&key) {
+            return Err(failure("unknown_agent"));
+        }
+        Ok(key)
+    }
+
+    fn snapshots(
+        &self,
+        targets: Option<&[ExecutionKey]>,
+    ) -> Result<Vec<SubagentSnapshot>, VegaError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| failure("state unavailable"))?;
+        match targets {
+            Some(targets) => targets
                 .iter()
-                .map(|id| {
-                    agents
-                        .get(id)
+                .map(|key| {
+                    state
+                        .executions
+                        .get(key)
                         .map(AgentRecord::snapshot)
-                        .ok_or_else(|| failure("unknown agent for this run"))
+                        .ok_or_else(|| failure("unknown_agent"))
                 })
                 .collect(),
-            None => Ok(agents.values().map(AgentRecord::snapshot).collect()),
+            None => Ok(state
+                .latest
+                .iter()
+                .filter_map(|(id, message)| state.executions.get(&(id.clone(), message.clone())))
+                .filter(|record| record.committed)
+                .map(AgentRecord::snapshot)
+                .collect()),
         }
     }
+
+    fn released_terminal(&self, targets: &[ExecutionKey]) -> Result<bool, VegaError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| failure("state unavailable"))?;
+        Ok(targets.iter().any(|key| {
+            state
+                .executions
+                .get(key)
+                .is_some_and(|record| record.snapshot.state.is_terminal() && !record.occupied)
+        }))
+    }
+
     fn update(&self, snapshot: SubagentSnapshot) -> Result<(), VegaError> {
         if let Some(record) = self
-            .agents
+            .state
             .lock()
             .map_err(|_| failure("state unavailable"))?
-            .get_mut(&snapshot.agent_id)
+            .executions
+            .get_mut(&(snapshot.agent_id.clone(), snapshot.message_id.clone()))
         {
             record.snapshot = snapshot;
         }
         self.changed.notify_waiters();
         Ok(())
     }
+
+    fn finish(&self, snapshot: SubagentSnapshot, boundary: Option<ContinuationBoundary>) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(record) = state
+                .executions
+                .get_mut(&(snapshot.agent_id.clone(), snapshot.message_id.clone()))
+        {
+            record.snapshot = snapshot;
+            record.occupied = false;
+            record.boundary = boundary;
+        }
+        self.changed.notify_waiters();
+    }
+
     fn cancel_all(&self) {
-        if let Ok(agents) = self.agents.lock() {
-            for record in agents
-                .values()
-                .filter(|record| !record.snapshot.state.is_terminal())
-            {
+        if let Ok(mut state) = self.state.lock() {
+            state.ended = true;
+            for record in state.executions.values().filter(|record| record.occupied) {
                 record.cancel.cancel();
             }
         }
+        self.changed.notify_waiters();
     }
 }
 
@@ -109,15 +288,15 @@ impl AgentRecord {
 }
 
 enum Command {
-    Spawn {
+    Admit {
         call_id: String,
-        name: String,
-        task: String,
-        reply: oneshot::Sender<Result<serde_json::Value, VegaError>>,
+        tool: String,
+        input: serde_json::Value,
+        reply: AdmissionReply,
     },
     Cancel {
-        id: String,
-        reply: oneshot::Sender<Result<serde_json::Value, VegaError>>,
+        target: ExecutionKey,
+        reply: AdmissionReply,
     },
 }
 
@@ -148,31 +327,36 @@ impl vega_runtime::RuntimeSubagentHook for Hook {
         let sender = self.sender.clone();
         let registry = self.registry.clone();
         async move {
-            if !vega_runtime::valid_subagent_input(&tool,&input.to_string()) { return Err(failure("invalid input")); }
+            registry.active()?;
+            if !vega_runtime::valid_subagent_input(&tool, &input.to_string()) { return Err(failure("invalid input")); }
             if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
             match tool.as_str() {
-                "list_agents" => Ok(receipt(registry.snapshots(None)?,false)),
+                "list_agents" => Ok(receipt(registry.snapshots(None)?, false)),
                 "wait_agent" => {
-                    let ids = input["agent_ids"].as_array().ok_or_else(|| failure("invalid input"))?.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect::<Vec<_>>();
+                    let targets = if let Some(targets) = input["targets"].as_array() {
+                        targets.iter().map(|target| registry.target(target["agent_id"].as_str().ok_or_else(|| failure("invalid input"))?, target["message_id"].as_str())).collect::<Result<Vec<_>, _>>()?
+                    } else {
+                        input["agent_ids"].as_array().ok_or_else(|| failure("invalid input"))?.iter().map(|id| registry.target(id.as_str().ok_or_else(|| failure("invalid input"))?, None)).collect::<Result<Vec<_>, _>>()?
+                    };
                     let deadline = tokio::time::Instant::now() + Duration::from_millis(input.get("timeout_ms").and_then(serde_json::Value::as_u64).unwrap_or(30_000));
                     loop {
                         let changed = registry.changed.notified(); tokio::pin!(changed); changed.as_mut().enable();
-                        let snapshots = registry.snapshots(Some(&ids))?;
-                        if snapshots.iter().any(|snapshot| snapshot.state.is_terminal()) { return Ok(receipt(snapshots,false)); }
-                        if tokio::time::Instant::now() >= deadline { return Ok(receipt(snapshots,true)); }
-                        tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), _ = &mut changed => {}, _ = tokio::time::sleep_until(deadline) => return Ok(receipt(registry.snapshots(Some(&ids))?,true)) }
+                        registry.active()?;
+                        let snapshots = registry.snapshots(Some(&targets))?;
+                        if registry.released_terminal(&targets)? { return Ok(receipt(snapshots, false)); }
+                        if tokio::time::Instant::now() >= deadline { return Ok(receipt(snapshots, true)); }
+                        tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), _ = &mut changed => {}, _ = tokio::time::sleep_until(deadline) => return Ok(receipt(registry.snapshots(Some(&targets))?,true)) }
                     }
                 }
                 _ => {
-                    let (reply,receiver) = oneshot::channel();
-                    let command = if tool == "spawn_agent" { Command::Spawn {call_id,name:input["name"].as_str().ok_or_else(|| failure("invalid input"))?.trim().into(),task:input["task"].as_str().ok_or_else(|| failure("invalid input"))?.into(),reply} } else { Command::Cancel {id:input["agent_id"].as_str().ok_or_else(|| failure("invalid input"))?.into(),reply} };
-                    tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), result = sender.send(command) => result.map_err(|_| failure("parent run ended"))? }
-                    tokio::select! { biased; _ = cancel.cancelled() => Err(VegaError::Cancelled), result = receiver => {
-                        match result.map_err(|_| failure("parent run ended"))? {
-                            Err(VegaError::Cancelled) if tool == "spawn_agent" && !cancel.is_cancelled() => Err(failure("child admission interrupted")),
-                            result => result,
-                        }
-                    } }
+                    let (reply, receiver) = oneshot::channel();
+                    let command = if tool == "cancel_agent" {
+                        Command::Cancel { target: registry.target(input["agent_id"].as_str().ok_or_else(|| failure("invalid input"))?, input["message_id"].as_str())?, reply }
+                    } else {
+                        Command::Admit { call_id, tool, input, reply }
+                    };
+                    tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), result = sender.send(command) => result.map_err(|_| failure("parent_run_ended"))? }
+                    tokio::select! { biased; _ = cancel.cancelled() => Err(VegaError::Cancelled), result = receiver => result.map_err(|_| failure("parent_run_ended"))? }
                 }
             }
         }.boxed()
@@ -232,12 +416,20 @@ pub(super) struct Supervisor {
     receiver: mpsc::Receiver<Command>,
 }
 
+struct ReservedExecution {
+    snapshot: SubagentSnapshot,
+    task: String,
+    call_id: String,
+    cancel: CancellationToken,
+    previous: Option<ContinuationBoundary>,
+}
+
 impl Supervisor {
     pub(super) fn new() -> Self {
         let (sender, receiver) = mpsc::channel(8);
         Self {
             registry: Registry {
-                agents: Arc::new(Mutex::new(BTreeMap::new())),
+                state: Arc::new(Mutex::new(RegistryState::default())),
                 changed: Arc::new(Notify::new()),
             },
             sender,
@@ -266,14 +458,16 @@ impl Supervisor {
                 Some(()) = children.next(), if !children.is_empty() => {},
                 command = self.receiver.recv() => {
                     match command {
-                        Some(Command::Spawn {call_id,name,task,reply}) => {
-                            let reserved = self.reserve(&launch,call_id,name,task);
-                            match reserved {
-                                Ok((snapshot,task,call_id,cancel)) => children.push(child_lifecycle(&launch,snapshot,task,call_id,cancel,reply,self.registry.clone())),
-                                Err(error) => { let _ = reply.send(Err(error)); }
+                        Some(Command::Admit { call_id, tool, input, reply }) => {
+                            match self.registry.begin_call(&call_id, &tool, &input, reply) {
+                                Ok(true) => match self.reserve(&launch, &call_id, &tool, &input) {
+                                    Ok(reserved) => children.push(child_lifecycle(&launch, reserved, self.registry.clone())),
+                                    Err(error) => { self.registry.resolve_call(&call_id, Err(error)); }
+                                },
+                                Ok(false) | Err(_) => {}
                             }
                         }
-                        Some(Command::Cancel {id,reply}) => { let result = self.cancel(&launch,&id).await; let _ = reply.send(result); }
+                        Some(Command::Cancel { target, reply }) => { let result = self.cancel(&launch, &target).await; let _ = reply.send(result); }
                         None => break parent.await,
                     }
                 }
@@ -283,39 +477,89 @@ impl Supervisor {
         while children.next().await.is_some() {}
         result
     }
+
     fn reserve(
         &self,
         launch: &ChildLaunch<'_>,
-        call_id: String,
-        name: String,
-        task: String,
-    ) -> Result<(SubagentSnapshot, String, String, CancellationToken), VegaError> {
+        call_id: &str,
+        tool: &str,
+        input: &serde_json::Value,
+    ) -> Result<ReservedExecution, VegaError> {
         if launch.cancel.is_cancelled() {
-            return Err(VegaError::Cancelled);
+            return Err(failure("parent_run_ended"));
         }
-        let mut agents = self
+        let mut state = self
             .registry
-            .agents
+            .state
             .lock()
             .map_err(|_| failure("state unavailable"))?;
-        if agents.values().any(|record| record.call_id == call_id) {
-            return Err(failure("spawn call already admitted"));
+        if state.ended {
+            return Err(failure("parent_run_ended"));
         }
-        if agents.values().any(|record| record.snapshot.name == name) {
-            return Err(failure("name already used in this run"));
-        }
-        if agents
+        let task = input["task"]
+            .as_str()
+            .ok_or_else(|| failure("invalid input"))?
+            .to_owned();
+        let (id, name, previous) = if tool == "followup_agent" {
+            let id = input["agent_id"]
+                .as_str()
+                .ok_or_else(|| failure("invalid input"))?;
+            let message = input["message_id"]
+                .as_str()
+                .ok_or_else(|| failure("invalid input"))?;
+            let latest = state
+                .latest
+                .get(id)
+                .ok_or_else(|| failure("unknown_agent"))?;
+            if latest != message {
+                return Err(failure("stale_execution"));
+            }
+            let old = state
+                .executions
+                .get(&(id.into(), message.into()))
+                .ok_or_else(|| failure("unknown_agent"))?;
+            if old.occupied
+                || matches!(
+                    old.snapshot.state,
+                    SubagentState::Running | SubagentState::Cancelling
+                )
+            {
+                return Err(failure("agent_busy"));
+            }
+            if old.snapshot.state != SubagentState::Completed {
+                return Err(failure("agent_not_completed"));
+            }
+            let previous = old
+                .boundary
+                .clone()
+                .ok_or_else(|| failure("externally_continued"))?;
+            (id.to_owned(), old.snapshot.name.clone(), Some(previous))
+        } else {
+            let name = input["name"]
+                .as_str()
+                .ok_or_else(|| failure("invalid input"))?
+                .trim()
+                .to_owned();
+            if state
+                .executions
+                .values()
+                .any(|record| record.snapshot.name == name)
+            {
+                return Err(failure("name already used in this run"));
+            }
+            (ulid::Ulid::generate().to_string(), name, None)
+        };
+        if state
+            .executions
             .values()
-            .filter(|record| !record.snapshot.state.is_terminal())
+            .filter(|record| record.occupied)
             .count()
             >= 4
         {
-            return Err(failure(
-                "four agents are already active; wait for one to finish",
-            ));
+            return Err(failure("capacity_exceeded"));
         }
         let snapshot = SubagentSnapshot {
-            agent_id: ulid::Ulid::generate().to_string(),
+            agent_id: id.clone(),
             parent_thread_id: launch.parent_thread.clone(),
             parent_message_id: launch.parent_message.clone(),
             message_id: ulid::Ulid::generate().to_string(),
@@ -325,46 +569,79 @@ impl Supervisor {
             truncated: false,
         };
         let cancel = launch.cancel.child_token();
-        agents.insert(
-            snapshot.agent_id.clone(),
+        state.latest.insert(id.clone(), snapshot.message_id.clone());
+        state.executions.insert(
+            (id, snapshot.message_id.clone()),
             AgentRecord {
                 snapshot: snapshot.clone(),
-                call_id: call_id.clone(),
+                call_id: call_id.into(),
                 cancel: cancel.clone(),
                 receipt_persisted: CancellationToken::new(),
+                occupied: true,
+                admitted: false,
+                committed: false,
+                boundary: None,
             },
         );
-        Ok((snapshot, task, call_id, cancel))
+        Ok(ReservedExecution {
+            snapshot,
+            task,
+            call_id: call_id.into(),
+            cancel,
+            previous,
+        })
     }
+
     async fn cancel(
         &self,
         launch: &ChildLaunch<'_>,
-        id: &str,
+        target: &ExecutionKey,
     ) -> Result<serde_json::Value, VegaError> {
         let (mut snapshot, cancel) = {
-            let agents = self
+            let state = self
                 .registry
-                .agents
+                .state
                 .lock()
                 .map_err(|_| failure("state unavailable"))?;
-            let record = agents
-                .get(id)
-                .ok_or_else(|| failure("unknown agent for this run"))?;
+            let record = state
+                .executions
+                .get(target)
+                .ok_or_else(|| failure("unknown_agent"))?;
             (record.snapshot.clone(), record.cancel.clone())
         };
         if !snapshot.state.is_terminal() {
             cancel.cancel();
             let database = launch.database.clone();
-            let child = id.to_string();
-            let run = snapshot.message_id.clone();
-            tokio::task::spawn_blocking(move || {
+            let (child, run) = target.clone();
+            let durable = tokio::task::spawn_blocking(move || {
                 let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
-                vega_store::subagents::request_cancel(store.conn(), &child, &run)
-                    .map_err(|_| failure("storage unavailable"))
+                let tx = store
+                    .immediate_transaction()
+                    .map_err(|_| failure("storage unavailable"))?;
+                vega_store::subagents::request_cancel(&tx, &child, &run)
+                    .map_err(|_| failure("storage unavailable"))?;
+                let execution = vega_store::subagents::execution(&tx, &child, &run)
+                    .map_err(|_| failure("storage unavailable"))?;
+                tx.commit().map_err(|_| failure("storage unavailable"))?;
+                Ok::<_, VegaError>(execution)
             })
             .await
             .map_err(|_| failure("storage unavailable"))??;
-            snapshot = self.registry.snapshots(Some(&[id.to_string()]))?.remove(0);
+            snapshot = self
+                .registry
+                .snapshots(Some(std::slice::from_ref(target)))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| failure("unknown_agent"))?;
+            if let Some(execution) = durable
+                && let Some(state) = SubagentState::parse(&execution.record.state)
+                && state.is_terminal()
+            {
+                snapshot.state = state;
+                snapshot.result = execution.record.result;
+                snapshot.truncated = execution.record.truncated;
+                self.registry.update(snapshot.clone())?;
+            }
             if !snapshot.state.is_terminal() {
                 snapshot.state = SubagentState::Cancelling;
                 self.registry.update(snapshot.clone())?;
@@ -487,16 +764,18 @@ fn bounded_result(text: &str) -> (String, bool) {
     (text[..end].to_string(), end < text.len())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn child_lifecycle<'a>(
     launch: &ChildLaunch<'a>,
-    mut snapshot: SubagentSnapshot,
-    task: String,
-    call_id: String,
-    cancel: CancellationToken,
-    reply: oneshot::Sender<Result<serde_json::Value, VegaError>>,
+    reserved: ReservedExecution,
     registry: Registry,
 ) -> LocalBoxFuture<'a, ()> {
+    let ReservedExecution {
+        mut snapshot,
+        task,
+        call_id,
+        cancel,
+        previous,
+    } = reserved;
     let provider = launch.provider;
     let tools = launch.tools.isolated();
     let database = launch.database.clone();
@@ -507,14 +786,14 @@ fn child_lifecycle<'a>(
         let _live = match crate::subagents::LiveDelegation::new(&database, &snapshot.agent_id) {
             Ok(live) => live,
             Err(_) => {
-                registry.discard(&snapshot.agent_id);
-                let _ = reply.send(Err(failure("admission unavailable")));
+                registry.discard(&snapshot, previous.as_ref());
+                registry.resolve_call(&call_id, Err(failure("admission_failed")));
                 return;
             }
         };
         if cancel.is_cancelled() {
-            registry.discard(&snapshot.agent_id);
-            let _ = reply.send(Err(VegaError::Cancelled));
+            registry.discard(&snapshot, previous.as_ref());
+            registry.resolve_call(&call_id, Err(VegaError::Cancelled));
             return;
         }
         if let Some(reader) = &settings.owner_credential_reader {
@@ -528,10 +807,11 @@ fn child_lifecycle<'a>(
                     ) == snapshot.name
             });
             if !safe {
-                registry.discard(&snapshot.agent_id);
-                let _ = reply.send(Err(failure(
-                    "delegated input failed credential safety checks",
-                )));
+                registry.discard(&snapshot, previous.as_ref());
+                registry.resolve_call(
+                    &call_id,
+                    Err(failure("delegated input failed credential safety checks")),
+                );
                 return;
             }
         }
@@ -539,19 +819,27 @@ fn child_lifecycle<'a>(
             database.clone(),
             snapshot.clone(),
             task.clone(),
-            call_id,
+            call_id.clone(),
             settings.clone(),
             cancel.clone(),
+            previous.clone(),
         )
         .await;
         let (thread, user_id) = match created {
             Ok(created) => created,
             Err(error) => {
-                registry.discard(&snapshot.agent_id);
-                let _ = reply.send(Err(error));
+                registry.discard(&snapshot, previous.as_ref());
+                registry.resolve_call(&call_id, Err(error));
                 return;
             }
         };
+        if let Ok(mut state) = registry.state.lock()
+            && let Some(record) = state
+                .executions
+                .get_mut(&(snapshot.agent_id.clone(), snapshot.message_id.clone()))
+        {
+            record.committed = true;
+        }
         let permissions = PermissionQueue::new();
         let questions = UserQuestionQueue::new();
         let queue_generation = ulid::Ulid::generate().to_string();
@@ -582,23 +870,24 @@ fn child_lifecycle<'a>(
                 if matches!(&error, VegaError::Cancelled) {
                     cancel.cancel();
                 }
-                let _ = reply.send(Err(error));
+                registry.resolve_call(&call_id, Err(error));
                 Err(ConversationError::Runtime(Arc::new(failure(
                     "child admission failed",
                 ))))
             }
             Ok(()) => {
-                if reply
-                    .send(Ok(serde_json::json!({"agent":snapshot})))
-                    .is_err()
-                {
+                let receipt_persisted = registry.state.lock().ok().and_then(|mut state| {
+                    state
+                        .executions
+                        .get_mut(&(snapshot.agent_id.clone(), snapshot.message_id.clone()))
+                        .map(|record| {
+                            record.admitted = true;
+                            record.receipt_persisted.clone()
+                        })
+                });
+                if !registry.resolve_call(&call_id, Ok(serde_json::json!({"agent":snapshot}))) {
                     cancel.cancel();
                 }
-                let receipt_persisted = registry.agents.lock().ok().and_then(|agents| {
-                    agents
-                        .get(&snapshot.agent_id)
-                        .map(|record| record.receipt_persisted.clone())
-                });
                 let ready = match receipt_persisted {
                     Some(receipt_persisted) => tokio::select! {
                         biased;
@@ -701,18 +990,40 @@ fn child_lifecycle<'a>(
         };
         (snapshot.result, snapshot.truncated) = bounded_result(text);
         let complete = usage_observer.complete();
-        let persisted = persist_child_terminal(database, snapshot.clone(), complete)
-            .await
-            .is_ok();
+        let terminal = persist_child_terminal(database, snapshot.clone(), complete).await;
+        let persisted = terminal.is_ok();
+        let boundary = terminal.ok().flatten();
         if !persisted {
             snapshot.state = SubagentState::Failed;
             snapshot.result = "Subagent result could not be saved".into();
             snapshot.truncated = false;
         }
         let _ = registry.update(snapshot.clone());
-        let _ = host.finished(snapshot, complete && persisted);
+        let release = host.finish_and_release(snapshot.clone(), complete && persisted);
+        let released = tokio::select! {
+            biased;
+            result = release => result.is_ok(),
+            _ = cancel.cancelled() => false,
+        };
+        let boundary = if released { boundary } else { None };
+        registry.finish(snapshot, boundary);
     }
     .boxed_local()
+}
+
+fn same_context(
+    left: &vega_store::threads::ThreadRow,
+    right: &vega_store::threads::ThreadRow,
+) -> bool {
+    left.id == right.id
+        && left.parent_thread_id == right.parent_thread_id
+        && left.workspace_owner_thread_id == right.workspace_owner_thread_id
+        && left.project_id == right.project_id
+        && left.mode == right.mode
+        && left.permission_mode == right.permission_mode
+        && left.model == right.model
+        && left.backend == right.backend
+        && left.status == right.status
 }
 
 async fn create_child(
@@ -722,6 +1033,7 @@ async fn create_child(
     call_id: String,
     settings: ChildSettings,
     cancel: CancellationToken,
+    previous: Option<ContinuationBoundary>,
 ) -> Result<(crate::types::Thread, String), VegaError> {
     tokio::task::spawn_blocking(move || {
         if cancel.is_cancelled() {
@@ -749,46 +1061,66 @@ async fn create_child(
             RuntimePermissionMode::Auto => "auto",
             RuntimePermissionMode::FullAccess => "full_access",
         };
-        let mut draft = crate::threads::draft_thread(
-            parent.project_binding(),
-            &settings.model,
-            permission_mode,
-        );
-        draft.id = snapshot.agent_id.clone();
-        let child = crate::threads::materialize_draft(&store, &draft)
-            .map_err(|_| failure("child creation failed"))?;
-        let changed = vega_store::threads::rename(&tx, &child.id, &snapshot.name, now_ms())
-            .map_err(|_| failure("child creation failed"))?;
-        if changed != 1 {
-            return Err(failure("child creation failed"));
+        if let Some(previous) = &previous {
+            let row = vega_store::threads::find(&tx, &snapshot.agent_id)
+                .map_err(|_| failure("storage unavailable"))?
+                .ok_or_else(|| failure("unknown_agent"))?;
+            let source = vega_store::context_compaction::load_source_version_in_transaction(
+                &tx,
+                &snapshot.agent_id,
+            )
+            .map_err(|_| failure("storage unavailable"))?;
+            if !same_context(&row, &previous.thread)
+                || row.backend != "native"
+                || row.mode != "execute"
+                || row.permission_mode != permission_mode
+                || row.model != settings.model
+                || row.parent_thread_id.as_deref() != Some(&snapshot.parent_thread_id)
+                || source.source_version != previous.source_version
+                || source.fingerprint != previous.fingerprint
+                || vega_store::pending_messages::count(&tx, &snapshot.agent_id)
+                    .map_err(|_| failure("storage unavailable"))?
+                    != 0
+            {
+                return Err(failure("externally_continued"));
+            }
+            let latest = vega_store::subagents::find(&tx, &snapshot.agent_id)
+                .map_err(|_| failure("storage unavailable"))?
+                .ok_or_else(|| failure("unknown_agent"))?;
+            if latest.child_message_id != previous.message_id {
+                return Err(failure("stale_execution"));
+            }
+            if latest.state != "completed" {
+                return Err(failure("agent_not_completed"));
+            }
+        } else {
+            let mut draft = crate::threads::draft_thread(
+                parent.project_binding(),
+                &settings.model,
+                permission_mode,
+            );
+            draft.id = snapshot.agent_id.clone();
+            crate::threads::materialize_draft(&store, &draft)
+                .map_err(|_| failure("admission_failed"))?;
+            if vega_store::threads::rename(&tx, &snapshot.agent_id, &snapshot.name, now_ms())
+                .map_err(|_| failure("admission_failed"))?
+                != 1
+            {
+                return Err(failure("admission_failed"));
+            }
         }
-        vega_store::subagents::insert(
-            &tx,
-            &vega_store::subagents::DelegationRow {
-                child_thread_id: child.id.clone(),
-                parent_thread_id: parent.id,
-                parent_message_id: snapshot.parent_message_id,
-                spawn_call_id: call_id,
-                child_message_id: snapshot.message_id,
-                name: snapshot.name,
-                task: task.clone(),
-                state: "running".into(),
-                result: String::new(),
-                truncated: false,
-                created_at: now_ms(),
-            },
-        )
-        .map_err(|_| failure("child creation failed"))?;
         let user_id = ulid::Ulid::generate().to_string();
+        let seq = vega_store::messages::next_seq(&tx, &snapshot.agent_id)
+            .map_err(|_| failure("admission_failed"))?;
         vega_store::messages::insert(
             &tx,
             &vega_store::messages::MessageRow {
                 id: user_id.clone(),
-                thread_id: child.id.clone(),
-                seq: 1,
+                thread_id: snapshot.agent_id.clone(),
+                seq,
                 role: "user".into(),
                 kind: "text".into(),
-                content: task,
+                content: task.clone(),
                 status: "done".into(),
                 created_at: now_ms(),
                 plan_status: None,
@@ -796,27 +1128,46 @@ async fn create_child(
                 plan_reviewed_at: None,
             },
         )
-        .map_err(|_| failure("child creation failed"))?;
-        let row = vega_store::threads::find(&tx, &child.id)
-            .map_err(|_| failure("child creation failed"))?
-            .ok_or_else(|| failure("child creation failed"))?;
+        .map_err(|_| failure("admission_failed"))?;
+        let record = vega_store::subagents::DelegationRow {
+            child_thread_id: snapshot.agent_id.clone(),
+            parent_thread_id: parent.id,
+            parent_message_id: snapshot.parent_message_id,
+            spawn_call_id: call_id,
+            child_message_id: snapshot.message_id,
+            name: snapshot.name,
+            task,
+            state: "running".into(),
+            result: String::new(),
+            truncated: false,
+            created_at: now_ms(),
+        };
+        if let Some(previous) = previous {
+            vega_store::subagents::append(&tx, &record, &previous.message_id, &user_id)
+                .map_err(|_| failure("admission_failed"))?;
+        } else {
+            vega_store::subagents::insert(&tx, &record).map_err(|_| failure("admission_failed"))?;
+        }
+        let row = vega_store::threads::find(&tx, &snapshot.agent_id)
+            .map_err(|_| failure("admission_failed"))?
+            .ok_or_else(|| failure("admission_failed"))?;
         let child =
-            crate::threads::thread_from_row(&row).map_err(|_| failure("child creation failed"))?;
+            crate::threads::thread_from_row(&row).map_err(|_| failure("admission_failed"))?;
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
-        tx.commit().map_err(|_| failure("child creation failed"))?;
+        tx.commit().map_err(|_| failure("admission_failed"))?;
         Ok((child, user_id))
     })
     .await
-    .map_err(|_| failure("child creation failed"))?
+    .map_err(|_| failure("admission_failed"))?
 }
 
 async fn persist_child_terminal(
     database: PathBuf,
     snapshot: SubagentSnapshot,
     usage_complete: bool,
-) -> Result<(), VegaError> {
+) -> Result<Option<ContinuationBoundary>, VegaError> {
     tokio::task::spawn_blocking(move || {
         let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
         let tx = store
@@ -845,8 +1196,30 @@ async fn persist_child_terminal(
             vega_store::recovery::recover_thread_in_transaction(&tx, &snapshot.agent_id, now_ms())
                 .map_err(|_| failure("storage unavailable"))?;
         }
+        let boundary = if snapshot.state == SubagentState::Completed
+            && vega_store::pending_messages::count(&tx, &snapshot.agent_id)
+                .map_err(|_| failure("storage unavailable"))?
+                == 0
+        {
+            let thread = vega_store::threads::find(&tx, &snapshot.agent_id)
+                .map_err(|_| failure("storage unavailable"))?
+                .ok_or_else(|| failure("unknown_agent"))?;
+            let source = vega_store::context_compaction::load_source_version_in_transaction(
+                &tx,
+                &snapshot.agent_id,
+            )
+            .map_err(|_| failure("storage unavailable"))?;
+            Some(ContinuationBoundary {
+                message_id: snapshot.message_id,
+                source_version: source.source_version,
+                fingerprint: source.fingerprint,
+                thread,
+            })
+        } else {
+            None
+        };
         tx.commit().map_err(|_| failure("storage unavailable"))?;
-        Ok(())
+        Ok(boundary)
     })
     .await
     .map_err(|_| failure("storage unavailable"))?
