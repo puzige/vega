@@ -17,7 +17,7 @@
 | 链接默认样式 | 当前会话正文的外链默认就是 **inline mention 外观**：`favicon 图标 + 蓝字 + font-weight 500`，不画常显下划线（`app-primary` 的 `CO` 组件，`appearance` 默认 `"inline-mention"`）。旧的 `TextLink`（`es6` 包）才是 `always` 实线下划线 + 继承正文色 |
 | hover | **正文链接 hover 出现虚线**：`text-decoration: underline dashed` + `thickness: .5px` + `offset: 2px`，由 `data-underline-on-hover` + `data-inline-mention-interactive` 两个属性同时成立时触发。旧 `TextLink` 是实线，`color-mix(in oklab, currentcolor 70%, transparent)`，offset `.1em` |
 | 下划虚线 | 就是**正文链接**（以及 `@` mention、文件/会话引用）hover 的默认样式，不是某个独立组件的特例。虚线与蓝字同属一个 `Mention` 组件 |
-| GitHub logo | 不是图片资源，是**内联 SVG 图标**（20×20 viewBox 的 GitHub mark，`fill: currentColor`）；卡片站点行用 `Favicon` 组件，取 `https://www.google.com/s2/favicons?domain=<origin>&sz=32`，失败降级 globe |
+| GitHub logo | 内置品牌图标表优先（`github` → 20×20 `fill: currentColor` mark，不发请求）；未收录站点才取 `https://www.google.com/s2/favicons?domain=<origin>&sz=32`，受限策略下退 globe |
 | 预览 block | 两条不同通路：代码围栏 → `CodeBlock`（1px 边框 + `radius-md` + 独立底色 + 右上角悬浮 Copy）；链接卡片 → GenUI `RecommendationLinkCard` / `CardLinkItem`（1px 边框 + `radius-xl`，hover 只加 `shadow-200`） |
 
 ## 一、Markdown 链接：`TextLink` 组件
@@ -104,7 +104,7 @@ token 取值（`app-shared-dc7535e633d7.css`）：
 
 1. Markdown `a` 由工厂 `yA` 生成；非文件/非本会话引用时落到 `CO`。
 2. `CO` 的 `appearance` **默认值就是 `"inline-mention"`**：`{appearance:n, ...}` 解构时 `n === void 0 ? "inline-mention" : n`。
-3. 同一个 `CO` 里：`const w = n === "inline-mention"`，然后 `<ju appearance={n} icon={S} underlineOnHover={w}>`；`icon` 在 `appearance === "inline-mention"` 且不是 `codex:` 协议时取 `vO`，即 **Favicon 组件**。
+3. 同一个 `CO` 里：`const w = n === "inline-mention"`，然后 `<ju appearance={n} icon={S} underlineOnHover={w}>`；`icon` 在 `appearance === "inline-mention"` 且不是 `codex:` 协议时取 `vO`（先查内置品牌图标，未收录才取 favicon，详见第三节）。
 4. 外层 `q_` 加上 `data-inline-mention-interactive`，`ju`（导出名 `aka`/`MU`）再按 `underlineOnHover` 打上 `data-underline-on-hover`。两个属性同时成立，虚线才生效。
 
 CSS（`app-initial-4d5df9210cbc.css`，`_Mention_exp8z_2`）：
@@ -139,25 +139,42 @@ CSS（`app-initial-4d5df9210cbc.css`，`_Mention_exp8z_2`）：
 
 - 浅色 `--color-text-info` = `--blue-500` `#0169cc`；与正文色 `#282828` 按 80/20 混合后约 `#085CAB`，所以看起来是偏沉的蓝，不是纯品牌蓝。深色 `--color-text-info` = `--blue-200` `#66b5ff`。
 - `font-weight: 500`（medium）。issue 里猜的「加粗？」到这里可以定论：**是 medium，不是 bold**。
-- 图标 16×16，与文字底部对齐、右侧留 3px；favicon 本身带 `rounded-2xs` 圆角。
+- 图标 16×16，在 `height: 1lh` 的槽内垂直居中（`top:50%` + `translateY(-50%)`），右侧留 3px；favicon 本身带 `rounded-2xs` 圆角。
 - 另有 `[data-appearance=underlined-text]` 变体：`font-weight: inherit` + `text-decoration-line: underline`（常显实线），说明「常显实线」在系统里是另一种 appearance，而不是这条默认路径。
 
 旧组件 `TextLink`（`es6-32b20093825a.js`）仍然存在，但走的是另一条外观：`data-underline="always"`、颜色继承正文、实线下划线。两者不要混为一谈。
 
 对 Vega 的直接影响：**GPUI 0.6.1 的 `UnderlineStyle` 只有 `thickness / color / wavy` 三个字段，没有虚线样式**（`gpui-pre-0.3.4/src/style.rs:828-837`，`paint_underline` 只分 solid 与 wavy，见 `window.rs:4373-4404`）。所以 Vega 若要「下划虚线」，只能自绘 dash（沿字形底部画短段），或改用 wavy 之外的替代表达；不能只改一个样式字段。
 
-对 Vega 的直接影响：**GPUI 0.6.1 的 `UnderlineStyle` 只有 `thickness / color / wavy` 三个字段，没有虚线样式**（`gpui-pre-0.3.4/src/style.rs:828-837`，`paint_underline` 只分 solid 与 wavy，见 `window.rs:4372-4404`）。所以 Vega 若要「下划虚线」，只能自绘 dash（沿字形底部画短段），或改用 wavy 之外的替代表达；不能只改一个样式字段。
-
 ## 三、GitHub logo 怎么展示
 
-两处，形态不同：
+**结论：链接左侧那个小图标不是图片文件，而是「先查内置品牌图标，查不到再拉 favicon」的两级回退。**
 
-1. **图标本身是内联 SVG**，不是 PNG/emoji。`Github` 图标来自 lucide（`github-BCbrDk0b-*.js` / `lucide-github-*.js`），路径为 `M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5...`，`stroke: currentColor`、`fill: none`、24 viewBox。连接器列表另有一套 20×20 的 GitHub mark（`app-initial-b21bd554b363.js` 内 `l7r`，`fill: currentColor`）。
-2. **卡片站点行用 favicon 组件**（`response-f556de04e01e.js` 内 `Favicon`）：默认 12px（inline 时 `1em`），圆形容器 `border-radius: 100%`，图片来源 `https://www.google.com/s2/favicons?domain=${encodeURIComponent(origin)}&sz=32`；`loadRemote=false` 或取不到 origin 时降级为 globe 图标；`role="presentation"`，有 alt 才给 `role="img"`。
+链路（`app-primary` → `vO` → `kea`，均在 `app-initial-b21bd554b363.js`）：
 
-也就是说：**GitHub logo 在 ChatGPT 里是「图标组件 + 远程 favicon」两层，而不是给 GitHub 特判一张图**。域名来源统一，图标按 origin 自动取，失败有兜底。
+```js
+// vO：链接行内图标
+function vO({className, globeSize, href, loadRemote = true}) {
+  const appId = lGe(href)?.appId;          // 从 URL 反推连接器/应用 id
+  return <Dh alt="" className={className} knownAppId={appId}
+             fallback={<il href={href} loadRemote={loadRemote} />} />;
+}
 
-Vega 对应能力：`gpui-kit-assets 0.6.1` **已经打包了** `icons/github.svg`，生成后可用 `IconName::Github`（已在 `target/debug/build/gpui-kit-assets-*/out/icon_name.rs` 确认）；但 `crates/vega_ui/src/icons.rs` 的 `Icon` 枚举目前没有 GitHub 变体，需要新增一条映射才能用。Vega 没有 favicon 抓取通道（也不应为 Markdown 链接引入联网取图），所以站点行只能用静态图标。
+// kea（Dh）：优先内置 SVG，其次远程 logo，最后 fallback
+const icon = I7r(connectorId) ?? (appInfo && L7r(appInfo)) ?? I7r(...) ?? I7r(knownAppId);
+if (icon?.icon != null) return <icon.Icon aria-hidden />;   // ① 内置 SVG
+if (logoUrl)            return <img src={logoUrl} … />;      // ② 远程 logo
+return fallback;                                            // ③ 兜底
+```
+
+1. **第一级：内置品牌图标表**。`app-initial` 里有一张 `B7r` 映射：`{github:{icon:l7r}, slack, gmail, notion, linear, figma, "google-drive", …}`。命中时直接渲染内联 SVG，**不发网络请求**。GitHub 那张是 20×20 viewBox、`fill: currentColor` 的 mark（路径以 `M9.99996 2.08002C14.373 2.08002…` 开头），不是 lucide 的描边版。
+2. **域名 → appId**：另一张表 `ndr` 把 hostname 映到 appId（`github.com → "github"`、`drive.google.com → "google-drive"`、`figma.com → "figma"` …）；`qk(url)` 做后缀匹配（`n === e || n.endsWith("." + e)`），所以 `gist.github.com` 也能归到 GitHub。
+3. **第二级：favicon**。只有没命中内置表时，`il`（Favicon）才取 `https://www.google.com/s2/favicons?domain=${encodeURIComponent(origin)}&sz=32`；`loadRemote === false`（如受限网络策略）或 URL 解析失败时，直接退到 globe 图标，不联网。
+4. **尺寸与对齐**：图标槽 `width: calc(var(--spacing) * 4)` = 16px，`height: 1lh`；图标本体 16×16 绝对定位 `top:50%` + `translateY(-50%)`，所以与文字视觉中线对齐；`inline-flow` 布局下 `vertical-align: bottom` + 右侧 3px 间距；圆角 `rounded-2xs`。
+
+所以 issue 里问的「GitHub 的 logo 是如何展示的」，准确答案是：**GitHub 是内置图标，不发请求；只有未收录的站点才走 favicon 服务**。这也解释了为什么截图里的 GitHub 图标总是清晰的矢量而非模糊位图。
+
+Vega 对应能力：`gpui-kit-assets 0.6.1` **已经打包了** `icons/github.svg`，生成后可用 `IconName::Github`（已在 `target/debug/build/gpui-kit-assets-*/out/icon_name.rs` 确认）；但 `crates/vega_ui/src/icons.rs` 的 `Icon` 枚举目前没有 GitHub 变体，需要新增一条映射才能用。Vega 没有 favicon 抓取通道（也不应为 Markdown 链接引入联网取图），所以未收录站点只能不显示图标或用通用 globe。
 
 ## 四、「codex 预览 block」的两条通路
 
@@ -248,3 +265,4 @@ node .scratch/asar-peek.js cat  /Applications/ChatGPT.app/Contents/Resources/app
 
 - 2026-10-19：首版。基于 ChatGPT.app 26.1013.40934 产物取证，回答 #486 三个问题，未做代码改动。
 - 2026-10-19：**修正**。用户指出截图里的虚线确属链接，复查找出 `CO` 组件默认 `appearance="inline-mention"`，即正文外链本就带 favicon + 蓝字 + 500 字重 + hover 虚线。首版「虚线只属于 `@` mention」的结论作废；同时补上颜色混合公式、图标尺寸与 `medium` 字重证据。
+- 2026-10-19：**再修正**。GitHub logo 不是「图标组件 + 远程 favicon」两层并列，而是「内置品牌图标优先、favicon 仅作未收录站点的回退」；补充 `ndr` 域名映射表与 `qk` 后缀匹配证据。
