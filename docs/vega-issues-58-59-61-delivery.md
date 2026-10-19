@@ -2,9 +2,9 @@
 
 ## 契约
 
-- [#58](vega-issue-58-full-access.md)：新增独立 Full access，不改变 Auto 的沙箱语义；保留危险确认、取消、超时和审计。
-- [#59](vega-issue-59-markdown.md)：修复把表格转换成填充空格文本的渲染路径，保留单元格样式、列对齐与窄窗局部滚动。
-- [#61](vega-issue-61-thinking.md)：不再丢弃真实 ThinkingDelta，按事件顺序展示有界、默认折叠的思考块。
+- [#58](58/vega-issue-58-full-access.md)：新增独立 Full access，不改变 Auto 的沙箱语义；保留危险确认、取消、超时和审计。
+- [#59](59/vega-issue-59-markdown.md)：修复把表格转换成填充空格文本的渲染路径，保留单元格样式、列对齐与窄窗局部滚动。
+- [#61](61/vega-issue-61-thinking.md)：不再丢弃真实 ThinkingDelta，按事件顺序展示有界、默认折叠的思考块。
 
 ## Freeze
 

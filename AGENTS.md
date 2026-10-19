@@ -22,13 +22,15 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - **有效测试**：验证稳定/公开边界的可观察结果、必要副作用和业务/安全不变量；mock 只隔离外部依赖，不替代被测决策。不以源码字符串/符号存在、仅 mock 调用/机械转发、镜像算法、重复同义断言或内部字段覆盖率充数；调用次数只有本身属于契约且结合结果/终态才有效。新测试用行为命名，不把 issue/task 编号写入非文档代码。
 - **范围与证据**：纯文档/格式变更无行为变化时不强加测试；纯重构的验证测试也只在开发阶段保留到 GREEN，最终同样删除。交接/PR 固定可访问的测试源码/补丁、完整提交 SHA、RED 原始失败、实现顺序、带测试 GREEN、独立删测提交和最终 head 空集门禁；squash/删分支后仍能从 PR 找回原测试，不依赖本机临时文件或会过期的 artifact。绿色 CI 或提交顺序不自动证明测试先行，不用删测后的空集替代带测试 GREEN。
 
-**历史决策（2026-09-25）**：[移除真实 E2E 规格](docs/vega-issue-149-remove-real-e2e.md) 当时要求保留进程内测试。本次 Rust 清零取代其保留旧测试要求；外部依赖隔离、真实系统集成由用户手测的边界仍适用于后续测试，不恢复真实 E2E 自动门禁。
+**历史决策（2026-09-25）**：[移除真实 E2E 规格](docs/149/vega-issue-149-remove-real-e2e.md) 当时要求保留进程内测试。本次 Rust 清零取代其保留旧测试要求；外部依赖隔离、真实系统集成由用户手测的边界仍适用于后续测试，不恢复真实 E2E 自动门禁。
 
 ## 最高原则：SDD（Spec-Driven Development）
 
-**历史决策（2026-09-22）**：[测试依赖隔离规格](docs/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 记录 Git/Shell 测试迁移及当时的真实适配层覆盖要求；不构成本次清零的保留要求或后续真实 E2E 门禁。不得把 mock 证据标作真实进程验收。
+**历史决策（2026-09-22）**：[测试依赖隔离规格](docs/140/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 记录 Git/Shell 测试迁移及当时的真实适配层覆盖要求；不构成本次清零的保留要求或后续真实 E2E 门禁。不得把 mock 证据标作真实进程验收。
 
 **Spec 先行，代码不允许先于 spec。** 所有实现工作必须对应 [`docs/`](docs/) 中的具体规格章节。设计文档以本仓库 `docs/` 为准（主索引见 [README](README.md#状态)）。
+
+Ticket 规格、交接与交付记录统一放在 `docs/<ticket>/`，同一编号文件归入同目录并保留文件名；通用规范留在 `docs/` 根层。目录导航见 [docs/README.md](docs/README.md)。不推断 R/A 编号与 Ticket 的映射；移动文档时同步更新本地引用，并按原目标重算内部相对链接，固定历史远程证据保持不变。
 
 - [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md) 是**执行宪法**：红线清单、依赖白名单、遇阻上报协议、验收协议。任何 agent 开工前必读。
 - 视觉/UI 工作必须先读 [`docs/vega-design-guidelines.md`](docs/vega-design-guidelines.md)。它统一设计语言与 token 使用；产品行为、安全契约和任务级冻结规格仍按各自更具体的 spec 执行。
@@ -84,13 +86,13 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 验证门禁与云端 CI（2026-09-25 用户裁决，相关规格）
 
-**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [相关规格](docs/vega-issue-188-parallel-ci-checks.md)（在 [相关规格](docs/vega-issue-183-nextest-ci.md) 测试运行器基础上并行 Clippy 与 nextest）；云端门禁拆分的历史背景见 [相关规格](docs/vega-issue-123-pr-check-pipeline.md)。
+**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [相关规格](docs/188/vega-issue-188-parallel-ci-checks.md)（在 [相关规格](docs/183/vega-issue-183-nextest-ci.md) 测试运行器基础上并行 Clippy 与 nextest）；云端门禁拆分的历史背景见 [相关规格](docs/123/vega-issue-123-pr-check-pipeline.md)。
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
 - `.github/workflows/pr-check.yml`：仅在 `pull_request`（base `master`）运行两个无相互依赖的 `macos-latest` job：Clippy job 顺序运行 `cargo fmt --all -- --check` 和 `cargo clippy --workspace --all-targets -- -D warnings`，Nextest job 保留三组 Python 检查（`python3 scripts/release_tests.py`、`python3 scripts/prepare_computer_use_tests.py`、`python3 -m unittest discover -s scripts/tests -v`），先用 `cargo nextest list --workspace --message-format json` 清点 Rust 测试；仅 `test-count` 为 0 时运行 `cargo nextest run --workspace --no-tests=pass`，非空仍运行 `cargo nextest run --workspace`。日志与 job summary 明确区分 `no Rust tests`（0 发现/0 执行）与非空执行通过；非空发现数不冒充执行数，执行/跳过数看 Nextest 原始输出。两者使用 Rust 1.98.0；Clippy job 安装 `rustfmt` / `clippy`。轻量汇总 job 的 required check 名固定为 `check (fmt, clippy, test)`，依赖两个执行 job，以 `always()` 运行；仅两者结果均为 `success` 才通过，失败、取消或跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。任何失败都使 required check 失败。保留 `contents: read`、执行 job 的 60 分钟超时和同 ref 并发取消；使用 `Swatinem/rust-cache@v2` 在两个执行 job 中恢复 master CICD 的 `vega-master-build` 缓存，但 PR 不写缓存；不使用归档、分片、额外独立 build 步骤或手动 dispatch（list/run 本身会在云端构建测试目标）。
 - `.github/workflows/cicd.yml`（GitHub Actions 名称 `master`）：push 到 master（PR merge 后）直接调用 `release.yml` 共用发布流程，固定事件 SHA 自动分配 patch 版本、打包并发布 Release；与 PR check 使用相同 `shared-key: vega-master-build`，仅自动 master 发布写缓存。rust-cache 的实际缓存还依赖 runner 平台、工具链和 Cargo 输入，因此只有兼容的缓存条目会命中。
 - 2026-09-25 用户裁决：每次合入 master 自动 patch 发布；保留人工 stable tag 与手动重跑，共用发布串行队列 `queue: max`，不取消正在运行的发布。先 draft，资产完整才 publish；同 SHA 幂等、正式资产不可覆盖，拒绝逆序发布。见 [发版指南](docs/vega-release.md)。
-- 历史 [相关规格](docs/vega-issue-123-pr-check-pipeline.md) 与 [相关规格](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [相关规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
+- 历史 [相关规格](docs/123/vega-issue-123-pr-check-pipeline.md) 与 [相关规格](docs/140/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [相关规格](docs/175/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 已删除；现存 `scripts/tests/` 是保留的 Python 脚本回归，不属于 Rust 清零。调度器的移除不代表允许本地编译；本地验证遵守顶部的快速 check 限制。
 - `.config/nextest.toml` 用于云端 PR gate：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
 - **本地仅做快速静态 check，功能点测试与全量门禁只交云端 `pr-check`**（2026-10-16 用户更新，取代本地定向测试要求）。有行为变化时必须先写有效测试/矩阵并确认 RED，再实现；同一测试 GREEN 后固定源码/提交与云端证据，再删除 Rust 测试及独占支持并验证最终空集 head，才转正式 PR。不得先删失败/未执行测试、加 ignore、放宽断言或重试到绿。空集放行不吞编译、发现或执行失败，不替代带测试 GREEN 或证明 TDD 时序。
@@ -104,7 +106,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 应用安装入口（2026-09-25 用户更新约定）
 
-- 用户明确批准 `/Applications/Vega.app`、`~/Applications/Vega.app`，兼容 `~/Documents/Vega/Vega.app`；bundle ID 保持 `ai.vega`。只更新实际运行的 canonical app；不得迁移或修改其他副本。独立更新签名与路径规则见 [规格](docs/vega-issue-181-independent-update-signing.md)。
+- 用户明确批准 `/Applications/Vega.app`、`~/Applications/Vega.app`，兼容 `~/Documents/Vega/Vega.app`；bundle ID 保持 `ai.vega`。只更新实际运行的 canonical app；不得迁移或修改其他副本。独立更新签名与路径规则见 [规格](docs/181/vega-issue-181-independent-update-signing.md)。
 - 新版本原位替换当前运行的受支持 app；不要创建带版本号的安装名、指向 worktree 的符号链接或从 `dist` 启动日常应用。启动使用明确路径，不按名称或 bundle ID 选择副本。权限不足时提示人工安装，不提权、不移除安全属性。
 - `dist/Vega.app` 仅是打包产物。备份优先保存为 zip，附原二进制哈希和构建 commit；不要长期散落可被系统索引的 `.app` 备份。既有验收证据不得擅自删除。
 - 安装须独占，先检查正在运行的任务；未经确认空闲不得强退。候选构建签名/哈希验证完成后再替换固定位置，并核对安装后二进制身份。

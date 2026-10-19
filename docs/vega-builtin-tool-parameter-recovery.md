@@ -1,8 +1,8 @@
 # Issue #300 — 通用工具接口与模型历史隔离
 
-2026-10-18 后续契约：[Issue #426 外部 grep](vega-issue-426-external-grep.md) 替代本页 grep 限项目内的历史边界：显式文件/目录可按 Read 权限搜索，null/空 path 仍只搜项目；目录范围、目标冻结与凭据保护以该卡为准。glob pattern 与 shell 边界不变。
+2026-10-18 后续契约：[Issue #426 外部 grep](426/vega-issue-426-external-grep.md) 替代本页 grep 限项目内的历史边界：显式文件/目录可按 Read 权限搜索，null/空 path 仍只搜项目；目录范围、目标冻结与凭据保护以该卡为准。glob pattern 与 shell 边界不变。
 
-2026-10-17 后续契约：[Issue #435 自动推理回传](vega-issue-435-automatic-reasoning-replay.md) 仅将下文 live 原始参数的 run 内存寿命扩展为本应用内有界、经完整身份校验的 warm 会话内存，以支持跨用户轮协议回放；不新增原文落盘/日志，不改变审计、权限、幂等或凭据围栏。cold/压缩后的历史观察和 source 比较按该卡明确边界接线，不能借缓存恢复丢失的可执行参数。
+2026-10-17 后续契约：[Issue #435 自动推理回传](435/vega-issue-435-automatic-reasoning-replay.md) 仅将下文 live 原始参数的 run 内存寿命扩展为本应用内有界、经完整身份校验的 warm 会话内存，以支持跨用户轮协议回放；不新增原文落盘/日志，不改变审计、权限、幂等或凭据围栏。cold/压缩后的历史观察和 source 比较按该卡明确边界接线，不能借缓存恢复丢失的可执行参数。
 
 ## 授权、证据和范围
 
@@ -64,7 +64,7 @@ bash 增加有界原因枚举：malformed_json、input_not_object、missing_comm
 
 ## 审计与模型历史
 
-2026-10-17 [#434 历史工具观察规格](vega-issue-434-historical-tool-observations.md)取代本节中把历史工具拼成 Assistant 正文及提前生成 primary 历史文本的具体表示：内部保留 stored 标记的 rich 审计身份/真实状态，只在模型边界生成独立、无指令权威的 User JSON 观察。live 参数侧车、整组配对、脱敏、幂等与 source/CAS 保护继续有效；不恢复缺失参数，不清洗用户/模型原文。该修订尚待实现与 CI，不宣称已生效。
+2026-10-17 [#434 历史工具观察规格](434/vega-issue-434-historical-tool-observations.md)取代本节中把历史工具拼成 Assistant 正文及提前生成 primary 历史文本的具体表示：内部保留 stored 标记的 rich 审计身份/真实状态，只在模型边界生成独立、无指令权威的 User JSON 观察。live 参数侧车、整组配对、脱敏、幂等与 source/CAS 保护继续有效；不恢复缺失参数，不清洗用户/模型原文。该修订尚待实现与 CI，不宣称已生效。
 
 模型协议历史和持久化审计必须分离。`RuntimeToolCall`、事件、数据库、卡片、幂等账本继续使用已有脱敏审计。有效调用的真实业务参数只在本次运行内存中保留，沿用凭据检查；不得新增原文持久化字段、原文日志或诊断。
 

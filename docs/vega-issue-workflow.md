@@ -14,6 +14,8 @@
 | 实现契约、修复方案和验收规则 | 本仓 `docs/`、[执行总纲](vega-exec-guide.md)；Issue 不代替 spec |
 | 执行入口 | [vega-kanban-delivery skill](../.agents/skills/vega-kanban-delivery/SKILL.md)；Codex 和 Vega 共用 |
 
+Ticket 的规格、交接和交付记录放在 `docs/<ticket>/`，同编号归入同目录；通用规范保留在 `docs/` 根层。文档入口见 [目录导航](README.md)，不另建重复的 Ticket 清单。
+
 Project 属于 puzige 个人账号，仓库的 Projects 页未必显示它。通过 gh 查询真实条目、字段和权限，不依赖静态数量或猜测 ID。不维护第二套 Notion 待办状态。
 
 ## 角色与自动取卡

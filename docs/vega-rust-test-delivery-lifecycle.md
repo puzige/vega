@@ -73,7 +73,7 @@ PR 是测试的检索入口，至少记录以下内容，不只写“CI 绿了�
 
 - 来源：[PR #480](https://github.com/puzige/vega/pull/480)，8 个新测试；原测试提交 `9db5eb30f68b9b342441d73edb803472900bab48`，有效 RED [Actions 39151902385](https://github.com/puzige/vega/actions/runs/39151902385)，后续实现 `9637111c85f216b365e8b1990d192d3c59537cc8`，最新基线集成及 GREEN `fc24491ab16b9f111a072f5dacabd2c2db13d8c4`。
 - [带测试 GREEN：Actions 39154822274](https://github.com/puzige/vega/actions/runs/39154822274)：123 个发现/执行，123 通过、0 跳过。该 head 与合并结果 `b3c2ffaf` 全树一致；这批新增 8 个的先行证据与原 115 个的证据缺口分别记录，不混为同一 TDD 结论。
-- 固定原始[模型选择器测试源码](https://github.com/puzige/vega/blob/b3c2ffafb9ae39e32654c6692b2f35da3955d76a/crates/vega_ui/src/conversation_stream/tests/composer_picker.rs)，SHA-256 `604c9b91ece02aba76a9d58a84faf417d80e44d761267469eec6af97ed18c6b5`。生产三文件只清理测试专用 debug selector，不撤销真实布局、内容条件、控件 ID/无障碍/焦点/事件行为。原 [#480 记录](vega-issue-467-composer-picker-stability.md)保持不变。
+- 固定原始[模型选择器测试源码](https://github.com/puzige/vega/blob/b3c2ffafb9ae39e32654c6692b2f35da3955d76a/crates/vega_ui/src/conversation_stream/tests/composer_picker.rs)，SHA-256 `604c9b91ece02aba76a9d58a84faf417d80e44d761267469eec6af97ed18c6b5`。生产三文件只清理测试专用 debug selector，不撤销真实布局、内容条件、控件 ID/无障碍/焦点/事件行为。原 [#480 记录](467/vega-issue-467-composer-picker-stability.md)保持不变。
 
 ## 本轮验证记录
 

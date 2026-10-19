@@ -39,7 +39,7 @@
 
 历史集合中有 1,610 个定义原样恢复，3 个同名用例改动了 fixture，另有 1 个 grep 用例改名并改写预期。最后一项仍来自历史定义：`rejects_invalid_regex_and_all_path_escape_shapes` 变为 `rejects_invalid_regex_and_missing_targets_but_accepts_explicit_external_aliases`，不因改名自动算新增。独立新增的 `absolute_project_paths_match_relative_paths_and_explicit_external_targets` 不在删除范围。
 
-115 个新增定义为输入预测 39 个、外部 grep 76 个。保留它们不等于认证测试质量或追认 TDD：输入预测的[原规格](vega-issue-469-composer-predictions.md#8-新-master-集成边界)和[交付记录](vega-issue-469-composer-predictions-delivery.md)记录了测试与实现同批交付及先行证据缺口；外部 grep 的[原规格](vega-issue-426-external-grep.md)也明确记录首批测试与生产实现同提交、没有有效行为 RED，部分后续用例晚于修复。该缺口在本次不通过补测、重排提交或放宽断言消除。后续新行为仍必须遵守 TEST-FIRST。
+115 个新增定义为输入预测 39 个、外部 grep 76 个。保留它们不等于认证测试质量或追认 TDD：输入预测的[原规格](469/vega-issue-469-composer-predictions.md#8-新-master-集成边界)和[交付记录](469/vega-issue-469-composer-predictions-delivery.md)记录了测试与实现同批交付及先行证据缺口；外部 grep 的[原规格](426/vega-issue-426-external-grep.md)也明确记录首批测试与生产实现同提交、没有有效行为 RED，部分后续用例晚于修复。该缺口在本次不通过补测、重排提交或放宽断言消除。后续新行为仍必须遵守 TEST-FIRST。
 
 ## 证据与执行限制
 

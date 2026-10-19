@@ -3,7 +3,7 @@
 ## 冻结、范围与证据
 
 - 规格 v1.1，2026-10-17；基线 `4eb22a1d776155be00a2e940889f8da15d125f55`，分支 `feat/413-compaction-failure-classification`。v1.1 仅补明确 F3 的非压缩具体错误优先级与乱序断言，范围不变。
-- 执行必读 [AGENTS](../AGENTS.md)、[执行总纲](vega-exec-guide.md)、[Issue 工作流](vega-issue-workflow.md)、[设计守则](vega-design-guidelines.md)、[#397 错误展示](vega-compaction-error-presentation.md)、[#171 诊断](vega-issue-171-run-diagnostics-spec.md)。
+- 执行必读 [AGENTS](../AGENTS.md)、[执行总纲](vega-exec-guide.md)、[Issue 工作流](vega-issue-workflow.md)、[设计守则](vega-design-guidelines.md)、[#397 错误展示](vega-compaction-error-presentation.md)、[#171 诊断](171/vega-issue-171-run-diagnostics-spec.md)。
 - 已确认：v0.1.128 / v0.1.138 中 context_summary 记录 `summary_source_changed`，根 run 记录却为 `unknown_safe_failure`，用户同时看到具体压缩提示和通用运行环境提示。只读证据见 #413 评论；没有上传真实对话、思考、原始请求或截图。
 - 根因链：`compaction.rs::summary_diagnostic_failure` 已有精确码；`agent/diagnostics.rs::run_failure` 仅识别少数 metrics.failure_kind，SourceChanged 等降成 Unknown；`RunFailureKind::from_runtime` 对这些 Context 变体落入 Runtime；历史恢复只看有限的 budget code 和 failure_kind；UI 的同原因去重仅覆盖 context/reasoning limit。
 - 本卡修类型化分类、根诊断、实时/恢复一致性与同原因去重。保留 #397 位置/样式及恢复按钮，不改 #409 来源比较、不改压缩算法/预算/超时/重试/取消策略，不处理 #427 无 assistant 行的发送失败位置。

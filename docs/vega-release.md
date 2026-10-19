@@ -27,7 +27,7 @@ Computer-use 准备产物与下载缓存分别位于 `.vega-build/computer-use/C
 
 ## 独立更新签名（必需）
 
-[独立签名规格](vega-issue-181-independent-update-signing.md) 规定仓库公钥
+[独立签名规格](181/vega-issue-181-independent-update-signing.md) 规定仓库公钥
 `assets/update-public-key.hex` 编译进应用。管理员配置 `VEGA_UPDATE_PRIVATE_KEY` secret，
 内容为 Ed25519 PKCS8 DER 的 base64。私钥只注入最终 ZIP 完成后的签名步骤；
 不写仓库、命令参数或日志，不给 PR 构建使用。密钥丢失或轮换必须单独规划客户端信任迁移。

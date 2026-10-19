@@ -4,7 +4,7 @@
 **S1 目标**（phase1-plan）：workspace 可编译运行、云端门禁绿、bench 骨架可报数、schema/keychain 落地、主题 token 就位。
 > v0.2 变更（2026-08-29，人类决策）：T03 由 GitHub Actions 云端 CI 改为**本地 Git Hooks 质量门禁**（防 macOS runner 费用；产品稳定后再评估上云）；DoD 对应调整。
 > v0.3 变更（2026-08-29，人类批准）：T02 GPUI 依赖来源改为 **zed 官方仓库 git rev 锁定**（`gpui_platform` 无 crates.io 发布版，详见 phase1-plan E1 修订）。
-> v0.4 变更（2026-09-22，人类裁决，Issue #123）：门禁**全部上云**。删除本地 `.githooks/` 与 `scripts/verify.py`、cargo-lock 调度器；PR 走云端 `pr-check.yml`（fmt/clippy/test），push master 由 `master-build.yml` 打包，两者共享 cargo 缓存 key，发布仍由 tag 触发。T03 的本地 hooks 方案已被取代，详见 [Issue #123 规格](vega-issue-123-pr-check-pipeline.md)。
+> v0.4 变更（2026-09-22，人类裁决，Issue #123）：门禁**全部上云**。删除本地 `.githooks/` 与 `scripts/verify.py`、cargo-lock 调度器；PR 走云端 `pr-check.yml`（fmt/clippy/test），push master 由 `master-build.yml` 打包，两者共享 cargo 缓存 key，发布仍由 tag 触发。T03 的本地 hooks 方案已被取代，详见 [Issue #123 规格](123/vega-issue-123-pr-check-pipeline.md)。
 > v0.5 变更（2026-09-24，用户裁决，Issue #175）：PR gate 改为单个无分片 Cargo job；不以缩短耗时为目标。更新后的 T03 流程见下方，旧的 nextest archive/分片实现已不再是当前门禁。
 
 ---
@@ -63,7 +63,7 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
 
 ## T03 · 云端质量门禁（GitHub Actions，2026-09-22 取代本地 hooks）
 
-- **前置**：T01 · **参考**：phase1-plan §3.5；exec-guide §7（验收协议）；Issue #123 与 [Issue #175 规格](vega-issue-175-single-pr-check.md)
+- **前置**：T01 · **参考**：phase1-plan §3.5；exec-guide §7（验收协议）；Issue #123 与 [Issue #175 规格](175/vega-issue-175-single-pr-check.md)
 - **目标**：门禁全部上云；PR 由 GitHub Actions 运行单个无分片的 fmt/clippy/Cargo test job，本地 commit/push 不做任何强制检查
 - **产出**：
   - `.github/workflows/pr-check.yml`：仅 `pull_request`（base master），单个 `macos-latest` job `check (fmt, clippy, test)`，依次运行 fmt、Clippy 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`；不分片、不安装 nextest、不传输归档
