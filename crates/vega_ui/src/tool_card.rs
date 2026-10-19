@@ -748,7 +748,7 @@ impl ToolCard {
 
     pub(crate) fn subagent(&self) -> Option<&SubagentSnapshot> {
         self.execution.as_ref().or(match &self.result {
-            Some(ToolCardResultProjection::Subagent { agent, .. }) => agent.as_ref(),
+            Some(ToolCardResultProjection::Subagent { agent, .. }) => agent.as_deref(),
             _ => None,
         })
     }

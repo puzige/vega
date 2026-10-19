@@ -459,12 +459,11 @@ impl Supervisor {
                 command = self.receiver.recv() => {
                     match command {
                         Some(Command::Admit { call_id, tool, input, reply }) => {
-                            match self.registry.begin_call(&call_id, &tool, &input, reply) {
-                                Ok(true) => match self.reserve(&launch, &call_id, &tool, &input) {
+                            if let Ok(true) = self.registry.begin_call(&call_id, &tool, &input, reply) {
+                                match self.reserve(&launch, &call_id, &tool, &input) {
                                     Ok(reserved) => children.push(child_lifecycle(&launch, reserved, self.registry.clone())),
                                     Err(error) => { self.registry.resolve_call(&call_id, Err(error)); }
-                                },
-                                Ok(false) | Err(_) => {}
+                                }
                             }
                         }
                         Some(Command::Cancel { target, reply }) => { let result = self.cancel(&launch, &target).await; let _ = reply.send(result); }

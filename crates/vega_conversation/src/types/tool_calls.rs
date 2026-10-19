@@ -422,7 +422,7 @@ impl ToolCardInputProjection {
 pub enum ToolCardResultProjection {
     Subagent {
         status: ToolCallStatus,
-        agent: Option<SubagentSnapshot>,
+        agent: Option<Box<SubagentSnapshot>>,
         output: String,
         reused: bool,
     },
@@ -814,7 +814,7 @@ pub fn tool_card_result_projection(
                 }) else {
                     return ToolCardResultProjection::Corrupt;
                 };
-                Some(agent)
+                Some(Box::new(agent))
             } else {
                 None
             };
