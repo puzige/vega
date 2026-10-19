@@ -19,12 +19,13 @@ struct RecoveryStream {
 impl OpenAiProvider {
     pub(super) fn recovering_stream(
         self,
-        request: ChatRequest,
+        mut request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<ProviderStream, VegaError> {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
+        request.messages = crate::project_model_messages(&request.messages)?;
         crate::images::validate_messages(&request.messages)?;
         if let Some(reasoning) = &request.reasoning {
             reasoning.validate()?;
@@ -34,11 +35,7 @@ impl OpenAiProvider {
                 });
             }
         }
-        let body = if self.responses_api {
-            responses::build_body(&request)?
-        } else {
-            build_request_body(&request)
-        };
+        let body = self.request_body(&request)?;
         let state = RecoveryStream {
             provider: self,
             request,

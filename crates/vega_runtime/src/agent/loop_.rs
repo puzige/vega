@@ -183,11 +183,13 @@ fn install_compacted_replay_frame(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_replay_response(
     reasoning: Option<&FrozenReasoning>,
     tools_requested: bool,
     calls: &[RuntimeToolCall],
     presence: &crate::ChatReasoningPresence,
+    chat_raw: Option<&crate::ChatRawState>,
     response_reasoning: &[serde_json::Value],
     response_layout: Option<&crate::ResponseReplayLayout>,
     assistant_text: &str,
@@ -196,9 +198,8 @@ fn validate_replay_response(
     let policy = reasoning
         .map(|profile| profile.replay_policy)
         .unwrap_or(crate::ReasoningReplayPolicy::Unknown);
-    if !calls.is_empty()
-        && policy != crate::ReasoningReplayPolicy::ResponsesItems
-        && raw_response_state
+    if (policy != crate::ReasoningReplayPolicy::ResponsesItems && raw_response_state)
+        || (policy == crate::ReasoningReplayPolicy::ResponsesItems && chat_raw.is_some())
     {
         return Err(VegaError::ReasoningReplayUnsupported);
     }
@@ -1070,6 +1071,7 @@ where
     let mut final_text = String::new();
     let mut tool_call_count = 0usize;
     let mut executed_tool_call_count = 0usize;
+    let mut bounded_run_reasoning_bytes = 0usize;
     // Agentic turn counter: the outer `loop` below issues exactly one provider
     // request per iteration. `turn_limit == 0` means unlimited (Claude Code's
     // `--max-turns` default); a positive value soft-stops before issuing the
@@ -1791,6 +1793,7 @@ where
         let mut valid_primary_input = None;
         let mut anchor_protocol_valid = true;
         let mut reasoning_turn_bytes = 0usize;
+        let mut bounded_turn_reasoning_bytes = 0usize;
         let mut retained_reasoning_bytes = 0usize;
         if let Some(run) = &tool_config.computer_use
             && run.wait_ready(&cancel).await.is_err()
@@ -1943,6 +1946,7 @@ where
         let mut assistant_text = String::new();
         let mut response_reasoning = Vec::new();
         let mut reasoning_presence = None;
+        let mut chat_raw_state = None;
         let mut response_layout = None;
         let mut calls = Vec::new();
         let mut stop_reason = None;
@@ -1976,6 +1980,52 @@ where
                 next = stream.next() => next,
             };
             let Some(item) = next else { break };
+            let item = item.and_then(|event| {
+                let bytes = match &event {
+                    ProviderEvent::ThinkingDelta(text) | ProviderEvent::SummaryDelta(text) => {
+                        text.len()
+                    }
+                    ProviderEvent::ChatReasoningState(raw) => raw.detail_bytes(),
+                    ProviderEvent::ReasoningReplay(items) => {
+                        items.iter().map(|item| item.to_string().len()).sum()
+                    }
+                    _ => 0,
+                };
+                if matches!(
+                    event,
+                    ProviderEvent::ThinkingDelta(_) | ProviderEvent::SummaryDelta(_)
+                ) && bytes > REASONING_DELTA_MAX_BYTES
+                {
+                    return Err(VegaError::ReasoningBudgetExceeded {
+                        scope: crate::ReasoningBudgetScope::Delta,
+                        observed_bytes: bytes,
+                        limit_bytes: REASONING_DELTA_MAX_BYTES,
+                    });
+                }
+                bounded_turn_reasoning_bytes = bounded_turn_reasoning_bytes.saturating_add(bytes);
+                bounded_run_reasoning_bytes = bounded_run_reasoning_bytes.saturating_add(bytes);
+                for (scope, observed_bytes, limit_bytes) in [
+                    (
+                        crate::ReasoningBudgetScope::Turn,
+                        bounded_turn_reasoning_bytes,
+                        REASONING_TURN_MAX_BYTES,
+                    ),
+                    (
+                        crate::ReasoningBudgetScope::Run,
+                        bounded_run_reasoning_bytes,
+                        REASONING_RUN_MAX_BYTES,
+                    ),
+                ] {
+                    if observed_bytes > limit_bytes {
+                        return Err(VegaError::ReasoningBudgetExceeded {
+                            scope,
+                            observed_bytes,
+                            limit_bytes,
+                        });
+                    }
+                }
+                Ok(event)
+            });
             if stop_reason.is_some() {
                 anchor_protocol_valid = false;
             }
@@ -2000,6 +2050,7 @@ where
                     response_last_visible = None;
                     response_reasoning.clear();
                     reasoning_presence = None;
+                    chat_raw_state = None;
                     response_layout = None;
                     calls.clear();
                     stop_reason = None;
@@ -2007,6 +2058,7 @@ where
                     valid_primary_input = None;
                     anchor_protocol_valid = true;
                     reasoning_turn_bytes = 0;
+                    bounded_turn_reasoning_bytes = 0;
                     retained_reasoning_bytes = 0;
                     diagnostic_metrics = RuntimeDiagnosticMetrics::default();
                     diagnostic_metrics.provider.retry_count = Some(attempt);
@@ -2096,6 +2148,24 @@ where
                             )
                         );
                         emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
+                        return Ok(outcome(
+                            events,
+                            messages,
+                            final_text,
+                            tool_call_count,
+                            executed_tool_call_count,
+                            false,
+                            true,
+                        ));
+                    }
+                }
+                Ok(ProviderEvent::ChatReasoningState(raw)) => {
+                    if chat_raw_state.replace(raw).is_some() {
+                        emit!(
+                            events,
+                            sink,
+                            RuntimeEvent::Error(Arc::new(crate::chat_compat::protocol_error()))
+                        );
                         return Ok(outcome(
                             events,
                             messages,
@@ -2448,6 +2518,7 @@ where
                 tools_requested,
                 &calls,
                 &reasoning_presence,
+                chat_raw_state.as_ref(),
                 &response_reasoning,
                 response_layout.as_ref(),
                 &assistant_text,
@@ -2550,6 +2621,7 @@ where
                 .unwrap_or(crate::ReasoningReplayPolicy::Unknown);
             if !replay_policy.preserves_chat_response(tools_requested)
                 && (!matches!(&reasoning_presence, crate::ChatReasoningPresence::Absent)
+                    || chat_raw_state.is_some()
                     || !response_reasoning.is_empty()
                     || response_layout.is_some())
             {
@@ -2557,6 +2629,7 @@ where
             }
             let mut assistant = ChatMessage::new(ChatRole::Assistant, assistant_text);
             if replay_policy.preserves_chat_response(tools_requested) {
+                assistant.chat_reasoning = chat_raw_state;
                 assistant.reasoning_content = match reasoning_presence {
                     crate::ChatReasoningPresence::Absent => None,
                     crate::ChatReasoningPresence::Empty => Some(String::new()),
@@ -2687,6 +2760,7 @@ where
             })
             .preserves_chat_response(tools_requested)
         {
+            assistant_message.chat_reasoning = chat_raw_state;
             assistant_message.reasoning_content = match reasoning_presence {
                 crate::ChatReasoningPresence::Absent => None,
                 crate::ChatReasoningPresence::Empty => Some(String::new()),

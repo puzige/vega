@@ -103,6 +103,9 @@ pub const OFF_LABEL: &str = "Off";
 pub const PROVIDER_DEFAULT_LABEL: &str = "Default";
 
 pub fn tier_display_label(effort: &str) -> String {
+    if effort == "enabled" {
+        return "开启思考".into();
+    }
     match effort {
         "none" => "None".to_string(),
         "minimal" => "Minimal".to_string(),

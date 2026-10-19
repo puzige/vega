@@ -79,11 +79,8 @@ async fn response_bytes(
                 max_tokens: Some(128),
                 ..Default::default()
             };
-            let body = if responses {
-                crate::openai::responses::build_body(&request).map_err(|_| CheckError::Invalid)?
-            } else {
-                crate::openai::build_request_body(&request)
-            };
+            let body = crate::openai::encode_request(base, &request, responses)
+                .map_err(|_| CheckError::Invalid)?;
             let path = if responses {
                 "responses"
             } else {
@@ -181,46 +178,38 @@ pub async fn probe(
     let source = futures::stream::once(async { Ok::<_, std::io::Error>(bytes) });
     let mut events = Box::pin(source.eventsource());
     let mut content = false;
-    let mut finished = false;
-    let mut done = false;
+    let mut sentinel = false;
+    let mut parser = crate::openai::SseAssembler::default();
     while let Some(event) = events.next().await {
         let event = event.map_err(|_| CheckError::Malformed)?;
         let data = event.data.trim();
         if data == "[DONE]" {
-            done = true;
+            sentinel = true;
             continue;
         }
-        if done {
+        if sentinel {
             return Err(CheckError::Malformed);
         }
-        let value: serde_json::Value =
-            serde_json::from_str(data).map_err(|_| CheckError::Malformed)?;
-        if value.get("error").is_some() {
-            return Err(CheckError::Malformed);
-        }
-        let choices = value
-            .get("choices")
-            .and_then(|v| v.as_array())
-            .ok_or(CheckError::Malformed)?;
-        for choice in choices {
-            if choice.get("index").and_then(|v| v.as_u64()) != Some(0) {
-                continue;
+        for event in parser.absorb(data).map_err(|_| CheckError::Malformed)? {
+            match event {
+                crate::ProviderEvent::TextDelta(text)
+                | crate::ProviderEvent::ThinkingDelta(text) => content |= !text.trim().is_empty(),
+                crate::ProviderEvent::ToolUse { .. } => return Err(CheckError::Malformed),
+                _ => {}
             }
-            content |= ["/delta/content", "/delta/reasoning_content"]
-                .iter()
-                .any(|path| {
-                    choice
-                        .pointer(path)
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|text| !text.trim().is_empty())
-                });
-            finished |= matches!(
-                choice.get("finish_reason").and_then(|v| v.as_str()),
-                Some("stop" | "length")
-            );
         }
     }
-    if content && finished && done {
+    let terminal = parser.finalize().map_err(|_| CheckError::Malformed)?;
+    if content
+        && terminal.iter().any(|event| {
+            matches!(
+                event,
+                crate::ProviderEvent::Done {
+                    stop_reason: crate::StopReason::End | crate::StopReason::Length
+                }
+            )
+        })
+    {
         Ok(())
     } else {
         Err(CheckError::Malformed)

@@ -33,6 +33,8 @@ impl ReasoningReplaySetting {
 /// UI-safe projection of one exact provider/model profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReasoningProfileProjection {
+    pub compatibility: Option<Box<ChatCompatibility>>,
+    pub supports_enabled: bool,
     /// Exact provider identifier.
     pub provider: String,
     /// Exact model identifier.
@@ -50,6 +52,34 @@ pub struct ReasoningProfileProjection {
 }
 
 impl ReasoningProfileProjection {
+    pub fn from_chat_compatibility(
+        provider: &str,
+        model: &str,
+        capabilities: ChatCompatibility,
+    ) -> Self {
+        let mut profile = Self::unknown(provider, model);
+        profile.protocol = capabilities.protocol;
+        profile.replay_profile = match capabilities.replay_policy {
+            ReasoningReplayPolicy::StandardChat => ReasoningReplaySetting::StandardChat,
+            ReasoningReplayPolicy::DeepSeekTools => ReasoningReplaySetting::DeepSeekTools,
+            ReasoningReplayPolicy::GlmPreserved => ReasoningReplaySetting::GlmPreserved,
+            ReasoningReplayPolicy::GlmInterleaved => ReasoningReplaySetting::GlmInterleaved,
+            ReasoningReplayPolicy::ResponsesItems => ReasoningReplaySetting::ResponsesItems,
+            ReasoningReplayPolicy::Unknown => ReasoningReplaySetting::Auto,
+        };
+        profile.support = capabilities.support;
+        profile.efforts = capabilities
+            .efforts
+            .iter()
+            .map(|effort| (*effort).to_string())
+            .collect();
+        profile.supports_disabled = capabilities.supports_disabled;
+        profile.disabled_wire = capabilities.disabled_wire;
+        profile.supports_enabled = capabilities.supports_enabled;
+        profile.compatibility = Some(Box::new(capabilities));
+        profile
+    }
+
     /// Converts the store representation without guessing undocumented values.
     pub fn from_store(profile: &ReasoningProfile) -> Result<Self, String> {
         profile.validate()?;
@@ -57,6 +87,7 @@ impl ReasoningProfileProjection {
         projection.preference = match profile.preference.as_str() {
             "provider_default" => ReasoningChoice::ProviderDefault,
             "disabled" => ReasoningChoice::Disabled,
+            "enabled" => ReasoningChoice::Enabled,
             effort => ReasoningChoice::Effort(effort.to_string()),
         };
         Ok(projection)
@@ -64,6 +95,7 @@ impl ReasoningProfileProjection {
 
     pub fn supports_preference(&self) -> bool {
         match &self.preference {
+            ReasoningChoice::Enabled => self.supports_enabled,
             ReasoningChoice::ProviderDefault => true,
             ReasoningChoice::Disabled => self.supports_disabled,
             ReasoningChoice::Effort(effort) => {
@@ -91,6 +123,7 @@ impl ReasoningProfileProjection {
         replay_policy: ReasoningReplayPolicy,
     ) -> Result<FrozenReasoning, vega_runtime::VegaError> {
         let frozen = FrozenReasoning {
+            compatibility: self.compatibility.clone(),
             provider: self.provider.clone(),
             model: self.model.clone(),
             protocol,
@@ -106,6 +139,8 @@ impl ReasoningProfileProjection {
 
     pub fn unknown(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
+            compatibility: None,
+            supports_enabled: false,
             provider: provider.into(),
             model: model.into(),
             protocol: ReasoningProtocol::Unknown,

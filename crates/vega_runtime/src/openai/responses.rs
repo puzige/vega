@@ -82,6 +82,13 @@ fn response_error(kind: crate::ProviderFailureKind) -> VegaError {
 }
 
 pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
+    if req
+        .messages
+        .iter()
+        .any(|message| message.reasoning_content.is_some() || message.chat_reasoning.is_some())
+    {
+        return Err(VegaError::ReasoningReplayUnsupported);
+    }
     let mut reasoning = json!({"summary": "auto"});
     if let Some(profile) = &req.reasoning {
         if profile.replay_policy != ReasoningReplayPolicy::ResponsesItems
@@ -93,6 +100,12 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
             return Err(VegaError::ReasoningSelectionInvalid { message: "Responses does not support this reasoning replay/off profile; choose Chat Completions or a compatible profile".into() });
         }
         match &profile.choice {
+            ReasoningChoice::Enabled => {
+                return Err(VegaError::ReasoningSelectionInvalid {
+                    message: "this Responses model has no explicit thinking enable operation"
+                        .into(),
+                });
+            }
             ReasoningChoice::Effort(effort) => reasoning["effort"] = json!(effort),
             ReasoningChoice::Disabled => reasoning["effort"] = json!("none"),
             ReasoningChoice::ProviderDefault => {}

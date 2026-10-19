@@ -2322,6 +2322,7 @@ async fn collect_summary_with_timeout_diagnostics(
             }
             Ok(
                 ProviderEvent::ReasoningReplay(_)
+                | ProviderEvent::ChatReasoningState(_)
                 | ProviderEvent::ChatReasoningContent(_)
                 | ProviderEvent::ResponseReplay(_),
             ) => {}

@@ -1214,7 +1214,11 @@ impl ConversationStream {
             match self.composer_defaults.reasoning.as_ref() {
                 Some(profile) => (
                     profile.model.clone(),
-                    declared_tiers(profile.support, &profile.efforts),
+                    if profile.supports_enabled {
+                        vec!["enabled".into()]
+                    } else {
+                        declared_tiers(profile.support, &profile.efforts)
+                    },
                     supports_off_position(profile),
                     preferred_tier_name(&profile.preference)
                         .unwrap_or_default()
@@ -1251,6 +1255,8 @@ impl ConversationStream {
         }
         let accepted = if event.choice == OFF_CHOICE_NAME {
             supports_off_position(profile)
+        } else if event.choice == "enabled" {
+            profile.supports_enabled
         } else {
             profile.efforts.iter().any(|effort| effort == &event.choice)
         };
@@ -1669,6 +1675,7 @@ impl ConversationStream {
 
 fn reasoning_choice_name(choice: &ReasoningChoice) -> String {
     match choice {
+        ReasoningChoice::Enabled => "enabled".into(),
         ReasoningChoice::ProviderDefault => "provider_default".to_string(),
         ReasoningChoice::Disabled => "disabled".to_string(),
         ReasoningChoice::Effort(effort) => effort.clone(),
@@ -1691,6 +1698,7 @@ pub(crate) fn declared_tiers(support: ReasoningSupport, efforts: &[String]) -> V
 
 pub(crate) fn preferred_tier_name(preference: &ReasoningChoice) -> Option<&str> {
     match preference {
+        ReasoningChoice::Enabled => Some("enabled"),
         ReasoningChoice::Effort(effort) => Some(effort.as_str()),
         ReasoningChoice::ProviderDefault | ReasoningChoice::Disabled => None,
     }
@@ -1698,6 +1706,7 @@ pub(crate) fn preferred_tier_name(preference: &ReasoningChoice) -> Option<&str> 
 
 fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
     match name {
+        "enabled" => ReasoningChoice::Enabled,
         "disabled" => ReasoningChoice::Disabled,
         "provider_default" | "" | "off" => ReasoningChoice::ProviderDefault,
         effort => ReasoningChoice::Effort(effort.to_string()),

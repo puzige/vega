@@ -40,6 +40,7 @@ fn reasoning_profile_patch(
         .transpose()
         .map_err(|_| ReasoningSettingsErrorCode::Invalid)?;
     let preference = match &candidate.preference {
+        ReasoningChoice::Enabled => "enabled".to_string(),
         ReasoningChoice::ProviderDefault => "provider_default".to_string(),
         ReasoningChoice::Disabled => "disabled".to_string(),
         ReasoningChoice::Effort(effort) => effort.clone(),
@@ -361,7 +362,13 @@ impl VegaWindow {
             return;
         };
 
-        let next = if choice == OFF_CHOICE_NAME {
+        let next = if choice == "enabled" {
+            if !profile.supports_enabled {
+                self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+                return;
+            }
+            ReasoningChoice::Enabled
+        } else if choice == OFF_CHOICE_NAME {
             if !(profile.supports_disabled && profile.disabled_wire.is_some()) {
                 self.apply_reasoning_profile_to_stream(&stream, &model, cx);
                 return;

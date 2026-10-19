@@ -91,6 +91,21 @@ fn contains_with_policy(
     vega_runtime::redact_sensitive_credential_text_with_policy(text, known, exceptions) != text
 }
 
+fn contains_chat_secret(
+    raw: &vega_runtime::ChatRawState,
+    known: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> bool {
+    raw.text
+        .as_ref()
+        .is_some_and(|(_, text)| contains_with_policy(text, known, exceptions))
+        || raw.details.as_ref().is_some_and(|details| {
+            details
+                .iter()
+                .any(|value| contains_json_secret(value, known, exceptions))
+        })
+}
+
 fn reject_owner_secret_with_policy(
     request: &ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
@@ -107,6 +122,10 @@ fn reject_owner_secret_with_policy(
                 .reasoning_content
                 .as_deref()
                 .is_some_and(|reasoning| contains_with_policy(reasoning, &known, exceptions))
+            || message
+                .chat_reasoning
+                .as_ref()
+                .is_some_and(|raw| contains_chat_secret(raw, &known, exceptions))
             || message.tool_calls.iter().any(|call| {
                 contains_with_policy(&call.id, &known, exceptions)
                     || contains_with_policy(&call.name, &known, exceptions)
@@ -160,6 +179,13 @@ pub(crate) fn project_owner_secrets_with_policy(
 ) -> Result<ChatRequest, VegaError> {
     let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
     for message in &mut request.messages {
+        if message
+            .chat_reasoning
+            .as_ref()
+            .is_some_and(|raw| contains_chat_secret(raw, &known, exceptions))
+        {
+            return Err(blocked());
+        }
         message.content = vega_runtime::redact_sensitive_credential_text_with_policy(
             &message.content,
             &known,
@@ -311,6 +337,23 @@ fn protected_stream(
                                 ended = true;
                             }
                             ready.push_back(projected);
+                        }
+                        Some(Ok(ProviderEvent::ChatReasoningState(raw))) => {
+                            if contains_chat_secret(&raw, &known, exceptions.as_ref()) {
+                                ready.push_back(Err(blocked()));
+                                ended = true;
+                            } else {
+                                ready.push_back(Ok(ProviderEvent::ChatReasoningState(raw)));
+                            }
+                        }
+                        Some(Ok(ProviderEvent::ChatReasoningContent(presence))) => {
+                            if matches!(&presence,vega_runtime::ChatReasoningPresence::NonEmpty(text) if contains_with_policy(text,&known,exceptions.as_ref()))
+                            {
+                                ready.push_back(Err(blocked()));
+                                ended = true;
+                            } else {
+                                ready.push_back(Ok(ProviderEvent::ChatReasoningContent(presence)));
+                            }
                         }
                         Some(Ok(ProviderEvent::ReasoningReplay(values))) => {
                             if values.iter().any(|value| {
