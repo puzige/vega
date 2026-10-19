@@ -109,16 +109,16 @@ fn fixture() -> (TempDir, vega_tools::Tools) {
     (root, tools)
 }
 
-fn legacy_step() -> FrozenReasoning {
+fn standard_step() -> FrozenReasoning {
     FrozenReasoning {
         provider: "cpa".into(),
         model: "step-5-preview".into(),
         protocol: ReasoningProtocol::OpenAiChatCompletions,
         replay_policy: ReasoningReplayPolicy::StandardChat,
         choice: ReasoningChoice::Effort("high".into()),
-        supports_disabled: true,
-        disabled_wire: Some(ReasoningDisabledWire::ReasoningEffortNone),
-        declared_efforts: ["minimal", "low", "medium", "high", "xhigh", "max"]
+        supports_disabled: false,
+        disabled_wire: None,
+        declared_efforts: ["low", "medium", "high"]
             .into_iter()
             .map(str::to_string)
             .collect(),
@@ -184,7 +184,7 @@ async fn standard_chat_completes_successive_tools_with_exact_reasoning_and_resul
     let outcome = crate::run_agent(
         &provider,
         &tools,
-        request(Some(legacy_step())),
+        request(Some(standard_step())),
         CancellationToken::new(),
     )
     .await
@@ -248,7 +248,7 @@ async fn generic_chat_preserves_absence_empty_and_original_text_without_control_
         None,
         Some(FrozenReasoning::unknown("custom", "step-5-preview")),
         {
-            let mut standard = legacy_step();
+            let mut standard = standard_step();
             standard.choice = ReasoningChoice::ProviderDefault;
             Some(standard)
         },
@@ -398,7 +398,7 @@ async fn required_provider_state_and_foreign_responses_fail_before_tool_side_eff
         assert_no_tool_side_effects(&outcome);
         assert_eq!(provider.bodies().len(), 1);
     }
-    for declaration in [None, Some(legacy_step())] {
+    for declaration in [None, Some(standard_step())] {
         for foreign_layout in [false, true] {
             let mut script = Script::read("foreign", Some("chat original"));
             script.extra = if foreign_layout {
@@ -433,13 +433,7 @@ async fn unsupported_saved_step_choice_is_rejected_before_any_provider_request()
         ReasoningChoice::Disabled,
         ReasoningChoice::Effort("max".into()),
     ] {
-        let mut profile = legacy_step();
-        profile.supports_disabled = false;
-        profile.disabled_wire = None;
-        profile.declared_efforts = ["low", "medium", "high"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let mut profile = standard_step();
         profile.choice = choice;
         let provider = ScriptedProvider::new(Vec::new());
         let result = crate::run_agent(
@@ -500,7 +494,6 @@ fn optional_reasoning_without_tools_keeps_default_wire_and_has_no_replay_contrac
     for policy in [
         ReasoningReplayPolicy::Unknown,
         ReasoningReplayPolicy::StandardChat,
-        ReasoningReplayPolicy::LegacyTextTools,
     ] {
         assert!(!policy.preserves_chat_response(false));
     }

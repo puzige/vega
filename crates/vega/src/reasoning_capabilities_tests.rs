@@ -1,6 +1,6 @@
 use super::*;
 
-fn old_step(preference: ReasoningChoice) -> ReasoningProfileProjection {
+fn caller_step_profile(preference: ReasoningChoice) -> ReasoningProfileProjection {
     ReasoningProfileProjection {
         provider: "proxy".into(),
         model: "step-5-preview".into(),
@@ -18,8 +18,11 @@ fn old_step(preference: ReasoningChoice) -> ReasoningProfileProjection {
 }
 
 #[test]
-fn step_capabilities_are_automatic_on_a_custom_chat_proxy_and_preserve_high() {
-    for configured in [None, Some(old_step(ReasoningChoice::Effort("high".into())))] {
+fn step_capabilities_are_internal_and_only_the_selected_preference_is_applied() {
+    for configured in [
+        None,
+        Some(caller_step_profile(ReasoningChoice::Effort("high".into()))),
+    ] {
         let profile = resolve_reasoning_profile(
             "proxy",
             ProviderApi::ChatCompletions,
@@ -45,7 +48,7 @@ fn step_capabilities_are_automatic_on_a_custom_chat_proxy_and_preserve_high() {
 }
 
 #[test]
-fn obsolete_step_preferences_remain_visible_and_fail_freeze_until_repaired() {
+fn unsupported_step_preferences_remain_visible_and_fail_freeze_until_repaired() {
     for choice in [
         ReasoningChoice::Disabled,
         ReasoningChoice::Effort("minimal".into()),
@@ -57,7 +60,7 @@ fn obsolete_step_preferences_remain_visible_and_fail_freeze_until_repaired() {
             ProviderApi::ChatCompletions,
             "https://gateway.example/v1",
             "step-5-preview",
-            Some(old_step(choice.clone())),
+            Some(caller_step_profile(choice.clone())),
         )
         .expect("repairable projection");
         assert_eq!(profile.preference, choice);
@@ -149,37 +152,128 @@ fn exact_known_services_keep_strict_facts_and_lookalike_endpoints_stay_generic()
 }
 
 #[test]
-fn imported_custom_vendor_profiles_keep_internal_semantics_and_responses_remains_api_driven() {
-    let mut imported = old_step(ReasoningChoice::Effort("high".into()));
-    imported.model = "custom-glm".into();
-    imported.protocol = ReasoningProtocol::ZhipuChatCompletions;
-    imported.replay_profile = ReasoningReplaySetting::GlmInterleaved;
-    imported.efforts = vec!["low".into(), "high".into()];
-    imported.disabled_wire = Some(ReasoningDisabledWire::ThinkingTypeDisabled);
+fn caller_capability_fields_cannot_override_internal_profiles_or_the_selected_api() {
+    let mut supplied = caller_step_profile(ReasoningChoice::ProviderDefault);
+    supplied.protocol = ReasoningProtocol::ZhipuChatCompletions;
+    supplied.replay_profile = ReasoningReplaySetting::GlmInterleaved;
+    supplied.disabled_wire = Some(ReasoningDisabledWire::ThinkingTypeDisabled);
     let resolved = resolve_reasoning_profile(
         "proxy",
         ProviderApi::ChatCompletions,
         "https://gateway.example/v1",
-        "custom-glm",
-        Some(imported.clone()),
+        "step-5-preview",
+        Some(supplied.clone()),
     )
-    .expect("imported profile");
-    assert_eq!(resolved, imported);
-    assert_eq!(
-        freeze_reasoning_profile(resolved)
-            .expect("imported frozen")
-            .replay_policy,
-        ReasoningReplayPolicy::GlmInterleaved
-    );
+    .expect("internal model facts");
+    assert_eq!(resolved.protocol, ReasoningProtocol::OpenAiChatCompletions);
+    assert_eq!(resolved.efforts, ["low", "medium", "high"]);
+    assert!(!resolved.supports_disabled);
+    assert_eq!(resolved.preference, ReasoningChoice::ProviderDefault);
+    supplied.model = "custom-glm".into();
+    let generic = resolve_reasoning_profile(
+        "proxy",
+        ProviderApi::ChatCompletions,
+        "https://gateway.example/v1",
+        "custom-glm",
+        Some(supplied),
+    )
+    .expect("generic internal profile");
+    let generic = freeze_reasoning_profile(generic).expect("generic default");
+    assert_eq!(generic.protocol, ReasoningProtocol::Unknown);
+    assert!(generic.declared_efforts.is_empty());
+    assert!(!generic.supports_disabled);
     let response = resolve_reasoning_profile(
-        "response",
+        "proxy",
         ProviderApi::Responses,
         "https://gateway.example/v1",
         "step-5-preview",
-        None,
+        Some(caller_step_profile(ReasoningChoice::ProviderDefault)),
     )
-    .expect("Responses profile");
-    let frozen = freeze_reasoning_profile(response).expect("Responses freeze");
+    .expect("actual Responses API");
+    let frozen = freeze_reasoning_profile(response).expect("Responses default");
     assert_eq!(frozen.protocol, ReasoningProtocol::ResponsesApi);
     assert_eq!(frozen.replay_policy, ReasoningReplayPolicy::ResponsesItems);
+}
+
+fn new_preference(preference: &str) -> String {
+    format!(
+        "version = 1\n[[preferences]]\nprovider = \"proxy\"\nmodel = \"step-5-preview\"\npreference = \"{preference}\"\n"
+    )
+}
+
+#[test]
+fn old_reasoning_files_never_affect_real_app_loading_or_create_preferences() {
+    let old_files = [
+        "version = 1\n[[profiles]]\nprovider = \"proxy\"\nmodel = \"step-5-preview\"\nprotocol = \"openai_chat_completions\"\nsupport = \"optional\"\nefforts = [\"high\"]\npreference = \"high\"\n",
+        "version = 2\n[[profiles]]\nprovider = \"proxy\"\nmodel = \"step-5-preview\"\nprotocol = \"openai_chat_completions\"\nsupport = \"optional\"\nefforts = [\"max\"]\nreplay_profile = \"standard_chat\"\npreference = \"max\"\n",
+        "version = [broken",
+        "version = 2\n[[profiles]]\nprovider = \"proxy\"\nmodel = \"step-5-preview\"\nprotocol = \"zhipu_chat_completions\"\nsupport = \"optional\"\nefforts = [\"max\"]\nsupports_disabled = true\ndisabled_wire = \"thinking_type_disabled\"\nreplay_profile = \"glm_interleaved\"\npreference = \"max\"\n",
+    ];
+    for source in old_files {
+        let root = tempfile::tempdir().expect("owned app configuration");
+        let old_path = root.path().join("reasoning.toml");
+        let preferences_path = root.path().join("reasoning-preferences.toml");
+        std::fs::write(&old_path, source).expect("untrusted old file");
+        let runtime_path = root
+            .path()
+            .join("config.toml")
+            .with_file_name(vega_store::reasoning::REASONING_FILE_NAME);
+        let frozen = crate::app_agent::reasoning_for_provider_model(
+            "proxy",
+            ProviderApi::ChatCompletions,
+            "https://gateway.example/v1",
+            "step-5-preview",
+            Some(&runtime_path),
+        )
+        .expect("old file cannot block loading");
+        assert_eq!(frozen.choice, ReasoningChoice::ProviderDefault);
+        assert_eq!(frozen.declared_efforts, ["low", "medium", "high"]);
+        assert_eq!(frozen.protocol, ReasoningProtocol::OpenAiChatCompletions);
+        assert!(!frozen.supports_disabled);
+        assert_eq!(
+            std::fs::read_to_string(&old_path).expect("old bytes"),
+            source
+        );
+        assert!(!preferences_path.exists());
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .expect("fixture directory")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn real_app_loads_only_new_preferences_and_does_not_rewrite_either_file() {
+    let root = tempfile::tempdir().expect("owned new preferences");
+    let old_path = root.path().join("reasoning.toml");
+    let new_path = root.path().join("reasoning-preferences.toml");
+    let old = "injected = [broken legacy configuration";
+    let preferences = new_preference("high");
+    std::fs::write(&old_path, old).expect("irrelevant old file");
+    std::fs::write(&new_path, &preferences).expect("new preference file");
+    let runtime_path = root
+        .path()
+        .join("config.toml")
+        .with_file_name(vega_store::reasoning::REASONING_FILE_NAME);
+    let frozen = crate::app_agent::reasoning_for_provider_model(
+        "proxy",
+        ProviderApi::ChatCompletions,
+        "https://gateway.example/v1",
+        "step-5-preview",
+        Some(&runtime_path),
+    )
+    .expect("new preference loading");
+    assert_eq!(frozen.choice, ReasoningChoice::Effort("high".into()));
+    assert_eq!(frozen.declared_efforts, ["low", "medium", "high"]);
+    assert!(!frozen.supports_disabled);
+    assert_eq!(
+        std::fs::read_to_string(&old_path).expect("old unchanged"),
+        old
+    );
+    assert_eq!(
+        std::fs::read_to_string(&new_path).expect("new unchanged"),
+        preferences
+    );
 }

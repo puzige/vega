@@ -1,165 +1,241 @@
-use super::reasoning_profile_patch;
+use super::{read_reasoning_authority, reasoning_profile_patch};
 use vega_conversation::types::{
-    ReasoningChoice, ReasoningDisabledWire, ReasoningProfileProjection, ReasoningProtocol,
-    ReasoningReplaySetting, ReasoningSupport,
+    ReasoningChoice, ReasoningDisabledWire, ReasoningProfileProjection,
 };
+use vega_store::config::ProviderApi;
 use vega_store::reasoning::{
-    ReasoningConfig, ReasoningConfigError, ReasoningFileSnapshot, ReasoningProfile,
-    ReasoningProfilePatch, read_authority_from, read_from, save_if_unchanged, save_profile_patch,
+    ReasoningConfig, ReasoningConfigError, encode, read_authority_from, read_from,
+    read_snapshot_from, save_profile_patch,
 };
 
-fn normalized(preference: ReasoningChoice) -> ReasoningProfileProjection {
-    ReasoningProfileProjection {
-        provider: "proxy".into(),
-        model: "step-5-preview".into(),
-        protocol: ReasoningProtocol::OpenAiChatCompletions,
-        support: ReasoningSupport::Optional,
-        efforts: ["low", "medium", "high"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        supports_disabled: false,
-        disabled_wire: None,
-        replay_profile: ReasoningReplaySetting::StandardChat,
-        preference,
-    }
+fn document(preference: &str) -> String {
+    format!(
+        "version = 1\n[[preferences]]\nprovider = \"proxy\"\nmodel = \"step-5-preview\"\npreference = \"{preference}\"\n"
+    )
 }
 
-fn old_record() -> ReasoningProfile {
-    ReasoningProfile {
-        provider: "proxy".into(),
-        model: "step-5-preview".into(),
-        protocol: "openai_chat_completions".into(),
-        support: "optional".into(),
-        efforts: ["minimal", "low", "medium", "high", "xhigh", "max"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        supports_disabled: true,
-        disabled_wire: Some("reasoning_effort_none".into()),
-        replay_profile: "standard_chat".into(),
-        preference: "high".into(),
-    }
+fn other_record(preference: &str) -> String {
+    format!(
+        "\n[[preferences]]\nprovider = \"other\"\nmodel = \"other-model\"\npreference = \"{preference}\"\n"
+    )
+}
+
+fn resolved_profile(authority: &ReasoningConfig) -> ReasoningProfileProjection {
+    let configured = authority
+        .profile("proxy", "step-5-preview")
+        .map(ReasoningProfileProjection::from_store)
+        .transpose()
+        .expect("preference projection");
+    crate::reasoning_capabilities::resolve_reasoning_profile(
+        "proxy",
+        ProviderApi::ChatCompletions,
+        "https://gateway.example/v1",
+        "step-5-preview",
+        configured,
+    )
+    .expect("internal Step capabilities")
 }
 
 #[test]
-fn existing_preference_save_keeps_imported_capabilities_and_disjoint_external_updates() {
-    let root = tempfile::tempdir().expect("owned settings fixture");
-    let path = root.path().join("reasoning.toml");
-    let original = old_record();
-    let authority = ReasoningConfig {
-        version: 2,
-        profiles: vec![original.clone()],
-    };
-    save_if_unchanged(&path, &ReasoningFileSnapshot::absent(), &authority).expect("seed authority");
-    let (base, snapshot) = read_authority_from(&path).expect("base authority");
-    let base_projection = normalized(ReasoningChoice::Effort("high".into()));
-    let mut candidate = base_projection.clone();
-    candidate.preference = ReasoningChoice::Effort("low".into());
-    let patch =
-        reasoning_profile_patch(&base, &base_projection, &candidate).expect("preference patch");
+fn preference_codec_round_trips_only_exact_identity_and_preference_records() {
+    let root = tempfile::tempdir().expect("owned codec fixture");
+    let path = root.path().join("reasoning-preferences.toml");
+    let source = document("high") + &other_record("provider_default");
+    std::fs::write(&path, &source).expect("new document");
+    let config = read_from(&path).expect("new preference grammar");
     assert_eq!(
-        patch,
-        ReasoningProfilePatch {
-            provider: "proxy".into(),
-            model: "step-5-preview".into(),
-            preference: Some("low".into()),
-            ..Default::default()
-        }
+        serde_json::to_value(&config).expect("stored shape"),
+        serde_json::json!({
+            "version": 1,
+            "preferences": [
+                {"provider":"proxy","model":"step-5-preview","preference":"high"},
+                {"provider":"other","model":"other-model","preference":"provider_default"}
+            ]
+        })
     );
-    let mut external = base.clone();
-    external.profiles[0].efforts = vec!["low".into(), "high".into()];
-    let mut unrelated = original;
-    unrelated.model = "unrelated".into();
-    external.profiles.push(unrelated.clone());
-    save_if_unchanged(&path, &snapshot, &external).expect("external disjoint edit");
-    save_profile_patch(&path, &snapshot, &base, &patch).expect("merge preference");
-    let saved = read_from(&path).expect("saved authority");
-    let expected = ReasoningProfile {
-        preference: "low".into(),
-        ..external.profiles[0].clone()
-    };
-    assert_eq!(saved.profiles, vec![expected, unrelated]);
+    let encoded = encode(&config).expect("preference encoding");
+    let copy = root.path().join("encoded.toml");
+    std::fs::write(&copy, encoded).expect("encoded copy");
+    assert_eq!(read_from(&copy).expect("encoded round trip"), config);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("original document"),
+        source
+    );
 }
 
 #[test]
-fn preference_save_rejects_same_field_conflict_and_capability_mutation() {
-    let root = tempfile::tempdir().expect("owned conflict fixture");
-    let path = root.path().join("reasoning.toml");
-    let authority = ReasoningConfig {
-        version: 2,
-        profiles: vec![old_record()],
-    };
-    let snapshot =
-        save_if_unchanged(&path, &ReasoningFileSnapshot::absent(), &authority).expect("seed");
-    let base_projection = normalized(ReasoningChoice::Effort("high".into()));
-    let mut candidate = base_projection.clone();
-    candidate.preference = ReasoningChoice::Effort("low".into());
-    let patch = reasoning_profile_patch(&authority, &base_projection, &candidate).expect("patch");
-    let mut external = authority.clone();
-    external.profiles[0].preference = "medium".into();
-    save_if_unchanged(&path, &snapshot, &external).expect("concurrent preference");
-    assert!(matches!(
-        save_profile_patch(&path, &snapshot, &authority, &patch),
-        Err(ReasoningConfigError::ConcurrentModification)
-    ));
-    assert_eq!(read_from(&path).expect("preserved external"), external);
-    let mut altered = base_projection.clone();
-    altered.preference = ReasoningChoice::Effort("low".into());
-    altered.supports_disabled = true;
-    altered.disabled_wire = Some(ReasoningDisabledWire::ReasoningEffortNone);
-    assert!(reasoning_profile_patch(&authority, &base_projection, &altered).is_err());
+fn new_preference_grammar_rejects_legacy_fields_duplicates_and_invalid_versions() {
+    let root = tempfile::tempdir().expect("owned rejected grammar");
+    let path = root.path().join("reasoning-preferences.toml");
+    let mut rejected = vec![
+        document("high").replacen("version = 1", "version = 2", 1),
+        document("high").replacen("version = 1", "version = 0", 1),
+        document("high") + "\n[[preferences]]\nprovider = \"proxy\"\nmodel = \"step-5-preview\"\npreference = \"low\"\n",
+        "version = 1\n[[profiles]]\nprovider = \"proxy\"\nmodel = \"step-5-preview\"\npreference = \"provider_default\"\n".into(),
+        document("high").replace("preference = \"high\"", "preference = [\"high\"]"),
+    ];
+    for field in [
+        "protocol = \"openai_chat_completions\"",
+        "support = \"optional\"",
+        "efforts = [\"high\"]",
+        "supports_disabled = true",
+        "disabled_wire = \"reasoning_effort_none\"",
+        "replay_profile = \"standard_chat\"",
+        "preserve_reasoning_content = true",
+    ] {
+        rejected.push(format!("{}{field}\n", document("high")));
+    }
+    for source in rejected {
+        std::fs::write(&path, &source).expect("invalid input");
+        assert!(
+            read_from(&path).is_err(),
+            "accepted unsupported preference document: {source}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("rejected bytes preserved"),
+            source
+        );
+    }
 }
 
 #[test]
-fn first_preference_save_materializes_known_facts_without_rewriting_on_load() {
+fn loading_missing_preferences_is_read_only_and_first_save_writes_no_capabilities() {
     let root = tempfile::tempdir().expect("owned first-save fixture");
-    let path = root.path().join("reasoning.toml");
-    let (authority, snapshot) = read_authority_from(&path).expect("absent authority");
-    assert!(!path.exists());
-    let base = normalized(ReasoningChoice::ProviderDefault);
+    let old_path = root.path().join("reasoning.toml");
+    let new_path = root.path().join("reasoning-preferences.toml");
+    let old = "old configuration remains untouched";
+    std::fs::write(&old_path, old).expect("old file");
+    let (authority, snapshot) = read_reasoning_authority(&new_path).expect("absent authority");
+    let base = resolved_profile(&authority);
+    assert_eq!(base.preference, ReasoningChoice::ProviderDefault);
+    assert_eq!(base.efforts, ["low", "medium", "high"]);
+    assert!(!new_path.exists());
+    assert_eq!(
+        std::fs::read_dir(root.path()).expect("before save").count(),
+        1
+    );
+    let mut candidate = base.clone();
+    candidate.preference = ReasoningChoice::Effort("medium".into());
+    let patch = reasoning_profile_patch(&authority, &base, &candidate).expect("preference patch");
+    save_profile_patch(&new_path, &snapshot, &authority, &patch).expect("explicit first save");
+    let saved = read_from(&new_path).expect("new authority");
+    assert_eq!(
+        serde_json::to_value(saved).expect("saved shape"),
+        serde_json::json!({
+            "version":1,
+            "preferences":[{"provider":"proxy","model":"step-5-preview","preference":"medium"}]
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(&old_path).expect("old unchanged"),
+        old
+    );
+}
+
+#[test]
+fn preference_patch_preserves_external_updates_to_another_model() {
+    let root = tempfile::tempdir().expect("owned disjoint edit fixture");
+    let path = root.path().join("reasoning-preferences.toml");
+    std::fs::write(&path, document("high") + &other_record("provider_default")).expect("base file");
+    let (authority, snapshot) = read_authority_from(&path).expect("base authority");
+    let base = resolved_profile(&authority);
     let mut candidate = base.clone();
     candidate.preference = ReasoningChoice::Effort("medium".into());
     let patch =
-        reasoning_profile_patch(&authority, &base, &candidate).expect("new preference patch");
-    save_profile_patch(&path, &snapshot, &authority, &patch).expect("first preference save");
-    let profile = read_from(&path).expect("new authority").profiles.remove(0);
-    assert_eq!(profile.efforts, ["low", "medium", "high"]);
-    assert_eq!(profile.preference, "medium");
-    assert!(!profile.supports_disabled);
-    assert_eq!(profile.disabled_wire, None);
-    let before = std::fs::read(&path).expect("saved bytes");
-    read_authority_from(&path).expect("read after save");
-    assert_eq!(std::fs::read(&path).expect("read-only bytes"), before);
+        reasoning_profile_patch(&authority, &base, &candidate).expect("owned preference patch");
+    std::fs::write(&path, document("high") + &other_record("low"))
+        .expect("external other model edit");
+    save_profile_patch(&path, &snapshot, &authority, &patch).expect("disjoint merge");
+    let saved = read_from(&path).expect("merged authority");
+    assert_eq!(
+        serde_json::to_value(saved).expect("merged shape"),
+        serde_json::json!({
+            "version":1,
+            "preferences":[
+                {"provider":"proxy","model":"step-5-preview","preference":"medium"},
+                {"provider":"other","model":"other-model","preference":"low"}
+            ]
+        })
+    );
 }
 
 #[test]
-fn legacy_v1_preference_can_be_repaired_without_replacing_imported_capabilities() {
-    let root = tempfile::tempdir().expect("owned v1 fixture");
-    let path = root.path().join("reasoning.toml");
-    let source = "version = 1\n[[profiles]]\nprovider = \"proxy\"\nmodel = \"step-5-preview\"\nprotocol = \"openai_chat_completions\"\nsupport = \"optional\"\nefforts = [\"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\"]\nsupports_disabled = true\ndisabled_wire = \"reasoning_effort_none\"\npreserve_reasoning_content = true\npreference = \"disabled\"\n";
-    std::fs::write(&path, source).expect("v1 authority");
-    let (authority, snapshot) = read_authority_from(&path).expect("v1 codec");
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("unmodified v1"),
-        source
-    );
-    let base = normalized(ReasoningChoice::Disabled);
-    let mut candidate = base.clone();
-    candidate.preference = ReasoningChoice::ProviderDefault;
-    let patch = reasoning_profile_patch(&authority, &base, &candidate).expect("v1 repair patch");
-    assert_eq!(
-        patch,
-        ReasoningProfilePatch {
-            provider: "proxy".into(),
-            model: "step-5-preview".into(),
-            preference: Some("provider_default".into()),
-            ..Default::default()
+fn stale_preference_patch_cannot_overwrite_a_conflict_or_resurrect_external_deletion() {
+    for external_change in ["preference", "record deletion", "file deletion"] {
+        let root = tempfile::tempdir().expect("owned CAS fixture");
+        let path = root.path().join("reasoning-preferences.toml");
+        std::fs::write(&path, document("high")).expect("base file");
+        let (authority, snapshot) = read_authority_from(&path).expect("base authority");
+        let base = resolved_profile(&authority);
+        let mut candidate = base.clone();
+        candidate.preference = ReasoningChoice::Effort("medium".into());
+        let patch = reasoning_profile_patch(&authority, &base, &candidate).expect("pending patch");
+        match external_change {
+            "preference" => std::fs::write(&path, document("low")).expect("external preference"),
+            "record deletion" => std::fs::write(&path, "version = 1\npreferences = []\n")
+                .expect("external record deletion"),
+            _ => std::fs::remove_file(&path).expect("external file deletion"),
         }
-    );
-    save_profile_patch(&path, &snapshot, &authority, &patch).expect("repair v1");
-    let saved = read_from(&path).expect("repaired v1");
-    let mut expected = authority.profiles[0].clone();
-    expected.preference = "provider_default".into();
-    assert_eq!(saved.profiles, [expected]);
+        let external_snapshot = read_snapshot_from(&path).expect("external snapshot");
+        assert!(matches!(
+            save_profile_patch(&path, &snapshot, &authority, &patch),
+            Err(ReasoningConfigError::ConcurrentModification)
+        ));
+        assert_eq!(
+            read_snapshot_from(&path).expect("external preserved"),
+            external_snapshot
+        );
+    }
+}
+
+#[test]
+fn unsupported_new_preference_stays_repairable_and_only_a_legal_selection_is_saved() {
+    for (invalid, repaired) in [
+        ("max", ReasoningChoice::Effort("medium".into())),
+        ("disabled", ReasoningChoice::ProviderDefault),
+    ] {
+        let root = tempfile::tempdir().expect("owned repair fixture");
+        let path = root.path().join("reasoning-preferences.toml");
+        let source = document(invalid);
+        std::fs::write(&path, &source).expect("syntactically valid preference");
+        let (authority, snapshot) = read_reasoning_authority(&path).expect("repairable authority");
+        let base = resolved_profile(&authority);
+        let expected_choice = if invalid == "disabled" {
+            ReasoningChoice::Disabled
+        } else {
+            ReasoningChoice::Effort(invalid.into())
+        };
+        assert_eq!(base.preference, expected_choice);
+        assert_eq!(base.efforts, ["low", "medium", "high"]);
+        assert!(base.freeze().is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("no silent default"),
+            source
+        );
+        let mut candidate = base.clone();
+        candidate.preference = repaired.clone();
+        let patch =
+            reasoning_profile_patch(&authority, &base, &candidate).expect("legal repair patch");
+        save_profile_patch(&path, &snapshot, &authority, &patch).expect("explicit repair");
+        let frozen = crate::app_agent::reasoning_for_provider_model(
+            "proxy",
+            ProviderApi::ChatCompletions,
+            "https://gateway.example/v1",
+            "step-5-preview",
+            Some(&path),
+        )
+        .expect("repaired runtime preference");
+        assert_eq!(frozen.choice, repaired);
+        assert_eq!(frozen.declared_efforts, ["low", "medium", "high"]);
+    }
+}
+
+#[test]
+fn preference_controller_rejects_attempts_to_edit_capabilities() {
+    let authority = ReasoningConfig::default();
+    let base = resolved_profile(&authority);
+    let mut candidate = base.clone();
+    candidate.supports_disabled = true;
+    candidate.disabled_wire = Some(ReasoningDisabledWire::ReasoningEffortNone);
+    assert!(reasoning_profile_patch(&authority, &base, &candidate).is_err());
 }
