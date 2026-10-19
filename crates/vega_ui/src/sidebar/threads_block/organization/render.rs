@@ -388,11 +388,13 @@ impl ThreadsBlock {
         Some(
             div()
                 .id("organization-pinned")
+                .debug_selector(|| "organization-pinned".into())
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
                 .child(
                     div()
+                        .debug_selector(|| "organization-pinned-label".into())
                         .h(px(28.))
                         .flex()
                         .items_center()
@@ -403,6 +405,7 @@ impl ThreadsBlock {
                 .child(
                     div()
                         .id("organization-pinned-scroll")
+                        .debug_selector(|| "organization-pinned-scroll".into())
                         // Include the row surface outset inside the scroll clip.
                         .ml(px(-8.0))
                         .pl_2()
@@ -518,6 +521,7 @@ impl ThreadsBlock {
         });
         div()
             .id("organization-recents")
+            .debug_selector(|| "organization-recents".into())
             .flex()
             .flex_col()
             .flex_shrink_0()
@@ -596,6 +600,7 @@ impl ThreadsBlock {
         );
         div()
             .id("organization-projects")
+            .debug_selector(|| "organization-projects".into())
             .flex()
             .flex_col()
             .child(header)
