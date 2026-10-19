@@ -318,7 +318,7 @@ impl RunFailureKind {
                 "The run exceeded the local reasoning limit. Send your message again to continue.".into()
             }
             Self::ReasoningReplay => {
-                "The model returned reasoning state that cannot be continued. Choose a matching advanced protocol template, then retry.".into()
+                "The model returned reasoning state that cannot be continued. Retry, or start a new conversation if this persists.".into()
             }
             Self::Runtime => "The run failed. Check the runtime environment, then retry.".into(),
             Self::RuntimeStorage => "The conversation could not be saved. Reopen it, then retry.".into(),

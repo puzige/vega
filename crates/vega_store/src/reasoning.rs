@@ -1,11 +1,3 @@
-//! Versioned application-level thinking capability and preference storage.
-//!
-//! The file is deliberately independent from `config.toml`: a reasoning
-//! worker never rewrites provider/default/permission settings from a stale
-//! `AppConfig` snapshot. The store crate owns only the persistence-shaped
-//! strings; conversion to runtime enums happens across the existing
-//! crate boundary.
-
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -16,9 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// Current on-disk format version.
-pub const REASONING_CONFIG_VERSION: u32 = 2;
+pub const REASONING_CONFIG_VERSION: u32 = 1;
 /// File name under [`crate::paths::config_dir`].
-pub const REASONING_FILE_NAME: &str = "reasoning.toml";
+pub const REASONING_FILE_NAME: &str = "reasoning-preferences.toml";
 
 /// Error returned by the reasoning config codec and persistence boundary.
 #[derive(Debug, thiserror::Error)]
@@ -38,7 +30,6 @@ pub enum ReasoningConfigError {
     /// A supported version was not available.
     #[error("unsupported reasoning config version: {0}")]
     UnsupportedVersion(u32),
-    /// A profile violates the explicit capability grammar.
     #[error("invalid reasoning profile: {0}")]
     InvalidProfile(String),
     /// The target changed after the worker read its expected snapshot.
@@ -51,10 +42,8 @@ pub enum ReasoningConfigError {
 #[serde(deny_unknown_fields)]
 pub struct ReasoningConfig {
     /// On-disk schema version.
-    #[serde(default = "default_version")]
     pub version: u32,
-    /// Explicit provider/model capability records and preferences.
-    #[serde(default)]
+    #[serde(default, rename = "preferences")]
     pub profiles: Vec<ReasoningProfile>,
 }
 
@@ -109,38 +98,16 @@ impl ReasoningConfig {
     }
 }
 
-/// Exact field patch for one provider/model profile.
-///
-/// `None` means the field is untouched. `disabled_wire` is therefore an
-/// `Option<Option<String>>`: `None` leaves it alone while `Some(None)` clears
-/// an existing declaration. Provider and model identify the target and are
-/// never changed by a patch.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReasoningProfilePatch {
     /// Exact profile provider key.
     pub provider: String,
     /// Exact profile model key.
     pub model: String,
-    /// New protocol, if edited.
-    pub protocol: Option<String>,
-    /// New support state, if edited.
-    pub support: Option<String>,
-    /// New effort list, if edited.
-    pub efforts: Option<Vec<String>>,
-    /// New disabled capability flag, if edited.
-    pub supports_disabled: Option<bool>,
-    /// New explicit disabled operation, if edited.
-    pub disabled_wire: Option<Option<String>>,
-    pub replay_profile: Option<String>,
     /// New user preference, if edited.
     pub preference: Option<String>,
 }
 
-fn default_version() -> u32 {
-    REASONING_CONFIG_VERSION
-}
-
-/// One explicit capability and preference for one exact provider/model pair.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReasoningProfile {
@@ -148,29 +115,10 @@ pub struct ReasoningProfile {
     pub provider: String,
     /// Exact model identifier.
     pub model: String,
-    #[serde(default = "default_protocol")]
-    pub protocol: String,
-    /// `required`, `optional`, `unsupported`, or `unknown`.
-    #[serde(default = "default_support")]
-    pub support: String,
-    /// Explicit legal effort values for this pair.
-    #[serde(default)]
-    pub efforts: Vec<String>,
-    /// Whether a real disabled wire operation is declared.
-    #[serde(default)]
-    pub supports_disabled: bool,
-    /// `thinking_type_disabled` or `reasoning_effort_none` when enabled.
-    #[serde(default)]
-    pub disabled_wire: Option<String>,
-    #[serde(default = "default_replay_profile")]
-    pub replay_profile: String,
-    /// `provider_default`, `disabled`, or one of `efforts`.
-    #[serde(default = "default_preference")]
     pub preference: String,
 }
 
 impl ReasoningProfile {
-    /// Validates explicit capability data before it can become runtime state.
     pub fn validate(&self) -> Result<(), String> {
         if self.provider.trim().is_empty() {
             return Err("provider is empty".to_string());
@@ -179,185 +127,20 @@ impl ReasoningProfile {
             return Err("model is empty".to_string());
         }
         if !matches!(
-            self.protocol.as_str(),
-            "openai_chat_completions"
-                | "zhipu_chat_completions"
-                | "deepseek_chat_completions"
-                | "responses_api"
-                | "unknown"
+            self.preference.as_str(),
+            "provider_default"
+                | "disabled"
+                | "minimal"
+                | "low"
+                | "medium"
+                | "high"
+                | "xhigh"
+                | "max"
         ) {
-            return Err("protocol is not declared".to_string());
-        }
-        if !matches!(
-            self.support.as_str(),
-            "required" | "optional" | "unsupported" | "unknown"
-        ) {
-            return Err("support is not declared".to_string());
-        }
-        for effort in &self.efforts {
-            if effort.trim().is_empty() {
-                return Err("effort is empty".to_string());
-            }
-            if !matches!(
-                effort.as_str(),
-                "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-            ) {
-                return Err(format!("effort {effort} is not supported"));
-            }
-        }
-        if self
-            .efforts
-            .iter()
-            .enumerate()
-            .any(|(index, effort)| self.efforts[..index].iter().any(|prior| prior == effort))
-        {
-            return Err("efforts contain duplicates".to_string());
-        }
-        if self.supports_disabled
-            && !matches!(
-                (self.protocol.as_str(), self.disabled_wire.as_deref()),
-                ("openai_chat_completions", Some("reasoning_effort_none"))
-                    | ("responses_api", Some("reasoning_effort_none"))
-                    | (
-                        "zhipu_chat_completions" | "deepseek_chat_completions",
-                        Some("thinking_type_disabled")
-                    )
-            )
-        {
-            return Err(
-                "supports_disabled requires a disabled_wire matching the declared protocol"
-                    .to_string(),
-            );
-        }
-        if !self.supports_disabled && self.disabled_wire.is_some() {
-            return Err("disabled_wire requires supports_disabled".to_string());
-        }
-        if self.preference != "provider_default"
-            && self.preference != "disabled"
-            && !self.efforts.iter().any(|effort| effort == &self.preference)
-        {
-            return Err("preference is not declared by efforts".to_string());
-        }
-        if self.preference == "disabled" && !self.supports_disabled {
-            return Err("disabled preference requires supports_disabled".to_string());
-        }
-        if matches!(self.support.as_str(), "unsupported" | "unknown")
-            && self.preference != "provider_default"
-        {
-            return Err("unsupported/unknown profile must use provider_default".to_string());
-        }
-        if !matches!(
-            self.replay_profile.as_str(),
-            "auto"
-                | "standard_chat"
-                | "deepseek_tools"
-                | "glm_preserved"
-                | "glm_interleaved"
-                | "responses_items"
-                | "legacy_text_tools"
-        ) {
-            return Err("replay profile is not declared".to_string());
-        }
-        if self.protocol == "unknown" && (self.supports_disabled || !self.efforts.is_empty()) {
-            return Err("unknown protocol cannot declare wire controls".to_string());
-        }
-        if self.protocol == "zhipu_chat_completions"
-            && matches!(self.model.as_str(), "glm-5.3" | "glm-5.3-flash")
-            && (self
-                .efforts
-                .iter()
-                .any(|effort| !matches!(effort.as_str(), "low" | "high" | "max"))
-                || self.supports_disabled
-                || self.disabled_wire.is_some()
-                || self.preference == "disabled")
-        {
-            return Err(
-                "standard GLM 5.3 profiles support only low/high/max and cannot be disabled"
-                    .to_string(),
-            );
-        }
-        if self.protocol == "deepseek_chat_completions"
-            && self
-                .disabled_wire
-                .as_deref()
-                .is_some_and(|wire| wire != "thinking_type_disabled")
-        {
-            return Err("DeepSeek profiles support only thinking_type_disabled".to_string());
+            return Err("preference is not supported".to_string());
         }
         Ok(())
     }
-}
-
-fn default_protocol() -> String {
-    "unknown".to_string()
-}
-
-fn default_support() -> String {
-    "unknown".to_string()
-}
-
-fn default_preference() -> String {
-    "provider_default".to_string()
-}
-
-fn default_replay_profile() -> String {
-    "auto".to_string()
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReasoningConfigV1 {
-    #[serde(default = "default_legacy_version")]
-    version: u32,
-    #[serde(default)]
-    profiles: Vec<ReasoningProfileV1>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReasoningProfileV1 {
-    provider: String,
-    model: String,
-    #[serde(default = "default_protocol")]
-    protocol: String,
-    #[serde(default = "default_support")]
-    support: String,
-    #[serde(default)]
-    efforts: Vec<String>,
-    #[serde(default)]
-    supports_disabled: bool,
-    #[serde(default)]
-    disabled_wire: Option<String>,
-    #[serde(default)]
-    preserve_reasoning_content: bool,
-    #[serde(default = "default_preference")]
-    preference: String,
-}
-
-impl From<ReasoningProfileV1> for ReasoningProfile {
-    fn from(profile: ReasoningProfileV1) -> Self {
-        let replay_profile =
-            if profile.protocol == "zhipu_chat_completions" || profile.preserve_reasoning_content {
-                "legacy_text_tools"
-            } else {
-                "auto"
-            };
-        Self {
-            provider: profile.provider,
-            model: profile.model,
-            protocol: profile.protocol,
-            support: profile.support,
-            efforts: profile.efforts,
-            supports_disabled: profile.supports_disabled,
-            disabled_wire: profile.disabled_wire,
-            replay_profile: replay_profile.to_string(),
-            preference: profile.preference,
-        }
-    }
-}
-
-fn default_legacy_version() -> u32 {
-    1
 }
 
 /// Snapshot used for a worker-side compare-before-rename.
@@ -481,6 +264,9 @@ pub fn save_profile_patch(
         .lock()
         .map_err(|_| coordinator_poisoned())?;
     let current_snapshot = read_snapshot_from(path)?;
+    if expected.exists && !current_snapshot.exists {
+        return Err(ReasoningConfigError::ConcurrentModification);
+    }
     let current = if current_snapshot.exists {
         decode(&current_snapshot.bytes)?
     } else {
@@ -519,35 +305,7 @@ fn coordinator_poisoned() -> ReasoningConfigError {
 
 fn decode(bytes: &[u8]) -> Result<ReasoningConfig, ReasoningConfigError> {
     let text = String::from_utf8(bytes.to_vec())?;
-    let value: toml::Value = toml::from_str(&text)?;
-    let version = match value.get("version") {
-        Some(version) => version.as_integer().ok_or_else(|| {
-            ReasoningConfigError::InvalidProfile("version is not an integer".to_string())
-        })?,
-        None => 1,
-    };
-    let config = match version {
-        1 => {
-            let legacy: ReasoningConfigV1 = toml::from_str(&text)?;
-            if legacy.version != 1 {
-                return Err(ReasoningConfigError::UnsupportedVersion(legacy.version));
-            }
-            ReasoningConfig {
-                version: REASONING_CONFIG_VERSION,
-                profiles: legacy
-                    .profiles
-                    .into_iter()
-                    .map(ReasoningProfile::from)
-                    .collect(),
-            }
-        }
-        2 => toml::from_str::<ReasoningConfig>(&text)?,
-        other => {
-            return Err(ReasoningConfigError::UnsupportedVersion(
-                u32::try_from(other).unwrap_or(u32::MAX),
-            ));
-        }
-    };
+    let config: ReasoningConfig = toml::from_str(&text)?;
     config.validate()?;
     Ok(config)
 }
@@ -559,114 +317,37 @@ fn merge_profile_patch(
 ) -> Result<ReasoningConfig, ReasoningConfigError> {
     let base_profile = base.profile(&patch.provider, &patch.model);
     let current_profile = current.profile(&patch.provider, &patch.model);
-    let mut candidate = current.clone();
-    let mut profile = current_profile.cloned().or_else(|| {
-        base_profile.cloned().or_else(|| {
-            Some(ReasoningProfile {
-                provider: patch.provider.clone(),
-                model: patch.model.clone(),
-                protocol: default_protocol(),
-                support: default_support(),
-                efforts: Vec::new(),
-                supports_disabled: false,
-                disabled_wire: None,
-                replay_profile: default_replay_profile(),
-                preference: default_preference(),
-            })
-        })
-    });
-    let Some(ref mut profile) = profile else {
-        return Err(ReasoningConfigError::InvalidProfile(
-            "profile patch target is unavailable".to_string(),
-        ));
-    };
-
-    merge_field(
-        "protocol",
-        base_profile.map(|profile| &profile.protocol),
-        current_profile.map(|profile| &profile.protocol),
-        patch.protocol.as_ref(),
-        &mut profile.protocol,
-    )?;
-    merge_field(
-        "support",
-        base_profile.map(|profile| &profile.support),
-        current_profile.map(|profile| &profile.support),
-        patch.support.as_ref(),
-        &mut profile.support,
-    )?;
-    merge_field(
-        "efforts",
-        base_profile.map(|profile| &profile.efforts),
-        current_profile.map(|profile| &profile.efforts),
-        patch.efforts.as_ref(),
-        &mut profile.efforts,
-    )?;
-    merge_field(
-        "supports_disabled",
-        base_profile.map(|profile| &profile.supports_disabled),
-        current_profile.map(|profile| &profile.supports_disabled),
-        patch.supports_disabled.as_ref(),
-        &mut profile.supports_disabled,
-    )?;
-    merge_field(
-        "disabled_wire",
-        base_profile.map(|profile| &profile.disabled_wire),
-        current_profile.map(|profile| &profile.disabled_wire),
-        patch.disabled_wire.as_ref(),
-        &mut profile.disabled_wire,
-    )?;
-    merge_field(
-        "replay_profile",
-        base_profile.map(|profile| &profile.replay_profile),
-        current_profile.map(|profile| &profile.replay_profile),
-        patch.replay_profile.as_ref(),
-        &mut profile.replay_profile,
-    )?;
-    merge_field(
-        "preference",
-        base_profile.map(|profile| &profile.preference),
-        current_profile.map(|profile| &profile.preference),
-        patch.preference.as_ref(),
-        &mut profile.preference,
-    )?;
-
-    // A profile that was removed externally is not recreated from stale
-    // authority. This preserves the external version and makes the conflict
-    // visible to the caller.
     if base_profile.is_some() && current_profile.is_none() {
         return Err(ReasoningConfigError::ConcurrentModification);
+    }
+    let mut profile = current_profile
+        .cloned()
+        .unwrap_or_else(|| ReasoningProfile {
+            provider: patch.provider.clone(),
+            model: patch.model.clone(),
+            preference: "provider_default".to_string(),
+        });
+    if let Some(desired) = &patch.preference {
+        let base_preference = base_profile.map(|profile| &profile.preference);
+        let current_preference = current_profile.map(|profile| &profile.preference);
+        if current_preference != base_preference && current_preference != Some(desired) {
+            return Err(ReasoningConfigError::ConcurrentModification);
+        }
+        profile.preference = desired.clone();
     }
     profile
         .validate()
         .map_err(ReasoningConfigError::InvalidProfile)?;
-    candidate.upsert_profile(profile.clone());
+    let mut candidate = current.clone();
+    candidate.upsert_profile(profile);
     candidate.validate()?;
     Ok(candidate)
 }
 
-fn merge_field<T: Clone + PartialEq>(
-    _name: &str,
-    base: Option<&T>,
-    current: Option<&T>,
-    desired: Option<&T>,
-    destination: &mut T,
-) -> Result<(), ReasoningConfigError> {
-    let Some(desired) = desired else {
-        return Ok(());
-    };
-    if current != base && current != Some(desired) {
-        return Err(ReasoningConfigError::ConcurrentModification);
-    }
-    *destination = desired.clone();
-    Ok(())
-}
-
-/// Encodes a validated config with a stable header.
 pub fn encode(config: &ReasoningConfig) -> Result<Vec<u8>, ReasoningConfigError> {
     config.validate()?;
     let body = toml::to_string_pretty(config)?;
-    Ok(format!("# Vega reasoning capability configuration.\n{body}").into_bytes())
+    Ok(body.into_bytes())
 }
 
 fn write_atomic(
@@ -712,7 +393,7 @@ fn unique_temp_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("reasoning.toml");
+        .unwrap_or(REASONING_FILE_NAME);
     path.with_file_name(format!(
         ".{file_name}.tmp-{}-{sequence}-{nanos}",
         std::process::id()

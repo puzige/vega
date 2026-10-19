@@ -34,28 +34,6 @@ impl CatalogUi {
     }
 }
 
-fn compatible_efforts(model: &CatalogModel) -> Option<Vec<String>> {
-    let [CatalogReasoningOption::Effort(values)] = model.reasoning_options.as_slice() else {
-        return None;
-    };
-    if model.reasoning != Some(true) || values.is_empty() {
-        return None;
-    }
-    let mut efforts = Vec::new();
-    for value in values {
-        let value = value.as_deref()?;
-        if !matches!(
-            value,
-            "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-        ) || efforts.iter().any(|v| v == value)
-        {
-            return None;
-        }
-        efforts.push(value.to_string());
-    }
-    Some(efforts)
-}
-
 fn simple_prices(model: &CatalogModel) -> Option<[String; 4]> {
     if !model.text_pricing {
         return None;
@@ -206,51 +184,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn catalog_apply_efforts(&mut self, cx: &mut Context<Self>) {
-        if self.settings_have_draft(cx) {
-            return;
-        }
-        let Some((provider, model)) = &self.model_settings else {
-            return;
-        };
-        let Some(efforts) = self
-            .catalog
-            .projection
-            .matched_model()
-            .and_then(compatible_efforts)
-        else {
-            return;
-        };
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some((index, mut profile)) = profiles
-            .iter()
-            .enumerate()
-            .find(|(_, p)| p.provider == *provider && p.model == *model)
-            .map(|(i, p)| (i, p.clone()))
-        else {
-            return;
-        };
-        if profile.protocol != ReasoningProtocol::OpenAiChatCompletions
-            || matches!(
-                profile.support,
-                ReasoningSupport::Unknown | ReasoningSupport::Unsupported
-            )
-            || matches!(&profile.preference, ReasoningChoice::Effort(value) if !efforts.contains(value))
-        {
-            return;
-        }
-        if profile.efforts == efforts {
-            return;
-        }
-        profile.efforts = efforts;
-        self.section = 2;
-        self.settings_help_open = None;
-        self.rebuild_reasoning_focuses(cx);
-        self.emit_reasoning_save(index, profile, cx);
-    }
-
     pub(crate) fn render_model_catalog(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         if self.model_settings.is_none() {
@@ -287,7 +220,7 @@ impl SettingsView {
                     "model-catalog-help",
                     "模型资料帮助",
                     format!(
-                        "目录资料仅作为候选值；刷新不会改动手动配置。应用输入、输出或价格后仍需保存，应用思考档位会立即保存。缓存格式 {}；内容摘要 {}。",
+                        "目录资料仅作为候选值；刷新不会改动手动配置。应用输入、输出或价格后仍需保存。缓存格式 {}；内容摘要 {}。",
                         self.catalog.projection.schema_version,
                         self.catalog.projection.digest.as_deref().map(|value| value.chars().take(12).collect::<String>()).unwrap_or_else(|| "未获取".into())
                     ),
@@ -445,17 +378,6 @@ impl SettingsView {
                         .child(format!("思考资料：{text}")),
                 );
             }
-            let can_efforts = compatible_efforts(&model).is_some_and(|efforts| match &self.reasoning {
-                ReasoningSettingsProjection::Ready { profiles, .. } => profiles.iter().any(|profile| self.model_settings.as_ref() == Some(&(profile.provider.clone(), profile.model.clone()))
-                    && profile.protocol == ReasoningProtocol::OpenAiChatCompletions && !matches!(profile.support, ReasoningSupport::Unknown | ReasoningSupport::Unsupported)
-                    && !matches!(&profile.preference, ReasoningChoice::Effort(v) if !efforts.contains(v))), _ => false });
-            section = section.child(self.settings_route_button(
-                "model-catalog-efforts",
-                "应用目录思考档位",
-                can_efforts && !self.settings_have_draft(cx),
-                cx.listener(|this, _, _, cx| this.catalog_apply_efforts(cx)),
-                cx,
-            ));
             if let Some(cost) = &model.cost {
                 section = section
                     .child(div().text_color(colors.text_secondary).child(format!(

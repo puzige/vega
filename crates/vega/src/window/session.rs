@@ -588,7 +588,8 @@ impl VegaWindow {
                         let mut reasoning_profiles = Vec::new();
                         let mut reasoning_error = None;
                         let mut reasoning_authority = None;
-                        let reasoning_path = config_path.with_file_name("reasoning.toml");
+                        let reasoning_path =
+                            config_path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME);
                         let reasoning =
                             match super::reasoning::read_reasoning_authority(&reasoning_path) {
                                 Ok((reasoning, snapshot)) => {

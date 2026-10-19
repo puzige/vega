@@ -54,7 +54,6 @@ pub struct SettingsView {
     /// rebuilt with the projection so Tab/Enter/Space use the same action
     /// route as the existing Settings controls.
     pub(crate) reasoning_focuses: Vec<(ReasoningFocusTarget, FocusHandle)>,
-    pub(crate) reasoning_advanced: bool,
     /// Last failed edit retained for an explicit retry/reload decision.
     pub(crate) reasoning_draft: Option<ReasoningProfileProjection>,
     pub(crate) next_reasoning_operation: u64,
@@ -231,7 +230,6 @@ impl SettingsView {
             pricing_focuses: Vec::new(),
             reasoning: ReasoningSettingsProjection::Loading,
             reasoning_focuses: Vec::new(),
-            reasoning_advanced: false,
             reasoning_draft: None,
             next_reasoning_operation: 0,
         }
@@ -720,7 +718,7 @@ impl SettingsView {
                 .reasoning_focuses
                 .iter()
                 .find(|(_, focus)| focus.is_focused(window))
-                .map(|(target, _)| *target)
+                .map(|(target, _)| target.clone())
         {
             match target {
                 ReasoningFocusTarget::Reload => {
@@ -728,26 +726,8 @@ impl SettingsView {
                         cx.emit(ReasoningReloadRequested);
                     }
                 }
-                ReasoningFocusTarget::Advanced(index) => {
-                    self.toggle_reasoning_advanced(index, cx);
-                }
-                ReasoningFocusTarget::Template { index, template } => {
-                    self.apply_reasoning_template(index, template, cx);
-                }
-                ReasoningFocusTarget::Protocol(index) => {
-                    self.cycle_reasoning_protocol(index, cx);
-                }
-                ReasoningFocusTarget::Support(index) => {
-                    self.cycle_reasoning_support(index, cx);
-                }
-                ReasoningFocusTarget::Effort { index, effort } => {
-                    self.toggle_reasoning_effort(index, effort, cx);
-                }
-                ReasoningFocusTarget::Preference(index) => {
-                    self.cycle_reasoning_preference(index, cx);
-                }
-                ReasoningFocusTarget::Disabled(index) => {
-                    self.toggle_reasoning_disabled(index, cx);
+                ReasoningFocusTarget::Preference { index, choice } => {
+                    self.select_reasoning_preference(index, choice, cx);
                 }
             }
             return;

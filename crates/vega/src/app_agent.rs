@@ -756,10 +756,6 @@ pub(crate) fn preflight_provider(
     Ok(())
 }
 
-/// Resolves one immutable reasoning snapshot for the exact provider/model
-/// pair selected for a run. Missing profiles intentionally become provider
-/// default with no wire controls; malformed declared profiles fail closed so
-/// an invalid Settings edit cannot silently become a different request.
 pub(crate) fn reasoning_for_provider_model(
     provider: &str,
     api: vega_store::config::ProviderApi,
@@ -788,42 +784,9 @@ pub(crate) fn reasoning_for_provider_model(
 fn reasoning_projection_from_frozen(
     frozen: &vega_runtime::FrozenReasoning,
 ) -> ReasoningProfileProjection {
-    use vega_conversation::types::{ReasoningReplaySetting, ReasoningSupport};
-    let replay_profile = match frozen.replay_policy {
-        vega_runtime::ReasoningReplayPolicy::StandardChat => ReasoningReplaySetting::StandardChat,
-        vega_runtime::ReasoningReplayPolicy::DeepSeekTools => ReasoningReplaySetting::DeepSeekTools,
-        vega_runtime::ReasoningReplayPolicy::GlmPreserved => ReasoningReplaySetting::GlmPreserved,
-        vega_runtime::ReasoningReplayPolicy::GlmInterleaved => {
-            ReasoningReplaySetting::GlmInterleaved
-        }
-        vega_runtime::ReasoningReplayPolicy::ResponsesItems => {
-            ReasoningReplaySetting::ResponsesItems
-        }
-        vega_runtime::ReasoningReplayPolicy::LegacyTextTools => {
-            ReasoningReplaySetting::LegacyTextTools
-        }
-        vega_runtime::ReasoningReplayPolicy::Unknown => ReasoningReplaySetting::Auto,
-    };
-    ReasoningProfileProjection {
-        provider: frozen.provider.clone(),
-        model: frozen.model.clone(),
-        protocol: frozen.protocol,
-        support: if frozen.supports_disabled || !frozen.declared_efforts.is_empty() {
-            ReasoningSupport::Optional
-        } else if matches!(
-            frozen.protocol,
-            vega_runtime::ReasoningProtocol::ZhipuChatCompletions
-        ) {
-            ReasoningSupport::Required
-        } else {
-            ReasoningSupport::Unknown
-        },
-        efforts: frozen.declared_efforts.clone(),
-        supports_disabled: frozen.supports_disabled,
-        disabled_wire: frozen.disabled_wire,
-        replay_profile,
-        preference: frozen.choice.clone(),
-    }
+    let mut profile = ReasoningProfileProjection::unknown(&frozen.provider, &frozen.model);
+    profile.preference = frozen.choice.clone();
+    profile
 }
 
 pub(crate) fn commit_provider(
@@ -985,9 +948,6 @@ pub(crate) fn run_agent_worker_with_mcp(
         if config_path.is_some() && configured_provider.is_none() {
             return Err(());
         }
-        let provider_name = configured_provider
-            .as_ref()
-            .map_or("unknown", |provider| provider.name.as_str());
         let reasoning_path = config_path
             .as_deref()
             .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
@@ -1007,13 +967,6 @@ pub(crate) fn run_agent_worker_with_mcp(
                 .map_err(|_| ())?;
                 crate::reasoning_capabilities::freeze_reasoning_profile(resolved).map_err(|_| ())?
             }
-            (Some(reasoning), None) => {
-                reasoning.validate().map_err(|_| ())?;
-                if reasoning.model != thread.model {
-                    return Err(());
-                }
-                reasoning
-            }
             (None, Some(provider)) => reasoning_for_provider_model(
                 &provider.name,
                 provider.api,
@@ -1021,7 +974,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 &thread.model,
                 reasoning_path.as_deref(),
             )?,
-            (None, None) => vega_runtime::FrozenReasoning::unknown(provider_name, &thread.model),
+            (_, None) => return Err(()),
         };
 
         let mut provider_known_credential = None::<String>;
