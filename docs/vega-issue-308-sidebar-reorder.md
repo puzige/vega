@@ -1,5 +1,7 @@
 # #308 — 侧栏项目与会话上下排序
 
+2026-10-19 用户修订：排序契约以 [v2.6：新消息置前与手动拖动统一顺序](vega-issue-308-message-order.md) 为准，当前修复/删测交接见 [v2.7](vega-issue-308-review-repairs.md)。下文保留初次实现契约与历史记录，时间排序条款不再用于本轮执行。
+
 版本：v1.1，2026-10-18。状态：已实现，集成最新基线后待 Actions 重验与用户手测。
 Issue：https://github.com/puzige/vega/issues/308
 原始基线：`75da678a`；当前集成基线：`cf00946e`。分支：`feat/308-sidebar-reorder`。

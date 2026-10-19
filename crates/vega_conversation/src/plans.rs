@@ -52,7 +52,7 @@ pub fn recoverable_approved_instruction(
     store: &Store,
     thread_id: &str,
 ) -> Result<Option<String>, ConversationError> {
-    let thread = crate::threads::open_thread(store, thread_id)?;
+    let thread = crate::threads::get_thread(store, thread_id)?;
     if thread.mode != crate::types::ThreadMode::Execute {
         return Ok(None);
     }

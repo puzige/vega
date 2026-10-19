@@ -15,7 +15,6 @@ pub(super) enum Control {
     NewStandalone,
     NewProjectTask(String),
     ToggleProject(String),
-    ToggleSort,
 }
 impl ThreadsBlock {
     pub(super) fn control_action(
@@ -51,9 +50,34 @@ impl ThreadsBlock {
                 }
             }
             Control::Archive => {
-                if let Some(org) = self.organization.as_mut() {
-                    org.archive = !org.archive;
-                }
+                let show_archived = if let Some(organization) = self.organization.as_mut() {
+                    organization.archive = !organization.archive;
+                    organization.archive
+                } else {
+                    false
+                };
+                let projects: Vec<_> =
+                    self.organization
+                        .as_ref()
+                        .and_then(|organization| organization.snapshot.as_ref())
+                        .map(|snapshot| {
+                            let mut projects: Vec<_> = snapshot
+                                .project_order
+                                .iter()
+                                .filter_map(|id| {
+                                    snapshot.projects.iter().find(|project| &project.id == id)
+                                })
+                                .collect();
+                            projects.extend(
+                                snapshot.projects.iter().filter(|project| {
+                                    !snapshot.project_order.contains(&project.id)
+                                }),
+                            );
+                            projects.into_iter().cloned().collect()
+                        })
+                        .unwrap_or_default();
+                let project_refs: Vec<_> = projects.iter().collect();
+                self.sync_project_task_windows(&project_refs, show_archived);
             }
             Control::NewGroup => self.edit_group(None, window, cx),
             Control::AddProject => {
@@ -86,24 +110,6 @@ impl ThreadsBlock {
                     self.toggle_organization_collapse(SidebarCollapseTarget::Project(id), cx);
                 }
             }
-            Control::ToggleSort => {
-                if let Some(snapshot) = self
-                    .organization
-                    .as_ref()
-                    .and_then(|organization| organization.snapshot.as_ref())
-                {
-                    let mut preferences = snapshot.preferences.clone();
-                    preferences.sort = match preferences.sort {
-                        SidebarTaskSort::Updated => SidebarTaskSort::Created,
-                        SidebarTaskSort::Created => SidebarTaskSort::Manual,
-                        SidebarTaskSort::Manual => SidebarTaskSort::Updated,
-                    };
-                    self.submit_organization(
-                        SidebarOrganizationAction::SetPreferences(preferences),
-                        cx,
-                    );
-                }
-            }
         }
         cx.notify();
     }
@@ -120,7 +126,6 @@ impl ThreadsBlock {
         let label = label.into();
         let aria = match &action {
             Control::CollapseAll => "收起全部".to_string(),
-            Control::Menu(OrganizationMenu::Filter) => "排序与归档".to_string(),
             Control::Menu(_) => "组织操作".to_string(),
             _ => label.clone(),
         };
@@ -192,7 +197,12 @@ impl ThreadsBlock {
         let Some((snapshot, show_archived, menu_open, projects_error)) =
             self.organization.as_ref().map(|org| {
                 (
-                    org.snapshot.clone(),
+                    org.snapshot.clone().map(|mut snapshot| {
+                        if let Some((_, order)) = &org.reorder.pointer_order {
+                            snapshot.preferences.manual_thread_order = order.clone();
+                        }
+                        snapshot
+                    }),
                     org.archive,
                     org.menu.is_some(),
                     org.projects.read(cx).error.clone(),
@@ -222,11 +232,18 @@ impl ThreadsBlock {
             .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
                 this.reset_reorder(window, cx);
             }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered {
+                    this.clear_reorder_projection(cx);
+                }
+            }))
             .capture_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                this.clear_reorder_projection(cx);
                 this.cancel_reorder(window, cx);
             }))
             .capture_key_down(
                 cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    this.clear_reorder_projection(cx);
                     if event.keystroke.key == "escape" {
                         this.cancel_reorder(window, cx);
                     }
@@ -256,49 +273,86 @@ impl ThreadsBlock {
         action: Control,
         hidden_until_hover: bool,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
         let colors = theme(cx).colors;
         let id = id.into();
         let label = label.into();
-        let keyboard_action = action.clone();
-        div()
+        let selected = matches!(action, Control::Archive)
+            && self.organization.as_ref().is_some_and(|org| org.archive);
+        let control = div()
             .id(ElementId::Name(id.clone().into()))
             .aria_label(label.clone())
             .focusable()
             .tab_stop(true)
-            .size(px(24.))
+            .size(px(Layout::SIDEBAR_ACTION_SIZE))
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_center()
             .rounded_md()
             .cursor_pointer()
-            .when(hidden_until_hover, |style| style.opacity(0.))
-            .hover(move |style| style.opacity(1.).bg(colors.bg_hover))
+            .when(selected, |style| style.bg(colors.bg_active))
+            .when(hidden_until_hover && !selected, |style| style.opacity(0.))
+            .hover(move |style| {
+                style.opacity(1.).bg(if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                })
+            })
             .focus_visible(move |style| {
                 style
                     .opacity(1.)
                     .bg(colors.bg_active)
                     .border_1()
                     .border_color(colors.border_subtle)
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
+            });
+        let control = if matches!(action, Control::Archive) {
+            control
+                .role(gpui_kit::Role::Button)
+                .on_click(cx.listener(|this, _, window, cx| {
                     cx.stop_propagation();
-                    this.control_action(action.clone(), window, cx);
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.control_action(Control::Archive, window, cx);
+                }))
+        } else {
+            let keyboard_action = action.clone();
+            control
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.control_action(keyboard_action.clone(), window, cx);
-                    }
-                }),
-            )
-            .child(crate::icons::icon(kind, colors.text_secondary))
-            .into_any_element()
+                        this.control_action(action.clone(), window, cx);
+                    }),
+                )
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            this.control_action(keyboard_action.clone(), window, cx);
+                        }
+                    },
+                ))
+        };
+        control.child(crate::icons::icon(kind, colors.text_secondary))
+    }
+
+    pub(super) fn archive_control(
+        &self,
+        hidden_until_hover: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        self.vector_control(
+            "organization-archive",
+            if self.organization.as_ref().is_some_and(|org| org.archive) {
+                "隐藏已归档"
+            } else {
+                "显示已归档"
+            },
+            crate::icons::Icon::Archive,
+            Control::Archive,
+            hidden_until_hover,
+            cx,
+        )
     }
 
     pub(super) fn eligible_threads(&self, show_archived: bool) -> Vec<Thread> {
@@ -396,10 +450,7 @@ impl ThreadsBlock {
         }
         standalone = super::projections::sorted_threads(&standalone, &snapshot.preferences);
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Recents)
-            || self.focused_section == Some(OrganizationSection::Recents)
-            || self.organization.as_ref().is_some_and(|organization| {
-                matches!(organization.menu, Some(OrganizationMenu::Filter))
-            });
+            || self.focused_section == Some(OrganizationSection::Recents);
         let header = div()
             .id("organization-recents-header")
             .track_focus(&self.recents_header_focus)
@@ -419,14 +470,7 @@ impl ThreadsBlock {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(self.vector_control(
-                        "organization-session-sort",
-                        "任务排序与归档",
-                        crate::icons::Icon::ArrowUpDown,
-                        Control::Menu(OrganizationMenu::Filter),
-                        !header_actions_visible,
-                        cx,
-                    ))
+                    .child(self.archive_control(!header_actions_visible, cx))
                     .child(self.vector_control(
                         "organization-new-session",
                         "新建独立任务",
