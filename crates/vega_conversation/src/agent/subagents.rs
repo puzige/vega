@@ -5,9 +5,6 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
 use tokio::sync::Notify;
 
-#[cfg(test)]
-mod tests;
-
 fn failure(message: &str) -> VegaError {
     VegaError::Tool {
         tool: "subagent".into(),

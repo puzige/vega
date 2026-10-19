@@ -6,10 +6,12 @@ Production baseline: `ae35310fe7e1ddac2b79d7ec7bc55bcca2d6af2a`.
 
 ## Test-first phase
 
-Status: effective RED reviewed by Codex, followed by production implementation.
-The same frozen six tests await Actions GREEN. The first Actions run stopped
-at test compilation wiring, before discovery or execution; its correction is
-recorded separately below. No historical test suite or dependency was restored.
+Status: Codex verified the same frozen six tests GREEN, retained their permanent
+source and cloud evidence in [PR #488](https://github.com/puzige/vega/pull/488),
+and authorized the independent test cleanup. Final delivery is gated by the
+latest head's complete empty Rust check, tracked in that PR. The first Actions run stopped at test compilation wiring;
+its correction is recorded separately below. No historical test suite or
+dependency was restored.
 
 | Acceptance | Development test | Expected observation |
 | --- | --- | --- |
@@ -39,7 +41,7 @@ produce behavioral failures without requiring a new production interface.
 - Local build, Vega execution, Clippy and tests: not run, per repository rules.
 - `rustfmt --edition 2024` on both new Rust files: exit 0.
 - `cargo fmt --all -- --check`: exit 0.
-- `git diff --check`: exit 0. Static inventory contains six test definitions;
+- `git diff --check`: exit 0. The development inventory contained six test definitions;
   no new dependencies, test scheduling seams, source-string assertions,
   sleeps, ignored tests or Rust comments were added.
 - Initial test-first commit:
@@ -82,10 +84,20 @@ produce behavioral failures without requiring a new production interface.
   all-target Clippy succeeded; Python checks passed 5 + 15 + 14 = 34 cases.
 - Production implementation began only after Codex reviewed those results and
   explicitly authorized phase 3. No test expectation or test source changed.
-- Same-test GREEN, independent test cleanup and the final empty Rust gate:
-  pending Actions and subsequent reviewed delivery phases.
+- Same-test GREEN:
+  [`288806315816ab3ca9c77f5c5f425d827c7665c4`](https://github.com/puzige/vega/commit/288806315816ab3ca9c77f5c5f425d827c7665c4),
+  [run 39197526185](https://github.com/puzige/vega/actions/runs/39197526185),
+  [Nextest job](https://github.com/puzige/vega/actions/runs/39197526185/job/117883401816),
+  [format/all-target Clippy job](https://github.com/puzige/vega/actions/runs/39197526185/job/117883401512),
+  [required check](https://github.com/puzige/vega/actions/runs/39197526185/job/117884146966).
+  Six discovered/executed, six passed, zero failed/skipped, 14 binaries,
+  0.291 seconds. Format, all-target Clippy and required check succeeded;
+  Python checks passed 5 + 15 + 14 = 34 cases. Codex reviewed these results
+  before authorizing removal, and read back the preserved PR evidence.
+- The independent cleanup and final empty Rust gate are tracked below; no
+  final cleanup SHA or final-head Actions result is claimed before it exists.
 
-## Production implementation awaiting GREEN
+## Production implementation verified with the frozen tests
 
 - Child startup waits on a conversation-private receipt signal. The event
   processor releases the matching, non-reused successful call only after
@@ -123,5 +135,39 @@ the next schema version before integration.
 
 Historical incident classification remains unknown. The causal RED established
 the code-level contention and launch-order defects; it cannot recover the old
-run's unrecorded original SQLite subtype. The implementation remains unverified
-until the same frozen tests execute successfully in Actions.
+run's unrecorded original SQLite subtype. Automated GREEN does not replace the
+user's manual integration acceptance.
+
+## Independent test cleanup and recoverable source
+
+The cleanup removes only these two development test files and their two
+`#[cfg(test)] mod tests` declarations in `agent/subagents.rs` and
+`run_diagnostics.rs`. No dependencies, features, fixtures or helper modules exist
+outside those files for this test set. Production behavior, migration, runtime
+guards, Python checks, Cargo/Nextest configuration and CI remain unchanged.
+
+| Recoverable source at the verified GREEN commit | Tests | SHA-256 |
+| --- | ---: | --- |
+| [Conversation startup regressions](https://github.com/puzige/vega/blob/288806315816ab3ca9c77f5c5f425d827c7665c4/crates/vega_conversation/src/agent/subagents/tests.rs) | 5 | `8d8939f42e8ff5bc977493711f9a6ff9ab2b0c72f4a5dc49b530c9502c9a71a0` |
+| [Diagnostic schema/legacy regression](https://github.com/puzige/vega/blob/288806315816ab3ca9c77f5c5f425d827c7665c4/crates/vega_store/src/run_diagnostics/tests.rs) | 1 | `ca158e55e2c9babecd1454d982b135f573864a96a326d1fc90105295ccc70669` |
+
+Restore only those sources and their two conditional module declarations when
+recovering this regression set. The permanent commit links and PR evidence do
+not depend on a local temporary file, deleted branch or expiring artifact.
+
+The local pre/post cleanup comparison hashed 376 protected Rust, Cargo and
+workflow paths, stripping only the two approved conditional declarations from
+the pre-cleanup projection. All 376 projected files remain byte-identical.
+The two deleted files contained all six tests and their exclusive support.
+Final-tree static inventory inspected 371 Rust files: zero test attributes,
+test cfg attributes, test macros, executable doctest fences or doc attributes.
+`cargo fmt --all -- --check` and `git diff --check` each exited 0. The cleanup
+diff contains only the two file deletions, two conditional declarations and this
+delivery record; the specification status is maintained separately by Codex.
+No local code, build, Clippy or tests ran during cleanup.
+
+For the exact cleanup commit, final head and complete required-check run, use
+the final delivery evidence in [PR #488](https://github.com/puzige/vega/pull/488). The local static
+zero-test inventory is not an Actions discovery/execution result. Only the
+final-head CI can establish `0 discovered / 0 executed`, `no Rust tests`, with
+format, all-target Clippy and the preserved Python checks successful.

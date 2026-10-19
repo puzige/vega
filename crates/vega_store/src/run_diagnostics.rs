@@ -2,8 +2,6 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 
 mod failure_ownership;
-#[cfg(test)]
-mod tests;
 pub use failure_ownership::{
     budget_failure_message_ids, classified_failure_message_ids, compaction_failure_message_ids,
     projection_reasoning_failure,

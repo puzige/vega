@@ -3,8 +3,11 @@
 Issue: [#487](https://github.com/puzige/vega/issues/487). Baseline:
 `ae35310fe7e1ddac2b79d7ec7bc55bcca2d6af2a` (v0.1.170).
 Status: acceptance frozen v1.1, 2026-10-19 (Asia/Shanghai). Codex reviewed
-effective Actions RED on `eaf77b4b359dacea8b2a1753a4674110a60a9d08` and authorized
-the dedicated executor's production implementation after that review.
+effective RED before authorizing the dedicated implementation. The same six
+frozen tests passed Actions GREEN on
+`288806315816ab3ca9c77f5c5f425d827c7665c4`. Final test cleanup, latest-head gate
+and merge evidence are maintained in [PR #488](https://github.com/puzige/vega/pull/488);
+native user acceptance remains pending.
 
 ## User request and evidence
 
@@ -181,3 +184,14 @@ test sources and RED/GREEN links in the PR after squash.
 Only the verified final head can become a regular PR and merge. Keep the issue
 open and branch/worktree retained at In review until user manual acceptance.
 Rollback is a reviewed revert PR; additive nullable diagnostic columns may remain.
+
+### Same-test development verification
+
+[Actions 39197526185](https://github.com/puzige/vega/actions/runs/39197526185),
+[Nextest job 117883401816](https://github.com/puzige/vega/actions/runs/39197526185/job/117883401816),
+verified `288806315816ab3ca9c77f5c5f425d827c7665c4`: six discovered, six executed,
+six passed, zero failed/skipped, across 14 binaries. Both frozen source hashes
+are unchanged from the effective RED. Format, all-target Clippy, 34 Python tests
+and the required check passed. These are isolated in-process behavior tests;
+native UI and real-provider integration still require user manual acceptance.
+The final empty-suite gate is distinct from this behavioral GREEN.
