@@ -1,8 +1,8 @@
 # R52 · 隔离负载敏感的测试，让并行门禁可用
 
-> 2026-09-22 [Issue #140](vega-issue-140-ci-test-throughput.md) supersedes the shadow selector and per-shard compilation topology: Python shadow reporting is removed; full-suite native nextest archives are built once and reused across workers. Existing safety assertions, resource weights and ignored inventory remain.
+> 2026-09-22 [Issue #140](140/vega-issue-140-ci-test-throughput.md) supersedes the shadow selector and per-shard compilation topology: Python shadow reporting is removed; full-suite native nextest archives are built once and reused across workers. Existing safety assertions, resource weights and ignored inventory remain.
 
-> 2026-09-24 [Issue #175](vega-issue-175-single-pr-check.md) supersedes the PR-gate topology described in this historical test-gate specification. The current gate uses one sequential Cargo job without nextest archives or shards. The R52/C9 measurements and historical test evidence below are retained unchanged.
+> 2026-09-24 [Issue #175](175/vega-issue-175-single-pr-check.md) supersedes the PR-gate topology described in this historical test-gate specification. The current gate uses one sequential Cargo job without nextest archives or shards. The R52/C9 measurements and historical test evidence below are retained unchanged.
 
 > 状态：**SPEC FROZEN**
 > 基线：`master @ 1c23fc4`

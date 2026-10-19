@@ -73,7 +73,7 @@ description: "Codex 与 Vega 共用的 Vega 看板交付流程。用于建卡、
 - **合并基线**：先同步最新 master，不从旧 ref 整目录/整仓恢复旧测试及支持。逐项审查本轮测试来源，改名/改写不自动算新增，新回归独立先测后修；开发 GREEN 后也须删测再正式交付。合并前复核带测试证据、独立删测差异和最终空集 head 门禁，不仅凭 CI 绿色。历史原因见 [合并纠偏规格](../../../docs/vega-rust-reset-reconciliation.md)。
 - **CI 空集**：保留 required check `check (fmt, clippy, test)`、fmt、全目标 Clippy、三组 Python 检查、固定 Nextest 0.9.146 与默认并发。JSON 清点仅为 0 时使用 `cargo nextest run --workspace --no-tests=pass`，非空正常执行。日志/摘要明确 `no Rust tests`（0 发现/0 执行），不是 Rust 测试全部通过；非空发现数不等于执行数，未知计数写未取得，真实失败仍阻断。
 - Codex 审查测试后建立/复用 draft PR（base `master`）确认有效 RED，再验证同一测试 GREEN，不新增执行设施。PR 固定测试源码/补丁、完整 SHA、RED 原始原因、实现顺序、带测试 GREEN run/job/计数；独立删测后补充生产差异及最终空集 head 门禁，全部可核实才转正式 PR。squash/删分支后仍能从 PR 找回原测试，不依赖本机临时文件或过期 artifact，不 force-push 丢弃唯一来源。未运行标待 CI，无行为变化说明不适用；空集不替代 GREEN，不证明 TDD。**不用自动关闭 Issue 的关键字**；审查与 CI 期间仍 In progress。
-- CI 启动后 **每 5 分钟查询一次**，禁止短轮询或 watch。收到完成/失败通知或用户要求即时查看时可立即查询；失败由 Codex 读日志分析、修订方案/委派修复，新一轮恢复 5 分钟间隔。CI 拓扑见 AGENTS.md 和 [相关规格](../../../docs/vega-issue-188-parallel-ci-checks.md)。
+- CI 启动后 **每 5 分钟查询一次**，禁止短轮询或 watch。收到完成/失败通知或用户要求即时查看时可立即查询；失败由 Codex 读日志分析、修订方案/委派修复，新一轮恢复 5 分钟间隔。CI 拓扑见 AGENTS.md 和 [相关规格](../../../docs/188/vega-issue-188-parallel-ci-checks.md)。
 - 仅当待合并的**最新 head**通过 required check `check (fmt, clippy, test)`，Codex 才主动 squash merge master，不绕过失败、分支保护或权限。合并后改 **In review**并读回，停下等用户纯手动验收；Issue 保持开放；允许自动删除已合并远端任务分支，前提是证据、完整 SHA 和原始 patch 可恢复并已读回确认，见 [安全清理规则](../../../docs/vega-issue-workflow.md#分支与-worktree-清理规则)。本地分支/worktree 另行安全检查，不随远端删除自动清理。
 - 打包、发布走云端，应用入口遵守 AGENTS.md。代码合并不代表已安装，不为本卡验收在本地运行 Vega。
 
