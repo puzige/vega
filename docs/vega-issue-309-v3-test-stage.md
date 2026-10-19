@@ -94,3 +94,33 @@
 创建本轮新 draft PR 并交叉链接 #489，以现有 pull_request Actions 跑完整门禁，分别读取几何及真实 Tab 原始失败，准确记录发现/执行/通过/失败/跳过。无关编译/fixture/依赖/runner 故障不算 RED。有效 RED 未核实前生产实现停止。
 
 同批 GREEN 后将完整测试/支持补丁、完整 SHA 和 RED/GREEN 原始链接固定在同一 PR，再用独立提交删本轮 Rust 测试及独占支持，最终空集 head 完整门禁通过后才转正式 PR。用户手测前不关闭 Issue、不 Done、不清理本轮或旧轮资源。
+
+## 新轮云端 RED 与冻结
+
+测试提交为 `f02679b9afbc478ec8b60353d21a6100b6c7370f`，新 [Draft PR #497](https://github.com/puzige/vega/pull/497)。[Actions 39242636898](https://github.com/puzige/vega/actions/runs/39242636898) 已完成：[Nextest 118026891799](https://github.com/puzige/vega/actions/runs/39242636898/job/118026891799) **21 发现/21 执行、10 通过、11 失败、0 跳过、0 ignore**，跨 14 binaries；Python 5+15+14 通过，[fmt/全目标 Clippy 118026891446](https://github.com/puzige/vega/actions/runs/39242636898/job/118026891446) 成功，required check 因目标行为缺失而失败。编译/发现均成功，不是接口缺失或环境 RED。
+
+[原始 11 失败与 10 通过清单](https://github.com/puzige/vega/pull/497#issuecomment-6265957563)已固定并读回，Nextest 原始 job 日志 SHA-256 `7872d0a64f1228f87020cdb0c86e631d52b3608534b67f6788ea52bf526588e5`。主审与独立 reviewer 已核实：
+
+- 八项失败在实际菜单/按钮几何断言。例如 V1 菜单右边 280，而实际按钮右边 260；键盘几何独立开菜单后也失败。旧分组按钮实测 63×32，为真实完整按钮，不强改成 vector token。
+- 两项失败在真实 Tab 后焦点未移动：项目行 30 未到相邻 31；归档相邻 37 未到 36。不是直接 focus 或 fixture Root 补出的遍历。
+- V5 底部场景在菜单未超出侧栏滚动区的定位结果失败，符合固定位置根因；这不是独立证明遮罩缺陷，后续实际外区点击尚待 GREEN 执行。
+- 原任务菜单场景已走完原菜单代表断言，只在最后项目菜单几何失败；V6 后续移除断言尚未执行，不能称全场景通过。
+- V9 真实归档激活/语义、V10 提交消息/手动顺序保护，以及菜单导航/guard/capture 清理均基线通过。
+
+[完整 core](https://github.com/puzige/vega/pull/497#issuecomment-6265842868)、[extended](https://github.com/puzige/vega/pull/497#issuecomment-6265843653)、[compatibility](https://github.com/puzige/vega/pull/497#issuecomment-6265844664) 与[测试支持补丁](https://github.com/puzige/vega/pull/497#issuecomment-6265845488)已经逐条固定并精确读回。支持补丁 SHA-256 `923e9b297ba91e5140f41382e1e75c316daa722d61024a46c6b22cb90f4d68ff`。
+
+[冻结与实施授权](https://github.com/puzige/vega/pull/497#issuecomment-6266003510)确认保留本报告三份源码 hash、目标/输入/断言不变，仅向原专职执行者交 v3 五文件最小实现；同批 GREEN、独立删测和最新 head 最终门禁仍待取得。
+
+## 有效 RED 后的最小实现与静态审查
+
+专职执行者交付 157 新增/27 删除，生产仅触及五文件：
+
+- `organization.rs` 保存/初始化私有菜单锚点，分组编辑时与菜单一并清理。
+- `render.rs` 显式菜单目标/点/角打开入口；没有按钮几何的普通 Menu 不打开。菜单按钮用 ScrollHandle parent bounds + canvas prepaint 取完整 border box，鼠标/键盘使用右下角 TopRight；非菜单按钮保持原动作。组织根新增仅普通 Tab/Shift-Tab 的 bubble 遍历及 guard，capture 重排清理原样保留。
+- `projections.rs` 只将原项目/分组行右键的当前 MouseUpEvent.position 传给 TopLeft 打开入口。
+- `menu.rs` 用保存的 Window 锚点取代固定 Local 坐标；原菜单项目/尺寸/滚动/occlude/内部阻断、margin 8 和只 deferred 表面 priority 3 不变。所有原关闭处清理锚点。
+- `reorder.rs` 只在原拖动开始关闭菜单处同步清理锚点。
+
+主审和独立 reviewer 静态核实 GPUI 在 child canvas prepaint 之前已更新父控件 ScrollHandle.bounds，测量的是完整按钮而不是内缩 canvas。归档 Click 分支、archive_control 构造器与原 capture/hover/mouse 重排处理经字节比较不变；Stateful<Div> 返回及 Role::Button/on_click 不变。三份冻结测试 hash、Cargo/观察支持、store/conversation/runtime/应用外层/CI 均未改，未追加测试。fmt/diff 静态检查 exit 0，无新增注释/unwrap/expect。独立审查无阻挡，批准提交云端同批 GREEN，不宣称类型/行为已通过。
+
+本地仍未运行 Vega、编译、Clippy 或任何测试；本实现的云端结果待取得，GREEN 前不删测试。
