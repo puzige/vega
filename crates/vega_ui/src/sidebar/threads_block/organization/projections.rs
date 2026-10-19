@@ -27,7 +27,7 @@ impl ThreadsBlock {
                 .drag_over::<OrganizationDrag>(move |s, _, _, _| s.bg(colors.bg_active))
                 .on_mouse_up(
                     MouseButton::Right,
-                    cx.listener(move |this, event, window, cx| {
+                    cx.listener(move |this, event: &MouseUpEvent, window, cx| {
                         cx.stop_propagation();
                         this.open_organization_menu(
                             OrganizationMenu::Group(context_group.clone()),
@@ -216,7 +216,7 @@ impl ThreadsBlock {
                 .items_center()
                 .on_mouse_up(
                     MouseButton::Right,
-                    cx.listener(move |this, event, window, cx| {
+                    cx.listener(move |this, event: &MouseUpEvent, window, cx| {
                         cx.stop_propagation();
                         this.open_organization_menu(
                             OrganizationMenu::Project(context_project.clone()),
