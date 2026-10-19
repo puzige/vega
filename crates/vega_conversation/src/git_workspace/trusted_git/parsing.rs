@@ -581,7 +581,9 @@ pub(crate) async fn collect_draft(
                 text.push_str(&delta);
             }
             ProviderEvent::Usage { .. } => usage_started = true,
-            ProviderEvent::ChatReasoningContent(_) | ProviderEvent::ResponseReplay(_) => {}
+            ProviderEvent::ChatReasoningState(_)
+            | ProviderEvent::ChatReasoningContent(_)
+            | ProviderEvent::ResponseReplay(_) => {}
             ProviderEvent::Done {
                 stop_reason: StopReason::End,
             } => done = true,

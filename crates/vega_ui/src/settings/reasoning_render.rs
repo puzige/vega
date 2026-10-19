@@ -241,6 +241,7 @@ fn reasoning_option_with_focus(
 
 fn reasoning_choice_label(choice: &ReasoningChoice) -> String {
     match choice {
+        ReasoningChoice::Enabled => "开启思考".into(),
         ReasoningChoice::ProviderDefault => "提供方默认".to_string(),
         ReasoningChoice::Disabled => "关闭思考".to_string(),
         ReasoningChoice::Effort(effort) => reasoning_effort_label(effort).to_string(),

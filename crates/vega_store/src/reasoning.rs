@@ -129,6 +129,7 @@ impl ReasoningProfile {
         if !matches!(
             self.preference.as_str(),
             "provider_default"
+                | "enabled"
                 | "disabled"
                 | "minimal"
                 | "low"

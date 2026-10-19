@@ -137,6 +137,18 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
             Some(value) => tagged(&mut hasher, 4, value.as_bytes()),
             None => tagged(&mut hasher, 5, &[]),
         }
+        if let Some(raw) = &message.chat_reasoning {
+            tagged(&mut hasher, 38, &[1]);
+            if let Some((source, text)) = &raw.text {
+                tagged(&mut hasher, 39, source.field().as_bytes());
+                tagged(&mut hasher, 40, text.as_bytes());
+            }
+            if let Some(details) = &raw.details {
+                tagged(&mut hasher, 41, &serde_json::to_vec(details).ok()?);
+            }
+        } else {
+            tagged(&mut hasher, 38, &[0]);
+        }
         tagged(
             &mut hasher,
             22,

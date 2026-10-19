@@ -33,6 +33,8 @@ impl ReasoningReplaySetting {
 /// UI-safe projection of one exact provider/model profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReasoningProfileProjection {
+    pub compatibility: Option<ChatCompatibility>,
+    pub supports_enabled: bool,
     /// Exact provider identifier.
     pub provider: String,
     /// Exact model identifier.
@@ -73,11 +75,8 @@ impl ReasoningProfileProjection {
             .collect();
         profile.supports_disabled = capabilities.supports_disabled;
         profile.disabled_wire = capabilities.disabled_wire;
-        profile.preference = capabilities
-            .default_effort
-            .map_or(ReasoningChoice::ProviderDefault, |effort| {
-                ReasoningChoice::Effort(effort.to_string())
-            });
+        profile.supports_enabled = capabilities.supports_enabled;
+        profile.compatibility = Some(capabilities);
         profile
     }
 
@@ -88,6 +87,7 @@ impl ReasoningProfileProjection {
         projection.preference = match profile.preference.as_str() {
             "provider_default" => ReasoningChoice::ProviderDefault,
             "disabled" => ReasoningChoice::Disabled,
+            "enabled" => ReasoningChoice::Enabled,
             effort => ReasoningChoice::Effort(effort.to_string()),
         };
         Ok(projection)
@@ -95,6 +95,7 @@ impl ReasoningProfileProjection {
 
     pub fn supports_preference(&self) -> bool {
         match &self.preference {
+            ReasoningChoice::Enabled => self.supports_enabled,
             ReasoningChoice::ProviderDefault => true,
             ReasoningChoice::Disabled => self.supports_disabled,
             ReasoningChoice::Effort(effort) => {
@@ -122,6 +123,7 @@ impl ReasoningProfileProjection {
         replay_policy: ReasoningReplayPolicy,
     ) -> Result<FrozenReasoning, vega_runtime::VegaError> {
         let frozen = FrozenReasoning {
+            compatibility: self.compatibility.clone(),
             provider: self.provider.clone(),
             model: self.model.clone(),
             protocol,
@@ -137,6 +139,8 @@ impl ReasoningProfileProjection {
 
     pub fn unknown(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
+            compatibility: None,
+            supports_enabled: false,
             provider: provider.into(),
             model: model.into(),
             protocol: ReasoningProtocol::Unknown,

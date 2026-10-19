@@ -30,6 +30,11 @@ pub(crate) fn resolve_reasoning_profile(
         let mut profile = ReasoningProfileProjection::unknown(provider, model);
         profile.protocol = ReasoningProtocol::ResponsesApi;
         profile.replay_profile = ReasoningReplaySetting::ResponsesItems;
+        profile.support = vega_runtime::ReasoningSupport::Optional;
+        profile.efforts = vega_runtime::REASONING_EFFORTS
+            .iter()
+            .map(|effort| (*effort).into())
+            .collect();
         profile
     } else {
         chat_compatibility(Some(base_url), model).map_or_else(

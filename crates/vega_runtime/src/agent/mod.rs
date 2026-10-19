@@ -662,6 +662,7 @@ pub(crate) fn replay_environment_fingerprint(
         hasher.update(value);
     };
     add(1, route_fingerprint);
+    add(24, crate::chat_compat::RULES_VERSION.as_bytes());
     add(2, model.as_bytes());
     add(3, system_prompt.as_bytes());
     add(4, &tool_config.replay_capability_digest()?);
@@ -679,6 +680,9 @@ pub(crate) fn replay_environment_fingerprint(
         add(9, &[u8::from(definition.strict)]);
     }
     if let Some(reasoning) = reasoning {
+        if let Some(facts) = &reasoning.compatibility {
+            add(25, facts.profile_id.as_bytes());
+        }
         add(10, reasoning.provider.as_bytes());
         add(11, reasoning.model.as_bytes());
         add(12, format!("{:?}", reasoning.protocol).as_bytes());

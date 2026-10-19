@@ -581,6 +581,18 @@ pub fn estimate_chat_context(
         if let Some(reasoning) = &message.reasoning_content {
             input_tokens = checked_add(input_tokens, estimate_text(reasoning)?)?;
         }
+        if let Some(raw) = &message.chat_reasoning {
+            if let Some((source, text)) = &raw.text {
+                input_tokens = checked_add(input_tokens, estimate_text(source.field())?)?;
+                input_tokens = checked_add(input_tokens, estimate_text(text)?)?;
+            }
+            if let Some(details) = &raw.details {
+                input_tokens = checked_add(
+                    input_tokens,
+                    estimate_json(&serde_json::json!(details).to_string())?,
+                )?;
+            }
+        }
         for item in &message.response_reasoning {
             input_tokens = checked_add(input_tokens, estimate_json(&item.to_string())?)?;
         }
@@ -656,6 +668,18 @@ pub fn estimate_wire_context(
         input_tokens = checked_add(input_tokens, estimate_text(&message.content)?)?;
         if let Some(reasoning) = &message.reasoning_content {
             input_tokens = checked_add(input_tokens, estimate_text(reasoning)?)?;
+        }
+        if let Some(raw) = &message.chat_reasoning {
+            if let Some((source, text)) = &raw.text {
+                input_tokens = checked_add(input_tokens, estimate_text(source.field())?)?;
+                input_tokens = checked_add(input_tokens, estimate_text(text)?)?;
+            }
+            if let Some(details) = &raw.details {
+                input_tokens = checked_add(
+                    input_tokens,
+                    estimate_json(&serde_json::json!(details).to_string())?,
+                )?;
+            }
         }
         for item in &message.response_reasoning {
             input_tokens = checked_add(input_tokens, estimate_json(&item.to_string())?)?;

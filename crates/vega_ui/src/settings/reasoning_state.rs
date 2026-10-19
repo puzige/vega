@@ -19,6 +19,9 @@ pub(crate) fn reasoning_choices(profile: &ReasoningProfileProjection) -> Vec<Rea
     if profile.supports_disabled {
         choices.push(ReasoningChoice::Disabled);
     }
+    if profile.supports_enabled {
+        choices.push(ReasoningChoice::Enabled);
+    }
     if !matches!(
         profile.support,
         ReasoningSupport::Unsupported | ReasoningSupport::Unknown

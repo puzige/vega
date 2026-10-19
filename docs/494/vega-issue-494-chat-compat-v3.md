@@ -146,3 +146,7 @@ ID 规范化遵守固定版 pi 的适用范围：非本 route live 绑定的 pip
 ## 进度与证据
 
 2026-10-19：来源核验及规格完成，49 个先行测试定义已编写并静态审查（runtime 25、App 13、conversation 5、UI 6）。本地 `cargo fmt --all -- --check`、`git diff --check` 和 `cargo metadata --no-deps --locked` 成功；未执行 Vega、编译或测试。预期最小缺失接口 `decode_catalog` 为接口 RED，行为断言尚未执行；须由云端确认后才授权生产实现。RED、GREEN、删测及最终门禁仍待取得。测试与支持源清单 SHA256 为 `e5eff2bccc6423f3f2de632911091c3946aa9c55af5943c6a4b2cd83edb54cce`，提交和原始证据将在本卡 PR 固定。
+
+2026-10-19 13:51 UTC：先行测试提交 `e8ca821a7aac87160131a26f741e3f057ab4c93a` 的 [Actions 39262820263](https://github.com/puzige/vega/actions/runs/39262820263) 已确认最小接口 RED。Clippy 与 Nextest 均仅报告 `chat_compat_catalog_tests.rs` 六处调用的 E0425：`decode_catalog` 不存在；格式和三组 Python（5/15/14）成功。Nextest 在清点前编译失败，Rust 发现数未取得、执行数 0，49 项行为断言尚未执行。测试源码与 12 个支持源哈希已在 [PR #503 固定记录](https://github.com/puzige/vega/pull/503#issuecomment-6268732441) 公布，并从远端 Git blob 全部读回核对。冻结该提交的测试目标/预期和清单，授权专职子 agent 按本规格实现；后续仍须同一测试真实 GREEN。
+
+2026-10-19 14:20 UTC：专职子 agent 完成实现，Codex 完成生产差异审查。固定目录、八种 codec、未知六档、布尔控制、文本来源/details、工具片段与身份、终态/用量、回放/凭据/预算及设置/composer 已接通；[来源与可复现投影](vega-issue-494-chat-catalog-source.md) 单独留证。格式、差异、无依赖 Cargo metadata 和来源静态核对通过；12 个冻结源 SHA256 全部未变。未本地运行 Vega、编译或测试；本次实现仍待同一冻结测试云端 GREEN，尚不构成正式交付。

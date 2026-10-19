@@ -166,6 +166,7 @@ impl ComposerPredictionRequest {
                     ProviderEvent::ThinkingDelta(_)
                     | ProviderEvent::SummaryDelta(_)
                     | ProviderEvent::ReasoningReplay(_)
+                    | ProviderEvent::ChatReasoningState(_)
                     | ProviderEvent::ChatReasoningContent(_)
                     | ProviderEvent::ResponseReplay(_)
                     | ProviderEvent::ResponseMetadata(_) => {}

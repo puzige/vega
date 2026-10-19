@@ -246,6 +246,7 @@ impl std::fmt::Debug for ResponseReplayLayout {
 /// OpenAI compatibility assumption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningDisabledWire {
+    Resolved,
     /// `thinking: { type: "disabled" }`.
     ThinkingTypeDisabled,
     /// `reasoning_effort: "none"`.
@@ -257,6 +258,7 @@ pub enum ReasoningDisabledWire {
 /// reasoning content.
 #[derive(Clone, PartialEq, Eq)]
 pub struct FrozenReasoning {
+    pub compatibility: Option<crate::ChatCompatibility>,
     /// Exact configured provider identifier.
     pub provider: String,
     /// Exact configured model identifier.
@@ -264,8 +266,6 @@ pub struct FrozenReasoning {
     /// Explicit protocol capability declaration.
     pub protocol: ReasoningProtocol,
     pub replay_policy: ReasoningReplayPolicy,
-    /// User choice: provider default, a true disabled operation, or a declared
-    /// effort value.
     pub choice: ReasoningChoice,
     /// Whether the profile explicitly permits the disabled operation.
     pub supports_disabled: bool,
@@ -287,6 +287,10 @@ impl std::fmt::Debug for FrozenReasoning {
             .field("supports_disabled", &self.supports_disabled)
             .field("disabled_wire", &self.disabled_wire)
             .field("declared_effort_count", &self.declared_efforts.len())
+            .field(
+                "compatibility",
+                &self.compatibility.as_ref().map(|facts| &facts.profile_id),
+            )
             .finish()
     }
 }
@@ -296,6 +300,7 @@ impl FrozenReasoning {
     /// omits all thinking controls for this profile.
     pub fn unknown(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
+            compatibility: None,
             provider: provider.into(),
             model: model.into(),
             protocol: ReasoningProtocol::Unknown,
@@ -314,6 +319,21 @@ impl FrozenReasoning {
             return Err(VegaError::ReasoningSelectionInvalid {
                 message: "reasoning profile provider/model is empty".to_string(),
             });
+        }
+        if let Some(facts) = &self.compatibility {
+            if self.protocol != facts.protocol
+                || self.replay_policy != facts.replay_policy
+                || self.declared_efforts != facts.efforts
+                || self.supports_disabled != facts.supports_disabled
+                || self.disabled_wire != facts.disabled_wire
+                || !facts.supports_choice(&self.choice)
+            {
+                return Err(VegaError::ReasoningSelectionInvalid {
+                    message: "thinking choice does not match the resolved model capabilities"
+                        .into(),
+                });
+            }
+            return Ok(());
         }
         for effort in &self.declared_efforts {
             if !matches!(
@@ -423,6 +443,9 @@ impl FrozenReasoning {
             });
         }
         match &self.choice {
+            ReasoningChoice::Enabled => Err(VegaError::ReasoningSelectionInvalid {
+                message: "enabled is not declared by the provider/model profile".into(),
+            }),
             ReasoningChoice::ProviderDefault => Ok(()),
             ReasoningChoice::Effort(effort)
                 if !effort.trim().is_empty()
@@ -466,9 +489,9 @@ impl FrozenReasoning {
     }
 }
 
-/// The three user-visible classes of thinking request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReasoningChoice {
+    Enabled,
     /// Omit all thinking controls and let the provider decide.
     ProviderDefault,
     /// Send the profile's explicit disabled operation.
@@ -561,6 +584,8 @@ impl ChatRole {
 /// One chat message (`role` + `content`, tech-spec §4.1 ChatRequest).
 #[derive(Clone, Eq)]
 pub struct ChatMessage {
+    pub chat_reasoning: Option<crate::ChatRawState>,
+    live_wire_ids: bool,
     /// Explicit validated user images; never attached to other roles.
     pub images: Vec<crate::ImageAttachment>,
     /// Sender role.
@@ -686,6 +711,8 @@ impl PartialEq for ChatMessage {
             && self.tool_call_id == other.tool_call_id
             && self.tool_calls == other.tool_calls
             && self.reasoning_content == other.reasoning_content
+            && self.chat_reasoning == other.chat_reasoning
+            && self.live_wire_ids == other.live_wire_ids
             && self.response_reasoning == other.response_reasoning
             && self.response_replay_layout == other.response_replay_layout
             && self.replay_frame == other.replay_frame
@@ -724,6 +751,7 @@ impl std::fmt::Debug for ChatMessage {
                 "reasoning_content_bytes",
                 &self.reasoning_content.as_ref().map(String::len),
             )
+            .field("chat_reasoning", &self.chat_reasoning)
             .finish()
     }
 }
@@ -787,6 +815,19 @@ impl ChatMessage {
             }))
             .saturating_add(self.tool_call_id.as_ref().map_or(0, string_size))
             .saturating_add(self.reasoning_content.as_ref().map_or(0, string_size))
+            .saturating_add(self.chat_reasoning.as_ref().map_or(0, |raw| {
+                raw.text
+                    .as_ref()
+                    .map_or(0, |(_, text)| text.capacity())
+                    .saturating_add(raw.details.as_ref().map_or(0, |details| {
+                        details
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<serde_json::Value>())
+                            .saturating_add(details.iter().fold(0usize, |total, value| {
+                                total.saturating_add(value_heap_size(value))
+                            }))
+                    }))
+            }))
             .saturating_add(
                 self.tool_calls
                     .capacity()
@@ -949,6 +990,7 @@ impl ChatMessage {
             }
         }
         self.live_tool_calls = Some(bound);
+        self.live_wire_ids = true;
         self.historical_tool_statuses = None;
         self.model_projection = false;
         Ok(())
@@ -957,8 +999,13 @@ impl ChatMessage {
     pub fn without_live_tool_arguments(&self) -> Self {
         let mut message = self.clone();
         message.live_tool_calls = None;
+        message.live_wire_ids = false;
         message.model_projection = false;
         message
+    }
+
+    pub(crate) fn preserves_live_wire_ids(&self) -> bool {
+        self.live_wire_ids
     }
 
     pub fn without_runtime_guidance(&self) -> Self {
@@ -1000,6 +1047,7 @@ impl ChatMessage {
     }
 
     pub fn mark_stored_tool_calls(&mut self) {
+        self.live_wire_ids = false;
         self.live_tool_calls = Some(vec![None; self.tool_calls.len()]);
         self.historical_tool_statuses = Some(
             self.tool_calls
@@ -1018,6 +1066,7 @@ impl ChatMessage {
         &mut self,
         statuses: Vec<String>,
     ) -> Result<(), VegaError> {
+        self.live_wire_ids = false;
         let invalid = || VegaError::Context(crate::ContextRuntimeError::InvalidProjection);
         if statuses.len() != self.tool_calls.len() {
             return Err(invalid());
@@ -1067,6 +1116,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls: Vec::new(),
+            chat_reasoning: None,
+            live_wire_ids: false,
             reasoning_content: None,
             response_reasoning: Vec::new(),
             response_replay_layout: None,
@@ -1088,6 +1139,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls,
+            chat_reasoning: None,
+            live_wire_ids: false,
             reasoning_content: None,
             response_reasoning: Vec::new(),
             response_replay_layout: None,
@@ -1113,6 +1166,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls,
+            chat_reasoning: None,
+            live_wire_ids: false,
             reasoning_content,
             response_reasoning: Vec::new(),
             response_replay_layout: None,
@@ -1171,6 +1226,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: Some(call_id.into()),
             tool_calls: Vec::new(),
+            chat_reasoning: None,
+            live_wire_ids: false,
             reasoning_content: None,
             response_reasoning: Vec::new(),
             response_replay_layout: None,
@@ -1213,6 +1270,7 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
                     && message.role == ChatRole::Assistant
             }) {
                 current.reasoning_content = None;
+                current.chat_reasoning = None;
             }
             if index >= frame.cold_prefix_len {
                 cold_projected.push(current);
@@ -1220,6 +1278,11 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
             }
             let mut cold = current;
             cold.replay_cold = true;
+            cold.live_wire_ids = false;
+            cold.reasoning_content = None;
+            cold.chat_reasoning = None;
+            cold.response_reasoning.clear();
+            cold.response_replay_layout = None;
             if message.role != ChatRole::Assistant || message.model_projection {
                 cold_projected.push(cold);
                 continue;
@@ -1244,6 +1307,7 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
                 assistant.content.clear();
                 assistant.images.clear();
                 assistant.reasoning_content = None;
+                assistant.chat_reasoning = None;
                 assistant.response_reasoning.clear();
                 assistant.response_replay_layout = None;
                 assistant.live_tool_calls = Some(vec![None; assistant.tool_calls.len()]);
@@ -1321,6 +1385,7 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
         }
         let mut next = message.without_live_tool_arguments();
         next.model_projection = true;
+        next.live_wire_ids = message.live_wire_ids;
         if message.role == ChatRole::Tool
             && message.images.is_empty()
             && let Some(id) = &message.tool_call_id
@@ -1383,13 +1448,14 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
                 next.historical_tool_statuses = None;
                 if lost_live_binding {
                     next.reasoning_content = None;
+                    next.chat_reasoning = None;
                     next.response_reasoning.clear();
                     next.response_replay_layout = None;
                 }
                 if !next.content.is_empty()
                     || !next.images.is_empty()
                     || (!lost_live_binding
-                        && (next.reasoning_content.is_some()
+                        && ((next.reasoning_content.is_some() || next.chat_reasoning.is_some())
                             || !next.response_reasoning.is_empty()
                             || next.response_replay_layout.is_some()))
                 {
@@ -1466,6 +1532,7 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
             next.tool_call_id = None;
             next.content = content;
             next.reasoning_content = None;
+            next.chat_reasoning = None;
             next.response_reasoning.clear();
             next.response_replay_layout = None;
             next.historical_tool_statuses = None;
@@ -1531,7 +1598,7 @@ fn completed_live_tool_group(
         }
         if result.role != ChatRole::Tool
             || !result.tool_calls.is_empty()
-            || result.reasoning_content.is_some()
+            || (result.reasoning_content.is_some() || result.chat_reasoning.is_some())
             || !result.response_reasoning.is_empty()
             || result.response_replay_layout.is_some()
             || result.tool_call_id.is_none()
@@ -1656,6 +1723,7 @@ pub enum StopReason {
 /// is emitted only after the model's argument fragments are fully aggregated.
 #[derive(Clone, PartialEq, Eq)]
 pub enum ProviderEvent {
+    ChatReasoningState(crate::ChatRawState),
     ResponseMetadata(ProviderResponseMetadata),
     RetryScheduled {
         attempt: u32,
@@ -1699,6 +1767,10 @@ pub enum ProviderEvent {
 impl std::fmt::Debug for ProviderEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ChatReasoningState(raw) => formatter
+                .debug_tuple("ChatReasoningState")
+                .field(raw)
+                .finish(),
             Self::ResponseMetadata(metadata) => formatter
                 .debug_tuple("ResponseMetadata")
                 .field(metadata)
