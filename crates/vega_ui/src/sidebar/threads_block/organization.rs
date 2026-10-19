@@ -13,6 +13,10 @@ mod projections;
 mod reorder;
 pub(super) use reorder::ReorderItem;
 use reorder::ReorderState;
+#[cfg(test)]
+mod menu_placement_extended_tests;
+#[cfg(test)]
+mod menu_placement_tests;
 mod render;
 
 pub(super) struct Organization {
