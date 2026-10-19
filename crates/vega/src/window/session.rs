@@ -923,6 +923,7 @@ impl VegaWindow {
                 }
                 Self::apply_thread_and_plans(&stream, refresh.thread, refresh.plans, cx);
                 if let Some(instruction_message_id) = approved_instruction_id {
+                    self.sidebar.update(cx, Sidebar::reload_sessions);
                     self.start_agent_run(
                         stream,
                         &request.thread_id,

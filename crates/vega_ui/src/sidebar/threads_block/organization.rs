@@ -136,7 +136,6 @@ struct GroupEditor {
 }
 #[derive(Clone)]
 enum OrganizationMenu {
-    Filter,
     Group(String),
     Project(String),
 }
@@ -153,7 +152,6 @@ enum MenuCommand {
     Rename(String),
     NewTask(String),
     RemoveProject(String),
-    ToggleArchive,
 }
 #[derive(Clone)]
 struct OrganizationDrag {

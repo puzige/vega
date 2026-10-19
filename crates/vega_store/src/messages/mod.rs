@@ -65,6 +65,10 @@ pub fn next_seq(conn: &Connection, thread_id: &str) -> Result<i64, rusqlite::Err
 
 pub fn insert(conn: &Connection, row: &MessageRow) -> Result<(), rusqlite::Error> {
     validate_message(row)?;
+    let tx = conn
+        .is_autocommit()
+        .then(|| Transaction::new_unchecked(conn, TransactionBehavior::Immediate))
+        .transpose()?;
     conn.execute(
         "INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at, \
          plan_status, plan_review_note, plan_reviewed_at) \
@@ -83,6 +87,12 @@ pub fn insert(conn: &Connection, row: &MessageRow) -> Result<(), rusqlite::Error
             row.plan_reviewed_at,
         ],
     )?;
+    if matches!(row.role.as_str(), "user" | "assistant") {
+        let _ = crate::sidebar_organization::promote_thread(conn, &row.thread_id);
+    }
+    if let Some(tx) = tx {
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -289,6 +299,7 @@ pub fn review_plan(
         if inserted != 1 {
             return Err(PlanTransitionError::CorruptState);
         }
+        let _ = crate::sidebar_organization::promote_thread(&tx, review.thread_id);
     }
     tx.commit()?;
     Ok(PlanReviewResult::Applied)

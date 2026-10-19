@@ -15,7 +15,6 @@ pub(super) enum Control {
     NewStandalone,
     NewProjectTask(String),
     ToggleProject(String),
-    ToggleSort,
 }
 impl ThreadsBlock {
     pub(super) fn control_action(
@@ -51,9 +50,34 @@ impl ThreadsBlock {
                 }
             }
             Control::Archive => {
-                if let Some(org) = self.organization.as_mut() {
-                    org.archive = !org.archive;
-                }
+                let show_archived = if let Some(organization) = self.organization.as_mut() {
+                    organization.archive = !organization.archive;
+                    organization.archive
+                } else {
+                    false
+                };
+                let projects: Vec<_> =
+                    self.organization
+                        .as_ref()
+                        .and_then(|organization| organization.snapshot.as_ref())
+                        .map(|snapshot| {
+                            let mut projects: Vec<_> = snapshot
+                                .project_order
+                                .iter()
+                                .filter_map(|id| {
+                                    snapshot.projects.iter().find(|project| &project.id == id)
+                                })
+                                .collect();
+                            projects.extend(
+                                snapshot.projects.iter().filter(|project| {
+                                    !snapshot.project_order.contains(&project.id)
+                                }),
+                            );
+                            projects.into_iter().cloned().collect()
+                        })
+                        .unwrap_or_default();
+                let project_refs: Vec<_> = projects.iter().collect();
+                self.sync_project_task_windows(&project_refs, show_archived);
             }
             Control::NewGroup => self.edit_group(None, window, cx),
             Control::AddProject => {
@@ -86,24 +110,6 @@ impl ThreadsBlock {
                     self.toggle_organization_collapse(SidebarCollapseTarget::Project(id), cx);
                 }
             }
-            Control::ToggleSort => {
-                if let Some(snapshot) = self
-                    .organization
-                    .as_ref()
-                    .and_then(|organization| organization.snapshot.as_ref())
-                {
-                    let mut preferences = snapshot.preferences.clone();
-                    preferences.sort = match preferences.sort {
-                        SidebarTaskSort::Updated => SidebarTaskSort::Created,
-                        SidebarTaskSort::Created => SidebarTaskSort::Manual,
-                        SidebarTaskSort::Manual => SidebarTaskSort::Updated,
-                    };
-                    self.submit_organization(
-                        SidebarOrganizationAction::SetPreferences(preferences),
-                        cx,
-                    );
-                }
-            }
         }
         cx.notify();
     }
@@ -120,7 +126,6 @@ impl ThreadsBlock {
         let label = label.into();
         let aria = match &action {
             Control::CollapseAll => "收起全部".to_string(),
-            Control::Menu(OrganizationMenu::Filter) => "排序与归档".to_string(),
             Control::Menu(_) => "组织操作".to_string(),
             _ => label.clone(),
         };
@@ -260,6 +265,8 @@ impl ThreadsBlock {
         let colors = theme(cx).colors;
         let id = id.into();
         let label = label.into();
+        let selected = matches!(action, Control::Archive)
+            && self.organization.as_ref().is_some_and(|org| org.archive);
         let keyboard_action = action.clone();
         div()
             .id(ElementId::Name(id.clone().into()))
@@ -267,15 +274,22 @@ impl ThreadsBlock {
             .debug_selector(|| id.clone())
             .focusable()
             .tab_stop(true)
-            .size(px(24.))
+            .size(px(Layout::SIDEBAR_ACTION_SIZE))
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_center()
             .rounded_md()
             .cursor_pointer()
-            .when(hidden_until_hover, |style| style.opacity(0.))
-            .hover(move |style| style.opacity(1.).bg(colors.bg_hover))
+            .when(selected, |style| style.bg(colors.bg_active))
+            .when(hidden_until_hover && !selected, |style| style.opacity(0.))
+            .hover(move |style| {
+                style.opacity(1.).bg(if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                })
+            })
             .focus_visible(move |style| {
                 style
                     .opacity(1.)
@@ -397,10 +411,7 @@ impl ThreadsBlock {
         }
         standalone = super::projections::sorted_threads(&standalone, &snapshot.preferences);
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Recents)
-            || self.focused_section == Some(OrganizationSection::Recents)
-            || self.organization.as_ref().is_some_and(|organization| {
-                matches!(organization.menu, Some(OrganizationMenu::Filter))
-            });
+            || self.focused_section == Some(OrganizationSection::Recents);
         let header = div()
             .id("organization-recents-header")
             .debug_selector(|| "organization-recents-header".into())
@@ -422,10 +433,14 @@ impl ThreadsBlock {
                     .items_center()
                     .gap_1()
                     .child(self.vector_control(
-                        "organization-session-sort",
-                        "任务排序与归档",
-                        crate::icons::Icon::ArrowUpDown,
-                        Control::Menu(OrganizationMenu::Filter),
+                        "organization-archive",
+                        if show_archived {
+                            "隐藏已归档"
+                        } else {
+                            "显示已归档"
+                        },
+                        crate::icons::Icon::Archive,
+                        Control::Archive,
                         !header_actions_visible,
                         cx,
                     ))

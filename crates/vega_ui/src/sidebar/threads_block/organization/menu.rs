@@ -13,39 +13,6 @@ impl ThreadsBlock {
         };
         let mut items = Vec::new();
         match menu {
-            OrganizationMenu::Filter => {
-                for (sort, label) in [
-                    (SidebarTaskSort::Updated, "更新时间"),
-                    (SidebarTaskSort::Created, "创建时间"),
-                    (SidebarTaskSort::Manual, "手动排序"),
-                ] {
-                    let mut preferences = snapshot.preferences.clone();
-                    preferences.sort = sort;
-                    items.push((
-                        format!(
-                            "{} {label}",
-                            if snapshot.preferences.sort == sort {
-                                "✓"
-                            } else {
-                                "  "
-                            }
-                        ),
-                        MenuCommand::Apply(SidebarOrganizationAction::SetPreferences(preferences)),
-                    ));
-                }
-                items.push((
-                    format!(
-                        "{} {}",
-                        if org.archive { "✓" } else { "  " },
-                        if org.archive {
-                            "隐藏已归档"
-                        } else {
-                            "显示已归档"
-                        },
-                    ),
-                    MenuCommand::ToggleArchive,
-                ));
-            }
             OrganizationMenu::Group(id) => {
                 items.push(("新建任务".into(), MenuCommand::NewTask(id.clone())));
                 items.push(("重命名".into(), MenuCommand::Rename(id.clone())));
@@ -132,36 +99,6 @@ impl ThreadsBlock {
                     org.projects.update(cx, |p, cx| p.remove_project(&id, cx));
                 }
             }
-            MenuCommand::ToggleArchive => {
-                let show_archived = if let Some(organization) = self.organization.as_mut() {
-                    organization.archive = !organization.archive;
-                    organization.archive
-                } else {
-                    false
-                };
-                let projects: Vec<_> =
-                    self.organization
-                        .as_ref()
-                        .and_then(|organization| organization.snapshot.as_ref())
-                        .map(|snapshot| {
-                            let mut projects: Vec<_> = snapshot
-                                .project_order
-                                .iter()
-                                .filter_map(|id| {
-                                    snapshot.projects.iter().find(|project| &project.id == id)
-                                })
-                                .collect();
-                            projects.extend(
-                                snapshot.projects.iter().filter(|project| {
-                                    !snapshot.project_order.contains(&project.id)
-                                }),
-                            );
-                            projects.into_iter().cloned().collect()
-                        })
-                        .unwrap_or_default();
-                let project_refs: Vec<_> = projects.iter().collect();
-                self.sync_project_task_windows(&project_refs, show_archived);
-            }
         }
         cx.notify();
     }
@@ -172,7 +109,6 @@ impl ThreadsBlock {
         };
         let items = self.organization_menu_items();
         let title = match org.menu {
-            Some(OrganizationMenu::Filter) => "排序与归档",
             Some(OrganizationMenu::Group(_)) => "分组操作",
             _ => "项目操作",
         };
