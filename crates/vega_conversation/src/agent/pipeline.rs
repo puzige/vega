@@ -70,7 +70,7 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
         }
-        "spawn_agent" | "list_agents" | "wait_agent" | "cancel_agent" => {
+        "spawn_agent" | "followup_agent" | "list_agents" | "wait_agent" | "cancel_agent" => {
             input_json == "{}" || vega_runtime::valid_subagent_input(tool, input_json)
         }
         "get_goal" | "update_goal" | "schedule_wakeup" => {
@@ -714,9 +714,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     if config.delegated {
         let mismatch =
             || ConversationError::CorruptRow("delegated instruction identity mismatch".into());
-        let delegation = vega_store::subagents::find(&transaction, &thread_id)
-            .map_err(runtime_store_error)?
-            .ok_or_else(mismatch)?;
+        let execution =
+            vega_store::subagents::execution(&transaction, &thread_id, &assistant_message_id)
+                .map_err(runtime_store_error)?
+                .ok_or_else(mismatch)?;
+        let delegation = execution.record;
         let existing = messages::find(&transaction, &user_message_id)
             .map_err(runtime_store_error)?
             .ok_or_else(mismatch)?;
@@ -741,7 +743,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             || existing.role != "user"
             || existing.kind != "text"
             || existing.status != "done"
-            || existing.seq != 1
+            || execution.instruction_message_id.as_deref() != Some(user_message_id.as_str())
             || existing.content != delegation.task
             || user_content != delegation.task
             || run_mode != ThreadMode::Execute
@@ -1205,8 +1207,8 @@ pub(crate) fn validate_recovered_projection(
         return Ok(input_json.to_owned());
     }
     match tool {
-        "spawn_agent" | "list_agents" | "wait_agent" | "cancel_agent" | "get_goal"
-        | "update_goal" | "schedule_wakeup" => {
+        "spawn_agent" | "followup_agent" | "list_agents" | "wait_agent" | "cancel_agent"
+        | "get_goal" | "update_goal" | "schedule_wakeup" => {
             let valid_json = if vega_runtime::is_subagent_tool(tool) {
                 vega_runtime::valid_subagent_input(tool, input_json)
                     || (input_json == "{}"
@@ -1777,8 +1779,8 @@ pub(crate) fn approval_source_matches(
         };
     }
     match tool {
-        "spawn_agent" | "list_agents" | "wait_agent" | "cancel_agent" | "get_goal"
-        | "update_goal" | "schedule_wakeup" => match status {
+        "spawn_agent" | "followup_agent" | "list_agents" | "wait_agent" | "cancel_agent"
+        | "get_goal" | "update_goal" | "schedule_wakeup" => match status {
             RuntimeToolStatus::Rejected => matches!(
                 source,
                 ApprovalSource::RunMode | ApprovalSource::Recovery | ApprovalSource::Timeout

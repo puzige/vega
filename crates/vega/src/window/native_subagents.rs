@@ -43,10 +43,27 @@ impl VegaWindow {
                     cancel,
                     permission_queue,
                     user_questions,
-                    task,
+                    task: _,
                     queue_generation,
                 } = *admission;
                 let thread_id = thread.id.clone();
+                let history = match &cx.global::<VegaStore>().0 {
+                    Ok(store) => vega_conversation::history::latest_history_page(
+                        store,
+                        &thread_id,
+                        vega_store::messages::PAGE_LIMIT,
+                    )
+                    .map_err(|_| ()),
+                    Err(_) => Err(()),
+                };
+                let Ok(history) = history else {
+                    cancel.cancel();
+                    let _ = reply.send(Err(vega_runtime::VegaError::Tool {
+                        tool: "subagent".into(),
+                        message: "admission_failed".into(),
+                    }));
+                    return;
+                };
                 let view = cx.new(move |cx| {
                     ConversationStream::new_with_request_queues(
                         thread,
@@ -55,9 +72,10 @@ impl VegaWindow {
                         cx,
                     )
                 });
+                view.update(cx, |stream, cx| stream.apply_history_page(history, cx));
                 let Some((generation, _)) =
                     self.agent_controller
-                        .begin(thread_id.clone(), view.clone(), Some(task), None)
+                        .begin(thread_id.clone(), view.clone(), None, None)
                 else {
                     cancel.cancel();
                     let _ = reply.send(Err(vega_runtime::VegaError::Cancelled));
@@ -69,6 +87,9 @@ impl VegaWindow {
                     active.delegated_parent_thread = Some(parent_id.into());
                     active.queue_generation = queue_generation;
                 }
+                self.agent_controller
+                    .delegated_latest
+                    .insert(thread_id.clone(), snapshot.message_id.clone());
                 self.agent_controller
                     .delegated_unbound
                     .insert(thread_id.clone());
@@ -94,8 +115,14 @@ impl VegaWindow {
                 view.update(cx, ConversationStream::begin_composer_run);
                 parent_stream.update(cx, |parent, cx| {
                     parent.apply_subagent(snapshot.clone(), cx);
-                    parent.bind_subagent_stream(&snapshot.parent_message_id, &thread_id, view, cx);
+                    parent.bind_subagent_stream(
+                        &snapshot.parent_message_id,
+                        &thread_id,
+                        view.clone(),
+                        cx,
+                    );
                 });
+                self.rebind_subagent_detail(&thread_id, &view, cx);
                 self.apply_subagent_panel_update(snapshot, cx);
                 if reply.send(Ok(())).is_err() {
                     cancel.cancel();
@@ -134,16 +161,51 @@ impl VegaWindow {
                 self.apply_agent_batch_ingress(generation, &thread_id, &stream, batch, cx);
             }
             NativeSubagentUpdate::Updated(snapshot) => {
-                if snapshot.parent_thread_id == parent_id {
+                if snapshot.parent_thread_id == parent_id
+                    && self.subagent_update_current(&snapshot, cx)
+                {
                     self.apply_subagent_panel_update(snapshot.clone(), cx);
                     parent_stream.update(cx, |stream, cx| stream.apply_subagent(snapshot, cx));
+                }
+            }
+            NativeSubagentUpdate::FinishedAndRelease {
+                snapshot,
+                usage_complete,
+                reply,
+            } => {
+                if snapshot.parent_thread_id != parent_id
+                    || !self.subagent_update_current(&snapshot, cx)
+                {
+                    let _ = reply.send(Err(vega_runtime::VegaError::Cancelled));
+                    return;
+                }
+                let child = snapshot.agent_id.clone();
+                self.apply_subagent_update(
+                    parent_id,
+                    parent_stream,
+                    NativeSubagentUpdate::Finished {
+                        snapshot,
+                        usage_complete,
+                    },
+                    cx,
+                );
+                if self.agent_controller.queue_operations.contains_key(&child) {
+                    self.agent_controller
+                        .subagent_releases
+                        .entry(child)
+                        .or_default()
+                        .push(reply);
+                } else {
+                    let _ = reply.send(Ok(()));
                 }
             }
             NativeSubagentUpdate::Finished {
                 snapshot,
                 usage_complete,
             } => {
-                if snapshot.parent_thread_id != parent_id {
+                if snapshot.parent_thread_id != parent_id
+                    || !self.subagent_update_current(&snapshot, cx)
+                {
                     return;
                 }
                 self.apply_subagent_panel_update(snapshot.clone(), cx);
@@ -204,6 +266,35 @@ impl VegaWindow {
             }
         }
         cx.notify();
+    }
+
+    fn subagent_update_current(&mut self, snapshot: &SubagentSnapshot, cx: &App) -> bool {
+        if let Some(active) = self.agent_controller.active.get(&snapshot.agent_id) {
+            return active.delegated_message_id.as_deref() == Some(&snapshot.message_id)
+                && active.delegated_parent_thread.as_deref() == Some(&snapshot.parent_thread_id);
+        }
+        if self
+            .agent_controller
+            .delegated_latest
+            .get(&snapshot.agent_id)
+            == Some(&snapshot.message_id)
+        {
+            return true;
+        }
+        let current = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .ok()
+            .is_some_and(|store| {
+                vega_conversation::subagents::is_latest_execution(store, snapshot).unwrap_or(false)
+            });
+        if current {
+            self.agent_controller
+                .delegated_latest
+                .insert(snapshot.agent_id.clone(), snapshot.message_id.clone());
+        }
+        current
     }
 
     pub(crate) fn open_subagent(

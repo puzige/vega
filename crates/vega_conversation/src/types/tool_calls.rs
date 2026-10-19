@@ -420,6 +420,12 @@ impl ToolCardInputProjection {
 /// Strict terminal projection safe for a tool card to retain and render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardResultProjection {
+    Subagent {
+        status: ToolCallStatus,
+        agent: Option<Box<SubagentSnapshot>>,
+        output: String,
+        reused: bool,
+    },
     UserQuestion {
         status: ToolCallStatus,
         output: UserQuestionHistoryText,
@@ -507,6 +513,7 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("task")
             ),
+            "followup_agent" => "Continue agent".into(),
             "list_agents" => "List agents".into(),
             "wait_agent" => "Wait for agents".into(),
             _ => "Stop agent".into(),
@@ -773,7 +780,7 @@ pub fn tool_card_result_projection(
         return ToolCardResultProjection::Corrupt;
     };
     match input {
-        ToolCardInputProjection::Subagent { .. } => {
+        ToolCardInputProjection::Subagent { tool, .. } => {
             if !is_terminal(result.status)
                 || result.exit_code.is_some()
                 || result.duration_ms.is_some()
@@ -782,8 +789,38 @@ pub fn tool_card_result_projection(
             {
                 return ToolCardResultProjection::Corrupt;
             }
-            ToolCardResultProjection::ReadOnly {
+            let agent = if result.status == ToolCallStatus::Success
+                && matches!(tool.as_str(), "spawn_agent" | "followup_agent")
+            {
+                let parsed = serde_json::from_str::<serde_json::Value>(&result.output)
+                    .ok()
+                    .and_then(|value| {
+                        serde_json::from_value::<SubagentSnapshot>(value.get("agent")?.clone()).ok()
+                    });
+                let Some(agent) = parsed.filter(|agent| {
+                    [
+                        &agent.agent_id,
+                        &agent.message_id,
+                        &agent.parent_thread_id,
+                        &agent.parent_message_id,
+                    ]
+                    .into_iter()
+                    .all(|id| {
+                        !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+                    }) && !agent.name.trim().is_empty()
+                        && agent.name.len() <= 256
+                        && !agent.name.chars().any(char::is_control)
+                        && agent.result.len() <= vega_runtime::SUBAGENT_RESULT_BYTES
+                }) else {
+                    return ToolCardResultProjection::Corrupt;
+                };
+                Some(Box::new(agent))
+            } else {
+                None
+            };
+            ToolCardResultProjection::Subagent {
                 status: result.status,
+                agent,
                 output: result.output.clone(),
                 reused: result.reused,
             }

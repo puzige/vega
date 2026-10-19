@@ -21,6 +21,11 @@ pub(crate) enum NativeSubagentUpdate {
         event: ConversationEvent,
     },
     Updated(SubagentSnapshot),
+    FinishedAndRelease {
+        snapshot: SubagentSnapshot,
+        usage_complete: bool,
+        reply: oneshot::Sender<Result<(), VegaError>>,
+    },
     Finished {
         snapshot: SubagentSnapshot,
         usage_complete: bool,
@@ -79,6 +84,22 @@ impl SubagentHost for NativeSubagentHost {
     }
     fn updated(&self, snapshot: SubagentSnapshot) -> Result<(), VegaError> {
         self.send(NativeSubagentUpdate::Updated(snapshot))
+    }
+    fn finish_and_release(
+        &self,
+        snapshot: SubagentSnapshot,
+        usage_complete: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<(), VegaError>> + Send + 'static>> {
+        let (reply, receiver) = oneshot::channel();
+        let sent = self.send(NativeSubagentUpdate::FinishedAndRelease {
+            snapshot,
+            usage_complete,
+            reply,
+        });
+        Box::pin(async move {
+            sent?;
+            receiver.await.map_err(|_| unavailable())?
+        })
     }
     fn finished(&self, snapshot: SubagentSnapshot, usage_complete: bool) -> Result<(), VegaError> {
         self.send(NativeSubagentUpdate::Finished {

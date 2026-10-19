@@ -649,16 +649,15 @@ fn permission_button(
         .track_focus(&focus)
         .on_mouse_up(MouseButton::Left, listener)
         .child(label);
-    if primary {
-        button
-            .interaction_surface(
-                colors.accent,
-                colors.brand_primary_strong,
-                colors.accent,
-                true,
-            )
-            .into_any_element()
+    let button = if primary {
+        button.interaction_surface(
+            colors.accent,
+            colors.brand_primary_strong,
+            colors.accent,
+            true,
+        )
     } else {
-        button.interactive(colors, true, false).into_any_element()
-    }
+        button.interactive(colors, true, false)
+    };
+    button.into_any_element()
 }

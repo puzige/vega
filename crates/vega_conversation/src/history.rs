@@ -426,7 +426,7 @@ fn assemble(
         }
     }
     Ok(HistoryPage {
-        subagents: crate::subagents::children(store, thread_id)?
+        subagents: crate::subagents::history(store, thread_id)?
             .into_iter()
             .filter(|agent| {
                 page.rows

@@ -480,6 +480,7 @@ impl VegaWindow {
                 {
                     return;
                 }
+                let released = result.is_ok();
                 let mut projection = stream.read(cx).pending_queue().clone();
                 projection.busy = false;
                 match result {
@@ -492,6 +493,22 @@ impl VegaWindow {
                 this.project_pending_queue(&thread_id, &stream, projection, cx);
                 this.continue_pending_queue(&thread_id, &stream, cx);
                 this.start_pending_composer_prediction(&thread_id, &stream, cx);
+                if !this
+                    .agent_controller
+                    .queue_operations
+                    .contains_key(&thread_id)
+                    && let Some(replies) =
+                        this.agent_controller.subagent_releases.remove(&thread_id)
+                {
+                    for reply in replies {
+                        let result = if released {
+                            Ok(())
+                        } else {
+                            Err(vega_runtime::VegaError::Cancelled)
+                        };
+                        let _ = reply.send(result);
+                    }
+                }
             });
         })
         .detach();

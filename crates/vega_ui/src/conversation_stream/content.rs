@@ -120,6 +120,7 @@ impl ConversationStream {
         for snapshot in subagents {
             self.apply_subagent(snapshot, cx);
         }
+        self.restore_subagent_request_entries();
         cx.notify();
     }
 
@@ -144,6 +145,7 @@ impl ConversationStream {
         for snapshot in subagents {
             self.apply_subagent(snapshot, cx);
         }
+        self.restore_subagent_request_entries();
         cx.notify();
     }
 
@@ -380,6 +382,16 @@ impl ConversationStream {
                     let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
+                    self.refresh_subagent_card(&card, cx);
+                    if card.read(cx).is_subagent_invocation() {
+                        hydrated.push(StreamEntry::Tool { card });
+                        hydrated_identities.push(self.tool_call_identity(
+                            &call_id,
+                            Some(&message_id),
+                            Some(seq),
+                        ));
+                        continue;
+                    }
                     let run_details =
                         self.run_activity_groups
                             .get(&message_id)
@@ -648,7 +660,8 @@ impl ConversationStream {
         self.message_anchor_keyboard_id = None;
         self.list.reset(0);
         self.tool_cards.clear();
-        self.subagent_groups.clear();
+        self.preserve_subagent_requests(cx);
+        self.subagent_executions.clear();
         self.run_activity_groups.clear();
         self.run_responses.clear();
         self.artifact_cards.clear();
@@ -1329,6 +1342,18 @@ impl ConversationStream {
                 let card = cx.new(|_| ToolCard::proposed(&call));
                 self.observe_tool_card(&card, cx);
                 self.append_live_tool(card.clone(), true, cx);
+                if card.read(cx).is_subagent_invocation()
+                    && let Some(index) = self.tool_entry_index(&card, cx)
+                {
+                    let identity = self.tool_call_identity(
+                        &call_id,
+                        self.active_agent_message
+                            .as_ref()
+                            .map(|(id, _)| id.as_str()),
+                        self.active_agent_sequence,
+                    );
+                    self.set_entry_identity(index, identity);
+                }
                 self.tool_cards.insert(call_id, card);
                 self.install_pending_permission(cx);
                 self.install_pending_user_question(cx);
@@ -1365,6 +1390,7 @@ impl ConversationStream {
                         card.apply_finished(&result);
                         cx.notify();
                     });
+                    self.refresh_subagent_card(&card, cx);
                     self.invalidate_tool_card(&card, cx);
                 } else {
                     // Validation rejection/conflict can be terminal without
@@ -1662,6 +1688,15 @@ impl ConversationStream {
     }
 
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
+        cx.subscribe(
+            card,
+            |this, _, event: &vega_conversation::types::SubagentOpenRequested, cx| {
+                if event.source_thread_id == this.thread.id {
+                    cx.emit(event.clone());
+                }
+            },
+        )
+        .detach();
         cx.observe(card, |this, card, cx| {
             let index = this.tool_entry_index(&card, cx);
             this.invalidate_item(index);
@@ -1708,7 +1743,9 @@ impl ConversationStream {
             Boundary,
         }
         let tail = match entries.last() {
-            Some(StreamEntry::Tool { card }) => Tail::Single(card.clone()),
+            Some(StreamEntry::Tool { card }) if !card.read(cx).is_subagent_invocation() => {
+                Tail::Single(card.clone())
+            }
             Some(StreamEntry::ToolGroup { group }) => Tail::Group(group.clone()),
             _ => Tail::Boundary,
         };
@@ -1725,6 +1762,13 @@ impl ConversationStream {
     }
 
     fn append_live_tool(&mut self, card: Entity<ToolCard>, proposed: bool, cx: &mut Context<Self>) {
+        if card.read(cx).is_subagent_invocation() {
+            self.active_run_activity_segment = None;
+            let index = self.entries.len();
+            self.entries.push(StreamEntry::Tool { card });
+            self.list_append(index);
+            return;
+        }
         let active_message_id = self
             .active_agent_message
             .as_ref()
@@ -1744,7 +1788,9 @@ impl ConversationStream {
         }
         let index = self.entries.len().saturating_sub(1);
         let tail = match self.entries.last() {
-            Some(StreamEntry::Tool { card }) => Tail::Single(card.clone()),
+            Some(StreamEntry::Tool { card }) if !card.read(cx).is_subagent_invocation() => {
+                Tail::Single(card.clone())
+            }
             Some(StreamEntry::ToolGroup { group }) => Tail::Group(group.clone()),
             _ => Tail::Boundary,
         };
@@ -1773,7 +1819,9 @@ impl ConversationStream {
 
     fn tool_entry_cards(entry: &StreamEntry, cx: &App) -> Option<(Vec<Entity<ToolCard>>, bool)> {
         match entry {
-            StreamEntry::Tool { card } => Some((vec![card.clone()], false)),
+            StreamEntry::Tool { card } if !card.read(cx).is_subagent_invocation() => {
+                Some((vec![card.clone()], false))
+            }
             StreamEntry::ToolGroup { group } => {
                 let group = group.read(cx);
                 Some((group.children(), group.expanded()))

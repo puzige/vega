@@ -85,6 +85,14 @@ pub trait SubagentHost: Send + Sync {
         snapshot: SubagentSnapshot,
         usage_complete: bool,
     ) -> Result<(), vega_runtime::VegaError>;
+    fn finish_and_release(
+        &self,
+        snapshot: SubagentSnapshot,
+        usage_complete: bool,
+    ) -> BoxFuture<'static, Result<(), vega_runtime::VegaError>> {
+        let result = self.finished(snapshot, usage_complete);
+        Box::pin(async move { result })
+    }
 }
 
 #[derive(Clone, Debug)]
