@@ -293,3 +293,15 @@ A 可回退提示词。B 如出现回归，先停止提供 followup 能力及对
 
 变更记录：v1.0（方案评审）→ v1.1（实施冻结）：补充用户授权与逐次唤起展示/右侧列表契约，拆细 B9a–B9c，更新 UI 文件范围，并遵守最新 Rust 测试 GREEN 后删测交付规则；研究结论与其余复用范围不变。
 
+
+## 11. 实施与验证记录（2026-10-19）
+
+实现与集成入口为 [PR #492](https://github.com/puzige/vega/pull/492)。生产实现 `06cba02a072b850f59eb9046be4647e0e1a1f0a9`；合入主线 `84baff54f98ffd0888858b447677b637be86c8cf` 后，本卡迁移顺延为 `0030_delegated_executions.sql`，保留主线 0029 及其行为。本次实现遵守 v1.1：同一活动父 run 内复用 completed 子会话；按执行隔离历史、回执、等待、取消和终态；对话只展示本次唤起入口，完整列表和详情留在右侧。
+
+[最初先行测试与 RED](https://github.com/puzige/vega/pull/492#issuecomment-6260608156)保留原始来源与日志：32 发现/执行、3 通过、29 失败。后续审查发现三份测试夹具未遵守改前已有的 fresh 回执截断标记、冷历史无权限 JSON 投影和 runtime notice 格式；[纠正依据、批准范围和新内容标识](https://github.com/puzige/vega/pull/492#issuecomment-6261043188)先记录后独立提交为 `df40679040456c81aae10d3de0f978d0b272df17`。32 个验收目标未增删，不通过放宽生产校验或恢复历史回复的指令权限来通过测试。原 RED 中三个 UI 失败含夹具错误，不能单独证明正确夹具已验证展示缺失。
+
+带测试 GREEN 提交为 `9096802183a3f19a34b1656dc3f3ce2d7591c153`。[完整证据与 5 份固定源码/哈希](https://github.com/puzige/vega/pull/492#issuecomment-6261169522)已在删测前发布并逐一核对远端提交树。[Actions 39209693473](https://github.com/puzige/vega/actions/runs/39209693473)发现/执行 **32** 个 Rust 测试，**32 通过、0 失败、0 跳过**；34 个 Python 测试、fmt、全目标 Clippy 和 required check 成功。
+
+依当前 Rust 交付生命周期，GREEN 后以独立提交 `8e30bdac198b6831e83378e7e9d42d7b4fe18075` 移除本轮测试及独占接线、dev 依赖与锁包，不改变已验证的生产行为或真实控件。最终树的 `no Rust tests / 0 发现 / 0 执行` 只表示清理后的门禁状态；行为证据为上述带测试 GREEN，不以空集替代。最终提交、门禁与合并结果在 PR #492 及 #478 的交付回报中固定。
+
+本地仅完成格式、差异和依赖 metadata 静态核对，未运行 Vega、编译、构建、Clippy、测试或打包。真实窗口观感及第 9 节用户手测仍待确认；合并后 #478 保持 OPEN / In review，保留本卡分支/worktree，不因 CI 成功自动关闭。此前调研继续按“量化证据不足”收口，不作减少调用量、成本或跨产品优势的保证。
