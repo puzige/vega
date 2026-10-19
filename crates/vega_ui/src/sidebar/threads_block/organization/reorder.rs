@@ -343,6 +343,7 @@ impl ThreadsBlock {
                         this.close_actions();
                         if let Some(org) = this.organization.as_mut() {
                             org.menu = None;
+                            org.menu_anchor = None;
                             org.reorder.source = Some(drag_item.clone());
                             org.reorder.gesture = true;
                             org.reorder.previous_focus = window.focused(cx);
