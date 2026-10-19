@@ -33,7 +33,7 @@ impl ReasoningReplaySetting {
 /// UI-safe projection of one exact provider/model profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReasoningProfileProjection {
-    pub compatibility: Option<ChatCompatibility>,
+    pub compatibility: Option<Box<ChatCompatibility>>,
     pub supports_enabled: bool,
     /// Exact provider identifier.
     pub provider: String,
@@ -76,7 +76,7 @@ impl ReasoningProfileProjection {
         profile.supports_disabled = capabilities.supports_disabled;
         profile.disabled_wire = capabilities.disabled_wire;
         profile.supports_enabled = capabilities.supports_enabled;
-        profile.compatibility = Some(capabilities);
+        profile.compatibility = Some(Box::new(capabilities));
         profile
     }
 

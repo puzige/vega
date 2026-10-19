@@ -34,9 +34,9 @@ fn profile(endpoint: &str, model: &str) -> ReasoningProfileProjection {
 
 fn ready(
     profile: ReasoningProfileProjection,
-    error: Option<vega_conversation::types::ReasoningSettingsErrorCode>,
-) -> vega_conversation::types::ReasoningSettingsProjection {
-    vega_conversation::types::ReasoningSettingsProjection::Ready {
+    error: Option<ReasoningSettingsErrorCode>,
+) -> ReasoningSettingsProjection {
+    ReasoningSettingsProjection::Ready {
         generation: 1,
         profiles: vec![profile],
         error,
@@ -108,9 +108,7 @@ fn choose(
         });
         window.render_frame(cx);
         let view = settings.read(cx);
-        let vega_conversation::types::ReasoningSettingsProjection::Ready { profiles, .. } =
-            &view.reasoning
-        else {
+        let ReasoningSettingsProjection::Ready { profiles, .. } = &view.reasoning else {
             panic!("ready")
         };
         let choices = super::reasoning_state::reasoning_choices(&profiles[0]);
@@ -260,10 +258,7 @@ fn invalid_known_preference_is_visible_reloadable_and_repairable_to_real_enabled
     cx.update_window(window.into(), |_, window, cx| {
         settings.update(cx, |view, cx| {
             view.apply_reasoning_projection(
-                ready(
-                    invalid,
-                    Some(vega_conversation::types::ReasoningSettingsErrorCode::Conflict),
-                ),
+                ready(invalid, Some(ReasoningSettingsErrorCode::Conflict)),
                 cx,
             )
         });

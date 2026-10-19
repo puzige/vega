@@ -183,6 +183,7 @@ fn install_compacted_replay_frame(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_replay_response(
     reasoning: Option<&FrozenReasoning>,
     tools_requested: bool,

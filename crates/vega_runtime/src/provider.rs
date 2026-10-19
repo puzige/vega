@@ -258,7 +258,7 @@ pub enum ReasoningDisabledWire {
 /// reasoning content.
 #[derive(Clone, PartialEq, Eq)]
 pub struct FrozenReasoning {
-    pub compatibility: Option<crate::ChatCompatibility>,
+    pub compatibility: Option<Box<crate::ChatCompatibility>>,
     /// Exact configured provider identifier.
     pub provider: String,
     /// Exact configured model identifier.
