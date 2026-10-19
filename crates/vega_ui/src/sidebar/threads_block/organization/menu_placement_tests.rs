@@ -1,6 +1,5 @@
 use super::*;
 use crate::sidebar::{Sidebar, SidebarExplicitlyShown, SidebarWidth};
-pub(super) use gpui_kit as gpui;
 use gpui_kit::{
     AppContext, Bounds, InteractiveElement, KeyBinding, Modifiers, Pixels, Point, Render,
     TestAppContext, VisualTestContext, size,

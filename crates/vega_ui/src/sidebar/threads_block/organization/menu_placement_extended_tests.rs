@@ -189,6 +189,14 @@ async fn settle_commands(fixture: &mut Fixture) {
 }
 
 async fn insert_spacer_projects(fixture: &mut Fixture, before: &str, count: usize) -> TempDir {
+    insert_spacer_projects_at(fixture, Some(before), count).await
+}
+
+async fn insert_spacer_projects_at(
+    fixture: &mut Fixture,
+    before_id: Option<&str>,
+    count: usize,
+) -> TempDir {
     let directory = tempfile::tempdir().expect("owned spacer directories");
     let root = directory
         .path()
@@ -226,7 +234,7 @@ async fn insert_spacer_projects(fixture: &mut Fixture, before: &str, count: usiz
                 snapshot.revision,
                 SidebarOrganizationAction::MoveProject {
                     project_id: project.id,
-                    before_id: Some(before.to_owned()),
+                    before_id: before_id.map(str::to_owned),
                 },
             )
             .expect("spacer order")
@@ -495,6 +503,12 @@ async fn organization_menu_placement_reopen_uses_scrolled_resized_current_layout
     .await;
     let project = fixture.projects[1].clone();
     let _spacers = insert_spacer_projects(&mut fixture, &project, 3).await;
+    let _trailing_spacers = insert_spacer_projects_at(&mut fixture, None, 3).await;
+    fixture.block.update(&mut fixture.visual.cx, |block, cx| {
+        block.projects_expanded = true;
+        cx.notify();
+    });
+    fixture.settle();
     let baseline = persisted(&fixture);
     let route = route_state(&fixture);
     let id = format!("project-more-{project}");
@@ -874,7 +888,7 @@ async fn organization_menu_placement_task_menu_preserves_pointer_keyboard_comman
         cx,
         FixtureConfig {
             height: 1100.0,
-            tasks_per_project: 3,
+            tasks_per_project: 9,
             ..Default::default()
         },
     )
