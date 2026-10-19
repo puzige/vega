@@ -522,8 +522,6 @@ impl ThreadsBlock {
                         // Include the row surface outset inside the scroll clip.
                         .ml(px(-8.0))
                         .pl_2()
-                        .max_h(px(Typography::SIDEBAR_LINE_HEIGHT * 5.0))
-                        .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .children(pinned.iter().map(|thread| {
@@ -535,8 +533,7 @@ impl ThreadsBlock {
                                 "pinned-thread-row-",
                                 cx,
                             )
-                        }))
-                        .scroll_edge_fade(colors.bg_sidebar, ScrollFade::compact()),
+                        })),
                 )
                 .into_any_element(),
         )
