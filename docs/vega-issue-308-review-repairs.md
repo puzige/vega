@@ -1,12 +1,14 @@
 # #308 — GREEN 后审查修复与交付
 
-版本：v2.7，2026-10-19。状态：Codex 已完成修复方案；等待 Vega 依次完成新基线集成、新辅助功能回归 RED、最小修复及带测试 GREEN。**Codex 再审查前不得删测。**
+版本：v2.8，2026-10-19。状态：迁移集成已完成，新增辅助功能用例已取得有效 RED，最小修复后该用例已通过；Codex 已审查旧键盘用例缺少 KeyUp 的接线错误，等待 Vega 仅补齐真实按键事件并重验同批42项。**Codex 再审查前不得删测。**
 
 Issue：https://github.com/puzige/vega/issues/308
 Draft PR：https://github.com/puzige/vega/pull/484
 分支：`feat/308-new-thread-order`；复用本卡 sidebar-reorder worktree，单一写入者。
 
 本版延续 [v2.6 的排序、消息失败及 M1–M7 契约](vega-issue-308-message-order.md)，落实用户最新授权：“更新两项修复方案 → 交 Vega 修复并重新 GREEN → Codex 审查 → Vega 独立删测并跑最终门禁”。用户已澄清本轮是代码 review，不是实际操作 VoiceOver；真实读屏/模型/应用集成仍待用户手测，不标通过。
+
+v2.8 仅修订下述已留证的测试接线问题，不增加验收、不改变断言，不改变 v2.7 的最小生产修复。此前“九份源码完全冻结”的唯一例外是 `organization/tests/archive_controls.rs` 中原键盘用例补发 KeyUp；其余八份原源码、新辅助功能用例、全部 fixture 和生产代码继续冻结。旧来源及失败证据全部保留，不以修订后的源码冒充旧源码逐字一致。
 
 ## 证据与当前基线
 
@@ -69,9 +71,18 @@ R2 是本次审查发现的辅助功能缺口的新一轮先测后修。原41项
 
 本修复无需新runtime、依赖、图标、控件文案或可访问状态基础设施。原辅助功能激活不应被误报成真实VoiceOver已通过。
 
+### v2.8：仅修正原键盘用例的按键释放接线
+
+- 最小修复提交 `e5c6d291084a52d416b0009c3b5296646dc58bff` 只修改 render.rs。精确 [run 39203418675](https://github.com/puzige/vega/actions/runs/39203418675) / [Nextest job117901017045](https://github.com/puzige/vega/actions/runs/39203418675/job/117901017045) 实际42执行、41通过、1失败、0跳过。新语义用例两状态全部通过；唯一失败是原 `sidebar_archive_toolbar_tab_enter_and_space_toggle_without_navigation_or_draft_loss`，Enter 后首个归档行不可见。fmt/全目标 Clippy 和 Python34通过，总门禁因该失败未通过，不删测、不重试换绿。
+- Codex已读锁定GPUI源码确认：`TestAppContext::simulate_keystrokes` → `dispatch_keystroke` → `Window::dispatch_keystroke` 只发送 `PlatformInput::KeyDown`，不发送 KeyUp。`Div::on_click` 的内建键盘激活先在KeyDown记录焦点代次，匹配KeyUp才触发。原测试只调用 simulate_keystrokes，未发释放事件，无法执行这个完整按键路径；不能据此把生产代码改回keydown或安装双回调来迎合测试。
+- 唯一允许修改：在 `organization/tests/archive_controls.rs` 原键盘用例 `for (key, shown)` 中，保留原 simulate_keystrokes 后，紧接着通过现有 `f.window.update` / 公共 `window.dispatch_event(gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent { keystroke: gpui_kit::Keystroke::parse(key).unwrap() }), cx)` 补发同键KeyUp，再执行原run_until_parked和全部断言。Tab/鼠标及其他调用不改；可仅为这段已有测试作用域引入所需公开类型，不新增helper/API/依赖。
+- 保留两键、顺序、shown预期、所有可见行/持久snapshot/焦点/导航/草稿/未读断言，不删、不放宽、不ignore、不扩大等待。该修正增加真实输入事件完整性，不改变行为验收或添加新用例；按生命周期“测试自身错误/接线修正须先留证审查且不改变验收含义”处理，不作实现后补测追认。
+- 先提交并普通push同一draft #484。生产文件及全部非本段测试/fixture必须与 e5c6d291逐字一致；记录唯一修正源码的新blob/hash及完整SHA后冻结，不再追改。原7c/9a源码、原RED、新语义RED和e5失败保留；不声称修正后的九文件hash仍全部等于7c。
+- 由现有Actions重新验证完整42项及Python34/fmt/Clippy/required check；取得真实GREEN后交回Codex，仍不得自动删测。若出现除已定位缺失KeyUp外的新失败/前置缺口或需要修改生产行为，停止交Codex，不开放式排障或扩大接线修正范围。本地不运行代码/编译/测试。
+
 ## 修复后的审查和独立删测
 
-Vega将R1/R2修复提交、原41项与新增用例源码/hash、RED及最新42项GREEN固定在同一PR，交回Codex并停止写入。Codex复核：已发布迁移不动、0029顺序正确；原冻结九文件不变；纯结构提取与可访问角色/事件分支范围正确；没有双切换、其他控件行为变化或新业务差异；精确head全部门禁GREEN。
+Vega将R1/R2修复提交、原41项与新增用例源码/hash、v2.8唯一接线修正及来源、RED及最新42项GREEN固定在同一PR，交回Codex并停止写入。Codex复核：已发布迁移不动、0029顺序正确；原九文件仅有上述已审查KeyUp接线修正，其余源码与新语义用例不变；纯结构提取与可访问角色/事件分支范围正确；没有双切换、其他控件行为变化或新业务差异；精确head全部门禁GREEN。
 
 **Codex发布第二次明确交接前，Vega不能自行删测。** 第二次交接才授权独立提交删除下列测试及真正独占支持，并在同一PR跑最终门禁：
 
@@ -84,7 +95,7 @@ Vega将R1/R2修复提交、原41项与新增用例源码/hash、RED及最新42�
 
 ## 允许范围、命令与交接
 
-允许修改：本版文档；本卡SQL重命名和MIGRATIONS；organization/render.rs的上述纯提取与archive分支；organization.rs仅新增测试接线；一个新的a11y语义测试文件。新master变更只作原样集成。除独立删测阶段的明确清单外，不改原41项/fixture、store消息/排序、runtime、模型、权限、定价、其他UI、CI、工具链或发布流程。
+允许修改：本版文档；本卡SQL重命名和MIGRATIONS；organization/render.rs的上述纯提取与archive分支；organization.rs仅新增测试接线；一个新的a11y语义测试文件；v2.8明确的原键盘用例KeyUp事件接线。新master变更只作原样集成。除这一接线修正和独立删测阶段的明确清单外，不改原41项/fixture、store消息/排序、runtime、模型、权限、定价、其他UI、CI、工具链或发布流程。
 
 本地仅快速fmt/diff及离线locked metadata；不运行Vega、编译、cargo check/Clippy、Rust/Python测试、迁移或打包。测试、全部编译与门禁只由现有pull_request Actions执行；不新建工作流、不rerun碰绿、每5分钟查询，完成通知/用户即时要求除外。
 
