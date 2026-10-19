@@ -1,64 +1,11 @@
 use super::*;
 
-/// The effort identifiers accepted by the explicit Settings editor. They are
-/// wire values inside the model, but render helpers translate them to
-/// user-facing labels.
-pub(crate) const REASONING_EFFORTS: [&str; 6] =
-    ["minimal", "low", "medium", "high", "xhigh", "max"];
-
-fn default_efforts(protocol: ReasoningProtocol, model: &str) -> Vec<String> {
-    if matches!(protocol, ReasoningProtocol::ZhipuChatCompletions)
-        && matches!(model, "glm-5.3" | "glm-5.3-flash")
-    {
-        return ["low", "high", "max"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-    }
-    match protocol {
-        ReasoningProtocol::OpenAiChatCompletions => {
-            REASONING_EFFORTS.into_iter().map(str::to_string).collect()
-        }
-        ReasoningProtocol::ZhipuChatCompletions => ["low", "high", "max"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        ReasoningProtocol::DeepSeekChatCompletions => ["low", "high", "max"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        ReasoningProtocol::ResponsesApi | ReasoningProtocol::Unknown => Vec::new(),
-    }
-}
-
-pub(crate) fn is_legal_effort(profile: &ReasoningProfileProjection, effort: &str) -> bool {
-    profile.protocol != ReasoningProtocol::Unknown
-        && !matches!(
-            profile.support,
-            ReasoningSupport::Unsupported | ReasoningSupport::Unknown
-        )
-        && REASONING_EFFORTS.contains(&effort)
-        && !(matches!(profile.protocol, ReasoningProtocol::ZhipuChatCompletions)
-            && matches!(profile.model.as_str(), "glm-5.3" | "glm-5.3-flash")
-            && !matches!(effort, "low" | "high" | "max"))
-        && !(matches!(profile.protocol, ReasoningProtocol::DeepSeekChatCompletions)
-            && !matches!(effort, "low" | "high" | "max"))
-}
-
-pub(crate) fn standard_glm(profile: &ReasoningProfileProjection) -> bool {
-    matches!(profile.protocol, ReasoningProtocol::ZhipuChatCompletions)
-        && matches!(profile.model.as_str(), "glm-5.3" | "glm-5.3-flash")
-}
-
 fn reasoning_profile_for_edit(
     profiles: &[ReasoningProfileProjection],
     draft: Option<&ReasoningProfileProjection>,
     index: usize,
 ) -> Option<ReasoningProfileProjection> {
     let authority = profiles.get(index)?;
-    // A failed edit belongs to one exact provider/model pair. Never let a
-    // draft from row A become the base for row B merely because the row index
-    // happens to be the same.
     draft
         .filter(|candidate| {
             candidate.provider == authority.provider && candidate.model == authority.model
@@ -67,91 +14,7 @@ fn reasoning_profile_for_edit(
         .or_else(|| Some(authority.clone()))
 }
 
-fn apply_protocol_template(
-    base: &ReasoningProfileProjection,
-    template: ReasoningTemplate,
-) -> ReasoningProfileProjection {
-    let mut profile = base.clone();
-    match template {
-        ReasoningTemplate::OpenAi => {
-            profile.protocol = ReasoningProtocol::OpenAiChatCompletions;
-            profile.replay_profile = ReasoningReplaySetting::StandardChat;
-            profile.support = ReasoningSupport::Optional;
-            profile.efforts = default_efforts(profile.protocol, &profile.model);
-            profile.supports_disabled = true;
-            profile.disabled_wire = Some(ReasoningDisabledWire::ReasoningEffortNone);
-        }
-        ReasoningTemplate::Zhipu => {
-            profile.protocol = ReasoningProtocol::ZhipuChatCompletions;
-            profile.replay_profile = ReasoningReplaySetting::LegacyTextTools;
-            profile.support = if standard_glm(&profile) {
-                ReasoningSupport::Required
-            } else {
-                ReasoningSupport::Optional
-            };
-            profile.efforts = template_efforts(base, ReasoningProtocol::ZhipuChatCompletions);
-            profile.supports_disabled = !standard_glm(&profile)
-                && (base.protocol != ReasoningProtocol::ZhipuChatCompletions
-                    || base.supports_disabled);
-            profile.disabled_wire = profile
-                .supports_disabled
-                .then_some(ReasoningDisabledWire::ThinkingTypeDisabled);
-        }
-        ReasoningTemplate::DeepSeek => {
-            profile.protocol = ReasoningProtocol::DeepSeekChatCompletions;
-            profile.replay_profile = ReasoningReplaySetting::DeepSeekTools;
-            profile.support = ReasoningSupport::Optional;
-            profile.efforts = template_efforts(base, ReasoningProtocol::DeepSeekChatCompletions);
-            profile.supports_disabled = base.protocol != ReasoningProtocol::DeepSeekChatCompletions
-                || base.supports_disabled;
-            profile.disabled_wire = profile
-                .supports_disabled
-                .then_some(ReasoningDisabledWire::ThinkingTypeDisabled);
-        }
-        ReasoningTemplate::GlmPreserved | ReasoningTemplate::GlmInterleaved => {
-            profile.protocol = ReasoningProtocol::ZhipuChatCompletions;
-            profile.replay_profile = if template == ReasoningTemplate::GlmPreserved {
-                ReasoningReplaySetting::GlmPreserved
-            } else {
-                ReasoningReplaySetting::GlmInterleaved
-            };
-            profile.support = if standard_glm(&profile) {
-                ReasoningSupport::Required
-            } else {
-                ReasoningSupport::Optional
-            };
-            profile.efforts = template_efforts(base, ReasoningProtocol::ZhipuChatCompletions);
-            profile.supports_disabled = !standard_glm(&profile)
-                && (base.protocol != ReasoningProtocol::ZhipuChatCompletions
-                    || base.supports_disabled);
-            profile.disabled_wire = profile
-                .supports_disabled
-                .then_some(ReasoningDisabledWire::ThinkingTypeDisabled);
-        }
-        ReasoningTemplate::Responses => {
-            profile.protocol = ReasoningProtocol::ResponsesApi;
-            profile.replay_profile = ReasoningReplaySetting::ResponsesItems;
-            if profile.supports_disabled {
-                profile.disabled_wire = Some(ReasoningDisabledWire::ReasoningEffortNone);
-            } else {
-                profile.disabled_wire = None;
-            }
-        }
-    }
-    profile
-}
-
-fn template_efforts(base: &ReasoningProfileProjection, protocol: ReasoningProtocol) -> Vec<String> {
-    if base.protocol == protocol && !base.efforts.is_empty() {
-        return base.efforts.clone();
-    }
-    default_efforts(protocol, &base.model)
-}
-
 pub(crate) fn reasoning_choices(profile: &ReasoningProfileProjection) -> Vec<ReasoningChoice> {
-    // Required means the provider enables thinking, not that the user must
-    // pick a named effort. Omitting the effort lets the provider choose its
-    // own legal default and is distinct from an explicit Disabled choice.
     let mut choices = vec![ReasoningChoice::ProviderDefault];
     if profile.supports_disabled {
         choices.push(ReasoningChoice::Disabled);
@@ -162,35 +25,10 @@ pub(crate) fn reasoning_choices(profile: &ReasoningProfileProjection) -> Vec<Rea
     ) {
         choices.extend(profile.efforts.iter().cloned().map(ReasoningChoice::Effort));
     }
-    if choices.is_empty() {
-        choices.push(ReasoningChoice::ProviderDefault);
-    }
     choices
 }
 
 impl SettingsView {
-    pub(crate) fn cycle_reasoning_preference(&mut self, index: usize, cx: &mut Context<Self>) {
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some(mut profile) =
-            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
-        else {
-            return;
-        };
-        let choices = reasoning_choices(&profile);
-        if choices.len() < 2 {
-            return;
-        }
-        let current = profile.preference.clone();
-        let current_index = choices
-            .iter()
-            .position(|choice| *choice == current)
-            .unwrap_or(0);
-        profile.preference = choices[(current_index + 1) % choices.len()].clone();
-        self.emit_reasoning_save(index, profile, cx);
-    }
-
     pub(crate) fn select_reasoning_preference(
         &mut self,
         index: usize,
@@ -212,327 +50,25 @@ impl SettingsView {
         self.emit_reasoning_save(index, profile, cx);
     }
 
-    pub(crate) fn select_reasoning_protocol(
-        &mut self,
-        index: usize,
-        protocol: ReasoningProtocol,
-        cx: &mut Context<Self>,
-    ) {
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some(profile) =
-            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
-        else {
-            return;
-        };
-        if profile.protocol == ReasoningProtocol::ResponsesApi {
-            return;
-        }
-        if profile.protocol == protocol {
-            return;
-        }
-        let profile = match protocol {
-            ReasoningProtocol::Unknown => {
-                ReasoningProfileProjection::unknown(profile.provider, profile.model)
-            }
-            ReasoningProtocol::OpenAiChatCompletions => {
-                apply_protocol_template(&profile, ReasoningTemplate::OpenAi)
-            }
-            ReasoningProtocol::ZhipuChatCompletions => {
-                apply_protocol_template(&profile, ReasoningTemplate::Zhipu)
-            }
-            ReasoningProtocol::DeepSeekChatCompletions => {
-                apply_protocol_template(&profile, ReasoningTemplate::DeepSeek)
-            }
-            ReasoningProtocol::ResponsesApi => return,
-        };
-        self.emit_reasoning_save(index, profile, cx);
-    }
-
-    pub(crate) fn select_reasoning_support(
-        &mut self,
-        index: usize,
-        support: ReasoningSupport,
-        cx: &mut Context<Self>,
-    ) {
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some(mut profile) =
-            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
-        else {
-            return;
-        };
-        if profile.support == support {
-            return;
-        }
-        profile.support = support;
-        if matches!(
-            support,
-            ReasoningSupport::Required | ReasoningSupport::Optional
-        ) && profile.efforts.is_empty()
-        {
-            profile.efforts = default_efforts(profile.protocol, &profile.model);
-        }
-        if matches!(
-            support,
-            ReasoningSupport::Unsupported | ReasoningSupport::Unknown
-        ) {
-            profile.efforts.clear();
-            profile.supports_disabled = false;
-            profile.disabled_wire = None;
-            profile.preference = ReasoningChoice::ProviderDefault;
-        }
-        if standard_glm(&profile) {
-            profile.support = ReasoningSupport::Required;
-        }
-        self.emit_reasoning_save(index, profile, cx);
-    }
-
-    /// Applies a user-selected capability template to one exact
-    /// provider/model row. The resulting profile remains a normal precise
-    /// save request, so the controller still owns validation, merge, and
-    /// durable acknowledgement.
-    pub fn apply_reasoning_template(
-        &mut self,
-        index: usize,
-        template: ReasoningTemplate,
-        cx: &mut Context<Self>,
-    ) {
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some(base) = reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
-        else {
-            return;
-        };
-        if (base.protocol == ReasoningProtocol::ResponsesApi)
-            != (template == ReasoningTemplate::Responses)
-        {
-            return;
-        }
-        self.emit_reasoning_save(index, apply_protocol_template(&base, template), cx);
-    }
-
-    /// Cycles the declared protocol through the explicit choices. Selecting
-    /// Unknown clears all controls and therefore returns to provider default;
-    /// it is never inferred from an endpoint or model name.
-    pub(crate) fn cycle_reasoning_protocol(&mut self, index: usize, cx: &mut Context<Self>) {
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some(mut profile) =
-            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
-        else {
-            return;
-        };
-        let next = match profile.protocol {
-            ReasoningProtocol::Unknown => ReasoningProtocol::OpenAiChatCompletions,
-            ReasoningProtocol::OpenAiChatCompletions => ReasoningProtocol::ZhipuChatCompletions,
-            ReasoningProtocol::ZhipuChatCompletions => ReasoningProtocol::DeepSeekChatCompletions,
-            ReasoningProtocol::DeepSeekChatCompletions => ReasoningProtocol::Unknown,
-            ReasoningProtocol::ResponsesApi => return,
-        };
-        profile = if next == ReasoningProtocol::Unknown {
-            ReasoningProfileProjection::unknown(profile.provider, profile.model)
-        } else {
-            apply_protocol_template(
-                &profile,
-                if next == ReasoningProtocol::OpenAiChatCompletions {
-                    ReasoningTemplate::OpenAi
-                } else if next == ReasoningProtocol::DeepSeekChatCompletions {
-                    ReasoningTemplate::DeepSeek
-                } else {
-                    ReasoningTemplate::Zhipu
-                },
-            )
-        };
-        self.emit_reasoning_save(index, profile, cx);
-    }
-
-    /// Cycles the support declaration. A disabled/unknown declaration has no
-    /// editable controls until the user explicitly chooses a supported state.
-    pub(crate) fn cycle_reasoning_support(&mut self, index: usize, cx: &mut Context<Self>) {
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some(mut profile) =
-            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
-        else {
-            return;
-        };
-        profile.support = match profile.support {
-            ReasoningSupport::Unknown => ReasoningSupport::Required,
-            ReasoningSupport::Required => ReasoningSupport::Optional,
-            ReasoningSupport::Optional => ReasoningSupport::Unsupported,
-            ReasoningSupport::Unsupported => ReasoningSupport::Required,
-        };
-        if profile.protocol == ReasoningProtocol::ZhipuChatCompletions
-            && matches!(profile.model.as_str(), "glm-5.3" | "glm-5.3-flash")
-        {
-            profile.support = ReasoningSupport::Required;
-        }
-        if matches!(
-            profile.support,
-            ReasoningSupport::Required | ReasoningSupport::Optional
-        ) && profile.efforts.is_empty()
-        {
-            profile.efforts = default_efforts(profile.protocol, &profile.model);
-        }
-        if matches!(
-            profile.support,
-            ReasoningSupport::Unsupported | ReasoningSupport::Unknown
-        ) {
-            profile.efforts.clear();
-            profile.supports_disabled = false;
-            profile.disabled_wire = None;
-            profile.preference = ReasoningChoice::ProviderDefault;
-        }
-        self.emit_reasoning_save(index, profile, cx);
-    }
-
-    /// Toggles one explicitly declared effort value. Standard GLM profiles
-    /// are restricted to low/high/max by the same model-aware rule as the
-    /// store/runtime validators.
-    pub(crate) fn toggle_reasoning_effort(
-        &mut self,
-        index: usize,
-        effort: &'static str,
-        cx: &mut Context<Self>,
-    ) {
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some(mut profile) =
-            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
-        else {
-            return;
-        };
-        if !is_legal_effort(&profile, effort) {
-            return;
-        }
-        if let Some(position) = profile
-            .efforts
-            .iter()
-            .position(|candidate| candidate == effort)
-        {
-            profile.efforts.remove(position);
-            if profile.preference == ReasoningChoice::Effort(effort.to_string()) {
-                profile.preference = ReasoningChoice::ProviderDefault;
-            }
-        } else {
-            profile.efforts.push(effort.to_string());
-            profile.efforts.sort_by_key(|candidate| {
-                REASONING_EFFORTS
-                    .iter()
-                    .position(|known| known == candidate)
-                    .unwrap_or(REASONING_EFFORTS.len())
-            });
-        }
-        self.emit_reasoning_save(index, profile, cx);
-    }
-
-    /// Toggles a declared disabled wire operation. Zhipu standard GLM
-    /// profiles intentionally have no disabled action.
-    pub(crate) fn toggle_reasoning_disabled(&mut self, index: usize, cx: &mut Context<Self>) {
-        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
-            return;
-        };
-        let Some(mut profile) =
-            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
-        else {
-            return;
-        };
-        if profile.protocol == ReasoningProtocol::Unknown
-            || profile.protocol == ReasoningProtocol::ResponsesApi
-            || matches!(
-                profile.support,
-                ReasoningSupport::Unsupported | ReasoningSupport::Unknown
-            )
-            || standard_glm(&profile)
-        {
-            return;
-        }
-        profile.supports_disabled = !profile.supports_disabled;
-        profile.disabled_wire = if profile.supports_disabled {
-            Some(match profile.protocol {
-                ReasoningProtocol::OpenAiChatCompletions => {
-                    ReasoningDisabledWire::ReasoningEffortNone
-                }
-                ReasoningProtocol::ZhipuChatCompletions => {
-                    ReasoningDisabledWire::ThinkingTypeDisabled
-                }
-                ReasoningProtocol::DeepSeekChatCompletions => {
-                    ReasoningDisabledWire::ThinkingTypeDisabled
-                }
-                ReasoningProtocol::Unknown => return,
-                ReasoningProtocol::ResponsesApi => return,
-            })
-        } else {
-            None
-        };
-        if !profile.supports_disabled && profile.preference == ReasoningChoice::Disabled {
-            profile.preference = ReasoningChoice::ProviderDefault;
-        }
-        self.emit_reasoning_save(index, profile, cx);
-    }
-
-    pub(crate) fn toggle_reasoning_advanced(&mut self, _: usize, cx: &mut Context<Self>) {
-        self.reasoning_advanced = !self.reasoning_advanced;
-        self.rebuild_reasoning_focuses(cx);
-        cx.notify();
-    }
-
     pub(crate) fn rebuild_reasoning_focuses(&mut self, cx: &mut Context<Self>) {
         let mut targets = Vec::new();
         if let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning {
             targets.push(ReasoningFocusTarget::Reload);
             for (index, authority) in profiles.iter().enumerate() {
-                targets.push(ReasoningFocusTarget::Advanced(index));
+                if self
+                    .model_settings
+                    .as_ref()
+                    .is_some_and(|(provider, model)| {
+                        authority.provider != *provider || authority.model != *model
+                    })
+                {
+                    continue;
+                }
                 let profile =
                     reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
                         .unwrap_or_else(|| authority.clone());
-                if self.reasoning_advanced {
-                    if profile.protocol == ReasoningProtocol::ResponsesApi {
-                        targets.push(ReasoningFocusTarget::Template {
-                            index,
-                            template: ReasoningTemplate::Responses,
-                        });
-                    } else {
-                        for template in [
-                            ReasoningTemplate::OpenAi,
-                            ReasoningTemplate::Zhipu,
-                            ReasoningTemplate::DeepSeek,
-                            ReasoningTemplate::GlmPreserved,
-                            ReasoningTemplate::GlmInterleaved,
-                        ] {
-                            targets.push(ReasoningFocusTarget::Template { index, template });
-                        }
-                    }
-                    if profile.protocol != ReasoningProtocol::ResponsesApi {
-                        targets.push(ReasoningFocusTarget::Protocol(index));
-                        if profile.protocol != ReasoningProtocol::Unknown {
-                            targets.push(ReasoningFocusTarget::Support(index));
-                        }
-                    }
-                }
-                for effort in REASONING_EFFORTS {
-                    if is_legal_effort(&profile, effort) {
-                        targets.push(ReasoningFocusTarget::Effort { index, effort });
-                    }
-                }
-                targets.push(ReasoningFocusTarget::Preference(index));
-                if self.reasoning_advanced
-                    && profile.protocol != ReasoningProtocol::Unknown
-                    && profile.protocol != ReasoningProtocol::ResponsesApi
-                    && !standard_glm(&profile)
-                    && !matches!(
-                        profile.support,
-                        ReasoningSupport::Unsupported | ReasoningSupport::Unknown
-                    )
-                {
-                    targets.push(ReasoningFocusTarget::Disabled(index));
+                for choice in reasoning_choices(&profile) {
+                    targets.push(ReasoningFocusTarget::Preference { index, choice });
                 }
             }
         }

@@ -1,4 +1,5 @@
 mod agent;
+mod chat_compat;
 mod context;
 mod error;
 mod openai;
@@ -29,6 +30,7 @@ pub use agent::{
     run_agent_with_permission_sink_and_context, run_agent_with_sink, tool_definitions,
     tool_names_equivalent, valid_subagent_input,
 };
+pub use chat_compat::{ChatCompatibility, ReasoningSupport, chat_compatibility};
 pub use context::{
     CONTEXT_ESTIMATOR_VERSION, ContextBudget, ContextCheck, ContextCompactionFailure,
     ContextCompactionHook, ContextCompactionPhase, ContextCompactionRequest,

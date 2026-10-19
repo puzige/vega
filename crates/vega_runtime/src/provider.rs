@@ -8,10 +8,6 @@ use tokio_util::sync::CancellationToken;
 use crate::error::VegaError;
 
 /// Protocol family used to encode a frozen thinking selection.
-///
-/// The runtime never infers this value from a provider URL or model name. The
-/// app/store boundary supplies an explicit declaration; `Unknown` therefore
-/// has the safe provider-default wire behavior only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReasoningProtocol {
     /// OpenAI-style Chat Completions using `reasoning_effort`.
@@ -32,7 +28,6 @@ pub enum ReasoningReplayPolicy {
     GlmPreserved,
     GlmInterleaved,
     ResponsesItems,
-    LegacyTextTools,
     #[default]
     Unknown,
 }
@@ -40,9 +35,8 @@ pub enum ReasoningReplayPolicy {
 impl ReasoningReplayPolicy {
     pub fn preserves_chat_response(self, tools_requested: bool) -> bool {
         match self {
-            Self::DeepSeekTools | Self::LegacyTextTools => tools_requested,
+            Self::DeepSeekTools | Self::StandardChat | Self::Unknown => tools_requested,
             Self::GlmPreserved | Self::GlmInterleaved | Self::ResponsesItems => true,
-            Self::StandardChat | Self::Unknown => false,
         }
     }
 
@@ -343,17 +337,13 @@ impl FrozenReasoning {
         }
         if matches!(self.protocol, ReasoningProtocol::Unknown)
             && (self.replay_policy != ReasoningReplayPolicy::Unknown
-                && !(self.replay_policy == ReasoningReplayPolicy::LegacyTextTools
-                    && !self.supports_disabled
-                    && self.disabled_wire.is_none()
-                    && self.declared_efforts.is_empty())
                 || self.supports_disabled
                 || self.disabled_wire.is_some()
                 || !self.declared_efforts.is_empty())
         {
             return Err(VegaError::ReasoningSelectionInvalid {
                 message:
-                    "unknown reasoning protocol cannot declare controls or replay reasoning content"
+                    "unknown reasoning protocol cannot declare controls or a specialized replay policy"
                         .to_string(),
             });
         }
@@ -417,7 +407,6 @@ impl FrozenReasoning {
             ReasoningReplayPolicy::StandardChat => {
                 !matches!(self.protocol, ReasoningProtocol::Unknown)
             }
-            ReasoningReplayPolicy::LegacyTextTools => true,
             ReasoningReplayPolicy::DeepSeekTools => {
                 matches!(self.protocol, ReasoningProtocol::DeepSeekChatCompletions)
             }

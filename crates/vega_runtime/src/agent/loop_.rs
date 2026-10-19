@@ -192,17 +192,13 @@ fn validate_replay_response(
     response_layout: Option<&crate::ResponseReplayLayout>,
     assistant_text: &str,
 ) -> Result<(), VegaError> {
-    let raw_chat_state = !matches!(presence, crate::ChatReasoningPresence::Absent);
     let raw_response_state = !response_reasoning.is_empty() || response_layout.is_some();
     let policy = reasoning
         .map(|profile| profile.replay_policy)
         .unwrap_or(crate::ReasoningReplayPolicy::Unknown);
     if !calls.is_empty()
-        && matches!(
-            policy,
-            crate::ReasoningReplayPolicy::Unknown | crate::ReasoningReplayPolicy::StandardChat
-        )
-        && (raw_chat_state || raw_response_state)
+        && policy != crate::ReasoningReplayPolicy::ResponsesItems
+        && raw_response_state
     {
         return Err(VegaError::ReasoningReplayUnsupported);
     }
@@ -2437,8 +2433,17 @@ where
             ));
         }
         let reasoning_presence = reasoning_presence.unwrap_or_default();
-        if stop_reason.is_some()
-            && let Err(error) = validate_replay_response(
+        let response_error = if stop_reason.is_none() {
+            Some(VegaError::ProviderDiagnostic {
+                kind: crate::ProviderFailureKind::Protocol,
+                status: None,
+                message: "provider stream ended without a terminal event".into(),
+                retryable: false,
+                retry_count: None,
+                request_id: None,
+            })
+        } else {
+            validate_replay_response(
                 request.reasoning.as_ref(),
                 tools_requested,
                 &calls,
@@ -2447,7 +2452,9 @@ where
                 response_layout.as_ref(),
                 &assistant_text,
             )
-        {
+            .err()
+        };
+        if let Some(error) = response_error {
             emit!(
                 events,
                 sink,
@@ -2549,11 +2556,7 @@ where
                 messages[0].mark_replay_unsealable();
             }
             let mut assistant = ChatMessage::new(ChatRole::Assistant, assistant_text);
-            if request.reasoning.as_ref().is_some_and(|profile| {
-                profile
-                    .replay_policy
-                    .preserves_chat_response(tools_requested)
-            }) {
+            if replay_policy.preserves_chat_response(tools_requested) {
                 assistant.reasoning_content = match reasoning_presence {
                     crate::ChatReasoningPresence::Absent => None,
                     crate::ChatReasoningPresence::Empty => Some(String::new()),
@@ -2676,11 +2679,14 @@ where
             .map(PreparedRuntimeCall::audit_call)
             .collect();
         let mut assistant_message = ChatMessage::assistant_with_tools(assistant_text, wire_calls);
-        if request.reasoning.as_ref().is_some_and(|profile| {
-            profile
-                .replay_policy
-                .preserves_chat_response(tools_requested)
-        }) {
+        if request
+            .reasoning
+            .as_ref()
+            .map_or(crate::ReasoningReplayPolicy::Unknown, |profile| {
+                profile.replay_policy
+            })
+            .preserves_chat_response(tools_requested)
+        {
             assistant_message.reasoning_content = match reasoning_presence {
                 crate::ChatReasoningPresence::Absent => None,
                 crate::ChatReasoningPresence::Empty => Some(String::new()),

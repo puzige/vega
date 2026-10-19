@@ -300,7 +300,6 @@ impl SettingsView {
         section: usize,
         cx: &mut Context<Self>,
     ) {
-        self.reasoning_advanced = false;
         if self.config.providers.iter().any(|candidate| {
             candidate.name == provider
                 && candidate.models.iter().any(|candidate| candidate == model)
