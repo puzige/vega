@@ -458,3 +458,6 @@ pub(crate) mod responses;
 mod sse;
 
 pub(crate) use sse::*;
+
+#[cfg(test)]
+mod chat_usage_tests;
