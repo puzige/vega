@@ -146,6 +146,7 @@ pub struct ToolCard {
     running_started_at: Option<Instant>,
     running_elapsed_seconds: Option<u64>,
     elapsed_refresh_task: Option<Task<()>>,
+    presentation_released: bool,
     execution: Option<SubagentSnapshot>,
 }
 
@@ -191,6 +192,7 @@ impl ToolCard {
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
+            presentation_released: false,
             execution: None,
         };
         card.refresh_summary();
@@ -216,6 +218,7 @@ impl ToolCard {
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
+            presentation_released: true,
             execution: None,
         };
         card.refresh_summary();
@@ -236,6 +239,7 @@ impl ToolCard {
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
+            presentation_released: true,
             execution: None,
         };
         card.refresh_summary();
@@ -264,6 +268,7 @@ impl ToolCard {
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
+            presentation_released: true,
             execution: None,
         };
         card.refresh_summary();
@@ -351,7 +356,7 @@ impl ToolCard {
             return false;
         }
         self.status = ToolCallStatus::Running;
-        if self.is_bash() && self.running_started_at.is_none() {
+        if !self.presentation_released && self.is_bash() && self.running_started_at.is_none() {
             let started_at = cx.background_executor().now();
             self.running_started_at = Some(started_at);
             self.running_elapsed_seconds = Some(0);
@@ -585,11 +590,19 @@ impl ToolCard {
         colors.conversation_tool
     }
 
+    pub(crate) fn is_running(&self) -> bool {
+        self.status == ToolCallStatus::Running && self.approval.is_some() && self.result.is_none()
+    }
+
+    pub(crate) fn headline_title(&self) -> &str {
+        &self.summary
+    }
+
     pub(crate) fn is_expanded(&self) -> bool {
         self.expanded
     }
 
-    fn compact_row_text(&self) -> String {
+    pub(crate) fn compact_title(&self) -> String {
         if !self.expanded
             || !self.is_bash()
             || matches!(
@@ -644,14 +657,24 @@ impl ToolCard {
         window: &mut gpui_kit::Window,
         cx: &mut App,
     ) -> AnyElement {
+        Self::render_with_title(card, indented, None, window, cx)
+    }
+
+    pub(crate) fn render_with_title(
+        card: Entity<Self>,
+        indented: bool,
+        headline: Option<(String, AnyElement)>,
+        window: &mut gpui_kit::Window,
+        cx: &mut App,
+    ) -> AnyElement {
         if card.read(cx).is_subagent_invocation() {
-            return Self::render_invocation(card, indented, window, cx);
+            return Self::render_invocation(card, indented, headline, window, cx);
         }
         let colors = theme(cx).colors;
         let (title, leading_icon, leading_icon_color, expanded, expandable, detail) = {
             let card_ref = card.read(cx);
             let expanded = card_ref.expanded;
-            let title = card_ref.compact_row_text();
+            let title = card_ref.compact_title();
             (
                 title,
                 card_ref.leading_icon(),
@@ -661,6 +684,8 @@ impl ToolCard {
                 if expanded { card_ref.detail() } else { None },
             )
         };
+        let (title, title_element) =
+            headline.unwrap_or_else(|| (title.clone(), div().child(title).into_any_element()));
         let detail_scroll = card.read(cx).detail_scroll.clone();
         let detail_id = format!("tool-detail-{}", card.entity_id());
         let toggle_card = card.clone();
@@ -729,7 +754,7 @@ impl ToolCard {
                     .truncate()
                     .text_size(px(Typography::CONVERSATION))
                     .text_color(colors.conversation_tool)
-                    .child(title),
+                    .child(title_element),
             )
             .child(crate::disclosure::inline_chevron(
                 disclosure_group,
@@ -786,6 +811,7 @@ impl ToolCard {
     fn render_invocation(
         card: Entity<Self>,
         indented: bool,
+        headline: Option<(String, AnyElement)>,
         window: &mut gpui_kit::Window,
         cx: &mut App,
     ) -> AnyElement {
@@ -805,6 +831,8 @@ impl ToolCard {
             (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
             _ => "Delegate task".into(),
         };
+        let (title, title_element) =
+            headline.unwrap_or_else(|| (title.clone(), div().child(title).into_any_element()));
         let status = agent.as_ref().map_or_else(
             || match current.status {
                 ToolCallStatus::PendingApproval => "Pending",
@@ -903,7 +931,7 @@ impl ToolCard {
                     .min_w_0()
                     .truncate()
                     .text_color(colors.conversation_tool)
-                    .child(title),
+                    .child(title_element),
             )
             .child(
                 div()
@@ -1105,6 +1133,11 @@ impl ToolCard {
             return action.into();
         };
         format!("{action} {}", compact_object(command))
+    }
+
+    pub(crate) fn release_presentation(&mut self) {
+        self.presentation_released = true;
+        self.elapsed_refresh_task = None;
     }
 
     fn stop_live_elapsed(&mut self) {

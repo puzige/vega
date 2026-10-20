@@ -673,6 +673,8 @@ impl ConversationStream {
         self.active_run_activity_segment = None;
         self.active_segment_ordinal = 0;
         self.active_response_start = None;
+        self.active_response_id = None;
+        self.response_reasoning_completed = false;
         self.active_segment_has_text = false;
         self.active_segment_has_visible_text = false;
         self.active_thinking = None;
@@ -1067,68 +1069,24 @@ impl ConversationStream {
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
         self.feed_meter(&event, cx);
         self.clear_recovered_retry(&event);
-        let phase = match &event {
-            ConversationEvent::AssistantResponseStarted { message_id, .. }
-                if self
-                    .active_agent_message
-                    .as_ref()
-                    .is_some_and(|(id, _)| id == message_id) =>
-            {
-                Some(run_activity::RunPhase::Requesting)
-            }
-            ConversationEvent::ThinkingDelta { message_id, delta }
-            | ConversationEvent::SummaryDelta { message_id, delta }
-                if !delta.trim().is_empty()
-                    && self
-                        .active_agent_message
-                        .as_ref()
-                        .is_some_and(|(id, _)| id == message_id) =>
-            {
-                Some(run_activity::RunPhase::Thinking)
-            }
-            ConversationEvent::TextDelta { message_id, delta }
-                if delta.chars().any(|character| !character.is_whitespace())
-                    && self
-                        .active_agent_message
-                        .as_ref()
-                        .is_some_and(|(id, _)| id == message_id) =>
-            {
-                Some(run_activity::RunPhase::Responding)
-            }
-            ConversationEvent::ToolCallProposed { call }
-                if !self.tool_cards.contains_key(&call.id) =>
-            {
-                Some(run_activity::RunPhase::Working)
-            }
-            ConversationEvent::ToolCallRunning { call_id }
-            | ConversationEvent::ToolCallFinished { call_id, .. }
-                if self.tool_cards.get(call_id).is_some_and(|card| {
-                    self.active_run_activity
-                        .as_ref()
-                        .is_some_and(|(_, group)| group.read(cx).contains_tool(card, cx))
-                }) =>
-            {
-                Some(
-                    if matches!(&event, ConversationEvent::ToolCallFinished { .. }) {
-                        run_activity::RunPhase::Working
-                    } else {
-                        run_activity::RunPhase::Tool
-                    },
-                )
-            }
-            _ => None,
-        };
-        if let Some(phase) = phase
-            && let Some((_, group)) = &self.active_run_activity
-        {
-            group.update(cx, |group, cx| group.set_phase(phase, cx));
-        }
         match event {
             ConversationEvent::AssistantResponseStarted {
                 message_id,
+                response_id,
                 text_start_bytes,
             } => {
-                self.checkpoint_response(&message_id, text_start_bytes, cx);
+                self.checkpoint_response(&message_id, &response_id, text_start_bytes, cx);
+            }
+            ConversationEvent::ReasoningCompleted {
+                message_id,
+                response_id,
+            } => {
+                if self.matches_response(&message_id, &response_id)
+                    && !self.response_reasoning_completed
+                {
+                    self.response_reasoning_completed = true;
+                    self.finish_live_thinking(cx);
+                }
             }
             ConversationEvent::ResponseRetrying {
                 message_id,
@@ -1168,6 +1126,8 @@ impl ConversationStream {
                 self.active_run_activity = Some((message_id.clone(), group.clone()));
                 self.active_segment_ordinal = 0;
                 self.active_response_start = None;
+                self.active_response_id = None;
+                self.response_reasoning_completed = false;
                 self.active_agent_sequence = i64::try_from(seq).ok();
                 self.active_run_activity_segment = None;
                 self.ensure_live_run_activity_header(
@@ -1195,10 +1155,24 @@ impl ConversationStream {
                 message_id,
                 response,
             } => {
-                if let Some((active_id, group)) = &self.active_run_activity
-                    && active_id == &message_id
-                {
-                    group.update(cx, |group, cx| group.finish_thinking(cx));
+                if self.matches_response(&message_id, &response.response_id) {
+                    let text = self
+                        .entries
+                        .iter()
+                        .zip(&self.entry_identities)
+                        .filter_map(|(entry, identity)| {
+                            if identity.message_id.as_deref() != Some(message_id.as_str()) {
+                                return None;
+                            }
+                            match entry {
+                                StreamEntry::Assistant { copy, .. } => Some(copy.original_text()),
+                                _ => None,
+                            }
+                        })
+                        .collect::<String>();
+                    if response.is_valid_for(&text) {
+                        self.finish_live_thinking(cx);
+                    }
                 }
                 self.apply_response_metadata(&message_id, response, cx);
             }
@@ -1217,10 +1191,18 @@ impl ConversationStream {
                 }
                 let starts_visible_text = !self.active_segment_has_visible_text
                     && delta.chars().any(|character| !character.is_whitespace());
+                if delta.chars().any(|character| !character.is_whitespace()) {
+                    self.finish_live_thinking(cx);
+                    if let Some((_, group)) = &self.active_run_activity {
+                        group.update(cx, |group, cx| {
+                            group.set_phase(run_activity::RunPhase::Responding, cx);
+                        });
+                    }
+                    self.active_thinking = None;
+                }
                 if starts_visible_text {
                     self.active_run_activity_segment = None;
                 }
-                self.active_thinking = None;
                 let entry_index = if entry_index == usize::MAX {
                     let index = self.entries.len();
                     self.entries.push(StreamEntry::Assistant {
@@ -1337,6 +1319,7 @@ impl ConversationStream {
                     self.install_pending_user_question(cx);
                     return;
                 }
+                self.finish_live_thinking(cx);
                 self.close_active_segment_before_tool();
                 let call_id = call.id.clone();
                 let card = cx.new(|_| ToolCard::proposed(&call));
@@ -1374,7 +1357,14 @@ impl ConversationStream {
             ConversationEvent::ToolCallRunning { call_id } => {
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     let card = card.clone();
-                    card.update(cx, ToolCard::apply_running);
+                    let started = card.update(cx, |card, cx| {
+                        let was_running = card.is_running();
+                        card.apply_running(cx);
+                        !was_running && card.is_running()
+                    });
+                    if started && let Some((_, group)) = &self.active_run_activity {
+                        group.update(cx, |group, cx| group.tool_started(&card, cx));
+                    }
                     self.invalidate_tool_card(&card, cx);
                 } else {
                     self.push_corrupt_tool(call_id, cx);
@@ -1506,12 +1496,27 @@ impl ConversationStream {
         }
     }
 
+    fn finish_live_thinking(&mut self, cx: &mut Context<Self>) {
+        if let Some(card) = &self.active_thinking {
+            card.update(cx, |card, _| card.progress_finished = true);
+        }
+        if let Some((_, group)) = &self.active_run_activity {
+            group.update(cx, |group, cx| group.finish_thinking(cx));
+        }
+    }
+
     pub(crate) fn finish_agent_message(&mut self, message_id: &str, cx: &mut Context<Self>) {
         let Some((active_id, entry_index)) = self.active_agent_message.as_ref() else {
             return;
         };
         if active_id != message_id {
             return;
+        }
+        let entry_index = *entry_index;
+        if let Some((active_id, group)) = &self.active_run_activity
+            && active_id == message_id
+        {
+            group.update(cx, |group, cx| group.release_presentation(cx));
         }
         self.response_checkpoint = None;
         self.network_retry = None;
@@ -1522,15 +1527,15 @@ impl ConversationStream {
         // 这是从 mutable tail 摘除前的最后一次显式失效（C4 白名单），必须
         // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]
         // 的尾部 delta 永不上屏、终块永无 committed 高亮。
-        if *entry_index != usize::MAX {
+        if entry_index != usize::MAX {
             if let Some(StreamEntry::Assistant { stream, model, .. }) =
-                self.entries.get_mut(*entry_index)
+                self.entries.get_mut(entry_index)
             {
                 stream.finish();
                 let snapshot = stream.snapshot();
                 model.sync(&snapshot, &self.counters);
             }
-            self.invalidate_item(Some(*entry_index));
+            self.invalidate_item(Some(entry_index));
         }
         self.last_finished_agent_message = self
             .active_agent_message
@@ -1540,6 +1545,8 @@ impl ConversationStream {
         self.active_segment_has_visible_text = false;
         self.active_segment_ordinal = 0;
         self.active_response_start = None;
+        self.active_response_id = None;
+        self.response_reasoning_completed = false;
         self.active_agent_sequence = None;
         self.active_run_activity_segment = None;
         if self

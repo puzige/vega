@@ -182,6 +182,7 @@ impl gpui_kit::EventEmitter<ThinkingChanged> for ThinkingBlock {}
 pub(crate) struct ThinkingBlock {
     pub(crate) text: String,
     pub(crate) shimmer_epoch: Option<Instant>,
+    pub(crate) progress_finished: bool,
     summary: String,
     raw_window: window::SourceWindow,
     summary_window: window::SourceWindow,
@@ -283,6 +284,7 @@ impl ThinkingBlock {
         Self {
             text: String::new(),
             shimmer_epoch: None,
+            progress_finished: false,
             summary: String::new(),
             raw_window: window::SourceWindow::default(),
             summary_window: window::SourceWindow::default(),
@@ -600,9 +602,6 @@ impl ConversationStream {
             self.active_thinking = Some(card);
         }
         if let Some(card) = self.active_thinking.clone() {
-            if let Some((_, group)) = &self.active_run_activity {
-                group.update(cx, |group, cx| group.set_thinking(card.clone(), cx));
-            }
             let before = card.read(cx).retained_bytes();
             let (retained, summary_preview_changed) = card.update(cx, |card, cx| {
                 let title = card.title().to_owned();
@@ -647,12 +646,15 @@ impl ConversationStream {
                 card.prepare_body(cx);
                 (appended, summary_preview_changed)
             });
-            if summary_preview_changed
+            if !card.read(cx).progress_finished
+                && (summary_preview_changed
+                    || !summary
+                        && !delta.trim().is_empty()
+                        && card.read(cx).summary_title().is_none())
                 && let Some((_, group)) = &self.active_run_activity
-                && let Some(segment) = self.active_run_activity_segment
             {
                 group.update(cx, |group, cx| {
-                    group.mark_summary_preview(segment, &card, cx)
+                    group.set_thinking(card.clone(), summary_preview_changed, cx)
                 });
             }
             self.thinking_bytes = self.thinking_bytes.saturating_sub(before) + retained;

@@ -104,6 +104,8 @@ pub struct ConversationStream {
     pub(crate) active_agent_sequence: Option<i64>,
     pub(crate) active_segment_ordinal: usize,
     pub(crate) active_response_start: Option<usize>,
+    pub(crate) active_response_id: Option<String>,
+    pub(crate) response_reasoning_completed: bool,
     pub(crate) response_checkpoint: Option<network_retry::ResponseCheckpoint>,
     pub(crate) network_retry: Option<(String, u32, u32)>,
     /// Whether the current Markdown segment contains text; a tool boundary
@@ -516,6 +518,8 @@ impl ConversationStream {
             active_agent_sequence: None,
             active_segment_ordinal: 0,
             active_response_start: None,
+            active_response_id: None,
+            response_reasoning_completed: false,
             response_checkpoint: None,
             network_retry: None,
             active_thinking: None,
@@ -1672,6 +1676,7 @@ impl ConversationStream {
             | ConversationEvent::RunStarted { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
+            | ConversationEvent::ReasoningCompleted { .. }
             | ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }
             | ConversationEvent::SkillActivated { .. }
