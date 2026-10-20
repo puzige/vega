@@ -473,10 +473,6 @@ impl VegaWindow {
     }
 
     pub(crate) fn composer_config_path(&self) -> Option<std::path::PathBuf> {
-        #[cfg(test)]
-        if let Some(path) = &self.composer_config_path_override {
-            return Some(path.clone());
-        }
         vega_store::paths::config_dir().map(|dir| dir.join("config.toml"))
     }
 

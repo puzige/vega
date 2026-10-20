@@ -52,8 +52,5 @@ pub mod automation;
 
 pub mod subagents;
 
-#[cfg(test)]
-mod model_compatibility_tests;
-
 pub mod model_capabilities;
 pub use model_capabilities::{ModelCapabilityAuthority, ModelCapabilitySettingsService};

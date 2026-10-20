@@ -245,7 +245,3 @@ fn normalized(text: &str, limit: usize) -> String {
     }
     result.trim_end().to_owned()
 }
-
-#[cfg(test)]
-#[path = "model_compatibility_tests/automatic_titles.rs"]
-mod compatibility_tests;

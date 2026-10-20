@@ -1,7 +1,5 @@
 use super::*;
 use crate::interaction::InteractionExt;
-#[cfg(test)]
-use gpui_kit::TestSupportExt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelCapabilityFocusTarget {
@@ -449,8 +447,6 @@ fn capability_control(
             button.aria_toggled(checked.into())
         })
         .interactive(colors, enabled, checked == Some(true));
-    #[cfg(test)]
-    let button = button.test_support();
     button
         .when(enabled, |button| button.focusable().tab_stop(true))
         .when_some(focus.filter(|_| enabled), |button, focus| {

@@ -2607,7 +2607,3 @@ fn normalize_summary(text: &str) -> Result<String, ContextRuntimeError> {
     }
     Ok(format!("Summary:\n{summary}"))
 }
-
-#[cfg(test)]
-#[path = "../model_compatibility_tests/compaction.rs"]
-mod compatibility_tests;

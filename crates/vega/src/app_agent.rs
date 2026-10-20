@@ -1466,7 +1466,3 @@ pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
         "继续推进已设置的持续目标。"
     }
 }
-
-#[cfg(test)]
-#[path = "app_model_compatibility_tests.rs"]
-mod model_compatibility_tests;

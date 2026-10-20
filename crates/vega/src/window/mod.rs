@@ -95,8 +95,6 @@ impl ModelSelectionRefresh {
 }
 
 pub(crate) struct VegaWindow {
-    #[cfg(test)]
-    composer_config_path_override: Option<PathBuf>,
     pub(crate) composer_prediction_config_generation: u64,
     pub(crate) composer_prediction: Option<composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
@@ -189,19 +187,6 @@ pub(crate) struct VegaWindow {
 
 impl VegaWindow {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        Self::new_inner(
-            #[cfg(test)]
-            None,
-            cx,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_for_test(config_path: PathBuf, cx: &mut Context<Self>) -> Self {
-        Self::new_inner(Some(config_path), cx)
-    }
-
-    fn new_inner(#[cfg(test)] config_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         cx.on_release(|this, cx| {
             if cx
                 .try_global::<crate::automation_controller::AutomationGlobal>()
@@ -294,8 +279,6 @@ impl VegaWindow {
         })
         .detach();
         let mut window = Self {
-            #[cfg(test)]
-            composer_config_path_override: config_path,
             composer_prediction_config_generation: 0,
             composer_prediction: None,
             updater: crate::updater::Updater::default(),
@@ -353,12 +336,7 @@ impl VegaWindow {
             deferred_model_refresh: None,
         };
         window.start_pricing_load(cx);
-        #[cfg(not(test))]
         window.start_updater(cx);
-        #[cfg(test)]
-        if window.composer_config_path_override.is_none() {
-            window.start_updater(cx);
-        }
         window
     }
 
@@ -407,6 +385,3 @@ impl Drop for VegaWindow {
         self.window_terminal_cleanup();
     }
 }
-
-#[cfg(test)]
-mod model_capability_tests;

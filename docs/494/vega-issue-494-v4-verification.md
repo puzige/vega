@@ -43,7 +43,23 @@
 
 四文件修正提交 `636d3104a3322de1a7475c364d287f6a2edc9e5d` 的 [Actions 39370960515](https://github.com/puzige/vega/actions/runs/39370960515) 被一个生产类型路径编译错误阻断：新helper使用了conversation未声明的rusqlite路径。发现数未取得、执行0，不称行为结果；Format和Python34成功。[修改前审查及日志SHA](vega-issue-494-remaining-compile-correction.json)仅允许使用Store本已公开导出的同一Connection类型，不新增依赖、改测试或行为。
 
-真实模型服务、原生应用和外层Trusted Git进程流程由用户合并后纯手动验证，不能把网络替身测试称真实服务或系统E2E。Issue在用户明确通过前保持开放，当前In progress。
+## 完整带测试GREEN
+
+一行同类型路径更正提交 `7d1066901e9f488cc81e825bb035df6dea7936ee` 的 [Actions 39371580926](https://github.com/puzige/vega/actions/runs/39371580926) 已完整成功：**133发现、133执行、133通过、0失败、0忽略、0跳过、0重试**，14个binaries。主会话读取完整原始Nextest日志，独立核对133个PASS和最终summary；Format、全目标Clippy、Python5+15+14及required check均成功。[完整结果/原始job/日志SHA](vega-issue-494-behavior-green.json)固定本次证据，不能借用删测后的空集。
+
+[GREEN时的完整源码](https://github.com/puzige/vega/tree/7d1066901e9f488cc81e825bb035df6dea7936ee/crates)与[完整更正提交补丁](https://github.com/puzige/vega/commit/7d1066901e9f488cc81e825bb035df6dea7936ee.patch)已读回；[来源恢复核验](vega-issue-494-green-source-recovery.json)固定34个GitHub blob及文件SHA，涵盖26个测试artifact、四个剩余生产修正和来源/原始清单。更正提交补丁4,132字节、SHA256 `f38b117c6750552ef297eaef1e8507c6b51020481f371c302795175d6f821d81`；生产修正与先行测试/全部更正补丁均可沿PR的完整SHA恢复。原始133名称/属性不变；测试资料和一处错误类型假定的更正已单独事前审查，不能称原始测试字节始终不变。
+
+遵照用户确认的现行生命周期，下一步仅按[独立清理计划](vega-issue-494-test-cleanup-plan.json)删除26个测试artifact并清25个独占接线/依赖路径，保留全部已验证产品语义、真实UI/无障碍/焦点/事件、生产758数据及MIT、Python、benchmark和workflow。独立清理提交和最终head的0发现/0执行完整门禁尚待取得；当前仍draft、Issue In progress。
+
+## 最终清理与最新head门禁
+
+[PR的固定最终记录](https://github.com/puzige/vega/pull/504#issuecomment-6283731800)统一保存独立清理完整SHA、生产等价审查、最新head原始run/job及0发现/0执行结果；取得结果后更新该记录，不为追填结果额外改动已经验证的生产head。此文件前面的待办句是对应阶段的历史状态，最终门禁与合并状态以该记录为准。清理后的空集明确写no Rust tests，不能替代上面的133项带测试GREEN。
+
+GREEN证据在[删除前已公开固定](https://github.com/puzige/vega/pull/504#issuecomment-6283717935)后，专职子agent完成独立清理，主会话逐项审查[完整删除/接线/生产等价记录](vega-issue-494-test-cleanup-audit.json)，原始审计SHA256 `8b463d1186b17b1b5925efd0a9e616a8169424f0d692c011516a528005c8f6c5`。静态133定义→0、26开发artifact删除、25接线/依赖路径清理；主会话独立核对全部51路径前后摘要、457个受保护文件、九个可透明恢复的原文件。构造器合回与观察移除只撤开发支持，真实控件/无障碍/焦点/事件、当前四文件修复和生产模型数据保留。
+
+锁图由924→914，仅删除10个独占包和7条保留节点的开发边；主会话独立解析规范身份/依赖边，确认无新边、保留包source/version/checksum一致，锁文件逐字节等于生产基线。fmt、diff、locked/offline/no-deps metadata各自独立退出0。Rust测试属性、条件与专用支持静态零匹配；这不是云端发现或执行结果，后者见上述最终记录。未在本地运行Vega、编译或执行Rust/Python测试。
+
+真实模型服务、原生应用和外层Trusted Git进程流程由用户合并后纯手动验证，不能把网络替身测试称真实服务或系统E2E。Issue在用户明确通过前保持开放；合并后进入In review等待手测。
 
 
 ## 合并后的用户手测

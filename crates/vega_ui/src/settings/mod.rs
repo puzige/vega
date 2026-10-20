@@ -213,6 +213,3 @@ pub(crate) use helpers::*;
 pub use state::SettingsView;
 
 mod updater;
-
-#[cfg(test)]
-mod model_capability_tests;

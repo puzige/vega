@@ -757,7 +757,3 @@ pub(crate) fn run_manual_context_worker(
         )
         .map_err(|_| ())
 }
-
-#[cfg(test)]
-#[path = "model_context_compatibility_tests.rs"]
-mod compatibility_tests;

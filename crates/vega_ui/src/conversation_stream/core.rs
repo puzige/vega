@@ -1728,7 +1728,3 @@ fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
 }
 
 impl EventEmitter<CredentialContinuationRequested> for ConversationStream {}
-
-#[cfg(test)]
-#[path = "model_capability_tests.rs"]
-mod model_capability_tests;

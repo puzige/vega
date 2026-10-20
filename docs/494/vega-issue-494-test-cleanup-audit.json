@@ -1,0 +1,3451 @@
+{
+  "schema_version": 1,
+  "status": "INDEPENDENT_POST_GREEN_TEST_CLEANUP_READY_FOR_ROOT_REVIEW",
+  "green_head": "7d1066901e9f488cc81e825bb035df6dea7936ee",
+  "green_run": "39371580926",
+  "public_green": "https://github.com/puzige/vega/pull/504#issuecomment-6283717935",
+  "cleanup_plan_sha256": "ea113c72bdba50d399b988d35811e27e9a5d6781054b2ee21e5dd9bccbbeff29",
+  "counts": {
+    "deleted_rust_definitions": 133,
+    "deleted_artifacts": 26,
+    "modified_wiring_dependency_paths": 25,
+    "total_changed_code_paths": 51,
+    "unchanged_protected_paths": 457,
+    "remaining_test_attributes": 0,
+    "remaining_test_cfg_conditions": 0,
+    "remaining_development_support_references": 0,
+    "remaining_workspace_dev_dependency_sections": 0
+  },
+  "paths_before_after": [
+    {
+      "path": "crates/vega/src/app_model_compatibility_tests.rs",
+      "before_sha256": "d042b8d5c107fdca86d0c04a4ced71189b608f74b8c06fd4a0f14444a92638b9",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega/src/window/model_capability_tests.rs",
+      "before_sha256": "dc7ee68420020e722d79458be036c8e4ce446f74c5219ca784a37655a0c1c29b",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega/src/window/model_context_compatibility_tests.rs",
+      "before_sha256": "8d74c473d38ad9994a5c8fa7c76e01b0e51cfb408d537b362181532f281fc80c",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs",
+      "before_sha256": "dc9bdc06f50b2de21de2b07774e5083e7ae902adbc760a33b958b2ad6b823e19",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/compaction.rs",
+      "before_sha256": "dfd1afb00611980b92880f4e74330714cfed17ea641ee2d9fcbbf7311e77f359",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs",
+      "before_sha256": "c2a060f21d121a8ce63bba7b3a2b4707d39b5305eba3f9f6ca1179b4fa4dba37",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "before_sha256": "760bdef74c9ef5b743c4bfb19cb07f2161e4f1b96d3b0bb94405765da72ebf85",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/mod.rs",
+      "before_sha256": "e884ea2fe999ffc9b81ef7f4d2551b4606935bf3054e44d307b8bca7ce5a0e67",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "before_sha256": "56a79a4357d4a05af99dcddf36c6f3ce0aba7052aa9541397538901f94b5b77b",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/trusted_git.rs",
+      "before_sha256": "6bfd433288121a7a0be35ba7cf101c47ecf9d0dbaa54e04a1a975daff0aa0d47",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "before_sha256": "774d899b2ddab3f9838f6c90c56ffa69fc0953b5c7d9d465bb096437ced86125",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "before_sha256": "eefa7e808fe19ca71c7c2487259eecd1002c9efe731d7e4513767d12bd651c09",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "before_sha256": "6f4e446cea780eff89b7e7d7fb478ee7b9250f8388fba9888ec75f1a783d8fd9",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/blue.png",
+      "before_sha256": "45d23cee87293ea99af26093ec3ad3acde66cb7969d3d3fd73798642d6453845",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/native-models.json",
+      "before_sha256": "8987a9a0dbacf211062e8563ae98c9e65419ce5a3e81de565b3a1e254aae5942",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/red.png",
+      "before_sha256": "d28c139bba718d60154960eaca75535a5cc5b59fe2153e998a29251e8e5f4667",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/http.rs",
+      "before_sha256": "9cb03a1de68f940890dc7335933e7e538b73213c0d713a80c08bf9f3752a74f8",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "before_sha256": "3eab92d775c5798f615c3ae6b04032f906ea4b60a663eacf1108b36b0a6e384f",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/mod.rs",
+      "before_sha256": "552f08c5e8388d374667a6d7a24f138c12bd58f0861da7e8f89fcbbcc2cceab6",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "before_sha256": "dff3cf83f3f9bd8c3b499c3d3e1b0b848a3caa9d59c22b3d4ab5e2b4e2a8352e",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "before_sha256": "701c6f36e787262f25fa75633a4a86d13c4cc5acdcc56359e865525ed0658880",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "before_sha256": "7898e813bafad0259623281619384f9d39a3b76bf809d05f67d4670618580905",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_store/src/model_capability_tests.rs",
+      "before_sha256": "65bc8ede847d8bd2ca586b2b14d1b13ca8f407386300aa0289cec90db1a3aec1",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "before_sha256": "c0d47c954cbf9661c3fd726736d2b1f7e9c3533da92652ef3fdea1c6e5220cd5",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "before_sha256": "6e5794c7d2176050e9dd978a01d7fe4503dac14ec8c420ae23357850717a4612",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/desktop_test_support.rs",
+      "before_sha256": "32e83ef7599b4e5d7411d255dfa533c4cff839fef92d76ca99e16d6b8d68a1b2",
+      "after_sha256": null,
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega/src/main.rs",
+      "before_sha256": "50a85da03eba7df80d0f9466c89f2d28b44a21c9ae459badd66ad0270ada2cbb",
+      "after_sha256": "e3a28cd1d564d380a62599bb926abc721c9c03b66842b14bc2a11d75794d39cd",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega/src/app_agent.rs",
+      "before_sha256": "b58b518d75e335950945c2c7d04128c1b61babe460f0e13a96d0252064b0c461",
+      "after_sha256": "697a2114e1e291249cdb22bef3b133423057dc8d377718ac5435626db4fc7bbe",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega/src/window/context.rs",
+      "before_sha256": "4fae536dfbe813745f2246ce519f3096e39adc20246df901c49bf1b801c0cd03",
+      "after_sha256": "e3f6f8a3043e00c6d5d06afa949e860680912674edaa4fb7f009252a14dbc074",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega/src/window/mod.rs",
+      "before_sha256": "8b75c430508760d3f766cafd9c43342896093d2ffeb5e7e6b20863e457b7e068",
+      "after_sha256": "72a9e37a547b139c628e34e23948b8382141209b390113e959a5c75ef8b7c9d6",
+      "action": "remove_owned_test_constructor_and_module"
+    },
+    {
+      "path": "crates/vega/src/window/session.rs",
+      "before_sha256": "a1873fb700400b6382b4d63bac988063ec2e2a043e4e6f8f093c208c66cd80f1",
+      "after_sha256": "f49231f21124744a6f6b5445a9b9cb2a4e3292d750a93ab4f7a72fbe41b7b918",
+      "action": "remove_owned_test_config_override_only"
+    },
+    {
+      "path": "crates/vega_conversation/src/lib.rs",
+      "before_sha256": "7f2e7208763eedb7c787c471b00efa844a496e70adf2e1179ab8d4b66197b7bd",
+      "after_sha256": "53d84c6fda16113b0bb810ba0bb1ddc1403cb61214bd00aeb24ff88b8d27f4a5",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_conversation/src/automatic_titles.rs",
+      "before_sha256": "fdc0af6b8a38dcf1484e07cb607a10edcd1c5f0d8a12d686c1093cbdf2767208",
+      "after_sha256": "f4adcf2f5852353cdd58375b403af06a83efde4e62a3b0acbad0f45026e12057",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_conversation/src/composer_predictions.rs",
+      "before_sha256": "256d4d28c9ec2f46fb97134785801c7403b70dabd5274f8cb123034a21b3486f",
+      "after_sha256": "b165caba05689b9b951b63542c71fd5068bbab56c49f727211e2147e4121086a",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/compaction.rs",
+      "before_sha256": "6b31abae7aeded0d8e63d38aa817325dc8b2c77710b69317f44f3223d33bd07d",
+      "after_sha256": "e0de6d1f1e0da70ba578f553a73c9f5d7daebbde6fc38de54980418c21cc1db0",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/trusted_git/service.rs",
+      "before_sha256": "eae4e26b912ec5cb60645897fc15b95ce1c02c0ec85eba22d1ec5ce11f64c675",
+      "after_sha256": "b1184540285de99a8d0aa7dc7b8b9976909155359c3023a12d108d467879ad8f",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_runtime/src/lib.rs",
+      "before_sha256": "89e2b0b625b124c5b036808db7b48d75ab8efaaf39e3944311c75036bf596567",
+      "after_sha256": "333278b481344339419d37d1ef1ff739f805210bc25e1c9727e87d0e6ddd7646",
+      "action": "remove_development_codec_facade_only"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/mod.rs",
+      "before_sha256": "87398b921d555aa070704b277ed2774188eb1b660c7028474a3a46f04156a45b",
+      "after_sha256": "e547bb912ab32895ec9af8a34c78ae6dd1605d5fb45ee1c7fae7599e679ac7b9",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_store/src/lib.rs",
+      "before_sha256": "955af8e561738636f4e44ea1d41768a21a9f9e95b2e2077213b86c294747b9fa",
+      "after_sha256": "f2b63ba796a9eabbad32b4d85595f87517e1d2c839f3071b2227841839e094de",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/core.rs",
+      "before_sha256": "d7e43cb0d7236d52681eba4030e6e8b39a8c68c9c406da84f795360d3a76f938",
+      "after_sha256": "f1e60e7807a8813acb36da7e848495545e06ea98d47991c22ccabf721fbb0e07",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/mod.rs",
+      "before_sha256": "1b34dda843dbbe50055473f4d77759bb9627f6cde54d49c8e94b7928e5f5091c",
+      "after_sha256": "6d61538ec3b90f27db7846d27bd023fe17fdbd95a1412faaf14f13143564783e",
+      "action": "remove_test_module_only"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/helpers.rs",
+      "before_sha256": "928cb98cc8f42965d93567883cf5918a123846ffcd23fac3e8c07f05d4272cb1",
+      "after_sha256": "86438c9126936f035d3064aa962d2fc37d4bab1a37fec65c062b45a39d263c7a",
+      "action": "restore_entire_observation_only_diff",
+      "equals_verified_baseline_restore": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/model_capabilities.rs",
+      "before_sha256": "f517a38cf96deb808da8c8272bf45a6fc6b59760f055c50f472a34197d400701",
+      "after_sha256": "f78989ed0090ace54b07a470fddba978bd49240738a150469d4c5558f088f784",
+      "action": "remove_test_observation_only"
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/backend.rs",
+      "before_sha256": "55e2365113ab04b4ab87536ab318035df688748bdc68bfcd75777ee9df5cf9f5",
+      "after_sha256": "881f8ca31f62a5bc53b792705517376bc84a5dbec687b2eaa39bfffd8d5bd562",
+      "action": "restore_entire_development_external_io_seam",
+      "equals_verified_baseline_restore": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "before_sha256": "222c5b2da92dad3161b14b06b33d8f08edf6f25b8c7acef5009ef7443e6353e0",
+      "after_sha256": "0f6d48a3f5a93b4589b9f85db966d4f248dd2c6b538d592139d52a6e6b397980",
+      "action": "restore_entire_development_external_io_seam",
+      "equals_verified_baseline_restore": true
+    },
+    {
+      "path": "crates/vega/Cargo.toml",
+      "before_sha256": "2bfff5666e847d4d7bf4450553bdf7c3d1a1523b798831cadcb60f7f5092ef0c",
+      "after_sha256": "605ad932cdbcc66b7156766c973500a930acfd0253348356b1bcf7b9b59310c7",
+      "action": "restore_development_only_manifest_diff",
+      "equals_verified_baseline_restore": true
+    },
+    {
+      "path": "crates/vega_conversation/Cargo.toml",
+      "before_sha256": "eaca3a60138e7111b20000aadbd0b4a54bbc8c152dffe6854b92c3f0af9c827a",
+      "after_sha256": "7dc1000baa003b394f3a1761f9d6e0020e2ab30d033b9f5e7ffbc2e92f6205e2",
+      "action": "restore_development_only_manifest_diff",
+      "equals_verified_baseline_restore": true
+    },
+    {
+      "path": "crates/vega_runtime/Cargo.toml",
+      "before_sha256": "c40fa58863ce91400aef91caecfad3f9eee0e79b5171788719eb274ebe66056e",
+      "after_sha256": "750db9ce45394eb918e8b9a672a50756a4c433348524c267773eeebf7aa4f36d",
+      "action": "restore_development_only_manifest_diff",
+      "equals_verified_baseline_restore": true
+    },
+    {
+      "path": "crates/vega_store/Cargo.toml",
+      "before_sha256": "c1216274147d70861006102eb4458f016558e465e4f21532393372d888ca9455",
+      "after_sha256": "a619a147f95a29b63932829928f35272f3546745f35325275214fe4a6ad9879c",
+      "action": "restore_development_only_manifest_diff",
+      "equals_verified_baseline_restore": true
+    },
+    {
+      "path": "crates/vega_ui/Cargo.toml",
+      "before_sha256": "3eaa306be5362de026a2fa0a63bc016d6f4bc6258596709911e0e28e4f7e35fd",
+      "after_sha256": "45f54ccb5909337fc1e31329bf85aaa254a829225e3e952d44ffa3fc5950787d",
+      "action": "restore_development_only_manifest_diff",
+      "equals_verified_baseline_restore": true
+    },
+    {
+      "path": "Cargo.lock",
+      "before_sha256": "6ed079c8a09e8fe8a20da1d530842ca6894e717d6beb7f0816230c6c3f7f0c77",
+      "after_sha256": "d803cdb1cd420921fa47ce091155bb0db1ce0845ecfa4027b95b46ebe2db36f9",
+      "action": "restore_development_only_lock_graph_diff",
+      "equals_verified_baseline_restore": true
+    }
+  ],
+  "production_equivalence": [
+    {
+      "path": "crates/vega/src/main.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega/src/app_agent.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "real reasoning resolver, commit/agent factory snapshot binding and credential guards"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega/src/window/context.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "actual manual-context factory snapshot/guard binding"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega/src/window/mod.rs",
+      "equivalence": "Non-test new_inner has only cx and new delegates immediately to it. Collapse wrapper while preserving current production constructor body and execution order. Delete no capability fields by baseline restoration.",
+      "must_preserve": [
+        "mod model_capabilities and all actual model_capability_* fields/initializers",
+        "actual constructor/lifecycle/pricing/capability controller and normal updater startup"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change."
+    },
+    {
+      "path": "crates/vega/src/window/session.rs",
+      "equivalence": "Deleted branch does not exist in non-test builds; keep every current actual model/session behavior.",
+      "must_preserve": [
+        "normal config_dir/config.toml lookup",
+        "capability reload/read/resolve, invalid-preference visible recovery and actual composer preference persistence"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change."
+    },
+    {
+      "path": "crates/vega_conversation/src/lib.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "pub mod model_capabilities and real service/authority reexports"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_conversation/src/automatic_titles.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "actual request snapshot binding"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_conversation/src/composer_predictions.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "actual request snapshot binding and usage persistence"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/compaction.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "current snapshot identity and credentials",
+        "shared current model policy/budget helper and provider-aware manual projection",
+        "latest &vega_store::Connection compile correction"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/trusted_git/service.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "private draft_request extraction and actual draft delegation",
+        "all current request fields, authority/deadline/credential/draft validation behavior"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_runtime/src/lib.rs",
+      "equivalence": "Facade exists only for tests or the removed development feature; do not remove the actual production functions it delegates to.",
+      "must_preserve": [
+        "pub mod model_compat; ToolChoice and all actual production reexports",
+        "actual encoder/native assemblers and all their real callers"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change."
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/mod.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "OpenAiProvider request_body/prepare_request/with_model_snapshot and actual encode_request",
+        "recovery/retry/probe native codec/Responses Assembler visibility and every-attempt guard"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_store/src/lib.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "pub mod model_capabilities and actual store API",
+        "pub use rusqlite::Connection"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/core.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "actual composer subset/default/enabled/off controls and typed model projections"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/mod.rs",
+      "equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting.",
+      "must_preserve": [
+        "real capability module/focus export/save/reload events/current production imports"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "non_whitespace_bytes_equal_after_exact_cfg_module_removal": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/helpers.rs",
+      "equivalence": "Entire current diff against baseline is dedicated observation or transparent let extraction. Exact original file restoration preserves its real non-test production rendering.",
+      "must_preserve": [
+        "original real control ID/role/aria/focus/event/interaction and actual error/status label rendering"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "86438c9126936f035d3064aa962d2fc37d4bab1a37fec65c062b45a39d263c7a"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/model_capabilities.rs",
+      "equivalence": "Only cfg(test) observer import/augmentation disappears; actual non-test controls and behavior remain unchanged.",
+      "must_preserve": [
+        "entire actual efforts/image/save/cancel/reset/reload UI and typed controller state/events/errors",
+        "actual ID/role/aria_label/aria_toggled/interactive(enabled)/disabled/focus/tab_stop/key/pointer/event behavior",
+        "production let button can remain; do not restore this new production file to baseline"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/backend.rs",
+      "equivalence": "2971b357 file is byte-identical to baseline8c. No v4 product change exists here; restoring exact original pair removes the whole test abstraction without retaining useless production refactors.",
+      "must_preserve": [
+        "original real Desktop/Browser processes, checked/list ordering and observation decode",
+        "original permission/prepare/authorize/control/epoch/target/publish/apply behavior and real image output"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "881f8ca31f62a5bc53b792705517376bc84a5dbec687b2eaa39bfffd8d5bd562"
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "equivalence": "2971b357 file is byte-identical to baseline8c. No v4 product change exists here; restoring exact original pair removes the whole test abstraction without retaining useless production refactors.",
+      "must_preserve": [
+        "original real Desktop/Browser processes, checked/list ordering and observation decode",
+        "original permission/prepare/authorize/control/epoch/target/publish/apply behavior and real image output"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "0f6d48a3f5a93b4589b9f85db966d4f248dd2c6b538d592139d52a6e6b397980"
+    },
+    {
+      "path": "crates/vega/Cargo.toml",
+      "equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "605ad932cdbcc66b7156766c973500a930acfd0253348356b1bcf7b9b59310c7"
+    },
+    {
+      "path": "crates/vega_conversation/Cargo.toml",
+      "equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "7dc1000baa003b394f3a1761f9d6e0020e2ab30d033b9f5e7ffbc2e92f6205e2"
+    },
+    {
+      "path": "crates/vega_runtime/Cargo.toml",
+      "equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "750db9ce45394eb918e8b9a672a50756a4c433348524c267773eeebf7aa4f36d"
+    },
+    {
+      "path": "crates/vega_store/Cargo.toml",
+      "equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "a619a147f95a29b63932829928f35272f3546745f35325275214fe4a6ad9879c"
+    },
+    {
+      "path": "crates/vega_ui/Cargo.toml",
+      "equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "45f54ccb5909337fc1e31329bf85aaa254a829225e3e952d44ffa3fc5950787d"
+    },
+    {
+      "path": "Cargo.lock",
+      "equivalence": "Restore baseline only after exact normalized graph check; no new product dependencies have been introduced in this round.",
+      "must_preserve": [
+        "every retained package version/source/checksum and actual production dependency edge",
+        "existing shared backtrace/tempfile/futures package nodes"
+      ],
+      "static_diff_review": "Root and implementation agent inspected authorized exact inverse only; no product behavior change.",
+      "exact_restored_sha256": "d803cdb1cd420921fa47ce091155bb0db1ce0845ecfa4027b95b46ebe2db36f9"
+    }
+  ],
+  "protected_paths": [
+    {
+      "path": ".agents/skills/karpathy-guidelines/SKILL.md",
+      "sha256": "14429c41419f2003d1be4abf0409060a17d8f652466c86224ae8c297c7847462",
+      "after_sha256": "14429c41419f2003d1be4abf0409060a17d8f652466c86224ae8c297c7847462",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/vega-kanban-delivery/SKILL.md",
+      "sha256": "1546281a33bb890f11a60cdc3eec38f6f7332fe4eeaeb86ce6afad94b0874be2",
+      "after_sha256": "1546281a33bb890f11a60cdc3eec38f6f7332fe4eeaeb86ce6afad94b0874be2",
+      "unchanged": true
+    },
+    {
+      "path": ".cargo/config.toml",
+      "sha256": "c185a2b859850d94af015a9672c1568e1ef73b12612d820f596ef967b835f637",
+      "after_sha256": "c185a2b859850d94af015a9672c1568e1ef73b12612d820f596ef967b835f637",
+      "unchanged": true
+    },
+    {
+      "path": ".config/nextest.toml",
+      "sha256": "9adc8b4f095e26d9f66f8c3ca13caf625d19db473010a0adafa4f58d5bca8846",
+      "after_sha256": "9adc8b4f095e26d9f66f8c3ca13caf625d19db473010a0adafa4f58d5bca8846",
+      "unchanged": true
+    },
+    {
+      "path": ".github/workflows/cicd.yml",
+      "sha256": "945fc1045f2f2acf6ae89ffe535a0e0a966b82d2f8554fdb8a12cae2d9974203",
+      "after_sha256": "945fc1045f2f2acf6ae89ffe535a0e0a966b82d2f8554fdb8a12cae2d9974203",
+      "unchanged": true
+    },
+    {
+      "path": ".github/workflows/pr-check.yml",
+      "sha256": "536ee05031209834437b7c03be7e076392ec9ab7f81b77b25f2ed21ef977150a",
+      "after_sha256": "536ee05031209834437b7c03be7e076392ec9ab7f81b77b25f2ed21ef977150a",
+      "unchanged": true
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "sha256": "4d36813ea110fe472ab1a65b19dbd7b4dce319238e2d06edd4b3588bda23a1cc",
+      "after_sha256": "4d36813ea110fe472ab1a65b19dbd7b4dce319238e2d06edd4b3588bda23a1cc",
+      "unchanged": true
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "748338bbe3d7c423952fe45e3f6b57cb9fba4bb934cd2377932d42a8db5fd708",
+      "after_sha256": "748338bbe3d7c423952fe45e3f6b57cb9fba4bb934cd2377932d42a8db5fd708",
+      "unchanged": true
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "80ab29a2c3d31ce226c35cbf1c5b31f41bf38a1e3ec8ec34e10190cb9a1ad05a",
+      "after_sha256": "80ab29a2c3d31ce226c35cbf1c5b31f41bf38a1e3ec8ec34e10190cb9a1ad05a",
+      "unchanged": true
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "7bb8296128c9e92fe284bb81b63c1bc66c43fd93c8f09b64a3b9f297594c4be0",
+      "after_sha256": "7bb8296128c9e92fe284bb81b63c1bc66c43fd93c8f09b64a3b9f297594c4be0",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/LOGO.md",
+      "sha256": "12795c4bf2aeda5baabc41c985229a6945170b15a7b866496272405b1866dfe8",
+      "after_sha256": "12795c4bf2aeda5baabc41c985229a6945170b15a7b866496272405b1866dfe8",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/PROMPTS.md",
+      "sha256": "1fd048cebee4135a53a9fce8e2cb2049ce505f5ef5db601535a1f45427adbedb",
+      "after_sha256": "1fd048cebee4135a53a9fce8e2cb2049ce505f5ef5db601535a1f45427adbedb",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/README.md",
+      "sha256": "088f386634f4cac8285e7e95cdbdb150688aeed8556d951d109d46f58e9d93c6",
+      "after_sha256": "088f386634f4cac8285e7e95cdbdb150688aeed8556d951d109d46f58e9d93c6",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/vega-blue-01-single-spark-smile.png",
+      "sha256": "7846275b5c91e5d95817e5a8d81ee46843a16f4e3bb08b6c9a4497f4c314a3ed",
+      "after_sha256": "7846275b5c91e5d95817e5a8d81ee46843a16f4e3bb08b6c9a4497f4c314a3ed",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/vega-blue-02-slender-spark.png",
+      "sha256": "ef94958a0cc8aff5e1f32454aec47787b2bc66d15043cee7ff1cfc45d3e9956e",
+      "after_sha256": "ef94958a0cc8aff5e1f32454aec47787b2bc66d15043cee7ff1cfc45d3e9956e",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/vega-blue-shape-studies.png",
+      "sha256": "e5744e0cc0872923ccc75bf90a997a5b0e31362d823100b8c87f8b9c1de482bf",
+      "after_sha256": "e5744e0cc0872923ccc75bf90a997a5b0e31362d823100b8c87f8b9c1de482bf",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/vega-logo-b-macos-terminal-blue.png",
+      "sha256": "c47a3d0cd7073a46da9c5c3881cd5ed684a337f71145b8a9dfd69b0ff8a0780a",
+      "after_sha256": "c47a3d0cd7073a46da9c5c3881cd5ed684a337f71145b8a9dfd69b0ff8a0780a",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/vega-logo-b-macos-terminal.png",
+      "sha256": "1d185c7ac76947290261096a09954010f8a23411e1c6639959aec7c96bbe2c52",
+      "after_sha256": "1d185c7ac76947290261096a09954010f8a23411e1c6639959aec7c96bbe2c52",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/vega-logo-b-macos.png",
+      "sha256": "2416268fa4d41448161f5c3203a445f47c8e711eab9b78ce643a6d2a309d36df",
+      "after_sha256": "2416268fa4d41448161f5c3203a445f47c8e711eab9b78ce643a6d2a309d36df",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/vega-logo-directions-first-pass.png",
+      "sha256": "aea08e0518d97be5178ad582192f8520e4d05c2cd30b05f7bf438ce8c2c32dcc",
+      "after_sha256": "aea08e0518d97be5178ad582192f8520e4d05c2cd30b05f7bf438ce8c2c32dcc",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/explorations/single-spark/vega-logo-directions.png",
+      "sha256": "8cec120de2e62ee71ace29ba23f2ba42af1fbafd5146dd44f6f5ab8421981372",
+      "after_sha256": "8cec120de2e62ee71ace29ba23f2ba42af1fbafd5146dd44f6f5ab8421981372",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/raster/vega-icon-f1-original.png",
+      "sha256": "64d43cac09b9dc0291e7f3f1b4ddadb6aa8a16721195893028d48c5caa739ff1",
+      "after_sha256": "64d43cac09b9dc0291e7f3f1b4ddadb6aa8a16721195893028d48c5caa739ff1",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/raster/vega-icon-f3-original.png",
+      "sha256": "9d2ca6088b935c507fa8cacf7e226af5e329e2290119926421f5c6c9357030ad",
+      "after_sha256": "9d2ca6088b935c507fa8cacf7e226af5e329e2290119926421f5c6c9357030ad",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/vega-icon-f1-light.svg",
+      "sha256": "976bd5409b6937bb99fab1fe28efe2e0554b391a1c86502e505797f8b60c0d9e",
+      "after_sha256": "976bd5409b6937bb99fab1fe28efe2e0554b391a1c86502e505797f8b60c0d9e",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/vega-icon-f3-dark.svg",
+      "sha256": "655a6b6f71573aa1b1751a949f94bfc18fafcafef07a3edbe015c976423386b9",
+      "after_sha256": "655a6b6f71573aa1b1751a949f94bfc18fafcafef07a3edbe015c976423386b9",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/vega-icon-smile-dark.svg",
+      "sha256": "82e697f46430f8248beeb6a3b5b3d87615feffb0f9c8ef425e830b7cf65a4f44",
+      "after_sha256": "82e697f46430f8248beeb6a3b5b3d87615feffb0f9c8ef425e830b7cf65a4f44",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/vega-icon-smile-light.svg",
+      "sha256": "7dcfeeb1e630ffe6608e0c869cf9a3a9e8dc0881d75b6b2929425f18199752f1",
+      "after_sha256": "7dcfeeb1e630ffe6608e0c869cf9a3a9e8dc0881d75b6b2929425f18199752f1",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/vega-symbol-mono.svg",
+      "sha256": "1a2e729dffabccca51e69638373f20abd3751f2e632441d74e11dbed2c8323d0",
+      "after_sha256": "1a2e729dffabccca51e69638373f20abd3751f2e632441d74e11dbed2c8323d0",
+      "unchanged": true
+    },
+    {
+      "path": "assets/logo/vega-symbol-smile-mono.svg",
+      "sha256": "daf1c6da0d0ac1caa28bc43c6751259aef8b518498f9fe8b4330feaeaf76bf3c",
+      "after_sha256": "daf1c6da0d0ac1caa28bc43c6751259aef8b518498f9fe8b4330feaeaf76bf3c",
+      "unchanged": true
+    },
+    {
+      "path": "assets/update-public-key.hex",
+      "sha256": "4aba76dc80b9aad42b9fb257cc81e131f3cc2fd646001c0eb68b161214fdba32",
+      "after_sha256": "4aba76dc80b9aad42b9fb257cc81e131f3cc2fd646001c0eb68b161214fdba32",
+      "unchanged": true
+    },
+    {
+      "path": "clippy.toml",
+      "sha256": "75ebd31d6d136292c9064ab8679b6e39c0246f64344849248a3b1010a54299d9",
+      "after_sha256": "75ebd31d6d136292c9064ab8679b6e39c0246f64344849248a3b1010a54299d9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/agent_context.rs",
+      "sha256": "2fcfa48482f46c0b8a664354c543891b118786757ea83a4df4208d32c1df7641",
+      "after_sha256": "2fcfa48482f46c0b8a664354c543891b118786757ea83a4df4208d32c1df7641",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/app_notifications.rs",
+      "sha256": "45188169fe7894ff0777331782b8ac7219006ec582cddbcf129607dc60b21f93",
+      "after_sha256": "45188169fe7894ff0777331782b8ac7219006ec582cddbcf129607dc60b21f93",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/app_palette.rs",
+      "sha256": "227323944fda280492c90931c4ffc5bc03177fec424dea86781d9e1050317e8c",
+      "after_sha256": "227323944fda280492c90931c4ffc5bc03177fec424dea86781d9e1050317e8c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/app_usage.rs",
+      "sha256": "ee11071dc7e78437571bfa2b0a9f65e2231c893ef50b959f6da08e88adad6b9f",
+      "after_sha256": "ee11071dc7e78437571bfa2b0a9f65e2231c893ef50b959f6da08e88adad6b9f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/artifact_controller.rs",
+      "sha256": "10a47a7dbb8f937e00c76a82a43f76562579c8d7a05da13da1fbd57b3e2ba70b",
+      "after_sha256": "10a47a7dbb8f937e00c76a82a43f76562579c8d7a05da13da1fbd57b3e2ba70b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/automation_controller.rs",
+      "sha256": "4e4371d77d2af1f294ed20b9a1036e2d90217a3682ba6329a552b886d80a6f0d",
+      "after_sha256": "4e4371d77d2af1f294ed20b9a1036e2d90217a3682ba6329a552b886d80a6f0d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/branch_controller.rs",
+      "sha256": "c67c59d1a61e4981558def9492398b260f32517204004cdf72ecaa8ed2ea1f2a",
+      "after_sha256": "c67c59d1a61e4981558def9492398b260f32517204004cdf72ecaa8ed2ea1f2a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/codex_agent.rs",
+      "sha256": "739c8151daff1da527195e9de1eccbeb25b84601d997f626b1d5d7cfffac031f",
+      "after_sha256": "739c8151daff1da527195e9de1eccbeb25b84601d997f626b1d5d7cfffac031f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/commit_controller.rs",
+      "sha256": "0c5825e5f6d578d25f7aefeeef0e5286cf2ff4466c75877fbf2d7d9b713b6959",
+      "after_sha256": "0c5825e5f6d578d25f7aefeeef0e5286cf2ff4466c75877fbf2d7d9b713b6959",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/diff_controller.rs",
+      "sha256": "c90df7522d3847ed66a8f8074ec510ac3a4deadd94a6b5746cedd7d5363109af",
+      "after_sha256": "c90df7522d3847ed66a8f8074ec510ac3a4deadd94a6b5746cedd7d5363109af",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/lib.rs",
+      "sha256": "bf15cd8261c7e9be9e70d81bb5149eec70aad34ac95bd8776db336cfd49b1644",
+      "after_sha256": "bf15cd8261c7e9be9e70d81bb5149eec70aad34ac95bd8776db336cfd49b1644",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/model_catalog/cache.rs",
+      "sha256": "58bc288f106ea6c782f0d15b0cee8eb468c7be4584eb1b07189daaab33db607b",
+      "after_sha256": "58bc288f106ea6c782f0d15b0cee8eb468c7be4584eb1b07189daaab33db607b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/model_catalog/mod.rs",
+      "sha256": "7c42430cb833ce9fc66a8df4268ce1b7014730d8dbdafc6db155bcb62e93595c",
+      "after_sha256": "7c42430cb833ce9fc66a8df4268ce1b7014730d8dbdafc6db155bcb62e93595c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/model_catalog/parse.rs",
+      "sha256": "96ae8cba41715536c592200cb1838ce5b8824fe883ca311ca1d1bf088a740d84",
+      "after_sha256": "96ae8cba41715536c592200cb1838ce5b8824fe883ca311ca1d1bf088a740d84",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/native_subagents.rs",
+      "sha256": "3be783d71b7d7ede46369e4335000310dd7e48e2e0baee4d66f4e1148aa5c81e",
+      "after_sha256": "3be783d71b7d7ede46369e4335000310dd7e48e2e0baee4d66f4e1148aa5c81e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/pricing_controller.rs",
+      "sha256": "a114b3ccc496f51111e7ecdc62bc54b188d27b6f184395f5b845b57b9880bf4a",
+      "after_sha256": "a114b3ccc496f51111e7ecdc62bc54b188d27b6f184395f5b845b57b9880bf4a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/reasoning_capabilities.rs",
+      "sha256": "6c10da4fd8dbc3cb283bed080684fbb1477e904bc1e8b46c6ae30fc3f08aa8df",
+      "after_sha256": "6c10da4fd8dbc3cb283bed080684fbb1477e904bc1e8b46c6ae30fc3f08aa8df",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/thread_reload.rs",
+      "sha256": "b2287086aada0a52be404c69786c3c1317ed5f8930d82c5074c037ba83fbefd2",
+      "after_sha256": "b2287086aada0a52be404c69786c3c1317ed5f8930d82c5074c037ba83fbefd2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/trusted_action.rs",
+      "sha256": "b5b7eba089cdbe0eefe6c4c56f80b9fad65e3942dfdc729fc18508bd37e0949e",
+      "after_sha256": "b5b7eba089cdbe0eefe6c4c56f80b9fad65e3942dfdc729fc18508bd37e0949e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/updater/delta.rs",
+      "sha256": "ed5da3558ef1368937acf1da237e0ef927ceb3e4c56f2e819cc2d2b1a9cbf0a1",
+      "after_sha256": "ed5da3558ef1368937acf1da237e0ef927ceb3e4c56f2e819cc2d2b1a9cbf0a1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/updater/install.rs",
+      "sha256": "9277b3782090142698b02cdec454402e2c94e7b5112c5e00b027d6ff83a013ff",
+      "after_sha256": "9277b3782090142698b02cdec454402e2c94e7b5112c5e00b027d6ff83a013ff",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/updater/mod.rs",
+      "sha256": "53cc87c3b21675b45696fd71dcbce4f899b19bd908ab109013f471f92768fa74",
+      "after_sha256": "53cc87c3b21675b45696fd71dcbce4f899b19bd908ab109013f471f92768fa74",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/updater/network.rs",
+      "sha256": "5d0e7824dc3dce5005e22fa1a024b06de1521732a817255005f664563d5bb1ab",
+      "after_sha256": "5d0e7824dc3dce5005e22fa1a024b06de1521732a817255005f664563d5bb1ab",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/updater/platform.rs",
+      "sha256": "d7429ca4d826e7eb2b08f7820bf095589eee44921f4ba5d52bc26318c3bc1cc6",
+      "after_sha256": "d7429ca4d826e7eb2b08f7820bf095589eee44921f4ba5d52bc26318c3bc1cc6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/updater/signature.rs",
+      "sha256": "2b49c014ec531c2ddd7c469ba1ab92ace5f82f8ae5c5993e04d4bf805b4aeedf",
+      "after_sha256": "2b49c014ec531c2ddd7c469ba1ab92ace5f82f8ae5c5993e04d4bf805b4aeedf",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/agent.rs",
+      "sha256": "7369c38b33b78bbc9480d8e41c944d512d4a2d914801d5dc5bcf9041b4b204a1",
+      "after_sha256": "7369c38b33b78bbc9480d8e41c944d512d4a2d914801d5dc5bcf9041b4b204a1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/artifact.rs",
+      "sha256": "836d6c725cb5bd69101557d507b0a50e87a8bb4a27062b81fd4879df03bb8b0e",
+      "after_sha256": "836d6c725cb5bd69101557d507b0a50e87a8bb4a27062b81fd4879df03bb8b0e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/automation.rs",
+      "sha256": "65ef5ca6420824602a2353c8477677a9d875b01160a62fbb0457359582d13344",
+      "after_sha256": "65ef5ca6420824602a2353c8477677a9d875b01160a62fbb0457359582d13344",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/automation_editor.rs",
+      "sha256": "7b8b4063fca61c32e267dd8f9c2627d37052328e47030f880dc0eaa91ae3ffaf",
+      "after_sha256": "7b8b4063fca61c32e267dd8f9c2627d37052328e47030f880dc0eaa91ae3ffaf",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/branch.rs",
+      "sha256": "ba104a4af52bc740995d972bbd398a9b9309e0f0af424da611674af5348300ae",
+      "after_sha256": "ba104a4af52bc740995d972bbd398a9b9309e0f0af424da611674af5348300ae",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/commit.rs",
+      "sha256": "7a9422f422e8be4b3e2e5e767d32d14cc4ccc43744b143376f07eacb260f31f0",
+      "after_sha256": "7a9422f422e8be4b3e2e5e767d32d14cc4ccc43744b143376f07eacb260f31f0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/commit_reconcile.rs",
+      "sha256": "3d96624262c1173464dad2eb44d5949059102502dfc6a8ef2837372fab6e4cc2",
+      "after_sha256": "3d96624262c1173464dad2eb44d5949059102502dfc6a8ef2837372fab6e4cc2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/composer_predictions.rs",
+      "sha256": "b54d9918131560106fb2c7fbfd88387c195927f5f41c9a185726bfbfa4e37a50",
+      "after_sha256": "b54d9918131560106fb2c7fbfd88387c195927f5f41c9a185726bfbfa4e37a50",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/diff.rs",
+      "sha256": "76fae4f9d4d7e5c80b05c0e233fc41d3537ce73299d281546d1518a7fceafda7",
+      "after_sha256": "76fae4f9d4d7e5c80b05c0e233fc41d3537ce73299d281546d1518a7fceafda7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/file_index.rs",
+      "sha256": "d2bcbcc952851496f81b56d1c79c30b95272ce5c96d008cda644c68116bccba2",
+      "after_sha256": "d2bcbcc952851496f81b56d1c79c30b95272ce5c96d008cda644c68116bccba2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/image_preview.rs",
+      "sha256": "179e884f7a82646002d956fb56071d32fc3de7e3fcb1571c0c33d30368b633e9",
+      "after_sha256": "179e884f7a82646002d956fb56071d32fc3de7e3fcb1571c0c33d30368b633e9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/image_preview/native.rs",
+      "sha256": "77a80f8bcb02e5ae204db852147b12b4dedaaf8371e19db983cf98c8eab7ad7b",
+      "after_sha256": "77a80f8bcb02e5ae204db852147b12b4dedaaf8371e19db983cf98c8eab7ad7b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/image_preview/native/macos.rs",
+      "sha256": "cad469a0fff39453aa548543267bb910b30fea4dd07f86db974169801e389d27",
+      "after_sha256": "cad469a0fff39453aa548543267bb910b30fea4dd07f86db974169801e389d27",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/model_capabilities.rs",
+      "sha256": "f4bbc2195949702279e6fe096b67790424ce369cbaa597b452d518189da79932",
+      "after_sha256": "f4bbc2195949702279e6fe096b67790424ce369cbaa597b452d518189da79932",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/model_catalog.rs",
+      "sha256": "f228993a63a91d68028db5f71c663d77acad580e7e602e289cd62ba9d0444705",
+      "after_sha256": "f228993a63a91d68028db5f71c663d77acad580e7e602e289cd62ba9d0444705",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/model_context.rs",
+      "sha256": "6f060cbab5bf8955f0c25941d6c3649748ac3b290357c890afbd9c2ccf0adfcf",
+      "after_sha256": "6f060cbab5bf8955f0c25941d6c3649748ac3b290357c890afbd9c2ccf0adfcf",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/native_subagents.rs",
+      "sha256": "0b345509c7fa8f589fca474f58098da8aaff0ccb661c800886bf96e4a4f75f4c",
+      "after_sha256": "0b345509c7fa8f589fca474f58098da8aaff0ccb661c800886bf96e4a4f75f4c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/navigation.rs",
+      "sha256": "87e740f34681c90af700b6af9c76938fc0f2350f5447001798c71ce217487741",
+      "after_sha256": "87e740f34681c90af700b6af9c76938fc0f2350f5447001798c71ce217487741",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/notifications.rs",
+      "sha256": "8241689bb080dca93a52d996163335068d89725d098a3924a9ebe5877197fa59",
+      "after_sha256": "8241689bb080dca93a52d996163335068d89725d098a3924a9ebe5877197fa59",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/pending_messages.rs",
+      "sha256": "bcafa0f82d8508977517ea80bffd01f3737ff6f07a0e4129481b4cbf717e5401",
+      "after_sha256": "bcafa0f82d8508977517ea80bffd01f3737ff6f07a0e4129481b4cbf717e5401",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/pricing.rs",
+      "sha256": "c10ea788088266e5f8307a55b30d019781f75c0bf71fe36633f6b04519e6b851",
+      "after_sha256": "c10ea788088266e5f8307a55b30d019781f75c0bf71fe36633f6b04519e6b851",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/privacy.rs",
+      "sha256": "f17adbf2415dc07835105857005d74dacb864ff85f0df1353113d28f0c2d68d1",
+      "after_sha256": "f17adbf2415dc07835105857005d74dacb864ff85f0df1353113d28f0c2d68d1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/reasoning.rs",
+      "sha256": "c73fd424f9d62c7e3834d3b851dbf8b5512bf676d898c443754a203cb386c40f",
+      "after_sha256": "c73fd424f9d62c7e3834d3b851dbf8b5512bf676d898c443754a203cb386c40f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/render.rs",
+      "sha256": "b08fb7e0250ae68a118adec1555209f987b32a21a796f6443ad05f599a7c0f19",
+      "after_sha256": "b08fb7e0250ae68a118adec1555209f987b32a21a796f6443ad05f599a7c0f19",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/scroll_state.rs",
+      "sha256": "4a33c6d40c8ba383d456c0e2f2aaca25e87787448f46807223c9b4455cc0f183",
+      "after_sha256": "4a33c6d40c8ba383d456c0e2f2aaca25e87787448f46807223c9b4455cc0f183",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/skills.rs",
+      "sha256": "967b1dd231f73dddad3eafbab420dad1743c0e67db3561984c7514f27648dd0e",
+      "after_sha256": "967b1dd231f73dddad3eafbab420dad1743c0e67db3561984c7514f27648dd0e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/subagent_panel.rs",
+      "sha256": "cc15b0e37b21ed81f48c5002f41425d582e89b76208894c07408dc45db753b13",
+      "after_sha256": "cc15b0e37b21ed81f48c5002f41425d582e89b76208894c07408dc45db753b13",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/updater.rs",
+      "sha256": "176435661784fa72e70beefc1f5dccdb8d80dba1d646bd83ccb5d969125bdf9f",
+      "after_sha256": "176435661784fa72e70beefc1f5dccdb8d80dba1d646bd83ccb5d969125bdf9f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega/src/window/workspace.rs",
+      "sha256": "8953998fd73c58a44d45abdbddf906ba6011cfe6dbc5c03ad7dbc1ff165bee42",
+      "after_sha256": "8953998fd73c58a44d45abdbddf906ba6011cfe6dbc5c03ad7dbc1ff165bee42",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_acp/Cargo.toml",
+      "sha256": "680a92e7fa6e36ffa27a2c17816b246354531d10ef0b975f0c67b6b2b8cd7be4",
+      "after_sha256": "680a92e7fa6e36ffa27a2c17816b246354531d10ef0b975f0c67b6b2b8cd7be4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_acp/src/connection.rs",
+      "sha256": "ac65a34751b60ef11a8765b0f9d04a6ff5bb328db6ba74e39fc8d6f6de576e51",
+      "after_sha256": "ac65a34751b60ef11a8765b0f9d04a6ff5bb328db6ba74e39fc8d6f6de576e51",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_acp/src/error.rs",
+      "sha256": "4ab73cb760edc0769b823b6e0617d27f5f7a01315a4e2cabcd17060f8281fc1d",
+      "after_sha256": "4ab73cb760edc0769b823b6e0617d27f5f7a01315a4e2cabcd17060f8281fc1d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_acp/src/framing.rs",
+      "sha256": "13ab8a0f1e4541a46e0763f42960e1e80f26cfb2808a05ba2a5dc8bfc31c2ca2",
+      "after_sha256": "13ab8a0f1e4541a46e0763f42960e1e80f26cfb2808a05ba2a5dc8bfc31c2ca2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_acp/src/lib.rs",
+      "sha256": "befb6396bab423518c3a90696068aef7caff7b7e66a7ee90ad0a0250dbd4e731",
+      "after_sha256": "befb6396bab423518c3a90696068aef7caff7b7e66a7ee90ad0a0250dbd4e731",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_acp/src/protocol.rs",
+      "sha256": "9bd15229b504fa90bfb8690b683d97dcc4aa785ae4827d95c2a7ea06598c8dc2",
+      "after_sha256": "9bd15229b504fa90bfb8690b683d97dcc4aa785ae4827d95c2a7ea06598c8dc2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/credential_guard.rs",
+      "sha256": "3f157eb62c304e4b2af3bd6e234dd8864b82c519747a83495982a5ded5ed75ea",
+      "after_sha256": "3f157eb62c304e4b2af3bd6e234dd8864b82c519747a83495982a5ded5ed75ea",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/diagnostics.rs",
+      "sha256": "3663e527835600f806dbee83d35b5527ee0e96da0a9107fc4ccec9398f1dfd3d",
+      "after_sha256": "3663e527835600f806dbee83d35b5527ee0e96da0a9107fc4ccec9398f1dfd3d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/entry.rs",
+      "sha256": "b3ba78f635bf9fdca6ca4a6e18fcd37aa00f60ecc720528e9ffb7eb3f9955645",
+      "after_sha256": "b3ba78f635bf9fdca6ca4a6e18fcd37aa00f60ecc720528e9ffb7eb3f9955645",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/events.rs",
+      "sha256": "58565debd0123c5fde9a71486e532d5f07a989f0bf085a7ebdf1b178a746c84f",
+      "after_sha256": "58565debd0123c5fde9a71486e532d5f07a989f0bf085a7ebdf1b178a746c84f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/mod.rs",
+      "sha256": "63b3a52a76dbf7f5905719875da0548d772753ffcde875b27704a9c7300f078d",
+      "after_sha256": "63b3a52a76dbf7f5905719875da0548d772753ffcde875b27704a9c7300f078d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/permission_queue.rs",
+      "sha256": "554f46e7e6baf5ea51e09bf9e930890b988fa6866e1997a677faa97d07b89bc5",
+      "after_sha256": "554f46e7e6baf5ea51e09bf9e930890b988fa6866e1997a677faa97d07b89bc5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/persistence.rs",
+      "sha256": "6a14f73d153f43b510976b684953ded6da0ab9af877246952272354939a715ab",
+      "after_sha256": "6a14f73d153f43b510976b684953ded6da0ab9af877246952272354939a715ab",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/pipeline.rs",
+      "sha256": "47e8a7942b8bfdef3cf2ddcea95011a0010af07a99002f2c09b489a528aa5e82",
+      "after_sha256": "47e8a7942b8bfdef3cf2ddcea95011a0010af07a99002f2c09b489a528aa5e82",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/replay_sessions.rs",
+      "sha256": "1dc6fd223a17456731d884c1c6d519e2aed2165866755ea73ae291fde3a41be0",
+      "after_sha256": "1dc6fd223a17456731d884c1c6d519e2aed2165866755ea73ae291fde3a41be0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/skills.rs",
+      "sha256": "a55a5dcc9c82682c09f7c1f2600bf268eee251cb9cc96afbd627c35cf49d5588",
+      "after_sha256": "a55a5dcc9c82682c09f7c1f2600bf268eee251cb9cc96afbd627c35cf49d5588",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/subagents.rs",
+      "sha256": "fd84cf4b911422428e983a80829ae4b538a146c0997c48d9f4577ebe925400d3",
+      "after_sha256": "fd84cf4b911422428e983a80829ae4b538a146c0997c48d9f4577ebe925400d3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/user_question_queue.rs",
+      "sha256": "c1f471bcc3b12462b223129f4ad158866fd81682399de42f12a3e7175318a9f3",
+      "after_sha256": "c1f471bcc3b12462b223129f4ad158866fd81682399de42f12a3e7175318a9f3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/artifact/helpers.rs",
+      "sha256": "a62171c71a0a8bc64310f5e2a8a768fee0832ed066116394c00374bbf3c638a3",
+      "after_sha256": "a62171c71a0a8bc64310f5e2a8a768fee0832ed066116394c00374bbf3c638a3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/artifact/mod.rs",
+      "sha256": "0b0d7a50668b30d5d95af0706732a3a162cbff7e734b7292f4df8f23fec38515",
+      "after_sha256": "0b0d7a50668b30d5d95af0706732a3a162cbff7e734b7292f4df8f23fec38515",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/attachments.rs",
+      "sha256": "d280f80e878a37f0556e97062fa3ee820265657e372496b14f06eeeea3b870bb",
+      "after_sha256": "d280f80e878a37f0556e97062fa3ee820265657e372496b14f06eeeea3b870bb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/automation/mod.rs",
+      "sha256": "a2d8b4a251905319ff77eb229f824c5f5a72dc3e8ec6c2a0096ba62d8c5c866e",
+      "after_sha256": "a2d8b4a251905319ff77eb229f824c5f5a72dc3e8ec6c2a0096ba62d8c5c866e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/automation/parser.rs",
+      "sha256": "6790d1da28e5dad55b3c494343dbb6a1dc5f37b95a716ff97eddba261e26df8f",
+      "after_sha256": "6790d1da28e5dad55b3c494343dbb6a1dc5f37b95a716ff97eddba261e26df8f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/automation/runtime.rs",
+      "sha256": "e62fa4efd682ab7f732a55cb1c91ad5142fdcc4d6b15df74a6b5d26e267909d1",
+      "after_sha256": "e62fa4efd682ab7f732a55cb1c91ad5142fdcc4d6b15df74a6b5d26e267909d1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/codex_tasks.rs",
+      "sha256": "80f34e8430e3e8b238def3eaabfbae73739976edf5eacda234864b28bd29ed8f",
+      "after_sha256": "80f34e8430e3e8b238def3eaabfbae73739976edf5eacda234864b28bd29ed8f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/branch/mod.rs",
+      "sha256": "351114f726e7438f3e13e119db3acb687abd9e2c11c9bb2db5e180db493b7f12",
+      "after_sha256": "351114f726e7438f3e13e119db3acb687abd9e2c11c9bb2db5e180db493b7f12",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/branch/parsing.rs",
+      "sha256": "63a57fe7f8b3516d2c1914606b6b29b5a88ac9b52ed0bd64ce3d52374e0dba9d",
+      "after_sha256": "63a57fe7f8b3516d2c1914606b6b29b5a88ac9b52ed0bd64ce3d52374e0dba9d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/diff.rs",
+      "sha256": "a8e000b1acc90688145d1e8213e837268afd8e4cfead8abbe9310223e29eaaea",
+      "after_sha256": "a8e000b1acc90688145d1e8213e837268afd8e4cfead8abbe9310223e29eaaea",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/executable.rs",
+      "sha256": "9b7ebc105338f8bf5d9cfbef9ad1d3f574aba81ebc1145fcf01a02a870fa1cea",
+      "after_sha256": "9b7ebc105338f8bf5d9cfbef9ad1d3f574aba81ebc1145fcf01a02a870fa1cea",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/identity.rs",
+      "sha256": "ec8211ec977d4de59de991408a825378de65dc07657908294c13211175160069",
+      "after_sha256": "ec8211ec977d4de59de991408a825378de65dc07657908294c13211175160069",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/mod.rs",
+      "sha256": "9bde969dac40a3260865319fdb418c3177ef5029511d324a216648c88f3eeb92",
+      "after_sha256": "9bde969dac40a3260865319fdb418c3177ef5029511d324a216648c88f3eeb92",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/projection.rs",
+      "sha256": "6ffbe0ef38c3acc8ed0a494a6df554947687991aef4bb8eaa067282136d5eb6f",
+      "after_sha256": "6ffbe0ef38c3acc8ed0a494a6df554947687991aef4bb8eaa067282136d5eb6f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/runner.rs",
+      "sha256": "38dce7ed8568f7a3744c0055ba4d09184790fd0c078abcffda22be5c2ec89526",
+      "after_sha256": "38dce7ed8568f7a3744c0055ba4d09184790fd0c078abcffda22be5c2ec89526",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/snapshot.rs",
+      "sha256": "b40b636cd52530a2cfa484751b214735330fa8dc1e6bfb27bd1c3f2e71849289",
+      "after_sha256": "b40b636cd52530a2cfa484751b214735330fa8dc1e6bfb27bd1c3f2e71849289",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/trusted_git/authority.rs",
+      "sha256": "73176c6888beea3f58e7447429cb6f3eeea0221d40da0e29190c5916a61e347c",
+      "after_sha256": "73176c6888beea3f58e7447429cb6f3eeea0221d40da0e29190c5916a61e347c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/trusted_git/mod.rs",
+      "sha256": "a4a78a6efc1080461feb21050655d552aba3cf253a6e6f1b6c2d86315909628d",
+      "after_sha256": "a4a78a6efc1080461feb21050655d552aba3cf253a6e6f1b6c2d86315909628d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/trusted_git/parsing.rs",
+      "sha256": "768de21b6c7f4e706b8323ec9fd2834d77256b599d3fa577e422ff934594225a",
+      "after_sha256": "768de21b6c7f4e706b8323ec9fd2834d77256b599d3fa577e422ff934594225a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/history.rs",
+      "sha256": "096aeea00070c56d64aaf178c405f1e5144a9eec02e00824fd8f7d562c95bb07",
+      "after_sha256": "096aeea00070c56d64aaf178c405f1e5144a9eec02e00824fd8f7d562c95bb07",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/link_preview.rs",
+      "sha256": "d9b5d8bf6f90d80eab8e3e10975909c0b042e9901b2996cf97c31049adcfff87",
+      "after_sha256": "d9b5d8bf6f90d80eab8e3e10975909c0b042e9901b2996cf97c31049adcfff87",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/link_preview/metadata.rs",
+      "sha256": "5f858108da8b640df26d9d8ce5d59537fc369b57518ca51b6a9529911dda2a2e",
+      "after_sha256": "5f858108da8b640df26d9d8ce5d59537fc369b57518ca51b6a9529911dda2a2e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/link_preview/ports.rs",
+      "sha256": "958c0b7b1c1ae03a86d3e1e1da7a486d90e9f4314f2a3a942c97eddfcff5c387",
+      "after_sha256": "958c0b7b1c1ae03a86d3e1e1da7a486d90e9f4314f2a3a942c97eddfcff5c387",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/mcp_settings.rs",
+      "sha256": "ff80c4512ef28bb48f995ba28b8f3d6839bb28a9b63675ceaeb8b3f9d72f4bc6",
+      "after_sha256": "ff80c4512ef28bb48f995ba28b8f3d6839bb28a9b63675ceaeb8b3f9d72f4bc6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/model_capabilities.rs",
+      "sha256": "ddb0c1da042f2a0aabedffb9c246dfb47acaaa7e89b4e6bb11e916849278c635",
+      "after_sha256": "ddb0c1da042f2a0aabedffb9c246dfb47acaaa7e89b4e6bb11e916849278c635",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/navigation.rs",
+      "sha256": "437c47a2b2793ec51c5b28fe869c3cb13db4d0f659480b338c9f3bc8b828188d",
+      "after_sha256": "437c47a2b2793ec51c5b28fe869c3cb13db4d0f659480b338c9f3bc8b828188d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/palette.rs",
+      "sha256": "f24561bff15130e7f1dc2589c1c9a4edc6940b8e12f3f1d1ff622e7afd04f748",
+      "after_sha256": "f24561bff15130e7f1dc2589c1c9a4edc6940b8e12f3f1d1ff622e7afd04f748",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/pending_messages.rs",
+      "sha256": "3a4d4a1a7948c16edf98e04044b75fe7f767dfed00287a39be2389d96e359587",
+      "after_sha256": "3a4d4a1a7948c16edf98e04044b75fe7f767dfed00287a39be2389d96e359587",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/plans.rs",
+      "sha256": "d05215201bdf07d9ac283972256273d8e0bf109a3ef60e515e1ace06a3a6d735",
+      "after_sha256": "d05215201bdf07d9ac283972256273d8e0bf109a3ef60e515e1ace06a3a6d735",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/pricing.rs",
+      "sha256": "6dc3dce4389d04300c16d7e2a06f62deaf03df15f498bd08dd1bf05cef43af11",
+      "after_sha256": "6dc3dce4389d04300c16d7e2a06f62deaf03df15f498bd08dd1bf05cef43af11",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/privacy.rs",
+      "sha256": "a643f7ae6b8a5cf53ed6386d1dbaaefa58954b94d108be58898c4593a4f3d421",
+      "after_sha256": "a643f7ae6b8a5cf53ed6386d1dbaaefa58954b94d108be58898c4593a4f3d421",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/project_branch.rs",
+      "sha256": "cb75d68e1590d866857e47a55fa9b3fd29a9a4002d3a18b1d6ec1202eaf2a083",
+      "after_sha256": "cb75d68e1590d866857e47a55fa9b3fd29a9a4002d3a18b1d6ec1202eaf2a083",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/provider_settings.rs",
+      "sha256": "20b7f734fb4120882518e2871f6f66368e0b29c7a6da3ff07c867b00f3a30ee9",
+      "after_sha256": "20b7f734fb4120882518e2871f6f66368e0b29c7a6da3ff07c867b00f3a30ee9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/sidebar_organization/calendar.rs",
+      "sha256": "f2ca64889b6774763a5533df294a4477720c4dfc26eae33a11a8965dfbda9a77",
+      "after_sha256": "f2ca64889b6774763a5533df294a4477720c4dfc26eae33a11a8965dfbda9a77",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/sidebar_organization/mod.rs",
+      "sha256": "0b6f275161a79fb14ded1150e5393633efeab0c4ff8a45e5e85333cc949b63b5",
+      "after_sha256": "0b6f275161a79fb14ded1150e5393633efeab0c4ff8a45e5e85333cc949b63b5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/sidebar_organization/mutations.rs",
+      "sha256": "0dd4356d250626fda6963f5179e3d92717fd4c9c84153134351af5967c148e75",
+      "after_sha256": "0dd4356d250626fda6963f5179e3d92717fd4c9c84153134351af5967c148e75",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/sidebar_organization/ordering.rs",
+      "sha256": "9111173c55bc17b027b7c49f528a190544ea48ce9dc3e29984703f1b741ac12a",
+      "after_sha256": "9111173c55bc17b027b7c49f528a190544ea48ce9dc3e29984703f1b741ac12a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/skill_settings.rs",
+      "sha256": "9d54fcaa0890c1c9a04b70050b73fb7ce762d01e944afdd5cdd916076cc5db15",
+      "after_sha256": "9d54fcaa0890c1c9a04b70050b73fb7ce762d01e944afdd5cdd916076cc5db15",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/skill_settings/composer.rs",
+      "sha256": "28e500d46fbe819e3e93e42299e4442b205d3224a4fbf25b4f2a01905f91f96c",
+      "after_sha256": "28e500d46fbe819e3e93e42299e4442b205d3224a4fbf25b4f2a01905f91f96c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/subagents.rs",
+      "sha256": "89fde3eff47661a128cf84b0b751b289ffe77c87353aebb3b19691efc7fa6958",
+      "after_sha256": "89fde3eff47661a128cf84b0b751b289ffe77c87353aebb3b19691efc7fa6958",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/summary.rs",
+      "sha256": "35f6ba11bd0f1e7df56a267bf1a8733fad258465f6ed24be62f82ad95a33d345",
+      "after_sha256": "35f6ba11bd0f1e7df56a267bf1a8733fad258465f6ed24be62f82ad95a33d345",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/terminal.rs",
+      "sha256": "bbce24923fa34b9186581193f62381f6e0781550ae8c2e61da782742aa67dd46",
+      "after_sha256": "bbce24923fa34b9186581193f62381f6e0781550ae8c2e61da782742aa67dd46",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/threads.rs",
+      "sha256": "a33759b2a84fa85c37b1eddbd34a62995acc3178cb9124ce5a1fbfc651d5dfe7",
+      "after_sha256": "a33759b2a84fa85c37b1eddbd34a62995acc3178cb9124ce5a1fbfc651d5dfe7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/artifact.rs",
+      "sha256": "540fdb4a94373291e903ddb074f54caca1679c459000623927e36210ec3ec24e",
+      "after_sha256": "540fdb4a94373291e903ddb074f54caca1679c459000623927e36210ec3ec24e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/automation.rs",
+      "sha256": "761d112309d2070ecbbe6cf60c5db943a8b2edb3b211ac8ad25ba504fd49fd02",
+      "after_sha256": "761d112309d2070ecbbe6cf60c5db943a8b2edb3b211ac8ad25ba504fd49fd02",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/codex_task.rs",
+      "sha256": "f3b4578338d250e0fa00a6bd854ac7106177b7bd5b802440d492315b5908be21",
+      "after_sha256": "f3b4578338d250e0fa00a6bd854ac7106177b7bd5b802440d492315b5908be21",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/context.rs",
+      "sha256": "312a372bfed92c1d5d5d6cddcf899a9d762a8a2a4909533caed17b6c9ff8cbcf",
+      "after_sha256": "312a372bfed92c1d5d5d6cddcf899a9d762a8a2a4909533caed17b6c9ff8cbcf",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/events.rs",
+      "sha256": "15361d395fa7f5417a77b87beac8a6d3993689fbd9c1208d591c8179905591e3",
+      "after_sha256": "15361d395fa7f5417a77b87beac8a6d3993689fbd9c1208d591c8179905591e3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/link_preview.rs",
+      "sha256": "8382e509a7402ade8769bd9aa1fcfd6c3d35677e9a26c441a8b06b0eee632748",
+      "after_sha256": "8382e509a7402ade8769bd9aa1fcfd6c3d35677e9a26c441a8b06b0eee632748",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/mcp.rs",
+      "sha256": "a7838309872a1fabb98b52fb918730f82e07819dffdd33f0647c86e8225665b0",
+      "after_sha256": "a7838309872a1fabb98b52fb918730f82e07819dffdd33f0647c86e8225665b0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/message_location.rs",
+      "sha256": "c5db75c62559d92b35cd66748233af3125f83cf9d168ba1304f15999dec78421",
+      "after_sha256": "c5db75c62559d92b35cd66748233af3125f83cf9d168ba1304f15999dec78421",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/meter.rs",
+      "sha256": "ae0c22ead2403d10938391e96f9ad988676b5a8ceb08e98fc1796dac7777219e",
+      "after_sha256": "ae0c22ead2403d10938391e96f9ad988676b5a8ceb08e98fc1796dac7777219e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/mod.rs",
+      "sha256": "b0a5cf36322964c511cde2eefb3dd447f6f9e78ec65b35e57ed8c917b6aad1f5",
+      "after_sha256": "b0a5cf36322964c511cde2eefb3dd447f6f9e78ec65b35e57ed8c917b6aad1f5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/model_catalog.rs",
+      "sha256": "395f8e4de7b8cbdd580103df145954c5289d09fd80ce82caa54f50e95ccf6eb7",
+      "after_sha256": "395f8e4de7b8cbdd580103df145954c5289d09fd80ce82caa54f50e95ccf6eb7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/navigation.rs",
+      "sha256": "e4a5f7527a0ebc2be71c61658b686613f08a7fdde6ed7273cc9e1c9d307c4a80",
+      "after_sha256": "e4a5f7527a0ebc2be71c61658b686613f08a7fdde6ed7273cc9e1c9d307c4a80",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/palette.rs",
+      "sha256": "081f2d7d4f96bb5aabe63de27c29a7fb1c2cfbd069f12338948d8bd88eb6784d",
+      "after_sha256": "081f2d7d4f96bb5aabe63de27c29a7fb1c2cfbd069f12338948d8bd88eb6784d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/pending_messages.rs",
+      "sha256": "30984a40541c779e18c897397c99adc370d0f197a30fd11b5a1ec10322bd3814",
+      "after_sha256": "30984a40541c779e18c897397c99adc370d0f197a30fd11b5a1ec10322bd3814",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/permission.rs",
+      "sha256": "7883673f366b07ec2d44b03cab88cbaadfdf51860e77dc3b81cc49cbcf329eb4",
+      "after_sha256": "7883673f366b07ec2d44b03cab88cbaadfdf51860e77dc3b81cc49cbcf329eb4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/pricing.rs",
+      "sha256": "bc905cd876522f69373648dde3a4a8f78e0c3a73773b60d0b3094a660fb54311",
+      "after_sha256": "bc905cd876522f69373648dde3a4a8f78e0c3a73773b60d0b3094a660fb54311",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/project_branch.rs",
+      "sha256": "3e10c6d33ba0ab755cf6971c857f81198265a53d15840c6f4dc4e23d637da38b",
+      "after_sha256": "3e10c6d33ba0ab755cf6971c857f81198265a53d15840c6f4dc4e23d637da38b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/project_worker.rs",
+      "sha256": "c44ccaf212e00137a38f7f1453f4b364acca9cbed6d4a028576e3e6d223e799b",
+      "after_sha256": "c44ccaf212e00137a38f7f1453f4b364acca9cbed6d4a028576e3e6d223e799b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/provider_settings.rs",
+      "sha256": "6ae40c9e180ec9197463199d07cf67bb7f9065b0df54433218158acea7327d3b",
+      "after_sha256": "6ae40c9e180ec9197463199d07cf67bb7f9065b0df54433218158acea7327d3b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/reasoning.rs",
+      "sha256": "5768f1a304dd49080a90d68c6148898debf30cce1d53bb35108264d5ce68a01c",
+      "after_sha256": "5768f1a304dd49080a90d68c6148898debf30cce1d53bb35108264d5ce68a01c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/response.rs",
+      "sha256": "772aaf93cdd4c7a9e4d47e10358122b5ed8796c75284c4a0c5a1da6412c756b6",
+      "after_sha256": "772aaf93cdd4c7a9e4d47e10358122b5ed8796c75284c4a0c5a1da6412c756b6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/running_threads.rs",
+      "sha256": "b4229c2ffbccf77b50366a0925a5939c9e88cca243555cbc1f0997d5427775b7",
+      "after_sha256": "b4229c2ffbccf77b50366a0925a5939c9e88cca243555cbc1f0997d5427775b7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/scroll.rs",
+      "sha256": "a38b870fd8e871c25509560a617e28fdaf43403708e9124aff79178ccf01c1d0",
+      "after_sha256": "a38b870fd8e871c25509560a617e28fdaf43403708e9124aff79178ccf01c1d0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/sidebar_organization.rs",
+      "sha256": "894789e8383a8ac1ce65dffe443cb0bfd145b45fba06d7f40907776ef83db07b",
+      "after_sha256": "894789e8383a8ac1ce65dffe443cb0bfd145b45fba06d7f40907776ef83db07b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/skills.rs",
+      "sha256": "6decedc6aaf5d2f506b6f6caacc5a012c8b00098004eaf94fa3ba4862ce786ba",
+      "after_sha256": "6decedc6aaf5d2f506b6f6caacc5a012c8b00098004eaf94fa3ba4862ce786ba",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/subagents.rs",
+      "sha256": "8f4477eab2c9df5a24899a9478924572951c5071b699b2d101e961aad30c82db",
+      "after_sha256": "8f4477eab2c9df5a24899a9478924572951c5071b699b2d101e961aad30c82db",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/terminal.rs",
+      "sha256": "916e78b9e352c8517fd3539833c2359f765e059a6f10882516c02b3d41293bf5",
+      "after_sha256": "916e78b9e352c8517fd3539833c2359f765e059a6f10882516c02b3d41293bf5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/thread.rs",
+      "sha256": "ef4dccd7a7b5a848d0a4fb8c7a452215b07fcf0bdbcad430b4a42b4da1b2abbc",
+      "after_sha256": "ef4dccd7a7b5a848d0a4fb8c7a452215b07fcf0bdbcad430b4a42b4da1b2abbc",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/tool_calls.rs",
+      "sha256": "7cd2c44060abe07862cb0b499399c4b64a8b628cf94e2b7265da0c1d3b960493",
+      "after_sha256": "7cd2c44060abe07862cb0b499399c4b64a8b628cf94e2b7265da0c1d3b960493",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/updater.rs",
+      "sha256": "454219c327ad91f1c333f799621187891e1d0f2bebfe6eb3c868fe1dcad38489",
+      "after_sha256": "454219c327ad91f1c333f799621187891e1d0f2bebfe6eb3c868fe1dcad38489",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/usage.rs",
+      "sha256": "3d3dac79ec761e20f1ceda9641ba6a4cc2e961968158562c2d69d30eb86cdb41",
+      "after_sha256": "3d3dac79ec761e20f1ceda9641ba6a4cc2e961968158562c2d69d30eb86cdb41",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/usage_dashboard.rs",
+      "sha256": "5a8acfd85479aea5ec18d62f5d4adb0bc34c4ba58d51169fe121c53485b9b12b",
+      "after_sha256": "5a8acfd85479aea5ec18d62f5d4adb0bc34c4ba58d51169fe121c53485b9b12b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/user_questions.rs",
+      "sha256": "60ccfe6af9b0242cf3bc5cc9319f0842cada7e49a39e297b3b416f71fdac510a",
+      "after_sha256": "60ccfe6af9b0242cf3bc5cc9319f0842cada7e49a39e297b3b416f71fdac510a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/types/workspace.rs",
+      "sha256": "8db0400905ab6727d04c51431bec911446b6cddfebb9dc286825efbf54a2228f",
+      "after_sha256": "8db0400905ab6727d04c51431bec911446b6cddfebb9dc286825efbf54a2228f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_conversation/src/usage_dashboard.rs",
+      "sha256": "f145d2c365a1fb42f06e2565415402b74f34978df416097b058c7d4b42de8f93",
+      "after_sha256": "f145d2c365a1fb42f06e2565415402b74f34978df416097b058c7d4b42de8f93",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_credentials/Cargo.toml",
+      "sha256": "3e75cc9ce7b435911bfa102873fe27dc685f8ee58d6e91ad6990c18e79e253e7",
+      "after_sha256": "3e75cc9ce7b435911bfa102873fe27dc685f8ee58d6e91ad6990c18e79e253e7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_credentials/src/lib.rs",
+      "sha256": "0cbf537dbb565163413b96c161753a619fbcc2610ddd419671a21aaae4d19651",
+      "after_sha256": "0cbf537dbb565163413b96c161753a619fbcc2610ddd419671a21aaae4d19651",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_credentials/src/proxy.rs",
+      "sha256": "bc139b0ca4655205ce6fb1f8be0966f1ccb4b546fb3aa56ac4c3e9abc6466e38",
+      "after_sha256": "bc139b0ca4655205ce6fb1f8be0966f1ccb4b546fb3aa56ac4c3e9abc6466e38",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_markdown/Cargo.toml",
+      "sha256": "0bac3576c150c27a687c52d6de54dffb2c28a60068682d4b034247bc7b4beeec",
+      "after_sha256": "0bac3576c150c27a687c52d6de54dffb2c28a60068682d4b034247bc7b4beeec",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_markdown/src/highlight.rs",
+      "sha256": "3b0069d225321ed2d1e34342f58c3dab7079a28809b76b95c5a30ac7994baffc",
+      "after_sha256": "3b0069d225321ed2d1e34342f58c3dab7079a28809b76b95c5a30ac7994baffc",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_markdown/src/lib.rs",
+      "sha256": "99b01a98171a3660eb9101411b447c94b7c5ee2d3566f889f7a9bf226bedc2aa",
+      "after_sha256": "99b01a98171a3660eb9101411b447c94b7c5ee2d3566f889f7a9bf226bedc2aa",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_markdown/src/nodes.rs",
+      "sha256": "018cccd7e6e41b144edd9a2a695bca08c2a25330cbb7a90ed290150e3ce08695",
+      "after_sha256": "018cccd7e6e41b144edd9a2a695bca08c2a25330cbb7a90ed290150e3ce08695",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_markdown/src/replay.rs",
+      "sha256": "82a343a24bf8005c1cacd304a3cbe4bc112b75485ced30ea2bcc025009e348ff",
+      "after_sha256": "82a343a24bf8005c1cacd304a3cbe4bc112b75485ced30ea2bcc025009e348ff",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_markdown/src/source_map.rs",
+      "sha256": "5b0be7e04ecda5fb73400e87f547b40712edd33dbc2a2b10f496a2b715b92d7a",
+      "after_sha256": "5b0be7e04ecda5fb73400e87f547b40712edd33dbc2a2b10f496a2b715b92d7a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_markdown/src/stream.rs",
+      "sha256": "5ec14196b2909e76a91eb728b80b9a63f22d8eea5157c00fc2337ab31b797b24",
+      "after_sha256": "5ec14196b2909e76a91eb728b80b9a63f22d8eea5157c00fc2337ab31b797b24",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_mcp/Cargo.toml",
+      "sha256": "3858bb40eea6137d5d758e3aca82d1f83c975fe27778185196a1f62605da3bff",
+      "after_sha256": "3858bb40eea6137d5d758e3aca82d1f83c975fe27778185196a1f62605da3bff",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_mcp/src/auth.rs",
+      "sha256": "074142ddcac149199210b650ff79bbaea0d5969d2d0f311a249667e270c96b4a",
+      "after_sha256": "074142ddcac149199210b650ff79bbaea0d5969d2d0f311a249667e270c96b4a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_mcp/src/http.rs",
+      "sha256": "d05035222c3110c190cab6da15be2fae67c70fb44fba99d1568b81780b762de2",
+      "after_sha256": "d05035222c3110c190cab6da15be2fae67c70fb44fba99d1568b81780b762de2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_mcp/src/lib.rs",
+      "sha256": "e2d81730f3f52eca10696a591470e953f64ff837f66f747c077ee1fe35ab8bb9",
+      "after_sha256": "e2d81730f3f52eca10696a591470e953f64ff837f66f747c077ee1fe35ab8bb9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_mcp/src/managed.rs",
+      "sha256": "ea3f91c732231e9d37c20b856024a04da0289e6a134a187047718f408f582f98",
+      "after_sha256": "ea3f91c732231e9d37c20b856024a04da0289e6a134a187047718f408f582f98",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_mcp/src/stdio.rs",
+      "sha256": "66c29ebfaa353844b36edc17ae2e44a67680c8a546b3f201c83bcb464bc8e539",
+      "after_sha256": "66c29ebfaa353844b36edc17ae2e44a67680c8a546b3f201c83bcb464bc8e539",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_mcp/src/transport.rs",
+      "sha256": "214e45cfa8feb4a141589d664d998c5f81e25c2d77f9214bda941f0550e494a7",
+      "after_sha256": "214e45cfa8feb4a141589d664d998c5f81e25c2d77f9214bda941f0550e494a7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_mcp/src/wire.rs",
+      "sha256": "29c1cf2a11a259e16448d4c51de35d4cc165f0065ff1e737c0c194c82b7553c0",
+      "after_sha256": "29c1cf2a11a259e16448d4c51de35d4cc165f0065ff1e737c0c194c82b7553c0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/automation.rs",
+      "sha256": "2dc8c27a0715c1517b70ef5dc28b0dca3833b093cf4c60ccf61652943cf432a1",
+      "after_sha256": "2dc8c27a0715c1517b70ef5dc28b0dca3833b093cf4c60ccf61652943cf432a1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/context_accounting.rs",
+      "sha256": "401b502c35e0485332b50e99282919cee479a65ab8e53d29e855984a8ba1c940",
+      "after_sha256": "401b502c35e0485332b50e99282919cee479a65ab8e53d29e855984a8ba1c940",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/credential_redaction.rs",
+      "sha256": "e8276385c09d873814f7370e8a93ced1075c1a5f80ab1ecd7244e22ac434eaa4",
+      "after_sha256": "e8276385c09d873814f7370e8a93ced1075c1a5f80ab1ecd7244e22ac434eaa4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/loop_.rs",
+      "sha256": "95773f32816c69890edfffd344a34bed8c755220d73d2296adf1f0002b7d0edb",
+      "after_sha256": "95773f32816c69890edfffd344a34bed8c755220d73d2296adf1f0002b7d0edb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/mcp_registry.rs",
+      "sha256": "9362ca4ece80ecfe1ff8f19883de0cb4dccca2432936dd1a46b46481b984035a",
+      "after_sha256": "9362ca4ece80ecfe1ff8f19883de0cb4dccca2432936dd1a46b46481b984035a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/mod.rs",
+      "sha256": "807e48db55665c377fb4f62b265d65ceeab90a6fc55ed01f0b379d41ec1e2d04",
+      "after_sha256": "807e48db55665c377fb4f62b265d65ceeab90a6fc55ed01f0b379d41ec1e2d04",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/progress.rs",
+      "sha256": "c34edcf6786803c08289e8d3989e40dc7bba54cd0e678735d7702ff1ed7b15bf",
+      "after_sha256": "c34edcf6786803c08289e8d3989e40dc7bba54cd0e678735d7702ff1ed7b15bf",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/progress_recovery.rs",
+      "sha256": "ca8a4b5ff6761db3acbc43578faf8b9f94132271e327498bc0a234995734c018",
+      "after_sha256": "ca8a4b5ff6761db3acbc43578faf8b9f94132271e327498bc0a234995734c018",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/subagents.rs",
+      "sha256": "67f37412872c477906b4e24751628777849c881069d4f9e40390022996c20b4f",
+      "after_sha256": "67f37412872c477906b4e24751628777849c881069d4f9e40390022996c20b4f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/tools_exec.rs",
+      "sha256": "b0c23bb1099c0c535b003da09e6dbb3812f05548ca1854b60de4a7b2ecd827eb",
+      "after_sha256": "b0c23bb1099c0c535b003da09e6dbb3812f05548ca1854b60de4a7b2ecd827eb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/user_questions.rs",
+      "sha256": "73c4df2537f27db25dce85127682f72e0c66cc22943a62b86b87873f6c3fef9f",
+      "after_sha256": "73c4df2537f27db25dce85127682f72e0c66cc22943a62b86b87873f6c3fef9f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/chat_compat.rs",
+      "sha256": "4b6d2d5f66e3feb63dd11f1973840de831547ce8fe52df59f34586864a0e994f",
+      "after_sha256": "4b6d2d5f66e3feb63dd11f1973840de831547ce8fe52df59f34586864a0e994f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/chat_compat/PI-LICENSE",
+      "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+      "after_sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/chat_reasoning.rs",
+      "sha256": "ce71a41f9845939c17ba96cdabb4f972a81ef2a8b96565b9702bcb78f999e888",
+      "after_sha256": "ce71a41f9845939c17ba96cdabb4f972a81ef2a8b96565b9702bcb78f999e888",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/background.rs",
+      "sha256": "0ec8190ff9bf098be7bfc2f017d895f07915eac7f151313eda0e1e6b86afb172",
+      "after_sha256": "0ec8190ff9bf098be7bfc2f017d895f07915eac7f151313eda0e1e6b86afb172",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/batch.rs",
+      "sha256": "ab10ba8a0e0ee0079a5019c128ce8b7e5ef78ccd98987fa3da33396c28b7a5b1",
+      "after_sha256": "ab10ba8a0e0ee0079a5019c128ce8b7e5ef78ccd98987fa3da33396c28b7a5b1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/components.rs",
+      "sha256": "5d6b0fc964713ba491cf2417d6293727a785f0e6f7e34037b571c4f595a4f0e0",
+      "after_sha256": "5d6b0fc964713ba491cf2417d6293727a785f0e6f7e34037b571c4f595a4f0e0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/control.rs",
+      "sha256": "9ca6fb3a09a148eb935cdbf0f7e021d7def32f59662a23889444d08904a6623a",
+      "after_sha256": "9ca6fb3a09a148eb935cdbf0f7e021d7def32f59662a23889444d08904a6623a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/desktop_observation.rs",
+      "sha256": "345b21b2704029cb1daec076563d6ac9578540dc5c8ac987d04dddb538fbc944",
+      "after_sha256": "345b21b2704029cb1daec076563d6ac9578540dc5c8ac987d04dddb538fbc944",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/diagnostics.rs",
+      "sha256": "9305f27ed6aedf78043a6ac7d04a4c2e1a77659747d166c75799b03c70865626",
+      "after_sha256": "9305f27ed6aedf78043a6ac7d04a4c2e1a77659747d166c75799b03c70865626",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/guide.rs",
+      "sha256": "8bcfde36272b6b57b1620641f807516790993bb807119c3c98640d07fcb087be",
+      "after_sha256": "8bcfde36272b6b57b1620641f807516790993bb807119c3c98640d07fcb087be",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/media.rs",
+      "sha256": "659af6e4cc0f609d379ee1a9652497763108eef20ddd56fdbb6bee01cbc8ddbe",
+      "after_sha256": "659af6e4cc0f609d379ee1a9652497763108eef20ddd56fdbb6bee01cbc8ddbe",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/progress.rs",
+      "sha256": "136ec58217399a3eb8152d97ea2ee16cacede47676bfcd155a0a7d6634b1f12b",
+      "after_sha256": "136ec58217399a3eb8152d97ea2ee16cacede47676bfcd155a0a7d6634b1f12b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/vega-cua/SKILL.md",
+      "sha256": "7079a77d86664a7a3f7410c874977cda57b23318600cbcc64f6e88e18dec6adb",
+      "after_sha256": "7079a77d86664a7a3f7410c874977cda57b23318600cbcc64f6e88e18dec6adb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/context.rs",
+      "sha256": "aa6b27ddf8ea52cd36ec5622ef212b30aead9c7eb882c472283ac058d61fb3d6",
+      "after_sha256": "aa6b27ddf8ea52cd36ec5622ef212b30aead9c7eb882c472283ac058d61fb3d6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/error.rs",
+      "sha256": "e08654e75516e5a7b21ce798477f10d3439c52cc0a0ea47d699b1c80feabf0d3",
+      "after_sha256": "e08654e75516e5a7b21ce798477f10d3439c52cc0a0ea47d699b1c80feabf0d3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/images.rs",
+      "sha256": "89b47cea5f8804ffe324bf03bc7d58a464cfdc5ba19fcba7c4214c50ff446dec",
+      "after_sha256": "89b47cea5f8804ffe324bf03bc7d58a464cfdc5ba19fcba7c4214c50ff446dec",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/model_compat.rs",
+      "sha256": "b0058e8b49619c8cd3687545defd32964df09815fab8ca0805600ab2b984791a",
+      "after_sha256": "b0058e8b49619c8cd3687545defd32964df09815fab8ca0805600ab2b984791a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/model_compat/pi-ai-0.84.4.json",
+      "sha256": "3c7bfe4d340715cdba2ddc689d7e302ba62f51377025d622fe33cb223bdae1f1",
+      "after_sha256": "3c7bfe4d340715cdba2ddc689d7e302ba62f51377025d622fe33cb223bdae1f1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/model_compat/pi-ai-0.84.4.sources.json",
+      "sha256": "82970e4c6963371aeffaab90a3d6d17e975718981120d553ffc2a48a615bf72c",
+      "after_sha256": "82970e4c6963371aeffaab90a3d6d17e975718981120d553ffc2a48a615bf72c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/chat.rs",
+      "sha256": "5ca1cbc1c6cfe01d7edd7f87c6d07d5f6c69d998e26cba91346056ca008288f8",
+      "after_sha256": "5ca1cbc1c6cfe01d7edd7f87c6d07d5f6c69d998e26cba91346056ca008288f8",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/recovery.rs",
+      "sha256": "7958b76d444373c984cf9ee32022edb10fc9b1595211e61bb1b61d5e366fc734",
+      "after_sha256": "7958b76d444373c984cf9ee32022edb10fc9b1595211e61bb1b61d5e366fc734",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/responses.rs",
+      "sha256": "360b10ec00793d4adda1aec64d2dc43ae253f46975110f9b042093e97dd99b30",
+      "after_sha256": "360b10ec00793d4adda1aec64d2dc43ae253f46975110f9b042093e97dd99b30",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/sse.rs",
+      "sha256": "75610574ed7a6dfbbaba2f7e26b66673e8479296b9bc4ed565df9be6ba2584a7",
+      "after_sha256": "75610574ed7a6dfbbaba2f7e26b66673e8479296b9bc4ed565df9be6ba2584a7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/permission.rs",
+      "sha256": "3bdbf029043a00eb4c3eb0c369b0bb47682a0bf8762bb9223c1273aa1617526a",
+      "after_sha256": "3bdbf029043a00eb4c3eb0c369b0bb47682a0bf8762bb9223c1273aa1617526a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/provider.rs",
+      "sha256": "0eea394fab48c7503a6689c35345532e472cc88b48824d4e61b2a98c4a6b92e6",
+      "after_sha256": "0eea394fab48c7503a6689c35345532e472cc88b48824d4e61b2a98c4a6b92e6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/provider_check.rs",
+      "sha256": "5cbe2fe936d0652c59c4d3ac8a7c6a98a462f7a9559a24d77a54d1dbc1ea67d2",
+      "after_sha256": "5cbe2fe936d0652c59c4d3ac8a7c6a98a462f7a9559a24d77a54d1dbc1ea67d2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/retry.rs",
+      "sha256": "c79fa9d93de42d91656ba9e4bc467d0833816a2bb9aa6e224d2860601a681b29",
+      "after_sha256": "c79fa9d93de42d91656ba9e4bc467d0833816a2bb9aa6e224d2860601a681b29",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/skills/catalog.rs",
+      "sha256": "e35bd908deeaf0ebc74db685827d8b5ca9258902f1b2ce7ebde5539e6e5cb7ec",
+      "after_sha256": "e35bd908deeaf0ebc74db685827d8b5ca9258902f1b2ce7ebde5539e6e5cb7ec",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/skills/catalog/snapshot.rs",
+      "sha256": "77868b7d2fe625c8c77f0827f7d82486ad85784eef99d46665942e14543a3b4b",
+      "after_sha256": "77868b7d2fe625c8c77f0827f7d82486ad85784eef99d46665942e14543a3b4b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/skills/frontmatter.rs",
+      "sha256": "c764c65ab6512b3aa6821c879617cd63470842c6c4ede867103f2dd26609e721",
+      "after_sha256": "c764c65ab6512b3aa6821c879617cd63470842c6c4ede867103f2dd26609e721",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/skills/mod.rs",
+      "sha256": "4a9200a347e4db3889cef48649c3346226972175e0c3f78f499079cd5df15bbc",
+      "after_sha256": "4a9200a347e4db3889cef48649c3346226972175e0c3f78f499079cd5df15bbc",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/skills/source.rs",
+      "sha256": "1e368d3f8ea72a89bf583475150b0522d29f329cf11bd6e51c084f9748300ea8",
+      "after_sha256": "1e368d3f8ea72a89bf583475150b0522d29f329cf11bd6e51c084f9748300ea8",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_runtime/src/tool_context.rs",
+      "sha256": "d8a9418e4586c261bb40e3f10604ff867c182f279ec76d0d5910f8dd06fba395",
+      "after_sha256": "d8a9418e4586c261bb40e3f10604ff867c182f279ec76d0d5910f8dd06fba395",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0001_init.sql",
+      "sha256": "9fe70629299688694eca46c483a898f0ff63d47561b1327195aa00ee28a4e75e",
+      "after_sha256": "9fe70629299688694eca46c483a898f0ff63d47561b1327195aa00ee28a4e75e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0002_plan_review.sql",
+      "sha256": "613b433c58d8e0ab8f3bdd3bfaa59271c5f822ab1c4aa00d611b83d32d85f9ad",
+      "after_sha256": "613b433c58d8e0ab8f3bdd3bfaa59271c5f822ab1c4aa00d611b83d32d85f9ad",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0003_token_usage_pricing.sql",
+      "sha256": "31c70b9b3ed6548aec9661566986ecea9c9f7aeef7205cb596be91c5bb535937",
+      "after_sha256": "31c70b9b3ed6548aec9661566986ecea9c9f7aeef7205cb596be91c5bb535937",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0004_sidebar_organization.sql",
+      "sha256": "c2d648c526016c9fa65da0bad992c0d5243bdfa6022705d21cf215848a873d78",
+      "after_sha256": "c2d648c526016c9fa65da0bad992c0d5243bdfa6022705d21cf215848a873d78",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0005_standalone_threads.sql",
+      "sha256": "384e2435f4758fcb6fb5964fafa992033d075e59cd85fa992f84617e956957ce",
+      "after_sha256": "384e2435f4758fcb6fb5964fafa992033d075e59cd85fa992f84617e956957ce",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0006_tool_text_offset.sql",
+      "sha256": "453f20c81b26ce4fa0c9c6a6b27797038038ca3e90802beff2b8b36c03d5c2a8",
+      "after_sha256": "453f20c81b26ce4fa0c9c6a6b27797038038ca3e90802beff2b8b36c03d5c2a8",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0007_image_attachments.sql",
+      "sha256": "812a4947f408d3ec333a623265579ed56f71ad5ed5e08847c39a272b5d2ba34c",
+      "after_sha256": "812a4947f408d3ec333a623265579ed56f71ad5ed5e08847c39a272b5d2ba34c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0008_auto_titles.sql",
+      "sha256": "4eaade7f29e79ef2e697bc739d5134c2ba39ab6bf93e8c7597ff51cfecb01c4e",
+      "after_sha256": "4eaade7f29e79ef2e697bc739d5134c2ba39ab6bf93e8c7597ff51cfecb01c4e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0009_context_compaction.sql",
+      "sha256": "8f7eecbada41eb1235d880c17d835546d20e2f7dbaf71eb71bae785f5126630b",
+      "after_sha256": "8f7eecbada41eb1235d880c17d835546d20e2f7dbaf71eb71bae785f5126630b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0010_context_compaction_status.sql",
+      "sha256": "a9c66ff27c5f49ffe6fc7c717af519277b625fce7c04f1455af673bb72917516",
+      "after_sha256": "a9c66ff27c5f49ffe6fc7c717af519277b625fce7c04f1455af673bb72917516",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0011_model_context_policies.sql",
+      "sha256": "4c3cfa3ef39a0e14b4541e303691490c30c7475d8842d524a5b5bf32f8f37486",
+      "after_sha256": "4c3cfa3ef39a0e14b4541e303691490c30c7475d8842d524a5b5bf32f8f37486",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0012_mcp_servers.sql",
+      "sha256": "3a8d37f242516aaaef473663af06b87ec00e44d76c247448abeffd403d708b0f",
+      "after_sha256": "3a8d37f242516aaaef473663af06b87ec00e44d76c247448abeffd403d708b0f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0013_skills.sql",
+      "sha256": "8e85bc143f0a0e4008a3e0ab1aa95174eb822944667bf962e636c110d4f1a432",
+      "after_sha256": "8e85bc143f0a0e4008a3e0ab1aa95174eb822944667bf962e636c110d4f1a432",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0014_execution_duration.sql",
+      "sha256": "d0acf6d233605bc233ddc35ad00b007c788e629e8f1ab2748255863205749f6a",
+      "after_sha256": "d0acf6d233605bc233ddc35ad00b007c788e629e8f1ab2748255863205749f6a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0015_run_diagnostics.sql",
+      "sha256": "94dbe5ef441e8ed174548d98b143d4b642fb27cac7fc35568e079a1ec3297a54",
+      "after_sha256": "94dbe5ef441e8ed174548d98b143d4b642fb27cac7fc35568e079a1ec3297a54",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0016_codex_task_identity.sql",
+      "sha256": "b3a5d97b5a8ceb75471a0dea7bb061507f50b3e4cb93ba67cbd026a8c3830994",
+      "after_sha256": "b3a5d97b5a8ceb75471a0dea7bb061507f50b3e4cb93ba67cbd026a8c3830994",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0017_assistant_responses.sql",
+      "sha256": "4cf68617aefd8f39c51488215e16e7d9300a21a42dc08bf5316b0d12f23f1110",
+      "after_sha256": "4cf68617aefd8f39c51488215e16e7d9300a21a42dc08bf5316b0d12f23f1110",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0018_computer_use_delivery.sql",
+      "sha256": "92dc6ea09990aef151204ed2a6c654de4ed86c002b828c3e0f45755e166a0a64",
+      "after_sha256": "92dc6ea09990aef151204ed2a6c654de4ed86c002b828c3e0f45755e166a0a64",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0019_pending_messages.sql",
+      "sha256": "8ae3bb812627d90ccf3b5f4fc03ee3deba594b98fd75cfcc77101a0b0c0e50f8",
+      "after_sha256": "8ae3bb812627d90ccf3b5f4fc03ee3deba594b98fd75cfcc77101a0b0c0e50f8",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0020_context_compaction_timeout.sql",
+      "sha256": "d7cd824df09d649b070b0eafc0441243130deb4126f70033b324f63d82c70bd8",
+      "after_sha256": "d7cd824df09d649b070b0eafc0441243130deb4126f70033b324f63d82c70bd8",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0021_tool_call_rounds.sql",
+      "sha256": "8a4740c5a74860b5867b9956442394bb9cdee8fce51b981d98c51686e560b8db",
+      "after_sha256": "8a4740c5a74860b5867b9956442394bb9cdee8fce51b981d98c51686e560b8db",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0022_partial_compaction.sql",
+      "sha256": "774a2a8ecb18b80178044759ecf11918b4397e22f3a1b84bc53612b9fbbc0a81",
+      "after_sha256": "774a2a8ecb18b80178044759ecf11918b4397e22f3a1b84bc53612b9fbbc0a81",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0023_credential_continuations.sql",
+      "sha256": "290edc45763521e84765560ef6af9cdaaa0de62fcbc7eb11efb3daf0b5e0bae8",
+      "after_sha256": "290edc45763521e84765560ef6af9cdaaa0de62fcbc7eb11efb3daf0b5e0bae8",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0024_credential_privacy.sql",
+      "sha256": "b06557b80deead37169119ba598179e91d694ea0b762259c74e2c93dc715e2cc",
+      "after_sha256": "b06557b80deead37169119ba598179e91d694ea0b762259c74e2c93dc715e2cc",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0025_failure_details.sql",
+      "sha256": "aa83b5b02c4d6bf54caf91b3abc7da09b1969307faf485fe20a2c995bb989330",
+      "after_sha256": "aa83b5b02c4d6bf54caf91b3abc7da09b1969307faf485fe20a2c995bb989330",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0026_automation.sql",
+      "sha256": "6339f1d009554be6232af0045a67820462459f168f03787aa0f664ce5155a190",
+      "after_sha256": "6339f1d009554be6232af0045a67820462459f168f03787aa0f664ce5155a190",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0027_subagents.sql",
+      "sha256": "bdb4b66f3ccb3bcba3cc5f7cf7d3d6410eb354a4ceeac541ef9bd7d1c62012f6",
+      "after_sha256": "bdb4b66f3ccb3bcba3cc5f7cf7d3d6410eb354a4ceeac541ef9bd7d1c62012f6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0028_runtime_failure_details.sql",
+      "sha256": "309e9ffd42439dfcf8ee1dc6ca54c8ecdd5a6e2969f66b874da7da965b2bb2fd",
+      "after_sha256": "309e9ffd42439dfcf8ee1dc6ca54c8ecdd5a6e2969f66b874da7da965b2bb2fd",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0029_sidebar_message_order.sql",
+      "sha256": "75342620a10bddf486c62285c41b13b9374886922cf712ff9d53148308b3e3d9",
+      "after_sha256": "75342620a10bddf486c62285c41b13b9374886922cf712ff9d53148308b3e3d9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/migrations/0030_delegated_executions.sql",
+      "sha256": "ea7f2bd4f34b298a2382932dd1ccb8124bc5f5aada141205b4f940e20da722db",
+      "after_sha256": "ea7f2bd4f34b298a2382932dd1ccb8124bc5f5aada141205b4f940e20da722db",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/automation.rs",
+      "sha256": "e554f4017df594d53c4bed0c5bf0db94aec35c6f1dc6db02757783f776cd8ecb",
+      "after_sha256": "e554f4017df594d53c4bed0c5bf0db94aec35c6f1dc6db02757783f776cd8ecb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/codex_tasks.rs",
+      "sha256": "1c10646e042efa2fb6f5bb7ed71c52b23653a23096ee23ebb068665549cc77ca",
+      "after_sha256": "1c10646e042efa2fb6f5bb7ed71c52b23653a23096ee23ebb068665549cc77ca",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/computer_use_delivery.rs",
+      "sha256": "65a7fc38f05c17f50f86cce7b5105d10660d6e51311f8e65854b1b9f42ebe7d6",
+      "after_sha256": "65a7fc38f05c17f50f86cce7b5105d10660d6e51311f8e65854b1b9f42ebe7d6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/config.rs",
+      "sha256": "a4935caa9ea7ce97e7734866273851af5ef51def8459a975b33324d0ad0d9bee",
+      "after_sha256": "a4935caa9ea7ce97e7734866273851af5ef51def8459a975b33324d0ad0d9bee",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/context_compaction.rs",
+      "sha256": "4b1d1430fcc28ed20fdc24bbbff80a8d8b388582bd0f37e57d4d35269383a3e3",
+      "after_sha256": "4b1d1430fcc28ed20fdc24bbbff80a8d8b388582bd0f37e57d4d35269383a3e3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/credential_continuation.rs",
+      "sha256": "5c682ca0e954fcde18bbf7b4bd015c86d14a2df5b9e64c22652c47a7915d2af5",
+      "after_sha256": "5c682ca0e954fcde18bbf7b4bd015c86d14a2df5b9e64c22652c47a7915d2af5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/credential_privacy.rs",
+      "sha256": "e993f9bac2ef00cfe98f09a5b26c399a7daf1c10ce2ed27974f8084a902e5ce4",
+      "after_sha256": "e993f9bac2ef00cfe98f09a5b26c399a7daf1c10ce2ed27974f8084a902e5ce4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/git_detect.rs",
+      "sha256": "e91c755f24036870a890189b444100dd5983fcef8c024c7013ddf9667386add8",
+      "after_sha256": "e91c755f24036870a890189b444100dd5983fcef8c024c7013ddf9667386add8",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/image_attachments.rs",
+      "sha256": "e4460561eccfc898c3340cd82c51e97926513befc3196f614f556554474120cb",
+      "after_sha256": "e4460561eccfc898c3340cd82c51e97926513befc3196f614f556554474120cb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/keystore.rs",
+      "sha256": "6b2e0ad02288f0049424f0d0b2ce8a65dd8f99aa0fff8b7b73ab7ef802afc616",
+      "after_sha256": "6b2e0ad02288f0049424f0d0b2ce8a65dd8f99aa0fff8b7b73ab7ef802afc616",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/mcp_servers.rs",
+      "sha256": "29e3b6231b6d4c4c18be833e44b5f94f50ee329eeb0b7d430a532270043a83c5",
+      "after_sha256": "29e3b6231b6d4c4c18be833e44b5f94f50ee329eeb0b7d430a532270043a83c5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/messages/mod.rs",
+      "sha256": "52a46e6e2ef8177ae7b8a5ae1370d928dc0d97cae142523d162333ae6ded0d09",
+      "after_sha256": "52a46e6e2ef8177ae7b8a5ae1370d928dc0d97cae142523d162333ae6ded0d09",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/messages/responses.rs",
+      "sha256": "dfdaf7e20b9af7eb94747c66be29eea1bec29174f5046559090acf9fa8de8c9e",
+      "after_sha256": "dfdaf7e20b9af7eb94747c66be29eea1bec29174f5046559090acf9fa8de8c9e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/model_capabilities.rs",
+      "sha256": "9545540588e8ad04e50a2e6fbb31aa6d56d0c120c9bb4c88274f7de173d69b64",
+      "after_sha256": "9545540588e8ad04e50a2e6fbb31aa6d56d0c120c9bb4c88274f7de173d69b64",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/palette.rs",
+      "sha256": "b93e8fe75faf399ec0de00233a4ebd2461826473f804cfd89ffaee7fc959e4f7",
+      "after_sha256": "b93e8fe75faf399ec0de00233a4ebd2461826473f804cfd89ffaee7fc959e4f7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/paths.rs",
+      "sha256": "9a437b09f32c17bc4d99c1cf1b1ff5a394db4f6e6bff0d8ec512b09d46ee016f",
+      "after_sha256": "9a437b09f32c17bc4d99c1cf1b1ff5a394db4f6e6bff0d8ec512b09d46ee016f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/pending_messages.rs",
+      "sha256": "7015d8cec16730120eef21bc2e4b89937801c5d8d0ef83c79a047aeee2e9d9d5",
+      "after_sha256": "7015d8cec16730120eef21bc2e4b89937801c5d8d0ef83c79a047aeee2e9d9d5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/permissions.rs",
+      "sha256": "4c83f05bb1cdd54a6dcee9d309ecdd4eb2d83855115f742aaa43314a9595c7e9",
+      "after_sha256": "4c83f05bb1cdd54a6dcee9d309ecdd4eb2d83855115f742aaa43314a9595c7e9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/projects.rs",
+      "sha256": "e6cac31fd41ef2993211397fa2417e0970cf9f6927acd6bd1351393667480166",
+      "after_sha256": "e6cac31fd41ef2993211397fa2417e0970cf9f6927acd6bd1351393667480166",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/reasoning.rs",
+      "sha256": "ef2215e2f8b51774121784e550cb100d31ad1da0a238aa74d32820535e259210",
+      "after_sha256": "ef2215e2f8b51774121784e550cb100d31ad1da0a238aa74d32820535e259210",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/recovery.rs",
+      "sha256": "b680615bb846e0d12be6bc4b082712543ea0f55d613a8c8efdf47f5039fcf1fa",
+      "after_sha256": "b680615bb846e0d12be6bc4b082712543ea0f55d613a8c8efdf47f5039fcf1fa",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/run_diagnostics.rs",
+      "sha256": "0ed0567af7cca0ab96cdf73cf5f1b010598a82cfcf093e90634bd7cd97d4a6c0",
+      "after_sha256": "0ed0567af7cca0ab96cdf73cf5f1b010598a82cfcf093e90634bd7cd97d4a6c0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/run_diagnostics/failure_ownership.rs",
+      "sha256": "8b6a7c5f3a8db53a2e1e1601ae19119a31382ef603f61d7770299c8d87416ef7",
+      "after_sha256": "8b6a7c5f3a8db53a2e1e1601ae19119a31382ef603f61d7770299c8d87416ef7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/sidebar_organization.rs",
+      "sha256": "faf233db3695c587fb15c61bf6cc88551146cfc77794e2897de29021442009e3",
+      "after_sha256": "faf233db3695c587fb15c61bf6cc88551146cfc77794e2897de29021442009e3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/skills.rs",
+      "sha256": "ccac8ef3d957a42dfc572f59c259a7607a5f4ff9dd18bad51de40ff0fdbe5abb",
+      "after_sha256": "ccac8ef3d957a42dfc572f59c259a7607a5f4ff9dd18bad51de40ff0fdbe5abb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/subagents.rs",
+      "sha256": "4d4a27d9d4ab107c00bec90beba7fb775d64045cff8dc90dd9a379dd4eeb6118",
+      "after_sha256": "4d4a27d9d4ab107c00bec90beba7fb775d64045cff8dc90dd9a379dd4eeb6118",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/threads.rs",
+      "sha256": "6d17fa66d1974db08c8736c3d830e9b8a57c0da267ae7e063a0def2fe4d0acd1",
+      "after_sha256": "6d17fa66d1974db08c8736c3d830e9b8a57c0da267ae7e063a0def2fe4d0acd1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/token_usage.rs",
+      "sha256": "8cac3c78621870e231fa6026bb7060e316315c1ba2abfe9708492be1a8ec27e4",
+      "after_sha256": "8cac3c78621870e231fa6026bb7060e316315c1ba2abfe9708492be1a8ec27e4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/token_usage/dashboard.rs",
+      "sha256": "37e7505da91f6980957f35f264637b919e834fb37edffde948444fdf9958ee5d",
+      "after_sha256": "37e7505da91f6980957f35f264637b919e834fb37edffde948444fdf9958ee5d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_store/src/tool_calls.rs",
+      "sha256": "326b0c37b3092306cc0f89d964e0e1751a0cfdad586afa68191de622a3974134",
+      "after_sha256": "326b0c37b3092306cc0f89d964e0e1751a0cfdad586afa68191de622a3974134",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_theme/Cargo.toml",
+      "sha256": "8bd23c121dacb3469ced6c03b9f142a06fc003fa28178962dd7dcb35a277c984",
+      "after_sha256": "8bd23c121dacb3469ced6c03b9f142a06fc003fa28178962dd7dcb35a277c984",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_theme/src/lib.rs",
+      "sha256": "4b672de2ed8cc6b12671ed7443d755369d51960e34adc67e37a7e5507634106c",
+      "after_sha256": "4b672de2ed8cc6b12671ed7443d755369d51960e34adc67e37a7e5507634106c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_token/Cargo.toml",
+      "sha256": "e77af1c3ec01460d8d9c919fe5e3fcef3f374841b555e01f65285e39480ff8aa",
+      "after_sha256": "e77af1c3ec01460d8d9c919fe5e3fcef3f374841b555e01f65285e39480ff8aa",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_token/src/catalog.rs",
+      "sha256": "15641d03b22402a4cb78ba3b53ac5b289db8083e3aacaa2bb24806d192278e7b",
+      "after_sha256": "15641d03b22402a4cb78ba3b53ac5b289db8083e3aacaa2bb24806d192278e7b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_token/src/error.rs",
+      "sha256": "5e2c2333c07e66365b5082fa9524c5701e6f6b1586addb4b7d70a55de9e89749",
+      "after_sha256": "5e2c2333c07e66365b5082fa9524c5701e6f6b1586addb4b7d70a55de9e89749",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_token/src/lib.rs",
+      "sha256": "f925204b9d51ac8db5ecccb9b94ab6c9bfd0d9bf94b8290820df22b754d3b9a9",
+      "after_sha256": "f925204b9d51ac8db5ecccb9b94ab6c9bfd0d9bf94b8290820df22b754d3b9a9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_token/src/persistence.rs",
+      "sha256": "e1de8eb3ce61089b30aa833383ad2ecc9932c19de49a4fa79ee07a5c9e56827d",
+      "after_sha256": "e1de8eb3ce61089b30aa833383ad2ecc9932c19de49a4fa79ee07a5c9e56827d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/Cargo.toml",
+      "sha256": "a2604b59ff6a9d995f9deb01e09a2eb6f310126a5be2fcc3317235d647010b8a",
+      "after_sha256": "a2604b59ff6a9d995f9deb01e09a2eb6f310126a5be2fcc3317235d647010b8a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/bash/mod.rs",
+      "sha256": "dc6bce6eb934f9f5d7057dd06b394e5124cdf810a689c5aeb86a1d9c92e2b8eb",
+      "after_sha256": "dc6bce6eb934f9f5d7057dd06b394e5124cdf810a689c5aeb86a1d9c92e2b8eb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/checkpoint.rs",
+      "sha256": "14af98bd607aa6d1cb9213ac3a375d919ce8334c2304615cefa99b03408d6c32",
+      "after_sha256": "14af98bd607aa6d1cb9213ac3a375d919ce8334c2304615cefa99b03408d6c32",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/codec.rs",
+      "sha256": "3b3f2a6282f1a22a60b4448a4eb98ba33abe16e2e9b37c688524ec2f64ee84b7",
+      "after_sha256": "3b3f2a6282f1a22a60b4448a4eb98ba33abe16e2e9b37c688524ec2f64ee84b7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/credentials.rs",
+      "sha256": "51c2cd46057fe749b6425dbbe09ac4635debc1f1e55eae364b449456e775528f",
+      "after_sha256": "51c2cd46057fe749b6425dbbe09ac4635debc1f1e55eae364b449456e775528f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/danger.rs",
+      "sha256": "95c0ee02ea4722daa2a63e67f091e6c17473fdba02089fdf774791ff7d3ed6b9",
+      "after_sha256": "95c0ee02ea4722daa2a63e67f091e6c17473fdba02089fdf774791ff7d3ed6b9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/error.rs",
+      "sha256": "49ba483a309d16bf7cb1370cf733c1433c44845e282344b4a375f3cfdba3b864",
+      "after_sha256": "49ba483a309d16bf7cb1370cf733c1433c44845e282344b4a375f3cfdba3b864",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/fence.rs",
+      "sha256": "4705894ae9919c9685728865295f2de54dc5ad1b96576213548cf527c95e8a2d",
+      "after_sha256": "4705894ae9919c9685728865295f2de54dc5ad1b96576213548cf527c95e8a2d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/glob.rs",
+      "sha256": "b312a33a4ba5109778804fffe3aa4154cbe521225348753a7f51f40fe872fe6d",
+      "after_sha256": "b312a33a4ba5109778804fffe3aa4154cbe521225348753a7f51f40fe872fe6d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/grep.rs",
+      "sha256": "df54c67a9c798264314ef4a4957ae81c48508380e267b54795e7450b8fb67e3b",
+      "after_sha256": "df54c67a9c798264314ef4a4957ae81c48508380e267b54795e7450b8fb67e3b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/grep/descriptor.rs",
+      "sha256": "18222fa30235f93002c095241c1d1e16fbb5ed1b4ee6c8b2a43a38d0e4c331cd",
+      "after_sha256": "18222fa30235f93002c095241c1d1e16fbb5ed1b4ee6c8b2a43a38d0e4c331cd",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/grep/external.rs",
+      "sha256": "b3807cd0a492fc372257927428b4fe67cbdd1efd2aee84dc0fd68d7db1b49143",
+      "after_sha256": "b3807cd0a492fc372257927428b4fe67cbdd1efd2aee84dc0fd68d7db1b49143",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/json.rs",
+      "sha256": "c1a942d1aecc908b7b522f49301f893daca3bdaba484eb3deddcc327eba3d329",
+      "after_sha256": "c1a942d1aecc908b7b522f49301f893daca3bdaba484eb3deddcc327eba3d329",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/lib.rs",
+      "sha256": "5f5d60d78ff39e58c424a8e9a7f747fe986c11250f58c352c2ce65bd286069b2",
+      "after_sha256": "5f5d60d78ff39e58c424a8e9a7f747fe986c11250f58c352c2ce65bd286069b2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/mutation/mod.rs",
+      "sha256": "525c15b2ea0001e1c75947dca08943ecf0dcdf30de31bacfef10f8ea9e2a0da5",
+      "after_sha256": "525c15b2ea0001e1c75947dca08943ecf0dcdf30de31bacfef10f8ea9e2a0da5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/output.rs",
+      "sha256": "c37175e1e3952b82763e7f67d98404b9f665c4cc07e529eac791dc4cf3037a94",
+      "after_sha256": "c37175e1e3952b82763e7f67d98404b9f665c4cc07e529eac791dc4cf3037a94",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/project_instructions.rs",
+      "sha256": "5c6f21bdcac661bd871db486b2d618a32cd3ee865bb20241186c6a5d8ca33fe3",
+      "after_sha256": "5c6f21bdcac661bd871db486b2d618a32cd3ee865bb20241186c6a5d8ca33fe3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/read.rs",
+      "sha256": "85922f86a7234455f524bdec6b84bbb301e8b1b0c30a69dd3981a2625caacf9e",
+      "after_sha256": "85922f86a7234455f524bdec6b84bbb301e8b1b0c30a69dd3981a2625caacf9e",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/reference.rs",
+      "sha256": "e3f54e29902763b4de7cce65475d1875e81c0dd63afa2f4daf6463db7192e4c7",
+      "after_sha256": "e3f54e29902763b4de7cce65475d1875e81c0dd63afa2f4daf6463db7192e4c7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/sandbox.rs",
+      "sha256": "8e245468096f844b161995082565c90538b77932c8db95bc896cacefdcb2048c",
+      "after_sha256": "8e245468096f844b161995082565c90538b77932c8db95bc896cacefdcb2048c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/sha256.rs",
+      "sha256": "2f39123c95798d80703de8cabfba3dd6f1868a951601dfdf625eb19d53de0a9c",
+      "after_sha256": "2f39123c95798d80703de8cabfba3dd6f1868a951601dfdf625eb19d53de0a9c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/text_file.rs",
+      "sha256": "9ef8ddfc2bb1f88ce4a56a2ff5f85ecfc94e513c82991cc6dac406032d448866",
+      "after_sha256": "9ef8ddfc2bb1f88ce4a56a2ff5f85ecfc94e513c82991cc6dac406032d448866",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_tools/src/tools.rs",
+      "sha256": "1eef7c945ead19b7e58ce78d42b6ef76f2836937970072bccf420ef349dffae9",
+      "after_sha256": "1eef7c945ead19b7e58ce78d42b6ef76f2836937970072bccf420ef349dffae9",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/artifact_card.rs",
+      "sha256": "00567aacb5668485555c4b35f2eb674bd2077c184ace3957cab15b2a85dd5f8a",
+      "after_sha256": "00567aacb5668485555c4b35f2eb674bd2077c184ace3957cab15b2a85dd5f8a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/automation_editor.rs",
+      "sha256": "9cabe467a4f9a6d24adb94b269baa1bec14d7caadcf00fa05ee26e7342f676f5",
+      "after_sha256": "9cabe467a4f9a6d24adb94b269baa1bec14d7caadcf00fa05ee26e7342f676f5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/branch_selector.rs",
+      "sha256": "bf9ffaf0fecfe20597913d22a26424f960fb0ffb2afdb3495b31685072bdf591",
+      "after_sha256": "bf9ffaf0fecfe20597913d22a26424f960fb0ffb2afdb3495b31685072bdf591",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/branch_selector/current_head.rs",
+      "sha256": "0a6f6f3f8c2037c99be2b3337002009b029248b53344034344e695d4edcabeff",
+      "after_sha256": "0a6f6f3f8c2037c99be2b3337002009b029248b53344034344e695d4edcabeff",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/command_palette.rs",
+      "sha256": "ad00eb987dfde3901139830ce98328b5b46505c1e939e083c2e1c8c951765991",
+      "after_sha256": "ad00eb987dfde3901139830ce98328b5b46505c1e939e083c2e1c8c951765991",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/commit_panel/mod.rs",
+      "sha256": "4964ea428133a6cd2904803e800d8eabb7981575105ce39ce0f7627ca457eda8",
+      "after_sha256": "4964ea428133a6cd2904803e800d8eabb7981575105ce39ce0f7627ca457eda8",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/commit_panel/model.rs",
+      "sha256": "6447ab8cc70844900a0aa45c33c6ac9a95e0de5fc4ae952dd2fea0090d040a70",
+      "after_sha256": "6447ab8cc70844900a0aa45c33c6ac9a95e0de5fc4ae952dd2fea0090d040a70",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/commit_panel/panel.rs",
+      "sha256": "dc063b0969ad44d8e39d315f3de9385f1a35e87364d8a6c8bdb326d327dfed52",
+      "after_sha256": "dc063b0969ad44d8e39d315f3de9385f1a35e87364d8a6c8bdb326d327dfed52",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/attachments.rs",
+      "sha256": "c3cae95d828daedd332071d04547da2dd8cd65c8e5bec5c53d5e63577ade1854",
+      "after_sha256": "c3cae95d828daedd332071d04547da2dd8cd65c8e5bec5c53d5e63577ade1854",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/autolinks.rs",
+      "sha256": "d23634e60258de9726142c704b853f84566c290057fded084d98562126369a3c",
+      "after_sha256": "d23634e60258de9726142c704b853f84566c290057fded084d98562126369a3c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/automation.rs",
+      "sha256": "65a8854b20fd6a913ef66cc87f786c0f4822fa5ee917991b1139734d4d6f6c0a",
+      "after_sha256": "65a8854b20fd6a913ef66cc87f786c0f4822fa5ee917991b1139734d4d6f6c0a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/bench.rs",
+      "sha256": "7b94a2b6e61ee63bc55cc247e43d82657746db36a5f019776025410305a71df1",
+      "after_sha256": "7b94a2b6e61ee63bc55cc247e43d82657746db36a5f019776025410305a71df1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer.rs",
+      "sha256": "1179ac34ebe5ccecbf9541be78ca388f762fd0c5dcfa6f5396c71c80b0694ec5",
+      "after_sha256": "1179ac34ebe5ccecbf9541be78ca388f762fd0c5dcfa6f5396c71c80b0694ec5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "sha256": "3e3df2dfeb98d9ae671d599c9381c56614ad72d1f91ebeddca43bd78eca1f698",
+      "after_sha256": "3e3df2dfeb98d9ae671d599c9381c56614ad72d1f91ebeddca43bd78eca1f698",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_predictions.rs",
+      "sha256": "783f5aa495f761aff51ac21e2652d59091a61a3d90bc985c3589996109d47c90",
+      "after_sha256": "783f5aa495f761aff51ac21e2652d59091a61a3d90bc985c3589996109d47c90",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/computer_use.rs",
+      "sha256": "56a8ac2d6d25a8a604fcf762cb93a765bb70bd3bc599c258a80cd3a7671da49f",
+      "after_sha256": "56a8ac2d6d25a8a604fcf762cb93a765bb70bd3bc599c258a80cd3a7671da49f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/content.rs",
+      "sha256": "eb1172db8c4c691e202818a64fbbaaf99a5d8a20e60ccd5107ef2a319fc912a3",
+      "after_sha256": "eb1172db8c4c691e202818a64fbbaaf99a5d8a20e60ccd5107ef2a319fc912a3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/context_control.rs",
+      "sha256": "8fa591b070761ff6bae2a66b91b153e3a6f092af97dcbb68c53f4a2b906a9bde",
+      "after_sha256": "8fa591b070761ff6bae2a66b91b153e3a6f092af97dcbb68c53f4a2b906a9bde",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/context_usage.rs",
+      "sha256": "0a68e418bdbf4707c9432ef082d3722401e83b75af0f324db01a3783720dfcf5",
+      "after_sha256": "0a68e418bdbf4707c9432ef082d3722401e83b75af0f324db01a3783720dfcf5",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/file_reference.rs",
+      "sha256": "41540770a07b036782560ac5c40a2bd024d4449d45b08665af49d2bd0c3fb889",
+      "after_sha256": "41540770a07b036782560ac5c40a2bd024d4449d45b08665af49d2bd0c3fb889",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/inline_code.rs",
+      "sha256": "0599cb9e18f4cabcbca3bcc8e97f26fa37aa84b3f43514999a6cdb650bbbf723",
+      "after_sha256": "0599cb9e18f4cabcbca3bcc8e97f26fa37aa84b3f43514999a6cdb650bbbf723",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/links.rs",
+      "sha256": "1a0a849b95d5d38fd73d9cc34d9162562f229f70b31357f75b7cf98fe7e3968b",
+      "after_sha256": "1a0a849b95d5d38fd73d9cc34d9162562f229f70b31357f75b7cf98fe7e3968b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/message_anchors.rs",
+      "sha256": "bdb6593f6699502a6b5fbe1bf15458aded5de117c130f68bca1be4df6eaecc3f",
+      "after_sha256": "bdb6593f6699502a6b5fbe1bf15458aded5de117c130f68bca1be4df6eaecc3f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/mod.rs",
+      "sha256": "5774e655493845fa154d8e81bdccbceeaa52807cf81406199ddf0ffad9e8d278",
+      "after_sha256": "5774e655493845fa154d8e81bdccbceeaa52807cf81406199ddf0ffad9e8d278",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/model.rs",
+      "sha256": "994b9f30794b463699090ec6322e8607b1eb2ee2a902aca71d412c7074334fc1",
+      "after_sha256": "994b9f30794b463699090ec6322e8607b1eb2ee2a902aca71d412c7074334fc1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/network_retry.rs",
+      "sha256": "0f796040c07240330ac81ac59a76f6c409fe501cdb694dfaceb24d63899ee208",
+      "after_sha256": "0f796040c07240330ac81ac59a76f6c409fe501cdb694dfaceb24d63899ee208",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/pending_messages.rs",
+      "sha256": "9c3eb5fc73fda67c8f4c847d85038116bf7229adafe3fb025c73514a59c36e8a",
+      "after_sha256": "9c3eb5fc73fda67c8f4c847d85038116bf7229adafe3fb025c73514a59c36e8a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/phase.rs",
+      "sha256": "2fce50e19148ff6eac8897eb3bd0875054c3ffd76f6a1499827dde551824f59a",
+      "after_sha256": "2fce50e19148ff6eac8897eb3bd0875054c3ffd76f6a1499827dde551824f59a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/privacy.rs",
+      "sha256": "ac710d1921dc140d655ce99b196891ea12fcc77b02cb78889bf57437a113115c",
+      "after_sha256": "ac710d1921dc140d655ce99b196891ea12fcc77b02cb78889bf57437a113115c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/render.rs",
+      "sha256": "2e5b1dd887dc3ccbd85a6c5b443be7839ab9e2c28857e032e2258cb9211f5d79",
+      "after_sha256": "2e5b1dd887dc3ccbd85a6c5b443be7839ab9e2c28857e032e2258cb9211f5d79",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/render_rows.rs",
+      "sha256": "2b0a181f290c6483449cfc9a68418008ec94d2a92e7ede38a009922fc39079e4",
+      "after_sha256": "2b0a181f290c6483449cfc9a68418008ec94d2a92e7ede38a009922fc39079e4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/run_activity.rs",
+      "sha256": "f0fa5857270ed1cec8307c87c6fdd227475f2150c1643590ae72ec3ad9dd3068",
+      "after_sha256": "f0fa5857270ed1cec8307c87c6fdd227475f2150c1643590ae72ec3ad9dd3068",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/run_notice.rs",
+      "sha256": "c1c2d5da65f1a431eee11bf785a2dc0c64aab420466765af0d7b110ef1261c00",
+      "after_sha256": "c1c2d5da65f1a431eee11bf785a2dc0c64aab420466765af0d7b110ef1261c00",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/screenshots.rs",
+      "sha256": "4c3a39146f2e703e64dc6d90ee7f820d79d1918048f245b666aab07cb9074b3c",
+      "after_sha256": "4c3a39146f2e703e64dc6d90ee7f820d79d1918048f245b666aab07cb9074b3c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection.rs",
+      "sha256": "e57e59b17307303b6a754a0841a598bc3ba8d3441a7d99fdf87fbb137067a2e7",
+      "after_sha256": "e57e59b17307303b6a754a0841a598bc3ba8d3441a7d99fdf87fbb137067a2e7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection_menu.rs",
+      "sha256": "f7cbd650a68f47be4f68e6d560437d7cf47f444f0bc2170297301c079b6d3e2c",
+      "after_sha256": "f7cbd650a68f47be4f68e6d560437d7cf47f444f0bc2170297301c079b6d3e2c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/shimmer.rs",
+      "sha256": "9660c2609db5619640288eb17305e30a8b4bff28a6a9cce6b2831ed396014f1a",
+      "after_sha256": "9660c2609db5619640288eb17305e30a8b4bff28a6a9cce6b2831ed396014f1a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/skills.rs",
+      "sha256": "582fc7d4b6604fc3c22330d55b3691463d7af776e51f4be5ac3fa8998381dced",
+      "after_sha256": "582fc7d4b6604fc3c22330d55b3691463d7af776e51f4be5ac3fa8998381dced",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/sticky_disclosure.rs",
+      "sha256": "865fd330fd130dc64a31a68bc237635b136d0727399899b79186fda9a36429cc",
+      "after_sha256": "865fd330fd130dc64a31a68bc237635b136d0727399899b79186fda9a36429cc",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/subagents.rs",
+      "sha256": "72dd0471386312ac3a1d554dffd716c0fd847d1d8d806b3fcc78510c399af03b",
+      "after_sha256": "72dd0471386312ac3a1d554dffd716c0fd847d1d8d806b3fcc78510c399af03b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/thinking.rs",
+      "sha256": "f2a4985134b4e0a48d4e340f1a78b6fd3ea70e356c2ab02c90072c0574d1fa25",
+      "after_sha256": "f2a4985134b4e0a48d4e340f1a78b6fd3ea70e356c2ab02c90072c0574d1fa25",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/thinking_body.rs",
+      "sha256": "f0cd7ec74992e66f433c22dec13ccebb410ce8198224e0511957b720af6d16ed",
+      "after_sha256": "f0cd7ec74992e66f433c22dec13ccebb410ce8198224e0511957b720af6d16ed",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/thinking_slider.rs",
+      "sha256": "bf62a990362c771d960e3b37a5639fa2deabba4c26d33cf7f3169eab6472cddf",
+      "after_sha256": "bf62a990362c771d960e3b37a5639fa2deabba4c26d33cf7f3169eab6472cddf",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/thinking_window.rs",
+      "sha256": "72a8f82fcce15629ff671c272247f203e027842bf6988b06f6001d92c795ce26",
+      "after_sha256": "72a8f82fcce15629ff671c272247f203e027842bf6988b06f6001d92c795ce26",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/user_questions.rs",
+      "sha256": "c2631ef114d06082a9451684aab75ff187a7a50a0ec44f38386ab8c80e22d436",
+      "after_sha256": "c2631ef114d06082a9451684aab75ff187a7a50a0ec44f38386ab8c80e22d436",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/utility_bar.rs",
+      "sha256": "bf8b19e0e5dbfa268574ae7290a08e0509e0ddd48494c28cb6ea10b427fa04b3",
+      "after_sha256": "bf8b19e0e5dbfa268574ae7290a08e0509e0ddd48494c28cb6ea10b427fa04b3",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/diff_view/mod.rs",
+      "sha256": "47cbfd96f7e7e88964f5b507cc26f95ee69bbf5ec73b45c3359685f92500f85a",
+      "after_sha256": "47cbfd96f7e7e88964f5b507cc26f95ee69bbf5ec73b45c3359685f92500f85a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/diff_view/render.rs",
+      "sha256": "cd2f5998a18acc73ed6f74a236b06f2b07bc77b2d66fadc4dc42fcae040a19e4",
+      "after_sha256": "cd2f5998a18acc73ed6f74a236b06f2b07bc77b2d66fadc4dc42fcae040a19e4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/diff_view/state.rs",
+      "sha256": "051d38995b6da66b3a55b3bc9435df49aeb6542ed7e10a16599479a335b442a4",
+      "after_sha256": "051d38995b6da66b3a55b3bc9435df49aeb6542ed7e10a16599479a335b442a4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/disclosure.rs",
+      "sha256": "fd560a4c99e1701f7b767dbd0f01f012a5514f76a7d29165a88ded3dbe1bc2da",
+      "after_sha256": "fd560a4c99e1701f7b767dbd0f01f012a5514f76a7d29165a88ded3dbe1bc2da",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/file_preview.rs",
+      "sha256": "5098371e5896c6c016fe7d1a7035db941e1ecd9d68f675d80276ce9b9090a8c2",
+      "after_sha256": "5098371e5896c6c016fe7d1a7035db941e1ecd9d68f675d80276ce9b9090a8c2",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/file_selector.rs",
+      "sha256": "8ed470ad51b80a9178cfd53afb390dfa6ee10cadf79d8ee0689244ae1c3fead0",
+      "after_sha256": "8ed470ad51b80a9178cfd53afb390dfa6ee10cadf79d8ee0689244ae1c3fead0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/icons.rs",
+      "sha256": "6d2be0e168a296a901864925636f02a20f45dd21a163aaadad0602c646154cf0",
+      "after_sha256": "6d2be0e168a296a901864925636f02a20f45dd21a163aaadad0602c646154cf0",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/image_preview.rs",
+      "sha256": "a7505002da342caeb4de463bff45c9781d3f5f0727630ab654400c3afceb1455",
+      "after_sha256": "a7505002da342caeb4de463bff45c9781d3f5f0727630ab654400c3afceb1455",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/interaction.rs",
+      "sha256": "9052c821c8c7b83170f7679f8d7527d412b89b23489513c9ed2e499823942433",
+      "after_sha256": "9052c821c8c7b83170f7679f8d7527d412b89b23489513c9ed2e499823942433",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/interaction/platform.rs",
+      "sha256": "2362532258c4d06bdfe0cfbb847a5ead9e132a899f740dd4551a312066a6ef77",
+      "after_sha256": "2362532258c4d06bdfe0cfbb847a5ead9e132a899f740dd4551a312066a6ef77",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/lib.rs",
+      "sha256": "a2b0b88123548feee8b6c43457e096f5e342fcef4bfcebdf96c038aa9c0f0579",
+      "after_sha256": "a2b0b88123548feee8b6c43457e096f5e342fcef4bfcebdf96c038aa9c0f0579",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/link_preview.rs",
+      "sha256": "6cca823ef7c09375c9af2d9267951ac62e7ecaecedab74f7ed2bd935315c50c6",
+      "after_sha256": "6cca823ef7c09375c9af2d9267951ac62e7ecaecedab74f7ed2bd935315c50c6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/menu_list.rs",
+      "sha256": "498de4efe321c7450ce5194446c75fff239ba772bba911e332da1dffcf280a22",
+      "after_sha256": "498de4efe321c7450ce5194446c75fff239ba772bba911e332da1dffcf280a22",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/navigation.rs",
+      "sha256": "95af2ab9623aba11200f188f5c4afd7940497e4fe594eae66d53b81f6158bc62",
+      "after_sha256": "95af2ab9623aba11200f188f5c4afd7940497e4fe594eae66d53b81f6158bc62",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/permission_card.rs",
+      "sha256": "8f240353594f7a559b661f071cf4f4f0e4da972c6e5ebac075d5cb48f8855383",
+      "after_sha256": "8f240353594f7a559b661f071cf4f4f0e4da972c6e5ebac075d5cb48f8855383",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/plan_card.rs",
+      "sha256": "9cd97c3f93bdf8a516ec357ad4ffb8c6ad2ef4a81d9de5bc0c9c906e39e8b9aa",
+      "after_sha256": "9cd97c3f93bdf8a516ec357ad4ffb8c6ad2ef4a81d9de5bc0c9c906e39e8b9aa",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/scroll_edge_fade.rs",
+      "sha256": "a947fde80b4f308f4233c393be30478615fae9e577b708c8b4ae39e47b0e949a",
+      "after_sha256": "a947fde80b4f308f4233c393be30478615fae9e577b708c8b4ae39e47b0e949a",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/agents.rs",
+      "sha256": "4a28f5c6c2062beb5228aee985f35e30bb5dfccfa21170fdbef4058b50f58823",
+      "after_sha256": "4a28f5c6c2062beb5228aee985f35e30bb5dfccfa21170fdbef4058b50f58823",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/mcp.rs",
+      "sha256": "3fe1995988fc85fbd9ca4eb86c0efa4eda6948c43a535bb9ca679200081891f4",
+      "after_sha256": "3fe1995988fc85fbd9ca4eb86c0efa4eda6948c43a535bb9ca679200081891f4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/model_catalog.rs",
+      "sha256": "d447ce46bb74cac67a853665027d3a96c7baa992ee60720c96750a01fa908aad",
+      "after_sha256": "d447ce46bb74cac67a853665027d3a96c7baa992ee60720c96750a01fa908aad",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/model_configuration.rs",
+      "sha256": "338064f031c6e0ff402004cfc74e31e2faeae9e52b6c2fe7739b754f97b21384",
+      "after_sha256": "338064f031c6e0ff402004cfc74e31e2faeae9e52b6c2fe7739b754f97b21384",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/preferences.rs",
+      "sha256": "ab761d473207e2445a12e2425da6cc665db0c41e2e575edb1b3219ec68a2d342",
+      "after_sha256": "ab761d473207e2445a12e2425da6cc665db0c41e2e575edb1b3219ec68a2d342",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/provider_management.rs",
+      "sha256": "65da7cb0fa7b5bc70091cdf875cce13e0dde90109f160b5961be6b02fa4dc08f",
+      "after_sha256": "65da7cb0fa7b5bc70091cdf875cce13e0dde90109f160b5961be6b02fa4dc08f",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/reasoning_render.rs",
+      "sha256": "5c5cef99a60294e1999d3dff157abb4931501a7947d45dee4ecb6fa66587d0f1",
+      "after_sha256": "5c5cef99a60294e1999d3dff157abb4931501a7947d45dee4ecb6fa66587d0f1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/reasoning_state.rs",
+      "sha256": "b0aaa17a4299a45b6cf5e0dbbc918fea7dbb3ca288faf7b29b969d2ee2db09bb",
+      "after_sha256": "b0aaa17a4299a45b6cf5e0dbbc918fea7dbb3ca288faf7b29b969d2ee2db09bb",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/render_impl.rs",
+      "sha256": "73a6a7be584555cca8f2c4bca845563f40f9573cb7bbf00f219fd156e9ab7929",
+      "after_sha256": "73a6a7be584555cca8f2c4bca845563f40f9573cb7bbf00f219fd156e9ab7929",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/skills.rs",
+      "sha256": "d5949a33d5d4f5465f927f1fe6ee884d27a39cce13e262cbbb730de1b716e4a1",
+      "after_sha256": "d5949a33d5d4f5465f927f1fe6ee884d27a39cce13e262cbbb730de1b716e4a1",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/state.rs",
+      "sha256": "adc6a75df571070b0df266561770a1d87a9bbc7424e7fae3fd3e1dbca7d02178",
+      "after_sha256": "adc6a75df571070b0df266561770a1d87a9bbc7424e7fae3fd3e1dbca7d02178",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/updater.rs",
+      "sha256": "a9c1496220ff07c0ba30e42205eba68a628e228c46fe7eba87c4925c87edaf03",
+      "after_sha256": "a9c1496220ff07c0ba30e42205eba68a628e228c46fe7eba87c4925c87edaf03",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/settings/usage.rs",
+      "sha256": "4573789c77440f302fd1baac5374c37ffacbc714c11a2de6c28b3e13bbaceeb6",
+      "after_sha256": "4573789c77440f302fd1baac5374c37ffacbc714c11a2de6c28b3e13bbaceeb6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/mod.rs",
+      "sha256": "7bd48f830357e414480b4040f910829bed9316349fbd2bb26b31a02f3dff02be",
+      "after_sha256": "7bd48f830357e414480b4040f910829bed9316349fbd2bb26b31a02f3dff02be",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/projects_block.rs",
+      "sha256": "0ec38e7efd3ab721a9d23eb895fead80212375a92859371fa18a8c6fbc0bb37c",
+      "after_sha256": "0ec38e7efd3ab721a9d23eb895fead80212375a92859371fa18a8c6fbc0bb37c",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/row_helpers.rs",
+      "sha256": "0b4f5bfbdf754f72c42c2d0d50353e11864627a7db2420b7ed087beec43a9ae6",
+      "after_sha256": "0b4f5bfbdf754f72c42c2d0d50353e11864627a7db2420b7ed087beec43a9ae6",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/threads_block.rs",
+      "sha256": "881f27301a39129e3909a2970eefe9e6fcdbad309b216999e105747c5ab5e708",
+      "after_sha256": "881f27301a39129e3909a2970eefe9e6fcdbad309b216999e105747c5ab5e708",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/threads_block/organization.rs",
+      "sha256": "b9ed2e15854203b2b84510525a9d06e56465238d156cd93ed7dbfae29cdc3d90",
+      "after_sha256": "b9ed2e15854203b2b84510525a9d06e56465238d156cd93ed7dbfae29cdc3d90",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/threads_block/organization/menu.rs",
+      "sha256": "a97d95bcde5312386728a371a7a63063aa23c62cf0e513a25aac0edf2b234ad7",
+      "after_sha256": "a97d95bcde5312386728a371a7a63063aa23c62cf0e513a25aac0edf2b234ad7",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/threads_block/organization/projections.rs",
+      "sha256": "28a97429f4d4578627834de096a4c0ef93b702b766e43168923680811a98d668",
+      "after_sha256": "28a97429f4d4578627834de096a4c0ef93b702b766e43168923680811a98d668",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/threads_block/organization/render.rs",
+      "sha256": "598a2bb995ecfc18c05f031bca248c7d1852805927971471893b2db4898cb3b4",
+      "after_sha256": "598a2bb995ecfc18c05f031bca248c7d1852805927971471893b2db4898cb3b4",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/sidebar/threads_block/organization/reorder.rs",
+      "sha256": "000384d2906d2ca322c7281d3ecf7f42b50d11a03d959c2e9a49fd3f28d56c8d",
+      "after_sha256": "000384d2906d2ca322c7281d3ecf7f42b50d11a03d959c2e9a49fd3f28d56c8d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/summary_card.rs",
+      "sha256": "457b806357a0f58ac52dcdf44cc531a1bc5cc6f2f281ff1491f4774a69e807ce",
+      "after_sha256": "457b806357a0f58ac52dcdf44cc531a1bc5cc6f2f281ff1491f4774a69e807ce",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/terminal.rs",
+      "sha256": "b1e1e2061695bceb12d7490e4821f989580c2a165940be76a485194d42005bba",
+      "after_sha256": "b1e1e2061695bceb12d7490e4821f989580c2a165940be76a485194d42005bba",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/element.rs",
+      "sha256": "00e86385cfd6ff8b54252e81f2f7f3a6ddde3d29215085923d8cf9f5711ec200",
+      "after_sha256": "00e86385cfd6ff8b54252e81f2f7f3a6ddde3d29215085923d8cf9f5711ec200",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/input_handler.rs",
+      "sha256": "d257d494221228e953de64c5e3ca9e5bc998a776abb147fdf996a838b6bff005",
+      "after_sha256": "d257d494221228e953de64c5e3ca9e5bc998a776abb147fdf996a838b6bff005",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/mod.rs",
+      "sha256": "982de03a6d034851a5554d198440e6d348c115001757c85dcf4ad4aa956b469b",
+      "after_sha256": "982de03a6d034851a5554d198440e6d348c115001757c85dcf4ad4aa956b469b",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/mouse_selection.rs",
+      "sha256": "e4bc7bbbbfbebb910421cca511babb6f1e52893ad0f3c773a2fef683095d4115",
+      "after_sha256": "e4bc7bbbbfbebb910421cca511babb6f1e52893ad0f3c773a2fef683095d4115",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/state.rs",
+      "sha256": "6c21b8435389ec3764bdee9b3f7c90897989834ea9febcabece301b2c7ef5512",
+      "after_sha256": "6c21b8435389ec3764bdee9b3f7c90897989834ea9febcabece301b2c7ef5512",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/tool_activity_group.rs",
+      "sha256": "5a4c584f84b5f3ddaf3bfb94e891046dc4c4bffb02836a22d092d1ba2e5a109d",
+      "after_sha256": "5a4c584f84b5f3ddaf3bfb94e891046dc4c4bffb02836a22d092d1ba2e5a109d",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/tool_card.rs",
+      "sha256": "71f11e37397e089b4b94e0447428c7ea92a4815fc9c145aadf61145f1ae09339",
+      "after_sha256": "71f11e37397e089b4b94e0447428c7ea92a4815fc9c145aadf61145f1ae09339",
+      "unchanged": true
+    },
+    {
+      "path": "crates/vega_ui/src/user_question_panel.rs",
+      "sha256": "fe9559bba3aaf3db25f8d82fb3dc4084c08feacc1699f6cc0e0cedcc8d9b8813",
+      "after_sha256": "fe9559bba3aaf3db25f8d82fb3dc4084c08feacc1699f6cc0e0cedcc8d9b8813",
+      "unchanged": true
+    },
+    {
+      "path": "packaging/computer-use/README.md",
+      "sha256": "417870d371d4838c260e9b9b4e711848bf4548cab04564e6cd092af25bd1c136",
+      "after_sha256": "417870d371d4838c260e9b9b4e711848bf4548cab04564e6cd092af25bd1c136",
+      "unchanged": true
+    },
+    {
+      "path": "packaging/computer-use/executors.json",
+      "sha256": "d3e31212af34dad0e096c01d9a52a0c8463caa260c017e6fd1611f7d943512fd",
+      "after_sha256": "d3e31212af34dad0e096c01d9a52a0c8463caa260c017e6fd1611f7d943512fd",
+      "unchanged": true
+    },
+    {
+      "path": "packaging/computer-use/node-entitlements.plist",
+      "sha256": "0c29630932bfda49edde756db1273172f6469d72fe174a2087256016dfb08f69",
+      "after_sha256": "0c29630932bfda49edde756db1273172f6469d72fe174a2087256016dfb08f69",
+      "unchanged": true
+    },
+    {
+      "path": "packaging/computer-use/playwright/cli.js",
+      "sha256": "4c8308c62c34fae7a75ee00fc5704a8071af12b69ea9368d2fa4a17741a1f68e",
+      "after_sha256": "4c8308c62c34fae7a75ee00fc5704a8071af12b69ea9368d2fa4a17741a1f68e",
+      "unchanged": true
+    },
+    {
+      "path": "packaging/computer-use/playwright/package-lock.json",
+      "sha256": "78de303f514bd9a6057e112bd7b1428f96034873ee5601cdf063569c1f86beb8",
+      "after_sha256": "78de303f514bd9a6057e112bd7b1428f96034873ee5601cdf063569c1f86beb8",
+      "unchanged": true
+    },
+    {
+      "path": "packaging/computer-use/playwright/package.json",
+      "sha256": "07d16ec278b60a22ed0641692e0528e09c9fe794f04ffc098fb0afe84cfc5e9e",
+      "after_sha256": "07d16ec278b60a22ed0641692e0528e09c9fe794f04ffc098fb0afe84cfc5e9e",
+      "unchanged": true
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "8f6b8393117d142cdfc4837c001aa36b60656983699b237077af4da5c337cdbd",
+      "after_sha256": "8f6b8393117d142cdfc4837c001aa36b60656983699b237077af4da5c337cdbd",
+      "unchanged": true
+    },
+    {
+      "path": "rustfmt.toml",
+      "sha256": "7bd1d029bc4997087c530ca064bee14da32f1066c9a475e0f538489ed37a9f17",
+      "after_sha256": "7bd1d029bc4997087c530ca064bee14da32f1066c9a475e0f538489ed37a9f17",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/delta_update.py",
+      "sha256": "c88adef4c5f582a45f05253acbd7914feeca3bbc89f3746b0a543f436f196f67",
+      "after_sha256": "c88adef4c5f582a45f05253acbd7914feeca3bbc89f3746b0a543f436f196f67",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/native-capture.swift",
+      "sha256": "2eb162db8e7e565671c231835a06888af4210a7d9d6a4ac4bbf2d76bc5640e2a",
+      "after_sha256": "2eb162db8e7e565671c231835a06888af4210a7d9d6a4ac4bbf2d76bc5640e2a",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/native-drive.swift",
+      "sha256": "8f092c16ba5295a4613419c3650cd0636a3e1bf5b9bbc0ca7b631c3316c53f8c",
+      "after_sha256": "8f092c16ba5295a4613419c3650cd0636a3e1bf5b9bbc0ca7b631c3316c53f8c",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/native-hover-drive.swift",
+      "sha256": "fce0092593659861f3689475f7a3c156c0dfb1334406238a190a36e6941639a2",
+      "after_sha256": "fce0092593659861f3689475f7a3c156c0dfb1334406238a190a36e6941639a2",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/prepare-computer-use.py",
+      "sha256": "f6e208c2b70f82897c2d6b0a373a316423f5594bdcd87c5fe9f0761bd957bd59",
+      "after_sha256": "f6e208c2b70f82897c2d6b0a373a316423f5594bdcd87c5fe9f0761bd957bd59",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/prepare_computer_use_tests.py",
+      "sha256": "980ebddaad6b1bba0e3dbae58e9cd0e245cf03b7d88a9af1dfb602e0245bce12",
+      "after_sha256": "980ebddaad6b1bba0e3dbae58e9cd0e245cf03b7d88a9af1dfb602e0245bce12",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/release.py",
+      "sha256": "4afb3ba1259b11ac515d61cb23e7409e8476b6325f44b1f3209dac752f0d9dca",
+      "after_sha256": "4afb3ba1259b11ac515d61cb23e7409e8476b6325f44b1f3209dac752f0d9dca",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/release_tests.py",
+      "sha256": "fde829328bbe58b0853e1a84c9e40ada09ec38375b0fb1ae43905c33d97871be",
+      "after_sha256": "fde829328bbe58b0853e1a84c9e40ada09ec38375b0fb1ae43905c33d97871be",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/sign-computer-use.py",
+      "sha256": "f895708bf29f1b399f9d5e4cbf953d1db2f85eb7fe3ecb86f6ff29f10b6fdada",
+      "after_sha256": "f895708bf29f1b399f9d5e4cbf953d1db2f85eb7fe3ecb86f6ff29f10b6fdada",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/tests/test_delta_update.py",
+      "sha256": "61596d9ffa67003afe6b4b69e2c3774cc4e536faab406660457f3f5a9ede5326",
+      "after_sha256": "61596d9ffa67003afe6b4b69e2c3774cc4e536faab406660457f3f5a9ede5326",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/Cargo.toml",
+      "sha256": "11496649f69945049f2083dd531c94a54fc303ce35b9964a7db7916f5828c4e8",
+      "after_sha256": "11496649f69945049f2083dd531c94a54fc303ce35b9964a7db7916f5828c4e8",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/scripts/render-icon.swift",
+      "sha256": "bed0a31335e4060b2865a172e35d5619c90c5606c02f710af95a42b8575733c8",
+      "after_sha256": "bed0a31335e4060b2865a172e35d5619c90c5606c02f710af95a42b8575733c8",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/contract.rs",
+      "sha256": "cf5d07d63ade205b63c3486af1f4ba2a87f854d6076c6a636bff41e0361a1dd1",
+      "after_sha256": "cf5d07d63ade205b63c3486af1f4ba2a87f854d6076c6a636bff41e0361a1dd1",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/main.rs",
+      "sha256": "73fa0a02f7d9d9c8a34c2f5e35938e26bd084385b86bb5280f38d70c08fd8fe6",
+      "after_sha256": "73fa0a02f7d9d9c8a34c2f5e35938e26bd084385b86bb5280f38d70c08fd8fe6",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/package.rs",
+      "sha256": "83ea0903e365b36236340a4360ab9e253ce6627d44fa2e8f5a129798f96b9eaf",
+      "after_sha256": "83ea0903e365b36236340a4360ab9e253ce6627d44fa2e8f5a129798f96b9eaf",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/probe.rs",
+      "sha256": "cf03ad9d22e06779c13fe20f90409cc5cd316a51e446e70ca934da3c35aed48a",
+      "after_sha256": "cf03ad9d22e06779c13fe20f90409cc5cd316a51e446e70ca934da3c35aed48a",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/protocol.rs",
+      "sha256": "b878be939f60c38567922b5af6e225083dc15495f5724b71e7a090adb9f8f09b",
+      "after_sha256": "b878be939f60c38567922b5af6e225083dc15495f5724b71e7a090adb9f8f09b",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/provenance.rs",
+      "sha256": "285815938b3b1230b86ed3680cb218c93d67ea11571579526ffe53b3e4148d39",
+      "after_sha256": "285815938b3b1230b86ed3680cb218c93d67ea11571579526ffe53b3e4148d39",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/render.rs",
+      "sha256": "e7627326f6f032d5f9a1ce20d015962c3159c5a5c1fc74fbafe16d58746f7bef",
+      "after_sha256": "e7627326f6f032d5f9a1ce20d015962c3159c5a5c1fc74fbafe16d58746f7bef",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/report.rs",
+      "sha256": "c2f13f3588fcb4ee9cded14c4af3163b154d1326e6e4f5096312f9c37a8ac634",
+      "after_sha256": "c2f13f3588fcb4ee9cded14c4af3163b154d1326e6e4f5096312f9c37a8ac634",
+      "unchanged": true
+    },
+    {
+      "path": "xtask/src/sign_update.rs",
+      "sha256": "f1c5c0cb0ead896b9732243dadd5927edcefa7e156a57d2af8217fe910d9319e",
+      "after_sha256": "f1c5c0cb0ead896b9732243dadd5927edcefa7e156a57d2af8217fe910d9319e",
+      "unchanged": true
+    }
+  ],
+  "manifest_audit": [
+    {
+      "path": "crates/vega/Cargo.toml",
+      "exact_original_production_toml": true,
+      "dev_dependencies": 0,
+      "development_features": 0
+    },
+    {
+      "path": "crates/vega_conversation/Cargo.toml",
+      "exact_original_production_toml": true,
+      "dev_dependencies": 0,
+      "development_features": 0
+    },
+    {
+      "path": "crates/vega_runtime/Cargo.toml",
+      "exact_original_production_toml": true,
+      "dev_dependencies": 0,
+      "development_features": 0
+    },
+    {
+      "path": "crates/vega_store/Cargo.toml",
+      "exact_original_production_toml": true,
+      "dev_dependencies": 0,
+      "development_features": 0
+    },
+    {
+      "path": "crates/vega_ui/Cargo.toml",
+      "exact_original_production_toml": true,
+      "dev_dependencies": 0,
+      "development_features": 0
+    }
+  ],
+  "lock_graph": {
+    "before_nodes": 924,
+    "after_nodes": 914,
+    "removed_nodes": [
+      {
+        "name": "bit-set",
+        "version": "0.8.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "bit-vec",
+        "version": "0.8.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "convert_case",
+        "version": "0.11.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "proptest",
+        "version": "1.11.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "proptest-macro",
+        "version": "0.5.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "quick-error",
+        "version": "1.2.3",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "rand_xorshift",
+        "version": "0.4.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "rusty-fork",
+        "version": "0.3.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "unarray",
+        "version": "0.1.4",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "wait-timeout",
+        "version": "0.2.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      }
+    ],
+    "added_nodes": [],
+    "retained_versions_sources_checksums_unchanged": true,
+    "removed_edges_from_retained_nodes": [
+      {
+        "from": "gpui-pre@0.3.4",
+        "to": "backtrace@0.3.76"
+      },
+      {
+        "from": "gpui-pre@0.3.4",
+        "to": "proptest@1.11.0"
+      },
+      {
+        "from": "vega@0.1.0",
+        "to": "futures@0.3.34"
+      },
+      {
+        "from": "vega_conversation@0.1.0",
+        "to": "tempfile@3.27.0"
+      },
+      {
+        "from": "vega_runtime@0.1.0",
+        "to": "tempfile@3.27.0"
+      },
+      {
+        "from": "vega_store@0.1.0",
+        "to": "tempfile@3.27.0"
+      },
+      {
+        "from": "vega_ui@0.1.0",
+        "to": "vega_runtime@0.1.0"
+      }
+    ],
+    "added_edges_from_retained_nodes": [],
+    "baseline_lock_exact_bytes": true
+  },
+  "local_static_checks": {
+    "cargo_fmt_all": 0,
+    "cargo_fmt_all_check": 0,
+    "git_diff_check": 0,
+    "cargo_metadata_no_deps_offline_locked": 0
+  },
+  "not_executed": [
+    "Vega",
+    "Rust/Python tests",
+    "compilation/build/cargo check/Clippy/benchmark/packaging"
+  ],
+  "pending": "Root review, independent cleanup commit and latest head final cloud empty-set gates. Zero tests is not a test pass; original133 GREEN source remains publicly recoverable.",
+  "docs_scope": "Root concurrently maintains docs/evidence; they are excluded from the51 code paths and untouched by cleanup agent.",
+  "patch": "/tmp/vega-pi-compat-cleanup.patch",
+  "patch_sha256": "2e9f814bd1d9ce6d9c0ed17df8f91150e3b9877331d8dc36dcfd531c58723339"
+}

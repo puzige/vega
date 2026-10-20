@@ -792,7 +792,3 @@ fn draft_request(model: String, summary: &str, truncated: bool) -> ChatRequest {
         tool_choice: None,
     }
 }
-
-#[cfg(test)]
-#[path = "../../model_compatibility_tests/trusted_git.rs"]
-mod compatibility_tests;

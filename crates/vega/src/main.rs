@@ -25,9 +25,6 @@ mod automation_controller;
 mod branch_controller;
 mod codex_agent;
 mod commit_controller;
-#[cfg(test)]
-#[path = "../../vega_runtime/src/openai/compatibility_tests/http.rs"]
-mod compatibility_http;
 mod diff_controller;
 mod model_catalog;
 mod native_subagents;
