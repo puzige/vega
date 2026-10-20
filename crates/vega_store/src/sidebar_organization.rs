@@ -149,15 +149,26 @@ pub fn read(conn: &Connection) -> rusqlite::Result<OrganizationRows> {
         project_order,
     })
 }
-/// Reads registered projects with a stable recent-open fallback order.
 pub fn projects(conn: &Connection) -> Result<Vec<projects::Project>, projects::ProjectsError> {
-    let mut rows = projects::list(conn, projects::ProjectSort::RecentlyOpened)?;
-    rows.sort_by(|a, b| {
-        b.last_opened_at
-            .cmp(&a.last_opened_at)
-            .then(a.id.cmp(&b.id))
-    });
-    Ok(rows)
+    let mut stmt = conn.prepare(
+        "SELECT projects.id, projects.path, projects.name, projects.git_default_branch, \
+         projects.created_at, projects.last_opened_at \
+         FROM projects \
+         JOIN sidebar_project_order ON sidebar_project_order.project_id = projects.id \
+         ORDER BY sidebar_project_order.position, sidebar_project_order.project_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(projects::Project {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            name: row.get(2)?,
+            git_default_branch: row.get(3)?,
+            created_at: row.get(4)?,
+            last_opened_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(projects::ProjectsError::from)
 }
 /// Reads bounded task metadata using the existing row decoder.
 pub fn threads(
