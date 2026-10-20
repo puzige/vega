@@ -75,13 +75,16 @@ impl Render for StageHost {
                 group, segment, 0., window, cx,
             ))
         });
-        div()
-            .id("stage-viewport")
-            .test_support()
-            .w(px(WIDTH))
-            .text_size(px(Typography::CONVERSATION))
-            .when(!self.visible, |view| view.hidden())
-            .children(content)
+        div().flex().flex_col().child(
+            div()
+                .id("stage-viewport")
+                .test_support()
+                .w(px(WIDTH))
+                .flex_shrink_0()
+                .text_size(px(Typography::CONVERSATION))
+                .when(!self.visible, |view| view.hidden())
+                .children(content),
+        )
     }
 }
 
@@ -106,6 +109,7 @@ impl LiveConversation {
         this.window
             .update(cx, |_, window, _| window.activate_window())
             .unwrap();
+        cx.run_until_parked();
         this
     }
 
@@ -1645,10 +1649,12 @@ fn live_shimmer_respects_reduce_motion_hidden_content_and_inactive_windows(
     other
         .update(cx, |_, window, _| window.activate_window())
         .unwrap();
+    cx.run_until_parked();
     assert_eq!(live.frame_demand(cx), 0);
     live.window
         .update(cx, |_, window, _| window.activate_window())
         .unwrap();
+    cx.run_until_parked();
     assert!(live.frame_demand(cx) > 0);
     live.complete_reasoning(INITIAL_RESPONSE, cx);
     live.assert_stage("Read files", Some(crate::icons::Icon::BookOpen), false, cx);

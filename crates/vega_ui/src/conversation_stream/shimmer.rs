@@ -23,15 +23,6 @@ impl StageText {
     }
 }
 
-#[cfg(test)]
-pub(super) mod observation {
-    use super::*;
-
-    pub(in crate::conversation_stream) fn rendered_title(view: &StageText) -> (&str, bool) {
-        (&view.title, view.epoch.is_some())
-    }
-}
-
 impl Render for StageText {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(epoch) = self.epoch {
@@ -170,4 +161,13 @@ fn styled_text(
         .aria_label(label)
         .child(canvas)
         .into_any_element()
+}
+
+#[cfg(test)]
+pub(super) mod observation {
+    use super::*;
+
+    pub(in crate::conversation_stream) fn rendered_title(view: &StageText) -> (&str, bool) {
+        (&view.title, view.epoch.is_some())
+    }
 }
