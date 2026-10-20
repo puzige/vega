@@ -4,7 +4,7 @@
 
 **仅适用于 Vega 项目，包括它的所有 worktree、主 agent 和子 agent；不限制 Loom 自身或其他项目。**
 
-- **Codex、Vega 及子 agent 本地不运行 Vega 代码，不编译、构建、打包或执行测试。** 包括定向 `cargo check`、Clippy、test / nextest，不因缓存、范围小或预计耗时短而豁免。
+- **主 Agent 与子 Agent 本地不运行 Vega 代码，不编译、构建、打包或执行测试。** 包括定向 `cargo check`、Clippy、test / nextest，不因缓存、范围小或预计耗时短而豁免。
 - 本地只做低 CPU、能快速完成的差异、格式和静态检查；skill frontmatter 静态校验可执行。自动测试只由 GitHub Actions 运行，打包使用云端发布流程。
 - 本规则优先于旧文档、技能、任务规格中要求本地运行、编译或定向测试的条款。有行为变化时按下文 TEST-FIRST 编写测试；报告区分本地静态检查和待 CI 验证，不把未运行项标为通过。此前仅针对上一轮编号清理的本地执行授权不延续到本轮或全局。
 
@@ -16,7 +16,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 - **一次性清零**：从 `cf00946e` 删除整个 workspace（含 `xtask`）的现存 Rust 测试、可执行 doctest 及其独占支持/接线；不改生产行为、benchmark 或打包契约。保留 Python 发布、组件准备、delta 测试及 fixture；保留 Cargo/Nextest、fmt、Clippy 能力。不批量改写历史规格或报告，也不为清零人为造新测试/RED。
 - **守住合并基线**：旧分支先同步最新基线，不从旧 ref 整目录或整仓恢复 `master` 已清除的测试集合。逐项审查本轮测试及必要支持的来源，开发 GREEN 后也须删测才能正式交付。历史测试改名/改写不自动算新回归，确需新回归独立先测后修并留证；纠偏历史见 [合并纠偏规格](docs/vega-rust-reset-reconciliation.md)。
-- **验收 → 测试 → 有效 RED → 最小实现 → 同一测试 GREEN → 删除测试 → 最终门禁 → 正式 PR**：生产实现尚未修改时先写齐本轮行为与失败边界测试，记录基线与测试补丁/提交；由 Codex 审查并建立/复用 draft PR 触发现有 Actions，确认目标行为缺失导致失败后才进入实现。最小缺失 API 可作接口缺失 RED，必须说明行为断言尚未执行；无关编译、依赖、网络或 runner 失败不算 RED。
+- **验收 → 测试 → 有效 RED → 最小实现 → 同一测试 GREEN → 删除测试 → 最终门禁 → 正式 PR**：生产实现尚未修改时先写齐本轮行为与失败边界测试，记录基线与测试补丁/提交；由主 Agent 组织独立审查并建立/复用 draft PR 触发现有 Actions，确认目标行为缺失导致失败后才进入实现。最小缺失 API 可作接口缺失 RED，必须说明行为断言尚未执行；无关编译、依赖、网络或 runner 失败不算 RED。
 - **GREEN 后删测、PR 留证**：开发和实现期间保留 Rust 测试及必要接线；同一冻结测试云端 GREEN 且证据固定后，用独立提交删除 Rust 测试、可执行 doctest 及独占 fixture/mock/helper/feature/dev dependency。保留生产、benchmark 和通用 CI 能力，不通过删除失败或未执行测试逃避 GREEN。删测后的最新 head 完整门禁通过、确认 0 发现/0 执行后，才转正式 PR/申请合并；空集不是测试通过。
 - **冻结测试目标与预期，禁止实现后补测**：不按实现输出反推断言、不为报告/覆盖率追加用例、不放宽断言、不 ignore、不自动重试换绿。新需求、遗漏边界或新 Bug 必须停止本轮，记录独立验收变化并重新开始先测后修；不能用补测追认已完成实现。测试自身错误/接线修正须先留证审查且不改变验收含义，否则重新开轮。
 - **有效测试**：验证稳定/公开边界的可观察结果、必要副作用和业务/安全不变量；mock 只隔离外部依赖，不替代被测决策。不以源码字符串/符号存在、仅 mock 调用/机械转发、镜像算法、重复同义断言或内部字段覆盖率充数；调用次数只有本身属于契约且结合结果/终态才有效。新测试用行为命名，不把 issue/task 编号写入非文档代码。
@@ -63,16 +63,16 @@ Ticket 规格、交接与交付记录统一放在 `docs/<ticket>/`，同一编�
 ## 工作流
 
 1. **不在 `master` 上直接实现**——每卡用 `~/Workspace/worktrees/` 下独立 worktree 和 `feat/<task-id>-<slug>` 分支。**任何仓库修改前先 fetch 并更新基线**；通常为 `git fetch` 后 `git rebase origin/master`，有脏改动或分叉先保护核实，不 reset 或覆盖。
-2. **共用入口与身份**：取卡、实现、交接和收尾使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)，细节以 [Issue 与角色工作流](docs/vega-issue-workflow.md) 为准。角色优先采用用户明确指定的工作流角色，否则采用宿主系统身份；Vega 为 `You are Vega`，不从模型名、项目名或路径猜身份，有证据不重复询问。
-3. **自动单卡**：用户指定或明确继续的卡优先；否则完整读取本角色候选队列，先排除关闭、占用、当前角色/阶段前提未满足、缺所需方案和未交接 PR，再按 Issue `createdAt` 降序、同时间编号降序取最新一张。Codex 取可审查的 Backlog、等待 Codex 的 Ready，或 Vega 最新交接明确交回、当前待领取且无活跃执行者的 In progress；这类阻塞卡可接回分析，不能因导致 Vega 阻塞的依赖缺口排除。Vega 仅取方案完整可访问、执行依赖已满足且明确交给 Vega 的 Ready。领取即 `In progress`，Issue 写阶段及当前/下一执行者；交回的 In progress 保留原列。解释、审阅或维护 skill 不启动其他卡。默认一张，仅连续授权才取下一张。
-4. **Codex 先接卡**：Codex 查重建卡并先审查所有需求；Bug 定位根因，先冻结验收与测试方案、再写具体到文件/符号/修改动作的实现计划，提交并发布可访问交接链接后置 Ready 等 Vega。新功能默认由 Codex 组织实现，**代码实现委托专职 subagent**；Codex 主会话负责协调、审查、集成、PR/CI/合并及用户反馈分析。卡外发现单独记录，不扩大实现范围。
-5. **Vega 执行**：领取已交接 Ready 后立即 `In progress`，先写齐测试并交 Actions 确认有效 RED，再按方案实现和验证同一测试 GREEN，禁止实现后补测；不建卡、不改 spec、不开放式排障。完成或遇阻都在同卡交回 Codex，保持 `In progress`，写当前执行者待领取、下一执行者 Codex 并停止写入。Codex 交到 Ready、Vega 交回或合并后等待用户，均为默认单卡停止点；同卡始终只有一个实现写入者。
-6. **合并与验收**：本地仅静态检查，测试只交 GitHub Actions；Codex 审查并确认最新 head 的 required check 通过后主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后 Codex 回写，按 [分支与 worktree 清理规则](docs/vega-issue-workflow.md#分支与-worktree-清理规则)完成本卡剩余安全清理，再关闭 Issue 并读回，最后置 Done 并读回；清理或关闭受阻时保持 `In review`、标待收尾，不先 Done 再补清理。未通过由 Codex 先分析，Bug 修订方案后重新交 Vega。**手测前不得关闭或 Done；最新 head 的 required check 通过并合并后，允许自动删除已合并远端任务分支，证据、完整 SHA 和补丁须可恢复。本地分支/worktree 仅在确认无运行 agent、无未提交或未合入改动后安全清理；允许删分支不等于授权删除用户数据。Done 仅表示验收和全部收尾均已完成。**
-7. **遇阻与证据**：按 exec-guide §6 用 `[BLOCKED]` 上报，Vega 的方案缺口交回 Codex，禁止自创方案绕过。后续先行测试按任务覆盖进程内业务/安全/存储/UI；真实模型、服务和 UI 系统集成由用户在合并后的 master 上手测，不以 Agent 自产 E2E/截图替代；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
+2. **统一 Agent 入口**：取卡、实现、交接和收尾使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)，细节以 [Issue 工作流](docs/vega-issue-workflow.md) 为准。当前用户裁决取代旧的厂商/宿主角色分工：主 Agent 可分析、修订 spec、组织实现、开 PR、跟进 CI、合并及收尾，不按模型或宿主路由，不因缺旧交接停工；历史记录保留但不作为等待另一角色的前提。
+3. **自动单卡**：用户指定或明确继续的卡优先；否则完整分页读取候选队列，取可分析的未占用 Backlog/Ready，或最新记录已释放写入权、当前待领取且无活跃执行者的 In progress。先排除关闭、占用、未交接 PR 及下一阶段真实前提未满足的卡，再按 Issue `createdAt` 降序、同时间编号降序取最新一张；实现依赖不足不得直接实现，但可接回分析解决方案/依赖缺口。领取前重读，立即 `In progress` 并读回（不是原子锁），冲突让出；接回卡保留原列。Issue 用阶段及当前/下一执行者 Agent / 待领取 / 用户记录状态，附会话/worktree 上下文；沿用五列，不新增列或重复卡。解释、审阅或维护 skill 不启动其他卡；默认一张，仅连续授权才取下一张。
+4. **分析与委派**：主 Agent 在授权内查重建卡、审查需求与 spec；Bug 定位根因，先写验收用例/测试方案，再写具体到文件/符号/修改动作的实现计划。**代码实现必须委派专职子 Agent**，主会话协调、审查与集成；由非该实现写入者的 Agent 独立审查，不能自审替代。委派范围、基线、方案版本和回报约定明确，跨会话交接提供可访问链接；无法委派或独立审查时报告真实限制。卡外发现单独记录，不扩大范围。
+5. **同卡连续推进**：生产未改时写齐测试 → 独立审查并建立/复用 draft PR → 现有 Actions 有效 RED → 冻结测试 → 最小实现 → 同一测试 GREEN → PR 固定原始源码/完整 SHA/patch 证据 → 独立删测提交 → 最终空集完整门禁 → 正式 PR。主 Agent 组织各阶段，无验收缺口时不停在 Ready、测试交接或实现回报处等旧角色。同一实现范围只有一个写入者，主会话不并行改受委派范围，前任交接后停止写入；独立审查默认只读。验收变化先停当前轮、更新 spec/基线并重开先测后修，不补测追认。
+6. **合并与验收**：本地仅静态检查，测试只交 GitHub Actions；独立审查无缺口且最新 head 的 required check 通过后，主 Agent 主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后回写，按 [分支与 worktree 清理规则](docs/vega-issue-workflow.md#分支与-worktree-清理规则)完成本卡剩余安全清理，再关闭 Issue 并读回，最后置 Done 并读回；清理或关闭受阻时保持 `In review`、标待收尾，不先 Done 再补清理。未通过由主 Agent 分析、修订 spec/验收并组织新一轮先测后修。**手测前不得关闭或 Done；最新 head 的 required check 通过并合并后，允许自动删除已合并远端任务分支，证据、完整 SHA 和补丁须可恢复。本地分支/worktree 仅在确认属于本卡、无运行 Agent/构建、无未提交（含未跟踪）或未合入改动后安全清理；squash 核对等价内容。未知文件/用户数据保留报告，不 reset、强删或覆盖；允许删分支不等于授权删除用户数据。Done 仅表示验收和全部收尾均已完成。**
+7. **遇阻与证据**：方案缺口由主 Agent 在授权内分析并先更新 spec，不绕过门禁；只有需用户裁决、缺权限或无法解决的技术阻碍才按 exec-guide §6 用 `[BLOCKED]` 上报，记录真实执行者、阻碍和恢复条件，不为旧角色交接人为停工。后续先行测试按任务覆盖进程内业务/安全/存储/UI；真实模型、服务和 UI 系统集成由用户在合并后的 master 上手测，不以 Agent 自产 E2E/截图替代；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ## 问题与需求收集
 
-- 由 Codex 按 [Issue 与看板工作流](docs/vega-issue-workflow.md) 查重并收集明确要跟踪的问题和需求，Vega 默认不建卡。**登记不等于承诺立即修复**：暂未开始时给用户链接和真实 Backlog 状态，不把它假装成进行中。
+- 由主 Agent 按 [Issue 与看板工作流](docs/vega-issue-workflow.md) 在授权内查重并收集明确要跟踪的问题和需求。**登记不等于承诺立即修复**：暂未开始时给用户链接和真实 Backlog 状态，不把它假装成进行中。
 - GitHub Issue 是执行事项与证据的单一入口，GitHub Project 只管理流转状态；Notion PRD 管产品目标，本仓 `docs/` 管实现规格。Issue 本身不替代上述 spec，也不授权卡外代码实现。
 - 无法访问 Project 时，不得声称已入看板；如已获授权且可创建 Issue，先保留 Issue 并明确说明待关联。仓库公开，截图、日志和复现信息必须脱敏。
 
@@ -81,8 +81,8 @@ Ticket 规格、交接与交付记录统一放在 `docs/<ticket>/`，同一编�
 - 提交格式：`feat(scope): <一句话>` / `fix(scope): <一句话>`（功能点 ID 见 [features](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
 - PR 必须附：本轮冻结测试目标、实现未改的 RED 基线/测试源码或补丁与原始原因、实现顺序、带相同测试的 GREEN 提交与云端输出、独立删测提交及最终 head 空集完整门禁（未运行标待 CI 验证），以及 spec 偏离说明（必须为无）。测试源码与提交链接须可从 PR 找回；正式 PR 最终树无 Rust 测试。文档/格式等无行为变化项说明不适用，不伪造 RED；不附本地全量测试。
-- 合并方式：由 Codex squash merge。**用户手测通过后才删除本卡远端功能分支及本地分支/worktree**；合并时保留，取代旧的合并后立即删分支规则。
-- **合并由 Codex 主动完成**：确认待合并最新 head 的 required check 绿后合入 master，完成后才把卡片改为 `In review` 等待用户手测；PR 不使用自动关闭 Issue 的关键字。
+- 合并方式：由主 Agent squash merge。**最新 head 的 required check 通过且已合并后，允许自动删除已合并远端任务分支**，须先固定并读回可恢复的完整 SHA/源码/原始 patch 与证据；本地分支/worktree 仅按安全清理规则另行核实后处理，不自动随远端删除。此规则取代旧的手测前必须保留分支要求，不授权删除用户数据。
+- **合并由主 Agent 主动完成**：独立审查无缺口且待合并最新 head 的 required check 绿后合入 master，完成后才把卡片改为 `In review` 等待用户手测；PR 不使用自动关闭 Issue 的关键字，用户明确通过前不关闭或 Done。
 
 ## 验证门禁与云端 CI（2026-09-25 用户裁决，相关规格）
 
@@ -348,7 +348,7 @@ let quads = visual
 
 ## 行为技能
 
-- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：Codex/Vega 共用的角色识别与最新单卡交付；Codex 先审查并交接 Bug、Vega 按方案执行、Actions 验证、Codex 合并、用户手测后收尾。维护 skill 本身不触发其他真实队列。
+- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：Agent 共用的最新合格单卡交付；主 Agent 分析/spec/协调，专职子 Agent 实现，独立审查、Actions 验证、合并后等用户手测再收尾。同卡连续推进，不按厂商或宿主身份交接；维护 skill 本身不触发其他真实队列。
 
 - [karpathy-guidelines](.agents/skills/karpathy-guidelines/SKILL.md)：写/审/重构代码时的
   行为准则（最小改动、表面化假设、可验证成功判据）。**冲突时以本文件与 exec-guide 为准**，

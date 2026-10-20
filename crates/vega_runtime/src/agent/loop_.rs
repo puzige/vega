@@ -1817,14 +1817,15 @@ where
         let mut response_last_visible = None;
         discard_reasoning_events(&mut events, 0);
         let reasoning_event_start = events.len();
+        let attempt_id = ulid::Ulid::generate().to_string();
         emit!(
             events,
             sink,
             RuntimeEvent::AssistantResponseStarted {
+                response_id: attempt_id.clone(),
                 text_start_bytes: response_text_start
             }
         );
-        let attempt_id = ulid::Ulid::generate().to_string();
         let attempt_started_at = std::time::Instant::now();
         let mut diagnostic_metrics = RuntimeDiagnosticMetrics::default();
         emit!(
@@ -2499,24 +2500,6 @@ where
                 false,
             ));
         }
-        if let Some(run) = &tool_config.computer_use {
-            if run.wait_ready(&cancel).await.is_err() {
-                cancel.cancel();
-            }
-            run.trim_messages(&mut messages);
-        }
-        if cancel.is_cancelled() {
-            emit!(events, sink, RuntimeEvent::Interrupted);
-            return Ok(outcome(
-                events,
-                messages,
-                final_text,
-                tool_call_count,
-                executed_tool_call_count,
-                true,
-                false,
-            ));
-        }
         let reasoning_presence = reasoning_presence.unwrap_or_default();
         let response_error = if stop_reason.is_none() {
             Some(VegaError::ProviderDiagnostic {
@@ -2540,6 +2523,33 @@ where
             )
             .err()
         };
+        if response_error.is_none() && !cancel.is_cancelled() {
+            emit!(
+                events,
+                sink,
+                RuntimeEvent::ReasoningCompleted {
+                    response_id: attempt_id.clone()
+                }
+            );
+        }
+        if let Some(run) = &tool_config.computer_use {
+            if run.wait_ready(&cancel).await.is_err() {
+                cancel.cancel();
+            }
+            run.trim_messages(&mut messages);
+        }
+        if cancel.is_cancelled() {
+            emit!(events, sink, RuntimeEvent::Interrupted);
+            return Ok(outcome(
+                events,
+                messages,
+                final_text,
+                tool_call_count,
+                executed_tool_call_count,
+                true,
+                false,
+            ));
+        }
         if let Some(error) = response_error {
             emit!(
                 events,

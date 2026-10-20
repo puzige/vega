@@ -25,12 +25,18 @@ struct RunActivitySegment {
     sticky: StickyState,
     expanded: bool,
     children: Vec<RunActivityChild>,
-    headline_summary: Option<Entity<ThinkingBlock>>,
     tool_categories: Vec<(Entity<ToolCard>, ToolActivityCategory)>,
     compact_tool_groups: Vec<(Entity<ToolCard>, Entity<ToolActivityGroup>)>,
     focus: FocusHandle,
     header_focus: FocusHandle,
     scrolls: Vec<ScrollHandle>,
+}
+
+struct StageHeadline {
+    title: String,
+    icon: Option<crate::icons::Icon>,
+    live: bool,
+    summary: Option<Entity<ThinkingBlock>>,
 }
 
 fn format_stage_tool_categories(categories: &[ToolActivityCategory]) -> String {
@@ -62,7 +68,8 @@ pub(crate) struct RunActivityCheckpoint {
     segment_count: usize,
     active_segment: Option<usize>,
     children: Vec<RunActivityChild>,
-    headline_summary: Option<Entity<ThinkingBlock>>,
+    activity_order: u64,
+    tool_starts: Vec<(Entity<ToolCard>, u64)>,
     tool_categories_len: usize,
     tool_group_children: Vec<(Entity<ToolActivityGroup>, Vec<Entity<ToolCard>>)>,
     scroll_count: usize,
@@ -80,7 +87,6 @@ pub(crate) enum RunPhase {
     Requesting,
     Thinking,
     Responding,
-    Tool,
     Compacting,
 }
 
@@ -106,6 +112,10 @@ pub(crate) struct RunActivityGroup {
     phase: RunPhase,
     waiting_for_user: bool,
     current_thinking: Option<Entity<ThinkingBlock>>,
+    thinking_order: u64,
+    activity_order: u64,
+    tool_starts: Vec<(Entity<ToolCard>, u64)>,
+    presentation_released: bool,
     process_copies: HashSet<u64>,
     final_confirmed: bool,
     body_in_details: bool,
@@ -156,12 +166,7 @@ impl RunActivityGroup {
         active_segment: Option<usize>,
         cx: &mut Context<Self>,
     ) -> RunActivityCheckpoint {
-        if let Some(card) = self.current_thinking.take() {
-            card.update(cx, |card, cx| {
-                card.shimmer_epoch = None;
-                cx.notify();
-            });
-        }
+        self.finish_thinking(cx);
         let children = active_segment
             .and_then(|segment| self.segments.get(segment))
             .map(|segment| segment.children.clone())
@@ -183,14 +188,12 @@ impl RunActivityGroup {
             .and_then(|segment| self.segments.get(segment))
             .map(|segment| segment.tool_categories.len())
             .unwrap_or(0);
-        let headline_summary = active_segment
-            .and_then(|segment| self.segments.get(segment))
-            .and_then(|segment| segment.headline_summary.clone());
         RunActivityCheckpoint {
             segment_count: self.segments.len(),
             active_segment,
             children,
-            headline_summary,
+            activity_order: self.activity_order,
+            tool_starts: self.tool_starts.clone(),
             tool_categories_len,
             tool_group_children,
             scroll_count,
@@ -202,12 +205,18 @@ impl RunActivityGroup {
         checkpoint: &RunActivityCheckpoint,
         cx: &mut Context<Self>,
     ) {
-        if let Some(card) = self.current_thinking.take() {
-            card.update(cx, |card, cx| {
-                card.shimmer_epoch = None;
-                cx.notify();
-            });
+        self.finish_thinking(cx);
+        for (card, _) in &self.tool_starts {
+            if !checkpoint
+                .tool_starts
+                .iter()
+                .any(|(owned, _)| owned == card)
+            {
+                card.update(cx, |card, _| card.release_presentation());
+            }
         }
+        self.activity_order = checkpoint.activity_order;
+        self.tool_starts = checkpoint.tool_starts.clone();
         self.segments.truncate(checkpoint.segment_count);
         if let Some(segment) = checkpoint.active_segment
             && let Some(segment_state) = self.segments.get_mut(segment)
@@ -216,7 +225,6 @@ impl RunActivityGroup {
                 group.update(cx, |group, cx| group.replace_children(cards.clone(), cx));
             }
             segment_state.children = checkpoint.children.clone();
-            segment_state.headline_summary = checkpoint.headline_summary.clone();
             segment_state
                 .tool_categories
                 .truncate(checkpoint.tool_categories_len);
@@ -238,6 +246,7 @@ impl RunActivityGroup {
         if let Some(card) = self.current_thinking.take() {
             card.update(cx, |card, cx| {
                 card.shimmer_epoch = None;
+                card.progress_finished = true;
                 cx.notify();
             });
             self.sync_thinking_visibility(cx);
@@ -245,7 +254,7 @@ impl RunActivityGroup {
         }
     }
     pub(crate) fn start_clock(&mut self, started_at: Instant, cx: &mut Context<Self>) {
-        if self.started_at.is_none() && !self.terminal {
+        if self.started_at.is_none() && !self.terminal && !self.presentation_released {
             self.started_at = Some(started_at);
             self.animation_epoch = started_at;
             self.sync_thinking_visibility(cx);
@@ -254,14 +263,18 @@ impl RunActivityGroup {
     }
 
     fn schedule_clock(&mut self, cx: &mut Context<Self>) {
-        if self.terminal || self.started_at.is_none() || self.clock_task.is_some() {
+        if self.terminal
+            || self.presentation_released
+            || self.started_at.is_none()
+            || self.clock_task.is_some()
+        {
             return;
         }
         self.clock_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             let _ = this.update(cx, |group, cx| {
                 group.clock_task = None;
-                if !group.terminal {
+                if !group.terminal && !group.presentation_released {
                     cx.emit(RunActivityDisplayChanged {
                         segment: None,
                         geometry: false,
@@ -274,7 +287,6 @@ impl RunActivityGroup {
     pub(crate) fn set_phase(&mut self, phase: RunPhase, cx: &mut Context<Self>) {
         if !self.terminal && self.phase != phase {
             self.phase = phase;
-            self.finish_thinking(cx);
             self.sync_thinking_visibility(cx);
             cx.notify();
         }
@@ -303,17 +315,59 @@ impl RunActivityGroup {
         cx.notify();
     }
 
-    pub(crate) fn set_thinking(&mut self, card: Entity<ThinkingBlock>, cx: &mut Context<Self>) {
-        if self.phase == RunPhase::Thinking && self.current_thinking.as_ref() == Some(&card) {
+    pub(crate) fn set_thinking(
+        &mut self,
+        card: Entity<ThinkingBlock>,
+        preview_changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.terminal
+            || self.presentation_released
+            || !preview_changed && self.current_thinking.as_ref() == Some(&card)
+        {
             return;
         }
-        self.phase = RunPhase::Thinking;
+        if self.phase != RunPhase::Compacting {
+            self.phase = RunPhase::Thinking;
+        }
+        self.activity_order = self.activity_order.saturating_add(1);
+        self.thinking_order = self.activity_order;
         card.update(cx, |card, _| card.shimmer_epoch = None);
         self.current_thinking = Some(card);
-        cx.emit(RunActivityDisplayChanged {
-            segment: None,
-            geometry: false,
-        });
+        self.sync_thinking_visibility(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn tool_started(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
+        if self.terminal
+            || self.presentation_released
+            || !card.read(cx).is_running()
+            || !self.contains_tool(card, cx)
+            || self.tool_starts.iter().any(|(owned, _)| owned == card)
+        {
+            return;
+        }
+        self.activity_order = self.activity_order.saturating_add(1);
+        self.tool_starts.push((card.clone(), self.activity_order));
+        self.sync_thinking_visibility(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn release_presentation(&mut self, cx: &mut Context<Self>) {
+        if self.presentation_released {
+            return;
+        }
+        self.presentation_released = true;
+        for segment in 0..self.segments.len() {
+            for card in self.stage_tool_calls(segment, cx) {
+                card.update(cx, |card, _| card.release_presentation());
+            }
+        }
+        self.tool_starts.clear();
+        self.finish_thinking(cx);
+        self.clock_task = None;
+        self.sync_thinking_visibility(cx);
+        cx.notify();
     }
 
     pub(crate) fn confirm_final(
@@ -475,6 +529,10 @@ impl RunActivityGroup {
             phase: RunPhase::Working,
             waiting_for_user: false,
             current_thinking: None,
+            thinking_order: 0,
+            activity_order: 0,
+            tool_starts: Vec::new(),
+            presentation_released: false,
             process_copies: HashSet::new(),
             final_confirmed: false,
             body_in_details: false,
@@ -587,7 +645,6 @@ impl RunActivityGroup {
             sticky: StickyState::default(),
             expanded: false,
             children: Vec::new(),
-            headline_summary: None,
             tool_categories: Vec::new(),
             compact_tool_groups: Vec::new(),
             focus: cx.focus_handle(),
@@ -647,29 +704,6 @@ impl RunActivityGroup {
         cx.notify();
     }
 
-    pub(crate) fn mark_summary_preview(
-        &mut self,
-        segment: usize,
-        card: &Entity<ThinkingBlock>,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.stage_has_tools(segment) {
-            return;
-        }
-        let Some(state) = self.segments.get_mut(segment) else {
-            return;
-        };
-        if state
-            .children
-            .iter()
-            .any(|child| matches!(child, RunActivityChild::Thinking(owned) if owned == card))
-            && card.read(cx).summary_title().is_some()
-        {
-            state.headline_summary = Some(card.clone());
-            cx.notify();
-        }
-    }
-
     pub(crate) fn append_tool(
         &mut self,
         segment: usize,
@@ -682,12 +716,12 @@ impl RunActivityGroup {
                 .stage_tool_calls(segment, cx)
                 .first()
                 .is_some_and(|card| card.read(cx).is_expanded());
+        if proposed && self.phase != RunPhase::Compacting {
+            self.phase = RunPhase::Working;
+        }
         let Some(segment_state) = self.segments.get_mut(segment) else {
             return;
         };
-        if proposed {
-            segment_state.headline_summary = None;
-        }
         segment_state
             .tool_categories
             .push((card.clone(), card.read(cx).stage_activity_category()));
@@ -729,7 +763,6 @@ impl RunActivityGroup {
         let Some(segment_state) = self.segments.get_mut(segment) else {
             return;
         };
-        segment_state.headline_summary = None;
         match segment_state.children.last() {
             Some(RunActivityChild::Tool(first)) => {
                 cx.observe(&card, |_, _, cx| cx.notify()).detach();
@@ -1060,13 +1093,7 @@ impl RunActivityGroup {
         self.status = status;
         self.execution_duration_ms = execution_duration_ms;
         self.terminal = true;
-        if let Some(card) = self.current_thinking.take() {
-            card.update(cx, |card, cx| {
-                card.shimmer_epoch = None;
-                cx.notify();
-            });
-        }
-        self.clock_task = None;
+        self.release_presentation(cx);
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -1090,7 +1117,7 @@ impl RunActivityGroup {
     fn label(&self) -> String {
         let duration = self.execution_duration_ms.or_else(|| {
             self.started_at
-                .filter(|_| !self.terminal)
+                .filter(|_| !self.terminal && !self.presentation_released)
                 .map(|start| start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
         });
         let status = match self.status {
@@ -1342,61 +1369,70 @@ impl RunActivityGroup {
     }
 
     fn stage_outer_summary_card(&self, segment: usize, cx: &App) -> Option<Entity<ThinkingBlock>> {
-        if !self.stage_has_tools(segment) {
-            self.stage_summary_card(segment, cx)
-        } else {
-            self.segments
-                .get(segment)?
-                .headline_summary
-                .as_ref()
-                .filter(|card| card.read(cx).summary_title().is_some())
-                .cloned()
-        }
+        self.stage_headline(segment, cx).summary
     }
 
-    fn stage_aggregate_tool_title(
-        &self,
-        segment: usize,
-        cx: &App,
-    ) -> Option<(String, crate::icons::Icon)> {
-        (self.stage_outer_summary_card(segment, cx).is_none())
-            .then(|| self.stage_tool_title(segment, cx))
-            .flatten()
-    }
-
-    fn stage_thinking_active(&self, segment: usize) -> bool {
-        !self.terminal
+    fn stage_headline(&self, segment: usize, cx: &App) -> StageHeadline {
+        let tools = self.stage_tool_calls(segment, cx);
+        let live = !self.terminal
+            && !self.presentation_released
             && !self.waiting_for_user
-            && self.phase == RunPhase::Thinking
-            && self.current_thinking.as_ref().is_some_and(|current| {
+            && !self.process_in_details()
+            && self.phase != RunPhase::Compacting;
+        if !self.terminal && !self.presentation_released && !self.process_in_details() {
+            let tool = self
+                .tool_starts
+                .iter()
+                .filter(|(card, _)| tools.contains(card) && card.read(cx).is_running())
+                .max_by_key(|(_, order)| *order);
+            let thinking = self.current_thinking.as_ref().filter(|current| {
                 self.segments.get(segment).is_some_and(|state| {
                     state.children.iter().any(|child| {
-                        matches!(child, RunActivityChild::Thinking(card) if card == current)
+                        matches!(child, RunActivityChild::Thinking(card) if card == *current)
                     })
                 })
-            })
-    }
-
-    pub(crate) fn stage_title(&self, segment: usize, cx: &App) -> String {
-        if self.stage_is_aggregate(segment, cx) {
-            if let Some(title) = self
-                .stage_outer_summary_card(segment, cx)
-                .and_then(|card| card.read(cx).summary_title().map(str::to_owned))
+            });
+            if let Some(card) = thinking
+                && tool.is_none_or(|(_, order)| self.thinking_order > *order)
             {
-                return title;
+                let summary = card.read(cx).summary_title().map(str::to_owned);
+                return StageHeadline {
+                    title: summary.clone().unwrap_or_else(|| "Thinking".into()),
+                    icon: None,
+                    live,
+                    summary: summary.map(|_| card.clone()),
+                };
             }
-            if let Some((title, _)) = self.stage_aggregate_tool_title(segment, cx) {
-                return title;
+            if let Some((card, _)) = tool {
+                let card = card.read(cx);
+                return StageHeadline {
+                    title: card.headline_title().to_owned(),
+                    icon: Some(card.leading_icon()),
+                    live,
+                    summary: None,
+                };
             }
         }
-        self.stage_summary_title(segment, cx).unwrap_or_else(|| {
-            if self.stage_thinking_active(segment) {
-                "Thinking"
-            } else {
-                "Thought"
-            }
-            .to_owned()
-        })
+        if self.stage_is_aggregate(segment, cx)
+            && let Some((title, icon)) = self.stage_tool_title(segment, cx)
+        {
+            return StageHeadline {
+                title,
+                icon: Some(icon),
+                live: false,
+                summary: None,
+            };
+        }
+        let summary = self.stage_summary_card(segment, cx);
+        StageHeadline {
+            title: summary
+                .as_ref()
+                .and_then(|card| card.read(cx).summary_title().map(str::to_owned))
+                .unwrap_or_else(|| "Thought".into()),
+            icon: None,
+            live: false,
+            summary,
+        }
     }
 
     pub(crate) fn reveal_segment(&mut self, segment: usize, cx: &mut Context<Self>) -> bool {
@@ -1475,10 +1511,8 @@ impl RunActivityGroup {
             .iter()
             .map(|card| card.entity_id())
             .collect::<Vec<_>>();
-        let activity = aggregate
-            .then(|| state.stage_aggregate_tool_title(segment_index, cx))
-            .flatten();
-        let title = (aggregate || single_thinking).then(|| state.stage_title(segment_index, cx));
+        let headline = state.stage_headline(segment_index, cx);
+        let title = (aggregate || single_thinking).then(|| headline.title.clone());
         let tool_leads = matches!(
             visible_children.first(),
             Some(RunActivityChild::Tool(_) | RunActivityChild::ToolGroup(_))
@@ -1486,8 +1520,8 @@ impl RunActivityGroup {
         let focus = state.segments[segment_index].focus.clone();
         let sticky = state.segments[segment_index].sticky.clone();
         let scrolls = state.segments[segment_index].scrolls.clone();
-        let shimmering = !aggregate && state.stage_thinking_active(segment_index);
-        let activity_icon = activity.map(|(_, icon)| icon);
+        let shimmering = headline.live;
+        let activity_icon = headline.icon;
         let epoch = state.animation_epoch;
         if (aggregate || single_thinking)
             && state
@@ -1583,7 +1617,13 @@ impl RunActivityGroup {
                                 .child(crate::icons::icon(icon, colors.conversation_stage)),
                         )
                     })
-                    .child(div().min_w_0().flex_shrink(1.).truncate().child(title_view))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_shrink(1.)
+                            .truncate()
+                            .child(title_view.clone()),
+                    )
                     .when(can_expand, |row| {
                         row.child(crate::disclosure::inline_chevron(
                             disclosure_group,
@@ -1639,7 +1679,31 @@ impl RunActivityGroup {
                         .filter(|child| {
                             !single_thinking || matches!(child, RunActivityChild::Artifact(_))
                         })
-                        .map(|child| StickySection::plain(Self::render_child(child, window, cx))),
+                        .map(|child| {
+                            let element = match child {
+                                RunActivityChild::Tool(card) if !aggregate && shimmering => {
+                                    let title = headline.title.clone();
+                                    title_view.update(cx, |view, cx| {
+                                        view.set(title.clone(), Some(epoch), cx)
+                                    });
+                                    ToolCard::render_with_title(
+                                        card,
+                                        false,
+                                        Some((title, title_view.clone().into_any_element())),
+                                        window,
+                                        cx,
+                                    )
+                                }
+                                RunActivityChild::Tool(card) if !aggregate => {
+                                    title_view.update(cx, |view, cx| {
+                                        view.set(card.read(cx).compact_title(), None, cx)
+                                    });
+                                    ToolCard::render(card, false, window, cx)
+                                }
+                                child => Self::render_child(child, window, cx),
+                            };
+                            StickySection::plain(element)
+                        }),
                 );
                 continue;
             }

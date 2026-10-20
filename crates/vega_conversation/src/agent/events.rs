@@ -92,7 +92,9 @@ where
 
         let RuntimeEnvelope { event, ack } = envelope;
         let invalid_boundary = match &event {
-            RuntimeEvent::AssistantResponseStarted { text_start_bytes } => {
+            RuntimeEvent::AssistantResponseStarted {
+                text_start_bytes, ..
+            } => {
                 if *text_start_bytes == streamed_content.len() {
                     response_start = Some(*text_start_bytes);
                     false
@@ -542,6 +544,7 @@ pub(crate) fn persist_runtime_event(
             .map_err(VegaError::from)?;
         }
         RuntimeEvent::AssistantResponseStarted { .. } => {}
+        RuntimeEvent::ReasoningCompleted { .. } => {}
         RuntimeEvent::SteeringAccepted(input) => {
             let tx = store.immediate_transaction()?;
             if !vega_store::pending_messages::mark_delivered(&tx, thread_id, &input.id)? {

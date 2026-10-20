@@ -367,7 +367,12 @@ fn now_unix_millis() -> i64 {
 pub enum ConversationEvent {
     AssistantResponseStarted {
         message_id: MessageId,
+        response_id: String,
         text_start_bytes: usize,
+    },
+    ReasoningCompleted {
+        message_id: MessageId,
+        response_id: String,
     },
     ResponseRetrying {
         message_id: MessageId,
@@ -516,11 +521,22 @@ impl std::fmt::Debug for ConversationEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AssistantResponseStarted {
-                text_start_bytes, ..
+                response_id,
+                text_start_bytes,
+                ..
             } => formatter
                 .debug_struct("AssistantResponseStarted")
+                .field("response_id_bytes", &response_id.len())
                 .field("text_start_bytes", text_start_bytes)
                 .finish_non_exhaustive(),
+            Self::ReasoningCompleted {
+                message_id,
+                response_id,
+            } => formatter
+                .debug_struct("ReasoningCompleted")
+                .field("message_id_bytes", &message_id.len())
+                .field("response_id_bytes", &response_id.len())
+                .finish(),
             Self::ResponseRetrying {
                 text_start_bytes,
                 attempt,
@@ -669,10 +685,18 @@ pub(crate) fn from_runtime_event(
     use vega_runtime::{RuntimeEvent, RuntimeFinishReason, RuntimeToolStatus};
 
     match event {
-        RuntimeEvent::AssistantResponseStarted { text_start_bytes } => {
-            Some(ConversationEvent::AssistantResponseStarted {
+        RuntimeEvent::AssistantResponseStarted {
+            response_id,
+            text_start_bytes,
+        } => Some(ConversationEvent::AssistantResponseStarted {
+            message_id: message_id.into(),
+            response_id: response_id.clone(),
+            text_start_bytes: *text_start_bytes,
+        }),
+        RuntimeEvent::ReasoningCompleted { response_id } => {
+            Some(ConversationEvent::ReasoningCompleted {
                 message_id: message_id.into(),
-                text_start_bytes: *text_start_bytes,
+                response_id: response_id.clone(),
             })
         }
         RuntimeEvent::ResponseRetrying {

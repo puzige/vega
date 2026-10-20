@@ -1,36 +1,87 @@
-# #421 聚合阶段标题在 summary 与工具之间切换
+# #421 最新运行进展与完成收纳
 
-状态：2026-10-16 用户反馈后的实施规格。关联 [Issue #421](https://github.com/puzige/vega/issues/421)，以当前 `master` 为基线。本文件只修订 [#343 的思考与工具标题规则](../343/vega-issue-343-live-thinking-title.md)中“阶段已有工具时 summary 永不重新占据外层标题”的部分；其余阶段边界、单条目门槛、工具类别、展开、错误和权限规则保持不变。
+状态：2026-10-20 实施规格 v3；先行测试经独立审查、接口缺失 RED 后冻结，最小实现及验收中性的测试接线修正已取得完整 Actions GREEN，待独立删测与最终空集门禁。关联 [Issue #421](https://github.com/puzige/vega/issues/421)。原始生产未改基线为 `e93518cf76a24df921a1af2c2663ebce75f614fd`；RED 前已集成最新 master `9baca7519d97995267de31eb9c2e213f0c171e67`；任务分支 `feat/421-live-progress-agent-delivery`。
 
-## 问题与目标
+## 目标与替代关系
 
-当前 `RunActivityGroup::stage_title` 在聚合阶段只要有工具就选工具类别，渲染又单独优先使用 `stage_tool_title`。因此工具后新收到的可读思考 summary 只会进入展开内容，外层仍显示 `run commands, edit files, read files, write files` 一类活动标题，用户看不到最新进展。
+同一个外层阶段标题，运行时表示**现在正在做什么**，无活动时表示**这个阶段做过什么**。最新且仍在运行的具体工具动作、可读 summary 或 `Thinking` 临时占据标题，并使用既有 Shimmer；活动全部结束即恢复现有工具类别标题，不残留虚假运行态。不增加额外进展行、完成提示或解释文案。
 
-外层标题改为反映**最后到达的可读 summary 或新工具调用**。新可读 summary 到达时暂时显示 summary；随后有新工具调用时立即恢复已有工具类别标题。重复执行这一切换，不追加状态、次数或其它前缀。工具类别的历史累计、首次类别顺序、首个工具图标及 96 字符截断均沿用现状。
+本规格替代本卡旧的“summary 接管直到下次工具提议”契约，以及 [#343](../343/vega-issue-343-live-thinking-title.md) 中与本轮运行标题冲突的部分。旧 PR #423 与摘要来源投影交接仅为历史，不能作为本轮验收证据。用户本轮取消厂商角色分工：统一由 Agent 分析、委派实现、审查、PR/CI、合并与收尾，不等待另一身份接手。
+
+## 先行验收矩阵
+
+所有自动用例均为进程内合成事件／GPUI 测试，不运行真实命令、网络、模型或应用。以下目标在生产修改前写齐并冻结；矩阵不代替实际测试。完整先行提交已有 Actions 接口缺失 RED；实现后的相同目标／断言在独立审查的接线修正后，已取得 27 发现／27 执行／27 通过／0 失败／0 跳过的 GREEN；真实 UI 为待用户手测。
+
+| ID | 前置与操作 | 可观察结果 | 层级与证据 |
+|---|---|---|---|
+| A1 | 同阶段已聚合；命令从提议、批准进入 Running，随后 Success，整轮仍未结束 | 仅 Running 时外层为具体命令并有 Shimmer；完成即类别标题、无 Shimmer；提议／批准不冒充执行中 | 真实 ConversationStream 事件与实际阶段渲染 |
+| A2 | read → command → summary → 新工具 → summary，各自开始和结束 | 运行标题依最新仍活跃活动切换；结束的命令／summary 不因整轮未结束或重绘继续占据运行态；收纳类别去重、顺序、复数与首工具图标不变 | 合成事件、标题／图标／动效渲染 |
+| A3 | 仅 ThinkingDelta；随后有效 SummaryDelta；再追加详细 thinking | 仅详细 thinking 时标题为 `Thinking`，原文只在详情；有效 summary 用可读预览；已有 summary 不被同块详细正文替换；持续思考有 Shimmer | 事件到 UI；源文仍完整 |
+| A4 | 空白、未完成 Markdown、围栏、重复可读预览与逐段增量；推进模拟时间但无完成事件 | 不可读内容不抢占已有有效进展；同一 summary 的有效增量更新标题；流式短暂停顿不当完成；不把围栏或原始 thinking 当摘要 | 合成事件与真实预览解析 |
+| A5 | 并行工具 A 后 B 开始；B 完成；A 完成；反向提议顺序但开始顺序不同 | 最新真实开始且仍 Running 的 B 优先；B 完成回 A；都结束才类别收纳；依据执行开始而非记录位置 | 真实工具事件／阶段渲染 |
+| A6 | 活跃 summary／thinking 期间旧工具收到输出、重复 Running、计时、完成或普通通知 | 旧工具更新不终止或抢走真正最新思考；真正新开始的工具可以成为最新进展；重复 Running 不改变先后顺序 | 交错事件／重绘回归 |
+| A7 | 活跃 summary 收到真实响应流结束（含仅 reasoning 无正文）、AssistantResponseCompleted 或非空可见 TextDelta；仅空白 TextDelta 对照 | 有真实完成／可见正文边界才结束思考运行态；无正文的工具轮不能遗漏结束；已结束阶段不再闪动；下一阶段独立决定标题，空白不制造切段；不制造空正文元数据 | runtime → conversation → UI 合成事件与 feed／阶段边界 |
+| A8 | 先展开或收起；重复经过活动开始、增量、结束和类别回退 | 用户开合状态不被这些切换重置；底层详情条目与源文不增删改或重排；外层显示摘要 S 时详情不重复 S，回退工具标题后 S 在原位置显示一次 | GPUI 渲染与键盘开合／焦点／aria／估高 |
+| A9 | 一条工具或一个 thinking，随后第二逻辑条目 | 一条仍直显、不造文件夹；第二项才聚合；直显运行工具也表达真实运行 Shimmer，完成后保留现有直显规则 | 实际渲染与聚合门槛 |
+| A10 | ResponseStarted 检查点后产生工具／summary，随后重试回滚，再有新事件 | 回滚去掉本次临时活动和条目；检查点之前仍真实运行的工具可恢复；新进展不继承被撤销的顺序／标题；类别、详情、开合保持检查点契约 | 真实检查点／回滚事件 |
+| A11 | 运行中收到工具失败／取消／拒绝、整轮失败／取消／完成、无 message_id 的 Error、worker 无最终事件时释放运行所有权，以及历史载入 | 终态不继续 Shimmer 或复活；仍有别的活动时回退，整轮真实终态／所有权释放全部停止；不伪造持久化结果；历史记录无虚假运行态；真实错误保留原入口 | 事件、worker 展示清理与历史投影 |
+| A12 | 权限／待回答、重连、压缩、失焦窗口／隐藏内容／Reduce Motion | 不以运行标题替代外层权限、重连或错误；待用户操作和终态无误导动效；既有可见性、Reduce Motion 约束不降低 | 进程内状态与 Shimmer 既有门禁；系统视觉由用户手测 |
 
 ## 行为契约
 
-1. 聚合阶段有工具时，默认沿用当前类别标题。每次新的 summary 增量使思考块产生**新的可读预览**时，外层立即显示该预览，直到下一次**新的工具调用提议**。同一个 summary 后续可读增量继续刷新外层标题。下一次新工具调用到达即切回工具类别标题；之后的另一次可读 summary 可以再次接管。
-2. 空白、尚未成形的 Markdown、围栏代码和没有改变可读预览的重复 delta 不抢占标题；原始 thinking content 不抢占工具类别，也不直接作为外层标题。工具开始、结束、成功、失败、拒绝、计时和渲染通知都不是“新工具调用”，不能自行切走仍有效的 summary。
-3. 新工具调用之后，旧 summary 不能因重绘、ThinkingChanged 的非标题变动或工具状态更新而重新出现。只有**此后**新的可读 summary 更新才能重新接管。阶段切分后，新阶段独立决定标题，不继承上一阶段的显示来源。响应重试回滚要恢复检查点时的标题来源，不保留本次失败响应的临时 summary/工具优先权。
-4. 外层正在显示 summary 时，展开区不重复显示**该同一个思考块**的 summary 行；既有其它思考、工具和产物保持原顺序、原内容。新工具把外层切回类别标题后，该 summary 在展开区出现一次。手动展开状态、焦点、aria 名称及估高随标题来源同步更新，不因标题切换自动开合。
-5. 只有一个逻辑过程条目时仍直接显示原条目，不造聚合外壳；第二个条目出现才聚合。纯 thinking 且无可读 summary 仍显示 `Thinking`/`Thought`；仅有可读 summary 的阶段继续使用现有标题与详情规则。GPT 仅 summary、DeepSeek 仅详细 thinking 两种来源都不能因本次修订失效。
-6. 外层显示工具类别时保持现有小写复数短语、不计数、不加 `Worked on`；图标仍取本阶段第一个工具。summary 占据标题时不保留不相符的工具类别图标，恢复工具标题时恢复该图标。权限请求、连接重试和整轮错误仍在独立 feed 行，工具级结果仍在展开详情；本次不改 provider 事件、持久化、原文复制或最终答案。
+1. **真实活动，不是回合状态。** 工具仅在真实 `ToolCallRunning` 生效后算运行；PendingApproval／Approved、已完成、拒绝、损坏、取消均不是正在执行。已运行工具的输出、计时和重复状态不重新排序。并行工具按真实开始顺序选最新仍运行项，结束后回退到剩余最新项。
+2. **思考生命周期。** 可读 summary 的有效增量可以刷新最新进展；只有详细 thinking 时使用 `Thinking`，不投影正文为摘要。不可读的 summary 不抢占已有有效工具或摘要。空白／重复预览不构成新的标题优先事件，流式停顿不结束活动。响应完成、可见正文、新工具提议所标记的真实阶段转换、重试／取消／整轮终态结束相关思考；旧工具状态更新本身不结束新思考。不得用超时猜测完成。
+3. **标题、图标、动效同源。** 活跃工具沿用其现有具体动作与对象标题（命令保持具体命令，不因详情展开改成泛称）；使用该工具图标。活跃 summary／Thinking 不挂无关工具图标。无活跃项时沿用现有累计类别、首次出现顺序、复数、首工具图标和 96 字符规则；无工具时沿用非工具回退。
+4. **既有详情不动。** 不新增、重排、改写或删除底层条目与源文；保留既有当前摘要去重逻辑：摘要占外层时详情不重复同一块，外层回退后该摘要在原位置显示一次，允许由此产生的可见集合和估高变化。完成只恢复标题，不自动关闭手动展开的详情。单条目直显、两项聚合、正文切段、持久化、源文复制、Final 收纳、安全入口与独立 feed 行不变；Final 的既有单次收起不属于本卡移除范围。
+5. **无虚假动效。** 复用共享 Shimmer、Motion 与样式 token；仅真实活跃标题提供动效，无活动立即停止。隐藏、窗口失焦、Reduce Motion 继续受既有绘制门禁约束，不增加动画任务或每 token 全量重绘。
 
-## 合成事件验收
+## 当前根因与调用链
 
-| 场景 | 预期外层标题与展开区 |
-|---|---|
-| `summary A → read` | 单项时 `A`；工具作为第二项到来后聚合并显示 `read files`，展开可见 `A` 一次。 |
-| `read → command → summary B → 工具状态变化` | 依次显示 `read files, run commands` → `B`；状态变化后仍为 `B`，展开不重复 `B`。 |
-| 上述过程再来 `edit → summary C → write` | 依次切回累积的类别标题 → `C` → 更新后的类别标题；同类类别只出现一次，图标始终取首个 read 工具。 |
-| `summary B` 后仅追加空白／不完整标记／thinking content | 外层保持 `B`；没有新的可读 summary 就不切换。 |
-| 用户先展开，再经历多次切换 | 聚合区保持展开；内容顺序、当前 summary 去重、焦点与 aria 同步；收起后继续保持收起。 |
-| 工具／summary 在重试响应中产生，然后回滚 | 检查点前的条目与标题来源恢复；回滚后的新事件按到达顺序重新接管。 |
-| 纯 thinking 或单条工具 | 维持既有单条目和 `Thinking`/`Thought` 行为，不显示空聚合。 |
+已读取基线代码，以下为代码事实而非运行复现：
 
-测试在 `crates/vega_ui/src/conversation_stream/tests` 使用合成事件覆盖以上切换及标题实际渲染，修正与新规则冲突的 #343 旧断言。检查点需要覆盖新增的标题优先状态；不要仅以 `stage_title` 的单元断言代替实际标题、图标、展开内容验证。历史载入按现有持久化能力验收，不凭空恢复未持久化的 thinking 文本。
+- `crates/vega_ui/src/conversation_stream/content.rs::apply_event` 在工具 Running／Finished 时分别统一设置 `RunPhase::Tool`／`Working`；`RunActivityGroup::set_phase` 会调用 `finish_thinking`。因此旧工具更新会清除新思考，单一 phase 不能表达并行活动。
+- `run_activity.rs` 的 `headline_summary` 只记“summary 后是否有新工具提议”，没有真实完成和并行运行先后语义。`stage_title` 与 `stage_aggregate_tool_title` 沿用该旧优先级。
+- `render_segment_with_top` 中 `shimmering = !aggregate && stage_thinking_active(...)`，明确排除聚合标题的动效。工具紧凑行也未把真实 Running 状态绑定到标题 Shimmer。
+- 独立审查推翻了 v2 的“已有完成事件足够”假设：`vega_runtime/src/agent/loop_.rs` 仅在 `final_text.len() > response_text_start` 时发出 `AssistantResponseCompleted`，仅 reasoning 的工具轮无该事件；`ToolRoundCompleted` 又被 `vega_conversation/src/types/events.rs::from_runtime_event` 丢弃。必须增加不含正文的成功响应流结束投影，不能把现有持久化正文 metadata 伪造为空区间；不改 reasoning 来源语义或 schema。
+- `content.rs::finish_agent_message`、`composer_actions.rs::finish_composer_run` 在 worker 无最终事件时只释放 stream 所有权，未停止保留的 group 运行展示；本卡须在该真实终态清理临时活动，但不伪造 durable 工具结果／成功状态。
 
-## 交付与验证
+## 最小实施计划与允许范围
 
-代码由专职实现 agent 完成，主 agent 审查与集成。Vega 本地仅运行快速格式、差异和静态检查；不在本地编译、构建、运行测试或启动应用。完整 fmt、Clippy 与测试由 PR Check 执行，合并后用户以真实 GPT/DeepSeek 会话手测标题切换。公开 Issue、PR 和测试仅使用合成文本，不包含截图中的私人会话内容。
+先由专职实现子 agent 在生产未改时写齐上述行为测试和最少测试接线，主 Agent 独立审查；保存基线、完整测试 SHA／patch，建立现有 Actions 的 draft PR 确认有效 RED。禁止在 RED 前改生产或用无关接线／编译失败冒充行为 RED。
+
+确认 RED 后，仅在以下边界实施：
+
+1. `tool_card.rs`：提供 crate 内真实运行态、开始顺序及具体标题访问，复用现有安全投影；直显标题接入既有 Shimmer，不改详情输出、业务状态校验或通用公开 API。
+2. `run_activity.rs`：以最小必要活动顺序／来源状态选择最新仍活跃项；所有外层标题、图标、Shimmer、aria、估高共用一致选择；检查点／回滚和终态清理相应状态。保留类别累计与详情顺序。
+3. `content.rs`、`thinking.rs`、必要的 `network_retry.rs`／`composer_actions.rs`：只调整活动事件接线，区分旧工具更新和真实思考／响应边界；不可读增量不复活旧标题。真实 worker 释放时停止临时运行展示，保留权限／重连／错误 feed。
+4. `vega_runtime/src/agent/mod.rs`／`loop_.rs` 与 `vega_conversation/src/types/events.rs` 及必要事件消费者：提供成功响应流完成的不含正文信号并投影到共享事件，在仅 reasoning／无正文轮次同样结束临时思考；失败／重试仍走原失败和检查点路径。不改变 provider 数据、请求、持久化响应区间或业务执行。先用合成 provider 流验证真正结束才发出，再验证投影及 UI 停止。
+5. 上述模块本轮开发测试、必要 Cargo dev-only 接线；不恢复已清除的历史测试集合。测试从本轮验收独立编写，行为命名，不在代码写任务编号或新增注释。
+
+内容无关信号的接口契约：`RuntimeEvent::ReasoningCompleted { response_id }` → `ConversationEvent::ReasoningCompleted { message_id, response_id }`；`AssistantResponseStarted` 同时携带同一请求标识，复用现有 attempt 标识，不以可能重复的正文 byte offset 充当身份。成功流完全耗尽且原校验通过后发出一次；不在收到 Done、静默、失败或取消时提前发成功结束。仅将纯响应校验和新的临时结束信号安排在流结束后的 `wait_ready` 等待之前；保留暂停／停止／取消控制门禁，不提前既有持久化 `ToolRoundCompleted` 或 `AssistantResponseCompleted`，不改工具执行和最终正文 metadata。完成仅终止匹配请求的思考候选，不停止并行工具；重复或旧请求完成不得结束新请求（含相同文本 offset）。现有 `ToolRoundCompleted` 保留原用途，不能用伪造空工具轮代替通用结束。
+
+必要消费者包括 runtime/shared event 的 Debug 与投影、`vega_conversation/src/agent/events.rs`（此信号不落库）、`types/meter.rs` 与 UI `core.rs::feed_meter`（不结束计量／整轮）、UI `network_retry.rs`（成功的空正文响应可解除重连）及 `content.rs`。本轮先行测试须覆盖源流正常／空正文／工具／错误／暂停／重试，真实事件适配顺序、请求身份／幂等、不新增持久化记录、不改变业务／工具状态、不结束计量或整轮（允许停止匹配思考、解除重连等指定临时展示变化）、UI 回退与无最终事件清理。仅缺少这些最小目标接口可标为接口缺失 RED，未执行的行为断言须明确标注；不能把辅助接线编译错误算作有效 RED。
+
+非目标：provider／GPT Chat Completions 摘要来源投影、模型配置、API 语义、数据库、命令执行、权限策略、用户配置或数据、依赖升级、额外 UI 文案与无关重构。若现有 API 或事件事实导致验收无法实现，主 Agent 记录具体缺口并修订规格，在生产未改基线上重开先测后修，不按实现回填预期。
+
+## 规格审查记录
+
+v2 在生产尚未修改、测试尚未冻结和 CI 尚未启动时被独立审查纠正为 v3：补齐 reasoning-only 响应完成与 worker 断开清理这两个已授权目标的实际来源路径。新增验收仍以原生产基线先写测试、确认有效 RED；不使用旧 v2 或历史 PR 的绿色证明 v3。
+
+## 本轮测试冻结与 RED 记录
+
+- 完整先行源码提交 [`35d51e369db7ca347be4e5444fa8885cff357926`](https://github.com/puzige/vega/commit/35d51e369db7ca347be4e5444fa8885cff357926)，[UI 原始补丁](https://github.com/puzige/vega/commit/35d51e369db7ca347be4e5444fa8885cff357926.patch)；生命周期源码与接线提交 [`fd0647c7e7ff62f31041bf4c686a86edd11c2acc`](https://github.com/puzige/vega/commit/fd0647c7e7ff62f31041bf4c686a86edd11c2acc)，[原始补丁](https://github.com/puzige/vega/commit/fd0647c7e7ff62f31041bf4c686a86edd11c2acc.patch)。静态定义 27 个（runtime 5、conversation 2、UI 20），不是执行计数。
+- 完整提交 [Actions 39401665593](https://github.com/puzige/vega/actions/runs/39401665593)：[Nextest 118557592186](https://github.com/puzige/vega/actions/runs/39401665593/job/118557592186)、[Clippy 118557592454](https://github.com/puzige/vega/actions/runs/39401665593/job/118557592454) 的编译诊断仅为最小目标 `ReasoningCompleted`／`AssistantResponseStarted.response_id` 缺失。属于接口缺失 RED；行为断言未执行，发现／执行／通过／跳过计数未取得。早先部分提交的 RED 不替代本完整记录。
+- 独立静态审查在生产未改时修正了合法正文 metadata、暂停控制配置、真实计时更新、请求身份、详情回退、断连清理，以及传输重试同 ID／无第二次 Started 的 fixture。没有放宽验收、忽略用例或本地执行。测试目标、断言和源文指纹在 RED 后冻结，实现中不得按结果改写。
+- SHA-256：runtime `4e7075f33804f0a96c2bcacd3e91940353ebddc8b4448afb70000a8857024a4d`；conversation `94e8868711395235cc5dd152a8d672fe58a11bb48fe4fc34b9a5ad88c32fc431`；UI `4e70ab5d810d3c0c21e179480a1b21d8d5488cad4a4ee65b0e19f29fc967476e`。原始测试与过程保存在 [PR #513](https://github.com/puzige/vega/pull/513)。原始源码不改写；后续仅允许已留证并独立审查、保持目标和断言不变的测试自身接线修正。
+- 实现提交：runtime／conversation [`9588d0d399b038793c1ba07db98290449788100f`](https://github.com/puzige/vega/commit/9588d0d399b038793c1ba07db98290449788100f)；UI [`de614570d471f5409ca30b965620530fbfe99226`](https://github.com/puzige/vega/commit/de614570d471f5409ca30b965620530fbfe99226)。两部分均由非写入者独立静态审查；独立子 Agent 提议入口的清理遗漏已在实现中修复并关闭 finding。
+- 测试自身接线修正：[`1aa8c762d42e2fe61df2a4756d0814ab69d6a0a3`](https://github.com/puzige/vega/commit/1aa8c762d42e2fe61df2a4756d0814ab69d6a0a3.patch) 仅移除未用 import、克隆同一焦点句柄后调用 focus；[`ce2b3cef60904fb5cf2a0e761bca9fad000d1f86`](https://github.com/puzige/vega/commit/ce2b3cef60904fb5cf2a0e761bca9fad000d1f86.patch) 仅使用自然高度测试子容器、等待异步窗口激活回调、原样后移两个测试观察模块。每次均先留证并独立批准、逐字重建读回，未改断言／容差／预期／业务事件／用例数或生产正文。保留编译失败和随后 22 通过／5 失败／0 跳过的 [run 39409350936](https://github.com/puzige/vega/actions/runs/39409350936)，不将夹具错误算产品 RED 或隐去失败。
+- 带测试 GREEN：[`ce2b3cef60904fb5cf2a0e761bca9fad000d1f86`](https://github.com/puzige/vega/commit/ce2b3cef60904fb5cf2a0e761bca9fad000d1f86) 的 [Actions 39411606422](https://github.com/puzige/vega/actions/runs/39411606422)，[Nextest 118590464255](https://github.com/puzige/vega/actions/runs/39411606422/job/118590464255) 实际 27 发现／27 执行／27 通过／0 失败／0 跳过；Python 5＋15＋14 通过；[fmt／Clippy 118590463990](https://github.com/puzige/vega/actions/runs/39411606422/job/118590463990) 与 [required check 118591769579](https://github.com/puzige/vega/actions/runs/39411606422/job/118591769579) 成功。修正后 UI SHA-256 `467aef1ed563779a7318e4fb3d25724b457bc0cc0ed9b63b4dadd19390ff32ae`；runtime／conversation 指纹未变。源码／完整 SHA／原始补丁及原始 run/job 已在 [PR 证据](https://github.com/puzige/vega/pull/513#issuecomment-6289427564) 固定并读回，独立删测与最新 head 空集门禁仍待完成。
+
+## 验证、交付与恢复
+
+- 本地只做快速差异、格式、静态检查；不运行 Vega、编译、构建、打包或执行测试。
+- 云端命令沿用 `.github/workflows/pr-check.yml`：fmt、全目标 Clippy、三组 Python 检查、`cargo nextest list --workspace --message-format json`、非空时 `cargo nextest run --workspace`。完整门禁为 `check (fmt, clippy, test)`，CI 每 5 分钟查询，通知／用户即时请求除外。
+- 有效 RED 后冻结本轮测试目标与预期；最小实现后同一测试云端 GREEN，固定完整 SHA、原始源码／patch 与 run/job、发现／执行／通过／跳过计数，再以独立提交删除 Rust 测试与独占支持。最新 head 的完整门禁必须确认 `no Rust tests`（0 发现／0 执行），不以空集替代 GREEN。
+- 正式 PR 不使用自动关闭 Issue 的关键字。最新 head required check 绿后 Agent squash merge，Project 才转 In review，Issue 保持开放等用户手测。合并不等于安装或手测通过。
+- 用户用真实 GPT／DeepSeek 会话观察：具体动作 Shimmer、工具完成收纳、summary／Thinking 切换、并行回退、展开保留及错误恢复。截图和私有会话不上传公开仓库。
+- 回滚使用本轮集成提交的 revert PR，保留门禁；原测试源码、完整 SHA／patch 与证据留在 PR 可恢复。必要时从证据恢复相同冻结测试再次云端验证，禁止以删测逃避失败。
