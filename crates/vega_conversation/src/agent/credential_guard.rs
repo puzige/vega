@@ -380,6 +380,10 @@ fn protected_stream(
 }
 
 impl Provider for OwnerCredentialProvider {
+    fn model_snapshot(&self) -> Option<vega_runtime::model_compat::ResolvedModel> {
+        self.provider.model_snapshot()
+    }
+
     fn chat_stream_recovering(
         &self,
         request: ChatRequest,

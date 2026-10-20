@@ -652,6 +652,10 @@ struct ChildProvider<'a> {
     reader: Option<vega_runtime::CredentialReader>,
 }
 impl Provider for ChildProvider<'_> {
+    fn model_snapshot(&self) -> Option<vega_runtime::model_compat::ResolvedModel> {
+        self.inner.model_snapshot()
+    }
+
     fn chat_stream(
         &self,
         request: vega_runtime::ChatRequest,

@@ -211,7 +211,8 @@ fn validate_replay_response(
             crate::ReasoningReplayPolicy::DeepSeekTools
                 | crate::ReasoningReplayPolicy::GlmPreserved
                 | crate::ReasoningReplayPolicy::GlmInterleaved
-        ) && matches!(presence, crate::ChatReasoningPresence::Absent)
+        ) && !calls.is_empty()
+            && matches!(presence, crate::ChatReasoningPresence::Absent)
         {
             return Err(VegaError::ReasoningReplayIncomplete);
         }
@@ -968,6 +969,18 @@ where
     F: FnMut(RuntimeEvent) -> Fut,
     Fut: Future<Output = Result<(), VegaError>>,
 {
+    let mut request = request;
+    if request.model_snapshot.is_none() {
+        request.model_snapshot = provider.model_snapshot().map(Box::new);
+    }
+    if request.reasoning.is_none()
+        && let Some(model) = &request.model_snapshot
+    {
+        request.reasoning = Some(crate::model_compat::freeze_choice(
+            model,
+            crate::ReasoningChoice::ProviderDefault,
+        )?);
+    }
     crate::images::validate_messages(&request.history)?;
     if let Some(reasoning) = &request.reasoning {
         reasoning.validate()?;
@@ -1852,6 +1865,8 @@ where
             tools: tool_definitions,
             max_tokens: request_output_cap(request.max_tokens, context_budget),
             reasoning: request.reasoning.clone(),
+            model_snapshot: request.model_snapshot.clone(),
+            tool_choice: None,
         };
         let tools_requested = !chat_request.tools.is_empty();
         primary_revision = primary_revision.checked_add(1).ok_or(VegaError::Context(

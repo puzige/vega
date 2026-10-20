@@ -108,13 +108,18 @@ impl SettingsView {
                 }
             )
             || self.reasoning_draft.is_some()
+            || self.model_capability_draft.is_some()
     }
 
     pub(crate) fn render_settings_navigation_guard(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let saving = self.provider_is_saving()
             || matches!(self.reasoning, ReasoningSettingsProjection::Saving { .. })
-            || matches!(self.pricing, PricingSettingsProjection::Saving { .. });
+            || matches!(self.pricing, PricingSettingsProjection::Saving { .. })
+            || matches!(
+                self.model_capabilities,
+                ModelCapabilitySettingsProjection::Saving { .. }
+            );
         settings_section()
             .child(settings_status("当前修改尚未保存", colors.warning, colors))
             .child(
@@ -134,6 +139,16 @@ impl SettingsView {
                                     cx.emit(PricingRetryRequested { generation });
                                 } else {
                                     this.submit_pricing_editor(cx);
+                                }
+                            } else if this.model_capability_draft.is_some() {
+                                if let Some(index) =
+                                    this.model_capability_models.iter().position(|model| {
+                                        this.model_capability_draft.as_ref().is_some_and(|draft| {
+                                            draft.identity == model.resolved.identity
+                                        })
+                                    })
+                                {
+                                    this.save_model_capability(index, false, cx);
                                 }
                             } else if this.section == 2 {
                                 if let (
@@ -168,6 +183,7 @@ impl SettingsView {
                             }
                             this.pricing_editor = None;
                             this.reasoning_draft = None;
+                            this.model_capability_draft = None;
                             if let Some(destination) = this.pending_section {
                                 this.discard_provider_draft(cx);
                                 this.finish_settings_navigation(destination, cx);

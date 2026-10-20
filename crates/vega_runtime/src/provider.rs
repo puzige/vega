@@ -1677,10 +1677,20 @@ impl std::fmt::Debug for ToolDefinition {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolChoice {
+    Auto,
+    None,
+    Required,
+    NamedFunction(String),
+}
+
 /// A chat completion request (tech-spec §4.1):
 /// model / messages / tools / max_tokens.
 #[derive(Clone, Default, PartialEq)]
 pub struct ChatRequest {
+    pub model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
+    pub tool_choice: Option<ToolChoice>,
     /// Model name as understood by the provider, e.g. `deepseek-chat`.
     pub model: String,
     pub messages: Vec<ChatMessage>,
@@ -1843,6 +1853,10 @@ impl std::fmt::Debug for ProviderEvent {
 /// that connection setup, retries, and cancellation all happen inside the
 /// future while the loop only polls events afterwards.
 pub trait Provider: Send + Sync {
+    fn model_snapshot(&self) -> Option<crate::model_compat::ResolvedModel> {
+        None
+    }
+
     fn chat_stream_recovering(
         &self,
         req: ChatRequest,

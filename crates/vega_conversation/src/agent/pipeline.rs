@@ -1005,6 +1005,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             completed_tool_results,
             pricing_catalog,
             reasoning,
+            model_snapshot: None,
             replay_frame: Some(replay_frame),
             context_budget,
             context_source_version: Some(source.source_version),

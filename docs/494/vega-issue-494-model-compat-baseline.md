@@ -196,3 +196,17 @@ Trusted Git 的完整 open_checklist/prepare/draft 正向需要真实 Git 权威
 先行提交 `80f4fe45b8f8f960d2f582e2b9768c729de64f3f` 的 [Actions 39360808726](https://github.com/puzige/vega/actions/runs/39360808726) 在测试目标编译阶段同时报告预定的真实目标接口缺失，以及测试自身的 rusqlite `FromSql<u64>` 错误。后者不是有效 RED；本轮未据此进入实现。Format 与 Python 5/15/14 通过，Rust 发现数未取得、执行 0，行为断言尚未执行。
 
 主会话[先公开留证审查](https://github.com/puzige/vega/pull/504#issuecomment-6282232482)，再授权专职子 agent 只将三个测试 SQL 用量 tuple 的宿主类型改为受支持的 i64。仅三行类型变化，输入、真实调用、SQL、精确期望值及133个定义/属性均不变；不加测试、不改断言、不改生产或依赖。原始冻结清单与源映射保持原样，[独立接线更正清单](vega-issue-494-test-wiring-corrections.json)记录旧/新源码哈希、原始 job 与审查证明。修正后 fmt/diff/offline locked metadata 静态成功，生产仍暂停，下一次现有 Actions 须确认不夹带已知测试错误的接口 RED。
+
+
+### 有效接口 RED 与生产授权
+
+更正后的 head `f00a64c30cbc64bf74fba3362e266987629c62f3` 在 [Actions 39361620256](https://github.com/puzige/vega/actions/runs/39361620256) 取得有效接口缺失 RED。主会话读取两个完整原始 job：Nextest 16个、Clippy 38个错误位置均为已冻结的真实目标 API 缺失（model_compat、能力 store/service/types、请求快照、ToolChoice）；测试 SQL 类型错误已消失，未见无关编译/依赖/网络/runner失败。Format 和 Python34项成功，Rust发现数仍未取得、执行0；不称行为断言跑红或通过。
+
+[原始接口缺口清单与日志内容标识](vega-issue-494-interface-red.json)保留两份完整 job 来源、逐错误位置和原始日志 SHA256。[主会话已在 PR 明确授权生产实现](https://github.com/puzige/vega/pull/504#issuecomment-6282337866)；专职子 agent 现在按本规格和同一133测试推进，主会话审查/集成。先行记录中的“生产未授权”是当时状态，当前阶段以本节和PR最新证据为准。全部带测试 GREEN、独立删测和最终 head 门禁尚待取得。
+
+持续验证、可恢复来源和手测/回滚步骤见[v4验证记录](vega-issue-494-v4-verification.md)。
+
+
+### 冻结回放用例的实现边界说明
+
+实现期审查再次核对了先行源码 `known_required_replay_fields_remain_strict_while_generic_missing_reasoning_is_legal`：已知DeepSeek/GLM的首轮工具提议必须有真实原始字段（真实空串也保留），缺失时零工具执行；已给字段的正向序列最后是无raw的普通正文终态，必须完成。该输入与预期在 `80f4fe45` 已冻结，不是实现后追加或放宽。Chat的必需原字段检查因此对应本轮实际提出、需要跨工具续接的调用，不能仅因每轮都广告内建工具，就误拒绝没有工具调用的最终正文。实际收到的raw仍做原有来源/预算/回放校验，不补造空串；Responses真实布局和跨API防护保持。此说明消除旧 `tools_requested` 触发范围与已冻结正向两轮的实现歧义，验收、用例、断言和其他安全边界不变。

@@ -4,6 +4,7 @@ mod chat_reasoning;
 pub use chat_reasoning::{ChatRawState, ChatReasoningSource};
 mod context;
 mod error;
+pub mod model_compat;
 mod openai;
 mod permission;
 mod provider;
@@ -60,7 +61,7 @@ pub use provider::{
     FrozenReasoning, Provider, ProviderEvent, ProviderFailureKind, ProviderResponseMetadata,
     ProviderStream, ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire,
     ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame, ResponseReplayLayout,
-    ResponseReplaySlot, StopReason, ToolDefinition, project_model_messages,
+    ResponseReplaySlot, StopReason, ToolChoice, ToolDefinition, project_model_messages,
 };
 pub use retry::RetryPolicy;
 

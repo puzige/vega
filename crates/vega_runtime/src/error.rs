@@ -186,6 +186,10 @@ pub enum VegaError {
         "the model response omitted required reasoning replay state; retry or start a new conversation"
     )]
     ReasoningReplayIncomplete,
+    #[error(
+        "this model does not accept images; select a vision model or enable image input in model settings"
+    )]
+    ModelImagesUnsupported,
     /// A frozen provider/model thinking selection violated its explicit
     /// capability declaration before any request was sent.
     #[error("reasoning selection is invalid")]
@@ -286,6 +290,7 @@ impl fmt::Debug for VegaError {
                 .finish(),
             Self::ReasoningReplayUnsupported => formatter.write_str("ReasoningReplayUnsupported"),
             Self::ReasoningReplayIncomplete => formatter.write_str("ReasoningReplayIncomplete"),
+            Self::ModelImagesUnsupported => formatter.write_str("ModelImagesUnsupported"),
             Self::ReasoningSelectionInvalid { message } => formatter
                 .debug_struct("ReasoningSelectionInvalid")
                 .field("message_bytes", &message.len())
@@ -403,6 +408,8 @@ impl VegaError {
                     None,
                 )
             }
+            Self::ModelImagesUnsupported => ("runtime", "model_images", None),
+            Self::ReasoningSelectionInvalid { .. } => ("runtime", "reasoning_selection", None),
             Self::ReasoningBudgetExceeded {
                 scope,
                 limit_bytes,
@@ -562,7 +569,14 @@ impl VegaError {
         let lower = diagnostic.to_ascii_lowercase();
         let known_phrase = lower.starts_with("prompt is too long")
             || lower.starts_with("prompt too long")
-            || lower.starts_with("this model's maximum context length is ");
+            || lower.starts_with("this model's maximum context length is ")
+            || (lower.starts_with("the input (")
+                && lower.contains("is longer than the model's context length"))
+            || (lower.starts_with("input length ")
+                && (lower.contains("exceeds model's maximum context length")
+                    || lower.contains("exceeds the maximum allowed input length")))
+            || (lower.starts_with("prompt has ")
+                && lower.contains("tokens, but the configured context size is "));
         if !known_code && !known_phrase {
             return None;
         }

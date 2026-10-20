@@ -548,6 +548,10 @@ pub(crate) async fn collect_draft(
     request: ChatRequest,
     cancel: CancellationToken,
 ) -> Result<String, CommitErrorCode> {
+    let mut request = request;
+    if request.model_snapshot.is_none() {
+        request.model_snapshot = provider.model_snapshot().map(Box::new);
+    }
     let mut stream = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CommitErrorCode::DraftFailed),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ChatRole, ProviderEvent, ReasoningReplayPolicy};
+use crate::{ChatRole, ProviderEvent};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -81,7 +81,13 @@ fn response_error(kind: crate::ProviderFailureKind) -> VegaError {
     }
 }
 
-pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
+pub(crate) fn build_body(base_url: &str, req: &ChatRequest) -> Result<Value, VegaError> {
+    let model = crate::model_compat::request_model(
+        req,
+        crate::model_compat::ModelApi::Responses,
+        base_url,
+    )?;
+    let facts = model.compatibility();
     if req
         .messages
         .iter()
@@ -89,30 +95,35 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
     {
         return Err(VegaError::ReasoningReplayUnsupported);
     }
-    let mut reasoning = json!({"summary": "auto"});
-    if let Some(profile) = &req.reasoning {
-        if profile.replay_policy != ReasoningReplayPolicy::ResponsesItems
-            || profile.protocol == ReasoningProtocol::ZhipuChatCompletions
-            || profile.protocol == ReasoningProtocol::DeepSeekChatCompletions
-            || (profile.choice == ReasoningChoice::Disabled
-                && profile.disabled_wire != Some(ReasoningDisabledWire::ReasoningEffortNone))
-        {
-            return Err(VegaError::ReasoningSelectionInvalid { message: "Responses does not support this reasoning replay/off profile; choose Chat Completions or a compatible profile".into() });
-        }
-        match &profile.choice {
-            ReasoningChoice::Enabled => {
-                return Err(VegaError::ReasoningSelectionInvalid {
-                    message: "this Responses model has no explicit thinking enable operation"
-                        .into(),
-                });
-            }
-            ReasoningChoice::Effort(effort) => reasoning["effort"] = json!(effort),
-            ReasoningChoice::Disabled => reasoning["effort"] = json!("none"),
-            ReasoningChoice::ProviderDefault => {}
-        }
-    }
+    let choice = req
+        .reasoning
+        .as_ref()
+        .map_or(&ReasoningChoice::ProviderDefault, |r| &r.choice);
+    let effort = match choice {
+        ReasoningChoice::ProviderDefault => None,
+        ReasoningChoice::Disabled => facts.off_effort.as_deref(),
+        ReasoningChoice::Effort(level) => Some(
+            facts
+                .effort_map
+                .get(level)
+                .ok_or_else(crate::model_compat::invalid)?
+                .as_str(),
+        ),
+        ReasoningChoice::Enabled => return Err(crate::model_compat::invalid()),
+    };
     let mut input = Vec::new();
-    for message in &req.messages {
+    let projected = crate::project_model_messages(&req.messages)?;
+    let ids = super::chat::wire_ids(base_url, &projected, 64)?;
+    let wire_id = |value: &str| ids.get(value).cloned().unwrap_or_else(|| value.to_string());
+    for message in &projected {
+        if message.response_replay_layout.is_some()
+            && message
+                .tool_calls
+                .iter()
+                .any(|call| wire_id(&call.id) != call.id)
+        {
+            return Err(VegaError::ReasoningReplayUnsupported);
+        }
         if let Some(layout) = response_layout_items(message)? {
             input.extend(layout);
             continue;
@@ -120,14 +131,18 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
         input.extend(message.response_reasoning.iter().cloned());
         if message.role == ChatRole::Tool {
             let output = if message.images.is_empty() {
-                json!(message.content)
+                json!(if message.content.is_empty() {
+                    "(no tool output)"
+                } else {
+                    message.content.as_str()
+                })
             } else {
                 use base64::Engine;
                 let mut parts = vec![json!({"type":"input_text","text":message.content})];
                 parts.extend(message.images.iter().map(|image| json!({"type":"input_image","image_url":format!("data:{};base64,{}", image.mime_type(), base64::engine::general_purpose::STANDARD.encode(image.bytes())),"detail":"auto"})));
                 Value::Array(parts)
             };
-            input.push(json!({"type":"function_call_output", "call_id":message.tool_call_id, "output":output}));
+            input.push(json!({"type":"function_call_output", "call_id":message.tool_call_id.as_deref().map(wire_id), "output":output}));
             continue;
         }
         if !message.content.is_empty() || !message.images.is_empty() {
@@ -139,21 +154,33 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Value, VegaError> {
                 use base64::Engine;
                 content.push(json!({"type":"input_image", "image_url":format!("data:{};base64,{}", image.mime_type(), base64::engine::general_purpose::STANDARD.encode(image.bytes()))}));
             }
-            input.push(json!({"role":message.role.as_str(),"content":content}));
+            input.push(json!({"role":if message.role==ChatRole::System && facts.reasoning && facts.transport.developer{"developer"}else{message.role.as_str()},"content":content}));
         }
         for call in &message.tool_calls {
-            input.push(json!({"type":"function_call", "call_id":call.id, "name":call.name, "arguments":call.input_json}));
+            input.push(json!({"type":"function_call", "call_id":wire_id(&call.id), "name":call.name, "arguments":call.input_json}));
         }
     }
-    let mut body = json!({"model":req.model,"input":input,"stream":true,"store":false,"reasoning":reasoning,"include":["reasoning.encrypted_content"]});
+    let mut body = json!({"model":req.model,"input":input,"stream":true,"store":false});
+    if let Some(effort) = effort {
+        body["reasoning"] = json!({"effort":effort,"summary":"auto"});
+    }
+    if model.definition.reasoning != Some(false)
+        || req
+            .messages
+            .iter()
+            .any(|message| !message.response_reasoning.is_empty())
+    {
+        body["include"] = json!(["reasoning.encrypted_content"]);
+    }
     if !req.tools.is_empty() {
         body["tools"] = Value::Array(req.tools.iter().map(|tool| {
-            json!({"type":"function", "name":tool.name,"description":tool.description,"parameters":tool.input_schema,"strict":tool.strict})
+            let mut value=json!({"type":"function", "name":tool.name,"description":tool.description,"parameters":tool.input_schema});if facts.transport.strict {value["strict"]=json!(tool.strict);}value
         }).collect());
     }
     if let Some(limit) = req.max_tokens {
         body["max_output_tokens"] = json!(limit);
     }
+    super::chat::apply_tool_choice(&mut body, req, true)?;
     Ok(body)
 }
 
@@ -412,12 +439,22 @@ impl Assembler {
                             return Err(invalid());
                         }
                     }
-                    self.items = items
-                        .iter()
-                        .cloned()
-                        .enumerate()
-                        .map(|(i, item)| (i as u64, item))
-                        .collect();
+                    let mut merged = BTreeMap::new();
+                    for (index, item) in items.iter().enumerate() {
+                        let mut item = item.clone();
+                        if item["type"] == "reasoning"
+                            && let Some(previous) = self.items.values().find(|previous| {
+                                previous["id"] == item["id"] && previous["type"] == "reasoning"
+                            })
+                            && let Some(encrypted) = previous
+                                .get("encrypted_content")
+                                .filter(|value| value.as_str().is_some_and(|text| !text.is_empty()))
+                        {
+                            item["encrypted_content"] = encrypted.clone();
+                        }
+                        merged.insert(index as u64, item);
+                    }
+                    self.items = merged;
                     self.complete = self.items.keys().copied().collect();
                 }
                 let snapshots: Vec<_> = self.items.values().cloned().collect();
@@ -490,14 +527,19 @@ impl Assembler {
                     let input = usage["input_tokens"].as_u64().ok_or_else(invalid)?;
                     let output = usage["output_tokens"].as_u64().ok_or_else(invalid)?;
                     let cache_read = usage["input_tokens_details"]["cached_tokens"].as_u64();
-                    if cache_read.is_some_and(|tokens| tokens > input) {
+                    let cache_write = usage["input_tokens_details"]["cache_write_tokens"].as_u64();
+                    if cache_read
+                        .unwrap_or(0)
+                        .saturating_add(cache_write.unwrap_or(0))
+                        > input
+                    {
                         return Err(invalid());
                     }
                     out.push(ProviderEvent::Usage {
                         input,
                         output,
                         cache_read,
-                        cache_write: None,
+                        cache_write,
                     });
                 }
                 out.push(ProviderEvent::Done { stop_reason });

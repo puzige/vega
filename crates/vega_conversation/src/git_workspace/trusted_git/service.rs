@@ -788,6 +788,8 @@ fn draft_request(model: String, summary: &str, truncated: bool) -> ChatRequest {
         tools: Vec::new(),
         max_tokens: Some(256),
         reasoning: None,
+        model_snapshot: None,
+        tool_choice: None,
     }
 }
 

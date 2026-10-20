@@ -1923,6 +1923,8 @@ fn direct_summary_request(
         tools: Vec::new(),
         max_tokens: Some(u64::from(SUMMARY_MAX_TOKENS).min(request.budget.output_reserve()) as u32),
         reasoning: summary_reasoning(reasoning),
+        model_snapshot: None,
+        tool_choice: None,
     }
 }
 
@@ -2244,6 +2246,9 @@ async fn collect_summary_with_timeout_diagnostics(
     operation_deadline: tokio::time::Instant,
 ) -> Result<SummaryCollection, SummaryCollectionFailure> {
     let mut request = request;
+    if request.model_snapshot.is_none() {
+        request.model_snapshot = provider.model_snapshot().map(Box::new);
+    }
     request.messages = vega_runtime::project_model_messages(&request.messages)
         .map_err(|error| summary_collection_failure(error, SummaryDiagnosticMetrics::default()))?;
     let child = cancel.child_token();

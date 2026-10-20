@@ -4,8 +4,10 @@ use gpui_kit::{
     MouseUpEvent, Window, actions, div, px, relative,
 };
 use vega_conversation::types::{
-    PricingDraftReason, PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice,
-    PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection, ReasoningChoice,
+    ModelCapabilityOverride, ModelCapabilityPatch, ModelCapabilityProjection,
+    ModelCapabilitySettingsErrorCode, ModelCapabilitySettingsProjection, PricingDraftReason,
+    PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice, PricingRateInputs,
+    PricingSettingsErrorCode, PricingSettingsProjection, REASONING_EFFORTS, ReasoningChoice,
     ReasoningProfileProjection, ReasoningSupport,
 };
 use vega_store::config::{self, AppConfig, ProviderConfig};
@@ -122,6 +124,16 @@ pub struct ReasoningProfileSaveRequested {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReasoningReloadRequested;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelCapabilitySaveRequested {
+    pub generation: u64,
+    pub operation_id: u64,
+    pub base: ModelCapabilityProjection,
+    pub patch: ModelCapabilityPatch,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelCapabilityReloadRequested;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PricingEditorKind {
     AddCustom,
@@ -181,7 +193,9 @@ mod agents;
 /// must be cached by the parent across re-renders (it is rebuilt — reloading
 mod helpers;
 mod mcp;
+mod model_capabilities;
 mod model_catalog;
+pub use model_capabilities::ModelCapabilityFocusTarget;
 mod model_configuration;
 use model_configuration::SettingsDestination;
 mod preferences;

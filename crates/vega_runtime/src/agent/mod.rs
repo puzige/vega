@@ -626,6 +626,7 @@ pub struct AgentRequest {
     /// Immutable provider/model thinking selection. `None` keeps the legacy
     /// provider-default request for callers that have no profile declaration.
     pub reasoning: Option<FrozenReasoning>,
+    pub model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
     pub replay_frame: Option<crate::ReplayFrame>,
     /// Optional total-context budget frozen for this run.  `None` preserves
     /// the legacy request path and does not trigger compaction or override

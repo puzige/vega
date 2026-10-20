@@ -1253,7 +1253,9 @@ impl ConversationStream {
         if profile.model != event.model || self.composer_defaults.thinking == event.choice {
             return;
         }
-        let accepted = if event.choice == OFF_CHOICE_NAME {
+        let accepted = if event.choice == "provider_default" {
+            true
+        } else if event.choice == OFF_CHOICE_NAME {
             supports_off_position(profile)
         } else if event.choice == "enabled" {
             profile.supports_enabled
@@ -1283,10 +1285,11 @@ impl ConversationStream {
         let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
             return Ok(None);
         };
-        let mut frozen = profile
+        let mut selected = profile.clone();
+        selected.preference = reasoning_choice_for_name(&self.composer_defaults.thinking);
+        let frozen = selected
             .freeze()
             .map_err(|_| ReasoningSubmitError::Invalid)?;
-        frozen.choice = reasoning_choice_for_name(&self.composer_defaults.thinking);
         frozen
             .validate()
             .map_err(|_| ReasoningSubmitError::Invalid)?;
@@ -1296,6 +1299,17 @@ impl ConversationStream {
     /// Reports an unresolved reasoning authority to the app run gate. A
     /// missing profile remains a valid provider-default state and returns
     /// `false` here.
+    pub fn model_snapshot_for_submit(
+        &self,
+    ) -> Result<Option<Box<vega_conversation::types::ResolvedModel>>, ReasoningSubmitError> {
+        self.frozen_reasoning_for_submit()?;
+        Ok(self
+            .composer_defaults
+            .reasoning
+            .as_ref()
+            .and_then(|profile| profile.model_snapshot.clone()))
+    }
+
     pub fn reasoning_unavailable(&self) -> bool {
         self.composer_defaults.reasoning_unavailable
     }

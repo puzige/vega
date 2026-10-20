@@ -1,5 +1,5 @@
 pub use vega_runtime::{
-    ChatCompatibility, FrozenReasoning, ReasoningBudgetScope, ReasoningChoice,
+    ChatCompatibility, FrozenReasoning, REASONING_EFFORTS, ReasoningBudgetScope, ReasoningChoice,
     ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, ReasoningSupport,
     chat_compatibility,
 };
@@ -34,6 +34,7 @@ impl ReasoningReplaySetting {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReasoningProfileProjection {
     pub compatibility: Option<Box<ChatCompatibility>>,
+    pub model_snapshot: Option<Box<ResolvedModel>>,
     pub supports_enabled: bool,
     /// Exact provider identifier.
     pub provider: String,
@@ -52,6 +53,17 @@ pub struct ReasoningProfileProjection {
 }
 
 impl ReasoningProfileProjection {
+    pub fn from_resolved_model(model: &ResolvedModel, preference: ReasoningChoice) -> Self {
+        let mut projection = Self::from_chat_compatibility(
+            &model.identity.provider,
+            &model.identity.model,
+            model.compatibility().clone(),
+        );
+        projection.model_snapshot = Some(Box::new(model.clone()));
+        projection.preference = preference;
+        projection
+    }
+
     pub fn from_chat_compatibility(
         provider: &str,
         model: &str,
@@ -68,11 +80,7 @@ impl ReasoningProfileProjection {
             ReasoningReplayPolicy::Unknown => ReasoningReplaySetting::Auto,
         };
         profile.support = capabilities.support;
-        profile.efforts = capabilities
-            .efforts
-            .iter()
-            .map(|effort| (*effort).to_string())
-            .collect();
+        profile.efforts = capabilities.efforts.clone();
         profile.supports_disabled = capabilities.supports_disabled;
         profile.disabled_wire = capabilities.disabled_wire;
         profile.supports_enabled = capabilities.supports_enabled;
@@ -140,6 +148,7 @@ impl ReasoningProfileProjection {
     pub fn unknown(provider: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             compatibility: None,
+            model_snapshot: None,
             supports_enabled: false,
             provider: provider.into(),
             model: model.into(),
@@ -152,4 +161,39 @@ impl ReasoningProfileProjection {
             preference: ReasoningChoice::ProviderDefault,
         }
     }
+}
+
+pub use vega_runtime::model_compat::{ModelCapabilityOverride, ModelIdentity, ResolvedModel};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelCapabilityProjection {
+    pub resolved: Box<ResolvedModel>,
+    pub user_override: Option<ModelCapabilityOverride>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelCapabilityPatch {
+    Upsert(ModelCapabilityOverride),
+    Reset { identity: ModelIdentity },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelCapabilitySettingsErrorCode {
+    Io,
+    Invalid,
+    Conflict,
+    Busy,
+    MissingModel,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelCapabilitySettingsProjection {
+    Loading,
+    Ready {
+        generation: u64,
+        models: Vec<ModelCapabilityProjection>,
+        error: Option<ModelCapabilitySettingsErrorCode>,
+    },
+    Saving {
+        generation: u64,
+        operation_id: u64,
+        model: ModelCapabilityProjection,
+    },
 }

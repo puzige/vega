@@ -168,6 +168,7 @@ impl AutomaticTitleRequest {
                 ),
             ],
             max_tokens: Some(512),
+            model_snapshot: self.provider.model_snapshot().map(Box::new),
             ..Default::default()
         };
         let mut usage = None;

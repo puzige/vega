@@ -73,10 +73,29 @@ async fn response_bytes(
             if !valid_model_id(model) {
                 return Err(CheckError::Invalid);
             }
+            let definition = crate::model_compat::lookup_model_definition(
+                &crate::model_compat::ModelRoute::new(
+                    if responses {
+                        crate::model_compat::ModelApi::Responses
+                    } else {
+                        crate::model_compat::ModelApi::ChatCompletions
+                    },
+                    base,
+                )
+                .map_err(|_| CheckError::Invalid)?,
+                &crate::model_compat::ModelIdentity {
+                    provider: "connection-check".into(),
+                    model: model.into(),
+                },
+            )
+            .map_err(|_| CheckError::Invalid)?;
+            let model_snapshot = crate::model_compat::resolve_model(&definition, None)
+                .map_err(|_| CheckError::Invalid)?;
             let request = ChatRequest {
                 model: model.into(),
                 messages: vec![ChatMessage::new(ChatRole::User, "Reply with OK.")],
                 max_tokens: Some(128),
+                model_snapshot: Some(Box::new(model_snapshot)),
                 ..Default::default()
             };
             let body = crate::openai::encode_request(base, &request, responses)
