@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit as gpui;
 use gpui_kit::test::{TestSupportExt, TestWindowExt};
 use gpui_kit::{AppContext, TestAppContext, WindowHandle, size};
 use vega_conversation::agent::PermissionHook;
@@ -971,7 +970,8 @@ fn disclosure_focus_expansion_detail_order_and_height_survive_headline_switches(
     assert_eq!(live.visible_details(cx), before_ids[..2]);
     gpui_kit::AnyWindowHandle::from(live.window)
         .update(cx, |_, window, cx| {
-            group.read(cx).segments[0].header_focus.focus(window, cx);
+            let header_focus = group.read(cx).segments[0].header_focus.clone();
+            header_focus.focus(window, cx);
             window.render_frame(cx);
             window.press("enter", cx);
             assert!(group.read(cx).segments[0].expanded);
