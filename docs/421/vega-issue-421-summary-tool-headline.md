@@ -1,6 +1,6 @@
 # #421 最新运行进展与完成收纳
 
-状态：2026-10-20 实施规格 v3；先行测试经独立静态审查、完整提交取得接口缺失 RED 后已冻结，最小实现中。关联 [Issue #421](https://github.com/puzige/vega/issues/421)。原始生产未改基线为 `e93518cf76a24df921a1af2c2663ebce75f614fd`；RED 前已集成最新 master `9baca7519d97995267de31eb9c2e213f0c171e67`；任务分支 `feat/421-live-progress-agent-delivery`。
+状态：2026-10-20 实施规格 v3；先行测试经独立审查、接口缺失 RED 后冻结，最小实现及验收中性的测试接线修正已取得完整 Actions GREEN，待独立删测与最终空集门禁。关联 [Issue #421](https://github.com/puzige/vega/issues/421)。原始生产未改基线为 `e93518cf76a24df921a1af2c2663ebce75f614fd`；RED 前已集成最新 master `9baca7519d97995267de31eb9c2e213f0c171e67`；任务分支 `feat/421-live-progress-agent-delivery`。
 
 ## 目标与替代关系
 
@@ -10,7 +10,7 @@
 
 ## 先行验收矩阵
 
-所有自动用例均为进程内合成事件／GPUI 测试，不运行真实命令、网络、模型或应用。以下目标在生产修改前写齐并冻结；矩阵不代替实际测试。完整先行提交已有 Actions 接口缺失 RED，行为断言尚未执行，GREEN 待 Actions；真实 UI 为待用户手测。
+所有自动用例均为进程内合成事件／GPUI 测试，不运行真实命令、网络、模型或应用。以下目标在生产修改前写齐并冻结；矩阵不代替实际测试。完整先行提交已有 Actions 接口缺失 RED；实现后的相同目标／断言在独立审查的接线修正后，已取得 27 发现／27 执行／27 通过／0 失败／0 跳过的 GREEN；真实 UI 为待用户手测。
 
 | ID | 前置与操作 | 可观察结果 | 层级与证据 |
 |---|---|---|---|
@@ -72,7 +72,10 @@ v2 在生产尚未修改、测试尚未冻结和 CI 尚未启动时被独立审�
 - 完整先行源码提交 [`35d51e369db7ca347be4e5444fa8885cff357926`](https://github.com/puzige/vega/commit/35d51e369db7ca347be4e5444fa8885cff357926)，[UI 原始补丁](https://github.com/puzige/vega/commit/35d51e369db7ca347be4e5444fa8885cff357926.patch)；生命周期源码与接线提交 [`fd0647c7e7ff62f31041bf4c686a86edd11c2acc`](https://github.com/puzige/vega/commit/fd0647c7e7ff62f31041bf4c686a86edd11c2acc)，[原始补丁](https://github.com/puzige/vega/commit/fd0647c7e7ff62f31041bf4c686a86edd11c2acc.patch)。静态定义 27 个（runtime 5、conversation 2、UI 20），不是执行计数。
 - 完整提交 [Actions 39401665593](https://github.com/puzige/vega/actions/runs/39401665593)：[Nextest 118557592186](https://github.com/puzige/vega/actions/runs/39401665593/job/118557592186)、[Clippy 118557592454](https://github.com/puzige/vega/actions/runs/39401665593/job/118557592454) 的编译诊断仅为最小目标 `ReasoningCompleted`／`AssistantResponseStarted.response_id` 缺失。属于接口缺失 RED；行为断言未执行，发现／执行／通过／跳过计数未取得。早先部分提交的 RED 不替代本完整记录。
 - 独立静态审查在生产未改时修正了合法正文 metadata、暂停控制配置、真实计时更新、请求身份、详情回退、断连清理，以及传输重试同 ID／无第二次 Started 的 fixture。没有放宽验收、忽略用例或本地执行。测试目标、断言和源文指纹在 RED 后冻结，实现中不得按结果改写。
-- SHA-256：runtime `4e7075f33804f0a96c2bcacd3e91940353ebddc8b4448afb70000a8857024a4d`；conversation `94e8868711395235cc5dd152a8d672fe58a11bb48fe4fc34b9a5ad88c32fc431`；UI `4e70ab5d810d3c0c21e179480a1b21d8d5488cad4a4ee65b0e19f29fc967476e`。原始测试与过程保存在 [PR #513](https://github.com/puzige/vega/pull/513)，实现后仍须同源 GREEN、独立删测和最新 head 空集完整门禁，当前均未完成。
+- SHA-256：runtime `4e7075f33804f0a96c2bcacd3e91940353ebddc8b4448afb70000a8857024a4d`；conversation `94e8868711395235cc5dd152a8d672fe58a11bb48fe4fc34b9a5ad88c32fc431`；UI `4e70ab5d810d3c0c21e179480a1b21d8d5488cad4a4ee65b0e19f29fc967476e`。原始测试与过程保存在 [PR #513](https://github.com/puzige/vega/pull/513)。原始源码不改写；后续仅允许已留证并独立审查、保持目标和断言不变的测试自身接线修正。
+- 实现提交：runtime／conversation [`9588d0d399b038793c1ba07db98290449788100f`](https://github.com/puzige/vega/commit/9588d0d399b038793c1ba07db98290449788100f)；UI [`de614570d471f5409ca30b965620530fbfe99226`](https://github.com/puzige/vega/commit/de614570d471f5409ca30b965620530fbfe99226)。两部分均由非写入者独立静态审查；独立子 Agent 提议入口的清理遗漏已在实现中修复并关闭 finding。
+- 测试自身接线修正：[`1aa8c762d42e2fe61df2a4756d0814ab69d6a0a3`](https://github.com/puzige/vega/commit/1aa8c762d42e2fe61df2a4756d0814ab69d6a0a3.patch) 仅移除未用 import、克隆同一焦点句柄后调用 focus；[`ce2b3cef60904fb5cf2a0e761bca9fad000d1f86`](https://github.com/puzige/vega/commit/ce2b3cef60904fb5cf2a0e761bca9fad000d1f86.patch) 仅使用自然高度测试子容器、等待异步窗口激活回调、原样后移两个测试观察模块。每次均先留证并独立批准、逐字重建读回，未改断言／容差／预期／业务事件／用例数或生产正文。保留编译失败和随后 22 通过／5 失败／0 跳过的 [run 39409350936](https://github.com/puzige/vega/actions/runs/39409350936)，不将夹具错误算产品 RED 或隐去失败。
+- 带测试 GREEN：[`ce2b3cef60904fb5cf2a0e761bca9fad000d1f86`](https://github.com/puzige/vega/commit/ce2b3cef60904fb5cf2a0e761bca9fad000d1f86) 的 [Actions 39411606422](https://github.com/puzige/vega/actions/runs/39411606422)，[Nextest 118590464255](https://github.com/puzige/vega/actions/runs/39411606422/job/118590464255) 实际 27 发现／27 执行／27 通过／0 失败／0 跳过；Python 5＋15＋14 通过；[fmt／Clippy 118590463990](https://github.com/puzige/vega/actions/runs/39411606422/job/118590463990) 与 [required check 118591769579](https://github.com/puzige/vega/actions/runs/39411606422/job/118591769579) 成功。修正后 UI SHA-256 `467aef1ed563779a7318e4fb3d25724b457bc0cc0ed9b63b4dadd19390ff32ae`；runtime／conversation 指纹未变。源码／完整 SHA／原始补丁及原始 run/job 已在 [PR 证据](https://github.com/puzige/vega/pull/513#issuecomment-6289427564) 固定并读回，独立删测与最新 head 空集门禁仍待完成。
 
 ## 验证、交付与恢复
 
