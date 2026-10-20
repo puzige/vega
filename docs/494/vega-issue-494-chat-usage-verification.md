@@ -16,12 +16,18 @@
 
 ## 同一测试 GREEN
 
-待修复提交与现有 Actions 验证；未取得结果时不标通过、不删测。
+生产修复提交 `530aec4ac68ab7c437b4f7de8161e0deae85643a` 只改 `usage_counts`，新增 5 行、移除 19 行。缓存读按 nested → DeepSeek → top-level 选第一个非 null 的数字；写按 nested → top-level。eager `.or(number(...)?)` 仍验证所有已识别非 null 数值；保留 selected read/write/总量及独立 miss 范围校验，去掉 alias 全等与跨来源 read+miss 强制分割。六个冻结测试/支持/接线文件 SHA256 全部未变。
+
+[GREEN run 39381186494](https://github.com/puzige/vega/actions/runs/39381186494) / [Nextest job 118490424303](https://github.com/puzige/vega/actions/runs/39381186494/job/118490424303)：`Starting 11 tests across 14 binaries`、`11 tests run: 11 passed, 0 skipped`；0 失败/重试，run ID `db5bfd66-3c05-44be-9b42-5e0fddb8c43b`。所有表行、真实 provider/runtime 的两个 Read 和结果回传、续问复用、typed 错误/零执行及取消均通过。Format、全目标 Clippy、Python 5+15+14=34 和 required check 成功。
+
+原始 Nextest 日志 52788 字节，SHA256 `89d7b5543a8b25fc3ea3e8665a5250b69ea488188a599664212fd093715a3738`；Clippy/format 原始日志 72247 字节，SHA256 `3d24f85918597e1f6211c42d7e94bd63186a7614698a36be6b8b9c06a6dc963f`。[完整 GREEN 与源码恢复记录](https://github.com/puzige/vega/pull/508#issuecomment-6285041628)在独立删测授权前发布，原输入/断言保持不变。
 
 ## 公开留证、独立删测和最终门禁
 
-待同一测试完整 GREEN 后先在 PR 固定可恢复源码、完整 SHA、原始 run/job/准确计数；然后才独立删除本轮 Rust 测试和独占支持。最终最新 head 须完整 required check 成功，Rust 明确为 0 发现/0 执行、no Rust tests；空集不替代本轮行为 GREEN。
+GREEN 和公开留证之后才授权子 agent 独立清理六路径：删除 `chat_usage_tests.rs`、`chat_usage_runtime.rs`、`chat_usage_http.rs` 三份专用源；将 `Cargo.lock`、runtime `Cargo.toml`、`openai/mod.rs` 的开发独占接线恢复至生产基线。只去掉 tempfile 的开发依赖边，包与生产依赖不变。`sse.rs` 修复 SHA256 必须保持 `2815518a30c65e08c5873501d5d9220484faf21dc1a9a23cd0203ad4c6854d4f`。
+
+本记录随独立清理提交写入，最终最新 head 的完整门禁仍需 Actions 证明。准确清理提交、原始 run/job、Rust 0 发现/0 执行和 required check 结果在 [最终状态固定记录](https://github.com/puzige/vega/pull/508#issuecomment-6285049121)读回。空集不替代上述 11/11 行为 GREEN，也不证明真实服务已通过。
 
 ## 发布与用户手测
 
-尚未合并或发布本轮修复。真实代理、DeepSeek/Step 及原生 UI 由用户在包含修复的发布版本中手测；Issue 保持开放，用户明确通过前不关闭或 Done。
+合并 SHA、发布时间及用户手测状态以 [最终状态固定记录](https://github.com/puzige/vega/pull/508#issuecomment-6285049121)和 [Issue 494](https://github.com/puzige/vega/issues/494)为准。真实代理、DeepSeek/Step 及原生 UI 由用户在包含修复的发布版本中手测；Issue 保持开放，用户明确通过前不关闭或 Done。
