@@ -109,7 +109,7 @@ pub fn tier_display_label(effort: &str) -> String {
     match effort {
         "none" => "None".to_string(),
         "minimal" => "Minimal".to_string(),
-        "low" => "Light".to_string(),
+        "low" => "Low".to_string(),
         "medium" => "Medium".to_string(),
         "high" => "High".to_string(),
         "xhigh" => "Extra High".to_string(),
