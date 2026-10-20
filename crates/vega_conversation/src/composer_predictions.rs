@@ -355,3 +355,7 @@ fn persist_usage(
         tracing::warn!("composer prediction usage persistence failed");
     }
 }
+
+#[cfg(test)]
+#[path = "model_compatibility_tests/composer_predictions.rs"]
+mod compatibility_tests;

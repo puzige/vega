@@ -51,3 +51,6 @@ pub mod privacy;
 pub mod automation;
 
 pub mod subagents;
+
+#[cfg(test)]
+mod model_compatibility_tests;
