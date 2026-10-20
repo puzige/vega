@@ -1295,3 +1295,6 @@ pub use tools_exec::{GREP_INVALID_INPUT_OUTPUT, tool_definitions, tool_names_equ
 
 mod automation;
 pub use automation::RuntimeAutomationHook;
+
+#[cfg(test)]
+mod reasoning_lifecycle_tests;

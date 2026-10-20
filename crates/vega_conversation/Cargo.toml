@@ -27,3 +27,6 @@ ulid = { workspace = true }
 portable-pty.workspace = true
 vt100.workspace = true
 libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
