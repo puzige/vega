@@ -167,3 +167,6 @@ impl Store {
         self.database_path.as_deref()
     }
 }
+
+#[cfg(test)]
+mod project_order_tests;

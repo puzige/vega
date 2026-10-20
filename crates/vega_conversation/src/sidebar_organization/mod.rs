@@ -125,3 +125,6 @@ pub fn register_and_reveal_project(
     tx.commit().map_err(storage)?;
     Ok((project.id, result.snapshot))
 }
+
+#[cfg(test)]
+mod project_order_tests;
