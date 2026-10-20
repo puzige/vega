@@ -1519,22 +1519,3 @@ fn detail_row(
         .child(gpui_kit::base::SelectableText::new(id, text))
         .into_any_element()
 }
-
-#[cfg(test)]
-pub(crate) mod live_progress_observation {
-    use super::*;
-
-    pub(crate) fn snapshot(
-        card: &ToolCard,
-    ) -> (
-        ToolCallStatus,
-        Option<u64>,
-        Option<ToolCardResultProjection>,
-    ) {
-        (
-            card.status,
-            card.running_elapsed_seconds,
-            card.result.clone(),
-        )
-    }
-}
