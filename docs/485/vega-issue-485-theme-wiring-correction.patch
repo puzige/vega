@@ -1,0 +1,26 @@
+diff --git a/crates/vega_ui/src/conversation_stream/quote_layout_tests.rs b/crates/vega_ui/src/conversation_stream/quote_layout_tests.rs
+index 0bddd7a8..919932f6 100644
+--- a/crates/vega_ui/src/conversation_stream/quote_layout_tests.rs
++++ b/crates/vega_ui/src/conversation_stream/quote_layout_tests.rs
+@@ -357,18 +357,21 @@ fn assert_reflow(visual: &mut VisualTestContext, selectable: bool) {
+ #[gpui_kit::test]
+ fn markdown_quotes_reflow_within_the_quote_gutter(cx: &mut TestAppContext) {
+     cx.update(gpui_kit::init);
++    cx.update(|cx| cx.set_global(Theme::light()));
+     assert_reflow(cx.add_empty_window(), false);
+ }
+ 
+ #[gpui_kit::test]
+ fn selectable_quotes_reflow_without_copying_soft_newlines(cx: &mut TestAppContext) {
+     cx.update(gpui_kit::init);
++    cx.update(|cx| cx.set_global(Theme::light()));
+     assert_reflow(cx.add_empty_window(), true);
+ }
+ 
+ #[gpui_kit::test]
+ fn short_quotes_stay_single_line_and_code_keeps_horizontal_layout(cx: &mut TestAppContext) {
+     cx.update(gpui_kit::init);
++    cx.update(|cx| cx.set_global(Theme::light()));
+     let visual = cx.add_empty_window();
+     let code = "let message = \"A long English code line stays horizontally scrollable; 中文代码内容也不应因为引用折行修复而换行。 Preserve every character in this deliberately wide code line.\";";
+     let source = format!("```\n{code}\n```\n");
