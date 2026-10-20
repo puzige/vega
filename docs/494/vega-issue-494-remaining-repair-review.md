@@ -15,3 +15,13 @@
 3. `tools_exec.rs`：InvalidRead独立返回真实Authorization::Terminal，执行前处理取消，保留原失败反馈并附validation audit。移出Approved组；不改执行计数代码、合法nullable输入、InvalidGrep或其他权限规则。
 
 三个目标分别有本次完整原始行为RED；对应测试/输入/结果期望保持不动。上述单独测试自身更正审查并提交后，授权专职子agent只实施这四个生产文件；不增加用例、模型硬编码、依赖、外部调用、配置迁移或注释。主会话随后审查差异和原133测试摘要，交同一完整Actions验证GREEN；未全绿不得删测、正式PR或合并。
+
+## 生产修正提交前复核
+
+测试接口更正独立提交为 `4bd6e6111d05929e131eb44c2cafcaf745148437`，[精确替换与前后摘要](vega-issue-494-capacity-wiring-correction.json)固定这一处经审查的断言变化。三个目标测试没有改写；随后才开始四文件生产修正。
+
+主会话读完四文件差异，并独立核对[生产修正审计](vega-issue-494-remaining-production-audit.json)的全部当前/父提交摘要：四个生产路径、26个未变测试artifact、133个原名称/属性、依赖及不可变清单均相符。审计SHA256 `73f780abd17e9b298320d051c5422a4e59761d91aa4873e5f0c92e7d6e921eea`。两个原始大型清单、开发测试/fixture和依赖均未改。
+
+tools_exec的无关展开仅是格式化；[同版本formatter等价记录](vega-issue-494-tools-exec-format-audit.json) SHA256 `ab6232cc411fa5401e1779c2939adc44995719ca4a0b91205c1f1b1183fec342`。主会话另读父文件与最小逻辑中间稿的差异，只有四处批准的InvalidRead修改；该中间稿经现行rustfmt得到当前文件逐字节相同。原取消/权限语义、输出上限、计数代码和nullable解析未改。
+
+主会话和专职子agent分别静态fmt、diff和locked/offline/no-deps metadata均退出0。本地没有编译、运行Vega或Rust/Python测试。报告中的/tmp位置仅是生成时路径；长期证据以相邻已提交文档、公开完整提交源码/补丁和Actions原始job为准。下一步是同一133测试完整云端验证，当前尚无本次生产修正的行为GREEN。
