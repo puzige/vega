@@ -2,9 +2,9 @@ use std::cell::RefCell;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, AvailableSpace, Bounds, Context, Element, ElementId,
-    GlobalElementId, InspectorElementId, LayoutId, Pixels, Point, Size, StyledText, TestAppContext,
-    TextLayout, VisualTestContext, Window, canvas, point, px, size,
+    AnyElement, App, AvailableSpace, Bounds, Context, Element, ElementId, GlobalElementId,
+    InspectorElementId, LayoutId, Pixels, Point, Size, StyledText, TestAppContext, TextLayout,
+    VisualTestContext, Window, canvas, point, px, size,
 };
 use vega_markdown::MarkdownStream;
 use vega_theme::{Layout, Theme};
