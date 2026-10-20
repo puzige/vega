@@ -29,8 +29,9 @@
 | 阶段 | head / 证据 | 结果 |
 |---|---|---|
 | 首次目标行为 RED | 上述测试先行 head；[Nextest job 118520786535](https://github.com/puzige/vega/actions/runs/39390563261/job/118520786535) | 4 发现 / 4 执行 / 1 通过 / 3 失败 / 0 跳过；两个目标引用测试实际文本为 1888px × 23px，在 240px 列中超出右边界，形成可归因行为 RED。短引用/代码保护通过；Thinking 缺主题全局的接线 panic 不计作目标 RED |
-| 接线修正后 RED | `9fad414853eaebf441b377e13aee4a5ab32f68c9` 移除冗余导入并初始化 Thinking 主题；后续接线提交统一补齐其余测试的主题初始化 | 输入/预期/断言不变，先取得保护用例通过再实现。9fad 的运行 39391629989 被后续接线 head 替代，不当作完整 RED/GREEN 证据 |
-| 最小生产实现 | 待有效 RED 后委派 | 尚未修改 |
+| 接线修正后 RED | `9fad414853eaebf441b377e13aee4a5ab32f68c9`；[run 39391629989](https://github.com/puzige/vega/actions/runs/39391629989) / [Nextest job 118524298969](https://github.com/puzige/vega/actions/runs/39391629989/job/118524298969) | 4 发现 / 4 执行 / 2 通过 / 2 失败 / 0 跳过；两项目标引用仍为相同溢出失败；Thinking、短引用/代码保护通过，Clippy 通过 |
+| 最终接线基线 RED | `3974c56508cb9c782213c36fbd032f4a66569275`；[run 39391982124](https://github.com/puzige/vega/actions/runs/39391982124) / [Nextest job 118525446775](https://github.com/puzige/vega/actions/runs/39391982124/job/118525446775) | 4 发现 / 4 执行 / 2 通过 / 2 失败 / 0 跳过；仍只有两个目标引用右边界失败，保护用例和 Clippy 通过。完成后才明确委派生产修复 |
+| 最小生产实现 | 最终接线基线 RED 确认后委派；只修改两个 Quote 分支的正文容器 | 进行中；冻结测试不变 |
 | 同一冻结测试 GREEN | 待实现 head 的完整现有 gate | 尚未取得 |
 | 独立删测 | 待 GREEN 固定后执行 | 尚未执行 |
 | 最终空集完整门禁 | 待删测后最新 head | 尚未取得；空集须标 `no Rust tests`（0 发现/0 执行），不是回归测试通过 |
