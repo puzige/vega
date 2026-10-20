@@ -571,29 +571,15 @@ fn usage_counts(usage: &serde_json::Value) -> Result<UsageCounts, VegaError> {
     };
     let input = number(usage.get("prompt_tokens"))?.ok_or_else(invalid_protocol)?;
     let output = number(usage.get("completion_tokens"))?.ok_or_else(invalid_protocol)?;
-    let compatible = |values: Vec<Option<u64>>| -> Result<Option<u64>, VegaError> {
-        let values = values.into_iter().flatten().collect::<Vec<_>>();
-        if values.iter().any(|value| Some(value) != values.first()) {
-            return Err(invalid_protocol());
-        }
-        Ok(values.first().copied())
-    };
-    let cache_read = compatible(vec![
-        number(usage.get("prompt_cache_hit_tokens"))?,
-        number(usage.get("cached_tokens"))?,
-        number(usage.pointer("/prompt_tokens_details/cached_tokens"))?,
-    ])?;
-    let cache_write = compatible(vec![
-        number(usage.get("cache_write_tokens"))?,
-        number(usage.pointer("/prompt_tokens_details/cache_write_tokens"))?,
-    ])?;
+    let cache_read = number(usage.pointer("/prompt_tokens_details/cached_tokens"))?
+        .or(number(usage.get("prompt_cache_hit_tokens"))?)
+        .or(number(usage.get("cached_tokens"))?);
+    let cache_write = number(usage.pointer("/prompt_tokens_details/cache_write_tokens"))?
+        .or(number(usage.get("cache_write_tokens"))?);
     let miss = number(usage.get("prompt_cache_miss_tokens"))?;
     if cache_read.is_some_and(|count| count > input)
         || cache_write.is_some_and(|count| count > input)
         || miss.is_some_and(|count| count > input)
-        || cache_read
-            .zip(miss)
-            .is_some_and(|(hit, miss)| hit.checked_add(miss) != Some(input))
         || cache_read
             .zip(cache_write)
             .is_some_and(|(read, write)| read.checked_add(write).is_none_or(|total| total > input))
