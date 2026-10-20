@@ -291,6 +291,8 @@ mod selection_menu;
 mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;
+#[cfg(test)]
+pub(crate) use thinking::code_drag_tests;
 mod utility_bar;
 
 pub use core::ConversationStream;

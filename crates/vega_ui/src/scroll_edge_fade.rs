@@ -453,6 +453,13 @@ impl<E: Element> Element for ScrollEdgeFade<E> {
             let state =
                 window.use_keyed_state("scroll-edge-fade-handle", cx, |_, _| ScrollHandle::new());
             let handle = state.read(cx).clone();
+            #[cfg(test)]
+            crate::conversation_stream::code_drag_tests::observe_scroll_handle(
+                window.window_handle().window_id(),
+                self.base.id(),
+                handle.clone(),
+                cx,
+            );
             prepare(&mut self.base, &handle);
             self.handle = Some(Box::new(handle));
         }
@@ -501,6 +508,14 @@ impl<E: Element> Element for ScrollEdgeFade<E> {
             guards.record(pinned.clone());
         }
         if let Some(handle) = self.handle.as_deref() {
+            #[cfg(test)]
+            crate::conversation_stream::code_drag_tests::observe_scroll(
+                window.window_handle().window_id(),
+                self.base.id(),
+                handle,
+                state.1,
+                cx,
+            );
             let metrics = ScrollFadeMetrics::from_handle(handle);
             let mut style = state.2;
             if self

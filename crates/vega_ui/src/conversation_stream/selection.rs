@@ -434,6 +434,23 @@ impl Element for SelectableMessage {
         self.copy.set_visible_text(self.content.clone());
         let mut runs = self.runs.borrow().clone();
         runs.sort_by_key(|run| run.order);
+        #[cfg(test)]
+        super::code_drag_tests::begin_document(
+            window.window_handle().window_id(),
+            self.copy.id,
+            cx,
+        );
+        #[cfg(test)]
+        for run in &runs {
+            super::code_drag_tests::observe_text(
+                window.window_handle().window_id(),
+                self.copy.id,
+                run.text.clone(),
+                run.layout.clone(),
+                run.bounds,
+                cx,
+            );
+        }
         let text_runs = runs
             .iter()
             .enumerate()
