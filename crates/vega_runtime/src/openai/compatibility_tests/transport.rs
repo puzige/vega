@@ -148,14 +148,15 @@ async fn recovery_retry_uses_same_snapshot_wire_and_actual_terminal_once() {
                 .count(),
             1
         );
-        let inspected = inspected.lock().unwrap();
-        assert_eq!(inspected.len(), 2);
-        assert!(
-            inspected
-                .iter()
-                .all(|request| request.model_snapshot.as_deref() == Some(&model))
-        );
-        drop(inspected);
+        {
+            let inspected = inspected.lock().unwrap();
+            assert_eq!(inspected.len(), 2);
+            assert!(
+                inspected
+                    .iter()
+                    .all(|request| request.model_snapshot.as_deref() == Some(&model))
+            );
+        }
         server.finish().await;
         let received = server.received.lock().unwrap();
         assert_eq!(received.len(), 2);
@@ -202,19 +203,20 @@ async fn provider_probe_uses_real_codec_and_rejects_intermediate_only_or_foreign
         };
         assert_eq!(result, Ok(()));
         server.finish().await;
-        let received = server.received.lock().unwrap();
-        assert_eq!(received.len(), 1);
-        assert_eq!(
-            received[0].body[if api == ModelApi::Responses {
-                "max_output_tokens"
-            } else {
-                "max_tokens"
-            }],
-            128
-        );
-        assert!(received[0].body.get("reasoning_effort").is_none());
-        assert!(received[0].body.pointer("/reasoning/effort").is_none());
-        drop(received);
+        {
+            let received = server.received.lock().unwrap();
+            assert_eq!(received.len(), 1);
+            assert_eq!(
+                received[0].body[if api == ModelApi::Responses {
+                    "max_output_tokens"
+                } else {
+                    "max_tokens"
+                }],
+                128
+            );
+            assert!(received[0].body.get("reasoning_effort").is_none());
+            assert!(received[0].body.pointer("/reasoning/effort").is_none());
+        }
         let chunks = if api == ModelApi::Responses {
             vec![json!({"type":"response.output_text.delta","delta":"partial"})]
         } else {

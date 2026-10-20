@@ -1,4 +1,3 @@
-use super::*;
 use crate::ModelCapabilitySettingsService;
 use crate::types::{ModelCapabilityPatch, ModelCapabilitySettingsErrorCode};
 use vega_runtime::model_compat::{ModelCapabilityOverride, ModelIdentity};

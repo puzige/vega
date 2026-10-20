@@ -80,11 +80,4 @@ impl SettingsView {
             .map(|target| (target, cx.focus_handle().tab_stop(true)))
             .collect();
     }
-
-    pub(crate) fn reasoning_focus(&self, target: &ReasoningFocusTarget) -> Option<FocusHandle> {
-        self.reasoning_focuses
-            .iter()
-            .find(|(candidate, _)| candidate == target)
-            .map(|(_, focus)| focus.clone())
-    }
 }

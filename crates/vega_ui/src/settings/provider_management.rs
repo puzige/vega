@@ -293,7 +293,7 @@ impl SettingsView {
         state.statuses.retain(|_, value| value != "正在测试…");
         cx.notify();
     }
-    pub(crate) fn open_model_settings(
+    pub fn open_model_settings(
         &mut self,
         provider: &str,
         model: &str,
