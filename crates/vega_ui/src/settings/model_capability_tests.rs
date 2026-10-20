@@ -55,7 +55,7 @@ fn projection(
             &identity,
         )
         .unwrap();
-    let user_override = (allowed.is_some() || image.is_some()).then(|| ModelCapabilityOverride {
+    let user_override = (allowed.is_some() || image.is_some()).then_some(ModelCapabilityOverride {
         identity,
         allowed_efforts: allowed,
         image_input: image,

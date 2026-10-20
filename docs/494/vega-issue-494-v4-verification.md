@@ -29,6 +29,8 @@
 
 首个带实现提交 `f4528d3837c9a9369a6a0b2756ff647aa4d25905` 的 [Actions 39365322166](https://github.com/puzige/vega/actions/runs/39365322166) 在测试编译阶段失败：GPUI 宏生成的标准 test 属性被同名导入遮蔽而递归，两个测试 MutexGuard 的显式 drop 仍触发 Clippy 锁作用域告警，另有无用测试 import。Rust 发现未取得、执行0，尚无行为结果；Format和Python34成功。[先审查的机械修正范围](vega-issue-494-implementation-compile-corrections.json)包括解除 test 宏名称遮蔽、保留同一组断言的锁作用域、删除无用 import/旧焦点 getter，以及既有真实设置路由方法的跨 crate 可见性，不改变验收输入/断言/阈值。
 
+这些修正提交为 `268ca25da7b4f8963b6572a059de72248672142b`，[精确补丁](https://github.com/puzige/vega/commit/268ca25da7b4f8963b6572a059de72248672142b.patch)已读回49,742字节、SHA256 `7abf9bbdbe567e47196b2181dc71ae56be386222bac5a83786d25c660a847c62`，25个冻结 artifact 的 GitHub tree blob 与本地逐项一致。[Actions 39366258750](https://github.com/puzige/vega/actions/runs/39366258750)解除前述问题后，继续发现缺少 `TestWindowExt` 测试扩展导入与测试 helper 的纯值 `then` 写法 lint；仍为发现未取得/执行0，Format及Python34成功。[两处机械修正的先审查记录和摘要](vega-issue-494-compile-wiring-third.json)继续保持原输入与断言，不修改生产行为。
+
 带相同测试的完整GREEN、准确发现/执行/通过/失败/跳过数、生产实现提交和原始job链接：待取得。固定可恢复证据后才独立删Rust测试及专用支持；最终head应由现有全门禁确认0发现/0执行和no Rust tests，空集不代表行为GREEN。
 
 真实模型服务、原生应用和外层Trusted Git进程流程由用户合并后纯手动验证，不能把网络替身测试称真实服务或系统E2E。Issue在用户明确通过前保持开放，当前In progress。

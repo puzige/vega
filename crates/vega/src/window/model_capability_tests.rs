@@ -1,5 +1,6 @@
 use super::*;
 use ::core::prelude::v1::test;
+use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, TestAppContext, WindowHandle};
 
 struct Harness;
