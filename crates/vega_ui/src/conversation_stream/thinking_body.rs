@@ -1197,8 +1197,6 @@ impl Element for FragmentsElement {
                 decoration.bounds.size,
             );
             if !rect.intersect(&window.content_mask().bounds).is_empty() {
-                #[cfg(test)]
-                super::super::quote_layout_tests::record_bar(rect);
                 window.paint_quad(gpui_kit::fill(rect, decoration.color));
             }
         }
@@ -1304,74 +1302,5 @@ impl Element for VisibilityElement {
         cx: &mut App,
     ) {
         self.content.paint(window, cx);
-    }
-}
-
-#[cfg(test)]
-mod quote_layout_tests {
-    use super::{BodyElement, PreparationStyle, PreparedBody};
-    use crate::conversation_stream::{
-        MessageCopy, quote_layout_tests as layout, selection::SelectionDocumentBuilder,
-    };
-    use gpui_kit::{IntoElement, TestAppContext, px};
-    use std::sync::Arc;
-    use vega_theme::Theme;
-
-    #[gpui_kit::test]
-    fn thinking_quotes_keep_width_constrained_layout_and_copy_projection(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        cx.update(|cx| cx.set_global(Theme::light()));
-        let visual = cx.add_empty_window();
-        for (source, expected) in layout::LONG_QUOTES
-            .into_iter()
-            .chain([("> Short 中文 quote.", "Short 中文 quote.")])
-        {
-            let mut observations = Vec::new();
-            for width in [240., 480., 240.] {
-                let copy = MessageCopy::new(source);
-                let rendered_copy = copy.clone();
-                let observation = layout::draw(visual, width, move |window, cx| {
-                    let style = PreparationStyle {
-                        width: px(width),
-                        font: window.text_style().font(),
-                        colors: Theme::light().colors,
-                        scale: window.scale_factor(),
-                    };
-                    let prepared = Arc::new(PreparedBody::new(
-                        source,
-                        0,
-                        0,
-                        &style,
-                        window.text_system(),
-                    ));
-                    let document = SelectionDocumentBuilder::projected(
-                        rendered_copy,
-                        cx.focus_handle(),
-                        gpui_kit::base::Theme::global(cx).tokens.colors.selection,
-                        prepared.text.clone(),
-                        1,
-                    );
-                    let element = BodyElement {
-                        prepared,
-                        document: document.clone(),
-                        horizontal_scrolls: Default::default(),
-                    };
-                    document.wrap(element.into_any_element(), window, cx)
-                });
-                observation.assert_quote(expected, width);
-                assert_eq!(copy.visible_text().as_deref(), Some(expected));
-                observations.push(observation);
-            }
-            if source == "> Short 中文 quote." {
-                for observation in &observations {
-                    assert_eq!(observation.text_height(), observation.line_height());
-                }
-            } else {
-                assert!(observations[0].text_height() > observations[0].line_height());
-                observations[0].assert_multiline_positions();
-                assert!(observations[0].size.height > observations[1].size.height);
-            }
-            assert_eq!(observations[0].size, observations[2].size);
-        }
     }
 }

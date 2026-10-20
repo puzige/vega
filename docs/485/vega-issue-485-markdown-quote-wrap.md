@@ -62,4 +62,5 @@ Issue：[#485](https://github.com/puzige/vega/issues/485)。版本：v1，2026-1
 - 已在生产布局未改的基线上写齐四个开发阶段行为测试，覆盖 Q1–Q5；独立审查核对了真实文本/富文本片段几何、复制投影和 GPUI 接线。正式冻结内容以测试先行提交为准。
 - 本地已通过 `git diff --check`、锁定工具链 `rustfmt --check` 和 `cargo metadata --offline --locked --no-deps --format-version 1`（仅元数据解析）。没有执行 Vega、编译或测试。
 - 自动验证仅覆盖无界面合成字体布局和生产可见文本投影，不冒充原生字体、实际窗口 resize、选择剪贴板或链接激活验收。
-- 有效 RED、同一测试 GREEN、独立删测和最终门禁均待 Actions；生产折行逻辑仍为基线。
+- `3974c565` 在 Actions 39391982124 确认两项目标行为 RED、两项保护通过；之后 `97bc60b5` 只修改两个 Quote 正文容器，同一冻结测试在 Actions 39393025425 四项全绿，完整 required check 通过。
+- 测试补丁/接线修正与原始失败和 GREEN 已固定在 PR，随后独立清理开发测试及专属支持。最终源码差异仅保留两个容器；最终空集门禁与交付状态详见[验证记录](vega-issue-485-verification.md)。Issue 仍待用户手测，不以自动测试替代。

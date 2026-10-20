@@ -275,8 +275,6 @@ mod file_reference;
 mod message_anchors;
 mod model;
 mod phase;
-#[cfg(test)]
-mod quote_layout_tests;
 mod render;
 mod render_rows;
 mod run_activity;
