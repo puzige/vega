@@ -659,10 +659,14 @@ async fn frozen_capacity_output_reserve_remains_authoritative_over_source_model_
     let mut request = agent_request(&model, dir.path());
     request.context_budget = Some(crate::ContextBudget::new(500, 100, false).unwrap());
     request.history[0].content = "large untrusted history ".repeat(5000);
-    let outcome = crate::run_agent(&provider, &tools, request, CancellationToken::new())
-        .await
-        .unwrap();
-    assert!(outcome.failed);
+    let result = crate::run_agent(&provider, &tools, request, CancellationToken::new()).await;
+    assert!(matches!(
+        result,
+        Err(VegaError::Context(crate::ContextRuntimeError::OverLimit {
+            estimated_tokens,
+            input_budget: 400,
+        })) if estimated_tokens > 400
+    ));
     assert!(provider.bodies.lock().unwrap().is_empty());
 }
 

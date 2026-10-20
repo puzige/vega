@@ -37,6 +37,8 @@
 
 更正提交不同时修复已确认的Responses凭据检查、当前模型容量权威和InvalidRead执行前终止缺口。先再次运行同一133定义，保留资料更正后的行为RED，再按未通过的冻结断言授权最小生产修正。
 
+更正提交 `f7128d6d25c7d4ea864b8974d975de9125053eed` 的 [Actions 39369557697](https://github.com/puzige/vega/actions/runs/39369557697) 完整执行 **133发现、133执行、129通过、4失败、0跳过**，Format、全目标Clippy和Python34成功。[原始失败与日志摘要](vega-issue-494-corrected-behavior-red.json)确认三个未改测试的真实实现缺口；其余失败是容量测试第二分支错误假定OverLimit返回Ok(failed)，而生产未改8c与当前都在发送前返回准确typed Err。[修改前公开审查](https://github.com/puzige/vega/pull/504#issuecomment-6283447290)先单独更正这一测试接口假定，再限定四个生产文件修复上述三个真实缺口；不修改三个目标测试，不把任意Err当通过。完整更正、范围与顺序见[剩余修正审查](vega-issue-494-remaining-repair-review.md)。
+
 完整带测试GREEN仍待取得。固定可恢复证据后才独立删Rust测试及专用支持；最终head应由现有全门禁确认0发现/0执行和no Rust tests，空集不代表行为GREEN。
 
 真实模型服务、原生应用和外层Trusted Git进程流程由用户合并后纯手动验证，不能把网络替身测试称真实服务或系统E2E。Issue在用户明确通过前保持开放，当前In progress。
