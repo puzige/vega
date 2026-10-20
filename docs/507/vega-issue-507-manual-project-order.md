@@ -69,6 +69,15 @@ v1.1：生产未改、RED 尚未启动时，根据独立审查补清多连接、
 
 初始状态：所有自动测试待编写／Actions，用户手测待执行。Issue 保持开放，不使用自动关闭关键字。各阶段真实结果留存在同一 PR／Issue；空集是 0 发现／0 执行，不是测试通过。
 
+### 先行测试与有效 RED
+
+- Draft PR：[512](https://github.com/puzige/vega/pull/512)。独立审查通过后提交先行测试 [`1c4c29a129c9d04e96a2bbb9a42578be0ac6ac3a`](https://github.com/puzige/vega/commit/1c4c29a129c9d04e96a2bbb9a42578be0ac6ac3a)，该提交只有规格、两个新测试文件及两处 cfg(test) 接线，生产行为与基线一致。
+- [Store 原始测试](https://github.com/puzige/vega/blob/1c4c29a129c9d04e96a2bbb9a42578be0ac6ac3a/crates/vega_store/src/project_order_tests.rs)：5 项，SHA-256 `8491e39745a94c53809c04f49b3cfa97f6e2c3dfd6a5babc3ac6d631c07ffdfe`。
+- [Conversation 原始测试](https://github.com/puzige/vega/blob/1c4c29a129c9d04e96a2bbb9a42578be0ac6ac3a/crates/vega_conversation/src/sidebar_organization/project_order_tests.rs)：6 项，SHA-256 `4b0d53bee60075f39e4b13d188f0bf18fc3fd55c87ab77713facf022ac0031e0`。[原始提交补丁](https://github.com/puzige/vega/commit/1c4c29a129c9d04e96a2bbb9a42578be0ac6ac3a.patch)可从 PR 找回。
+- [RED run 39394804823](https://github.com/puzige/vega/actions/runs/39394804823)／[Nextest job 118534766357](https://github.com/puzige/vega/actions/runs/39394804823/job/118534766357)：编译／发现成功，原始输出 `Starting 11 tests across 14 binaries`、`11 tests run: 0 passed, 11 failed, 0 skipped`，各测试 ignored 为 0；fmt／Clippy 与三组 Python 检查成功。
+- 有效行为 RED：访问末项后 projects 实际 `[project-c,project-b,project-a]` 而非原顺序；新建和注册的 project_order 为空；历史迁移后未补齐排序；排序拒绝时 create 仍成功。不是缺接口、编译或 runner 故障。完整原始失败保存在上述 job，后续测试目标、数据与断言冻结不变。
+- 仅在上述 RED 核实后委派生产最小实现；同一测试 GREEN、独立删测及最终空集门禁尚待后续云端验证。本地 fmt／diff 静态检查退出 0，未本地运行／编译／执行测试。
+
 ## 用户手测与回滚
 
 1. 升级前记下至少三个项目顺序，包含已有手排和后来加入项目。
