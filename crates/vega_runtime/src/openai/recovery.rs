@@ -19,22 +19,13 @@ struct RecoveryStream {
 impl OpenAiProvider {
     pub(super) fn recovering_stream(
         self,
-        mut request: ChatRequest,
+        request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<ProviderStream, VegaError> {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
-        request.messages = crate::project_model_messages(&request.messages)?;
-        crate::images::validate_messages(&request.messages)?;
-        if let Some(reasoning) = &request.reasoning {
-            reasoning.validate()?;
-            if reasoning.model != request.model {
-                return Err(VegaError::ReasoningSelectionInvalid {
-                    message: "reasoning profile model does not match request model".into(),
-                });
-            }
-        }
+        let request = self.prepare_request(request)?;
         let body = self.request_body(&request)?;
         let state = RecoveryStream {
             provider: self,
@@ -128,17 +119,13 @@ impl RecoveryStream {
                     let retry_after = retry_after_of(&response);
                     let request_id = request_id_from_headers(response.headers());
                     let retryable = status == 408 || is_retryable_status(status);
-                    let snippet = if self.provider.responses_api || retryable {
-                        "<response body omitted>".to_string()
-                    } else {
-                        let snippet = tokio::time::timeout(
-                            REQUEST_TIMEOUT,
-                            error_snippet(response, &self.cancel),
-                        )
-                        .await
-                        .unwrap_or_else(|_| "<response body omitted>".into());
-                        self.provider.redact_key(&snippet)
-                    };
+                    let snippet = tokio::time::timeout(
+                        REQUEST_TIMEOUT,
+                        error_snippet(response, &self.cancel),
+                    )
+                    .await
+                    .unwrap_or_else(|_| "<response body unavailable>".into());
+                    let snippet = self.provider.redact_key(&snippet);
                     if self.cancel.is_cancelled() {
                         self.ended = true;
                         return Some(Err(VegaError::Cancelled));

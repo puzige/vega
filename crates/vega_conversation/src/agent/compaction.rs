@@ -136,6 +136,46 @@ impl<'a> ConversationCompactionHook<'a> {
     }
 }
 
+pub(super) fn load_current_model_context_policy(
+    conn: &vega_store::Connection,
+    provider: &str,
+    model: &str,
+) -> Result<
+    vega_store::context_compaction::ModelContextPolicy,
+    vega_store::context_compaction::ContextSettingsError,
+> {
+    Ok(
+        vega_store::context_compaction::load_model_policy(conn, provider, model)?.unwrap_or_else(
+            || vega_store::context_compaction::ModelContextPolicy::assumed_default(provider, model),
+        ),
+    )
+}
+
+pub(super) fn model_context_budget(
+    policy: &vega_store::context_compaction::ModelContextPolicy,
+) -> Result<Option<ContextBudget>, crate::types::ConversationError> {
+    match (policy.input_limit, policy.output_reserve) {
+        (Some(input), Some(reserve)) => {
+            let total = input.checked_add(reserve).ok_or_else(|| {
+                crate::types::ConversationError::CorruptRow(
+                    "invalid persisted context budget".into(),
+                )
+            })?;
+            ContextBudget::new(total, reserve, policy.automatic_compaction)
+                .map(Some)
+                .map_err(|_| {
+                    crate::types::ConversationError::CorruptRow(
+                        "invalid persisted context budget".into(),
+                    )
+                })
+        }
+        (None, None) => Ok(None),
+        _ => Err(crate::types::ConversationError::CorruptRow(
+            "partial persisted context budget".into(),
+        )),
+    }
+}
+
 /// Reads settings through the conversation service boundary.  UI/controller
 /// code does not need a SQLite handle or the store's row type.
 pub fn read_context_settings(
@@ -205,22 +245,29 @@ pub fn read_context_projection_with_provider(
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
     let checkpoint = latest_checkpoint_in_transaction(&transaction, thread_id, expected_model)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
-    let settings = load_settings(&transaction, thread_id, expected_model)
-        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
-        .map(context_settings_from_store);
-    let model_input_limit = provider
+    let policy = provider
         .filter(|provider| !provider.trim().is_empty())
-        .map(|provider| {
-            vega_store::context_compaction::load_model_policy(
-                &transaction,
-                provider,
-                expected_model,
-            )
-        })
+        .map(|provider| load_current_model_context_policy(&transaction, provider, expected_model))
         .transpose()
-        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
-        .flatten()
-        .and_then(|policy| policy.input_limit);
+        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
+    let budget = policy
+        .as_ref()
+        .map(model_context_budget)
+        .transpose()?
+        .flatten();
+    let settings =
+        policy
+            .as_ref()
+            .zip(budget)
+            .map(|(policy, budget)| crate::types::ContextSettings {
+                thread_id: thread_id.into(),
+                model: expected_model.into(),
+                context_limit: Some(budget.total_limit()),
+                output_reserve: budget.output_reserve(),
+                automatic_compaction: budget.automatic_compaction(),
+                updated_at: policy.updated_at,
+            });
+    let model_input_limit = policy.as_ref().and_then(|policy| policy.input_limit);
     let history = crate::agent::pipeline::primary_history_from_context_source_with_checkpoint(
         &source,
         checkpoint.as_ref(),
@@ -680,7 +727,26 @@ pub async fn compact_thread_manually_accounted_with_credential_reader(
     generation: u64,
     credential_reader: Option<vega_runtime::CredentialReader>,
 ) -> Result<Vec<crate::types::ConversationEvent>, crate::types::ConversationError> {
-    let projection = read_context_projection(store, thread_id, expected_model, system_prompt)?;
+    let model_snapshot = provider.model_snapshot().ok_or_else(|| {
+        conversation_runtime_error(context_error(ContextRuntimeError::MissingHook))
+    })?;
+    if model_snapshot.identity.model != expected_model
+        || reasoning.as_ref().is_some_and(|selection| {
+            selection.provider != model_snapshot.identity.provider
+                || selection.model != model_snapshot.identity.model
+        })
+    {
+        return Err(crate::types::ConversationError::CorruptRow(
+            "frozen context model changed".into(),
+        ));
+    }
+    let projection = read_context_projection_with_provider(
+        store,
+        thread_id,
+        expected_model,
+        Some(&model_snapshot.identity.provider),
+        system_prompt,
+    )?;
     let settings = projection.settings.clone().ok_or_else(|| {
         conversation_runtime_error(context_error(ContextRuntimeError::MissingHook))
     })?;
@@ -1923,6 +1989,8 @@ fn direct_summary_request(
         tools: Vec::new(),
         max_tokens: Some(u64::from(SUMMARY_MAX_TOKENS).min(request.budget.output_reserve()) as u32),
         reasoning: summary_reasoning(reasoning),
+        model_snapshot: None,
+        tool_choice: None,
     }
 }
 
@@ -2244,6 +2312,9 @@ async fn collect_summary_with_timeout_diagnostics(
     operation_deadline: tokio::time::Instant,
 ) -> Result<SummaryCollection, SummaryCollectionFailure> {
     let mut request = request;
+    if request.model_snapshot.is_none() {
+        request.model_snapshot = provider.model_snapshot().map(Box::new);
+    }
     request.messages = vega_runtime::project_model_messages(&request.messages)
         .map_err(|error| summary_collection_failure(error, SummaryDiagnosticMetrics::default()))?;
     let child = cancel.child_token();

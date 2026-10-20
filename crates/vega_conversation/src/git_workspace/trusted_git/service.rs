@@ -274,22 +274,7 @@ impl TrustedGitService {
         };
         self.require_exact_authority(&authority, cancel.clone())
             .await?;
-        let request = ChatRequest {
-            model,
-            messages: vec![
-                ChatMessage::new(ChatRole::System, SYSTEM_PROMPT),
-                ChatMessage::new(
-                    ChatRole::User,
-                    format!(
-                        "{USER_PREFIX}{}\n--- staged diff ---\n{summary}",
-                        if truncated { "true" } else { "false" }
-                    ),
-                ),
-            ],
-            tools: Vec::new(),
-            max_tokens: Some(256),
-            reasoning: None,
-        };
+        let request = draft_request(model, &summary, truncated);
         let draft =
             collect_draft_with_deadline(provider, request, cancel.clone(), DRAFT_TIMEOUT).await?;
         self.require_exact_authority(&authority, cancel).await?;
@@ -784,5 +769,26 @@ impl TrustedGitService {
         })
         .await
         .map_err(|_| CommitErrorCode::GitFailed)?
+    }
+}
+
+fn draft_request(model: String, summary: &str, truncated: bool) -> ChatRequest {
+    ChatRequest {
+        model,
+        messages: vec![
+            ChatMessage::new(ChatRole::System, SYSTEM_PROMPT),
+            ChatMessage::new(
+                ChatRole::User,
+                format!(
+                    "{USER_PREFIX}{}\n--- staged diff ---\n{summary}",
+                    if truncated { "true" } else { "false" }
+                ),
+            ),
+        ],
+        tools: Vec::new(),
+        max_tokens: Some(256),
+        reasoning: None,
+        model_snapshot: None,
+        tool_choice: None,
     }
 }

@@ -513,6 +513,7 @@ impl VegaWindow {
             } else {
                 self.reasoning_settings_projection()
             };
+            self.request_model_capability_reload(settings.clone(), cx);
             settings.update(cx, |settings, cx| {
                 settings.apply_reasoning_projection(projection, cx)
             });
@@ -602,6 +603,14 @@ impl VegaWindow {
                                     None
                                 }
                             };
+                        let capabilities =
+                            vega_store::model_capabilities::read_from(&config_path.with_file_name(
+                                vega_store::model_capabilities::MODEL_CAPABILITY_FILE_NAME,
+                            ));
+                        if capabilities.is_err() {
+                            reasoning_error = Some(ReasoningSettingsErrorCode::Invalid);
+                            reasoning_authority = None;
+                        }
                         for provider in config.providers.iter().filter(|provider| provider.enabled)
                         {
                             for model in &provider.models {
@@ -641,6 +650,7 @@ impl VegaWindow {
                                             &provider.base_url,
                                             model,
                                             profile,
+                                            &capabilities.as_ref().cloned().unwrap_or_default(),
                                         );
                                     let profile = match profile {
                                         Ok(profile) => profile,

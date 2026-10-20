@@ -1,6 +1,4 @@
-use vega_conversation::types::{
-    ReasoningProfileProjection, ReasoningProtocol, ReasoningReplaySetting, chat_compatibility,
-};
+use vega_conversation::types::ReasoningProfileProjection;
 use vega_runtime::{FrozenReasoning, ReasoningReplayPolicy};
 use vega_store::config::ProviderApi;
 
@@ -15,6 +13,7 @@ pub(crate) fn resolve_reasoning_profile(
     base_url: &str,
     model: &str,
     configured: Option<ReasoningProfileProjection>,
+    capabilities: &vega_store::model_capabilities::ModelCapabilityConfig,
 ) -> Result<ReasoningProfileProjection, ReasoningCapabilityError> {
     if configured
         .as_ref()
@@ -22,27 +21,33 @@ pub(crate) fn resolve_reasoning_profile(
     {
         return Err(ReasoningCapabilityError::Invalid);
     }
-    let mut profile = if api == ProviderApi::Responses {
-        let mut profile = ReasoningProfileProjection::unknown(provider, model);
-        profile.protocol = ReasoningProtocol::ResponsesApi;
-        profile.replay_profile = ReasoningReplaySetting::ResponsesItems;
-        profile.support = vega_runtime::ReasoningSupport::Optional;
-        profile.efforts = vega_runtime::REASONING_EFFORTS
-            .iter()
-            .map(|effort| (*effort).into())
-            .collect();
-        profile
-    } else {
-        chat_compatibility(Some(base_url), model).map_or_else(
-            || ReasoningProfileProjection::unknown(provider, model),
-            |capabilities| {
-                ReasoningProfileProjection::from_chat_compatibility(provider, model, capabilities)
-            },
+    let definition = vega_runtime::model_compat::lookup_model_definition(
+        &vega_runtime::model_compat::ModelRoute::new(
+            vega_conversation::model_capabilities::api(api),
+            base_url,
         )
-    };
-    if let Some(configured) = configured {
-        profile.preference = configured.preference;
-    }
+        .map_err(|_| ReasoningCapabilityError::Invalid)?,
+        &vega_runtime::model_compat::ModelIdentity {
+            provider: provider.into(),
+            model: model.into(),
+        },
+    )
+    .map_err(|_| ReasoningCapabilityError::Invalid)?;
+    let user_override = capabilities.record(provider, model).map(|record| {
+        vega_runtime::model_compat::ModelCapabilityOverride {
+            identity: definition.identity.clone(),
+            allowed_efforts: record.allowed_efforts.clone(),
+            image_input: record.image_input,
+        }
+    });
+    let resolved = vega_runtime::model_compat::resolve_model(&definition, user_override.as_ref())
+        .map_err(|_| ReasoningCapabilityError::Invalid)?;
+    let profile = ReasoningProfileProjection::from_resolved_model(
+        &resolved,
+        configured.map_or(vega_runtime::ReasoningChoice::ProviderDefault, |profile| {
+            profile.preference
+        }),
+    );
     Ok(profile)
 }
 

@@ -5,7 +5,12 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub(super) fn build_body(base_url: &str, req: &ChatRequest) -> Result<Value, VegaError> {
-    let facts = crate::chat_compat::resolve(Some(base_url), &req.model)?;
+    let model = crate::model_compat::request_model(
+        req,
+        crate::model_compat::ModelApi::ChatCompletions,
+        base_url,
+    )?;
+    let facts = model.compatibility();
     let choice = req
         .reasoning
         .as_ref()
@@ -21,7 +26,7 @@ pub(super) fn build_body(base_url: &str, req: &ChatRequest) -> Result<Value, Veg
         });
     }
     let projected = crate::project_model_messages(&req.messages)?;
-    let ids = wire_ids(base_url, &projected)?;
+    let ids = wire_ids(base_url, &projected, 40)?;
     let id = |value: &str| ids.get(value).cloned().unwrap_or_else(|| value.into());
     let mut pending = Vec::new();
     let mut messages = Vec::new();
@@ -57,21 +62,16 @@ pub(super) fn build_body(base_url: &str, req: &ChatRequest) -> Result<Value, Veg
             .and_then(|raw| raw.details.as_ref())
         {
             wire["reasoning_details"] = json!(details);
-        } else {
-            if let Some(text) = &message.reasoning_content {
-                wire["reasoning_content"] = json!(text);
-            }
-            if let Some((source, text)) = message
-                .chat_reasoning
-                .as_ref()
-                .and_then(|raw| raw.text.as_ref())
-            {
-                wire[if facts.reasoning_source_override {
-                    "reasoning_content"
-                } else {
-                    source.field()
-                }] = json!(text);
-            }
+        }
+        if let Some(text) = &message.reasoning_content {
+            wire["reasoning_content"] = json!(text);
+        }
+        if let Some((source, text)) = message
+            .chat_reasoning
+            .as_ref()
+            .and_then(|raw| raw.text.as_ref())
+        {
+            wire[source.field()] = json!(text);
         }
         if let Some(call_id) = &message.tool_call_id {
             wire["tool_call_id"] = json!(id(call_id));
@@ -102,6 +102,32 @@ pub(super) fn build_body(base_url: &str, req: &ChatRequest) -> Result<Value, Veg
                 pending.push(image_part(image, true));
             }
         }
+        if message.role == crate::ChatRole::Tool
+            && message.content.is_empty()
+            && message.images.is_empty()
+        {
+            wire["content"] = json!("(no tool output)");
+        }
+        if message.role == crate::ChatRole::Assistant && facts.thinking_as_text {
+            let raw = message.reasoning_content.as_deref().or_else(|| {
+                message
+                    .chat_reasoning
+                    .as_ref()
+                    .and_then(|raw| raw.text.as_ref().map(|(_, text)| text.as_str()))
+            });
+            if let Some(raw) = raw {
+                let mut parts = vec![json!({"type":"text","text":raw})];
+                if !message.content.is_empty() {
+                    parts.push(json!({"type":"text","text":message.content}));
+                }
+                wire["content"] = json!(parts);
+                if let Some(object) = wire.as_object_mut() {
+                    for key in ["reasoning_content", "reasoning", "reasoning_text"] {
+                        object.remove(key);
+                    }
+                }
+            }
+        }
         messages.push(wire);
     }
     if !pending.is_empty() {
@@ -118,7 +144,7 @@ pub(super) fn build_body(base_url: &str, req: &ChatRequest) -> Result<Value, Veg
     {
         body["tools"]=json!(req.tools.iter().map(|tool|{
             let mut function=json!({"name":tool.name,"description":tool.description,"parameters":tool.input_schema});
-            if tool.strict&&facts.transport.strict {function["strict"]=json!(true);}
+            if facts.transport.strict {function["strict"]=json!(tool.strict);}
             json!({"type":"function","function":function})
         }).collect::<Vec<_>>());
     }
@@ -132,7 +158,11 @@ pub(super) fn build_body(base_url: &str, req: &ChatRequest) -> Result<Value, Veg
             "max_completion_tokens"
         }] = json!(cap);
     }
-    apply_control(&mut body, &facts, choice)?;
+    if facts.transport.store {
+        body["store"] = json!(false);
+    }
+    apply_tool_choice(&mut body, req, false)?;
+    apply_control(&mut body, facts, choice)?;
     Ok(body)
 }
 
@@ -155,9 +185,6 @@ fn apply_control(
         ReasoningChoice::Disabled => Some(false),
         _ => Some(true),
     };
-    if facts.format == ChatThinkingFormat::Zai && (facts.reasoning || active.is_some()) {
-        body["thinking"] = json!({"clear_thinking":false});
-    }
     let Some(active) = active else {
         return Ok(());
     };
@@ -179,6 +206,9 @@ fn apply_control(
             body["reasoning_effort"] = json!(value);
         }
         ChatThinkingFormat::Deepseek | ChatThinkingFormat::Zai => {
+            if active && facts.format == ChatThinkingFormat::Zai {
+                body["thinking"] = json!({"clear_thinking":false});
+            }
             body["thinking"]["type"] = json!(if active { "enabled" } else { "disabled" });
             if let Some(effort) = effort {
                 body["reasoning_effort"] = json!(effort);
@@ -197,10 +227,11 @@ fn apply_control(
             }
         }
         ChatThinkingFormat::Baseten => {
-            if !facts.template_enabled {
+            let values = template(facts.template_args.as_ref(), active, effort)?;
+            if values.is_empty() {
                 return Err(crate::chat_compat::protocol_error());
             }
-            body["chat_template_args"] = json!({"enable_thinking":active});
+            body["chat_template_args"] = json!(values);
             if let Some(effort) = effort {
                 body["reasoning_effort"] = json!(effort);
             } else if !active
@@ -214,6 +245,24 @@ fn apply_control(
             body["reasoning"] =
                 json!({"effort":effort.or(facts.off_effort.as_deref()).unwrap_or("none")});
         }
+        ChatThinkingFormat::StringThinking => {
+            body["thinking"] = json!(
+                effort
+                    .or(facts.off_effort.as_deref())
+                    .ok_or_else(crate::chat_compat::protocol_error)?
+            );
+        }
+        ChatThinkingFormat::QwenChatTemplate => {
+            body["chat_template_kwargs"] =
+                json!({"enable_thinking":active,"preserve_thinking":true});
+        }
+        ChatThinkingFormat::ChatTemplate => {
+            body["chat_template_kwargs"] = json!(template(
+                facts.template_kwargs.as_ref(),
+                active,
+                effort.or_else(|| (!active).then_some(facts.off_effort.as_deref()).flatten())
+            )?);
+        }
         ChatThinkingFormat::AntLing => {
             body["reasoning"] =
                 json!({"effort":effort.ok_or_else(crate::chat_compat::protocol_error)?});
@@ -222,9 +271,10 @@ fn apply_control(
     Ok(())
 }
 
-fn wire_ids(
+pub(super) fn wire_ids(
     base_url: &str,
     messages: &[crate::ChatMessage],
+    limit: usize,
 ) -> Result<BTreeMap<String, String>, VegaError> {
     let official = reqwest::Url::parse(base_url).is_ok_and(|url| {
         url.scheme() == "https"
@@ -251,7 +301,8 @@ fn wire_ids(
                 .chain(message.tool_call_id.clone())
         })
         .collect::<BTreeSet<_>>();
-    let needs = |id: &str| !live.contains(id) && (id.contains('|') || (official && id.len() > 40));
+    let needs =
+        |id: &str| !live.contains(id) && (id.contains('|') || (official && id.len() > limit));
     let mut reserved = all
         .iter()
         .filter(|id| !needs(id))
@@ -290,4 +341,61 @@ fn wire_ids(
         }
     }
     Ok(mapping)
+}
+
+fn template(
+    values: Option<&BTreeMap<String, Value>>,
+    active: bool,
+    effort: Option<&str>,
+) -> Result<BTreeMap<String, Value>, VegaError> {
+    let mut result = BTreeMap::new();
+    for (key, value) in values.into_iter().flatten() {
+        let value = match value.get("$var").and_then(Value::as_str) {
+            Some("thinking.enabled") => json!(active),
+            Some("thinking.effort") => {
+                if !active && value["omitWhenOff"] == true {
+                    continue;
+                }
+                let Some(effort) = effort else {
+                    continue;
+                };
+                json!(effort)
+            }
+            Some(_) => return Err(crate::chat_compat::protocol_error()),
+            None => value.clone(),
+        };
+        result.insert(key.clone(), value);
+    }
+    Ok(result)
+}
+
+pub(super) fn apply_tool_choice(
+    body: &mut Value,
+    request: &ChatRequest,
+    responses: bool,
+) -> Result<(), VegaError> {
+    let Some(choice) = &request.tool_choice else {
+        return Ok(());
+    };
+    body["tool_choice"] = match choice {
+        crate::ToolChoice::Auto => json!("auto"),
+        crate::ToolChoice::None => json!("none"),
+        crate::ToolChoice::Required => {
+            if request.tools.is_empty() {
+                return Err(crate::model_compat::invalid());
+            }
+            json!("required")
+        }
+        crate::ToolChoice::NamedFunction(name) => {
+            if !request.tools.iter().any(|tool| &tool.name == name) {
+                return Err(crate::model_compat::invalid());
+            }
+            if responses {
+                json!({"type":"function","name":name})
+            } else {
+                json!({"type":"function","function":{"name":name}})
+            }
+        }
+    };
+    Ok(())
 }

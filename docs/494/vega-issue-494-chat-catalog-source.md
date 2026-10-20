@@ -1,5 +1,7 @@
 # #494 Chat 目录来源与导入
 
+本文记录 v3（[固定提交 8c57f7ef](https://github.com/puzige/vega/tree/8c57f7efb3d886c1c10429edb2bc1219a7b7a753)）的导入结果。v4 将两种现有 API 的共同能力移入 `model_compat`，删除下述旧目录资产；当前范围与验证见[模型兼容基线](vega-issue-494-model-compat-baseline.md)和[v4 验证记录](vega-issue-494-v4-verification.md)。本文的数量、范围和结论仅对应 v3。
+
 本轮内置的是固定版本的兼容元数据和 Vega 的 Rust codec，不增加 npm 运行时、在线目录依赖或构建期下载。目录记录不是逐模型真实服务验证结果；工具接续、请求和解析行为由本卡冻结测试另行验证。
 
 ## 固定来源
@@ -16,11 +18,11 @@
 
 生成的 provider JSON 位于发布包的 `dist/providers/data/`，不在该 gitHead 的 Git 源码树中。[固定 Chat codec](https://github.com/earendil-works/pi/blob/b79e4cc834970cca69daebffab7df1da7d1e52c4/packages/ai/src/api/openai-completions.ts) 提供默认值与编码行为参考，[固定 LICENSE](https://github.com/earendil-works/pi/blob/b79e4cc834970cca69daebffab7df1da7d1e52c4/LICENSE) 提供 MIT 许可。该 tarball 不包含 LICENSE，仓库中的副本取自上述固定 Git 提交；其 Git blob 为 `b0a8e9b81083294360c69b4ec45d3d39a2b28197`。
 
-仓库保存三个文件：
+v3 固定提交保存三个文件：
 
-- `crates/vega_runtime/src/chat_compat/pi-ai-0.84.4.json`：version 1 投影，保留 653 条源记录。
-- `crates/vega_runtime/src/chat_compat/pi-ai-0.84.4.sources.json`：26 个源文件的 SHA256、条数、发布 integrity、投影摘要和消费字段清单。
-- `crates/vega_runtime/src/chat_compat/PI-LICENSE`：MIT 原文与版权声明。
+- [Chat 投影](https://github.com/puzige/vega/blob/8c57f7efb3d886c1c10429edb2bc1219a7b7a753/crates/vega_runtime/src/chat_compat/pi-ai-0.84.4.json)：version 1 投影，保留 653 条源记录。
+- [Chat 来源清单](https://github.com/puzige/vega/blob/8c57f7efb3d886c1c10429edb2bc1219a7b7a753/crates/vega_runtime/src/chat_compat/pi-ai-0.84.4.sources.json)：26 个源文件的 SHA256、条数、发布 integrity、投影摘要和消费字段清单。
+- [PI-LICENSE](https://github.com/puzige/vega/blob/8c57f7efb3d886c1c10429edb2bc1219a7b7a753/crates/vega_runtime/src/chat_compat/PI-LICENSE)：MIT 原文与版权声明，v4 继续保留。
 
 26 个源 provider 共有 653 条 `openai-completions` 记录、645 个规范化 endpoint/model 身份。8 条重复来自 Qwen plan 与 individual 共用入口，其 reasoning、thinkingLevelMap、compat 完全相同。导入保留源记录；运行时 decoder 仅允许行为等价的重复身份，冲突明确失败。以上数字用于来源清点，不表示 653 个不同模型或服务已经实测。
 
@@ -46,7 +48,7 @@
 
 ## Vega 的解析边界
 
-服务通过规范化 HTTPS endpoint 的完整身份识别，拒绝凭主机子串或 provider 显示名称猜测。Cloudflare 仅对源路径中的账户/网关占位段做单段匹配。除源 URL 外，显式入口别名为 Together 的 `https://api.together.xyz/v1`、DeepSeek 的 `/v1`，以及既有 Zai/智谱标准与 coding v4 入口。别名和服务默认值集中在 `chat_compat/catalog.rs`，不分散到 App、Agent 或 UI。
+服务通过规范化 HTTPS endpoint 的完整身份识别，拒绝凭主机子串或 provider 显示名称猜测。Cloudflare 仅对源路径中的账户/网关占位段做单段匹配。除源 URL 外，显式入口别名为 Together 的 `https://api.together.xyz/v1`、DeepSeek 的 `/v1`，以及既有 Zai/智谱标准与 coding v4 入口。别名和服务默认值集中在 [v3 catalog.rs](https://github.com/puzige/vega/blob/8c57f7efb3d886c1c10429edb2bc1219a7b7a753/crates/vega_runtime/src/chat_compat/catalog.rs)，不分散到 App、Agent 或 UI。
 
 服务 transport 默认值、该服务一致的目录覆写、精确模型覆写依次合成。未知代理即使同名也不借用原厂模型能力。完全未知模型显示默认加六档，选择通过实际方言发送；已知服务未知模型使用服务的默认控制方言。默认选择不主动开关思考；不支持的选择不降档或吞掉。Responses 保持独立编码与 replay 类型。
 
@@ -56,7 +58,7 @@ Vega 的已有公开覆盖保留在 resolver：Step `step-5-preview` 的 low/med
 
 ## 可复现投影
 
-在仓库根目录运行以下 Python，仅下载固定资料并写入 `/tmp` 的复核产物，不启动 Vega、不编译、不运行测试，也不修改仓库文件。它逐文件核对 manifest，再按源文件名顺序及文件内原记录顺序投影；JSON 使用 UTF-8、递归排序对象键、紧凑分隔符和单个末尾换行。
+以下 Python 只适用于检出固定提交 `8c57f7efb3d886c1c10429edb2bc1219a7b7a753` 的独立目录，在其仓库根目录运行；当前 v4 工作树已移除旧资产。它仅下载固定资料并写入 `/tmp` 的复核产物，不启动 Vega、不编译、不运行测试，也不修改仓库文件。它逐文件核对 manifest，再按源文件名顺序及文件内原记录顺序投影；JSON 使用 UTF-8、递归排序对象键、紧凑分隔符和单个末尾换行。
 
 ```python
 import base64

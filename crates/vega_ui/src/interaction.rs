@@ -122,6 +122,9 @@ impl Element for Interaction {
 
     fn write_a11y_info(&self, node: &mut gpui_kit::accesskit::Node) {
         self.base.write_a11y_info(node);
+        if !self.enabled {
+            node.set_disabled();
+        }
     }
 
     fn a11y_synthetic_children(

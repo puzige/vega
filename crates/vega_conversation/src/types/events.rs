@@ -51,6 +51,8 @@ pub enum RunFailureKind {
     #[allow(missing_docs)]
     ReasoningLimit(Option<vega_runtime::ReasoningBudgetScope>),
     ReasoningReplay,
+    ModelImagesUnsupported,
+    ReasoningSelectionInvalid,
     /// A durable failed row whose original reason was not persisted.
     Persisted,
 }
@@ -123,6 +125,8 @@ impl RunFailureKind {
             Some("rejected") => Self::ProviderRejected,
             Some("output_limit") => Self::ProviderOutputLimit,
             Some("context_over_limit") => Self::ContextOverLimit,
+            Some("model_images") => Self::ModelImagesUnsupported,
+            Some("reasoning_selection") => Self::ReasoningSelectionInvalid,
             Some("reasoning_limit") => {
                 Self::ReasoningLimit(match metrics.failure_scope.as_deref() {
                     Some("delta") => Some(vega_runtime::ReasoningBudgetScope::Delta),
@@ -272,6 +276,10 @@ impl RunFailureKind {
             | vega_runtime::VegaError::ReasoningReplayBudgetExceeded { scope, .. } => {
                 Self::ReasoningLimit(Some(*scope))
             }
+            vega_runtime::VegaError::ModelImagesUnsupported => Self::ModelImagesUnsupported,
+            vega_runtime::VegaError::ReasoningSelectionInvalid { .. } => {
+                Self::ReasoningSelectionInvalid
+            }
             vega_runtime::VegaError::ReasoningReplayUnsupported
             | vega_runtime::VegaError::ReasoningReplayIncomplete => Self::ReasoningReplay,
             _ => Self::Runtime,
@@ -313,6 +321,8 @@ impl RunFailureKind {
             Self::ReasoningLimit(_) => {
                 "The run exceeded the local reasoning limit. Send your message again to continue.".into()
             }
+            Self::ModelImagesUnsupported => "This model does not accept images. Choose a vision model or enable image input in model settings, then retry.".into(),
+            Self::ReasoningSelectionInvalid => "The selected thinking level is unavailable. Choose provider default or another available level in the conversation, then retry.".into(),
             Self::ReasoningReplay => {
                 "The model returned reasoning state that cannot be continued. Retry, or start a new conversation if this persists.".into()
             }

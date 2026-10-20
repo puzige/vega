@@ -10,6 +10,7 @@ pub mod image_attachments;
 pub mod keystore;
 pub mod mcp_servers;
 pub mod messages;
+pub mod model_capabilities;
 pub mod palette;
 pub mod paths;
 pub mod pending_messages;

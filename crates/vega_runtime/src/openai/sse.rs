@@ -158,6 +158,9 @@ impl SseAssembler {
     pub(crate) fn absorb(&mut self, data: &str) -> Result<Vec<ProviderEvent>, VegaError> {
         let chunk: serde_json::Value =
             serde_json::from_str(data).map_err(|_| invalid_protocol())?;
+        if chunk.is_null() {
+            return Ok(Vec::new());
+        }
         if !chunk.is_object() || chunk.get("error").is_some() {
             return Err(invalid_protocol());
         }
@@ -267,7 +270,10 @@ impl SseAssembler {
                     }
                 }
             }
-            if let Some(reason) = choice.get("finish_reason").filter(|value| !value.is_null()) {
+            if let Some(reason) = choice
+                .get("finish_reason")
+                .filter(|value| !value.is_null() && value.as_str() != Some(""))
+            {
                 let reason = map_finish_reason(reason.as_str().ok_or_else(invalid_protocol)?);
                 if reason == StopReason::Unknown
                     || self
@@ -426,14 +432,16 @@ impl SseAssembler {
         };
         let tool = &mut self.tools[slot];
         if index.zip(tool.index).is_some_and(|(one, two)| one != two)
-            || id.is_some_and(|id| !tool.id.is_empty() && tool.id != id)
+            || (by_index.is_none() && id.is_some_and(|id| !tool.id.is_empty() && tool.id != id))
         {
             return Err(invalid_protocol());
         }
         if let Some(index) = index {
             tool.index = Some(index);
         }
-        if let Some(id) = id {
+        if tool.id.is_empty()
+            && let Some(id) = id
+        {
             tool.id = id.into();
         }
         if let Some(function) = call.get("function").filter(|value| !value.is_null()) {
@@ -442,8 +450,11 @@ impl SseAssembler {
             }
             if let Some(name) = function.get("name").filter(|value| !value.is_null()) {
                 let name = name.as_str().ok_or_else(invalid_protocol)?;
-                if tool.name != name {
-                    tool.name.push_str(name);
+                if !name.is_empty() {
+                    if !tool.name.is_empty() && tool.name != name {
+                        return Err(invalid_protocol());
+                    }
+                    tool.name = name.into();
                 }
             }
             if let Some(arguments) = function.get("arguments").filter(|value| !value.is_null()) {
@@ -491,7 +502,8 @@ impl SseAssembler {
         if self.tools.iter().any(|tool| {
             tool.id.is_empty()
                 || tool.name.is_empty()
-                || serde_json::from_str::<serde_json::Value>(&tool.arguments).is_err()
+                || !serde_json::from_str::<serde_json::Value>(&tool.arguments)
+                    .is_ok_and(|value| value.is_object())
         }) {
             return Err(invalid_protocol());
         }

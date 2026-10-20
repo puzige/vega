@@ -1,16 +1,11 @@
-use crate::VegaError;
-use crate::provider::{
-    ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy,
+use crate::model_compat::{ModelApi, ModelDefinition, ModelIdentity, ModelRoute};
+use crate::{
+    ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, VegaError,
 };
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
 
-mod catalog;
-use catalog::{Catalog, CatalogEntry, Transport};
-
-pub(crate) const RULES_VERSION: &str = "vega.chat.v3.pi-ai-0.84.4.1";
+pub(crate) const RULES_VERSION: &str = crate::model_compat::RULES_VERSION;
 pub const REASONING_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +16,7 @@ pub enum ReasoningSupport {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatThinkingFormat {
     #[default]
@@ -34,6 +29,22 @@ pub enum ChatThinkingFormat {
     Openrouter,
     #[serde(rename = "ant-ling")]
     AntLing,
+    #[serde(rename = "string-thinking")]
+    StringThinking,
+    #[serde(rename = "qwen-chat-template")]
+    QwenChatTemplate,
+    #[serde(rename = "chat-template")]
+    ChatTemplate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Transport {
+    pub(crate) developer: bool,
+    pub(crate) max_tokens: bool,
+    pub(crate) usage: bool,
+    pub(crate) strict: bool,
+    pub(crate) tool_stream: bool,
+    pub(crate) store: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,13 +59,12 @@ pub struct ChatCompatibility {
     pub profile_id: String,
     pub(crate) format: ChatThinkingFormat,
     pub(crate) transport: Transport,
-    pub(crate) known_model: bool,
     pub(crate) reasoning: bool,
-    pub(crate) fallback: bool,
     pub(crate) effort_map: BTreeMap<String, String>,
     pub(crate) off_effort: Option<String>,
-    pub(crate) template_enabled: bool,
-    pub(crate) reasoning_source_override: bool,
+    pub(crate) template_args: Option<BTreeMap<String, serde_json::Value>>,
+    pub(crate) template_kwargs: Option<BTreeMap<String, serde_json::Value>>,
+    pub(crate) thinking_as_text: bool,
 }
 
 impl ChatCompatibility {
@@ -63,17 +73,8 @@ impl ChatCompatibility {
             ReasoningChoice::ProviderDefault => true,
             ReasoningChoice::Enabled => self.supports_enabled,
             ReasoningChoice::Disabled => self.supports_disabled,
-            ReasoningChoice::Effort(effort) => self.efforts.contains(effort),
+            ReasoningChoice::Effort(v) => self.efforts.contains(v),
         }
-    }
-
-    fn identify(&mut self) {
-        self.profile_id.clear();
-        let mut digest = Sha256::new();
-        digest.update(RULES_VERSION.as_bytes());
-        digest.update([u8::from(self.fallback)]);
-        digest.update(format!("{self:?}").as_bytes());
-        self.profile_id = format!("{:x}", digest.finalize());
     }
 }
 
@@ -88,37 +89,155 @@ pub(crate) fn protocol_error() -> VegaError {
     }
 }
 
-fn decode_catalog(bytes: &[u8]) -> Result<Catalog, VegaError> {
-    catalog::decode(bytes)
-}
-
-fn catalog() -> Result<&'static Catalog, VegaError> {
-    static DATA: OnceLock<Result<Catalog, ()>> = OnceLock::new();
-    DATA.get_or_init(|| {
-        decode_catalog(include_bytes!("chat_compat/pi-ai-0.84.4.json")).map_err(|_| ())
-    })
-    .as_ref()
-    .map_err(|_| protocol_error())
-}
-
 pub fn chat_compatibility(base_url: Option<&str>, model: &str) -> Option<ChatCompatibility> {
     resolve(base_url, model).ok()
 }
 
 pub(crate) fn resolve(base_url: Option<&str>, model: &str) -> Result<ChatCompatibility, VegaError> {
-    let data = catalog()?;
-    let (service, entry) = data.find(base_url, model);
-    let mut transport = Transport::for_service(service, model);
-    data.apply_service_transport(service, &mut transport);
-    if let Some(entry) = entry {
-        entry.compat.apply_transport(&mut transport);
+    let route = ModelRoute::new(
+        ModelApi::ChatCompletions,
+        base_url.ok_or_else(protocol_error)?,
+    )?;
+    let definition = crate::model_compat::lookup_model_definition(
+        &route,
+        &ModelIdentity {
+            provider: "unconfigured".into(),
+            model: model.into(),
+        },
+    )?;
+    Ok(crate::model_compat::resolve_model(&definition, None)?
+        .compatibility()
+        .clone())
+}
+
+pub(crate) fn from_definition(def: &ModelDefinition) -> ChatCompatibility {
+    let service = def.service.as_deref();
+    let known_service = matches!(
+        service,
+        Some(
+            "ant-ling"
+                | "baseten"
+                | "cerebras"
+                | "cloudflare-ai-gateway"
+                | "cloudflare-workers-ai"
+                | "deepseek"
+                | "fireworks"
+                | "github-copilot"
+                | "groq"
+                | "huggingface"
+                | "moonshotai"
+                | "moonshotai-cn"
+                | "nvidia"
+                | "openai"
+                | "opencode"
+                | "opencode-go"
+                | "openrouter"
+                | "qwen-token-plan"
+                | "qwen-token-plan-cn"
+                | "qwen-token-plan-individual"
+                | "together"
+                | "xai"
+                | "xiaomi"
+                | "xiaomi-token-plan-ams"
+                | "xiaomi-token-plan-cn"
+                | "xiaomi-token-plan-sgp"
+                | "zai"
+                | "zai-coding-cn"
+        )
+    );
+    let nonstandard = matches!(
+        service,
+        Some(
+            "nvidia"
+                | "cerebras"
+                | "together"
+                | "deepseek"
+                | "zai"
+                | "zai-coding-cn"
+                | "moonshotai"
+                | "moonshotai-cn"
+                | "opencode"
+                | "opencode-go"
+                | "cloudflare-workers-ai"
+                | "cloudflare-ai-gateway"
+                | "ant-ling"
+        )
+    );
+    let mut transport = Transport {
+        developer: known_service
+            && !nonstandard
+            && (service != Some("openrouter")
+                || def.identity.model.starts_with("openai/")
+                || def.identity.model.starts_with("anthropic/")),
+        max_tokens: !known_service
+            || matches!(
+                service,
+                Some(
+                    "deepseek"
+                        | "moonshotai"
+                        | "moonshotai-cn"
+                        | "cloudflare-ai-gateway"
+                        | "together"
+                        | "nvidia"
+                        | "ant-ling"
+                        | "zai"
+                        | "zai-coding-cn"
+                )
+            ),
+        usage: true,
+        strict: !matches!(
+            service,
+            Some("moonshotai" | "moonshotai-cn" | "together" | "cloudflare-ai-gateway" | "nvidia")
+        ),
+        tool_stream: false,
+        store: known_service,
+    };
+    let compat = &def.compat;
+    if let Some(value) = compat.supports_developer_role {
+        transport.developer = value;
     }
-    let format = entry
-        .and_then(|entry| entry.compat.thinking_format)
-        .unwrap_or_else(|| data.service_format(service));
-    let mut profile = ChatCompatibility {
-        protocol: ReasoningProtocol::OpenAiChatCompletions,
-        replay_policy: ReasoningReplayPolicy::StandardChat,
+    if let Some(value) = compat.supports_usage_in_streaming {
+        transport.usage = value;
+    }
+    if let Some(value) = compat.supports_strict_mode {
+        transport.strict = value;
+    }
+    if let Some(value) = compat.supports_store {
+        transport.store = value;
+    }
+    if let Some(value) = &compat.max_tokens_field {
+        transport.max_tokens = value == "max_tokens";
+    }
+    if let Some(value) = compat.zai_tool_stream {
+        transport.tool_stream = value;
+    }
+    let mut format = compat.thinking_format.unwrap_or(match service {
+        Some("deepseek" | "opencode-go") => ChatThinkingFormat::Deepseek,
+        Some("zai" | "zai-coding-cn") => ChatThinkingFormat::Zai,
+        Some("together") => ChatThinkingFormat::Together,
+        Some("ant-ling") => ChatThinkingFormat::AntLing,
+        Some("openrouter") => ChatThinkingFormat::Openrouter,
+        Some("qwen-token-plan" | "qwen-token-plan-cn" | "qwen-token-plan-individual") => {
+            ChatThinkingFormat::Qwen
+        }
+        _ => ChatThinkingFormat::Openai,
+    });
+    if def.route.api == ModelApi::Responses
+        || def.reasoning.is_none() && format == ChatThinkingFormat::Baseten
+    {
+        format = ChatThinkingFormat::Openai;
+    }
+    let mut facts = ChatCompatibility {
+        protocol: if def.route.api == ModelApi::Responses {
+            ReasoningProtocol::ResponsesApi
+        } else {
+            ReasoningProtocol::OpenAiChatCompletions
+        },
+        replay_policy: if def.route.api == ModelApi::Responses {
+            ReasoningReplayPolicy::ResponsesItems
+        } else {
+            ReasoningReplayPolicy::StandardChat
+        },
         support: ReasoningSupport::Optional,
         efforts: Vec::new(),
         supports_disabled: false,
@@ -127,144 +246,112 @@ pub(crate) fn resolve(base_url: Option<&str>, model: &str) -> Result<ChatCompati
         profile_id: String::new(),
         format,
         transport,
-        known_model: entry.is_some(),
-        reasoning: entry.is_some_and(|entry| entry.reasoning),
-        fallback: entry.is_none(),
+        reasoning: def.reasoning == Some(true),
         effort_map: BTreeMap::new(),
-        off_effort: None,
-        template_enabled: false,
-        reasoning_source_override: service == Some("opencode-go"),
+        off_effort: def.thinking_level_map.get("off").and_then(Clone::clone),
+        template_args: compat.chat_template_args.clone(),
+        template_kwargs: compat.chat_template_kwargs.clone(),
+        thinking_as_text: compat.requires_thinking_as_text == Some(true),
     };
-    if let Some(entry) = entry {
-        apply_model(&mut profile, entry, service);
-    } else {
-        profile.efforts = REASONING_EFFORTS
-            .iter()
-            .map(|effort| (*effort).into())
-            .collect();
-        profile.effort_map = profile
-            .efforts
-            .iter()
-            .map(|effort| (effort.clone(), effort.clone()))
-            .collect();
-        if profile.format == ChatThinkingFormat::Baseten {
-            profile.format = ChatThinkingFormat::Openai;
-        }
+    let fallback = def.reasoning.is_none();
+    if def.reasoning == Some(false) {
+        facts.support = ReasoningSupport::Unsupported;
+        return facts;
     }
-    if service == Some("deepseek") && model == "deepseek-flash" {
-        profile.known_model = true;
-        profile.fallback = false;
-        profile.reasoning = true;
-        profile.format = ChatThinkingFormat::Deepseek;
-        profile.efforts = ["low", "high", "max"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        profile.effort_map = profile
-            .efforts
-            .iter()
-            .map(|effort| (effort.clone(), effort.clone()))
-            .collect();
-        profile.supports_disabled = true;
-    }
-    if service == Some("deepseek") && profile.known_model {
-        profile.protocol = ReasoningProtocol::DeepSeekChatCompletions;
-        profile.replay_policy = ReasoningReplayPolicy::DeepSeekTools;
-    }
-    if matches!(service, Some("zai" | "zai-coding-cn"))
-        && matches!(model, "glm-4.7" | "glm-5.3" | "glm-5.3-flash")
-    {
-        profile.protocol = ReasoningProtocol::ZhipuChatCompletions;
-        profile.replay_policy = ReasoningReplayPolicy::GlmPreserved;
-        if model != "glm-4.7" {
-            profile.support = ReasoningSupport::Required;
-            profile.supports_disabled = false;
-        }
-    }
-    if model == "step-5-preview" {
-        profile.efforts = ["low", "medium", "high"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        profile.effort_map = profile
-            .efforts
-            .iter()
-            .map(|effort| (effort.clone(), effort.clone()))
-            .collect();
-        profile.supports_disabled = false;
-        profile.supports_enabled = false;
-        if service.is_none() {
-            profile.known_model = true;
-            profile.reasoning = true;
-            profile.fallback = false;
-        }
-    }
-    profile.disabled_wire = profile
-        .supports_disabled
-        .then_some(ReasoningDisabledWire::Resolved);
-    profile.identify();
-    Ok(profile)
-}
-
-fn apply_model(profile: &mut ChatCompatibility, entry: &CatalogEntry, service: Option<&str>) {
-    if !entry.reasoning {
-        profile.support = ReasoningSupport::Unsupported;
-        return;
-    }
-    let format = profile.format;
+    let effort = fallback
+        || def.route.api == ModelApi::Responses
+        || matches!(
+            format,
+            ChatThinkingFormat::Openrouter | ChatThinkingFormat::AntLing
+        )
+        || compat.supports_reasoning_effort.unwrap_or(!matches!(
+            service,
+            Some(
+                "zai"
+                    | "zai-coding-cn"
+                    | "moonshotai"
+                    | "moonshotai-cn"
+                    | "together"
+                    | "cloudflare-ai-gateway"
+                    | "nvidia"
+                    | "ant-ling"
+            )
+        ));
+    let effort = effort
+        && (format != ChatThinkingFormat::ChatTemplate
+            || compat.chat_template_kwargs.as_ref().is_some_and(|values| {
+                values
+                    .values()
+                    .any(|value| value["$var"] == "thinking.effort")
+            }));
     let boolean = matches!(
         format,
         ChatThinkingFormat::Deepseek
             | ChatThinkingFormat::Zai
             | ChatThinkingFormat::Qwen
             | ChatThinkingFormat::Together
-            | ChatThinkingFormat::Baseten
-    );
-    let effort = matches!(
+            | ChatThinkingFormat::QwenChatTemplate
+    ) || matches!(
         format,
-        ChatThinkingFormat::Openrouter | ChatThinkingFormat::AntLing
-    ) || entry
-        .compat
-        .supports_reasoning_effort
-        .unwrap_or_else(|| catalog::default_effort(service));
-    profile.template_enabled = entry
-        .compat
+        ChatThinkingFormat::Baseten | ChatThinkingFormat::ChatTemplate
+    ) && compat
         .chat_template_args
         .as_ref()
-        .is_some_and(|args| args.enable_thinking.is_some());
-    let boolean = boolean && (format != ChatThinkingFormat::Baseten || profile.template_enabled);
-    profile.supports_enabled = boolean && !effort;
+        .into_iter()
+        .chain(compat.chat_template_kwargs.as_ref())
+        .any(|map| {
+            map.values()
+                .any(|value| value["$var"] == "thinking.enabled")
+        });
     if effort {
         for name in REASONING_EFFORTS {
-            let mapped = entry.thinking_level_map.get(*name);
-            let value = match mapped {
-                Some(Some(value)) => Some(value.as_str()),
-                None if !matches!(*name, "xhigh" | "max")
-                    && format != ChatThinkingFormat::AntLing =>
-                {
-                    Some(*name)
+            let value = if fallback {
+                Some((*name).to_string())
+            } else {
+                match def.thinking_level_map.get(*name) {
+                    Some(Some(value)) => Some(value.clone()),
+                    None if !matches!(*name, "xhigh" | "max")
+                        && format != ChatThinkingFormat::AntLing =>
+                    {
+                        Some((*name).into())
+                    }
+                    _ => None,
                 }
-                _ => None,
             };
             if let Some(value) = value {
-                profile.efforts.push((*name).into());
-                profile.effort_map.insert((*name).into(), value.into());
+                facts.efforts.push((*name).into());
+                facts.effort_map.insert((*name).into(), value);
             }
         }
     }
-    profile.off_effort = entry.thinking_level_map.get("off").and_then(Option::clone);
-    profile.supports_disabled = match format {
-        ChatThinkingFormat::Openai => effort && profile.off_effort.is_some(),
-        ChatThinkingFormat::AntLing => false,
-        ChatThinkingFormat::Openrouter => entry.thinking_level_map.get("off") != Some(&None),
-        _ => boolean && entry.thinking_level_map.get("off") != Some(&None),
-    };
-    if entry
-        .compat
-        .requires_reasoning_content_on_assistant_messages
-        == Some(true)
-    {
-        profile.replay_policy = ReasoningReplayPolicy::DeepSeekTools;
-        profile.protocol = ReasoningProtocol::DeepSeekChatCompletions;
+    facts.supports_enabled = !fallback && boolean && !effort;
+    facts.supports_disabled = !fallback
+        && match format {
+            ChatThinkingFormat::Openai | ChatThinkingFormat::StringThinking => {
+                effort && facts.off_effort.is_some()
+            }
+            ChatThinkingFormat::AntLing => false,
+            ChatThinkingFormat::ChatTemplate => {
+                def.thinking_level_map.get("off") != Some(&None)
+                    && (boolean || facts.off_effort.is_some())
+            }
+            ChatThinkingFormat::Openrouter => def.thinking_level_map.get("off") != Some(&None),
+            _ => boolean && def.thinking_level_map.get("off") != Some(&None),
+        };
+    if !fallback && def.route.api == ModelApi::ChatCompletions {
+        if compat.requires_reasoning_content_on_assistant_messages == Some(true)
+            || service == Some("deepseek")
+        {
+            facts.protocol = ReasoningProtocol::DeepSeekChatCompletions;
+            facts.replay_policy = ReasoningReplayPolicy::DeepSeekTools;
+        }
+        if matches!(service, Some("zai" | "zai-coding-cn")) && format == ChatThinkingFormat::Zai {
+            facts.protocol = ReasoningProtocol::ZhipuChatCompletions;
+            facts.replay_policy = ReasoningReplayPolicy::GlmPreserved;
+        }
     }
+    facts.disabled_wire = facts
+        .supports_disabled
+        .then_some(ReasoningDisabledWire::Resolved);
+    facts
 }

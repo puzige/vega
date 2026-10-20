@@ -716,9 +716,18 @@ pub(crate) fn run_manual_context_worker(
                 provider_credential_reader.clone(),
                 exceptions.clone(),
             );
+        let model_snapshot = vega_conversation::model_capabilities::load_configured_model(
+            &config,
+            &config_path,
+            &configured.name,
+            &model,
+        )
+        .map_err(|_| ())?;
         let provider = vega_runtime::OpenAiProvider::new(configured.base_url, key)
             .map_err(|_| ())?
             .with_responses_api(configured.api == vega_conversation::types::ProviderApi::Responses)
+            .with_model_snapshot(model_snapshot)
+            .map_err(|_| ())?
             .with_pre_attempt_guard(pre_attempt_guard);
         Ok(Arc::new(provider))
     };

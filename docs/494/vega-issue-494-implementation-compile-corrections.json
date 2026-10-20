@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "status": "reviewed_before_mechanical_compile_corrections; awaiting same frozen suite GREEN",
+  "head_before_correction": "f4528d3837c9a9369a6a0b2756ff647aa4d25905",
+  "actions_run": "https://github.com/puzige/vega/actions/runs/39365322166",
+  "rust_discovered": null,
+  "rust_executed": 0,
+  "behavior_green": false,
+  "review_before_edit": "https://github.com/puzige/vega/pull/504#issuecomment-6282865079",
+  "raw_logs": [
+    {
+      "job": "https://github.com/puzige/vega/actions/runs/39365322166/job/118440734541",
+      "bytes": 72012,
+      "sha256": "adfb1f43946f513700abb151417693d5eec4f4f3fe7e8ac3ca0262f023f8ca6a",
+      "failure": "GPUI generated bare test attribute resolves imported GPUI test macro recursively"
+    },
+    {
+      "job": "https://github.com/puzige/vega/actions/runs/39365322166/job/118440734285",
+      "bytes": 107265,
+      "sha256": "dac3285dcece871944bd55fa1910c9de457365527018a223ce0db6c20b974a8d",
+      "failure": "two test mutex guards and unused test glob import"
+    }
+  ],
+  "files": [
+    {
+      "file": "crates/vega/src/window/model_capability_tests.rs",
+      "before_sha256": "d428aaae75c5dfe5ad4a20acd2c8ee193995aa7cd178ceba6a3b2dbbca9e997c",
+      "reviewed_change": "explicit standard test import; original GPUI attributes and bodies unchanged",
+      "after_sha256": "731825a0d83b18013698d6b45ea2d3994a1ca219fc935d7278d1f3dda3c0062f"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "before_sha256": "38a324990aeec2200bbb9a89214e1caf41f6042dc423679d956c72d7cf32383f",
+      "reviewed_change": "lexical scopes around two existing mutex assertions replace explicit drop before awaits",
+      "after_sha256": "7898e813bafad0259623281619384f9d39a3b76bf809d05f67d4670618580905"
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "before_sha256": "f848898fa98c879c7aa05985b6e13208a5995ea1274bdf2ed3e7e11beaeeb465",
+      "reviewed_change": "remove unused super glob only",
+      "after_sha256": "56a79a4357d4a05af99dcddf36c6f3ce0aba7052aa9541397538901f94b5b77b"
+    },
+    {
+      "file": "crates/vega_ui/src/settings/reasoning_state.rs",
+      "before_sha256": "2b19471c221ccb0ad02a5352072c2abf18483df4955cd446a933a856e4eeb1e0",
+      "reviewed_change": "remove unused reasoning_focus getter only",
+      "after_sha256": "b0aaa17a4299a45b6cf5e0dbbc918fea7dbb3ca288faf7b29b969d2ee2db09bb"
+    },
+    {
+      "file": "crates/vega_ui/src/settings/provider_management.rs",
+      "before_sha256": "b1e86d96688f8039503c3dc28c3194b1f5fb47569d7a540c1797402ea0bbfe87",
+      "reviewed_change": "existing real open_model_settings route visibility pub(crate) to pub only",
+      "after_sha256": "65da7cb0fa7b5bc70091cdf875cce13e0dde90109f160b5961be6b02fa4dc08f"
+    }
+  ],
+  "invariants": [
+    "same 133 test names and attributes",
+    "no test added removed or ignored",
+    "same input values production calls assertions and thresholds",
+    "original frozen source map and pre-implementation SQL correction ledger unchanged",
+    "no lint suppression recursion limit increase or workflow/dependency change",
+    "local format/diff/metadata only; no Vega execution compilation or tests"
+  ],
+  "after_review": {
+    "audit": "vega-issue-494-compile-correction-audit.json",
+    "sha256": "7a7a0b08bca59e1a097bcfa96e337605377148525e91b7f55f3b1503a31a1adb",
+    "root_verified": "Five exact before/after hashes, all25 frozen artifacts and same133 names/attributes independently matched; diff contains only reviewed scope/import/visibility/dead-getter changes. All original input and assertion tokens retained.",
+    "full_same_suite_green": "pending Actions"
+  }
+}

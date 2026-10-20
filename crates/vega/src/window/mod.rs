@@ -28,6 +28,7 @@ mod context;
 mod diff;
 mod file_index;
 mod image_preview;
+mod model_capabilities;
 mod model_catalog;
 mod model_context;
 mod native_subagents;
@@ -146,6 +147,10 @@ pub(crate) struct VegaWindow {
     /// Configured model ids projected from the worker-side config read. The
     /// selector intersects these with the in-memory Ready pricing authority.
     pub(crate) configured_models: Option<Vec<String>>,
+    model_capability_authority: Option<ModelCapabilityAuthority>,
+    model_capability_projection: ModelCapabilitySettingsProjection,
+    model_capability_generation: u64,
+    model_capability_pending: Option<(u64, u64)>,
     /// Exact provider/model reasoning projections loaded beside the model
     /// catalog. The stream receives a typed projection and performs no file
     /// IO of its own.
@@ -313,6 +318,10 @@ impl VegaWindow {
             trusted_actions: TrustedActionCoordinator::default(),
             window_alive: Arc::new(AtomicBool::new(true)),
             configured_models: None,
+            model_capability_authority: None,
+            model_capability_projection: ModelCapabilitySettingsProjection::Loading,
+            model_capability_generation: 0,
+            model_capability_pending: None,
             configured_reasoning: None,
             configured_reasoning_error: None,
             configured_reasoning_authority: None,

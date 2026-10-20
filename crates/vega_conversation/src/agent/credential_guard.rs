@@ -106,6 +106,43 @@ fn contains_chat_secret(
         })
 }
 
+fn contains_response_secret(
+    message: &vega_runtime::ChatMessage,
+    known: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> bool {
+    message
+        .response_reasoning
+        .iter()
+        .any(|value| contains_json_secret(value, known, exceptions))
+        || message
+            .response_replay_layout
+            .as_ref()
+            .is_some_and(|layout| {
+                layout
+                    .response_id
+                    .as_deref()
+                    .is_some_and(|id| contains_with_policy(id, known, exceptions))
+                    || layout.slots.iter().any(|slot| match slot {
+                        vega_runtime::ResponseReplaySlot::Reasoning(value)
+                        | vega_runtime::ResponseReplaySlot::Message(value) => {
+                            contains_json_secret(value, known, exceptions)
+                        }
+                        vega_runtime::ResponseReplaySlot::FunctionCall {
+                            item,
+                            call_id,
+                            name,
+                            arguments,
+                        } => {
+                            contains_json_secret(item, known, exceptions)
+                                || contains_with_policy(call_id, known, exceptions)
+                                || contains_with_policy(name, known, exceptions)
+                                || contains_with_policy(arguments, known, exceptions)
+                        }
+                    })
+            })
+}
+
 fn reject_owner_secret_with_policy(
     request: &ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
@@ -126,6 +163,7 @@ fn reject_owner_secret_with_policy(
                 .chat_reasoning
                 .as_ref()
                 .is_some_and(|raw| contains_chat_secret(raw, &known, exceptions))
+            || contains_response_secret(message, &known, exceptions)
             || message.tool_calls.iter().any(|call| {
                 contains_with_policy(&call.id, &known, exceptions)
                     || contains_with_policy(&call.name, &known, exceptions)
@@ -183,6 +221,7 @@ pub(crate) fn project_owner_secrets_with_policy(
             .chat_reasoning
             .as_ref()
             .is_some_and(|raw| contains_chat_secret(raw, &known, exceptions))
+            || contains_response_secret(message, &known, exceptions)
         {
             return Err(blocked());
         }
@@ -380,6 +419,10 @@ fn protected_stream(
 }
 
 impl Provider for OwnerCredentialProvider {
+    fn model_snapshot(&self) -> Option<vega_runtime::model_compat::ResolvedModel> {
+        self.provider.model_snapshot()
+    }
+
     fn chat_stream_recovering(
         &self,
         request: ChatRequest,

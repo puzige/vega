@@ -51,3 +51,6 @@ pub mod privacy;
 pub mod automation;
 
 pub mod subagents;
+
+pub mod model_capabilities;
+pub use model_capabilities::{ModelCapabilityAuthority, ModelCapabilitySettingsService};

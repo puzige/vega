@@ -160,6 +160,20 @@ impl Render for VegaWindow {
                     this.request_reasoning_reload(view.clone(), cx);
                 })
                 .detach();
+                cx.subscribe(
+                    &settings,
+                    |this, view, event: &ModelCapabilitySaveRequested, cx| {
+                        this.request_model_capability_save(view.clone(), event, cx)
+                    },
+                )
+                .detach();
+                cx.subscribe(
+                    &settings,
+                    |this, view, _: &ModelCapabilityReloadRequested, cx| {
+                        this.request_model_capability_reload(view.clone(), cx)
+                    },
+                )
+                .detach();
                 let projection = self.pricing_controller.projection();
                 let reasoning_projection = self.reasoning_settings_projection();
                 settings.update(cx, |settings, cx| {
@@ -169,7 +183,8 @@ impl Render for VegaWindow {
                 });
                 let focus = settings.read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
-                self.settings_view = Some(settings);
+                self.settings_view = Some(settings.clone());
+                self.request_model_capability_reload(settings, cx);
             }
             match &self.settings_view {
                 Some(settings) => settings.clone().into_any_element(),

@@ -57,6 +57,11 @@ pub struct SettingsView {
     /// Last failed edit retained for an explicit retry/reload decision.
     pub(crate) reasoning_draft: Option<ReasoningProfileProjection>,
     pub(crate) next_reasoning_operation: u64,
+    pub(crate) model_capabilities: ModelCapabilitySettingsProjection,
+    pub(crate) model_capability_models: Vec<ModelCapabilityProjection>,
+    pub(crate) model_capability_draft: Option<ModelCapabilityOverride>,
+    pub(crate) model_capability_focuses: Vec<(ModelCapabilityFocusTarget, FocusHandle)>,
+    pub(crate) next_model_capability_operation: u64,
 }
 
 impl Focusable for SettingsView {
@@ -74,6 +79,8 @@ impl EventEmitter<ModelContextLoadRequested> for SettingsView {}
 impl EventEmitter<ModelContextSaveRequested> for SettingsView {}
 impl EventEmitter<ReasoningProfileSaveRequested> for SettingsView {}
 impl EventEmitter<ReasoningReloadRequested> for SettingsView {}
+impl EventEmitter<ModelCapabilitySaveRequested> for SettingsView {}
+impl EventEmitter<ModelCapabilityReloadRequested> for SettingsView {}
 
 pub(crate) const PRICING_INPUT_BYTES_LIMIT: usize = 1024 * 1024;
 pub(crate) const PROVIDER_MODELS_MIN_ROWS: usize = 2;
@@ -232,6 +239,11 @@ impl SettingsView {
             reasoning_focuses: Vec::new(),
             reasoning_draft: None,
             next_reasoning_operation: 0,
+            model_capabilities: ModelCapabilitySettingsProjection::Loading,
+            model_capability_models: Vec::new(),
+            model_capability_draft: None,
+            model_capability_focuses: Vec::new(),
+            next_model_capability_operation: 0,
         }
     }
 

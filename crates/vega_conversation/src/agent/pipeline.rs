@@ -573,48 +573,19 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let context_policy = reasoning
         .as_ref()
         .map(|selection| {
-            vega_store::context_compaction::load_model_policy(
+            super::compaction::load_current_model_context_policy(
                 &transaction,
                 &selection.provider,
                 &selection.model,
             )
         })
         .transpose()
-        .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
-        .flatten()
-        .or_else(|| {
-            reasoning.as_ref().map(|selection| {
-                vega_store::context_compaction::ModelContextPolicy::assumed_default(
-                    &selection.provider,
-                    &selection.model,
-                )
-            })
-        });
-    let context_budget = match context_policy.as_ref() {
-        Some(policy) => match (policy.input_limit, policy.output_reserve) {
-            (Some(input), Some(reserve)) => {
-                // Settings exposes independent input/output numbers. The
-                // runtime's existing total/reserve representation has the
-                // same input budget only after checked B + O conversion.
-                let total = input.checked_add(reserve).ok_or_else(|| {
-                    ConversationError::CorruptRow("invalid persisted context budget".into())
-                })?;
-                Some(
-                    vega_runtime::ContextBudget::new(total, reserve, policy.automatic_compaction)
-                        .map_err(|_| {
-                        ConversationError::CorruptRow("invalid persisted context budget".into())
-                    })?,
-                )
-            }
-            (None, None) => None,
-            _ => {
-                return Err(ConversationError::CorruptRow(
-                    "partial persisted context budget".into(),
-                ));
-            }
-        },
-        None => None,
-    };
+        .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?;
+    let context_budget = context_policy
+        .as_ref()
+        .map(super::compaction::model_context_budget)
+        .transpose()?
+        .flatten();
     let checkpoint_root = database_path
         .parent()
         .ok_or_else(|| ConversationError::CorruptRow("database path has no parent".to_string()))?
@@ -1005,6 +976,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             completed_tool_results,
             pricing_catalog,
             reasoning,
+            model_snapshot: None,
             replay_frame: Some(replay_frame),
             context_budget,
             context_source_version: Some(source.source_version),

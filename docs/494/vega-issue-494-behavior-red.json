@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "head": "2971b357daac35187593c4aae3c485397a4096ae",
+  "run": "https://github.com/puzige/vega/actions/runs/39367011160",
+  "nextest_job": "https://github.com/puzige/vega/actions/runs/39367011160/job/118446031040",
+  "nextest_run_id": "08dd6e23-3853-4376-bbe1-e79b43fd5c44",
+  "discovered": 133,
+  "executed": 133,
+  "passed": 123,
+  "failed": 10,
+  "skipped": 0,
+  "ignored": 0,
+  "retries": 0,
+  "suite_complete": true,
+  "behavior_green": false,
+  "nextest_raw_log": {
+    "bytes": 127258,
+    "sha256": "95ecf9853994c48031741f6293dfa659410d691a40493cde0267ad5d971d59a0"
+  },
+  "failures": [
+    {
+      "test": "vega::bin/vega window::context::compatibility_tests::manual_context_worker_factory_consumes_native_snapshot_and_keeps_capacity_authority",
+      "completion_index": 5,
+      "raw_failure_excerpt": [
+        "thread 'window::context::compatibility_tests::manual_context_worker_factory_consumes_native_snapshot_and_keeps_capacity_authority' (26846) panicked at crates/vega/src/window/model_context_compatibility_tests.rs:123:9:",
+        "assertion failed: result.is_ok()"
+      ]
+    },
+    {
+      "test": "vega_conversation model_compatibility_tests::lifecycle::credential_guard_checks_all_private_channels_and_opaque_keys_without_rewriting_signed_data",
+      "completion_index": 23,
+      "raw_failure_excerpt": [
+        "thread 'model_compatibility_tests::lifecycle::credential_guard_checks_all_private_channels_and_opaque_keys_without_rewriting_signed_data' (26942) panicked at crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs:202:9:",
+        "responses"
+      ]
+    },
+    {
+      "test": "vega_runtime openai::compatibility_tests::catalog::verified_native_models_expose_their_exact_logical_holes_and_boolean_or_effort_controls",
+      "completion_index": 45,
+      "raw_failure_excerpt": [
+        "thread 'openai::compatibility_tests::catalog::verified_native_models_expose_their_exact_logical_holes_and_boolean_or_effort_controls' (27026) panicked at crates/vega_runtime/src/openai/compatibility_tests/catalog.rs:671:9:",
+        "assertion `left == right` failed: grok-build-0.1",
+        "left: [\"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\"]",
+        "right: [\"high\"]"
+      ]
+    },
+    {
+      "test": "vega_runtime openai::compatibility_tests::lifecycle::frozen_capacity_output_reserve_remains_authoritative_over_source_model_limits",
+      "completion_index": 73,
+      "raw_failure_excerpt": [
+        "thread 'openai::compatibility_tests::lifecycle::frozen_capacity_output_reserve_remains_authoritative_over_source_model_limits' (27113) panicked at crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:545:5:",
+        "assertion `left == right` failed",
+        "left: Some(256)",
+        "right: Some(800)"
+      ]
+    },
+    {
+      "test": "vega_runtime openai::compatibility_tests::lifecycle::unmodified_json_validation_and_permission_rejection_keep_tools_fenced",
+      "completion_index": 78,
+      "raw_failure_excerpt": [
+        "thread 'openai::compatibility_tests::lifecycle::unmodified_json_validation_and_permission_rejection_keep_tools_fenced' (27129) panicked at crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:297:9:",
+        "assertion `left == right` failed: read {\"path\":5}",
+        "left: 1",
+        "right: 0"
+      ]
+    },
+    {
+      "test": "vega_runtime openai::compatibility_tests::lifecycle::user_and_history_images_block_before_send_while_legal_tool_images_block_next_send",
+      "completion_index": 79,
+      "raw_failure_excerpt": [
+        "thread 'openai::compatibility_tests::lifecycle::user_and_history_images_block_before_send_while_legal_tool_images_block_next_send' (27131) panicked at crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:476:5:",
+        "assertion failed: outcome.failed"
+      ]
+    },
+    {
+      "test": "vega_runtime openai::compatibility_tests::lifecycle::known_required_replay_fields_remain_strict_while_generic_missing_reasoning_is_legal",
+      "completion_index": 80,
+      "raw_failure_excerpt": [
+        "thread 'openai::compatibility_tests::lifecycle::known_required_replay_fields_remain_strict_while_generic_missing_reasoning_is_legal' (27115) panicked at crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:755:13:",
+        "assertion `left == right` failed: deepseek-reasoner None",
+        "left: false",
+        "right: true"
+      ]
+    },
+    {
+      "test": "vega_ui conversation_stream::core::model_capability_tests::composer_allows_only_effective_subset_and_preserves_actual_wire_choice",
+      "completion_index": 124,
+      "raw_failure_excerpt": [
+        "thread 'conversation_stream::core::model_capability_tests::composer_allows_only_effective_subset_and_preserves_actual_wire_choice' (27268) panicked at crates/vega_ui/src/conversation_stream/model_capability_tests.rs:70:13:",
+        "assertion failed: slider.update(cx, |slider, cx| slider.select_index(2, cx))"
+      ]
+    },
+    {
+      "test": "vega_ui conversation_stream::core::model_capability_tests::unknown_proxy_gpt_and_arbitrary_ids_expose_every_fallback_effort_without_whitelist",
+      "completion_index": 126,
+      "raw_failure_excerpt": [
+        "thread 'conversation_stream::core::model_capability_tests::unknown_proxy_gpt_and_arbitrary_ids_expose_every_fallback_effort_without_whitelist' (27278) panicked at crates/vega_ui/src/conversation_stream/model_capability_tests.rs:219:13:",
+        "assertion `left == right` failed: gpt-6-luna",
+        "left: String(\"low\")",
+        "right: \"minimal\""
+      ]
+    },
+    {
+      "test": "vega_ui settings::model_capability_tests::saving_prevents_duplicates_and_failed_conflict_retains_edit_for_reload",
+      "completion_index": 130,
+      "raw_failure_excerpt": [
+        "thread 'settings::model_capability_tests::saving_prevents_duplicates_and_failed_conflict_retains_edit_for_reload' (27298) panicked at crates/vega_ui/src/settings/model_capability_tests.rs:303:35:",
+        "index out of bounds: the len is 0 but the index is 0"
+      ]
+    }
+  ],
+  "clippy_job": "https://github.com/puzige/vega/actions/runs/39367011160/job/118446030884",
+  "clippy_raw_log": {
+    "bytes": 102853,
+    "sha256": "507107b92d9974b47327adca02a61392f6b1bd84341205998925d7ecce0af12f"
+  },
+  "clippy_failure": "duplicate_mod: same unchanged HTTP fixture declared twice in App binary test target",
+  "other_checks": "Format successful; Python5+15+14 successful",
+  "review_state": "Read-only diagnosis. No tests or production rewritten after this result yet. Fixture/source-contract errors require prior review and explicit correction evidence; actual implementation gaps must preserve target assertions."
+}

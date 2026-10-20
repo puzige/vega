@@ -1,0 +1,34 @@
+{
+  "head": "7d1066901e9f488cc81e825bb035df6dea7936ee",
+  "run": "https://github.com/puzige/vega/actions/runs/39371580926",
+  "nextest_job": "https://github.com/puzige/vega/actions/runs/39371580926/job/118460417791",
+  "nextest_run_id": "0811d334-3dff-4716-b3f7-91ad9712750d",
+  "discovered": 133,
+  "executed": 133,
+  "passed": 133,
+  "failed": 0,
+  "skipped": 0,
+  "ignored": 0,
+  "retries": 0,
+  "behavior_green": true,
+  "summary_excerpt": "Starting 133 tests across 14 binaries; Summary [7.043s] 133 tests run: 133 passed, 0 skipped",
+  "clippy_job": "https://github.com/puzige/vega/actions/runs/39371580926/job/118460418222",
+  "clippy_and_format": "success",
+  "required_check_job": "https://github.com/puzige/vega/actions/runs/39371580926/job/118461554213",
+  "required_check": "success",
+  "python_executed_and_passed": 34,
+  "logs": {
+    "nextest": {
+      "bytes": 107007,
+      "sha256": "a0b43955bac50da5437a0bb24647e720dd60d2e7877f2be90fa95f86df3b38d1",
+      "retrieval": "gh run view --job --log"
+    },
+    "clippy": {
+      "bytes": 73676,
+      "sha256": "aad2ae5dbda0accefbbe5e0948d95ff29e611007bd92724e6e1bf10370a2d32e",
+      "retrieval": "GitHub job logs API (CLI archive cache bypass)"
+    }
+  },
+  "test_identity": "133 original names/attributes; prior reviewed source/input/result-contract corrections explicitly documented, not original byte identity",
+  "lifecycle": "GREEN proved before independent Rust test/support cleanup; final empty-set gate pending"
+}

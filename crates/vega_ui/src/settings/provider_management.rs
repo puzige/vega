@@ -293,7 +293,7 @@ impl SettingsView {
         state.statuses.retain(|_, value| value != "正在测试…");
         cx.notify();
     }
-    pub(crate) fn open_model_settings(
+    pub fn open_model_settings(
         &mut self,
         provider: &str,
         model: &str,
@@ -312,6 +312,7 @@ impl SettingsView {
         self.section = section;
         self.rebuild_pricing_focuses(cx);
         self.rebuild_reasoning_focuses(cx);
+        self.rebuild_model_capability_focuses(cx);
         cx.notify();
     }
 
@@ -1484,6 +1485,7 @@ impl SettingsView {
                     );
         }
         detail
+            .child(self.render_model_capability_image(cx))
             .child(self.render_model_catalog(cx))
             .into_any_element()
     }

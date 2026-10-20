@@ -12,8 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::VegaError;
 use crate::provider::{
     ChatReasoningPresence, ChatRequest, EventStream, Provider, ProviderEvent, ProviderFailureKind,
-    ProviderResponseMetadata, ProviderStream, ReasoningChoice, ReasoningDisabledWire,
-    ReasoningProtocol, StopReason,
+    ProviderResponseMetadata, ProviderStream, ReasoningChoice, StopReason,
 };
 use crate::retry::{RetryPolicy, parse_retry_after};
 
@@ -35,6 +34,7 @@ type RequestAttemptGuard = Arc<dyn Fn(&ChatRequest) -> Result<(), VegaError> + S
 pub struct OpenAiProvider {
     http: reqwest::Client,
     responses_api: bool,
+    model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
     /// Endpoint root, e.g. `https://api.openai.com/v1` (trailing slash ok).
     base_url: String,
     /// API key; only ever serialized into the Authorization request header.
@@ -76,6 +76,7 @@ impl OpenAiProvider {
         Ok(Self {
             http,
             responses_api: false,
+            model_snapshot: None,
             base_url: base_url.into(),
             key: key.into(),
             retry: RetryPolicy::default(),
@@ -85,6 +86,22 @@ impl OpenAiProvider {
             },
             before_attempt: None,
         })
+    }
+
+    pub fn with_model_snapshot(
+        mut self,
+        model: crate::model_compat::ResolvedModel,
+    ) -> Result<Self, VegaError> {
+        let api = if self.responses_api {
+            crate::model_compat::ModelApi::Responses
+        } else {
+            crate::model_compat::ModelApi::ChatCompletions
+        };
+        if model.definition.route != crate::model_compat::ModelRoute::new(api, &self.base_url)? {
+            return Err(crate::model_compat::invalid());
+        }
+        self.model_snapshot = Some(Box::new(model));
+        Ok(self)
     }
 
     pub fn with_responses_api(mut self, enabled: bool) -> Self {
@@ -147,17 +164,36 @@ impl OpenAiProvider {
         self.http.execute(request).await
     }
 
-    /// Sends the request (with retries) and returns the SSE event stream on
-    /// the first successful response.
-    async fn stream_response(
-        self,
-        req: ChatRequest,
-        cancel: CancellationToken,
-    ) -> Result<ProviderStream, VegaError> {
-        if cancel.is_cancelled() {
-            return Err(VegaError::Cancelled);
+    fn prepare_request(&self, mut req: ChatRequest) -> Result<ChatRequest, VegaError> {
+        if let Some(bound) = &self.model_snapshot {
+            if req
+                .model_snapshot
+                .as_ref()
+                .is_some_and(|model| model != bound)
+            {
+                return Err(crate::model_compat::invalid());
+            }
+            req.model_snapshot = Some(bound.clone());
         }
-        let mut req = req;
+        let api = if self.responses_api {
+            crate::model_compat::ModelApi::Responses
+        } else {
+            crate::model_compat::ModelApi::ChatCompletions
+        };
+        req.model_snapshot = Some(Box::new(crate::model_compat::request_model(
+            &req,
+            api,
+            &self.base_url,
+        )?));
+        if req.messages.iter().any(|message| {
+            if self.responses_api {
+                message.reasoning_content.is_some() || message.chat_reasoning.is_some()
+            } else {
+                !message.response_reasoning.is_empty() || message.response_replay_layout.is_some()
+            }
+        }) {
+            return Err(VegaError::ReasoningReplayUnsupported);
+        }
         req.messages = crate::project_model_messages(&req.messages)?;
         crate::images::validate_messages(&req.messages)?;
         if let Some(reasoning) = &req.reasoning {
@@ -168,6 +204,20 @@ impl OpenAiProvider {
                 });
             }
         }
+        Ok(req)
+    }
+
+    /// Sends the request (with retries) and returns the SSE event stream on
+    /// the first successful response.
+    async fn stream_response(
+        self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> Result<ProviderStream, VegaError> {
+        if cancel.is_cancelled() {
+            return Err(VegaError::Cancelled);
+        }
+        let req = self.prepare_request(req)?;
         let body = self.request_body(&req)?;
         let endpoint = if self.responses_api {
             "responses"
@@ -205,11 +255,7 @@ impl OpenAiProvider {
                     let status = resp.status().as_u16();
                     let request_id = request_id_from_headers(resp.headers());
                     let retry_after = retry_after_of(&resp);
-                    let snippet = if self.responses_api {
-                        "<response body omitted>".to_string()
-                    } else {
-                        self.redact_key(&error_snippet(resp, &cancel).await)
-                    };
+                    let snippet = self.redact_key(&error_snippet(resp, &cancel).await);
                     let message = format!("{endpoint} request failed (HTTP {status}): {snippet}");
                     if !is_retryable_status(status) {
                         // 4xx（除 429）：重试无意义，立即失败
@@ -263,6 +309,9 @@ impl OpenAiProvider {
 }
 
 impl Provider for OpenAiProvider {
+    fn model_snapshot(&self) -> Option<crate::model_compat::ResolvedModel> {
+        self.model_snapshot.as_deref().cloned()
+    }
     fn chat_stream_recovering(
         &self,
         req: ChatRequest,
@@ -338,7 +387,7 @@ pub(crate) fn encode_request(
     responses_api: bool,
 ) -> Result<serde_json::Value, VegaError> {
     if responses_api {
-        responses::build_body(req)
+        responses::build_body(base_url, req)
     } else {
         chat::build_body(base_url, req)
     }
@@ -357,15 +406,50 @@ fn retry_after_of(resp: &reqwest::Response) -> Option<Duration> {
 
 /// Reads a bounded snippet of an error response body for the error message.
 async fn error_snippet(resp: reqwest::Response, cancel: &CancellationToken) -> String {
-    let bytes = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return String::from("<cancelled while reading error body>"),
-        result = resp.bytes() => match result {
-            Ok(bytes) => bytes,
-            Err(e) => return format!("<error body unavailable: {e}>"),
-        },
-    };
-    String::from_utf8_lossy(&bytes).chars().take(512).collect()
+    let mut bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while bytes.len() < 4096 {
+        let next = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return String::from("<cancelled while reading error body>"),
+            next = stream.next() => next,
+        };
+        match next {
+            Some(Ok(chunk)) => {
+                bytes.extend_from_slice(&chunk[..chunk.len().min(4096 - bytes.len())])
+            }
+            Some(Err(_)) => return "<error body unavailable>".into(),
+            None => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
+    if let Some(details) = parsed
+        .as_ref()
+        .map(|value| value.get("error").unwrap_or(value))
+        .filter(|value| value.is_object())
+    {
+        let mut fields = serde_json::Map::new();
+        for key in [
+            "message",
+            "code",
+            "type",
+            "requested_tokens",
+            "max_context_tokens",
+        ] {
+            if let Some(value) = details.get(key) {
+                fields.insert(key.into(), value.clone());
+            }
+        }
+        if !fields.is_empty() {
+            return serde_json::json!({"error":fields})
+                .to_string()
+                .chars()
+                .take(3072)
+                .collect();
+        }
+    }
+    text.chars().take(1024).collect()
 }
 
 mod chat;

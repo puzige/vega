@@ -1,0 +1,1191 @@
+{
+  "head": "4bd6e6111d05929e131eb44c2cafcaf745148437",
+  "origin_master": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+  "review_before_edit": "https://github.com/puzige/vega/pull/504#issuecomment-6283447290",
+  "files": [
+    {
+      "file": "crates/vega_conversation/src/agent/credential_guard.rs",
+      "before_sha256": "e3610bb6a9bd65b68805bbb7b92a66c51db49c9573b9762fdf1c4821077855d3",
+      "sha256": "3f157eb62c304e4b2af3bd6e234dd8864b82c519747a83495982a5ded5ed75ea"
+    },
+    {
+      "file": "crates/vega_conversation/src/agent/compaction.rs",
+      "before_sha256": "5738e74cf1e2e263151bf2aaed9a307f7dc0f954e1f5d7034b3ea4f6cf37d03e",
+      "sha256": "241cd7e0de6049962e53f8c66a38fdbde29390bbf0dd138dd39d5ccf61fa7a67"
+    },
+    {
+      "file": "crates/vega_conversation/src/agent/pipeline.rs",
+      "before_sha256": "2be5d723aedf84b6c977f5125027ba53688b42519d6908723b7fe35f49883b0f",
+      "sha256": "47e8a7942b8bfdef3cf2ddcea95011a0010af07a99002f2c09b489a528aa5e82"
+    },
+    {
+      "file": "crates/vega_runtime/src/agent/tools_exec.rs",
+      "before_sha256": "f69bb0daec9980e2692de6e79c508638d7d7937f94ab2707364a0f28afa344dd",
+      "sha256": "b0c23bb1099c0c535b003da09e6dbb3812f05548ca1854b60de4a7b2ecd827eb"
+    }
+  ],
+  "artifacts": [
+    {
+      "file": "crates/vega/src/app_model_compatibility_tests.rs",
+      "sha256": "d042b8d5c107fdca86d0c04a4ced71189b608f74b8c06fd4a0f14444a92638b9",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega/src/window/model_capability_tests.rs",
+      "sha256": "dc7ee68420020e722d79458be036c8e4ce446f74c5219ca784a37655a0c1c29b",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega/src/window/model_context_compatibility_tests.rs",
+      "sha256": "8d74c473d38ad9994a5c8fa7c76e01b0e51cfb408d537b362181532f281fc80c",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs",
+      "sha256": "dc9bdc06f50b2de21de2b07774e5083e7ae902adbc760a33b958b2ad6b823e19",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/compaction.rs",
+      "sha256": "dfd1afb00611980b92880f4e74330714cfed17ea641ee2d9fcbbf7311e77f359",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs",
+      "sha256": "c2a060f21d121a8ce63bba7b3a2b4707d39b5305eba3f9f6ca1179b4fa4dba37",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "sha256": "760bdef74c9ef5b743c4bfb19cb07f2161e4f1b96d3b0bb94405765da72ebf85",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/mod.rs",
+      "sha256": "e884ea2fe999ffc9b81ef7f4d2551b4606935bf3054e44d307b8bca7ce5a0e67",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "sha256": "56a79a4357d4a05af99dcddf36c6f3ce0aba7052aa9541397538901f94b5b77b",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/trusted_git.rs",
+      "sha256": "6bfd433288121a7a0be35ba7cf101c47ecf9d0dbaa54e04a1a975daff0aa0d47",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "sha256": "774d899b2ddab3f9838f6c90c56ffa69fc0953b5c7d9d465bb096437ced86125",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "sha256": "eefa7e808fe19ca71c7c2487259eecd1002c9efe731d7e4513767d12bd651c09",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "sha256": "6f4e446cea780eff89b7e7d7fb478ee7b9250f8388fba9888ec75f1a783d8fd9",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/blue.png",
+      "sha256": "45d23cee87293ea99af26093ec3ad3acde66cb7969d3d3fd73798642d6453845",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/native-models.json",
+      "sha256": "8987a9a0dbacf211062e8563ae98c9e65419ce5a3e81de565b3a1e254aae5942",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/red.png",
+      "sha256": "d28c139bba718d60154960eaca75535a5cc5b59fe2153e998a29251e8e5f4667",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/http.rs",
+      "sha256": "9cb03a1de68f940890dc7335933e7e538b73213c0d713a80c08bf9f3752a74f8",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "sha256": "3eab92d775c5798f615c3ae6b04032f906ea4b60a663eacf1108b36b0a6e384f",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/mod.rs",
+      "sha256": "552f08c5e8388d374667a6d7a24f138c12bd58f0861da7e8f89fcbbcc2cceab6",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "sha256": "dff3cf83f3f9bd8c3b499c3d3e1b0b848a3caa9d59c22b3d4ab5e2b4e2a8352e",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "sha256": "701c6f36e787262f25fa75633a4a86d13c4cc5acdcc56359e865525ed0658880",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "sha256": "7898e813bafad0259623281619384f9d39a3b76bf809d05f67d4670618580905",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_store/src/model_capability_tests.rs",
+      "sha256": "65bc8ede847d8bd2ca586b2b14d1b13ca8f407386300aa0289cec90db1a3aec1",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "sha256": "c0d47c954cbf9661c3fd726736d2b1f7e9c3533da92652ef3fdea1c6e5220cd5",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "sha256": "6e5794c7d2176050e9dd978a01d7fe4503dac14ec8c420ae23357850717a4612",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_runtime/src/computer_use/desktop_test_support.rs",
+      "sha256": "32e83ef7599b4e5d7411d255dfa533c4cff839fef92d76ca99e16d6b8d68a1b2",
+      "unchanged": true
+    }
+  ],
+  "artifact_count": 26,
+  "same_names_and_attributes": true,
+  "definition_count": 133,
+  "definitions": [
+    [
+      "crates/vega/src/app_model_compatibility_tests.rs",
+      "commit_provider_factory_binds_actual_model_overrides_for_default_requests",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega/src/app_model_compatibility_tests.rs",
+      "commit_provider_factory_rejects_unsupported_images_before_network",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega/src/app_model_compatibility_tests.rs",
+      "real_agent_worker_resolves_saved_capabilities_and_default_selection_before_sending",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega/src/app_model_compatibility_tests.rs",
+      "real_reasoning_loader_rejects_invalid_saved_choice_without_clamping_and_accepts_default_repair",
+      [
+        "::core::prelude::v1::test"
+      ]
+    ],
+    [
+      "crates/vega/src/window/model_capability_tests.rs",
+      "capability_save_conflict_preserves_external_record_and_does_not_publish_draft_as_authority",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega/src/window/model_capability_tests.rs",
+      "invalid_saved_effort_recovers_through_actual_composer_controller_default_save",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega/src/window/model_capability_tests.rs",
+      "stale_generation_or_foreign_settings_entity_cannot_write_model_capabilities",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega/src/window/model_capability_tests.rs",
+      "started_worker_completion_cannot_replace_new_settings_entity_or_new_model_operation",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega/src/window/model_capability_tests.rs",
+      "window_capability_save_and_reset_use_real_service_without_editing_preferences",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega/src/window/model_context_compatibility_tests.rs",
+      "manual_context_worker_factory_consumes_native_snapshot_and_keeps_capacity_authority",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs",
+      "automatic_title_collect_uses_bound_default_snapshot_and_authentic_terminal",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs",
+      "title_incomplete_and_tool_outputs_never_become_a_generated_title",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs",
+      "title_launch_updates_only_claimed_title_and_records_real_total_usage",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/compaction.rs",
+      "incomplete_summary_does_not_install_checkpoint_or_claim_compaction_success",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/compaction.rs",
+      "manual_compaction_uses_frozen_model_and_installs_real_checkpoint_with_usage",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs",
+      "prediction_collect_uses_bound_default_snapshot_and_parses_actual_json_text",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs",
+      "prediction_invalid_terminal_or_json_is_not_a_user_suggestion",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs",
+      "prediction_run_observes_real_owner_and_records_usage_without_rewriting_history",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "credential_guard_checks_all_private_channels_and_opaque_keys_without_rewriting_signed_data",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "credential_projection_redacts_mutable_text_before_wire_and_keeps_source_request_owned",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "credential_reader_failure_and_cancel_do_not_send_auxiliary_requests",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "default_conversation_request_binds_model_and_persists_only_visible_result_and_usage",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "original_private_reasoning_and_details_replay_in_run_but_never_enter_sqlite_or_debug",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "capability_service_load_save_reset_resolves_exact_models_and_keeps_preferences_unchanged",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "corrupt_new_capability_authority_blocks_real_loading_while_old_file_never_participates",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "loading_capabilities_ignores_preference_value_but_never_changes_its_bytes",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "orphan_records_do_not_create_models_or_vanish_when_other_models_are_saved",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "real_provider_configuration_add_replace_remove_updates_exact_model_resolution",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "service_rejects_nonencodable_level_without_writing_or_altering_preferences",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "service_rejects_removed_target_and_stale_same_target_but_merges_other_records",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "service_reloads_exact_provider_route_and_never_borrows_same_named_factory_model",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/trusted_git.rs",
+      "commit_draft_rejects_tool_output_incomplete_terminal_and_oversized_text",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_conversation/src/model_compatibility_tests/trusted_git.rs",
+      "commit_draft_request_and_collector_use_real_bound_model_and_native_wire",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "capability_overrides_are_identity_scoped_immutable_and_resettable",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "catalog_rejects_invalid_schema_and_conflicting_canonical_identity",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "common_reasoning_metadata_from_other_native_models_keeps_raw_level_semantics_only",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "complete_pinned_native_metadata_survives_decoder_lookup_and_fixed_resolution",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "empty_effort_subset_preserves_real_boolean_operations",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "equal_catalog_aliases_resolve_without_order_dependent_model_selection",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "final_raw_map_keeps_explicit_disabled_off_and_mapped_effort",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "fixed_lookup_uses_exact_endpoint_and_api_before_service_defaults",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "fixed_native_model_metadata_preserves_reasoning_vision_and_limits",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "logical_levels_and_real_controls_use_independent_capability_sets",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "source_map_missing_null_and_mapped_values_remain_distinct",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "unknown_models_use_six_generic_levels_on_both_native_apis",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "unsupported_or_duplicate_user_levels_are_rejected_without_clamping",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "verified_native_models_expose_their_exact_logical_holes_and_boolean_or_effort_controls",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "empty_tool_lists_and_real_history_keep_function_contracts_without_fabrication",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "empty_tool_outputs_use_a_truthful_placeholder_and_chat_images_follow_consecutive_results",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "explicit_disabled_and_boolean_enabled_are_real_separate_operations",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "fixed_native_model_maps_reach_real_wire_without_clamping_or_service_guessing",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "official_chat_transport_chooses_completion_limit_without_borrowing_responses_model_facts",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "ordinary_tool_choice_is_encoded_by_both_native_apis_and_validated_locally",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "output_limit_preserves_caller_authority_without_catalog_or_estimate_clamping",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "provider_default_never_becomes_an_explicit_thinking_off_operation",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "snapshot_api_route_model_and_saved_choice_mismatches_fail_before_encoding",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "system_developer_strict_usage_and_store_are_model_transport_facts",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "template_effort_mapping_preserves_static_values_and_omits_inactive_control",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "thinking_dialects_encode_only_their_selected_wire_control",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "unknown_proxy_effort_selection_is_sent_for_every_fallback_level",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "validated_image_bytes_and_existing_budgets_stay_authoritative_after_capability_overrides",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "vision_gate_preserves_real_image_order_or_rejects_each_role_before_send",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "actual_generation_length_never_manufactures_provider_context_overflow",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "cancelled_transport_does_not_start_network_or_retry",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "deterministic_retry_schedule_is_finite_and_honors_bounded_server_delay",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "explicit_context_error_codes_and_phrases_do_not_confuse_usage_length_or_rate_limits",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "native_http_failures_preserve_status_bounded_reason_and_redact_credentials",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "retryable_statuses_retry_same_wire_while_rejected_requests_never_change_choice",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "actual_tool_loop_preserves_first_id_original_arguments_raw_and_single_execution",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "cancellation_after_visible_delta_fences_queued_tools_before_any_execution",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "cancelled_run_never_contacts_provider_or_starts_tools",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "completed_call_identity_is_not_executed_twice_in_one_run",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "declared_thinking_as_text_is_wire_only_and_cold_projection_never_restores_it",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "frozen_capacity_output_reserve_remains_authoritative_over_source_model_limits",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "known_required_replay_fields_remain_strict_while_generic_missing_reasoning_is_legal",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "malformed_or_incomplete_proposals_never_start_tools_or_succeed",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "private_text_and_opaque_detail_bytes_remain_in_real_context_and_resident_accounting",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "routed_response_model_never_replaces_configured_request_or_replay_identity",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "unmodified_json_validation_and_permission_rejection_keep_tools_fenced",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "user_and_history_images_block_before_send_while_legal_tool_images_block_next_send",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "warm_candidate_replays_only_under_same_model_route_api_and_effective_capabilities",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "fixed_xai_responses_models_keep_real_roles_efforts_and_encrypted_replay_request",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "foreign_raw_is_rejected_and_cold_projection_never_exposes_private_state",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "native_tool_image_results_keep_call_association_and_pixel_order",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "nonlive_foreign_tool_id_projection_is_unique_bounded_and_result_consistent",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "nonreasoning_responses_omit_thinking_fields_and_encrypted_includes",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "responses_default_explicit_effort_and_off_keep_separate_wire_meanings",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "responses_encrypted_reasoning_uses_done_value_and_fills_only_missing_payload",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "responses_fragmented_function_calls_emit_only_final_original_arguments",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "responses_known_model_choices_are_metadata_bound_and_unknown_choices_reach_wire",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "responses_native_replay_preserves_message_order_and_opaque_layout",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "responses_output_limit_is_preserved_and_chat_only_fields_never_cross_api",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "responses_terminal_phases_never_replace_authentic_completed_or_failed_state",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "responses_usage_preserves_total_input_and_both_cache_counters",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "conflicting_slots_names_and_unrepaired_final_json_fail_before_call_release",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "empty_custom_objects_do_not_replace_function_calls",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "empty_or_null_finish_frames_do_not_terminate_text_reasoning_or_tools",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "fragmented_unicode_visible_text_is_not_mixed_with_private_reasoning",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "null_chunks_are_ignored_and_null_or_empty_only_eof_still_fails",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "original_reasoning_channel_presence_is_preserved_without_duplicate_alias_text",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "parallel_slots_content_and_reasoning_accumulate_independently",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "signed_reasoning_detail_order_and_fragment_identity_are_lossless",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "stable_index_retains_first_nonempty_call_id_and_complete_original_arguments",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "unknown_nonempty_finish_and_mutation_after_terminal_are_rejected",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "usage_tracks_total_input_caches_and_progressive_snapshots_without_double_output",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "actual_provider_binds_default_snapshot_and_encodes_each_native_api",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "incomplete_http_stream_never_reports_success_even_with_display_text",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "provider_probe_uses_real_codec_and_rejects_intermediate_only_or_foreign_terminal",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "recovery_retry_uses_same_snapshot_wire_and_actual_terminal_once",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "rejected_effort_or_bad_snapshot_never_falls_back_to_another_request",
+      [
+        "tokio::test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "capability_atomic_save_preserves_existing_file_permissions",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "capability_codec_preserves_missing_empty_and_explicit_false_without_preferences",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "capability_schema_rejects_invalid_documents_and_never_rewrites_them",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "failed_save_keeps_existing_bytes_and_never_claims_readback_authority",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "first_explicit_save_is_atomic_and_round_trips_only_the_requested_target",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "missing_capability_file_returns_inheritance_without_creating_any_file",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "old_reasoning_documents_never_participate_in_capability_or_preference_loading",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "preference_and_capability_round_trips_are_independent_documents",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "reset_removes_exact_record_and_keeps_other_overrides_and_preference_bytes",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "same_target_external_change_or_deletion_rejects_save_without_overwrite",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_store/src/model_capability_tests.rs",
+      "target_record_cas_merges_disjoint_external_models_and_preserves_orphans",
+      [
+        "test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "boolean_controls_remain_real_operations_when_allowed_efforts_is_empty",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "capability_shrink_keeps_invalid_saved_choice_visible_until_real_default_selection",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "composer_allows_only_effective_subset_and_preserves_actual_wire_choice",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "model_change_replaces_snapshot_controls_and_rejects_old_model_events",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "unknown_proxy_gpt_and_arbitrary_ids_expose_every_fallback_effort_without_whitelist",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "cancel_discards_draft_and_restore_automatic_emits_only_exact_reset",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "effort_controls_edit_a_set_in_draft_and_save_without_freezing_image_inheritance",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "image_control_edits_basic_information_without_freezing_effort_inheritance",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "keyboard_activation_uses_real_focus_and_matches_pointer_set_edit",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "saving_prevents_duplicates_and_failed_conflict_retains_edit_for_reload",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "settings_show_capabilities_without_default_preference_or_protocol_controls",
+      [
+        "gpui_kit::test"
+      ]
+    ],
+    [
+      "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "unavailable_wire_levels_are_disabled_and_cannot_enter_save_patch",
+      [
+        "gpui_kit::test"
+      ]
+    ]
+  ],
+  "dependencies": [
+    {
+      "file": "crates/vega_runtime/Cargo.toml",
+      "sha256": "c40fa58863ce91400aef91caecfad3f9eee0e79b5171788719eb274ebe66056e",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_conversation/Cargo.toml",
+      "sha256": "eaca3a60138e7111b20000aadbd0b4a54bbc8c152dffe6854b92c3f0af9c827a",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega/Cargo.toml",
+      "sha256": "2bfff5666e847d4d7bf4450553bdf7c3d1a1523b798831cadcb60f7f5092ef0c",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_markdown/Cargo.toml",
+      "sha256": "0bac3576c150c27a687c52d6de54dffb2c28a60068682d4b034247bc7b4beeec",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_ui/Cargo.toml",
+      "sha256": "3eaa306be5362de026a2fa0a63bc016d6f4bc6258596709911e0e28e4f7e35fd",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_mcp/Cargo.toml",
+      "sha256": "3858bb40eea6137d5d758e3aca82d1f83c975fe27778185196a1f62605da3bff",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_tools/Cargo.toml",
+      "sha256": "a2604b59ff6a9d995f9deb01e09a2eb6f310126a5be2fcc3317235d647010b8a",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_token/Cargo.toml",
+      "sha256": "e77af1c3ec01460d8d9c919fe5e3fcef3f374841b555e01f65285e39480ff8aa",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_store/Cargo.toml",
+      "sha256": "c1216274147d70861006102eb4458f016558e465e4f21532393372d888ca9455",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_credentials/Cargo.toml",
+      "sha256": "3e75cc9ce7b435911bfa102873fe27dc685f8ee58d6e91ad6990c18e79e253e7",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_theme/Cargo.toml",
+      "sha256": "8bd23c121dacb3469ced6c03b9f142a06fc003fa28178962dd7dcb35a277c984",
+      "unchanged": true
+    },
+    {
+      "file": "crates/vega_acp/Cargo.toml",
+      "sha256": "680a92e7fa6e36ffa27a2c17816b246354531d10ef0b975f0c67b6b2b8cd7be4",
+      "unchanged": true
+    },
+    {
+      "file": "Cargo.toml",
+      "sha256": "7bb8296128c9e92fe284bb81b63c1bc66c43fd93c8f09b64a3b9f297594c4be0",
+      "unchanged": true
+    },
+    {
+      "file": "Cargo.lock",
+      "sha256": "6ed079c8a09e8fe8a20da1d530842ca6894e717d6beb7f0816230c6c3f7f0c77",
+      "unchanged": true
+    }
+  ],
+  "immutable_manifests": [
+    {
+      "file": "docs/494/vega-issue-494-frozen-model-compat-tests.json",
+      "sha256": "59105217ffc4096445de39a03976ea00ad8d2f106f73df616294a9cddcfedef7",
+      "unchanged": true
+    },
+    {
+      "file": "docs/494/vega-issue-494-test-wiring-corrections.json",
+      "sha256": "77592a123ac911455660f59a1c106724c9be52d60a825e384a860107ee2aa7b6",
+      "unchanged": true
+    }
+  ],
+  "format_audit": "/tmp/vega-pi-compat-tools-exec-format-audit.json",
+  "format_audit_sha256": "ab6232cc411fa5401e1779c2939adc44995719ca4a0b91205c1f1b1183fec342",
+  "patch": "/tmp/vega-pi-compat-remaining-production.patch",
+  "patch_sha256": "0f97ed94fb7fa82096c75a2050487b68e4b164f383043cfb002dd02ddb584783",
+  "checks": {
+    "cargo_fmt_all": 0,
+    "cargo_fmt_all_check": 0,
+    "git_diff_check": 0,
+    "cargo_metadata_no_deps_offline_locked": 0,
+    "compiled_or_executed_vega_or_tests": false
+  },
+  "scope": "only request raw credential projection/final guard, current provider/model capacity policy + checked budget/projection/manual, actual InvalidRead pre-execution Terminal; no output-event changes, no legacy fallback, no test/dependency changes"
+}

@@ -1,0 +1,24 @@
+{
+  "head": "4bd6e6111d05929e131eb44c2cafcaf745148437",
+  "minimal_logical_source": "/tmp/vega-pi-compat-tools-exec-minimal.rs",
+  "minimal_logical_source_sha256": "b3deaa83f09fbebc29e55069997d54e6b7e7fc5fbc3728c293b892e595b18693",
+  "formatter_stdout": "/tmp/vega-pi-compat-tools-exec-minimal-formatted.rs",
+  "formatter_command": "rustfmt --edition 2024 --config-path rustfmt.toml --emit stdout /tmp/vega-pi-compat-tools-exec-minimal.rs",
+  "formatter_exit_code": 0,
+  "formatted_minimal_identical_to_current": true,
+  "formatted_source_sha256": "b0c23bb1099c0c535b003da09e6dbb3812f05548ca1854b60de4a7b2ecd827eb",
+  "minimal_logical_edits": [
+    "InvalidRead authorize Terminal with existing cancellation path",
+    "remove InvalidRead from Approved group",
+    "existing execute InvalidRead delegates same result helper",
+    "shared original failure text plus validation audit"
+  ],
+  "formatter_only_expansion": [
+    "InvalidUserQuestion",
+    "UserQuestion",
+    "Subagent",
+    "Automation",
+    "InvalidBash"
+  ],
+  "proof": "Exact same-version rustfmt output of HEAD plus only the four reviewed logical edits equals current file byte-for-byte; formatter also inserts expression-block braces and optional commas."
+}

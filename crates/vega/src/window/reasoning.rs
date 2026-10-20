@@ -56,6 +56,7 @@ fn reasoning_profile_patch(
 }
 
 struct ReasoningSaveWorkerResult {
+    capabilities: Option<vega_store::model_capabilities::ModelCapabilityConfig>,
     authority: Option<(
         vega_store::reasoning::ReasoningConfig,
         vega_store::reasoning::ReasoningFileSnapshot,
@@ -93,6 +94,7 @@ fn reconcile_reasoning_profiles(
     config: &vega_store::reasoning::ReasoningConfig,
     catalog: Vec<ReasoningProfileProjection>,
     provider_config: Option<&vega_store::config::AppConfig>,
+    capabilities: &vega_store::model_capabilities::ModelCapabilityConfig,
 ) -> Result<Vec<ReasoningProfileProjection>, ()> {
     catalog
         .into_iter()
@@ -119,6 +121,7 @@ fn reconcile_reasoning_profiles(
                 &actual_provider.base_url,
                 &model,
                 configured,
+                capabilities,
             )
             .map_err(|_| ())
         })
@@ -362,7 +365,9 @@ impl VegaWindow {
             return;
         };
 
-        let next = if choice == "enabled" {
+        let next = if choice == "provider_default" {
+            ReasoningChoice::ProviderDefault
+        } else if choice == "enabled" {
             if !profile.supports_enabled {
                 self.apply_reasoning_profile_to_stream(&stream, &model, cx);
                 return;
@@ -441,7 +446,7 @@ impl VegaWindow {
         let worker = std::thread::Builder::new()
             .name("vega-reasoning-save".into())
             .spawn(move || {
-                let result = match vega_store::reasoning::save_profile_patch(
+                let mut result = match vega_store::reasoning::save_profile_patch(
                     &path,
                     &expected_snapshot,
                     &base_config,
@@ -449,15 +454,18 @@ impl VegaWindow {
                 ) {
                     Ok(_) => match read_reasoning_authority(&path) {
                         Ok(authority) => ReasoningSaveWorkerResult {
+                            capabilities: None,
                             authority: Some(authority),
                             error: None,
                         },
                         Err(error) => ReasoningSaveWorkerResult {
+                            capabilities: None,
                             authority: None,
                             error: Some(reasoning_error_code(&error)),
                         },
                     },
                     Err(error) => ReasoningSaveWorkerResult {
+                        capabilities: None,
                         // A failed save can still have renamed its candidate;
                         // reread the actual file and make that disk state the
                         // next authority. If reread fails, retain only the
@@ -466,6 +474,14 @@ impl VegaWindow {
                         error: Some(reasoning_error_code(&error)),
                     },
                 };
+                result.capabilities = vega_store::model_capabilities::read_from(
+                    &path
+                        .with_file_name(vega_store::model_capabilities::MODEL_CAPABILITY_FILE_NAME),
+                )
+                .ok();
+                if result.capabilities.is_none() {
+                    result.error = Some(ReasoningSettingsErrorCode::Invalid);
+                }
                 let _ = sender.send(result);
             });
         if worker.is_err() {
@@ -474,6 +490,7 @@ impl VegaWindow {
                 generation,
                 operation_id,
                 ReasoningSaveWorkerResult {
+                    capabilities: None,
                     authority: None,
                     error: Some(ReasoningSettingsErrorCode::Io),
                 },
@@ -508,6 +525,7 @@ impl VegaWindow {
                                 generation,
                                 operation_id,
                                 ReasoningSaveWorkerResult {
+                                    capabilities: None,
                                     authority: None,
                                     error: Some(ReasoningSettingsErrorCode::Io),
                                 },
@@ -537,6 +555,7 @@ impl VegaWindow {
 
         let ReasoningSaveWorkerResult {
             authority,
+            capabilities,
             mut error,
         } = result;
         let previous_snapshot = self
@@ -548,8 +567,15 @@ impl VegaWindow {
             replay_identity_changed = previous_snapshot.as_ref() != Some(&snapshot);
             let catalog = self.configured_reasoning.take().unwrap_or_default();
             let fallback_catalog = catalog.clone();
-            match reconcile_reasoning_profiles(&config, catalog, self.loaded_replay_config.as_ref())
-            {
+            let capabilities = capabilities.ok_or(());
+            match capabilities.and_then(|capabilities| {
+                reconcile_reasoning_profiles(
+                    &config,
+                    catalog,
+                    self.loaded_replay_config.as_ref(),
+                    &capabilities,
+                )
+            }) {
                 Ok(profiles) => self.configured_reasoning = Some(profiles),
                 Err(()) => {
                     self.configured_reasoning = Some(fallback_catalog);

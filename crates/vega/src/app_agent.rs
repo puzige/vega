@@ -774,19 +774,42 @@ pub(crate) fn reasoning_for_provider_model(
         }
         None => None,
     };
-    let resolved = crate::reasoning_capabilities::resolve_reasoning_profile(
-        provider, api, base_url, model, configured,
+    let identity = vega_runtime::model_compat::ModelIdentity {
+        provider: provider.into(),
+        model: model.into(),
+    };
+    let definition = vega_runtime::model_compat::lookup_model_definition(
+        &vega_runtime::model_compat::ModelRoute::new(
+            vega_conversation::model_capabilities::api(api),
+            base_url,
+        )
+        .map_err(|_| ())?,
+        &identity,
     )
     .map_err(|_| ())?;
+    let capabilities = match reasoning_path {
+        Some(path) => vega_store::model_capabilities::read_from(
+            &path.with_file_name(vega_store::model_capabilities::MODEL_CAPABILITY_FILE_NAME),
+        )
+        .map_err(|_| ())?,
+        None => Default::default(),
+    };
+    let user_override = capabilities.record(provider, model).map(|record| {
+        vega_runtime::model_compat::ModelCapabilityOverride {
+            identity,
+            allowed_efforts: record.allowed_efforts.clone(),
+            image_input: record.image_input,
+        }
+    });
+    let model = vega_runtime::model_compat::resolve_model(&definition, user_override.as_ref())
+        .map_err(|_| ())?;
+    let resolved = ReasoningProfileProjection::from_resolved_model(
+        &model,
+        configured.map_or(vega_runtime::ReasoningChoice::ProviderDefault, |profile| {
+            profile.preference
+        }),
+    );
     crate::reasoning_capabilities::freeze_reasoning_profile(resolved).map_err(|_| ())
-}
-
-fn reasoning_projection_from_frozen(
-    frozen: &vega_runtime::FrozenReasoning,
-) -> ReasoningProfileProjection {
-    let mut profile = ReasoningProfileProjection::unknown(&frozen.provider, &frozen.model);
-    profile.preference = frozen.choice.clone();
-    profile
 }
 
 pub(crate) fn commit_provider(
@@ -798,12 +821,22 @@ pub(crate) fn commit_provider(
     let provider = unique_provider_for_model(&config, &thread.model).ok_or(())?;
     let key = vega_store::keystore::get_key(path.parent().ok_or(())?, &provider.key_ref)
         .map_err(|_| ())?;
+    let model_snapshot = vega_conversation::model_capabilities::load_configured_model(
+        &config,
+        path,
+        &provider.name,
+        &thread.model,
+    )
+    .map_err(|_| ())?;
     let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
         .map(|transport| {
             transport.with_responses_api(
                 provider.api == vega_conversation::types::ProviderApi::Responses,
             )
         })
+        .map_err(|_| ())?;
+    let provider = provider
+        .with_model_snapshot(model_snapshot)
         .map_err(|_| ())?;
     Ok(Arc::new(provider.with_retry_policy(commit_retry_policy())))
 }
@@ -956,16 +989,17 @@ pub(crate) fn run_agent_worker_with_mcp(
                 if reasoning.model != thread.model || reasoning.provider != provider.name {
                     return Err(());
                 }
-                let projection = reasoning_projection_from_frozen(&reasoning);
-                let resolved = crate::reasoning_capabilities::resolve_reasoning_profile(
+                let path = config_path.as_deref().ok_or(())?;
+                let config = vega_store::config::read_from(path).map_err(|_| ())?;
+                let model = vega_conversation::model_capabilities::load_configured_model(
+                    &config,
+                    path,
                     &provider.name,
-                    provider.api,
-                    &provider.base_url,
                     &thread.model,
-                    Some(projection),
                 )
                 .map_err(|_| ())?;
-                crate::reasoning_capabilities::freeze_reasoning_profile(resolved).map_err(|_| ())?
+                vega_runtime::model_compat::freeze_choice(&model, reasoning.choice)
+                    .map_err(|_| ())?
             }
             (None, Some(provider)) => reasoning_for_provider_model(
                 &provider.name,
@@ -1055,12 +1089,21 @@ pub(crate) fn run_agent_worker_with_mcp(
                 &thread.project_id,
             ));
             provider_known_credential = Some(key.clone());
+            let model_snapshot = vega_conversation::model_capabilities::load_configured_model(
+                &vega_store::config::read_from(config_path.as_deref().ok_or(())?).map_err(|_| ())?,
+                config_path.as_deref().ok_or(())?,
+                &provider.name,
+                &thread.model,
+            )
+            .map_err(|_| ())?;
             let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
                 .map(|transport| {
                     transport.with_responses_api(
                         provider.api == vega_conversation::types::ProviderApi::Responses,
                     )
                 })
+                .map_err(|_| ())?
+                .with_model_snapshot(model_snapshot)
                 .map_err(|_| ())?
                 .with_pre_attempt_guard(
                     vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard_with_exceptions(

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "scope": "Only explicitly reviewed test wiring corrections; original acceptance and source maps remain frozen. Production implementation remains unauthorised until clean Actions interface RED.",
+  "original_frozen_commit": "80f4fe45b8f8f960d2f582e2b9768c729de64f3f",
+  "original_frozen_manifest_sha256": "59105217ffc4096445de39a03976ea00ad8d2f106f73df616294a9cddcfedef7",
+  "corrections": [
+    {
+      "kind": "pre-implementation SQL host representation",
+      "first_actions_run": "https://github.com/puzige/vega/actions/runs/39360808726",
+      "nextest_job": "https://github.com/puzige/vega/actions/runs/39360808726/job/118426292998",
+      "clippy_job": "https://github.com/puzige/vega/actions/runs/39360808726/job/118426292819",
+      "review_before_edit": "https://github.com/puzige/vega/pull/504#issuecomment-6282232482",
+      "cause": "E0277: rusqlite::FromSql is not implemented for u64. Seven SQL INTEGER reads were inferred from three tuple annotations.",
+      "reviewed_change": "Only the three test tuple host types become i64. Same SQL, exact positive expected values, inputs, production calls and all assertions. Negative stored values would still fail equality.",
+      "report": {
+        "head": "80f4fe45b8f8f960d2f582e2b9768c729de64f3f",
+        "production_merge_base": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+        "files": [
+          {
+            "file": "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs",
+            "before_sha256": "eede8b30bc00af06ade808d01cef332b5031b0cc98362bb49ee8f79648d1a633",
+            "after_sha256": "dc9bdc06f50b2de21de2b07774e5083e7ae902adbc760a33b958b2ad6b823e19",
+            "exact_change": "SQL usage tuple host representation u64 -> i64 only",
+            "positive_values_and_assertions_unchanged": true
+          },
+          {
+            "file": "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs",
+            "before_sha256": "51d32a7bb5117556e5586e482bc492e23e441aa63e494ca5fdf2fa8dd9e93cd5",
+            "after_sha256": "c2a060f21d121a8ce63bba7b3a2b4707d39b5305eba3f9f6ca1179b4fa4dba37",
+            "exact_change": "SQL usage tuple host representation u64 -> i64 only",
+            "positive_values_and_assertions_unchanged": true
+          },
+          {
+            "file": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+            "before_sha256": "0601a3a31fb9a3df0bbf6c9b0bc78e3ea7ec5b88b6c00ec853c55bbfdb6aaf1a",
+            "after_sha256": "760bdef74c9ef5b743c4bfb19cb07f2161e4f1b96d3b0bb94405765da72ebf85",
+            "exact_change": "SQL usage tuple host representation u64 -> i64 only",
+            "positive_values_and_assertions_unchanged": true
+          }
+        ],
+        "test_names_and_attributes_unchanged": true,
+        "test_definitions": 133,
+        "other_frozen_files_unchanged": true,
+        "published_frozen_json_unchanged": true,
+        "additional_bad_unsigned_sql_row_reads_found": false,
+        "local_execution": "none; static inspection only"
+      },
+      "root_review": "Exact old.replace(u64,i64)==new for each of these three files; all other frozen source/fixture/wiring hashes unchanged. 133 same named test definitions; no new/removed/ignored test.",
+      "next_actions_result": "pending; no production code authorised by this correction record",
+      "first_run_rust_discovered": null,
+      "first_run_rust_executed": 0,
+      "first_run_behavior_red": false,
+      "first_run_other_static_checks": "Format successful; Python5+15+14 successful. Interface gaps reported but this mixed run is not used to advance implementation."
+    }
+  ]
+}

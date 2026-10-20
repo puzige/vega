@@ -866,6 +866,12 @@ pub(crate) async fn authorize_call(
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
     match prepared {
+        PreparedRuntimeCall::InvalidRead(call) => {
+            if cancel.is_cancelled() {
+                return Ok(cancelled_permission(call));
+            }
+            Ok(Authorization::Terminal(invalid_read_result(call)))
+        }
         PreparedRuntimeCall::InvalidUserQuestion { call, code } => {
             Ok(Authorization::Terminal(terminal_result(
                 call,
@@ -1148,7 +1154,6 @@ pub(crate) async fn authorize_call(
         PreparedRuntimeCall::Subagent { .. }
         | PreparedRuntimeCall::Automation { .. }
         | PreparedRuntimeCall::Readonly(_)
-        | PreparedRuntimeCall::InvalidRead(_)
         | PreparedRuntimeCall::InvalidGrep(_)
         | PreparedRuntimeCall::PinnedRead { .. }
         | PreparedRuntimeCall::Grep { target: None, .. } => {
@@ -1470,44 +1475,125 @@ pub(crate) async fn execute_prepared_waiting(
     cancel: &CancellationToken,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
-        PreparedRuntimeCall::InvalidUserQuestion { call, code } => (terminal_result(&call, user_question_validation_output(&code), RuntimeToolStatus::Rejected, Some(validation_audit())), false),
+        PreparedRuntimeCall::InvalidUserQuestion { call, code } => (
+            terminal_result(
+                &call,
+                user_question_validation_output(&code),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            ),
+            false,
+        ),
         PreparedRuntimeCall::UserQuestion { call, input, hook } => {
             let response = match hook {
-                Some(hook) => hook.request(RuntimeUserQuestionRequest { call_id: call.id.clone(), input: input.clone() }, cancel.clone()).await,
+                Some(hook) => {
+                    hook.request(
+                        RuntimeUserQuestionRequest {
+                            call_id: call.id.clone(),
+                            input: input.clone(),
+                        },
+                        cancel.clone(),
+                    )
+                    .await
+                }
                 None => RuntimeUserQuestionResponse::Unavailable,
             };
             let (output, status, cancelled) = match response {
                 RuntimeUserQuestionResponse::Answered(answers) => match answers.to_json(&input) {
                     Ok(output) => (output, RuntimeToolStatus::Success, false),
-                    Err(_) => (USER_QUESTION_UNSAFE_RESPONSE.into(), RuntimeToolStatus::Failed, false),
+                    Err(_) => (
+                        USER_QUESTION_UNSAFE_RESPONSE.into(),
+                        RuntimeToolStatus::Failed,
+                        false,
+                    ),
                 },
-                RuntimeUserQuestionResponse::Cancelled => (USER_QUESTION_CANCELLED.into(), RuntimeToolStatus::Cancelled, true),
-                RuntimeUserQuestionResponse::Unavailable => (USER_QUESTION_UNAVAILABLE.into(), RuntimeToolStatus::Failed, false),
+                RuntimeUserQuestionResponse::Cancelled => (
+                    USER_QUESTION_CANCELLED.into(),
+                    RuntimeToolStatus::Cancelled,
+                    true,
+                ),
+                RuntimeUserQuestionResponse::Unavailable => (
+                    USER_QUESTION_UNAVAILABLE.into(),
+                    RuntimeToolStatus::Failed,
+                    false,
+                ),
             };
             {
                 let mut result = terminal_result(&call, output, status, None);
                 result.truncated = (status == RuntimeToolStatus::Success).then_some(false);
                 (result, cancelled)
             }
-        },
-        PreparedRuntimeCall::Subagent {call,arguments,hook} => {
-            if cancel.is_cancelled() { return (terminal_result(&call,CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),true); }
-            match hook.call(call.id.clone(), call.name.clone(), arguments, cancel.clone()).await {
-                Ok(value) => { let mut result = terminal_result(&call,value.to_string(),RuntimeToolStatus::Success,None); result.truncated = Some(false); (result,false) }
-                Err(VegaError::Cancelled) => (terminal_result(&call,SUBAGENT_CANCELLED_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),true),
-                Err(error) => (failed_tool_result(&call,error.to_string()),false),
-            }
         }
-        PreparedRuntimeCall::Automation {call,arguments,hook} => {
-            if cancel.is_cancelled() { return (terminal_result(&call,CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),RuntimeToolStatus::Cancelled,None),true); }
-            let result = hook.call(call.name.clone(),arguments,cancel.clone()).await;
-            match result {
+        PreparedRuntimeCall::Subagent {
+            call,
+            arguments,
+            hook,
+        } => {
+            if cancel.is_cancelled() {
+                return (
+                    terminal_result(
+                        &call,
+                        CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                );
+            }
+            match hook
+                .call(
+                    call.id.clone(),
+                    call.name.clone(),
+                    arguments,
+                    cancel.clone(),
+                )
+                .await
+            {
                 Ok(value) => {
-                    let mut result = terminal_result(&call,value.to_string(),RuntimeToolStatus::Success,None);
+                    let mut result =
+                        terminal_result(&call, value.to_string(), RuntimeToolStatus::Success, None);
                     result.truncated = Some(false);
                     (result, false)
                 }
-                Err(error) => (failed_tool_result(&call,error.to_string()),false),
+                Err(VegaError::Cancelled) => (
+                    terminal_result(
+                        &call,
+                        SUBAGENT_CANCELLED_OUTPUT.into(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                ),
+                Err(error) => (failed_tool_result(&call, error.to_string()), false),
+            }
+        }
+        PreparedRuntimeCall::Automation {
+            call,
+            arguments,
+            hook,
+        } => {
+            if cancel.is_cancelled() {
+                return (
+                    terminal_result(
+                        &call,
+                        CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                );
+            }
+            let result = hook
+                .call(call.name.clone(), arguments, cancel.clone())
+                .await;
+            match result {
+                Ok(value) => {
+                    let mut result =
+                        terminal_result(&call, value.to_string(), RuntimeToolStatus::Success, None);
+                    result.truncated = Some(false);
+                    (result, false)
+                }
+                Err(error) => (failed_tool_result(&call, error.to_string()), false),
             }
         }
         PreparedRuntimeCall::ComputerUse {
@@ -1739,13 +1825,7 @@ pub(crate) async fn execute_prepared_waiting(
         PreparedRuntimeCall::PinnedRead { execution, .. } => {
             execute_readonly_waiting(base_tools, &execution, cancel).await
         }
-        PreparedRuntimeCall::InvalidRead(call) => (
-            failed_tool_result(
-                &call,
-                "read requires path identifying a regular text file. Expected {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}".into(),
-            ),
-            false,
-        ),
+        PreparedRuntimeCall::InvalidRead(call) => (invalid_read_result(&call), false),
         PreparedRuntimeCall::Readonly(call) | PreparedRuntimeCall::ExternalRead { call, .. } => {
             execute_readonly_waiting(base_tools, &call, cancel).await
         }
@@ -1858,7 +1938,10 @@ pub(crate) async fn execute_prepared_waiting(
         PreparedRuntimeCall::InvalidBash { call } => (
             terminal_result(
                 &call,
-                InvalidBashAudit::from_json(&call.input_json).map_or_else(|| BASH_INVALID_INPUT_OUTPUT.to_owned(), |audit| audit.feedback()),
+                InvalidBashAudit::from_json(&call.input_json).map_or_else(
+                    || BASH_INVALID_INPUT_OUTPUT.to_owned(),
+                    |audit| audit.feedback(),
+                ),
                 RuntimeToolStatus::Rejected,
                 Some(validation_audit()),
             ),
@@ -2070,6 +2153,15 @@ fn readonly_result(
             remember_rule: None,
         },
     }
+}
+
+fn invalid_read_result(call: &RuntimeToolCall) -> RuntimeToolResult {
+    let mut result = failed_tool_result(
+        call,
+        "read requires path identifying a regular text file. Expected {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}".into(),
+    );
+    result.approval = Some(validation_audit());
+    result
 }
 
 pub(crate) fn failed_tool_result(call: &RuntimeToolCall, message: String) -> RuntimeToolResult {
