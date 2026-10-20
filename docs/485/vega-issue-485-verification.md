@@ -29,13 +29,13 @@
 | 阶段 | head / 证据 | 结果 |
 |---|---|---|
 | 首次目标行为 RED | 上述测试先行 head；[Nextest job 118520786535](https://github.com/puzige/vega/actions/runs/39390563261/job/118520786535) | 4 发现 / 4 执行 / 1 通过 / 3 失败 / 0 跳过；两个目标引用测试实际文本为 1888px × 23px，在 240px 列中超出右边界，形成可归因行为 RED。短引用/代码保护通过；Thinking 缺主题全局的接线 panic 不计作目标 RED |
-| 接线修正后 RED | 待测试-only 接线修正 head | 移除未使用的 AppContext 导入，补齐 Thinking 主题初始化；输入/预期/断言不变，先取得保护用例通过再实现 |
+| 接线修正后 RED | `9fad414853eaebf441b377e13aee4a5ab32f68c9` 移除冗余导入并初始化 Thinking 主题；后续接线提交统一补齐其余测试的主题初始化 | 输入/预期/断言不变，先取得保护用例通过再实现。9fad 的运行 39391629989 被后续接线 head 替代，不当作完整 RED/GREEN 证据 |
 | 最小生产实现 | 待有效 RED 后委派 | 尚未修改 |
 | 同一冻结测试 GREEN | 待实现 head 的完整现有 gate | 尚未取得 |
 | 独立删测 | 待 GREEN 固定后执行 | 尚未执行 |
 | 最终空集完整门禁 | 待删测后最新 head | 尚未取得；空集须标 `no Rust tests`（0 发现/0 执行），不是回归测试通过 |
 
-首次原始失败：普通路径文本 `Bounds { origin: Point { x: 38px, y: 48px }, size: Size { 1888px × 23px } }`；可选择路径为 `(38px, 32px)`、同样 `1888px × 23px`。文本预算只有 226px。完整失败已固定在 [PR 评论](https://github.com/puzige/vega/pull/511#issuecomment-6286485439)。Clippy 另因冗余 `AppContext` 导入失败；Thinking 因缺 `vega_theme::Theme` 全局初始化失败。上述两项是测试接线错误，单独修正并重新云端验证，不放宽断言或冒充产品修复。
+首次原始失败：普通路径文本 `Bounds { origin: Point { x: 38px, y: 48px }, size: Size { 1888px × 23px } }`；可选择路径为 `(38px, 32px)`、同样 `1888px × 23px`。文本预算只有 226px。完整失败已固定在 [PR 评论](https://github.com/puzige/vega/pull/511#issuecomment-6286485439)。Clippy 另因冗余 `AppContext` 导入失败；Thinking 因缺 `vega_theme::Theme` 全局初始化失败。上述两项是测试接线错误，单独修正并重新云端验证，不放宽断言或冒充产品修复。独立审查进一步确认链接绘制同样读取 Vega 主题全局，因此其余三个测试也按真实应用初始化 Vega 主题；不能依赖另一个测试的独立 AppContext。原始修正见 [第一次接线补丁](vega-issue-485-test-wiring-correction.patch) 和 [主题初始化补丁](vega-issue-485-theme-wiring-correction.patch)，仅改环境，不改冻结验收。
 
 准确计数均以 Nextest 原始输出为准；忽略数未单独取得，不猜测。完整 PR gate 保留 fmt、全目标 Clippy、三组 Python 检查和 Nextest。
 
