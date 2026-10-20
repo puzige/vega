@@ -55,5 +55,10 @@
 
 ## 验证记录
 
-- 规格/测试准备：生产实现尚未修改；云端 RED、GREEN 与最终门禁均待验证。
-- 证据入口：本卡 PR（建立后在 Issue 回写）。
+- PR：[Draft #510](https://github.com/puzige/vega/pull/510)。用户授权本轮角色限制例外；验收与实现范围无偏离。
+- 原始规格与冻结测试提交：`f0a89cab1d8634e4b02551dd420ba413bd9e824b`；生产仍为上述基线。原始测试源码和完整补丁固定在 [PR 评论](https://github.com/puzige/vega/pull/510#issuecomment-6285666842)，删分支或 squash 后仍可找回。
+- 有效 RED：[Actions 39386142098](https://github.com/puzige/vega/actions/runs/39386142098)，[Nextest job 118506332465](https://github.com/puzige/vega/actions/runs/39386142098/job/118506332465)。2 发现/2 执行，1 通过、1 失败、0 跳过；目标断言实际 `Light`、预期 `Low`。不是编译、依赖或 runner 失败。其他标签/Off/Default/空态测试通过，fmt/Clippy 与 34 个 Python 测试通过。
+- 实现与带同一测试 GREEN 提交：`9fad7f981abf4cc6fd19644cd861c4b5e927fda3`。只改一行映射，冻结测试逐字未变。[Actions 39387192301](https://github.com/puzige/vega/actions/runs/39387192301) / [Nextest job 118509742363](https://github.com/puzige/vega/actions/runs/39387192301/job/118509742363)：2 发现/2 执行/2 通过、0 失败/忽略/跳过；Python 5+15+14=34 通过，fmt/Clippy/required check 成功。
+- 带测试 GREEN 已固定在 [PR 评论](https://github.com/puzige/vega/pull/510#issuecomment-6285919573)，随后才授权独立删除本轮两个 Rust 测试和所属 55 行测试模块；无独占依赖、fixture 或其他接线需要清理。生产、Python、CI、benchmark 与打包能力不变。
+- 本地仅运行 `cargo fmt --all -- --check`、`git diff --check` 与只读差异/静态比对；未运行 Vega、编译、Clippy 或任何测试。
+- 独立删测提交与最终最新 head 的完整门禁结果在 PR 回写；尚待验证，不以空集代替上述带测试 GREEN。用户手测尚未完成，Issue 保持开放。
