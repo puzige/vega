@@ -1,6 +1,6 @@
 # #421 最新运行进展与完成收纳
 
-状态：2026-10-20 用户重新确认、生命周期审查修订后的实施规格 v3（尚未冻结测试）。关联 [Issue #421](https://github.com/puzige/vega/issues/421)。本轮生产未改基线为 `e93518cf76a24df921a1af2c2663ebce75f614fd`；任务分支 `feat/421-live-progress-agent-delivery`。
+状态：2026-10-20 实施规格 v3；先行测试经独立静态审查、完整提交取得接口缺失 RED 后已冻结，最小实现中。关联 [Issue #421](https://github.com/puzige/vega/issues/421)。原始生产未改基线为 `e93518cf76a24df921a1af2c2663ebce75f614fd`；RED 前已集成最新 master `9baca7519d97995267de31eb9c2e213f0c171e67`；任务分支 `feat/421-live-progress-agent-delivery`。
 
 ## 目标与替代关系
 
@@ -10,7 +10,7 @@
 
 ## 先行验收矩阵
 
-所有自动用例均为进程内合成事件／GPUI 测试，不运行真实命令、网络、模型或应用。以下目标在生产修改前写齐并冻结；矩阵不代替实际测试。自动证据当前均为待 Actions，真实 UI 当前为待用户手测。
+所有自动用例均为进程内合成事件／GPUI 测试，不运行真实命令、网络、模型或应用。以下目标在生产修改前写齐并冻结；矩阵不代替实际测试。完整先行提交已有 Actions 接口缺失 RED，行为断言尚未执行，GREEN 待 Actions；真实 UI 为待用户手测。
 
 | ID | 前置与操作 | 可观察结果 | 层级与证据 |
 |---|---|---|---|
@@ -66,6 +66,13 @@
 ## 规格审查记录
 
 v2 在生产尚未修改、测试尚未冻结和 CI 尚未启动时被独立审查纠正为 v3：补齐 reasoning-only 响应完成与 worker 断开清理这两个已授权目标的实际来源路径。新增验收仍以原生产基线先写测试、确认有效 RED；不使用旧 v2 或历史 PR 的绿色证明 v3。
+
+## 本轮测试冻结与 RED 记录
+
+- 完整先行源码提交 [`35d51e369db7ca347be4e5444fa8885cff357926`](https://github.com/puzige/vega/commit/35d51e369db7ca347be4e5444fa8885cff357926)，[UI 原始补丁](https://github.com/puzige/vega/commit/35d51e369db7ca347be4e5444fa8885cff357926.patch)；生命周期源码与接线提交 [`fd0647c7e7ff62f31041bf4c686a86edd11c2acc`](https://github.com/puzige/vega/commit/fd0647c7e7ff62f31041bf4c686a86edd11c2acc)，[原始补丁](https://github.com/puzige/vega/commit/fd0647c7e7ff62f31041bf4c686a86edd11c2acc.patch)。静态定义 27 个（runtime 5、conversation 2、UI 20），不是执行计数。
+- 完整提交 [Actions 39401665593](https://github.com/puzige/vega/actions/runs/39401665593)：[Nextest 118557592186](https://github.com/puzige/vega/actions/runs/39401665593/job/118557592186)、[Clippy 118557592454](https://github.com/puzige/vega/actions/runs/39401665593/job/118557592454) 的编译诊断仅为最小目标 `ReasoningCompleted`／`AssistantResponseStarted.response_id` 缺失。属于接口缺失 RED；行为断言未执行，发现／执行／通过／跳过计数未取得。早先部分提交的 RED 不替代本完整记录。
+- 独立静态审查在生产未改时修正了合法正文 metadata、暂停控制配置、真实计时更新、请求身份、详情回退、断连清理，以及传输重试同 ID／无第二次 Started 的 fixture。没有放宽验收、忽略用例或本地执行。测试目标、断言和源文指纹在 RED 后冻结，实现中不得按结果改写。
+- SHA-256：runtime `4e7075f33804f0a96c2bcacd3e91940353ebddc8b4448afb70000a8857024a4d`；conversation `94e8868711395235cc5dd152a8d672fe58a11bb48fe4fc34b9a5ad88c32fc431`；UI `4e70ab5d810d3c0c21e179480a1b21d8d5488cad4a4ee65b0e19f29fc967476e`。原始测试与过程保存在 [PR #513](https://github.com/puzige/vega/pull/513)，实现后仍须同源 GREEN、独立删测和最新 head 空集完整门禁，当前均未完成。
 
 ## 验证、交付与恢复
 

@@ -998,7 +998,11 @@ pub enum RuntimeAssistantResponseKind {
 #[derive(Clone)]
 pub enum RuntimeEvent {
     AssistantResponseStarted {
+        response_id: String,
         text_start_bytes: usize,
+    },
+    ReasoningCompleted {
+        response_id: String,
     },
     ResponseRetrying {
         text_start_bytes: usize,
@@ -1114,9 +1118,17 @@ pub enum RuntimeEvent {
 impl fmt::Debug for RuntimeEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AssistantResponseStarted { text_start_bytes } => formatter
+            Self::AssistantResponseStarted {
+                response_id,
+                text_start_bytes,
+            } => formatter
                 .debug_struct("AssistantResponseStarted")
+                .field("response_id_bytes", &response_id.len())
                 .field("text_start_bytes", text_start_bytes)
+                .finish(),
+            Self::ReasoningCompleted { response_id } => formatter
+                .debug_struct("ReasoningCompleted")
+                .field("response_id_bytes", &response_id.len())
                 .finish(),
             Self::ResponseRetrying {
                 text_start_bytes,
