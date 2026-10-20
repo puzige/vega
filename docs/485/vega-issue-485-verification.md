@@ -33,10 +33,13 @@
 | 最终接线基线 RED | `3974c56508cb9c782213c36fbd032f4a66569275`；[run 39391982124](https://github.com/puzige/vega/actions/runs/39391982124) / [Nextest job 118525446775](https://github.com/puzige/vega/actions/runs/39391982124/job/118525446775) | 4 发现 / 4 执行 / 2 通过 / 2 失败 / 0 跳过；仍只有两个目标引用右边界失败，保护用例和 Clippy 通过。完成后才明确委派生产修复 |
 | 最小生产实现 | `97bc60b5fa75094c2bc70ae561d3435a56ff7e84`；最终 RED 完成后才修改两个 Quote 分支的正文容器 | 只增加 `div().flex_1().min_w_0()` 包裹正文；冻结测试、观测与依赖未变 |
 | 同一冻结测试 GREEN | `97bc60b5fa75094c2bc70ae561d3435a56ff7e84`；[run 39393025425](https://github.com/puzige/vega/actions/runs/39393025425) / [Nextest 118528873301](https://github.com/puzige/vega/actions/runs/39393025425/job/118528873301) / [required check 118530841744](https://github.com/puzige/vega/actions/runs/39393025425/job/118530841744) | 4 发现 / 4 执行 / 4 通过 / 0 失败 / 0 跳过；两个目标引用与两个保护用例全部通过，fmt / Clippy / 三组 Python 通过，完整 gate 成功 |
-| 独立删测 | GREEN 与恢复补丁已固定在 [PR 评论](https://github.com/puzige/vega/pull/511#issuecomment-6286818254) 后才委派 | 清理已完成；只删除四项开发测试、透明观察器/模块及 dev-only test-support，lock 恢复生产基线；两个已验证的正文容器逐字保留 |
-| 最终空集完整门禁 | 待删测后最新 head | 尚未取得；空集须标 `no Rust tests`（0 发现/0 执行），不是回归测试通过 |
+| 独立删测 | `472d79a73185ce6efa703f187471078cd807aedb`；GREEN 与恢复补丁已固定在 [PR 评论](https://github.com/puzige/vega/pull/511#issuecomment-6286818254) 后才执行 | 只删除四项开发测试、透明观察器/模块及 dev-only test-support，lock 恢复生产基线；两个已验证的正文容器逐字保留；独立清理审查通过 |
+| 清理 head 空集完整门禁 | `472d79a73185ce6efa703f187471078cd807aedb`；[run 39394897661](https://github.com/puzige/vega/actions/runs/39394897661) / [Nextest 118535081389](https://github.com/puzige/vega/actions/runs/39394897661/job/118535081389) / [required check 118536638318](https://github.com/puzige/vega/actions/runs/39394897661/job/118536638318) | 完整 gate 成功；Rust 明确 `no Rust tests`（0 发现 / 0 执行），不是回归测试通过；fmt、Clippy、Python 5/15/14 项均通过 |
+| 本交付记录更新后的最新 head | 仅文档补充已取得的清理 head 门禁证据；生产、测试空集与锁文件不变 | 最新提交和完整 required check 以 [PR #511](https://github.com/puzige/vega/pull/511) 的最终交接评论为准，不能用旧 head 绿色替代 |
 
 首次原始失败：普通路径文本 `Bounds { origin: Point { x: 38px, y: 48px }, size: Size { 1888px × 23px } }`；可选择路径为 `(38px, 32px)`、同样 `1888px × 23px`。文本预算只有 226px。完整失败已固定在 [PR 评论](https://github.com/puzige/vega/pull/511#issuecomment-6286485439)。Clippy 另因冗余 `AppContext` 导入失败；Thinking 因缺 `vega_theme::Theme` 全局初始化失败。上述两项是测试接线错误，单独修正并重新云端验证，不放宽断言或冒充产品修复。独立审查进一步确认链接绘制同样读取 Vega 主题全局，因此其余三个测试也按真实应用初始化 Vega 主题；不能依赖另一个测试的独立 AppContext。原始修正见 [第一次接线补丁](vega-issue-485-test-wiring-correction.patch) 和 [主题初始化补丁](vega-issue-485-theme-wiring-correction.patch)，仅改环境，不改冻结验收。
+
+清理 head 原始摘要：`Starting 0 tests across 14 binaries`；`Summary [0.002s] 0 tests run: 0 passed, 0 skipped`；`Rust: no Rust tests (0 discovered, 0 executed).`。这是最终空集交付门禁，不替代带测试 GREEN。
 
 GREEN 原始摘要：`Starting 4 tests across 14 binaries`；四项逐条 `PASS`；`Summary [0.139s] 4 tests run: 4 passed, 0 skipped`。三组 Python 原始输出分别为 5、15、14 项通过。独立生产审查确认唯一源代码差异是两个正文容器，文本、选择、链接与竖线不变。冻结测试与所有观察器、manifest、lock 相对最终 RED head 逐字一致。
 
@@ -51,7 +54,7 @@ GREEN 原始摘要：`Starting 4 tests across 14 binaries`；四项逐条 `PASS`
 - `cargo metadata --offline --locked --no-deps --format-version 1`，仅元数据解析，无编译或执行。
 - 锁文件图静态比较：仅新增 10 个 test-support 传递包；既有 package 版本/来源/checksum 不变，既有 GPUI 包仅增加其测试支持依赖边，其他多版本依赖仅补充消歧版本号。
 - 测试先行阶段的子 agent 生产投影静态比对：移除本轮测试模块和观察接线后，涉及的既有 Rust 文件与生产基线逐字一致。
-- GREEN 后清理：workspace 384 个 Rust 文件的测试属性/测试 cfg、专属 hooks、test-support manifest、显式测试 target 和可执行 doctest 静态清点为 0（仅静态结果，实际发现/执行仍由 Actions 确认）。原有 `text` 文档围栏不变。
+- GREEN 后清理：workspace 384 个 Rust 文件的测试属性/测试 cfg、专属 hooks、test-support manifest、显式测试 target 和可执行 doctest 静态清点为 0；随后清理 head 的 Actions 确认 0 发现 / 0 执行。原有 `text` 文档围栏不变。
 - 清理后非文档差异相对 `3a2ef8e9` 只有 `render_rows.rs` 两个正文容器（3 插入 / 3 删除）；其余源码、manifest、lock 与生产基线逐字一致。对照带测试 GREEN，renderer 仅移除了两个透明 bar 观察闭包，正文容器实现不变。
 - 最终非文档差异 SHA-256：`372cd2ac85ba26e6403ed3f19a0495fac81b654198ba8c6e545a016f7356f9c8`；`render_rows.rs` SHA-256：`5d657bc04b5c6939019a3baae18c7c345f8ae2133857d36fe6b0c39d64b8be4f`。
 
