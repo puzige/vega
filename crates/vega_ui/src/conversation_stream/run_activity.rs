@@ -1594,6 +1594,13 @@ impl RunActivityGroup {
                             window,
                         ))
                     })
+                    .map(|row| {
+                        #[cfg(test)]
+                        {
+                            live_progress_tests::observe_header(segment_index, &row, activity_icon);
+                        }
+                        row
+                    })
                     .into_any_element(),
             );
         }
@@ -1722,6 +1729,10 @@ impl RunActivityGroup {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "live_progress_tests.rs"]
+mod live_progress_tests;
 
 pub(crate) fn format_run_clock(duration_ms: u64) -> String {
     let seconds = duration_ms / 1000;

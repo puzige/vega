@@ -149,6 +149,25 @@ pub struct ToolCard {
     execution: Option<SubagentSnapshot>,
 }
 
+#[cfg(test)]
+pub(crate) mod live_progress_observation {
+    use super::*;
+
+    pub(crate) fn snapshot(
+        card: &ToolCard,
+    ) -> (
+        ToolCallStatus,
+        Option<u64>,
+        Option<ToolCardResultProjection>,
+    ) {
+        (
+            card.status,
+            card.running_elapsed_seconds,
+            card.result.clone(),
+        )
+    }
+}
+
 impl gpui_kit::EventEmitter<SubagentOpenRequested> for ToolCard {}
 
 impl ToolCard {
