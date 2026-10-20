@@ -76,7 +76,15 @@ v1.1：生产未改、RED 尚未启动时，根据独立审查补清多连接、
 - [Conversation 原始测试](https://github.com/puzige/vega/blob/1c4c29a129c9d04e96a2bbb9a42578be0ac6ac3a/crates/vega_conversation/src/sidebar_organization/project_order_tests.rs)：6 项，SHA-256 `4b0d53bee60075f39e4b13d188f0bf18fc3fd55c87ab77713facf022ac0031e0`。[原始提交补丁](https://github.com/puzige/vega/commit/1c4c29a129c9d04e96a2bbb9a42578be0ac6ac3a.patch)可从 PR 找回。
 - [RED run 39394804823](https://github.com/puzige/vega/actions/runs/39394804823)／[Nextest job 118534766357](https://github.com/puzige/vega/actions/runs/39394804823/job/118534766357)：编译／发现成功，原始输出 `Starting 11 tests across 14 binaries`、`11 tests run: 0 passed, 11 failed, 0 skipped`，各测试 ignored 为 0；fmt／Clippy 与三组 Python 检查成功。
 - 有效行为 RED：访问末项后 projects 实际 `[project-c,project-b,project-a]` 而非原顺序；新建和注册的 project_order 为空；历史迁移后未补齐排序；排序拒绝时 create 仍成功。不是缺接口、编译或 runner 故障。完整原始失败保存在上述 job，后续测试目标、数据与断言冻结不变。
-- 仅在上述 RED 核实后委派生产最小实现；同一测试 GREEN、独立删测及最终空集门禁尚待后续云端验证。本地 fmt／diff 静态检查退出 0，未本地运行／编译／执行测试。
+- 仅在上述 RED 核实后委派生产最小实现。本地 fmt／diff 静态检查退出 0，未本地运行／编译／执行测试。
+
+### 带相同测试的 GREEN 与交付清理
+
+- 实现提交 [`b8d791e6b34ea40475f88824d927a223523a4b55`](https://github.com/puzige/vega/commit/b8d791e6b34ea40475f88824d927a223523a4b55) 在 RED 后新增 0031 迁移、迁移接线和持久化排序读取，无 spec 偏离。主会话与独立审查均通过生产差异；旧显式排序消费者、访问时间、revision、UI、会话行为均未修改。
+- [GREEN run 39397358014](https://github.com/puzige/vega/actions/runs/39397358014)／[Nextest job 118543293178](https://github.com/puzige/vega/actions/runs/39397358014/job/118543293178)：原始输出 `Starting 11 tests across 14 binaries`、`11 tests run: 11 passed, 0 skipped`，发现 11／执行 11／通过 11／失败 0／忽略 0／跳过 0；fmt、全目标 Clippy、三组 Python 及 required check 全部成功。
+- RED 到 GREEN 两个测试文件 diff 为空且哈希一致，没有追加测试、改期望、ignore 或重试换绿。原始测试文件已从 GitHub API 读回，blob 分别为 `2713bfc7727b841fbdfaf1e90c14bff9c34d5d90`、`83e3eabe972a3a2e4d2bdded1a22022a877c8d6b`；测试源码、完整 SHA、补丁与 run/job 证据在 PR 512 可恢复。
+- 只有上述 GREEN 证据固定后，才用第三个独立提交删除两个 Rust 测试文件及 `lib.rs`／`sidebar_organization/mod.rs` 末尾两处 cfg(test) 接线。无新增独占依赖／feature／锁文件接线，保留全部生产、迁移、通用 CI、Python 与 benchmark。删测前后除这两处测试接线外生产字节必须与 GREEN 一致。
+- 删测后的最终 head 完整门禁及 Rust 0 发现／0 执行待下一轮 Actions 确认，未确认前仍为 draft，不将空集称为测试通过。用户手测仍待执行；Issue 保持开放、最终合并后才置 In review。
 
 ## 用户手测与回滚
 
