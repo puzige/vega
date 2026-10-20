@@ -3,9 +3,7 @@ use futures::StreamExt;
 use vega_runtime::{ChatMessage, ChatRequest, ChatRole, ProviderEvent};
 use vega_store::model_capabilities::{ModelCapabilityConfig, ModelCapabilityRecord};
 
-#[path = "../../vega_runtime/src/openai/compatibility_tests/http.rs"]
-mod http;
-use http::{HttpFixture, Reply};
+use crate::compatibility_http::{HttpFixture, Reply};
 
 fn owned(
     root: &std::path::Path,

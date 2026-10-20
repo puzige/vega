@@ -655,7 +655,7 @@ fn verified_native_models_expose_their_exact_logical_holes_and_boolean_or_effort
             vec!["low", "high", "max"],
         ),
         (
-            ModelApi::ChatCompletions,
+            ModelApi::Responses,
             "https://opencode.ai/zen/v1",
             "grok-build-0.1",
             vec!["high"],

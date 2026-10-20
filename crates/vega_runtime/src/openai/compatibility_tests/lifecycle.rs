@@ -123,6 +123,146 @@ fn final_round() -> Vec<Value> {
     ]
 }
 
+struct OwnedDesktopTransport {
+    connected: bool,
+    remaining_calls: usize,
+    captured: bool,
+    png: Vec<u8>,
+}
+
+impl crate::computer_use::DesktopTransport for OwnedDesktopTransport {
+    fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    fn connect<'a>(
+        &'a mut self,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<(), crate::computer_use::ComputerUseError>> {
+        Box::pin(async move {
+            if cancel.is_cancelled() {
+                return Err(crate::computer_use::ComputerUseError::Cancelled);
+            }
+            self.connected = true;
+            Ok(())
+        })
+    }
+
+    fn call<'a>(
+        &'a mut self,
+        name: &'a str,
+        args: Value,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<vega_mcp::ManagedResult, vega_mcp::McpError>> {
+        Box::pin(async move {
+            if !self.connected || cancel.is_cancelled() || self.remaining_calls == 0 {
+                return Err(vega_mcp::McpError::Transport);
+            }
+            self.remaining_calls -= 1;
+            let mut images = Vec::new();
+            let structured = match name {
+                "check_permissions"
+                    if args == json!({"prompt":false,"probe_direct_capture":false}) =>
+                {
+                    json!({"accessibility":true,"screen_recording":true})
+                }
+                "list_apps" if args == json!({}) => {
+                    json!({"apps":[{"pid":101,"name":"Fixture","bundle_id":"owned.fixture"}]})
+                }
+                "list_windows" if args == json!({}) => {
+                    json!({"windows":[{"pid":101,"window_id":202,"title":"Owned image"}]})
+                }
+                "get_window_state"
+                    if !self.captured
+                        && args
+                            == json!({"pid":101,"window_id":202,"include_screenshot":true,"include_accessibility_tree":true,"max_elements":200,"max_depth":12,"max_dimension":1600}) =>
+                {
+                    self.captured = true;
+                    images.push(vega_mcp::ManagedImage {
+                        bytes: self.png.clone(),
+                        mime_type: "image/png".into(),
+                    });
+                    json!({"pid":101,"window_id":202,"screenshot_frame_valid":true,"snapshot_id":"owned-snapshot","capture_id":"owned-capture","elements":[],"tree_markdown":"Owned PNG observation"})
+                }
+                _ => return Err(vega_mcp::McpError::Transport),
+            };
+            Ok(vega_mcp::ManagedResult {
+                text: Vec::new(),
+                images,
+                structured: Some(structured),
+                is_error: false,
+            })
+        })
+    }
+
+    fn shutdown(&mut self) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            self.connected = false;
+            true
+        })
+    }
+}
+
+async fn owned_image_tool_run(
+    model: &ResolvedModel,
+    tools: &vega_tools::Tools,
+    root: &std::path::Path,
+) -> (crate::AgentOutcome, ScriptedProvider) {
+    let run = crate::computer_use::ComputerUseRun::with_desktop_transport(OwnedDesktopTransport {
+        connected: false,
+        remaining_calls: 16,
+        captured: false,
+        png: pixels().bytes().to_vec(),
+    });
+    let cancel = CancellationToken::new();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let epoch = run.control.status().epoch;
+        let directory = json!({"target_id":null,"cursor":null});
+        run.authorize("ComputerObserve", &directory, epoch, &cancel)
+            .await
+            .map_err(|_| VegaError::Tool {
+                tool: "ComputerObserve".into(),
+                message: "owned directory authorization failed".into(),
+            })?;
+        run.execute_at("ComputerObserve", "owned-directory", directory, epoch, &cancel)
+            .await
+            .map_err(|_| VegaError::Tool {
+                tool: "ComputerObserve".into(),
+                message: "owned directory discovery failed".into(),
+            })?;
+        let target = run
+            .control
+            .snapshot()
+            .observations
+            .into_iter()
+            .find(|observation| observation.call_id == "owned-directory")
+            .and_then(|observation| serde_json::from_str::<Value>(&observation.text).ok())
+            .and_then(|directory| directory["windows"][0]["target_id"].as_str().map(str::to_owned))
+            .ok_or_else(|| VegaError::Tool {
+                tool: "ComputerObserve".into(),
+                message: "owned directory target missing".into(),
+            })?;
+        let proposal = vec![chat_chunk(
+            json!({"tool_calls":[{"index":0,"id":"read-image","type":"function","function":{"name":"ComputerObserve","arguments":json!({"target_id":target,"cursor":null}).to_string()}}]}),
+            json!("tool_calls"),
+        )];
+        let provider = ScriptedProvider::new(model, vec![proposal, final_round()], false);
+        let mut request = agent_request(model, root);
+        request.tool_config.permission_mode = RuntimePermissionMode::Confirm;
+        request.tool_config = request.tool_config.with_computer_use(Some(run.clone()));
+        let outcome = crate::run_agent(&provider, tools, request, cancel.clone()).await?;
+        Ok::<_, VegaError>((outcome, provider))
+    })
+    .await;
+    cancel.cancel();
+    let shutdown = tokio::time::timeout(std::time::Duration::from_secs(5), run.shutdown()).await;
+    run.control.release();
+    shutdown.expect("owned desktop shutdown is bounded");
+    result
+        .expect("owned desktop request is bounded")
+        .expect("owned desktop request completed")
+}
+
 #[tokio::test]
 async fn actual_tool_loop_preserves_first_id_original_arguments_raw_and_single_execution() {
     let dir = tempfile::tempdir().unwrap();
@@ -277,7 +417,7 @@ async fn unmodified_json_validation_and_permission_rejection_keep_tools_fenced()
     let model = resolved(json!({}));
     for (name, args) in [
         ("read", r#"{"path":5}"#),
-        ("read", r#"{"path":"README.md","offset":null}"#),
+        ("read", r#"{"path":"README.md","offset":false}"#),
         ("read", r#"{"path":"README.md","offset":"1"}"#),
         ("write", r#"{"path":"README.md","content":"changed"}"#),
     ] {
@@ -457,22 +597,7 @@ async fn user_and_history_images_block_before_send_while_legal_tool_images_block
         assert!(result.is_err() || result.is_ok_and(|outcome| outcome.failed));
         assert!(provider.bodies.lock().unwrap().is_empty());
     }
-    let provider = ScriptedProvider::new(
-        &text_model,
-        vec![
-            read_round(json!({}), "read-image", r#"{"path":"red.png"}"#),
-            final_round(),
-        ],
-        false,
-    );
-    let outcome = crate::run_agent(
-        &provider,
-        &tools,
-        agent_request(&text_model, dir.path()),
-        CancellationToken::new(),
-    )
-    .await
-    .unwrap();
+    let (outcome, provider) = owned_image_tool_run(&text_model, &tools, dir.path()).await;
     assert!(outcome.failed);
     assert_eq!(outcome.executed_tool_call_count, 1);
     assert_eq!(provider.bodies.lock().unwrap().len(), 1);
@@ -485,22 +610,7 @@ async fn user_and_history_images_block_before_send_while_legal_tool_images_block
         Some(&override_for(&text_model, None, Some(true))),
     )
     .unwrap();
-    let provider = ScriptedProvider::new(
-        &vision,
-        vec![
-            read_round(json!({}), "read-image", r#"{"path":"red.png"}"#),
-            final_round(),
-        ],
-        false,
-    );
-    let outcome = crate::run_agent(
-        &provider,
-        &tools,
-        agent_request(&vision, dir.path()),
-        CancellationToken::new(),
-    )
-    .await
-    .unwrap();
+    let (outcome, provider) = owned_image_tool_run(&vision, &tools, dir.path()).await;
     assert!(!outcome.failed);
     assert_eq!(outcome.executed_tool_call_count, 1);
     assert_eq!(provider.bodies.lock().unwrap().len(), 2);
@@ -537,6 +647,7 @@ async fn frozen_capacity_output_reserve_remains_authoritative_over_source_model_
     let model = resolved(json!({"contextWindow":200,"maxTokens":100}));
     let provider = ScriptedProvider::new(&model, vec![final_round()], false);
     let mut request = agent_request(&model, dir.path());
+    request.max_tokens = Some(800);
     request.context_budget = Some(crate::ContextBudget::new(100_000, 800, false).unwrap());
     let outcome = crate::run_agent(&provider, &tools, request, CancellationToken::new())
         .await
@@ -727,7 +838,7 @@ async fn known_required_replay_fields_remain_strict_while_generic_missing_reason
     std::fs::write(dir.path().join("README.md"), "owned").unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     for (endpoint, name, required) in [
-        ("https://api.deepseek.com", "deepseek-reasoner", true),
+        ("https://api.deepseek.com", "deepseek-v4-flash", true),
         ("https://api.z.ai/api/paas/v4", "glm-4.7", true),
         ("https://fixture.invalid/v1", "step-5-preview", false),
         ("https://fixture.invalid/v1", "deepseek-v4-flash", false),

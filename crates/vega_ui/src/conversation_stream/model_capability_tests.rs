@@ -67,7 +67,7 @@ fn composer_allows_only_effective_subset_and_preserves_actual_wire_choice(cx: &m
         let slider = cx.update(|cx| stream.read(cx).thinking_slider.clone());
         cx.update(|cx| {
             assert_eq!(slider.read(cx).tiers(), ["low", "high"]);
-            assert!(slider.update(cx, |slider, cx| slider.select_index(2, cx)));
+            assert!(slider.update(cx, |slider, cx| slider.select_index(1, cx)));
         });
         cx.run_until_parked();
         let (reasoning, snapshot) = cx.update(|cx| {
@@ -198,9 +198,7 @@ fn unknown_proxy_gpt_and_arbitrary_ids_expose_every_fallback_effort_without_whit
             .into_iter()
             .enumerate()
         {
-            cx.update(|cx| {
-                assert!(slider.update(cx, |slider, cx| slider.select_index(index + 1, cx)))
-            });
+            cx.update(|cx| assert!(slider.update(cx, |slider, cx| slider.select_index(index, cx))));
             cx.run_until_parked();
             let reasoning = cx.update(|cx| stream.read(cx).frozen_reasoning_for_submit().unwrap());
             let snapshot = cx.update(|cx| stream.read(cx).model_snapshot_for_submit().unwrap());

@@ -1,0 +1,551 @@
+--- a/crates/vega/src/app_model_compatibility_tests.rs
++++ b/crates/vega/src/app_model_compatibility_tests.rs
+@@ -3,9 +3,7 @@
+ use vega_runtime::{ChatMessage, ChatRequest, ChatRole, ProviderEvent};
+ use vega_store::model_capabilities::{ModelCapabilityConfig, ModelCapabilityRecord};
+ 
+-#[path = "../../vega_runtime/src/openai/compatibility_tests/http.rs"]
+-mod http;
+-use http::{HttpFixture, Reply};
++use crate::compatibility_http::{HttpFixture, Reply};
+ 
+ fn owned(
+     root: &std::path::Path,
+--- a/crates/vega/src/window/model_context_compatibility_tests.rs
++++ b/crates/vega/src/window/model_context_compatibility_tests.rs
+@@ -1,9 +1,7 @@
+ use super::*;
+ use vega_store::model_capabilities::{ModelCapabilityConfig, ModelCapabilityRecord};
+ 
+-#[path = "../../../vega_runtime/src/openai/compatibility_tests/http.rs"]
+-mod http;
+-use http::{HttpFixture, Reply};
++use crate::compatibility_http::{HttpFixture, Reply};
+ 
+ #[tokio::test]
+ async fn manual_context_worker_factory_consumes_native_snapshot_and_keeps_capacity_authority() {
+--- a/crates/vega_runtime/src/openai/compatibility_tests/catalog.rs
++++ b/crates/vega_runtime/src/openai/compatibility_tests/catalog.rs
+@@ -655,7 +655,7 @@
+             vec!["low", "high", "max"],
+         ),
+         (
+-            ModelApi::ChatCompletions,
++            ModelApi::Responses,
+             "https://opencode.ai/zen/v1",
+             "grok-build-0.1",
+             vec!["high"],
+--- a/crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs
++++ b/crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs
+@@ -121,6 +121,146 @@
+         chat_chunk(json!({"content":"Complete"}), Value::Null),
+         chat_chunk(json!({}), json!("stop")),
+     ]
++}
++
++struct OwnedDesktopTransport {
++    connected: bool,
++    remaining_calls: usize,
++    captured: bool,
++    png: Vec<u8>,
++}
++
++impl crate::computer_use::DesktopTransport for OwnedDesktopTransport {
++    fn is_connected(&self) -> bool {
++        self.connected
++    }
++
++    fn connect<'a>(
++        &'a mut self,
++        cancel: &'a CancellationToken,
++    ) -> BoxFuture<'a, Result<(), crate::computer_use::ComputerUseError>> {
++        Box::pin(async move {
++            if cancel.is_cancelled() {
++                return Err(crate::computer_use::ComputerUseError::Cancelled);
++            }
++            self.connected = true;
++            Ok(())
++        })
++    }
++
++    fn call<'a>(
++        &'a mut self,
++        name: &'a str,
++        args: Value,
++        cancel: &'a CancellationToken,
++    ) -> BoxFuture<'a, Result<vega_mcp::ManagedResult, vega_mcp::McpError>> {
++        Box::pin(async move {
++            if !self.connected || cancel.is_cancelled() || self.remaining_calls == 0 {
++                return Err(vega_mcp::McpError::Transport);
++            }
++            self.remaining_calls -= 1;
++            let mut images = Vec::new();
++            let structured = match name {
++                "check_permissions"
++                    if args == json!({"prompt":false,"probe_direct_capture":false}) =>
++                {
++                    json!({"accessibility":true,"screen_recording":true})
++                }
++                "list_apps" if args == json!({}) => {
++                    json!({"apps":[{"pid":101,"name":"Fixture","bundle_id":"owned.fixture"}]})
++                }
++                "list_windows" if args == json!({}) => {
++                    json!({"windows":[{"pid":101,"window_id":202,"title":"Owned image"}]})
++                }
++                "get_window_state"
++                    if !self.captured
++                        && args
++                            == json!({"pid":101,"window_id":202,"include_screenshot":true,"include_accessibility_tree":true,"max_elements":200,"max_depth":12,"max_dimension":1600}) =>
++                {
++                    self.captured = true;
++                    images.push(vega_mcp::ManagedImage {
++                        bytes: self.png.clone(),
++                        mime_type: "image/png".into(),
++                    });
++                    json!({"pid":101,"window_id":202,"screenshot_frame_valid":true,"snapshot_id":"owned-snapshot","capture_id":"owned-capture","elements":[],"tree_markdown":"Owned PNG observation"})
++                }
++                _ => return Err(vega_mcp::McpError::Transport),
++            };
++            Ok(vega_mcp::ManagedResult {
++                text: Vec::new(),
++                images,
++                structured: Some(structured),
++                is_error: false,
++            })
++        })
++    }
++
++    fn shutdown(&mut self) -> BoxFuture<'_, bool> {
++        Box::pin(async move {
++            self.connected = false;
++            true
++        })
++    }
++}
++
++async fn owned_image_tool_run(
++    model: &ResolvedModel,
++    tools: &vega_tools::Tools,
++    root: &std::path::Path,
++) -> (crate::AgentOutcome, ScriptedProvider) {
++    let run = crate::computer_use::ComputerUseRun::with_desktop_transport(OwnedDesktopTransport {
++        connected: false,
++        remaining_calls: 16,
++        captured: false,
++        png: pixels().bytes().to_vec(),
++    });
++    let cancel = CancellationToken::new();
++    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
++        let epoch = run.control.status().epoch;
++        let directory = json!({"target_id":null,"cursor":null});
++        run.authorize("ComputerObserve", &directory, epoch, &cancel)
++            .await
++            .map_err(|_| VegaError::Tool {
++                tool: "ComputerObserve".into(),
++                message: "owned directory authorization failed".into(),
++            })?;
++        run.execute_at("ComputerObserve", "owned-directory", directory, epoch, &cancel)
++            .await
++            .map_err(|_| VegaError::Tool {
++                tool: "ComputerObserve".into(),
++                message: "owned directory discovery failed".into(),
++            })?;
++        let target = run
++            .control
++            .snapshot()
++            .observations
++            .into_iter()
++            .find(|observation| observation.call_id == "owned-directory")
++            .and_then(|observation| serde_json::from_str::<Value>(&observation.text).ok())
++            .and_then(|directory| directory["windows"][0]["target_id"].as_str().map(str::to_owned))
++            .ok_or_else(|| VegaError::Tool {
++                tool: "ComputerObserve".into(),
++                message: "owned directory target missing".into(),
++            })?;
++        let proposal = vec![chat_chunk(
++            json!({"tool_calls":[{"index":0,"id":"read-image","type":"function","function":{"name":"ComputerObserve","arguments":json!({"target_id":target,"cursor":null}).to_string()}}]}),
++            json!("tool_calls"),
++        )];
++        let provider = ScriptedProvider::new(model, vec![proposal, final_round()], false);
++        let mut request = agent_request(model, root);
++        request.tool_config.permission_mode = RuntimePermissionMode::Confirm;
++        request.tool_config = request.tool_config.with_computer_use(Some(run.clone()));
++        let outcome = crate::run_agent(&provider, tools, request, cancel.clone()).await?;
++        Ok::<_, VegaError>((outcome, provider))
++    })
++    .await;
++    cancel.cancel();
++    let shutdown = tokio::time::timeout(std::time::Duration::from_secs(5), run.shutdown()).await;
++    run.control.release();
++    shutdown.expect("owned desktop shutdown is bounded");
++    result
++        .expect("owned desktop request is bounded")
++        .expect("owned desktop request completed")
+ }
+ 
+ #[tokio::test]
+@@ -277,7 +417,7 @@
+     let model = resolved(json!({}));
+     for (name, args) in [
+         ("read", r#"{"path":5}"#),
+-        ("read", r#"{"path":"README.md","offset":null}"#),
++        ("read", r#"{"path":"README.md","offset":false}"#),
+         ("read", r#"{"path":"README.md","offset":"1"}"#),
+         ("write", r#"{"path":"README.md","content":"changed"}"#),
+     ] {
+@@ -457,22 +597,7 @@
+         assert!(result.is_err() || result.is_ok_and(|outcome| outcome.failed));
+         assert!(provider.bodies.lock().unwrap().is_empty());
+     }
+-    let provider = ScriptedProvider::new(
+-        &text_model,
+-        vec![
+-            read_round(json!({}), "read-image", r#"{"path":"red.png"}"#),
+-            final_round(),
+-        ],
+-        false,
+-    );
+-    let outcome = crate::run_agent(
+-        &provider,
+-        &tools,
+-        agent_request(&text_model, dir.path()),
+-        CancellationToken::new(),
+-    )
+-    .await
+-    .unwrap();
++    let (outcome, provider) = owned_image_tool_run(&text_model, &tools, dir.path()).await;
+     assert!(outcome.failed);
+     assert_eq!(outcome.executed_tool_call_count, 1);
+     assert_eq!(provider.bodies.lock().unwrap().len(), 1);
+@@ -485,22 +610,7 @@
+         Some(&override_for(&text_model, None, Some(true))),
+     )
+     .unwrap();
+-    let provider = ScriptedProvider::new(
+-        &vision,
+-        vec![
+-            read_round(json!({}), "read-image", r#"{"path":"red.png"}"#),
+-            final_round(),
+-        ],
+-        false,
+-    );
+-    let outcome = crate::run_agent(
+-        &provider,
+-        &tools,
+-        agent_request(&vision, dir.path()),
+-        CancellationToken::new(),
+-    )
+-    .await
+-    .unwrap();
++    let (outcome, provider) = owned_image_tool_run(&vision, &tools, dir.path()).await;
+     assert!(!outcome.failed);
+     assert_eq!(outcome.executed_tool_call_count, 1);
+     assert_eq!(provider.bodies.lock().unwrap().len(), 2);
+@@ -537,6 +647,7 @@
+     let model = resolved(json!({"contextWindow":200,"maxTokens":100}));
+     let provider = ScriptedProvider::new(&model, vec![final_round()], false);
+     let mut request = agent_request(&model, dir.path());
++    request.max_tokens = Some(800);
+     request.context_budget = Some(crate::ContextBudget::new(100_000, 800, false).unwrap());
+     let outcome = crate::run_agent(&provider, &tools, request, CancellationToken::new())
+         .await
+@@ -727,7 +838,7 @@
+     std::fs::write(dir.path().join("README.md"), "owned").unwrap();
+     let tools = vega_tools::Tools::new(dir.path()).unwrap();
+     for (endpoint, name, required) in [
+-        ("https://api.deepseek.com", "deepseek-reasoner", true),
++        ("https://api.deepseek.com", "deepseek-v4-flash", true),
+         ("https://api.z.ai/api/paas/v4", "glm-4.7", true),
+         ("https://fixture.invalid/v1", "step-5-preview", false),
+         ("https://fixture.invalid/v1", "deepseek-v4-flash", false),
+--- a/crates/vega_ui/src/conversation_stream/model_capability_tests.rs
++++ b/crates/vega_ui/src/conversation_stream/model_capability_tests.rs
+@@ -67,7 +67,7 @@
+         let slider = cx.update(|cx| stream.read(cx).thinking_slider.clone());
+         cx.update(|cx| {
+             assert_eq!(slider.read(cx).tiers(), ["low", "high"]);
+-            assert!(slider.update(cx, |slider, cx| slider.select_index(2, cx)));
++            assert!(slider.update(cx, |slider, cx| slider.select_index(1, cx)));
+         });
+         cx.run_until_parked();
+         let (reasoning, snapshot) = cx.update(|cx| {
+@@ -198,9 +198,7 @@
+             .into_iter()
+             .enumerate()
+         {
+-            cx.update(|cx| {
+-                assert!(slider.update(cx, |slider, cx| slider.select_index(index + 1, cx)))
+-            });
++            cx.update(|cx| assert!(slider.update(cx, |slider, cx| slider.select_index(index, cx))));
+             cx.run_until_parked();
+             let reasoning = cx.update(|cx| stream.read(cx).frozen_reasoning_for_submit().unwrap());
+             let snapshot = cx.update(|cx| stream.read(cx).model_snapshot_for_submit().unwrap());
+--- a/crates/vega_ui/src/settings/model_capability_tests.rs
++++ b/crates/vega_ui/src/settings/model_capability_tests.rs
+@@ -300,7 +300,11 @@
+         window.render_frame(cx);
+         window.click("model-capability-effort-0-high", cx);
+         window.click("model-capability-save-0", cx);
+-        let event = saves.borrow()[0].clone();
++    })
++    .unwrap();
++    cx.run_until_parked();
++    let event = saves.borrow()[0].clone();
++    cx.update_window(window.into(), |_, window, cx| {
+         assert!(
+             settings
+                 .read(cx)
+@@ -331,9 +335,10 @@
+         );
+         assert_eq!(saves.borrow().len(), 1);
+         window.click("model-capability-reload", cx);
+-        assert_eq!(*reloads.borrow(), 1);
+-    })
+-    .unwrap();
++    })
++    .unwrap();
++    cx.run_until_parked();
++    assert_eq!(*reloads.borrow(), 1);
+ }
+ 
+ #[gpui_kit::test]
+--- a/crates/vega/src/main.rs
++++ b/crates/vega/src/main.rs
+@@ -25,6 +25,9 @@
+ mod branch_controller;
+ mod codex_agent;
+ mod commit_controller;
++#[cfg(test)]
++#[path = "../../vega_runtime/src/openai/compatibility_tests/http.rs"]
++mod compatibility_http;
+ mod diff_controller;
+ mod model_catalog;
+ mod native_subagents;
+--- a/crates/vega_runtime/src/computer_use/backend.rs
++++ b/crates/vega_runtime/src/computer_use/backend.rs
+@@ -15,10 +15,22 @@
+ use tokio_util::sync::CancellationToken;
+ use vega_mcp::{LocalServer, ManagedClient};
+ 
++#[cfg(test)]
++#[path = "desktop_test_support.rs"]
++mod desktop_test_support;
++#[cfg(test)]
++use desktop_test_support::DesktopConnection;
++#[cfg(test)]
++pub(crate) use desktop_test_support::DesktopTransport;
++#[cfg(not(test))]
++type DesktopConnection = Desktop;
++
+ #[derive(Default)]
+ pub(super) struct Backends {
+-    desktop: Option<Desktop>,
++    desktop: Option<DesktopConnection>,
+     browser: Option<Browser>,
++    #[cfg(test)]
++    desktop_transport: Option<Box<dyn DesktopTransport>>,
+ }
+ struct Dispatch<'a> {
+     cancel: &'a CancellationToken,
+@@ -146,15 +158,45 @@
+ }
+ 
+ impl Backends {
++    #[cfg(test)]
++    pub(super) fn with_desktop_transport(transport: Box<dyn DesktopTransport>) -> Self {
++        Self {
++            desktop_transport: Some(transport),
++            ..Self::default()
++        }
++    }
++
++    async fn spawn_desktop(&mut self) -> Result<DesktopConnection, Error> {
++        #[cfg(test)]
++        if let Some(transport) = self.desktop_transport.take() {
++            return Ok(DesktopConnection::InProcess(transport));
++        }
++        let components = ManagedComponents::detect()?;
++        let desktop = Desktop::spawn(&components).await?;
++        #[cfg(test)]
++        let desktop = DesktopConnection::Process(Box::new(desktop));
++        Ok(desktop)
++    }
++
+     async fn desktop_windows(
+         &mut self,
+         cancel: &CancellationToken,
+     ) -> Result<Vec<DesktopTarget>, Error> {
+-        self.desktop
+-            .as_mut()
+-            .ok_or(Error::NotReady)?
+-            .windows(cancel)
+-            .await
++        let desktop = self.desktop.as_mut().ok_or(Error::NotReady)?;
++        if !desktop.is_connected() {
++            return Err(Error::Unavailable);
++        }
++        let apps = checked(
++            Capability::Desktop,
++            Stage::ListApps,
++            desktop.call("list_apps", json!({}), cancel).await,
++        )?;
++        let windows = checked(
++            Capability::Desktop,
++            Stage::ListWindows,
++            desktop.call("list_windows", json!({}), cancel).await,
++        )?;
++        parse_windows(apps.structured.as_ref(), windows.structured.as_ref())
+     }
+ 
+     async fn desktop_call(
+@@ -165,7 +207,6 @@
+     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
+         self.desktop
+             .as_mut()
+-            .and_then(|desktop| desktop.client.as_mut())
+             .ok_or(vega_mcp::McpError::Transport)?
+             .call(name, args, cancel)
+             .await
+@@ -417,10 +458,9 @@
+             return Ok(());
+         }
+         run.control.begin(capability)?;
+-        let components = ManagedComponents::detect()?;
+         match capability {
+             Capability::Desktop => {
+-                self.desktop = Some(Desktop::spawn(&components).await?);
++                self.desktop = Some(self.spawn_desktop().await?);
+                 self.desktop
+                     .as_mut()
+                     .ok_or(Error::Unavailable)?
+@@ -430,6 +470,7 @@
+                     .connected(epoch, capability, Target::DesktopCatalog)?;
+             }
+             Capability::Browser => {
++                let components = ManagedComponents::detect()?;
+                 let root = private_directory()?;
+                 let args = vec![
+                     components.playwright.to_string_lossy().into_owned(),
+@@ -846,19 +887,21 @@
+         })
+     }
+ 
+-    async fn windows(&mut self, cancel: &CancellationToken) -> Result<Vec<DesktopTarget>, Error> {
+-        let client = self.client.as_mut().ok_or(Error::Unavailable)?;
+-        let apps = checked(
+-            Capability::Desktop,
+-            Stage::ListApps,
+-            client.call("list_apps", json!({}), cancel).await,
+-        )?;
+-        let windows = checked(
+-            Capability::Desktop,
+-            Stage::ListWindows,
+-            client.call("list_windows", json!({}), cancel).await,
+-        )?;
+-        parse_windows(apps.structured.as_ref(), windows.structured.as_ref())
++    fn is_connected(&self) -> bool {
++        self.client.is_some()
++    }
++
++    async fn call(
++        &mut self,
++        name: &str,
++        args: Value,
++        cancel: &CancellationToken,
++    ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
++        self.client
++            .as_mut()
++            .ok_or(vega_mcp::McpError::Transport)?
++            .call(name, args, cancel)
++            .await
+     }
+ 
+     async fn connect(&mut self, cancel: &CancellationToken) -> Result<(), Error> {
+--- a/crates/vega_runtime/src/computer_use/mod.rs
++++ b/crates/vega_runtime/src/computer_use/mod.rs
+@@ -6,6 +6,8 @@
+ 
+ pub(crate) const INVALIDATED_OBSERVATION: &str = "[Earlier tool observation returned successfully, but its payload has since been invalidated and discarded. This placeholder does not mean the original observation was empty or failed, and does not establish whether an earlier action was verified. Obtain a fresh observation before any new action.]";
+ mod backend;
++#[cfg(test)]
++pub(crate) use backend::DesktopTransport;
+ mod components;
+ mod control;
+ mod diagnostics;
+@@ -271,6 +273,15 @@
+         }
+     }
+ 
++    #[cfg(test)]
++    pub(crate) fn with_desktop_transport(transport: impl DesktopTransport + 'static) -> Self {
++        let mut run = Self::new(true, false);
++        run.backend = Arc::new(tokio::sync::Mutex::new(
++            backend::Backends::with_desktop_transport(Box::new(transport)),
++        ));
++        run
++    }
++
+     pub fn enabled(&self, capability: Capability) -> bool {
+         match capability {
+             Capability::Desktop => self.desktop_enabled,
+--- /dev/null
++++ b/crates/vega_runtime/src/computer_use/desktop_test_support.rs
+@@ -0,0 +1,58 @@
++use super::{Desktop, Error};
++use futures::future::BoxFuture;
++use serde_json::Value;
++use tokio_util::sync::CancellationToken;
++use vega_mcp::{ManagedResult, McpError};
++
++pub(crate) trait DesktopTransport: Send {
++    fn is_connected(&self) -> bool;
++    fn connect<'a>(&'a mut self, cancel: &'a CancellationToken)
++    -> BoxFuture<'a, Result<(), Error>>;
++    fn call<'a>(
++        &'a mut self,
++        name: &'a str,
++        args: Value,
++        cancel: &'a CancellationToken,
++    ) -> BoxFuture<'a, Result<ManagedResult, McpError>>;
++    fn shutdown(&mut self) -> BoxFuture<'_, bool>;
++}
++
++pub(super) enum DesktopConnection {
++    Process(Box<Desktop>),
++    InProcess(Box<dyn DesktopTransport>),
++}
++
++impl DesktopConnection {
++    pub(super) fn is_connected(&self) -> bool {
++        match self {
++            Self::Process(desktop) => desktop.is_connected(),
++            Self::InProcess(transport) => transport.is_connected(),
++        }
++    }
++
++    pub(super) async fn connect(&mut self, cancel: &CancellationToken) -> Result<(), Error> {
++        match self {
++            Self::Process(desktop) => desktop.connect(cancel).await,
++            Self::InProcess(transport) => transport.connect(cancel).await,
++        }
++    }
++
++    pub(super) async fn call(
++        &mut self,
++        name: &str,
++        args: Value,
++        cancel: &CancellationToken,
++    ) -> Result<ManagedResult, McpError> {
++        match self {
++            Self::Process(desktop) => desktop.call(name, args, cancel).await,
++            Self::InProcess(transport) => transport.call(name, args, cancel).await,
++        }
++    }
++
++    pub(super) async fn shutdown(&mut self) -> bool {
++        match self {
++            Self::Process(desktop) => desktop.shutdown().await,
++            Self::InProcess(transport) => transport.shutdown().await,
++        }
++    }
++}

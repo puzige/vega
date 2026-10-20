@@ -31,7 +31,13 @@
 
 这些修正提交为 `268ca25da7b4f8963b6572a059de72248672142b`，[精确补丁](https://github.com/puzige/vega/commit/268ca25da7b4f8963b6572a059de72248672142b.patch)已读回49,742字节、SHA256 `7abf9bbdbe567e47196b2181dc71ae56be386222bac5a83786d25c660a847c62`，25个冻结 artifact 的 GitHub tree blob 与本地逐项一致。[Actions 39366258750](https://github.com/puzige/vega/actions/runs/39366258750)解除前述问题后，继续发现缺少 `TestWindowExt` 测试扩展导入与测试 helper 的纯值 `then` 写法 lint；仍为发现未取得/执行0，Format及Python34成功。[两处机械修正的先审查记录和摘要](vega-issue-494-compile-wiring-third.json)继续保持原输入与断言，不修改生产行为。
 
-带相同测试的完整GREEN、准确发现/执行/通过/失败/跳过数、生产实现提交和原始job链接：待取得。固定可恢复证据后才独立删Rust测试及专用支持；最终head应由现有全门禁确认0发现/0执行和no Rust tests，空集不代表行为GREEN。
+第三处接线提交 `2971b357daac35187593c4aae3c485397a4096ae` 的 [Actions 39367011160](https://github.com/puzige/vega/actions/runs/39367011160) 首次完整运行本轮行为基线：**133 发现、133 执行、123 通过、10 失败、0 跳过**。Format 和 Python34成功；Clippy另报App重复声明同一HTTP测试helper。[逐失败名称、原始job和完整日志SHA](vega-issue-494-behavior-red.json)保留本次结果，不把123部分通过称完整GREEN。
+
+主会话独立读取固定npm来源、真实工具schema/图片生产者和GPUI事件/滑块实现后，确认其中包含测试资料与物理接线错误。[修改前公开审查](https://github.com/puzige/vega/pull/504#issuecomment-6283260542)固定了[精确更正范围](vega-issue-494-behavior-red-review.md)：模型/API身份、明确调用方输出上限、非法类型负例、无Off时的索引、异步事件观察、唯一HTTP helper和真实工具图片链。它们保留逻辑验收及原结果断言，但确实改变测试资料/输入/操作位置，不能声称仍是原始字节未变。原始冻结和源映射清单不覆盖；完整更正须有独立源码/摘要和前后证据。
+
+更正提交不同时修复已确认的Responses凭据检查、当前模型容量权威和InvalidRead执行前终止缺口。先再次运行同一133定义，保留资料更正后的行为RED，再按未通过的冻结断言授权最小生产修正。
+
+完整带测试GREEN仍待取得。固定可恢复证据后才独立删Rust测试及专用支持；最终head应由现有全门禁确认0发现/0执行和no Rust tests，空集不代表行为GREEN。
 
 真实模型服务、原生应用和外层Trusted Git进程流程由用户合并后纯手动验证，不能把网络替身测试称真实服务或系统E2E。Issue在用户明确通过前保持开放，当前In progress。
 

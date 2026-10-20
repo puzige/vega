@@ -15,10 +15,22 @@ use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 use vega_mcp::{LocalServer, ManagedClient};
 
+#[cfg(test)]
+#[path = "desktop_test_support.rs"]
+mod desktop_test_support;
+#[cfg(test)]
+use desktop_test_support::DesktopConnection;
+#[cfg(test)]
+pub(crate) use desktop_test_support::DesktopTransport;
+#[cfg(not(test))]
+type DesktopConnection = Desktop;
+
 #[derive(Default)]
 pub(super) struct Backends {
-    desktop: Option<Desktop>,
+    desktop: Option<DesktopConnection>,
     browser: Option<Browser>,
+    #[cfg(test)]
+    desktop_transport: Option<Box<dyn DesktopTransport>>,
 }
 struct Dispatch<'a> {
     cancel: &'a CancellationToken,
@@ -146,15 +158,45 @@ fn action_unknown(
 }
 
 impl Backends {
+    #[cfg(test)]
+    pub(super) fn with_desktop_transport(transport: Box<dyn DesktopTransport>) -> Self {
+        Self {
+            desktop_transport: Some(transport),
+            ..Self::default()
+        }
+    }
+
+    async fn spawn_desktop(&mut self) -> Result<DesktopConnection, Error> {
+        #[cfg(test)]
+        if let Some(transport) = self.desktop_transport.take() {
+            return Ok(DesktopConnection::InProcess(transport));
+        }
+        let components = ManagedComponents::detect()?;
+        let desktop = Desktop::spawn(&components).await?;
+        #[cfg(test)]
+        let desktop = DesktopConnection::Process(Box::new(desktop));
+        Ok(desktop)
+    }
+
     async fn desktop_windows(
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Vec<DesktopTarget>, Error> {
-        self.desktop
-            .as_mut()
-            .ok_or(Error::NotReady)?
-            .windows(cancel)
-            .await
+        let desktop = self.desktop.as_mut().ok_or(Error::NotReady)?;
+        if !desktop.is_connected() {
+            return Err(Error::Unavailable);
+        }
+        let apps = checked(
+            Capability::Desktop,
+            Stage::ListApps,
+            desktop.call("list_apps", json!({}), cancel).await,
+        )?;
+        let windows = checked(
+            Capability::Desktop,
+            Stage::ListWindows,
+            desktop.call("list_windows", json!({}), cancel).await,
+        )?;
+        parse_windows(apps.structured.as_ref(), windows.structured.as_ref())
     }
 
     async fn desktop_call(
@@ -165,7 +207,6 @@ impl Backends {
     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
         self.desktop
             .as_mut()
-            .and_then(|desktop| desktop.client.as_mut())
             .ok_or(vega_mcp::McpError::Transport)?
             .call(name, args, cancel)
             .await
@@ -417,10 +458,9 @@ impl Backends {
             return Ok(());
         }
         run.control.begin(capability)?;
-        let components = ManagedComponents::detect()?;
         match capability {
             Capability::Desktop => {
-                self.desktop = Some(Desktop::spawn(&components).await?);
+                self.desktop = Some(self.spawn_desktop().await?);
                 self.desktop
                     .as_mut()
                     .ok_or(Error::Unavailable)?
@@ -430,6 +470,7 @@ impl Backends {
                     .connected(epoch, capability, Target::DesktopCatalog)?;
             }
             Capability::Browser => {
+                let components = ManagedComponents::detect()?;
                 let root = private_directory()?;
                 let args = vec![
                     components.playwright.to_string_lossy().into_owned(),
@@ -846,19 +887,21 @@ impl Desktop {
         })
     }
 
-    async fn windows(&mut self, cancel: &CancellationToken) -> Result<Vec<DesktopTarget>, Error> {
-        let client = self.client.as_mut().ok_or(Error::Unavailable)?;
-        let apps = checked(
-            Capability::Desktop,
-            Stage::ListApps,
-            client.call("list_apps", json!({}), cancel).await,
-        )?;
-        let windows = checked(
-            Capability::Desktop,
-            Stage::ListWindows,
-            client.call("list_windows", json!({}), cancel).await,
-        )?;
-        parse_windows(apps.structured.as_ref(), windows.structured.as_ref())
+    fn is_connected(&self) -> bool {
+        self.client.is_some()
+    }
+
+    async fn call(
+        &mut self,
+        name: &str,
+        args: Value,
+        cancel: &CancellationToken,
+    ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
+        self.client
+            .as_mut()
+            .ok_or(vega_mcp::McpError::Transport)?
+            .call(name, args, cancel)
+            .await
     }
 
     async fn connect(&mut self, cancel: &CancellationToken) -> Result<(), Error> {

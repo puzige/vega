@@ -1,9 +1,7 @@
 use super::*;
 use vega_store::model_capabilities::{ModelCapabilityConfig, ModelCapabilityRecord};
 
-#[path = "../../../vega_runtime/src/openai/compatibility_tests/http.rs"]
-mod http;
-use http::{HttpFixture, Reply};
+use crate::compatibility_http::{HttpFixture, Reply};
 
 #[tokio::test]
 async fn manual_context_worker_factory_consumes_native_snapshot_and_keeps_capacity_authority() {

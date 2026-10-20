@@ -6,6 +6,8 @@ mod desktop_observation;
 
 pub(crate) const INVALIDATED_OBSERVATION: &str = "[Earlier tool observation returned successfully, but its payload has since been invalidated and discarded. This placeholder does not mean the original observation was empty or failed, and does not establish whether an earlier action was verified. Obtain a fresh observation before any new action.]";
 mod backend;
+#[cfg(test)]
+pub(crate) use backend::DesktopTransport;
 mod components;
 mod control;
 mod diagnostics;
@@ -269,6 +271,15 @@ impl ComputerUseRun {
             screenshots: Arc::new(std::sync::Mutex::new(Vec::new())),
             model_batch: Arc::new(std::sync::Mutex::new(batch::ModelBatch::default())),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_desktop_transport(transport: impl DesktopTransport + 'static) -> Self {
+        let mut run = Self::new(true, false);
+        run.backend = Arc::new(tokio::sync::Mutex::new(
+            backend::Backends::with_desktop_transport(Box::new(transport)),
+        ));
+        run
     }
 
     pub fn enabled(&self, capability: Capability) -> bool {

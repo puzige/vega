@@ -300,7 +300,11 @@ fn saving_prevents_duplicates_and_failed_conflict_retains_edit_for_reload(cx: &m
         window.render_frame(cx);
         window.click("model-capability-effort-0-high", cx);
         window.click("model-capability-save-0", cx);
-        let event = saves.borrow()[0].clone();
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let event = saves.borrow()[0].clone();
+    cx.update_window(window.into(), |_, window, cx| {
         assert!(
             settings
                 .read(cx)
@@ -331,9 +335,10 @@ fn saving_prevents_duplicates_and_failed_conflict_retains_edit_for_reload(cx: &m
         );
         assert_eq!(saves.borrow().len(), 1);
         window.click("model-capability-reload", cx);
-        assert_eq!(*reloads.borrow(), 1);
     })
     .unwrap();
+    cx.run_until_parked();
+    assert_eq!(*reloads.borrow(), 1);
 }
 
 #[gpui_kit::test]
