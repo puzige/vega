@@ -1320,6 +1320,7 @@ mod quote_layout_tests {
     #[gpui_kit::test]
     fn thinking_quotes_keep_width_constrained_layout_and_copy_projection(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
+        cx.update(|cx| cx.set_global(Theme::light()));
         let visual = cx.add_empty_window();
         for (source, expected) in layout::LONG_QUOTES
             .into_iter()
