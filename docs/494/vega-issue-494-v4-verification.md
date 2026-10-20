@@ -41,6 +41,8 @@
 
 完整带测试GREEN仍待取得。固定可恢复证据后才独立删Rust测试及专用支持；最终head应由现有全门禁确认0发现/0执行和no Rust tests，空集不代表行为GREEN。
 
+四文件修正提交 `636d3104a3322de1a7475c364d287f6a2edc9e5d` 的 [Actions 39370960515](https://github.com/puzige/vega/actions/runs/39370960515) 被一个生产类型路径编译错误阻断：新helper使用了conversation未声明的rusqlite路径。发现数未取得、执行0，不称行为结果；Format和Python34成功。[修改前审查及日志SHA](vega-issue-494-remaining-compile-correction.json)仅允许使用Store本已公开导出的同一Connection类型，不新增依赖、改测试或行为。
+
 真实模型服务、原生应用和外层Trusted Git进程流程由用户合并后纯手动验证，不能把网络替身测试称真实服务或系统E2E。Issue在用户明确通过前保持开放，当前In progress。
 
 

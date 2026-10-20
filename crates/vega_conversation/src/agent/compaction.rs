@@ -137,7 +137,7 @@ impl<'a> ConversationCompactionHook<'a> {
 }
 
 pub(super) fn load_current_model_context_policy(
-    conn: &rusqlite::Connection,
+    conn: &vega_store::Connection,
     provider: &str,
     model: &str,
 ) -> Result<
