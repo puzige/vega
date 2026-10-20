@@ -47,7 +47,7 @@ async fn default_conversation_request_binds_model_and_persists_only_visible_resu
             )
             .unwrap();
         assert_eq!(content, "Visible answer");
-        let (input,output,cached):(u64,u64,u64)=store.conn().query_row("SELECT input_tokens,output_tokens,cache_read_tokens FROM token_usage WHERE thread_id='thread' ORDER BY rowid DESC LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        let (input,output,cached):(i64,i64,i64)=store.conn().query_row("SELECT input_tokens,output_tokens,cache_read_tokens FROM token_usage WHERE thread_id='thread' ORDER BY rowid DESC LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
         assert_eq!((input, output, cached), (17, 3, 5));
     }
 }

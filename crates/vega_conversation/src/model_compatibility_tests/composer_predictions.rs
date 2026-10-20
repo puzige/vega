@@ -78,7 +78,7 @@ async fn prediction_run_observes_real_owner_and_records_usage_without_rewriting_
         )
         .unwrap();
     assert_eq!(count, 2);
-    let tokens: (u64, u64) = store
+    let tokens: (i64, i64) = store
         .conn()
         .query_row(
             "SELECT input_tokens,output_tokens FROM token_usage WHERE thread_id='thread'",

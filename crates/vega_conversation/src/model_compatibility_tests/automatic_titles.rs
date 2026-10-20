@@ -89,7 +89,7 @@ async fn title_launch_updates_only_claimed_title_and_records_real_total_usage() 
     }
     assert_snapshot(&observed, &expected, 512);
     server.finish().await;
-    let tokens: (u64, u64) = store
+    let tokens: (i64, i64) = store
         .conn()
         .query_row(
             "SELECT input_tokens,output_tokens FROM token_usage WHERE thread_id='thread'",

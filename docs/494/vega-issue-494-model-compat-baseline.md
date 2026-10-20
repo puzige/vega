@@ -189,3 +189,10 @@ Trusted Git 的完整 open_checklist/prepare/draft 正向需要真实 Git 权威
 生产兼容行为、目录、用户文件仍未改。仅有私有 `draft_request` 的等价提取，以及 cfg(test)/dev-feature 编码观察、构造前临时路径注入、真实 GPUI 控件观察。锁定开发支持增加 10 个包，旧包版本/来源/checksum 和五个 crate 的生产依赖不变；静态审计随清单收录。本地 `cargo fmt --all -- --check`、`git diff --check`、`cargo metadata --no-deps --offline --locked --format-version 1` 通过；未编译、未运行 Vega/Clippy/Rust/Python 测试。
 
 下一步只提交测试与规格并通过现有 draft PR 取得 Actions RED。`model_compat`、能力 store/controller 和请求快照等真实目标接口当前缺失；若云端因此失败，只认定接口缺失 RED，并明确行为断言尚未执行。尚未取得有效 RED，主会话尚未授权任何生产实现。
+
+
+### 首次云端检查与测试接线修正
+
+先行提交 `80f4fe45b8f8f960d2f582e2b9768c729de64f3f` 的 [Actions 39360808726](https://github.com/puzige/vega/actions/runs/39360808726) 在测试目标编译阶段同时报告预定的真实目标接口缺失，以及测试自身的 rusqlite `FromSql<u64>` 错误。后者不是有效 RED；本轮未据此进入实现。Format 与 Python 5/15/14 通过，Rust 发现数未取得、执行 0，行为断言尚未执行。
+
+主会话[先公开留证审查](https://github.com/puzige/vega/pull/504#issuecomment-6282232482)，再授权专职子 agent 只将三个测试 SQL 用量 tuple 的宿主类型改为受支持的 i64。仅三行类型变化，输入、真实调用、SQL、精确期望值及133个定义/属性均不变；不加测试、不改断言、不改生产或依赖。原始冻结清单与源映射保持原样，[独立接线更正清单](vega-issue-494-test-wiring-corrections.json)记录旧/新源码哈希、原始 job 与审查证明。修正后 fmt/diff/offline locked metadata 静态成功，生产仍暂停，下一次现有 Actions 须确认不夹带已知测试错误的接口 RED。
