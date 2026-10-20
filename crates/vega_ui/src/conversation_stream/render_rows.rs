@@ -863,7 +863,7 @@ fn render_line_selectable(
                                 bar
                             }),
                     )
-                    .child(selected),
+                    .child(div().flex_1().min_w_0().child(selected)),
             )
             .into_any_element()
         }
@@ -1208,12 +1208,12 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                                 bar
                             }),
                     )
-                    .child(markdown_text(
+                    .child(div().flex_1().min_w_0().child(markdown_text(
                         &line.spans,
                         message_run_style(colors.text_primary),
                         colors,
                         format!("{id_prefix}-quote"),
-                    )),
+                    ))),
             )
             .into_any_element(),
         LineKind::Rule => item
