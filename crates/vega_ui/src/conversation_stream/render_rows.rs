@@ -856,7 +856,12 @@ fn render_line_selectable(
                             .w(px(2.0))
                             .mr(px(Layout::MARKDOWN_CODE_PADDING))
                             .flex_shrink_0()
-                            .bg(colors.border_subtle),
+                            .bg(colors.border_subtle)
+                            .map(|bar| {
+                                #[cfg(test)]
+                                let bar = super::quote_layout_tests::observe_bar(bar);
+                                bar
+                            }),
                     )
                     .child(selected),
             )
@@ -1196,7 +1201,12 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                             .w(px(2.0))
                             .mr(px(Layout::MARKDOWN_CODE_PADDING))
                             .flex_shrink_0()
-                            .bg(colors.border_subtle),
+                            .bg(colors.border_subtle)
+                            .map(|bar| {
+                                #[cfg(test)]
+                                let bar = super::quote_layout_tests::observe_bar(bar);
+                                bar
+                            }),
                     )
                     .child(markdown_text(
                         &line.spans,
