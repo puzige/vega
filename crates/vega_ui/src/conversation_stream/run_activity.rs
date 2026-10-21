@@ -30,6 +30,16 @@ struct RunActivitySegment {
     focus: FocusHandle,
     header_focus: FocusHandle,
     scrolls: Vec<ScrollHandle>,
+    latest_progress: Option<StageProgress>,
+}
+
+#[derive(Clone)]
+enum StageProgress {
+    Tool(Entity<ToolCard>),
+    Thinking {
+        card: Entity<ThinkingBlock>,
+        completed_summary: Option<String>,
+    },
 }
 
 struct StageHeadline {
@@ -73,6 +83,7 @@ pub(crate) struct RunActivityCheckpoint {
     tool_categories_len: usize,
     tool_group_children: Vec<(Entity<ToolActivityGroup>, Vec<Entity<ToolCard>>)>,
     scroll_count: usize,
+    segment_progress: Vec<Option<StageProgress>>,
 }
 
 impl RunActivityCheckpoint {
@@ -197,6 +208,11 @@ impl RunActivityGroup {
             tool_categories_len,
             tool_group_children,
             scroll_count,
+            segment_progress: self
+                .segments
+                .iter()
+                .map(|segment| segment.latest_progress.clone())
+                .collect(),
         }
     }
 
@@ -218,6 +234,11 @@ impl RunActivityGroup {
         self.activity_order = checkpoint.activity_order;
         self.tool_starts = checkpoint.tool_starts.clone();
         self.segments.truncate(checkpoint.segment_count);
+        if !self.terminal && !self.presentation_released {
+            for (segment, progress) in self.segments.iter_mut().zip(&checkpoint.segment_progress) {
+                segment.latest_progress = progress.clone();
+            }
+        }
         if let Some(segment) = checkpoint.active_segment
             && let Some(segment_state) = self.segments.get_mut(segment)
         {
@@ -244,6 +265,16 @@ impl RunActivityGroup {
 
     pub(crate) fn finish_thinking(&mut self, cx: &mut Context<Self>) {
         if let Some(card) = self.current_thinking.take() {
+            for segment in &mut self.segments {
+                if let Some(StageProgress::Thinking {
+                    card: source,
+                    completed_summary,
+                }) = &mut segment.latest_progress
+                    && source == &card
+                {
+                    *completed_summary = card.read(cx).summary_title().map(str::to_owned);
+                }
+            }
             card.update(cx, |card, cx| {
                 card.shimmer_epoch = None;
                 card.progress_finished = true;
@@ -332,6 +363,17 @@ impl RunActivityGroup {
         }
         self.activity_order = self.activity_order.saturating_add(1);
         self.thinking_order = self.activity_order;
+        if let Some(segment) = self.segments.iter_mut().find(|segment| {
+            segment
+                .children
+                .iter()
+                .any(|child| matches!(child, RunActivityChild::Thinking(owned) if owned == &card))
+        }) {
+            segment.latest_progress = Some(StageProgress::Thinking {
+                card: card.clone(),
+                completed_summary: None,
+            });
+        }
         card.update(cx, |card, _| card.shimmer_epoch = None);
         self.current_thinking = Some(card);
         self.sync_thinking_visibility(cx);
@@ -342,13 +384,22 @@ impl RunActivityGroup {
         if self.terminal
             || self.presentation_released
             || !card.read(cx).is_running()
-            || !self.contains_tool(card, cx)
             || self.tool_starts.iter().any(|(owned, _)| owned == card)
         {
             return;
         }
+        let Some(segment) = self.segments.iter_mut().find(|segment| {
+            segment.children.iter().any(|child| match child {
+                RunActivityChild::Tool(owned) => owned == card,
+                RunActivityChild::ToolGroup(group) => group.read(cx).contains(card),
+                _ => false,
+            })
+        }) else {
+            return;
+        };
         self.activity_order = self.activity_order.saturating_add(1);
         self.tool_starts.push((card.clone(), self.activity_order));
+        segment.latest_progress = Some(StageProgress::Tool(card.clone()));
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -365,6 +416,9 @@ impl RunActivityGroup {
         }
         self.tool_starts.clear();
         self.finish_thinking(cx);
+        for segment in &mut self.segments {
+            segment.latest_progress = None;
+        }
         self.clock_task = None;
         self.sync_thinking_visibility(cx);
         cx.notify();
@@ -650,6 +704,7 @@ impl RunActivityGroup {
             focus: cx.focus_handle(),
             header_focus: cx.focus_handle().tab_stop(true),
             scrolls: vec![ScrollHandle::new()],
+            latest_progress: None,
         });
         self.sync_thinking_visibility(cx);
         cx.notify();
@@ -1374,12 +1429,14 @@ impl RunActivityGroup {
 
     fn stage_headline(&self, segment: usize, cx: &App) -> StageHeadline {
         let tools = self.stage_tool_calls(segment, cx);
-        let live = !self.terminal
-            && !self.presentation_released
-            && !self.waiting_for_user
-            && !self.process_in_details()
-            && self.phase != RunPhase::Compacting;
-        if !self.terminal && !self.presentation_released && !self.process_in_details() {
+        let owns_progress =
+            !self.terminal && !self.presentation_released && !self.process_in_details();
+        let progress = self
+            .segments
+            .get(segment)
+            .and_then(|state| state.latest_progress.as_ref());
+        let live = owns_progress && !self.waiting_for_user && self.phase != RunPhase::Compacting;
+        if owns_progress {
             let tool = self
                 .tool_starts
                 .iter()
@@ -1412,6 +1469,31 @@ impl RunActivityGroup {
                     summary: None,
                 };
             }
+            match progress {
+                Some(StageProgress::Tool(card)) => {
+                    let card = card.read(cx);
+                    if let Some(title) = card.completed_command_headline() {
+                        return StageHeadline {
+                            title: title.to_owned(),
+                            icon: Some(card.leading_icon()),
+                            live: false,
+                            summary: None,
+                        };
+                    }
+                }
+                Some(StageProgress::Thinking {
+                    card,
+                    completed_summary: Some(title),
+                }) => {
+                    return StageHeadline {
+                        title: title.clone(),
+                        icon: None,
+                        live: false,
+                        summary: Some(card.clone()),
+                    };
+                }
+                _ => {}
+            }
         }
         if self.stage_is_aggregate(segment, cx)
             && let Some((title, icon)) = self.stage_tool_title(segment, cx)
@@ -1423,7 +1505,9 @@ impl RunActivityGroup {
                 summary: None,
             };
         }
-        let summary = self.stage_summary_card(segment, cx);
+        let summary = (!owns_progress || progress.is_none())
+            .then(|| self.stage_summary_card(segment, cx))
+            .flatten();
         StageHeadline {
             title: summary
                 .as_ref()

@@ -1,6 +1,74 @@
-# #421 最新运行进展与完成收纳
+# #421 最新进展与完成态保留
 
-状态：2026-10-20 实施规格 v3；先行测试经独立审查、接口缺失 RED 后冻结，最小实现及验收中性的测试接线修正已取得完整 Actions GREEN，待独立删测与最终空集门禁。关联 [Issue #421](https://github.com/puzige/vega/issues/421)。原始生产未改基线为 `e93518cf76a24df921a1af2c2663ebce75f614fd`；RED 前已集成最新 master `9baca7519d97995267de31eb9c2e213f0c171e67`；任务分支 `feat/421-live-progress-agent-delivery`。
+状态：实施规格 v4，用户手测反馈后的独立 TEST-FIRST 周期，完整有效 Actions RED 已固定并冻结测试，最小实现已通过独立生产审查，同目标 32／32 云端 GREEN 已固定，独立删测及生产等价审查已完成，待最新 head 最终门禁。关联 [Issue #421](https://github.com/puzige/vega/issues/421)。本轮基线为已合并 [PR #513](https://github.com/puzige/vega/pull/513) 的 `edc944040b66cfaf196272a6d5577f5c8fde4d70`，任务分支 `feat/421-retained-completion`。以下 v4 为当前契约；下半部 v3 仅保留已交付历史，旧 GREEN 不证明新行为。
+
+## v4 目标与替代关系
+
+快速命令完成后立即回到类别标题，会让具体动作一闪而过。用户选择保留完成态而非显示时长阈值，并进一步确认**命令和可读 thinking summary 都保留**：真实活动有 Shimmer，明确完成后立即停止 Shimmer，标题暂留，等待下一条有效进展直接替换。成功命令使用既有安全投影的 `Ran <command>`，不是改写 `Running` 字符串或把完成伪装为运行。
+
+本轮仅替代 v3 中“命令／summary 完成且无活动就立即恢复类别”的规则及对应 A1／A2／A5／A7／A8 预期。保留 #513 的生命周期信号、请求身份、源文和详情、单项直显、工具类别、手动开合、Final 单次收起及安全入口。整轮结束仍恢复既有类别收纳。用户截图仅用于讨论，不上传公开仓库，不把正文小标题的外观当作 summary 来源证明。
+
+## v4 先行验收矩阵
+
+在本轮生产修改前写齐必要的进程内合成事件／GPUI 测试；不运行真实命令、网络、模型或应用，不整批恢复已删除的 v3 测试。以下为目标而非已取得结果。
+
+| ID | 前置与操作 | 可观察结果 |
+|---|---|---|
+| B1 | 同阶段已聚合；命令 Proposed → Approved → Running → Success，整轮保持开放；重绘并推进模拟时间 | 只有真实 Running 激活具体命令和 Shimmer；成功后立即为 `Ran <command>`、命令图标、无 Shimmer，不插入类别帧，无超时退回 |
+| B2 | 保留命令后依次收到新响应开始、工具提议／批准、空白／不可读 summary，再收到真实工具 Running 或有效 summary／详细 thinking | 前几类不冒充新活动或抹去保留态；真实新活动直接替换。仅详细 thinking 显示 `Thinking`，原文留在详情；它结束不保留 `Thinking` 或复活更早的已替换完成态 |
+| B3 | 可读 summary 更新并明确完成，含 reasoning-only、匹配 AssistantResponseCompleted、可见正文／新提议边界；仅空白正文及流式停顿对照 | 有效 summary 活跃时 Shimmer，明确结束后同一可读标题静止保留；空白／停顿不结束。新 summary 替换旧标题，已结束块的迟到增量／重复或旧请求完成不夺取新进展 |
+| B4 | 并行工具 A 后 B 真实开始；B 完成仍有 A；随后 A 完成；交错 summary／thinking 活动以及旧工具输出／重复 Running／完成／计时 | 任何真实活动优先于完成内容；B 完成先回 A；无活动时保留最近有效激活的可保留项 B，而不是按最后到达的完成事件改成 A。旧更新不重新排序或盖住新活动／完成态 |
+| B5 | 新命令真实 Running 后 Failed／非零退出码／Cancelled；无 Running 的 Rejected／reused／损坏结果；新非命令工具运行后完成 | 已运行命令可保留真实失败／取消标题但不显示 `Ran` 或 Shimmer；拒绝／复用／损坏不凭结果造“执行过”。非命令工具仍沿用既有完成展示，不复活已被它替换的旧命令／summary；必要错误和待处理入口不变 |
+| B6 | 展开／收起阶段，在命令和 summary 的运行／保留／替换之间切换；检查实际标题、图标、aria、焦点、估高及源文 | 开合状态保持；标题、图标、Shimmer 和去重使用同一选择。保留 summary 在外层时仍不在详情重复；被替换后在原位置恢复一次。单项直显、两项聚合、直显完成工具详情、类别顺序／复数／首图标／96 字符规则不变 |
+| B7 | 检查点前已有保留项或真实运行工具；请求内产生新活动后重试回滚；可见正文关闭阶段并创建新阶段 | 回滚清除本次新活动／保留态，恢复检查点前合法展示；检查点前 Running 的工具若已真实完成，回滚后仍保持终态、无 Shimmer，不复活已结束思考或伪造工具状态。阶段保留不串到新阶段，不改变正文边界或详情顺序 |
+| B8 | 保留或运行时整轮 Completed／Failed／Interrupted、无归属 Error、worker 释放；历史载入；权限／待回答、压缩、隐藏／失焦／Reduce Motion | 终态／所有权释放清除临时保留并停止动画，恢复既有类别或无工具回退，不伪造 durable 成功。历史静态；权限／重连／错误独立可用；绘制门禁不降低 |
+
+## v4 精确行为与边界
+
+1. **活跃优先，完成其次。** 同一阶段先按 #513 规则选择最新且仍活跃的工具／thinking；没有活跃候选时才展示可保留的最近有效进展。有效进展顺序来自真实工具首次 Running 或思考有效激活／可读摘要变化，不来自完成到达顺序。并行剩余活动退场后，先在所有类型中选最近有效激活项，再判断它能否保留，不先过滤为“历史最新可保留项”；已被较新有效进展替换的旧项不作为保留态重新出现，仍在活跃的旧项可按上述优先级显示。
+2. **保留范围。** 本轮保留经过真实 Running 的 Bash 命令，以及已通过 summary 路径形成可读预览且明确结束的摘要。完成命令沿用安全投影，失败、取消、非零退出仍是真实失败／取消文案；损坏、拒绝、无 Running 的复用结果不成为完成候选。已保留命令若因非法转换变为损坏，立即失去保留资格，不缓存旧 `Ran` 或复活更早完成项，沿用真实损坏展示。其他工具活跃时照常接管，完成后保留原展示规则；详细 thinking 只在活跃时显示 `Thinking`，结束后不把其原文或 `Thinking` 当作保留摘要。
+3. **有效替换而非任意事件。** 新响应开始、提议、批准、token 暂停、空白、未形成可读预览的 summary、重复 Running、旧输出／计时／重绘不提升顺序，不清除合法保留。新提议仍按既有入口明确结束当前思考；它自身尚不是工具运行，因而已完成摘要可留到实际新进展。新详细 thinking 或其他工具的真实活动会替换旧完成项；若它们完成时没有可保留内容，使用既有非保留回退，不恢复旧项；特别是无工具的 summary S → 新详细 thinking → 结束，在开放 run 内回退 `Thought` 而非历史 S，整轮终态仍按第 5 条处理。
+4. **完成与来源真实。** 使用既有匹配请求的 `ReasoningCompleted`、合法响应完成、可见正文、新工具提议和终态边界；不添加超时／阈值，不改 provider 的 thinking／summary 分类。完成摘要保留其结束时可读标题，迟到片段不让已结束标题变为新进展；底层源文继续按既有规则保留。摘要图标不挂无关工具图标，命令使用自己的工具图标。
+5. **生命周期有界。** 保留只属于当前 run 内原阶段；新阶段不继承前阶段标题。检查点／回滚记录并恢复必要选择来源、顺序和保留状态，移除尝试内新增项；不快照或回写工具生命周期，检查点前已真实完成的工具不得被恢复为 Running／Shimmer。整轮完成／失败／取消或 presentation ownership 释放时清除临时保留，不改 durable 工具结果；阶段恢复类别（无工具沿用原非工具回退），历史载入不重建临时保留。
+6. **同位置、同投影。** 不新增说明行、常驻图标提示、等待阈值或完成 toast。聚合标题、静止／动态 StageText、图标、aria、摘要去重和估高共用相同决策。保留用户开合、焦点／键盘行为与源文复制；直显完成工具沿用既有详情展开标题，不为保留策略改写内层标题。待用户处理时停动画但不丢失必要提示；压缩和可见性门禁沿用现状。
+
+## v4 根因、最小计划与允许范围
+
+已静态读取 `edc94404`：`RunActivityGroup::stage_headline` 只在 `tool_starts` 中选仍 `is_running()` 的工具；`finish_thinking` 直接移除 `current_thinking`，没有完成摘要选择，因此无活动立刻进入类别回退。`ToolCard::build_bash_summary` 已有 `Ran` 和真实失败／取消文案；`StageText::set(..., None, ...)` 已能静止绘制。无需再改 runtime／conversation 的完成信号、命令执行或 provider 来源。
+
+1. 专职子 Agent 先在未改生产上写 B1–B8 所需最少有效测试及仅测试接线；独立审查后建立新 draft PR，通过现有 Actions 取得行为 RED，再冻结目标／断言／源码指纹。
+2. 有效 RED 后，专职子 Agent 最小修改 `crates/vega_ui/src/conversation_stream/run_activity.rs` 的候选选择／必要状态、检查点／回滚／release，保持活跃优先、阶段所属与完成静止。`tool_card.rs` 仅在需要时增加 crate 内只读资格查询，不扩公共 API／改安全投影。`thinking.rs`／`content.rs`／`network_retry.rs` 只在必要生命周期接线时修改，不重做 #513。
+3. 实际渲染、aria、summary 可见去重／估高继续用统一 headline；保留 observer 既有完整高度失效机制，不增加重复框架。复用 Shimmer／Motion／样式，避免新增任务和 token 全量渲染。
+4. 生产实现经非写入者独立审查，固定相同测试 GREEN 的完整 SHA／源码／原始 patch／run／job／准确计数，独立删测并独立核对生产等价，最终最新 head 完整门禁确认 `no Rust tests`（0 发现／0 执行）后转正式 PR、squash merge、In review 等用户手测。
+
+非目标：全工具完成态策略扩展、provider／GPT 摘要来源修改、运行时或共享事件重做、命令执行、权限／数据库／配置／数据、依赖升级、增加 CI 调度基础设施、已合并的统一 Agent 工作流重写。没有新依赖授权。历史夹具只可逐项复用必要基础设施并记录来源，不恢复 v3 的冲突断言或整个测试集合。
+
+## v4 验证与恢复记录
+
+- 本地仅快速差异、格式和静态检查；不运行 Vega、不编译、构建、打包或执行测试。云端沿用现有 `pr-check` 的 fmt／Clippy／三组 Python／Nextest，5 分钟查询，通知／用户即时要求除外。
+- 当前：在生产基线 `edc944040b66cfaf196272a6d5577f5c8fde4d70` 未改时完成先行测试与独立复审，夹具中性修正后的完整 Actions 行为 RED 已经独立确认，冻结目标／数据／断言／预期。专职子 Agent 随后交付最小生产补丁，非写入者独立审查已批准；同目标同断言 32／32 云端 GREEN 已取得并留证，独立证据核验、独立删测及非写入者生产等价审查已批准，最新 head 最终门禁尚未取得，不引用 v3 的 27／27 作为本轮结果。
+- 测试独立预审（未冻结、未运行）：暂定源码 SHA-256 `89e5308722090f75d1bc65b1b43fe7faf159f82a3a5b2e4003b52677065244d4`，静态 30 个定义，不是发现／执行计数。审查发现三处必须在生产修改前补齐的区分场景：同阶段且无工具的旧 summary → 新详细 thinking → 结束必须 `Thought`；先有效成功并保留的命令随后收到非法转换必须失去成功保留；检查点前 Running 工具在 retry 前真实完成，回滚不复活其 Running。此暂定版本不接受为完整冻结测试；不以夹具失败替代产品 RED。
+- 三处预审缺口已由专职子 Agent 在生产未改时补齐，保留原有初始损坏／真实存活工具对照。最新先行源码 `crates/vega_ui/src/conversation_stream/retained_headline_tests.rs` 为 SHA-256 `4e85e8da81db7eccd89bae64e03c0b044fba92e97030a868847fea451a440262`，静态 32 个测试定义，不是执行计数。目标覆盖 B1–B8；来源为本轮新行为断言，逐项复用 `ce2b3cef60904fb5cf2a0e761bca9fad000d1f86` 的自然高度 host、实际 aria／StageText 观察、帧门禁、模拟时钟和焦点基础夹具，不恢复旧 suite／冲突的立即类别回退断言。测试观察模块置 EOF，Cargo 增量仅 GPUI dev-only 支持与 runtime 类型访问，锁文件 914 → 924，保留包元数据／checksum 不变。
+- 主会话本地静态：定向 `rustfmt --edition 2024 --check --config skip_children=true`、`cargo metadata --no-deps --offline --locked --format-version 1`、`git diff --check` 均退出 0；不代表类型检查、行为或像素验收。源码生产投影在移除精确测试接线后与基线一致；runtime／conversation／workflow 未改。最终独立复审已核对三处补齐、32 个定义与源码指纹前后一致，无静态阻断；仅批准进入 draft PR 的 Actions RED，不代表编译／行为已通过。以下保留首次 Actions、夹具中性修正及完整有效 RED 证据；后续保持同一冻结测试，不按实现输出改写。
+- 首次完整先行提交 [`15521a36d176390785fb15871f85b18ae5ce209c`](https://github.com/puzige/vega/commit/15521a36d176390785fb15871f85b18ae5ce209c)／[原始 patch](https://github.com/puzige/vega/commit/15521a36d176390785fb15871f85b18ae5ce209c.patch)，[draft PR #520](https://github.com/puzige/vega/pull/520)。[Actions 39525834372](https://github.com/puzige/vega/actions/runs/39525834372) 的 [Nextest 118980135649](https://github.com/puzige/vega/actions/runs/39525834372/job/118980135649) 实际 32 发现／32 执行／8 通过／24 失败／0 跳过；Python 5／15／14 通过；[fmt／Clippy 118980135813](https://github.com/puzige/vega/actions/runs/39525834372/job/118980135813) 成功，[required 118981711605](https://github.com/puzige/vega/actions/runs/39525834372/job/118981711605) 失败。非接口缺失；所有测试已编译并执行。
+- 独立逐项日志分类：23 个真实产品 RED（9 个命令保留、13 个 summary 保留、1 个无工具旧摘要复活）；其他断言在首次失败之后尚未执行，不声称全部边界已验证。另 1 个 `a_single_completed_command_keeps_its_existing_expanded_detail_title` 在普通 window update 调用 render-scoped disclosure focus，经 keyed state → `current_view` 触发 GPUI phase panic，不算产品 RED。[首次失败记录](https://github.com/puzige/vega/pull/520#issuecomment-6305659384) 公开保留。
+- 夹具中性修正已在编辑前独立批准：仅从既有 cfg(test) 工具卡渲染观察器保存实际 `.track_focus` 使用的同一 FocusHandle，在测试取回它代替 render-scoped 查询；保留 focus／render_frame／Enter、全部断言／事件／预期／32 个用例。不能直接设置 expanded 或造替代焦点。该修正已委派完成并经独立逐字复审批准，测试仅查询替换，生产仍未改。修正后测试 SHA-256 `c5ebcddf52b11db5727ce5acb0ebc19d384e5a16f074486115687cf3eba44501`，tool-card 文件 `d872470de6e681a80171bf6fda7a20669a9589270b39bdf22e22615c8a9675e2`；定向 rustfmt／diff check 退出 0，不运行本地测试。修正提交 [`517fd1a3c5f21c3144b36e2898751bd110694d12`](https://github.com/puzige/vega/commit/517fd1a3c5f21c3144b36e2898751bd110694d12)／[原始 patch](https://github.com/puzige/vega/commit/517fd1a3c5f21c3144b36e2898751bd110694d12.patch)。
+- **完整有效行为 RED／冻结**：[Actions 39527668640](https://github.com/puzige/vega/actions/runs/39527668640)／[Nextest 118986034377](https://github.com/puzige/vega/actions/runs/39527668640/job/118986034377) 在生产未改 head `517fd1a3c5f21c3144b36e2898751bd110694d12` 实际 32 发现／32 执行／8 通过／24 失败／0 跳过，三组 Python 5／15／14 通过；[fmt／Clippy 118986034785](https://github.com/puzige/vega/actions/runs/39527668640/job/118986034785) 成功，[required 118987436166](https://github.com/puzige/vega/actions/runs/39527668640/job/118987436166) 失败。独立逐项确认全部 24 个失败均为统一实际渲染标题断言（10 命令、13 summary、1 历史摘要复活）；已无夹具 phase panic。单工具键盘展开及原有完成标题断言已执行通过，随后聚合才在 `Run commands` 对 `Ran printf single` 处有效失败。冻结测试指纹 `c5ebcddf52b11db5727ce5acb0ebc19d384e5a16f074486115687cf3eba44501`，允许开始专职最小实现；每个首次失败之后的后续断言仍待同一套测试 GREEN，不将 RED 当边界全通过。
+- 最小实现交付：仅 `run_activity.rs` 与 `tool_card.rs`，生产差异 +106／−8。每阶段记录最近有效进展，先选真实活动，再判断最近进展能否保留；完成摘要冻结标题并保留原 entity；命令通过真实 Running 的阶段记录及当前合法终态判定，不缓存 `Ran`。检查点只恢复选择来源，不回写工具生命周期；release 在结束思考后清除保留。测试源码指纹仍为 `c5ebcddf52b11db5727ce5acb0ebc19d384e5a16f074486115687cf3eba44501`，测试观察／接线未改，stream／provider／Cargo／CI 未改。定向 rustfmt 与 `git diff --check` 退出 0；非写入者独立生产审查无阻断并复核指纹稳定：run-activity `bd9fe8ffda1bf3d623301de86a43a9d9ded0399d3d1957a049bce2034fb2fac8`、tool-card `e9e32caf4cccb1254b7a80af9e9d0ed947547f3486d50943d94e0090b7254e27`，生产 diff `b1299590ae1af7077368d2fb1e5d73dd2a3732749463d30fac3d1f2886368733`。编译和行为仅待同套测试云端验证。
+- 首次实现云端：head `94dd9e7ba25cd5387bf9fd020a9e976d3c1d2992`／[原始 patch](https://github.com/puzige/vega/commit/94dd9e7ba25cd5387bf9fd020a9e976d3c1d2992.patch) 的 [Actions 39530961455](https://github.com/puzige/vega/actions/runs/39530961455)／[Nextest 118996478741](https://github.com/puzige/vega/actions/runs/39530961455/job/118996478741) 实际 32 发现／执行、31 通过／1 失败／0 跳过；[fmt／Clippy 118996478436](https://github.com/puzige/vega/actions/runs/39530961455/job/118996478436) 及 Python 5／15／14 通过，[required 118997659330](https://github.com/puzige/vega/actions/runs/39530961455/job/118997659330) 失败，尚非 GREEN。唯一失败在 reused 分支后续投影断言 889；此前标题与无动画断言已通过，该测试后面的 corrupt 分支尚未执行。原始失败公开保留，不自动重试换绿。
+- 第二处夹具中性修正：独立审查确认既有成功投影要求 reused 的 `truncated` 为 `None`，测试 helper 错填 `Some(false)`；生产校验自基线未改，不放宽它。[编辑前批准记录](https://github.com/puzige/vega/pull/520#issuecomment-6306361334) 后，专职 Agent 仅将 helper 改成 `(success && !reused).then_some(false)`，唯一 reused 调用的输入恢复合法，全部断言／事件／场景／32 用例不变。新源码 SHA-256 `9a347d67799d64c46de82e62090868436340adaf70f27755405567a9e8c1e482`；生产文件／接线不变，定向 rustfmt／diff check 退出 0；非写入者独立逐字复审批准，内存反向还原该行即得到原冻结整文件 hash，32 个名称及顺序一致。待同步后的新 head 完整 Actions，不将修正当作 GREEN。
+- 同步基线：fresh fetch 发现无关 #521 已合入 `e658cb4e2db1cff95ffb79e11a85fba444d6bd24`，仅 root Cargo／lock 的 vendored block 修复及对应源码／docs；保留它并合并到任务分支后验证新 head，不重写测试来源历史。
+- **带测试完整 GREEN**：集成 head `735d542d352481556e63531a4d1bfdadf61c95ab` 的 [Actions 39532582505](https://github.com/puzige/vega/actions/runs/39532582505)，[Nextest 119001719445](https://github.com/puzige/vega/actions/runs/39532582505/job/119001719445) 实际 **32 发现／32 执行／32 通过／0 失败／0 跳过**，32 条唯一 PASS 及完整 summary 已逐项读取；无 ignored，原 reused 测试全部场景完成。Python 5／15／14 通过；[fmt／Clippy 119001719608](https://github.com/puzige/vega/actions/runs/39532582505/job/119001719608) 与 [required 119003038926](https://github.com/puzige/vega/actions/runs/39532582505/job/119003038926) 成功。[固定源码／SHA／patch／原始 run/job 证据](https://github.com/puzige/vega/pull/520#issuecomment-6306499063) 已公开并读回。[GREEN 原测试](https://github.com/puzige/vega/blob/735d542d352481556e63531a4d1bfdadf61c95ab/crates/vega_ui/src/conversation_stream/retained_headline_tests.rs) SHA-256 `9a347d67799d64c46de82e62090868436340adaf70f27755405567a9e8c1e482`，blob `562145443fc6e0e3535e12de3426e51d9cbf659c`，61970 bytes，远端逐字节等于本地 git 对象；修正提交 `b8d168e2093a32c4f62504279f3bb305a1652cdf` 原始 patch 也已读回。生产实现指纹未变；独立 GREEN／来源复核后才允许独立删测，空集不能替代此 GREEN。
+- 独立 GREEN／来源核验：非写入者读取权威原始日志，32 唯一 PASS 对齐全部源码名称，计数 32／32／32、0 失败／跳过／忽略，三组 Python、fmt／Clippy／required 全成功；实际 PR merge commit `9b8c70043f06f8fc664cb11595cf5145398aa54a` 整树等于 GREEN head。原始源码及 patch、生产指纹均已独立读回；[批准及独立删测授权](https://github.com/puzige/vega/pull/520#issuecomment-6306565680) 已公开。仅授权删除本轮六路径测试／独占支持，不改生产或 #521；仍需非写入者审查删除差异及最新 head 完整空集门禁。
+- 独立清理交付及非写入者复审批准：专职清理 Agent 在完整 GREEN 留证核验后，仅删除 32 测试源码／三个混合文件测试观察与注册／UI dev-dependencies／十包三边独占 lock 闭包，共六路径。清理后生产投影与 GREEN 去除精确测试支持后逐字节一致，保留 +106／−8 实现；共享依赖、bench／Python／CI、真实控件／aria／焦点／observer／geometry 及 #521 均不变。锁文件 SHA-256 `fecfdc95c5d7f563cc52e8fbff6649284056fbb87e5d612fefbfc1fe5e8ffa1a`，逐字节等于最新 master；run-activity `6b83cd0b16bdc47fdb3c56846cd4d706cf40263cc5dc9fb2a7049acb43b20cf4`、tool-card `3471fa8f5311f7277794d34b12b6dfaae8751b5b0d24f710aef6ee0f39a5e461`。定向 rustfmt／diff check 退出 0，静态扫描 384 个 workspace Rust 文件及 manifest 无测试／独占接线，不把静态扫描当 CI 的 0 发现／执行。非写入者从 GREEN Git 对象独立构造非测试投影并与清理结果逐字节相等，闭包解析、42 受保护文件及 workspace／xtask／vendor 共 385 Rust 文件残留复核无阻断；起止指纹稳定，六路径删除 patch SHA-256 `2e5258e88a619da99662fc4d21bd49d3100e9fdbfcebcca8c9e070bb0843401f`。独立删测提交后仍待最新 head 完整门禁，不能以静态扫描代替发现／执行结果。
+- 用户手测目标（尚未执行）：真实会话快速命令不再闪回类别，完成命令为 `Ran` 且静止，完成可读摘要静止保留，下一进展直接替换；并行回退、权限／失败、手动展开及 Final 收纳正常。合并不等于应用已安装，未明确通过前不关闭 Issue／Done。
+- 回滚：本轮集成提交的 revert PR，原始测试及 RED／GREEN 留在新 PR 可恢复；不撤销 #513 的无关生命周期与工作流改动。
+
+---
+
+# v3 已交付历史（不是 v4 当前验收）
+
+历史状态：v3 已通过独立删测和最终空集门禁，并经 [PR #513](https://github.com/puzige/vega/pull/513) squash 合入 `edc944040b66cfaf196272a6d5577f5c8fde4d70`。最终任务 head 为 `f4a1e0d9b5276ed8eea79f0bb783486d42b819e4`，与集成 tree 相同；[最终 Actions 39415626514](https://github.com/puzige/vega/actions/runs/39415626514) 为 `no Rust tests`（0 发现／0 执行），不是新周期 GREEN。下文“待删测”等措辞是当时阶段记录，后续完成证据见 [PR 最终记录](https://github.com/puzige/vega/pull/513#issuecomment-6289993271)。原始生产未改基线为 `e93518cf76a24df921a1af2c2663ebce75f614fd`，RED 前集成 `9baca7519d97995267de31eb9c2e213f0c171e67`，原任务分支 `feat/421-live-progress-agent-delivery`。
 
 ## 目标与替代关系
 
