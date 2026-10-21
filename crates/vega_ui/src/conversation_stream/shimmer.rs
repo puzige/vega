@@ -1,6 +1,9 @@
 use super::*;
 use gpui_kit::{TextAlign, point};
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) struct StageText {
     title: String,
     epoch: Option<Instant>,
