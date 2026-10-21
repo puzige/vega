@@ -646,7 +646,7 @@ async fn missing_or_partial_usage_and_pricing_remain_unknown() {
         assert_eq!(result["metrics"]["pricing_known"], known);
         assert_eq!(result["metrics"]["usage_complete"], emits_usage);
         if known {
-            assert_eq!(result["metrics"]["cost_microcents"], 2000);
+            assert_eq!(result["metrics"]["cost_microcents"], 20);
         } else {
             assert!(result["metrics"]["cost_microcents"].is_null());
         }

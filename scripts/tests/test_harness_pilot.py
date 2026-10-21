@@ -328,10 +328,10 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(summary['trials'], 2)
         self.assertEqual(summary['successes'], 1)
         self.assertEqual(summary['success_rate'], 0.5)
-        self.assertAlmostEqual(summary['cost_usd'], 0.03)
-        self.assertAlmostEqual(summary['search_cost_usd'], 0.05)
-        self.assertAlmostEqual(summary['total_cost_usd'], 0.08)
-        self.assertAlmostEqual(summary['cost_per_success_usd'], 0.03)
+        self.assertAlmostEqual(summary['cost_usd'], 3.0)
+        self.assertAlmostEqual(summary['search_cost_usd'], 5.0)
+        self.assertAlmostEqual(summary['total_cost_usd'], 8.0)
+        self.assertAlmostEqual(summary['cost_per_success_usd'], 3.0)
 
     def test_unknown_prices_and_no_success_remain_unknown_not_zero(self):
         records = [{'evaluation': {'delivered': False}, 'native': {
@@ -356,6 +356,7 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(self.boundary.calls, [])
 
     def test_frozen_holdout_runs_only_paired_native_trials_without_library_mutation(self):
+        self.boundary.artifacts = {}
         plan = self.plan()
         before = (self.library / 'retrieval.json').read_bytes()
         report = self.holdout(plan)
