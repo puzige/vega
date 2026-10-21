@@ -70,4 +70,13 @@ v1 澄清 issue 的两处文字误差，不改变冻结资产/验收：旧字形
 
 合并后保持 Issue 开放并置 In review：用户在 CI 发布后的实际应用检查浅/深主题、消息与代码块复制、Copy/Fork Retina 配对、Tab/Enter/Space、tooltip 和可访问名称。未收到明确通过前不关闭或 Done。
 
-回滚仅撤销 COPY_SVG 与两处 Copy 路由修改，不调整其它图标、token 或按钮。交付记录固定 PR、最终完整 SHA、RED/GREEN、删测与最终门禁链接；当前这些证据尚未取得。
+回滚仅撤销 COPY_SVG 与两处 Copy 路由修改，不调整其它图标、token 或按钮。
+
+## 6. 本轮交付证据
+
+- PR：[ #528](https://github.com/puzige/vega/pull/528)。生产未改的测试提交 `ac2b5c1f7af20b31238a2c951dff50e2220783dc`；[原始源码](https://github.com/puzige/vega/blob/ac2b5c1f7af20b31238a2c951dff50e2220783dc/crates/vega_ui/src/icons.rs#L410-L511) / [原始 patch](https://github.com/puzige/vega/commit/ac2b5c1f7af20b31238a2c951dff50e2220783dc.patch)。RED 只为缺少 COPY_SVG 的接口 RED，行为断言尚未执行，详见 §4.1。
+- 生产实现 `8e4527b24e8e89c3f24abe3fd04399b3566a1af3`；独立审查确认恰为冻结 SVG 与两处路由修改，其它生产保持不变。首次执行失败与原因见 §4.1，未删除失败测试或放宽断言。
+- 接线修正/GREEN 提交 `363e15e59aa70d2a878e174be862209dcd5fed50`；[修正后源码](https://github.com/puzige/vega/blob/363e15e59aa70d2a878e174be862209dcd5fed50/crates/vega_ui/src/icons.rs) / [patch](https://github.com/puzige/vega/commit/363e15e59aa70d2a878e174be862209dcd5fed50.patch)。修正前、修正后均经非实现者独立审查。修正后测试块 SHA-256 `08e6fe2e3f6f5576cdbf760495aba860c10a0f7e230dc9318ed992ea1c408323`，GitHub API 已核对源码 blob `e97704f1183c18ab864b29295398d55baf90b84f` 可访问。
+- [GREEN run 39568085129](https://github.com/puzige/vega/actions/runs/39568085129) / [Nextest job 119115171128](https://github.com/puzige/vega/actions/runs/39568085129/job/119115171128)：2 发现、2 执行、2 通过、0 失败、0 跳过。fmt/Clippy/required check 通过；三组 Python 分别 5/15/14 项通过。生产相对实现提交逐字不变；固定目标、容差和测试名称不变，仅纠正 §4.1 已记录的观测边界。
+- GREEN 后以独立删测提交仅移除本卡测试模块，无独占 fixture/helper/依赖留存；最终提交完整门禁及合并提交以 PR 最新记录为准，在对应验证完成前均视为待验证。最终空集须报告 `no Rust tests`（0 发现/0 执行），不等于测试通过。
+- 本地仅执行快速 rustfmt 检查、差异/内容静态核对；未运行 Vega、编译、构建、测试或打包。实际 Retina Copy/Fork 观感、两种主题与交互仍待用户手测。
