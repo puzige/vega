@@ -579,6 +579,20 @@ impl ToolCard {
         &self.summary
     }
 
+    pub(crate) fn completed_command_headline(&self) -> Option<&str> {
+        (!self.presentation_released
+            && self.is_bash()
+            && matches!(
+                self.status,
+                ToolCallStatus::Success | ToolCallStatus::Failed | ToolCallStatus::Cancelled
+            )
+            && matches!(
+                &self.result,
+                Some(ToolCardResultProjection::Bash { status, .. }) if *status == self.status
+            ))
+        .then(|| self.headline_title())
+    }
+
     pub(crate) fn is_expanded(&self) -> bool {
         self.expanded
     }
