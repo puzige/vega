@@ -746,7 +746,7 @@ impl ToolCard {
                 window,
             ));
         #[cfg(test)]
-        retained_headline_observation::observe_header(card.entity_id(), &row, leading_icon);
+        retained_headline_observation::observe_header(card.entity_id(), &row, leading_icon, &focus);
         div()
             .w_full()
             .min_w_0()
@@ -1528,8 +1528,10 @@ fn detail_row(
 pub(crate) mod retained_headline_observation {
     use super::*;
 
-    type HeaderMap =
-        std::collections::HashMap<gpui_kit::EntityId, (gpui_kit::accesskit::Node, Icon)>;
+    type HeaderMap = std::collections::HashMap<
+        gpui_kit::EntityId,
+        (gpui_kit::accesskit::Node, Icon, gpui_kit::FocusHandle),
+    >;
 
     thread_local! {
         static HEADERS: std::cell::RefCell<HeaderMap> = std::cell::RefCell::new(HeaderMap::new());
@@ -1552,14 +1554,22 @@ pub(crate) mod retained_headline_observation {
         id: gpui_kit::EntityId,
         header: &impl gpui_kit::Element,
         icon: Icon,
+        focus: &gpui_kit::FocusHandle,
     ) {
         let mut node = gpui_kit::accesskit::Node::new(gpui_kit::Role::GenericContainer);
         header.write_a11y_info(&mut node);
-        HEADERS.with(|headers| headers.borrow_mut().insert(id, (node, icon)));
+        HEADERS.with(|headers| headers.borrow_mut().insert(id, (node, icon, focus.clone())));
     }
 
     pub(crate) fn header(id: gpui_kit::EntityId) -> (gpui_kit::accesskit::Node, Icon) {
-        HEADERS.with(|headers| headers.borrow()[&id].clone())
+        HEADERS.with(|headers| {
+            let headers = headers.borrow();
+            (headers[&id].0.clone(), headers[&id].1)
+        })
+    }
+
+    pub(crate) fn focus(id: gpui_kit::EntityId) -> gpui_kit::FocusHandle {
+        HEADERS.with(|headers| headers.borrow()[&id].2.clone())
     }
 
     pub(crate) fn snapshot(

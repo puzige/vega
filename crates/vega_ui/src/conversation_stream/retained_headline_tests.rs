@@ -1032,11 +1032,7 @@ fn a_single_completed_command_keeps_its_existing_expanded_detail_title(cx: &mut 
     let card = live.card("single", cx);
     gpui_kit::AnyWindowHandle::from(live.window)
         .update(cx, |_, window, cx| {
-            let focus = crate::disclosure::focus(
-                format!("tool-disclosure-{}", card.entity_id()).into(),
-                window,
-                cx,
-            );
+            let focus = retained_headline_observation::focus(card.entity_id());
             focus.focus(window, cx);
             window.render_frame(cx);
             window.press("enter", cx);
