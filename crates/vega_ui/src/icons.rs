@@ -406,3 +406,106 @@ pub(crate) fn link_icon(site: vega_conversation::types::LinkSiteKind, color: Rgb
         .text_color(color)
         .into_any_element()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use gpui_kit::{DevicePixels, SvgRenderer, SvgSize, size};
+
+    use super::COPY_SVG;
+
+    fn rendered_copy_alpha(side: usize) -> Vec<f32> {
+        let renderer = SvgRenderer::new(Arc::new(()));
+        let parsed = renderer.parse_svg(COPY_SVG).expect("Copy SVG must parse");
+        let dimensions = size(DevicePixels(side as i32), DevicePixels(side as i32));
+        let image = renderer
+            .render_parsed(&parsed, SvgSize::ExactSize(dimensions))
+            .expect("Copy SVG must rasterize");
+        assert_eq!(image.size(0), dimensions);
+        image
+            .as_bytes(0)
+            .expect("Copy raster must contain a frame")
+            .chunks_exact(4)
+            .map(|pixel| f32::from(pixel[3]) / 255.0)
+            .collect()
+    }
+
+    fn coverage_bounds(projection: &[f32]) -> (f32, f32) {
+        let first = projection
+            .iter()
+            .position(|alpha| *alpha > 0.0)
+            .expect("Copy must have visible ink");
+        let last = projection
+            .iter()
+            .rposition(|alpha| *alpha > 0.0)
+            .expect("Copy must have visible ink");
+        (
+            first as f32 + 1.0 - projection[first],
+            last as f32 + projection[last],
+        )
+    }
+
+    fn assert_device_pixels(actual: f32, expected: f32, measurement: &str, side: usize) {
+        assert!(
+            (actual - expected).abs() <= 0.15,
+            "{measurement} at {side}px: expected {expected:.4} ± 0.15 device pixels, got {actual:.4}"
+        );
+    }
+
+    #[test]
+    fn copy_renderer_centers_compact_ink_at_native_and_retina_sizes() {
+        for side in [16, 32] {
+            let alpha = rendered_copy_alpha(side);
+            let horizontal: Vec<f32> = (0..side)
+                .map(|x| (0..side).map(|y| alpha[y * side + x]).fold(0.0, f32::max))
+                .collect();
+            let vertical: Vec<f32> = (0..side)
+                .map(|y| (0..side).map(|x| alpha[y * side + x]).fold(0.0, f32::max))
+                .collect();
+            let expected_margin = side as f32 / 12.0;
+            let expected_extent = side as f32 * 5.0 / 6.0;
+            for (axis, projection) in [("horizontal", horizontal), ("vertical", vertical)] {
+                let (start, end) = coverage_bounds(&projection);
+                assert_device_pixels(start, expected_margin, axis, side);
+                assert_device_pixels(side as f32 - end, expected_margin, axis, side);
+                assert_device_pixels(end - start, expected_extent, axis, side);
+            }
+            for index in 0..side {
+                assert_eq!(alpha[index], 0.0, "top edge must be clear at {side}px");
+                assert_eq!(
+                    alpha[(side - 1) * side + index],
+                    0.0,
+                    "bottom edge must be clear at {side}px"
+                );
+                assert_eq!(
+                    alpha[index * side],
+                    0.0,
+                    "left edge must be clear at {side}px"
+                );
+                assert_eq!(
+                    alpha[index * side + side - 1],
+                    0.0,
+                    "right edge must be clear at {side}px"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn copy_renderer_preserves_straight_stroke_weight_at_native_and_retina_sizes() {
+        for side in [16, 32] {
+            let alpha = rendered_copy_alpha(side);
+            let middle = side / 2;
+            let outer_quarter = side * 3 / 4..side;
+            let right_stroke: f32 = outer_quarter
+                .clone()
+                .map(|x| alpha[middle * side + x])
+                .sum();
+            let bottom_stroke: f32 = outer_quarter.map(|y| alpha[y * side + middle]).sum();
+            let expected_stroke = side as f32 / 12.0;
+            assert_device_pixels(right_stroke, expected_stroke, "right stroke", side);
+            assert_device_pixels(bottom_stroke, expected_stroke, "bottom stroke", side);
+        }
+    }
+}
