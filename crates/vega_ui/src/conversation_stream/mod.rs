@@ -319,3 +319,6 @@ pub use automation::{AutomationEditorRequested, AutomationRequested, AutomationT
 
 #[cfg(test)]
 mod quote_behavior_tests;
+
+#[cfg(test)]
+mod list_marker_behavior_tests;

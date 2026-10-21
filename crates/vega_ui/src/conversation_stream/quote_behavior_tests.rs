@@ -40,7 +40,7 @@ pub(super) fn observe_text(text: &str, layout: &TextLayout, window: &Window) {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Path {
+pub(super) enum Path {
     Ordinary,
     Selectable,
     Thinking,
@@ -48,11 +48,11 @@ enum Path {
 
 const PATHS: [Path; 3] = [Path::Ordinary, Path::Selectable, Path::Thinking];
 
-struct QuoteView {
+pub(super) struct QuoteView {
     stream: MarkdownStream,
     model: StreamModel,
     source: String,
-    copy: MessageCopy,
+    pub(super) copy: MessageCopy,
     focus: FocusHandle,
     path: Path,
     width: f32,
@@ -108,7 +108,12 @@ impl Render for QuoteView {
     }
 }
 
-fn open(cx: &mut TestAppContext, path: Path, source: &str, width: f32) -> WindowHandle<QuoteView> {
+pub(super) fn open(
+    cx: &mut TestAppContext,
+    path: Path,
+    source: &str,
+    width: f32,
+) -> WindowHandle<QuoteView> {
     cx.update(|cx| {
         if !cx.has_global::<vega_theme::Theme>() {
             gpui_kit::init(cx);
@@ -322,7 +327,7 @@ fn outer_x(frame: &Frame) -> f32 {
         .expect("painted quote rail")
 }
 
-fn continuous(frame: &Frame, first: &str, last: &str) {
+pub(super) fn continuous(frame: &Frame, first: &str, last: &str) {
     let first = text_bounds(frame, first);
     let last = text_bounds(frame, last);
     covered(
