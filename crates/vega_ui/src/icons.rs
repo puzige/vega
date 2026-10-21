@@ -418,18 +418,24 @@ mod tests {
 
     use super::COPY_SVG;
 
-    fn rendered_copy_alpha(side: usize) -> Vec<f32> {
+    fn rendered_copy_alpha(raster_side: usize) -> Vec<f32> {
         let renderer = SvgRenderer::new(Arc::new(()));
         let parsed = renderer.parse_svg(COPY_SVG).expect("Copy SVG must parse");
-        let dimensions = size(DevicePixels(side as i32), DevicePixels(side as i32));
+        let dimensions = size(
+            DevicePixels(raster_side as i32),
+            DevicePixels(raster_side as i32),
+        );
         let image = renderer
             .render_parsed(&parsed, SvgSize::ExactSize(dimensions))
             .expect("Copy SVG must rasterize");
         assert_eq!(image.size(0), dimensions);
-        image
+        let (pixels, remainder) = image
             .as_bytes(0)
             .expect("Copy raster must contain a frame")
-            .chunks_exact(4)
+            .as_chunks::<4>();
+        assert!(remainder.is_empty());
+        pixels
+            .iter()
             .map(|pixel| f32::from(pixel[3]) / 255.0)
             .collect()
     }
@@ -459,35 +465,49 @@ mod tests {
     #[test]
     fn copy_renderer_centers_compact_ink_at_native_and_retina_sizes() {
         for side in [16, 32] {
-            let alpha = rendered_copy_alpha(side);
-            let horizontal: Vec<f32> = (0..side)
-                .map(|x| (0..side).map(|y| alpha[y * side + x]).fold(0.0, f32::max))
+            let raster_side = side * 2;
+            let alpha = rendered_copy_alpha(raster_side);
+            let horizontal: Vec<f32> = (0..raster_side)
+                .map(|x| {
+                    (0..raster_side)
+                        .map(|y| alpha[y * raster_side + x])
+                        .fold(0.0, f32::max)
+                })
                 .collect();
-            let vertical: Vec<f32> = (0..side)
-                .map(|y| (0..side).map(|x| alpha[y * side + x]).fold(0.0, f32::max))
+            let vertical: Vec<f32> = (0..raster_side)
+                .map(|y| {
+                    (0..raster_side)
+                        .map(|x| alpha[y * raster_side + x])
+                        .fold(0.0, f32::max)
+                })
                 .collect();
             let expected_margin = side as f32 / 12.0;
             let expected_extent = side as f32 * 5.0 / 6.0;
             for (axis, projection) in [("horizontal", horizontal), ("vertical", vertical)] {
                 let (start, end) = coverage_bounds(&projection);
-                assert_device_pixels(start, expected_margin, axis, side);
-                assert_device_pixels(side as f32 - end, expected_margin, axis, side);
-                assert_device_pixels(end - start, expected_extent, axis, side);
+                assert_device_pixels(start / 2.0, expected_margin, axis, side);
+                assert_device_pixels(
+                    (raster_side as f32 - end) / 2.0,
+                    expected_margin,
+                    axis,
+                    side,
+                );
+                assert_device_pixels((end - start) / 2.0, expected_extent, axis, side);
             }
-            for index in 0..side {
+            for index in 0..raster_side {
                 assert_eq!(alpha[index], 0.0, "top edge must be clear at {side}px");
                 assert_eq!(
-                    alpha[(side - 1) * side + index],
+                    alpha[(raster_side - 1) * raster_side + index],
                     0.0,
                     "bottom edge must be clear at {side}px"
                 );
                 assert_eq!(
-                    alpha[index * side],
+                    alpha[index * raster_side],
                     0.0,
                     "left edge must be clear at {side}px"
                 );
                 assert_eq!(
-                    alpha[index * side + side - 1],
+                    alpha[index * raster_side + raster_side - 1],
                     0.0,
                     "right edge must be clear at {side}px"
                 );
@@ -498,17 +518,18 @@ mod tests {
     #[test]
     fn copy_renderer_preserves_straight_stroke_weight_at_native_and_retina_sizes() {
         for side in [16, 32] {
-            let alpha = rendered_copy_alpha(side);
-            let middle = side / 2;
-            let outer_quarter = side * 3 / 4..side;
+            let raster_side = side * 2;
+            let alpha = rendered_copy_alpha(raster_side);
+            let middle = raster_side / 2;
+            let outer_quarter = raster_side * 3 / 4..raster_side;
             let right_stroke: f32 = outer_quarter
                 .clone()
-                .map(|x| alpha[middle * side + x])
+                .map(|x| alpha[middle * raster_side + x])
                 .sum();
-            let bottom_stroke: f32 = outer_quarter.map(|y| alpha[y * side + middle]).sum();
+            let bottom_stroke: f32 = outer_quarter.map(|y| alpha[y * raster_side + middle]).sum();
             let expected_stroke = side as f32 / 12.0;
-            assert_device_pixels(right_stroke, expected_stroke, "right stroke", side);
-            assert_device_pixels(bottom_stroke, expected_stroke, "bottom stroke", side);
+            assert_device_pixels(right_stroke / 2.0, expected_stroke, "right stroke", side);
+            assert_device_pixels(bottom_stroke / 2.0, expected_stroke, "bottom stroke", side);
         }
     }
 }

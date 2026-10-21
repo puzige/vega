@@ -56,6 +56,16 @@ v1 澄清 issue 的两处文字误差，不改变冻结资产/验收：旧字形
 
 本地只进行快速差异、格式与静态检查；不运行 Vega，不编译、构建、打包或测试。RED/GREEN 与最终完整门禁均交 Actions。未运行项不得标为通过，空集明确为 0 发现/0 执行而非测试通过。自动渲染回归不替代用户 Retina 观感验收。
 
+### 4.1 测量接线纠正记录（目标不变）
+
+初始测试源码固定在 `ac2b5c1f7af20b31238a2c951dff50e2220783dc`；接口缺失 RED 为 [run 39565316867](https://github.com/puzige/vega/actions/runs/39565316867)。实现 `8e4527b24e8e89c3f24abe3fd04399b3566a1af3` 的 [run 39566283153](https://github.com/puzige/vega/actions/runs/39566283153) 实际执行 2 项、0 通过、2 失败、0 跳过：16px 墨迹 alpha 推算为 13.5059px、直线描边覆盖为 1.5059px，超出原有 ±0.15px；32px 断言未执行。不能将此称为 GREEN。
+
+独立只读诊断确认原测量前提不成立：tiny-skia 0.11.4 的 `scan/path_aa.rs` 使用 4 倍扫描网格并量化 coverage，直接 16/32 栅格的 alpha 不等于精确解析面积；GPUI `Window::paint_svg` 实际使用 `SMOOTH_SVG_SCALE_FACTOR = 2` 的图集 mask，再按半尺寸显示。原测试的 ExactSize 16/32 绕过此观测边界。接口 RED、原始测试和首次执行失败均在 [PR #528](https://github.com/puzige/vega/pull/528) 留证。
+
+按执行总纲 §7.2 测试接线纠正规则，先记录缺陷并独立审查批准，之后只修正 harness：按生产约定将 16/32 设备像素对应的 mask 渲染为 32/64 栅格，所有维度测量除以 2 后再与原目标比较；alpha 不缩放。测试名称、13.3333/26.6667 墨迹目标、1.3333/2.6667 描边目标、居中目标、±0.15 设备像素容差与冻结 SVG 均不变。不拟合失败输出、不放宽断言、不调整生产。另以等价 `as_chunks::<4>()` 和余数为空断言纠正 Clippy 的测试解码接线问题。修正后必须重新取得 Actions GREEN；若仍失败，停止复核，不能继续换采样方式试绿。
+
+此回归验证生产图集 mask 的几何，不宣称复现最终 GPU 纹理采样或 Retina 主观观感；用户实际界面验收仍为必要条件。
+
 ## 5. 手测与回滚
 
 合并后保持 Issue 开放并置 In review：用户在 CI 发布后的实际应用检查浅/深主题、消息与代码块复制、Copy/Fork Retina 配对、Tab/Enter/Space、tooltip 和可访问名称。未收到明确通过前不关闭或 Done。
