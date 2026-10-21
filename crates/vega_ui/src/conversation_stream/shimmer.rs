@@ -83,26 +83,42 @@ fn display_layout(
     if available == ellipsis.width {
         return Some(("…".to_owned(), ellipsis));
     }
-    let prefix_width = available - ellipsis.width;
     let mut boundaries = full
         .runs
         .iter()
         .flat_map(|run| run.glyphs.iter())
-        .filter(|glyph| glyph.position.x <= prefix_width)
         .map(|glyph| glyph.index)
         .filter(|&index| index > 0 && index < text.len() && text.is_char_boundary(index))
         .collect::<Vec<_>>();
     boundaries.sort_unstable();
     boundaries.dedup();
-    for index in boundaries.into_iter().rev() {
+    let mut measure_prefix = |index| {
         let mut candidate = text[..index].to_owned();
         candidate.push('…');
         let layout = shape(&candidate);
+        (candidate, layout)
+    };
+    let mut best = ("…".to_owned(), ellipsis);
+    let mut low = 0;
+    let mut high = boundaries.len();
+    if let Some(&index) = boundaries.first() {
+        let (candidate, layout) = measure_prefix(index);
         if layout.width <= available {
-            return Some((candidate, layout));
+            best = (candidate, layout);
+        }
+        low = 1;
+    }
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let (candidate, layout) = measure_prefix(boundaries[mid]);
+        if layout.width <= available {
+            best = (candidate, layout);
+            low = mid + 1;
+        } else {
+            high = mid;
         }
     }
-    Some(("…".to_owned(), ellipsis))
+    Some(best)
 }
 
 fn frame_decorations(
