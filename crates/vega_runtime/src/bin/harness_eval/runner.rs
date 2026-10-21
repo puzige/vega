@@ -350,18 +350,6 @@ fn sanitize(value: &mut Value, known_credentials: &[String]) {
     }
 }
 
-#[cfg(test)]
-pub(super) async fn run_trial(
-    provider: &dyn Provider,
-    request: TrialRequest,
-    trial_root: &Path,
-    run_id: &str,
-    pricing: Option<PricingCatalog>,
-    cancel: CancellationToken,
-) -> Result<Value, EvalError> {
-    run_trial_inner(provider, request, trial_root, run_id, pricing, cancel, &[]).await
-}
-
 async fn run_trial_inner(
     provider: &dyn Provider,
     request: TrialRequest,

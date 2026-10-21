@@ -2,7 +2,7 @@
 
 ## 状态、授权与基线
 
-- Issue：[#522](https://github.com/puzige/vega/issues/522)。规格 v2，2026-10-21；原生worker与controller已实现且完整独立静态审查通过，待云端GREEN；真实实验未运行。
+- Issue：[#522](https://github.com/puzige/vega/issues/522)。规格 v2，2026-10-21；原生worker与controller已实现并取得独立审查、带冻结测试的云端GREEN。独立删测、最终head门禁与合并以[PR530](https://github.com/puzige/vega/pull/530)后续记录为准；真实实验未运行。
 - 用户明确要求接手本卡；实验模型固定为 `gpt-6.1-sol`，思考强度 `max`。真实调用费用上限、可用原生 API route/凭据与隔离实验环境未明确，不启动付费模型搜索或跑批。
 - 已 fetch 并从最新 `origin/master` 建立 `feat/522-harness-pilot`；生产未改基线 `9be433a147b5aad9848e32e30afaa9fa23c5915e`。主 Agent 已完成基线同步，子 Agent 不再就此询问用户。
 - 主 Agent 写规格、管理 Git/PR/集成；Native 实现者仅写本规格指定 Rust 范围；Controller 实现者仅写指定 Python/研究数据范围；非实现者独立审查。禁止并发写同范围。
@@ -151,10 +151,12 @@ python3 scripts/harness_pilot.py plan \
 
 - 先行测试/规格提交：`99fb0d7c0a69d4268357e4470c5b67f96b9c5d75`；8项Rust、21项Python和24项任务fixture经非实现者独立静态审查。主Agent复核精确hash、rustfmt、AST/JSON及差异检查通过；未本地执行。
 - 最小接口缺失RED：[Actions 39597872628](https://github.com/puzige/vega/actions/runs/39597872628)。Format无法解析尚未实现的runner.rs；Python无法导入尚未实现的harness_pilot。新增行为断言尚未执行，Rust未运行；已有Python5+15+14项通过，discover另有1个新模块导入错误。不是行为RED或完整GREEN。
-- 确认后才进入原生worker与controller/上游桥实现；任务fixture保持不变。带测试GREEN、独立删测和最终空集门禁待取得；真实研究尚未运行。
+- 确认后才进入原生worker与controller/上游桥实现；任务fixture保持不变。该阶段尚待带测试GREEN、独立删测和最终空集门禁；真实研究未运行，后续结果逐项记于下文与PR。
 - 首次GREEN前独立审查并留证的fixture单位修正：[PR记录](https://github.com/puzige/vega/pull/530#issuecomment-6316021958)。基线 `vega_token/src/catalog.rs:11` 实际每美元1,000,000原始单位，Runtime直接转发。10输入+5输出、每百万$1/$2原生报价应为20而非2000；Python相同1e6/2e6原始值对应总$3、搜索$5、合计$8、每成功$3。仅纠正5个数值，其他验收、原始输入与断言保持不变；不是从新实现输出反推预期，不改原生计价逻辑。
 - 修正后冻结Rust测试SHA256：`65e1510eb8dbd17e27a342de8fe8ba93619d78b6b893abe4da4ceb2fa5323ec7`（旧 `ffea8e44603079fe7c5570009cc9d775c7b8d3823f291b658d4d7af3df8df61d`）；Python：`329936c4be162310208008c0ab534c660feddc7fd03f86b5fc67e20ebb6683a1`（旧 `ab41067ddfffcb20e6ff210cd8c1fad8e23fc380b37d756b47000aec0289eace`）。主Agent逐行复核精确变更和新hash，任务集hash不变。
 - 首版实现停止写入后，非实现者独立静态审查通过；修正了原生Read/Write/Edit别名的重复epoch统计与Python启动器的协作取消路径。该次审查文件SHA256：runner `e570f5e8bc9329a1c9644cb64c974655e86b42af72934dae9878b40359b1a656`、protocol `5c9048df477b682ac06fd5b8d002fb690214e55943c85aca1aa603af423ca1c3`、trace `ae320e4bb1de1832d94a085ee39b7a22c2dcd6ef1e60dfd5128ec4c518e2342a`、controller `57c7cde7d9f0e0db055a4e38dcfc1ee87966d0f647eaf9be6c9dd329d4b8222d`、upstream bridge `2b9ef4534d0c000806007feecb70f02495be28cc8dd1ee7073595a66130e836c`。所有新增代码仅做静态检查，未本地执行、编译、测试或调用模型。
 - 首轮实现CI：[Actions39603657413](https://github.com/puzige/vega/actions/runs/39603657413)，head `16b852b3e3f03b17fe9f4591a8944a6166eee758`。Format/全目标Clippy成功；Python55执行、54通过、1error，Rust步骤跳过。配对/冻结测试的共享替身无条件返回answer.json，违反部分留出任务的声明路径；不是合法worker行为。保留生产fatal校验，按[编辑前独立审查记录](https://github.com/puzige/vega/pull/530#issuecomment-6316795380)仅在该用例设置空产物，原48次/配对/冻结断言不变。修正后Python测试SHA256 `0b24a4d022688d4d3c697ac28919d2972edebb0fefc6ebb29139683505e74ad7`；Rust/任务集和全部生产字节不变。该修正纳入尚未GREEN的实现提交，保留先行来源及批准补丁后再云端重验，不重写已GREEN来源。
 - 原生行为首轮：[Actions39605400418](https://github.com/puzige/vega/actions/runs/39605400418)，head `d9a0809fdd05344e750da141fb324afefe61bc4c`。Format/Clippy和三组Python成功；Rust8发现/执行、4通过、4失败、0跳过（15 binaries）。独立确认两处生产根因：缺少checkpoint根目录使mutation准备中止，连带编辑脚本第二次采样读到未消费步骤；workspace启用serde_json preserve_order，使不同对象键序的等价输入哈希不同。仅补新trial的0700 checkpoints目录及Value递归排序对象键（保留数组顺序），独立增量审查通过。新runner SHA256 `20582a0afb6fc90be299baf6ca6d0d357e091c34dfc89b15069a349da2402639`、protocol `4ca263b200d03c2493b1ea42eb4ed5403e18db49d616c76c9e9592101cf55b0d`；测试/权限/schema守卫无变。相同冻结测试GREEN仍待云端重验。
+- 带相同冻结测试GREEN：[Actions39607398233](https://github.com/puzige/vega/actions/runs/39607398233)，head `9f59218b90e6d406e6e540b88cd8efbb53805ca4`。Rust8发现/8执行、8通过、0失败、0跳过（15 binaries）；Python5+15+35=55执行通过。Format/全目标Clippy及required check全部success。非实现者核对完整head、生产/测试hash、原始日志及来源链；[PR固定记录](https://github.com/puzige/vega/pull/530#issuecomment-6317299633)已读回，再批准独立删测。
+- 可恢复的[GREEN Rust源码](https://github.com/puzige/vega/blob/9f59218b90e6d406e6e540b88cd8efbb53805ca4/crates/vega_runtime/src/bin/harness_eval/tests.rs)、[Python源码](https://github.com/puzige/vega/blob/9f59218b90e6d406e6e540b88cd8efbb53805ca4/scripts/tests/test_harness_pilot.py)与[全部批准测试修正原始patch](https://github.com/puzige/vega/pull/530#issuecomment-6316849308)不依赖临时文件或会过期artifact。开发测试最终按规则删除，生产与Python测试保留；最新空集门禁不能替代本次8项行为GREEN。没有真实优化收益、外部通道或OS隔离的已验证结论。
 
