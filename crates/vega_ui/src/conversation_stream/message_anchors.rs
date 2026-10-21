@@ -722,17 +722,11 @@ pub(super) fn estimate_entry_height(
 
 pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
     let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
-    let chars_per_line = (width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
     let lines = model
         .committed_lines
         .iter()
         .chain(&model.pending_lines)
         .collect::<Vec<_>>();
-    let list_blocks = lines
-        .iter()
-        .filter(|line| line.kind == LineKind::ListItem)
-        .map(|line| line.block_id)
-        .collect::<HashSet<_>>();
     let gaps = lines
         .iter()
         .enumerate()
@@ -744,8 +738,8 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
             render_rows::markdown_block_gap(
                 previous,
                 line,
-                list_blocks.contains(&line.block_id),
-                previous.is_some_and(|line| list_blocks.contains(&line.block_id)),
+                line.in_list,
+                previous.is_some_and(|line| line.in_list),
             )
         })
         .sum::<f32>();
@@ -772,13 +766,14 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
                 return Typography::CODE * Typography::CODE_LINE_HEIGHT;
             }
             if let Some(table) = &line.table {
-                let inset =
-                    if list_blocks.contains(&line.block_id) && line.kind != LineKind::ListItem {
-                        (line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
-                    } else {
-                        0.0
-                    };
-                let widths = table.column_widths(width - inset);
+                let inset = if line.in_list && line.kind != LineKind::ListItem {
+                    (line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+                } else {
+                    0.0
+                };
+                let widths = table.column_widths(
+                    width - inset - line.quotes.len() as f32 * (2. + Layout::MARKDOWN_CODE_PADDING),
+                );
                 return table
                     .rows
                     .iter()
@@ -808,6 +803,16 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
                 .iter()
                 .map(|span| display_width(&span.text))
                 .sum::<usize>();
+            let quote_inset = line.quotes.len() as f32 * (2. + Layout::MARKDOWN_CODE_PADDING);
+            let list_inset = if line.in_list {
+                (line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+            } else {
+                0.
+            };
+            let minimum_capacity = if line.quotes.is_empty() { 12. } else { 1. };
+            let chars_per_line = ((width - quote_inset - list_inset)
+                / (Typography::CONVERSATION * 0.56))
+                .max(minimum_capacity) as usize;
             chars.div_ceil(chars_per_line).max(1) as f32 * line_height
         })
         .sum::<f32>();

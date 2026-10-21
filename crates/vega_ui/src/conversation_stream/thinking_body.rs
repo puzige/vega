@@ -359,6 +359,7 @@ struct PreparedBody {
     width: Pixels,
     height: Pixels,
     blocks: Arc<[PreparedBlock]>,
+    rails: Arc<[Decoration]>,
     horizontal_ranges: Arc<[(Range<usize>, usize)]>,
     colors: ThemeColors,
 }
@@ -382,13 +383,9 @@ impl PreparedBody {
             .iter()
             .chain(&model.pending_lines)
             .collect();
-        let lists: HashSet<_> = lines
-            .iter()
-            .filter(|line| line.kind == LineKind::ListItem)
-            .map(|line| line.block_id)
-            .collect();
         let mut content = String::new();
         let mut blocks = Vec::new();
+        let mut rails: Vec<((u64, usize), Decoration)> = Vec::new();
         let mut y = px(0.);
         let mut previous_text: Option<&StreamLine> = None;
         let mut index = 0;
@@ -398,14 +395,16 @@ impl PreparedBody {
             y += px(render_rows::markdown_block_gap(
                 previous,
                 line,
-                lists.contains(&line.block_id),
-                previous.is_some_and(|line| lists.contains(&line.block_id)),
+                line.in_list,
+                previous.is_some_and(|line| line.in_list),
             ));
-            let inset = if lists.contains(&line.block_id) && line.kind != LineKind::ListItem {
+            let list_inset = if line.in_list && line.kind != LineKind::ListItem {
                 px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT)
             } else {
                 px(0.)
             };
+            let gutter = px(2. + Layout::MARKDOWN_CODE_PADDING);
+            let inset = list_inset + gutter * line.quotes.len() as f32;
             let block_style = PreparationStyle {
                 width: (style.width - inset).max(px(1.)),
                 ..style.clone()
@@ -418,11 +417,11 @@ impl PreparedBody {
             if line.kind == LineKind::Code {
                 block.horizontal = true;
                 block.code = true;
+                let start = index;
                 let mut row_y = px(Layout::MARKDOWN_CODE_PADDING);
                 let mut width = style.width;
                 while index < lines.len()
-                    && lines[index].block_id == line.block_id
-                    && lines[index].kind == LineKind::Code
+                    && (index == start || lines[index].continues_code_block(line))
                 {
                     let row = lines[index];
                     append_separator(&mut content, previous_text, row);
@@ -508,9 +507,6 @@ impl PreparedBody {
                             content.push(' ');
                         }
                     }
-                    if line.kind == LineKind::Quote {
-                        x += px(2. + Layout::MARKDOWN_CODE_PADDING);
-                    }
                     let height = layout_text(
                         &mut block,
                         &mut content,
@@ -523,12 +519,6 @@ impl PreparedBody {
                         text_system,
                     );
                     block.size = size(style.width, height);
-                    if line.kind == LineKind::Quote {
-                        block.decorations.push(Decoration {
-                            bounds: Bounds::new(point(px(0.), px(0.)), size(px(2.), height)),
-                            color: style.colors.border_subtle,
-                        });
-                    }
                 }
                 index += 1;
             }
@@ -540,6 +530,22 @@ impl PreparedBody {
                     .then(left.range.start.cmp(&right.range.start))
             });
             y += block.size.height;
+            for (depth, identity) in line.quotes.iter().enumerate() {
+                if let Some((_, rail)) = rails.iter_mut().find(|(owner, _)| owner == identity) {
+                    rail.bounds.size.height = y - rail.bounds.top();
+                } else {
+                    rails.push((
+                        *identity,
+                        Decoration {
+                            bounds: Bounds::new(
+                                point(gutter * depth as f32, block.origin.y),
+                                size(px(2.), block.size.height),
+                            ),
+                            color: style.colors.border_subtle,
+                        },
+                    ));
+                }
+            }
             blocks.push(block);
         }
         let mut mapper = vega_markdown::SourceTextMap::new(source);
@@ -583,6 +589,7 @@ impl PreparedBody {
             width: style.width,
             height: y,
             blocks: blocks.into(),
+            rails: rails.into_iter().map(|(_, rail)| rail).collect(),
             horizontal_ranges: horizontal_ranges.into(),
             colors: style.colors,
         }
@@ -690,11 +697,10 @@ impl PreparedBody {
 
 fn append_separator(content: &mut String, previous: Option<&StreamLine>, line: &StreamLine) {
     if let Some(previous) = previous {
-        let same = previous.block_id == line.block_id
-            && matches!(
-                (previous.kind, line.kind),
-                (LineKind::Code, LineKind::Code) | (LineKind::ListItem, LineKind::ListItem)
-            );
+        let same = line.continues_code_block(previous)
+            || (previous.block_id == line.block_id
+                && previous.kind == LineKind::ListItem
+                && line.kind == LineKind::ListItem);
         content.push_str(if same { "\n" } else { "\n\n" });
     }
 }
@@ -1049,12 +1055,21 @@ impl Element for BodyElement {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut (),
         elements: &mut Vec<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        for rail in self.prepared.rails.iter() {
+            let rect = Bounds::new(
+                bounds.origin + rail.bounds.origin - point(px(0.), self.prepared.y_offset),
+                rail.bounds.size,
+            );
+            if !rect.intersect(&window.content_mask().bounds).is_empty() {
+                window.paint_quad(gpui_kit::fill(rect, rail.color));
+            }
+        }
         for element in elements {
             element.paint(window, cx);
         }

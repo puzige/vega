@@ -145,8 +145,6 @@ pub(crate) enum LineKind {
     Table,
     /// Code line (monospace on `code_bg`).
     Code,
-    /// Block-quote line (left bar + secondary color).
-    Quote,
     /// Thematic break (`---`).
     Rule,
     /// User message label row (「你」标记，卡片上方).
@@ -174,6 +172,8 @@ pub(crate) struct StreamLine {
     pub marker: String,
     /// Nesting depth for list rows (2-space indent per level).
     pub depth: usize,
+    pub(crate) in_list: bool,
+    pub(crate) quotes: Vec<(u64, usize)>,
     pub spans: Vec<StreamSpan>,
     pub table: Option<Arc<StreamTable>>,
     pub(crate) code_block: Option<Arc<StreamCodeBlock>>,
@@ -231,6 +231,8 @@ impl StreamLine {
             checked: None,
             marker: String::new(),
             depth: 0,
+            in_list: false,
+            quotes: Vec::new(),
             spans: Vec::new(),
             table: None,
             code_block: None,
@@ -347,8 +349,9 @@ pub(crate) fn flatten_nodes(
     origin: BlockOrigin,
 ) -> Vec<StreamLine> {
     let mut lines = Vec::new();
+    let mut identity = 0;
     for node in nodes {
-        flatten_node(block_id, node, 0, origin, &mut lines);
+        flatten_node(block_id, node, 0, origin, &mut lines, &mut identity);
     }
     lines
 }
@@ -359,7 +362,10 @@ pub(crate) fn flatten_node(
     depth: usize,
     origin: BlockOrigin,
     out: &mut Vec<StreamLine>,
+    identity: &mut usize,
 ) {
+    let node_identity = *identity;
+    *identity += 1;
     match node {
         RenderNode::Paragraph { spans } => {
             let mut inline = Vec::new();
@@ -417,14 +423,14 @@ pub(crate) fn flatten_node(
                 offset = line_end + 1; // skip the '\n'
             }
         }
-        RenderNode::List(list) => flatten_list(block_id, list, depth, origin, out),
+        RenderNode::List(list) => flatten_list(block_id, list, depth, origin, out, identity),
         RenderNode::BlockQuote { children } => {
             let start = out.len();
             for child in children {
-                flatten_node(block_id, child, depth, origin, out);
+                flatten_node(block_id, child, depth, origin, out, identity);
             }
             for line in &mut out[start..] {
-                line.kind = LineKind::Quote;
+                line.quotes.insert(0, (block_id, node_identity));
             }
         }
         RenderNode::Table(table) => flatten_table(block_id, table, out),
@@ -490,6 +496,7 @@ pub(crate) fn flatten_list(
     depth: usize,
     origin: BlockOrigin,
     out: &mut Vec<StreamLine>,
+    identity: &mut usize,
 ) {
     for (index, item) in list.items.iter().enumerate() {
         let marker = if list.ordered {
@@ -501,15 +508,22 @@ pub(crate) fn flatten_list(
         for child in &item.children {
             match child {
                 // 嵌套列表携带 depth+1（§5.3 嵌套列表分支）。
-                RenderNode::List(nested) => flatten_list(block_id, nested, depth + 1, origin, out),
-                other => flatten_node(block_id, other, depth, origin, out),
+                RenderNode::List(nested) => {
+                    flatten_list(block_id, nested, depth + 1, origin, out, identity)
+                }
+                other => flatten_node(block_id, other, depth, origin, out, identity),
             }
+        }
+        for line in &mut out[start..] {
+            line.in_list = true;
         }
         if let Some(first) = out.get_mut(start) {
             first.marker = marker;
             first.depth = depth;
             first.checked = item.checked;
-            first.kind = LineKind::ListItem;
+            if first.kind == LineKind::Paragraph {
+                first.kind = LineKind::ListItem;
+            }
         }
     }
 }
