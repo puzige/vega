@@ -398,13 +398,27 @@ impl PreparedBody {
                 line.in_list,
                 previous.is_some_and(|line| line.in_list),
             ));
-            let list_inset = if line.in_list && line.kind != LineKind::ListItem {
+            let list_inset = if line.in_list && !line.starts_list_item() {
                 px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT)
             } else {
                 px(0.)
             };
             let gutter = px(2. + Layout::MARKDOWN_CODE_PADDING);
-            let inset = list_inset + gutter * line.quotes.len() as f32;
+            let mut inset = list_inset + gutter * line.quotes.len() as f32;
+            if line.kind == LineKind::Code && line.starts_list_item() {
+                append_separator(&mut content, previous_text, line);
+                let mut marker = PreparedBlock {
+                    origin: point(gutter * line.quotes.len() as f32, y),
+                    ..Default::default()
+                };
+                let width = layout_list_marker(&mut marker, &mut content, line, style, text_system);
+                marker.size = size(
+                    width,
+                    px(Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT),
+                );
+                inset += width;
+                blocks.push(marker);
+            }
             let block_style = PreparationStyle {
                 width: (style.width - inset).max(px(1.)),
                 ..style.clone()
@@ -424,7 +438,9 @@ impl PreparedBody {
                     && (index == start || lines[index].continues_code_block(line))
                 {
                     let row = lines[index];
-                    append_separator(&mut content, previous_text, row);
+                    if index != start || !line.starts_list_item() {
+                        append_separator(&mut content, previous_text, row);
+                    }
                     previous_text = Some(row);
                     let height = layout_text(
                         &mut block,
@@ -460,52 +476,8 @@ impl PreparedBody {
                 } else {
                     append_separator(&mut content, previous_text, line);
                     previous_text = Some(line);
-                    if line.kind == LineKind::ListItem {
-                        content.push_str(&"  ".repeat(line.depth));
-                        x = px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT);
-                        layout_text(
-                            &mut block,
-                            &mut content,
-                            &[StreamSpan {
-                                text: format!("{} ", line.marker),
-                                style: SpanStyle::Plain,
-                                link: None,
-                                link_occurrence: None,
-                            }],
-                            LineKind::Paragraph,
-                            point(x, px(0.)),
-                            None,
-                            false,
-                            style,
-                            text_system,
-                        );
-                        block.source_ranges.pop();
-                        x += px(Layout::MARKDOWN_LIST_INDENT);
-                        if let Some(checked) = line.checked {
-                            let start = block.fragments.len();
-                            layout_text(
-                                &mut block,
-                                &mut content,
-                                &[StreamSpan {
-                                    text: if checked { "[x]" } else { "[ ]" }.into(),
-                                    style: SpanStyle::Plain,
-                                    link: None,
-                                    link_occurrence: None,
-                                }],
-                                LineKind::Paragraph,
-                                point(x, px(0.)),
-                                None,
-                                false,
-                                style,
-                                text_system,
-                            );
-                            block.source_ranges.pop();
-                            x = block
-                                .fragments
-                                .get(start)
-                                .map_or(x, |fragment| fragment.bounds.right() + px(4.));
-                            content.push(' ');
-                        }
+                    if line.starts_list_item() {
+                        x = layout_list_marker(&mut block, &mut content, line, style, text_system);
                     }
                     let height = layout_text(
                         &mut block,
@@ -693,6 +665,61 @@ impl PreparedBody {
                 .map(|fragment| block.origin.y + fragment.bounds.top() - self.y_offset)
         })
     }
+}
+
+fn layout_list_marker(
+    block: &mut PreparedBlock,
+    content: &mut String,
+    line: &StreamLine,
+    style: &PreparationStyle,
+    text_system: &WindowTextSystem,
+) -> Pixels {
+    content.push_str(&"  ".repeat(line.depth));
+    let mut x = px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT);
+    layout_text(
+        block,
+        content,
+        &[StreamSpan {
+            text: format!("{} ", line.marker),
+            style: SpanStyle::Plain,
+            link: None,
+            link_occurrence: None,
+        }],
+        LineKind::Paragraph,
+        point(x, px(0.)),
+        None,
+        false,
+        style,
+        text_system,
+    );
+    block.source_ranges.pop();
+    x += px(Layout::MARKDOWN_LIST_INDENT);
+    if let Some(checked) = line.checked {
+        let start = block.fragments.len();
+        layout_text(
+            block,
+            content,
+            &[StreamSpan {
+                text: if checked { "[x]" } else { "[ ]" }.into(),
+                style: SpanStyle::Plain,
+                link: None,
+                link_occurrence: None,
+            }],
+            LineKind::Paragraph,
+            point(x, px(0.)),
+            None,
+            false,
+            style,
+            text_system,
+        );
+        block.source_ranges.pop();
+        x = block
+            .fragments
+            .get(start)
+            .map_or(x, |fragment| fragment.bounds.right() + px(4.));
+        content.push(' ');
+    }
+    x
 }
 
 fn append_separator(content: &mut String, previous: Option<&StreamLine>, line: &StreamLine) {

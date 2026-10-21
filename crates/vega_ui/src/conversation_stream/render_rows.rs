@@ -367,11 +367,10 @@ fn markdown_message_item(
         .flex()
         .flex_col()
         .children(markdown_blocks(model, colors, code_owner, |line, index| {
-            render_line(
-                line,
-                colors,
-                &format!("{id_prefix}-markdown-{message_id}-line-{index}"),
-            )
+            let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
+            let marker =
+                independent_list_marker(line).map(|marker| render_line(&marker, colors, &id));
+            (marker, render_line(line, colors, &id))
         }))
         .children(
             failure.map(|reason| div().child(plain_error_notice(reason.message(), colors.danger))),
@@ -578,11 +577,13 @@ pub(crate) fn selectable_markdown_content(
                         && matches!(line.kind, LineKind::ListItem)));
             document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
         }
+        let marker = independent_list_marker(line)
+            .map(|marker| render_line_selectable(&marker, colors, &mut document, index, copy.id));
         let element = render_line_selectable(line, colors, &mut document, index, copy.id);
         if !matches!(line.kind, LineKind::Rule) {
             previous = Some((line.block_id, line.kind, line.code_block.clone()));
         }
-        element
+        (marker, element)
     });
     selection_context_menu(
         document.wrap(body.children(blocks).into_any_element(), window, cx),
@@ -591,11 +592,23 @@ pub(crate) fn selectable_markdown_content(
     )
 }
 
+fn independent_list_marker(line: &StreamLine) -> Option<StreamLine> {
+    if !line.starts_list_item() || line.kind == LineKind::ListItem {
+        return None;
+    }
+    let mut marker = line.clone();
+    marker.kind = LineKind::ListItem;
+    marker.spans.clear();
+    marker.table = None;
+    marker.code_block = None;
+    Some(marker)
+}
+
 fn markdown_blocks(
     model: &StreamModel,
     colors: &ThemeColors,
     code_owner: Option<u64>,
-    mut render: impl FnMut(&StreamLine, usize) -> AnyElement,
+    mut render: impl FnMut(&StreamLine, usize) -> (Option<AnyElement>, AnyElement),
 ) -> Vec<AnyElement> {
     let lines: Vec<_> = model
         .committed_lines
@@ -613,21 +626,19 @@ fn markdown_blocks(
         let in_list = line.in_list;
         let previous_in_list = previous.is_some_and(|line| line.in_list);
         let gap = markdown_block_gap(previous, line, in_list, previous_in_list);
-        let mut content = vec![render(line, index)];
+        let (marker, element) = render(line, index);
+        let mut content = vec![element];
         index += 1;
         if line.kind == LineKind::Code {
             while index < lines.len() && lines[index].continues_code_block(line) {
-                content.push(render(lines[index], index));
+                content.push(render(lines[index], index).1);
                 index += 1;
             }
         }
-        let body = div()
-            .w_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .when(in_list && line.kind != LineKind::ListItem, |body| {
-                body.pl(px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT))
-            });
+        let body = div().w_full().min_w_0().flex_shrink_0().when(
+            in_list && line.kind != LineKind::ListItem && marker.is_none(),
+            |body| body.pl(px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT)),
+        );
         let body = if line.kind == LineKind::Code {
             let ordinal = code_ordinal;
             code_ordinal += 1;
@@ -673,6 +684,16 @@ fn markdown_blocks(
             )
         } else {
             body.children(content)
+        };
+        let body = if let Some(marker) = marker {
+            div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .child(div().flex_shrink_0().child(marker))
+                .child(div().flex_1().min_w_0().child(body))
+        } else {
+            body
         };
         blocks.push((line.quotes.clone(), gap, body.into_any_element()));
     }
@@ -851,7 +872,11 @@ fn render_line_selectable(
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .when(line.kind != LineKind::Code, |item| item.w_full())
+        .when(
+            line.kind != LineKind::Code
+                && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
+            |item| item.w_full(),
+        )
         .flex_shrink_0()
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -1177,7 +1202,11 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
     let text_id = format!("{id_prefix}-text");
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .when(line.kind != LineKind::Code, |item| item.w_full())
+        .when(
+            line.kind != LineKind::Code
+                && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
+            |item| item.w_full(),
+        )
         .flex_shrink_0()
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))

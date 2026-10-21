@@ -239,6 +239,10 @@ impl StreamLine {
         }
     }
 
+    pub(crate) fn starts_list_item(&self) -> bool {
+        !self.marker.is_empty()
+    }
+
     pub(crate) fn continues_code_block(&self, previous: &Self) -> bool {
         self.kind == LineKind::Code
             && previous.kind == LineKind::Code
