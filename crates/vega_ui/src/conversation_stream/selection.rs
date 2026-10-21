@@ -286,6 +286,8 @@ impl Element for SelectableStyledText {
     ) -> Self::PrepaintState {
         self.text
             .prepaint(id, inspector_id, bounds, &mut (), window, cx);
+        #[cfg(test)]
+        super::quote_behavior_tests::observe_text(&self.content, self.text.layout(), window);
         self.runs.borrow_mut().push(LaidOutRun {
             text: self.content.clone(),
             layout: self.text.layout().clone(),

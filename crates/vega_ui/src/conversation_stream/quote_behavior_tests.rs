@@ -1,0 +1,968 @@
+use super::*;
+use gpui_kit::gpui;
+use gpui_kit::test::TestWindowExt;
+use gpui_kit::{Bounds, InputEvent, TestAppContext, TextLayout, WindowHandle, point, size};
+use std::{cell::RefCell, rc::Rc};
+
+#[derive(Clone)]
+pub(crate) struct PaintedText {
+    pub(crate) text: String,
+    pub(crate) layout: TextLayout,
+}
+
+thread_local! {
+    static TEXT: RefCell<Vec<PaintedText>> = const { RefCell::new(Vec::new()) };
+    static NODES: RefCell<Option<Vec<RenderNode>>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn model_input(model: &mut StreamModel) {
+    NODES.with_borrow(|nodes| {
+        if let Some(nodes) = nodes {
+            model.committed_lines.clear();
+            model.pending_lines = model::flatten_nodes(7, nodes, model::BlockOrigin::Pending);
+        }
+    });
+}
+
+pub(super) fn observe_text(text: &str, layout: &TextLayout, window: &Window) {
+    if layout
+        .bounds()
+        .intersect(&window.content_mask().bounds)
+        .is_empty()
+    {
+        return;
+    }
+    TEXT.with_borrow_mut(|observations| {
+        observations.push(PaintedText {
+            text: text.to_owned(),
+            layout: layout.clone(),
+        })
+    });
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Path {
+    Ordinary,
+    Selectable,
+    Thinking,
+}
+
+const PATHS: [Path; 3] = [Path::Ordinary, Path::Selectable, Path::Thinking];
+
+struct QuoteView {
+    stream: MarkdownStream,
+    model: StreamModel,
+    source: String,
+    copy: MessageCopy,
+    focus: FocusHandle,
+    path: Path,
+    width: f32,
+    height: f32,
+    offset: f32,
+    nodes: Option<Vec<RenderNode>>,
+    horizontal: Rc<RefCell<HashMap<usize, ScrollHandle>>>,
+}
+
+impl QuoteView {
+    fn sync(&mut self) {
+        self.model
+            .sync(&self.stream.snapshot(), &StreamCounters::default());
+        self.copy.replace_text(&self.source);
+    }
+}
+
+impl Render for QuoteView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = theme(cx).colors;
+        NODES.with_borrow_mut(|nodes| *nodes = self.nodes.clone());
+        let body = match self.path {
+            Path::Ordinary => render_rows::markdown_item(&self.model, None, &colors, "quote"),
+            Path::Selectable => render_rows::selectable_markdown_content(
+                &self.model,
+                &self.copy,
+                &self.focus,
+                &colors,
+                false,
+                window,
+                cx,
+            ),
+            Path::Thinking => thinking::quote_test_body(
+                &self.source,
+                px(self.width),
+                px(self.offset),
+                self.copy.clone(),
+                self.focus.clone(),
+                self.horizontal.clone(),
+                window,
+                cx,
+            ),
+        };
+        NODES.with_borrow_mut(|nodes| *nodes = None);
+        div()
+            .w(px(self.width))
+            .h(px(self.height))
+            .overflow_hidden()
+            .text_size(px(Typography::CONVERSATION))
+            .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+            .child(body)
+    }
+}
+
+fn open(cx: &mut TestAppContext, path: Path, source: &str, width: f32) -> WindowHandle<QuoteView> {
+    cx.update(|cx| {
+        if !cx.has_global::<vega_theme::Theme>() {
+            gpui_kit::init(cx);
+            cx.set_global(vega_theme::Theme::light());
+        }
+    });
+    let source = source.to_owned();
+    cx.open_window(size(px(width), px(12000.)), move |_, cx| {
+        let mut view = QuoteView {
+            stream: MarkdownStream::new(),
+            model: StreamModel::default(),
+            copy: MessageCopy::new(&source),
+            focus: cx.focus_handle(),
+            source,
+            path,
+            width,
+            height: 12000.,
+            offset: 0.,
+            nodes: None,
+            horizontal: Default::default(),
+        };
+        view.stream.append(&view.source);
+        view.sync();
+        view
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Rect {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+pub(crate) struct Frame {
+    pub(crate) text: Vec<PaintedText>,
+    rails: Vec<Rect>,
+}
+
+pub(crate) fn frame<V: Render + 'static>(
+    handle: WindowHandle<V>,
+    cx: &mut TestAppContext,
+) -> Frame {
+    TEXT.with_borrow_mut(Vec::clear);
+    let rails = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.refresh();
+            window.render_frame(cx);
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter_map(|quad| {
+                    if quad.background.as_solid() != Some(vega_theme::LIGHT.border_subtle.into()) {
+                        return None;
+                    }
+                    let clipped = quad.bounds.intersect(&quad.content_mask.bounds);
+                    let width = f32::from(quad.bounds.size.width) / scale;
+                    if clipped.is_empty() || (width - 2.).abs() > 0.1 {
+                        return None;
+                    }
+                    Some(Rect {
+                        left: f32::from(clipped.left()) / scale,
+                        top: f32::from(clipped.top()) / scale,
+                        right: f32::from(clipped.right()) / scale,
+                        bottom: f32::from(clipped.bottom()) / scale,
+                    })
+                })
+                .collect()
+        })
+        .unwrap();
+    Frame {
+        text: TEXT.with_borrow(Clone::clone),
+        rails,
+    }
+}
+
+pub(crate) fn text_bounds(frame: &Frame, needle: &str) -> Bounds<Pixels> {
+    let matches: Vec<_> = frame
+        .text
+        .iter()
+        .filter(|text| text.text.contains(needle))
+        .collect();
+    assert!(!matches.is_empty(), "missing painted {needle:?}");
+    matches
+        .into_iter()
+        .map(|text| text.layout.bounds())
+        .reduce(|a, b| a.union(&b))
+        .unwrap()
+}
+
+fn covered(frame: &Frame, x: f32, top: f32, bottom: f32) {
+    let mut spans: Vec<_> = frame
+        .rails
+        .iter()
+        .filter(|rail| (rail.left - x).abs() < 0.2)
+        .map(|rail| (rail.top, rail.bottom))
+        .collect();
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut end = top;
+    for (start, next) in spans {
+        if next < end {
+            continue;
+        }
+        assert!(
+            start <= end + 0.2,
+            "unpainted rail gap at {x}: {end}..{start}"
+        );
+        end = end.max(next);
+        if end >= bottom - 0.2 {
+            return;
+        }
+    }
+    panic!(
+        "rail at {x} ends at {end}, expected {bottom}; {:?}",
+        frame.rails
+    );
+}
+
+fn absent(frame: &Frame, x: f32, top: f32, bottom: f32) {
+    assert!(
+        !frame.rails.iter().any(|rail| (rail.left - x).abs() < 0.2
+            && rail.top < bottom - 0.2
+            && rail.bottom > top + 0.2),
+        "unexpected rail at {x} in {top}..{bottom}: {:?}",
+        frame.rails
+    );
+}
+
+fn outer_x(frame: &Frame) -> f32 {
+    frame
+        .rails
+        .iter()
+        .map(|rail| rail.left)
+        .min_by(f32::total_cmp)
+        .expect("painted quote rail")
+}
+
+fn continuous(frame: &Frame, first: &str, last: &str) {
+    let first = text_bounds(frame, first);
+    let last = text_bounds(frame, last);
+    covered(
+        frame,
+        outer_x(frame),
+        f32::from(first.top()),
+        f32::from(last.bottom()),
+    );
+}
+
+#[gpui_kit::test]
+fn paragraph_rails_cover_preserved_gaps(cx: &mut TestAppContext) {
+    for path in PATHS {
+        let handle = open(
+            cx,
+            path,
+            "> 第一段 alpha\n>\n> 第二段 beta\n>\n> 第三段 gamma",
+            600.,
+        );
+        let painted = frame(handle, cx);
+        for (before, after) in [("第一段", "第二段"), ("第二段", "第三段")] {
+            let before = text_bounds(&painted, before);
+            let after = text_bounds(&painted, after);
+            assert!(
+                (f32::from(after.top() - before.bottom()) - 16.).abs() < 0.2,
+                "paragraph gap changed in {path:?}"
+            );
+        }
+        continuous(&painted, "第一段", "第三段");
+    }
+}
+
+#[gpui_kit::test]
+fn independent_quotes_do_not_decorate_intervening_body(cx: &mut TestAppContext) {
+    for path in PATHS {
+        let handle = open(cx, path, "> first\n\nordinary\n\n> second", 600.);
+        let painted = frame(handle, cx);
+        let body = text_bounds(&painted, "ordinary");
+        absent(
+            &painted,
+            outer_x(&painted),
+            f32::from(body.top()),
+            f32::from(body.bottom()),
+        );
+        continuous(&painted, "first", "first");
+        continuous(&painted, "second", "second");
+    }
+}
+
+#[gpui_kit::test]
+fn nested_siblings_share_only_the_outer_rail(cx: &mut TestAppContext) {
+    for path in PATHS {
+        let source = "> outer-start\n>\n> > inner-one\n> >\n> > inner-two\n>\n> outer-middle\n>\n> > sibling\n>\n> outer-end";
+        let handle = open(cx, path, source, 600.);
+        let painted = frame(handle, cx);
+        continuous(&painted, "outer-start", "outer-end");
+        let outer = outer_x(&painted);
+        let inner = outer + 2. + Layout::MARKDOWN_CODE_PADDING;
+        let one = text_bounds(&painted, "inner-one");
+        let two = text_bounds(&painted, "inner-two");
+        covered(
+            &painted,
+            inner,
+            f32::from(one.top()),
+            f32::from(two.bottom()),
+        );
+        let middle = text_bounds(&painted, "outer-middle");
+        absent(
+            &painted,
+            inner,
+            f32::from(two.bottom()) + 0.3,
+            f32::from(middle.bottom()),
+        );
+        let sibling = text_bounds(&painted, "sibling");
+        covered(
+            &painted,
+            inner,
+            f32::from(sibling.top()),
+            f32::from(sibling.bottom()),
+        );
+        let end = text_bounds(&painted, "outer-end");
+        absent(
+            &painted,
+            inner,
+            f32::from(sibling.bottom()) + 0.3,
+            f32::from(end.bottom()),
+        );
+        assert_eq!(one.left(), sibling.left());
+        assert_eq!(middle.left(), end.left());
+        assert!(one.left() > middle.left());
+    }
+}
+
+#[gpui_kit::test]
+fn wrapping_and_resize_use_remaining_quote_width(cx: &mut TestAppContext) {
+    let source = "> 中文与 English 混排内容需要自然换行，不得超出右侧边界。 repeated words 中文继续自然换行。";
+    for path in PATHS {
+        let handle = open(cx, path, source, 240.);
+        let narrow = frame(handle, cx);
+        let bounds = all_text_bounds(&narrow);
+        assert!(
+            bounds.right() <= px(240.1),
+            "{path:?} overflows: {bounds:?}"
+        );
+        assert!(
+            bounds.size.height
+                > px(Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+        );
+        covered(
+            &narrow,
+            outer_x(&narrow),
+            f32::from(bounds.top()),
+            f32::from(bounds.bottom()),
+        );
+        cx.simulate_window_resize(handle.into(), size(px(760.), px(12000.)));
+        handle
+            .update(cx, |view, _, cx| {
+                view.width = 760.;
+                cx.notify();
+            })
+            .unwrap();
+        let wide = frame(handle, cx);
+        assert!(all_text_bounds(&wide).size.height < bounds.size.height);
+        covered(
+            &wide,
+            outer_x(&wide),
+            f32::from(all_text_bounds(&wide).top()),
+            f32::from(all_text_bounds(&wide).bottom()),
+        );
+        let bottom = f32::from(all_text_bounds(&wide).bottom());
+        assert!(wide.rails.iter().all(|rail| rail.bottom <= bottom + 0.2));
+        let repeated = frame(handle, cx);
+        assert_eq!(wide.rails, repeated.rails);
+    }
+}
+
+#[gpui_kit::test]
+fn streamed_intermediate_and_finished_frames_match_fresh_projection(cx: &mut TestAppContext) {
+    for path in PATHS {
+        let handle = open(cx, path, "> start", 480.);
+        let mut source = String::from("> start");
+        for delta in [
+            "\n>\n> > nested",
+            "\n> >\n> > next",
+            "\n>\n> tail",
+            "\n\nplain\n\n> separate",
+        ] {
+            source.push_str(delta);
+            handle
+                .update(cx, |view, _, cx| {
+                    view.source.push_str(delta);
+                    view.stream.append(delta);
+                    view.sync();
+                    cx.notify();
+                })
+                .unwrap();
+            let current = frame(handle, cx);
+            let fresh_handle = open(cx, path, &source, 480.);
+            let fresh = frame(fresh_handle, cx);
+            assert_eq!(
+                current.rails, fresh.rails,
+                "stale streamed rails in {path:?}"
+            );
+            assert_eq!(
+                current
+                    .text
+                    .iter()
+                    .map(|text| &text.text)
+                    .collect::<Vec<_>>(),
+                fresh.text.iter().map(|text| &text.text).collect::<Vec<_>>()
+            );
+            let end = if source.contains("tail") {
+                "tail"
+            } else if source.contains("next") {
+                "next"
+            } else {
+                "nested"
+            };
+            continuous(&current, "start", end);
+        }
+        handle
+            .update(cx, |view, _, cx| {
+                view.stream.finish();
+                view.sync();
+                cx.notify();
+            })
+            .unwrap();
+        let finished = frame(handle, cx);
+        let fresh_handle = open(cx, path, &source, 480.);
+        let fresh = frame(fresh_handle, cx);
+        assert_eq!(finished.rails, fresh.rails);
+        assert_eq!(finished.text.len(), fresh.text.len());
+    }
+}
+
+#[gpui_kit::test]
+fn mixed_quote_children_keep_content_layout_and_copy_separators(cx: &mut TestAppContext) {
+    for path in [Path::Selectable, Path::Thinking] {
+        for (source, expected) in [
+            (
+                "> 起点🙂\n>\n> - 项目甲\n> - 项目乙\n>\n> 终点é",
+                "起点🙂\n\n• 项目甲\n• 项目乙\n\n终点é",
+            ),
+            (
+                "> 起点🙂\n>\n> ```text\n> alpha\n> beta\n> ```\n>\n> ```text\n> gamma\n> ```\n>\n> 终点é",
+                "起点🙂\n\nalpha\nbeta\n\ngamma\n\n终点é",
+            ),
+        ] {
+            let handle = open(cx, path, source, 600.);
+            let painted = frame(handle, cx);
+            continuous(&painted, "起点", "终点");
+            assert_eq!(
+                text_bounds(&painted, "起点").left(),
+                text_bounds(&painted, "终点").left()
+            );
+            let first = painted.text.first().expect("first selection run");
+            let last = painted.text.last().expect("last selection run");
+            let from = first.layout.position_for_index(0).expect("selection start")
+                + point(px(0.1), px(3.));
+            let to = last
+                .layout
+                .position_for_index(last.text.len())
+                .expect("selection end")
+                + point(px(0.1), px(3.));
+            let copy = handle.update(cx, |view, _, _| view.copy.clone()).unwrap();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.drag(from, to, cx);
+                copy.copy_selected_text(cx);
+            })
+            .unwrap();
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some(expected),
+                "{path:?}"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn quote_links_request_original_destination(cx: &mut TestAppContext) {
+    for path in PATHS {
+        let url = format!("https://example.invalid/{path:?}?q=%E4%B8%AD");
+        let source = format!("> before\n>\n> [目标🙂]({url})\n>\n> after");
+        let handle = open(cx, path, &source, 600.);
+        let painted = frame(handle, cx);
+        let target = text_bounds(&painted, "目标");
+        handle
+            .update(cx, |_, window, cx| {
+                window.dispatch_event(
+                    gpui_kit::MouseDownEvent {
+                        position: target.center(),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: Default::default(),
+                        first_mouse: false,
+                    }
+                    .into(),
+                    cx,
+                );
+                window.dispatch_event(
+                    gpui_kit::MouseUpEvent {
+                        position: target.center(),
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: Default::default(),
+                    }
+                    .into(),
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_millis(501));
+        cx.run_until_parked();
+        assert_eq!(cx.opened_url().as_deref(), Some(url.as_str()));
+    }
+}
+
+#[gpui_kit::test]
+fn thinking_rails_survive_offscreen_first_paragraph_and_gap_only_mask(cx: &mut TestAppContext) {
+    let source = format!(
+        "> {}\n>\n> later\n>\n> final",
+        "long paragraph words ".repeat(90)
+    );
+    let handle = open(cx, Path::Thinking, &source, 300.);
+    let full = frame(handle, cx);
+    let later = text_bounds(&full, "later");
+    let x = outer_x(&full);
+    let offset = f32::from(later.top()) - 4.;
+    assert!(offset > 2. * Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT);
+    handle
+        .update(cx, |view, _, cx| {
+            view.offset = offset;
+            view.height = 2.;
+            cx.notify();
+        })
+        .unwrap();
+    let gap = frame(handle, cx);
+    assert!(gap.text.is_empty(), "gap-only mask should not paint text");
+    covered(&gap, x, 0., 2.);
+    handle
+        .update(cx, |view, _, cx| {
+            view.offset = f32::from(later.top());
+            view.height = 90.;
+            cx.notify();
+        })
+        .unwrap();
+    let scrolled = frame(handle, cx);
+    let later = text_bounds(&scrolled, "later");
+    assert!(f32::from(later.top()).abs() < 0.2);
+    covered(
+        &scrolled,
+        x,
+        0.,
+        f32::from(text_bounds(&scrolled, "final").bottom()).min(90.),
+    );
+    cx.simulate_window_resize(handle.into(), size(px(640.), px(12000.)));
+    handle
+        .update(cx, |view, _, cx| {
+            view.width = 640.;
+            view.offset = 0.;
+            view.height = 12000.;
+            cx.notify();
+        })
+        .unwrap();
+    let resized = frame(handle, cx);
+    continuous(&resized, "long paragraph", "final");
+    assert!(text_bounds(&resized, "final").bottom() < text_bounds(&full, "final").bottom());
+}
+
+#[gpui_kit::test]
+fn thinking_first_paragraph_is_beyond_culling_overscan(cx: &mut TestAppContext) {
+    let source = format!(
+        "> first-short\n>\n> {}\n>\n> end-marker",
+        "later 中文 words ".repeat(100)
+    );
+    let handle = open(cx, Path::Thinking, &source, 280.);
+    let full = frame(handle, cx);
+    let first = text_bounds(&full, "first-short");
+    let later_top = full
+        .text
+        .iter()
+        .filter(|run| run.text.contains("later"))
+        .map(|run| run.layout.bounds().top())
+        .min()
+        .unwrap();
+    let overscan = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    let offset = f32::from(later_top) + 4. * overscan;
+    assert!(f32::from(first.bottom()) - offset < -overscan - 1.);
+    handle
+        .update(cx, |view, _, cx| {
+            view.offset = offset;
+            view.height = 80.;
+            cx.notify();
+        })
+        .unwrap();
+    let clipped = frame(handle, cx);
+    assert!(
+        !clipped
+            .text
+            .iter()
+            .any(|run| run.text.contains("first-short"))
+    );
+    assert!(!clipped.text.is_empty());
+    covered(&clipped, outer_x(&full), 0., 80.);
+}
+
+#[gpui_kit::test]
+fn soft_wrapped_unicode_copy_has_only_source_paragraph_breaks(cx: &mut TestAppContext) {
+    let paragraph = "中文🙂 English é words 混排继续 "
+        .repeat(12)
+        .trim_end()
+        .to_owned();
+    let source = format!("> {paragraph}\n>\n> next终点");
+    let expected = format!("{paragraph}\n\nnext终点");
+    for path in [Path::Selectable, Path::Thinking] {
+        let handle = open(cx, path, &source, 200.);
+        for width in [200., 700., 200.] {
+            cx.simulate_window_resize(handle.into(), size(px(width), px(12000.)));
+            handle
+                .update(cx, |view, _, cx| {
+                    view.width = width;
+                    cx.notify();
+                })
+                .unwrap();
+            let painted = frame(handle, cx);
+            let first = painted.text.first().unwrap();
+            let last = painted.text.last().unwrap();
+            let first_y = first.layout.position_for_index(0).unwrap().y;
+            let wrapped_bottom = painted
+                .text
+                .iter()
+                .filter(|run| !run.text.contains("next终点"))
+                .map(|run| run.layout.bounds().bottom())
+                .max()
+                .unwrap();
+            assert!(
+                wrapped_bottom - first_y
+                    > px(2. * Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+            );
+            let from = first.layout.position_for_index(0).unwrap() + point(px(0.1), px(3.));
+            let to =
+                last.layout.position_for_index(last.text.len()).unwrap() + point(px(0.1), px(3.));
+            let copy = handle.update(cx, |view, _, _| view.copy.clone()).unwrap();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.drag(from, to, cx);
+                copy.copy_selected_text(cx);
+            })
+            .unwrap();
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some(expected.clone()),
+                "{path:?} width={width}"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn quoted_code_horizontal_scroll_moves_code_not_quote_or_paragraph(cx: &mut TestAppContext) {
+    let code = format!("HEAD{}TAIL", "abcdefghijklmnopqrstuvwxyz".repeat(14));
+    let source =
+        format!("> stationary-before\n>\n> ```text\n> {code}\n> ```\n>\n> stationary-after");
+    for path in PATHS {
+        let handle = open(cx, path, &source, 220.);
+        let before = frame(handle, cx);
+        let paragraph = text_bounds(&before, "stationary-before");
+        let code_run = before
+            .text
+            .iter()
+            .find(|run| run.text.contains("HEAD"))
+            .unwrap();
+        let head_x = code_run.layout.position_for_index(0).unwrap().x;
+        let tail_x = code_run
+            .layout
+            .position_for_index(code_run.text.find("TAIL").unwrap())
+            .unwrap()
+            .x;
+        assert!(tail_x > px(220.) + px(100.));
+        let position = point(px(110.), code_run.layout.bounds().center().y);
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.dispatch_event(
+                gpui_kit::MouseMoveEvent {
+                    position,
+                    ..Default::default()
+                }
+                .into(),
+                cx,
+            );
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(-(tail_x - px(160.)), px(0.))),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        let after = frame(handle, cx);
+        assert_eq!(text_bounds(&after, "stationary-before"), paragraph);
+        assert_eq!(after.rails, before.rails);
+        let tail = after
+            .text
+            .iter()
+            .find(|run| run.text.contains("TAIL"))
+            .unwrap();
+        let moved_tail = tail
+            .layout
+            .position_for_index(tail.text.find("TAIL").unwrap())
+            .unwrap()
+            .x;
+        assert!(moved_tail >= px(0.) && moved_tail < px(220.));
+        assert!(moved_tail < tail_x - px(100.));
+        if let Some(head) = after.text.iter().find(|run| run.text.contains("HEAD")) {
+            assert!(head.layout.position_for_index(0).unwrap().x < head_x - px(100.));
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn unquoted_body_and_code_have_no_quote_rails(cx: &mut TestAppContext) {
+    for path in PATHS {
+        let handle = open(
+            cx,
+            path,
+            "ordinary\n\n```text\ncode words stay on one physical line\n```",
+            240.,
+        );
+        let painted = frame(handle, cx);
+        assert!(painted.rails.is_empty());
+        let code = text_bounds(&painted, "code words");
+        assert!(code.size.height <= px(Typography::CODE * Typography::CODE_LINE_HEIGHT + 0.2));
+    }
+}
+
+fn all_text_bounds(frame: &Frame) -> Bounds<Pixels> {
+    frame
+        .text
+        .iter()
+        .map(|text| text.layout.bounds())
+        .reduce(|a, b| a.union(&b))
+        .expect("painted text")
+}
+
+struct ObservedText {
+    content: String,
+    text: StyledText,
+}
+
+pub(super) fn observed_text(content: String, text: StyledText) -> AnyElement {
+    ObservedText { content, text }.into_any_element()
+}
+
+impl IntoElement for ObservedText {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui_kit::Element for ObservedText {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<gpui_kit::ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        id: Option<&gpui_kit::GlobalElementId>,
+        inspector: Option<&gpui_kit::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui_kit::LayoutId, ()) {
+        self.text.request_layout(id, inspector, window, cx)
+    }
+    fn prepaint(
+        &mut self,
+        id: Option<&gpui_kit::GlobalElementId>,
+        inspector: Option<&gpui_kit::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.text
+            .prepaint(id, inspector, bounds, &mut (), window, cx);
+        observe_text(&self.content, self.text.layout(), window);
+    }
+    fn paint(
+        &mut self,
+        id: Option<&gpui_kit::GlobalElementId>,
+        inspector: Option<&gpui_kit::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.text
+            .paint(id, inspector, bounds, &mut (), &mut (), window, cx);
+    }
+}
+
+#[gpui_kit::test]
+fn sibling_quotes_in_one_stream_block_remain_distinct(cx: &mut TestAppContext) {
+    let paragraph = |text: &str| RenderNode::Paragraph {
+        spans: vec![Inline::Text(text.to_owned())],
+    };
+    let nodes = vec![RenderNode::BlockQuote {
+        children: vec![
+            paragraph("outer-first"),
+            RenderNode::BlockQuote {
+                children: vec![paragraph("left-sibling")],
+            },
+            RenderNode::BlockQuote {
+                children: vec![paragraph("right-sibling")],
+            },
+            paragraph("outer-last"),
+        ],
+    }];
+    for path in PATHS {
+        let handle = open(cx, path, "", 600.);
+        handle
+            .update(cx, |view, _, cx| {
+                view.nodes = Some(nodes.clone());
+                view.model.pending_lines =
+                    model::flatten_nodes(7, &nodes, model::BlockOrigin::Pending);
+                cx.notify();
+            })
+            .unwrap();
+        let painted = frame(handle, cx);
+        continuous(&painted, "outer-first", "outer-last");
+        let left = text_bounds(&painted, "left-sibling");
+        let right = text_bounds(&painted, "right-sibling");
+        assert!(right.top() > left.bottom());
+        let inner = outer_x(&painted) + 2. + Layout::MARKDOWN_CODE_PADDING;
+        covered(
+            &painted,
+            inner,
+            f32::from(left.top()),
+            f32::from(left.bottom()),
+        );
+        covered(
+            &painted,
+            inner,
+            f32::from(right.top()),
+            f32::from(right.bottom()),
+        );
+        absent(
+            &painted,
+            inner,
+            f32::from(left.bottom()) + 0.3,
+            f32::from(right.top()) - 0.3,
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn mixed_children_preserve_ordinary_layout(cx: &mut TestAppContext) {
+    for path in PATHS {
+        for source in [
+            "> before\n>\n> - item-one\n> - item-two\n>\n> after",
+            "> before\n>\n> ```text\n> code-one\n> code-two\n> ```\n>\n> after",
+        ] {
+            let handle = open(cx, path, source, 600.);
+            let painted = frame(handle, cx);
+            continuous(&painted, "before", "after");
+            let before = text_bounds(&painted, "before");
+            let after = text_bounds(&painted, "after");
+            assert_eq!(before.left(), after.left());
+            if source.contains("item-one") {
+                assert!(text_bounds(&painted, "item-one").left() > before.left());
+                assert!(painted.text.iter().any(|text| text.text.contains('•')));
+            } else {
+                let code = text_bounds(&painted, "code-one");
+                assert!(
+                    code.size.height <= px(Typography::CODE * Typography::CODE_LINE_HEIGHT + 0.2)
+                );
+            }
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn unicode_nested_selection_tracks_append_and_resize(cx: &mut TestAppContext) {
+    for path in [Path::Selectable, Path::Thinking] {
+        let handle = open(cx, path, "> 起点🙂\n>\n> > 内层é\n>\n> 终点中", 260.);
+        for width in [260., 640.] {
+            cx.simulate_window_resize(handle.into(), size(px(width), px(12000.)));
+            handle
+                .update(cx, |view, _, cx| {
+                    view.width = width;
+                    cx.notify();
+                })
+                .unwrap();
+            let painted = frame(handle, cx);
+            copy_between(handle, cx, &painted, "起点🙂", "终点中");
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some("起点🙂\n\n内层é\n\n终点中")
+            );
+        }
+        handle
+            .update(cx, |view, _, cx| {
+                let delta = "\n>\n> 增量Ω";
+                view.source.push_str(delta);
+                view.stream.append(delta);
+                view.sync();
+                cx.notify();
+            })
+            .unwrap();
+        let painted = frame(handle, cx);
+        copy_between(handle, cx, &painted, "内层é", "增量Ω");
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("内层é\n\n终点中\n\n增量Ω")
+        );
+    }
+}
+
+fn copy_between(
+    handle: WindowHandle<QuoteView>,
+    cx: &mut TestAppContext,
+    painted: &Frame,
+    first: &str,
+    last: &str,
+) {
+    let first = painted
+        .text
+        .iter()
+        .find(|text| text.text == first)
+        .expect("first text");
+    let last = painted
+        .text
+        .iter()
+        .find(|text| text.text == last)
+        .expect("last text");
+    let from = first.layout.position_for_index(0).unwrap() + point(px(0.1), px(3.));
+    let to = last.layout.position_for_index(last.text.len()).unwrap() + point(px(0.1), px(3.));
+    let copy = handle.update(cx, |view, _, _| view.copy.clone()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.drag(from, to, cx);
+        copy.copy_selected_text(cx);
+    })
+    .unwrap();
+}
