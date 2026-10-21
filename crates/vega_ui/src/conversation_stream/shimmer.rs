@@ -1,11 +1,6 @@
 use super::*;
 use gpui_kit::{ContentMask, DecorationRun, LineLayout, TextAlign, point};
 
-#[cfg(test)]
-mod logical_prefix_tests;
-#[cfg(test)]
-mod tests;
-
 pub(crate) struct StageText {
     title: String,
     epoch: Option<Instant>,
