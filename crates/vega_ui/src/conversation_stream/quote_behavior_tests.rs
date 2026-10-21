@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::gpui;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{Bounds, InputEvent, TestAppContext, TextLayout, WindowHandle, point, size};
 use std::{cell::RefCell, rc::Rc};
@@ -167,15 +166,15 @@ pub(crate) fn frame<V: Render + 'static>(
                         return None;
                     }
                     let clipped = quad.bounds.intersect(&quad.content_mask.bounds);
-                    let width = f32::from(quad.bounds.size.width) / scale;
+                    let width = quad.bounds.size.width.as_f32() / scale;
                     if clipped.is_empty() || (width - 2.).abs() > 0.1 {
                         return None;
                     }
                     Some(Rect {
-                        left: f32::from(clipped.left()) / scale,
-                        top: f32::from(clipped.top()) / scale,
-                        right: f32::from(clipped.right()) / scale,
-                        bottom: f32::from(clipped.bottom()) / scale,
+                        left: clipped.left().as_f32() / scale,
+                        top: clipped.top().as_f32() / scale,
+                        right: clipped.right().as_f32() / scale,
+                        bottom: clipped.bottom().as_f32() / scale,
                     })
                 })
                 .collect()
@@ -508,7 +507,7 @@ fn quote_links_request_original_destination(cx: &mut TestAppContext) {
                         modifiers: Default::default(),
                         first_mouse: false,
                     }
-                    .into(),
+                    .to_platform_input(),
                     cx,
                 );
                 window.dispatch_event(
@@ -518,7 +517,7 @@ fn quote_links_request_original_destination(cx: &mut TestAppContext) {
                         click_count: 1,
                         modifiers: Default::default(),
                     }
-                    .into(),
+                    .to_platform_input(),
                     cx,
                 );
             })
@@ -697,7 +696,7 @@ fn quoted_code_horizontal_scroll_moves_code_not_quote_or_paragraph(cx: &mut Test
                     position,
                     ..Default::default()
                 }
-                .into(),
+                .to_platform_input(),
                 cx,
             );
             window.dispatch_event(

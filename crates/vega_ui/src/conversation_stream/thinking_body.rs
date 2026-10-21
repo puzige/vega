@@ -1353,7 +1353,6 @@ pub(crate) fn quote_test_body(
 mod quote_lifecycle_tests {
     use super::*;
     use crate::conversation_stream::quote_behavior_tests::{frame, text_bounds};
-    use gpui_kit::gpui;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{TestAppContext, WindowHandle};
 
