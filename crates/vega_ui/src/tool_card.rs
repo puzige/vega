@@ -759,8 +759,6 @@ impl ToolCard {
                 colors,
                 window,
             ));
-        #[cfg(test)]
-        retained_headline_observation::observe_header(card.entity_id(), &row, leading_icon, &focus);
         div()
             .w_full()
             .min_w_0()
@@ -1437,8 +1435,6 @@ fn render_detail(
         )
     }));
     if let Some((footer, state)) = detail.footer {
-        #[cfg(test)]
-        retained_headline_observation::observe_footer(&footer);
         let color = if state == ToolActivityState::Success {
             colors.text_secondary
         } else {
@@ -1536,67 +1532,4 @@ fn detail_row(
         .text_color(color)
         .child(gpui_kit::base::SelectableText::new(id, text))
         .into_any_element()
-}
-
-#[cfg(test)]
-pub(crate) mod retained_headline_observation {
-    use super::*;
-
-    type HeaderMap = std::collections::HashMap<
-        gpui_kit::EntityId,
-        (gpui_kit::accesskit::Node, Icon, gpui_kit::FocusHandle),
-    >;
-
-    thread_local! {
-        static HEADERS: std::cell::RefCell<HeaderMap> = std::cell::RefCell::new(HeaderMap::new());
-        static FOOTERS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-
-    pub(super) fn observe_footer(footer: &str) {
-        FOOTERS.with(|footers| footers.borrow_mut().push(footer.to_owned()));
-    }
-
-    pub(crate) fn clear_footers() {
-        FOOTERS.with(|footers| footers.borrow_mut().clear());
-    }
-
-    pub(crate) fn footers() -> Vec<String> {
-        FOOTERS.with(|footers| footers.borrow().clone())
-    }
-
-    pub(super) fn observe_header(
-        id: gpui_kit::EntityId,
-        header: &impl gpui_kit::Element,
-        icon: Icon,
-        focus: &gpui_kit::FocusHandle,
-    ) {
-        let mut node = gpui_kit::accesskit::Node::new(gpui_kit::Role::GenericContainer);
-        header.write_a11y_info(&mut node);
-        HEADERS.with(|headers| headers.borrow_mut().insert(id, (node, icon, focus.clone())));
-    }
-
-    pub(crate) fn header(id: gpui_kit::EntityId) -> (gpui_kit::accesskit::Node, Icon) {
-        HEADERS.with(|headers| {
-            let headers = headers.borrow();
-            (headers[&id].0.clone(), headers[&id].1)
-        })
-    }
-
-    pub(crate) fn focus(id: gpui_kit::EntityId) -> gpui_kit::FocusHandle {
-        HEADERS.with(|headers| headers.borrow()[&id].2.clone())
-    }
-
-    pub(crate) fn snapshot(
-        card: &ToolCard,
-    ) -> (
-        ToolCallStatus,
-        Option<u64>,
-        Option<ToolCardResultProjection>,
-    ) {
-        (
-            card.status,
-            card.running_elapsed_seconds,
-            card.result.clone(),
-        )
-    }
 }

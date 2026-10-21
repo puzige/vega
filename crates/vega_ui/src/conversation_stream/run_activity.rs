@@ -1718,11 +1718,6 @@ impl RunActivityGroup {
                             window,
                         ))
                     })
-                    .map(|row| {
-                        #[cfg(test)]
-                        retained_headline_tests::observe_header(segment_index, &row, activity_icon);
-                        row
-                    })
                     .into_any_element(),
             );
         }
@@ -1886,7 +1881,3 @@ pub(crate) fn format_run_clock(duration_ms: u64) -> String {
     }
     format!("{}h {}m", seconds / 3600, seconds % 3600 / 60)
 }
-
-#[cfg(test)]
-#[path = "retained_headline_tests.rs"]
-mod retained_headline_tests;

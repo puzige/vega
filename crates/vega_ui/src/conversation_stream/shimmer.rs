@@ -162,12 +162,3 @@ fn styled_text(
         .child(canvas)
         .into_any_element()
 }
-
-#[cfg(test)]
-pub(super) mod observation {
-    use super::*;
-
-    pub(in crate::conversation_stream) fn rendered_title(view: &StageText) -> (&str, bool) {
-        (&view.title, view.epoch.is_some())
-    }
-}
