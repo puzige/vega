@@ -42,7 +42,7 @@
 
 1. 在 `shimmer.rs` 分离布局准备与按相位着色/绘制。固定文本与排版先以统一样式 shaping；动画绘制消费同一字形 ID、字体及位置，不再按逐字符颜色重新 shaping。
 2. 使用统一样式的 `Arc<LineLayout>`，相位着色只生成 `DecorationRun` 并交给 `LineLayout::paint`；布局准备可每帧调用既有缓存。按 GPUI 原有规则绘制基线、fallback glyph 与 emoji，不为测试新造公开接口或自定义 glyph painter。
-3. 省略仅由可用宽度与原始布局决定，必须保持 shaper 已给出的 cluster 边界，不额外承诺完整 Unicode extended grapheme 分割。必要时对显示候选请求统一样式布局并验证宽度；重复候选由 GPUI 缓存命中，动画相位不得影响 shaping 输入或显示候选。保留原有超过可用宽度 1px 才省略的容差（绘制仍受标签遮罩限制）；截断后扫光仍按原文全宽归一化。零/极窄宽度按 A3 不绘制。
+3. 省略仅由可用宽度与原始布局决定，必须保持 shaper 已给出的 cluster 边界，不额外承诺完整 Unicode extended grapheme 分割。必要时对显示候选请求统一样式布局并验证宽度；重复候选由 GPUI 缓存命中，动画相位不得影响 shaping 输入或显示候选。候选从原始几何对应的可用宽度附近起步，再测量并退让，不能对长标题从近全长逐字穷举而生成二次规模的候选布局。保留原有超过可用宽度 1px 才省略的容差（绘制仍受标签遮罩限制）；截断后扫光仍按原文全宽归一化。零/极窄宽度按 A3 不绘制。
 4. 可用宽度、文本及字体输入变化时重新准备布局；颜色和相位只影响绘制。保留完整原文 aria、原有 canvas 占位/最小宽度约束与两个入口的主题 token。
 5. 维持内容遮罩可见、窗口活跃、非 Reduce Motion 的动画门禁；空绘制无无意义请求。不新增后台任务或刷新范围。
 6. 仅在开发期间添加必要的本轮 Rust 测试/接线，不恢复历史测试集合，不扩大 production public API，不新增未批准依赖，不添加代码注释。
@@ -91,7 +91,9 @@
 - 测试补丁：`crates/vega_ui/src/conversation_stream/shimmer/tests.rs`，3 个普通 `#[test]`，197 行，SHA-256 `d903a8ad7daddc6d6f7c792b217afcae5b8e33a95f588b22cf63a49cce84a385`。生产模块只新增 `#[cfg(test)] mod tests;`，无生产行为改动、依赖或 workflow 改动。
 - 目标接口（均私有且测试先行时尚不存在）：`display_layout(text, full: Arc<LineLayout>, available, shape_fn) -> Option<(String, Arc<LineLayout>)>`；`frame_decorations(text, layout, original_width, phase, base, highlight, moving) -> Vec<DecorationRun>`；`should_animate(layout: Option<&LineLayout>, visible, active, reduce_motion) -> bool`。
 - 冻结测试：`moving_colors_preserve_mixed_text_geometry_and_utf8_spans`；`display_width_boundaries_shape_candidates_and_retreat_without_stale_output`；`empty_and_motion_gates_stop_colors_and_resume_on_the_fixed_layout`。颜色预期为独立数值，截断 shape fixture 是明确候选映射，不替代生产拟合选择。空态、glyphless、所有门禁组合及恢复包含在表中。
-- 已执行本地静态检查：`rustfmt --edition 2024 --check crates/vega_ui/src/conversation_stream/shimmer/tests.rs` 与 `git diff --check` 均退出码 0。没有编译/运行测试。当前待独立测试审查和 Actions 接口缺失 RED；尚无实现、GREEN 或视觉验收证据。
+- 已执行本地静态检查：`rustfmt --edition 2024 --check crates/vega_ui/src/conversation_stream/shimmer/tests.rs` 与 `git diff --check` 均退出码 0。没有编译/运行测试。测试补丁经独立审查批准；[先行提交 f59131f58fbb6cd675c87e2c8282cb4e951bf105](https://github.com/puzige/vega/commit/f59131f58fbb6cd675c87e2c8282cb4e951bf105) 已进入 [draft PR #524](https://github.com/puzige/vega/pull/524)。
+- 有效接口缺失 RED：[Actions 39533789268](https://github.com/puzige/vega/actions/runs/39533789268)，[Nextest job 119005580982](https://github.com/puzige/vega/actions/runs/39533789268/job/119005580982) 与 [Clippy job 119005581207](https://github.com/puzige/vega/actions/runs/39533789268/job/119005581207) 均仅报 `E0432`：测试第 1 行导入的 `display_layout`/`frame_decorations`/`should_animate` 不存在，`vega_ui` lib test 因 1 个前置错误退出 101。fmt、Python 步骤成功。行为断言尚未执行，发现/执行计数未取得；此证据不冒充原生抖动复现。
+- 在读取并确认上述 RED 后，才授权专职子 Agent 修改生产模块；测试源码/预期冻结不变。尚无 GREEN 或视觉验收证据。
 
 ## 6. 用户手测与回滚
 
