@@ -93,7 +93,18 @@
 - 冻结测试：`moving_colors_preserve_mixed_text_geometry_and_utf8_spans`；`display_width_boundaries_shape_candidates_and_retreat_without_stale_output`；`empty_and_motion_gates_stop_colors_and_resume_on_the_fixed_layout`。颜色预期为独立数值，截断 shape fixture 是明确候选映射，不替代生产拟合选择。空态、glyphless、所有门禁组合及恢复包含在表中。
 - 已执行本地静态检查：`rustfmt --edition 2024 --check crates/vega_ui/src/conversation_stream/shimmer/tests.rs` 与 `git diff --check` 均退出码 0。没有编译/运行测试。测试补丁经独立审查批准；[先行提交 f59131f58fbb6cd675c87e2c8282cb4e951bf105](https://github.com/puzige/vega/commit/f59131f58fbb6cd675c87e2c8282cb4e951bf105) 已进入 [draft PR #524](https://github.com/puzige/vega/pull/524)。
 - 有效接口缺失 RED：[Actions 39533789268](https://github.com/puzige/vega/actions/runs/39533789268)，[Nextest job 119005580982](https://github.com/puzige/vega/actions/runs/39533789268/job/119005580982) 与 [Clippy job 119005581207](https://github.com/puzige/vega/actions/runs/39533789268/job/119005581207) 均仅报 `E0432`：测试第 1 行导入的 `display_layout`/`frame_decorations`/`should_animate` 不存在，`vega_ui` lib test 因 1 个前置错误退出 101。fmt、Python 步骤成功。行为断言尚未执行，发现/执行计数未取得；此证据不冒充原生抖动复现。
-- 在读取并确认上述 RED 后，才授权专职子 Agent 修改生产模块；测试源码/预期冻结不变。尚无 GREEN 或视觉验收证据。
+- 在读取并确认上述 RED 后，才授权专职子 Agent 修改生产模块；测试源码/预期冻结不变。
+- 首次带同测试 GREEN：实现 `af28a3abca7a050ec15a11e495a03e20253b2ae7`，[Actions 39535699499](https://github.com/puzige/vega/actions/runs/39535699499) 的 Nextest 发现 3、执行 3、通过 3、跳过 0；fmt、全目标 Clippy、Python 5+15+14 与 required check 均成功。独立审查随后指出从近全长逐个枚举前缀会对长工具标题产生二次规模候选；该 GREEN 不是最终交付依据。
+- 性能修正 `27cfe7f2fc847b40b56e0a2455e88148529e1802` 以原始 glyph 的 `available − ellipsis.width` 宽度预算筛选候选，再测量并退让，不改冻结测试。同步 master `d2d07b86b315d5f793ae1e353a820a77dace26ae` 后为带测试 head `2de33192dc24b62d9e5cd979ce881379e0c1cfbe`；Shimmer 与测试文件相对修正版本逐字节一致，标题调用者的 #520 变更单独审查。
+- 集成基线带同测试 GREEN：[Actions 39537747298](https://github.com/puzige/vega/actions/runs/39537747298)，head `2de33192dc24b62d9e5cd979ce881379e0c1cfbe`；[Nextest 119018212133](https://github.com/puzige/vega/actions/runs/39537747298/job/119018212133) 原始输出为发现 3、执行 3、通过 3、跳过 0，冻结源码 blob `e6397a2d68fe954bd6938a07dd5238b03376cc56` 与原先行版本相同。Python 分别执行 5、15、14 个通过；[fmt/Clippy 119018212280](https://github.com/puzige/vega/actions/runs/39537747298/job/119018212280) 和 [required check 119019326492](https://github.com/puzige/vega/actions/runs/39537747298/job/119019326492) 成功。该结果仍不代替独立实现审查和删测后的最终空集门禁。
+- [PR 固定原始测试 patch](https://github.com/puzige/vega/pull/524#issuecomment-6307155459) 含完整测试源码和接线，已从评论读回并重算 SHA-256，与冻结哈希一致，不依赖任务分支、临时文件或 Actions artifact。原始 RED/各次 GREEN 的完整 SHA 与证据分别留存，不用 rebase 后提交追认 RED 时序。原生字体像素/系统集成尚待用户手测。
+
+### 5.1 第二轮：逻辑前缀与重排字形（实现修正前重新先测）
+
+- 首轮实现/测试已 GREEN，但独立审查在 `2de33192dc24b62d9e5cd979ce881379e0c1cfbe`（生产文件 SHA-256 `f9e602db5c7ecaceb5e6d21ceae2dbf9761edb8f1fad2c5160d44aba1082cd75`）发现新的失败边界：视觉重排的 glyph x 不能作为逻辑前缀宽度。以 1024 个等宽 RTL cluster、可用宽 10、省略号宽 1 为例，按 x 筛选会尝试约 1014–1023 cluster 的近全长前缀并退化为仅省略号，尽管 9 cluster 前缀加省略号可以放下。
+- 本轮停止生产修改，冻结新增验收：按逻辑顺序的完整 cluster 前缀准备实际测量候选，不依赖视觉 x 与逻辑 index 同序；上述 fixture 必须保留 9 cluster 与省略号、最终宽 10，并在最多 16 次 shape 请求内完成（包含省略号）。同时检查返回文本/布局及原始布局未变，调用数不单独作为通过证据。该上界为 1024 候选的二分搜索最多 11 次加省略号 1 次留出余量，拒绝逐前缀穷举；不承诺新增 bidi 着色或完整 grapheme 分割。
+- 新测试 `shimmer/logical_prefix_tests.rs::rtl_logical_prefix_fits_with_bounded_shaping`，81 行、1 个普通 Rust 测试，SHA-256 `55c36048ca7bec879bf1ffb118997d6832c6f523342f25acd78878d6d38fd734`；原三测试哈希保持不变。新测试实际调用既有 `display_layout`，只用外部 shape fixture 构造重排布局，不替代拟合选择。生产差异仅测试模块接线；本地 rustfmt 与 diff 静态检查退出 0，行为尚未执行。
+- 顺序：在上述现有实现基线上先添加独立测试模块，原 3 个冻结测试保持字节不变 → 非实现者审查 → Actions 行为断言 RED → 冻结新测试 → 专职子 Agent 修正逻辑候选搜索（预期使用有界二分、实际候选宽度验证，不再按视觉 x 过滤）→ 原测试及本轮测试一起 GREEN → 固定两轮证据后删测/最终门禁。不得把首轮 GREEN 追认为本边界已验证，尚未开始本边界修复。
 
 ## 6. 用户手测与回滚
 
