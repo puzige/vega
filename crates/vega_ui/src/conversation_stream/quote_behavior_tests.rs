@@ -186,6 +186,80 @@ pub(crate) fn frame<V: Render + 'static>(
     }
 }
 
+fn dispatch_pointer<V: Render + 'static>(
+    handle: WindowHandle<V>,
+    cx: &mut TestAppContext,
+    event: impl InputEvent,
+) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_event(event.to_platform_input(), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+pub(crate) fn drag_selection<V: Render + 'static>(
+    handle: WindowHandle<V>,
+    cx: &mut TestAppContext,
+    from: gpui_kit::Point<Pixels>,
+    to: gpui_kit::Point<Pixels>,
+) {
+    cx.update_window(handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.run_until_parked();
+    dispatch_pointer(
+        handle,
+        cx,
+        gpui_kit::MouseMoveEvent {
+            position: from,
+            pressed_button: None,
+            modifiers: Default::default(),
+        },
+    );
+    dispatch_pointer(
+        handle,
+        cx,
+        gpui_kit::MouseDownEvent {
+            position: from,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Default::default(),
+            first_mouse: false,
+        },
+    );
+    for step in 1..=8 {
+        let fraction = step as f32 / 8.;
+        dispatch_pointer(
+            handle,
+            cx,
+            gpui_kit::MouseMoveEvent {
+                position: point(
+                    from.x + (to.x - from.x) * fraction,
+                    from.y + (to.y - from.y) * fraction,
+                ),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Default::default(),
+            },
+        );
+    }
+    dispatch_pointer(
+        handle,
+        cx,
+        gpui_kit::MouseUpEvent {
+            position: to,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Default::default(),
+        },
+    );
+}
+
 pub(crate) fn text_bounds(frame: &Frame, needle: &str) -> Bounds<Pixels> {
     let matches: Vec<_> = frame
         .text
@@ -473,11 +547,8 @@ fn mixed_quote_children_keep_content_layout_and_copy_separators(cx: &mut TestApp
                 .expect("selection end")
                 + point(px(0.1), px(3.));
             let copy = handle.update(cx, |view, _, _| view.copy.clone()).unwrap();
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.drag(from, to, cx);
-                copy.copy_selected_text(cx);
-            })
-            .unwrap();
+            drag_selection(handle, cx, from, to);
+            cx.update(|cx| copy.copy_selected_text(cx));
             assert_eq!(
                 cx.read_from_clipboard()
                     .and_then(|item| item.text())
@@ -497,31 +568,39 @@ fn quote_links_request_original_destination(cx: &mut TestAppContext) {
         let handle = open(cx, path, &source, 600.);
         let painted = frame(handle, cx);
         let target = text_bounds(&painted, "目标");
-        handle
-            .update(cx, |_, window, cx| {
-                window.dispatch_event(
-                    gpui_kit::MouseDownEvent {
-                        position: target.center(),
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: Default::default(),
-                        first_mouse: false,
-                    }
-                    .to_platform_input(),
-                    cx,
-                );
-                window.dispatch_event(
-                    gpui_kit::MouseUpEvent {
-                        position: target.center(),
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: Default::default(),
-                    }
-                    .to_platform_input(),
-                    cx,
-                );
-            })
+        cx.update_window(handle.into(), |_, window, _| window.activate_window())
             .unwrap();
+        cx.run_until_parked();
+        dispatch_pointer(
+            handle,
+            cx,
+            gpui_kit::MouseMoveEvent {
+                position: target.center(),
+                ..Default::default()
+            },
+        );
+        dispatch_pointer(
+            handle,
+            cx,
+            gpui_kit::MouseDownEvent {
+                position: target.center(),
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: Default::default(),
+                first_mouse: false,
+            },
+        );
+        dispatch_pointer(
+            handle,
+            cx,
+            gpui_kit::MouseUpEvent {
+                position: target.center(),
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: Default::default(),
+            },
+        );
+        cx.run_until_parked();
         cx.executor().advance_clock(Duration::from_millis(501));
         cx.run_until_parked();
         assert_eq!(cx.opened_url().as_deref(), Some(url.as_str()));
@@ -654,11 +733,8 @@ fn soft_wrapped_unicode_copy_has_only_source_paragraph_breaks(cx: &mut TestAppCo
             let to =
                 last.layout.position_for_index(last.text.len()).unwrap() + point(px(0.1), px(3.));
             let copy = handle.update(cx, |view, _, _| view.copy.clone()).unwrap();
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.drag(from, to, cx);
-                copy.copy_selected_text(cx);
-            })
-            .unwrap();
+            drag_selection(handle, cx, from, to);
+            cx.update(|cx| copy.copy_selected_text(cx));
             assert_eq!(
                 cx.read_from_clipboard().and_then(|item| item.text()),
                 Some(expected.clone()),
@@ -723,6 +799,14 @@ fn quoted_code_horizontal_scroll_moves_code_not_quote_or_paragraph(cx: &mut Test
             .position_for_index(tail.text.find("TAIL").unwrap())
             .unwrap()
             .x;
+        eprintln!(
+            "quote scroll {path:?}: wheel_target={position:?}, delta_x={:?}, before_bounds={:?}, after_bounds={:?}, head_before={head_x:?}, tail_before={tail_x:?}, tail_after={moved_tail:?}, code_before={:?}, code_after={:?}",
+            -(tail_x - px(160.)),
+            code_run.layout.bounds(),
+            tail.layout.bounds(),
+            code_run.text,
+            tail.text,
+        );
         assert!(moved_tail >= px(0.) && moved_tail < px(220.));
         assert!(moved_tail < tail_x - px(100.));
         if let Some(head) = after.text.iter().find(|run| run.text.contains("HEAD")) {
@@ -959,9 +1043,6 @@ fn copy_between(
     let from = first.layout.position_for_index(0).unwrap() + point(px(0.1), px(3.));
     let to = last.layout.position_for_index(last.text.len()).unwrap() + point(px(0.1), px(3.));
     let copy = handle.update(cx, |view, _, _| view.copy.clone()).unwrap();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.drag(from, to, cx);
-        copy.copy_selected_text(cx);
-    })
-    .unwrap();
+    drag_selection(handle, cx, from, to);
+    cx.update(|cx| copy.copy_selected_text(cx));
 }

@@ -1352,8 +1352,7 @@ pub(crate) fn quote_test_body(
 #[cfg(test)]
 mod quote_lifecycle_tests {
     use super::*;
-    use crate::conversation_stream::quote_behavior_tests::{frame, text_bounds};
-    use gpui_kit::test::TestWindowExt;
+    use crate::conversation_stream::quote_behavior_tests::{drag_selection, frame, text_bounds};
     use gpui_kit::{TestAppContext, WindowHandle};
 
     fn settle(handle: WindowHandle<ThinkingBlock>, cx: &mut TestAppContext) {
@@ -1427,11 +1426,8 @@ mod quote_lifecycle_tests {
                 )
             })
             .unwrap();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.drag(from, to, cx);
-            copy.copy_selected_text(cx);
-        })
-        .unwrap();
+        drag_selection(handle, cx, from, to);
+        cx.update(|cx| copy.copy_selected_text(cx));
         let expected = Some("内层é mixed中\n\n终点Ω".to_owned());
         assert_eq!(
             cx.read_from_clipboard().and_then(|item| item.text()),
