@@ -483,7 +483,7 @@ fn result(status: ToolCallStatus, bash: bool, reused: bool) -> ToolResult {
         reused,
         exit_code: (bash && success).then_some(0),
         duration_ms: (bash && success).then_some(12),
-        truncated: success.then_some(false),
+        truncated: (success && !reused).then_some(false),
         invalid: None,
     }
 }
