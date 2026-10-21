@@ -1355,19 +1355,35 @@ mod quote_lifecycle_tests {
     use crate::conversation_stream::quote_behavior_tests::{drag_selection, frame, text_bounds};
     use gpui_kit::{TestAppContext, WindowHandle};
 
-    fn settle(handle: WindowHandle<ThinkingBlock>, cx: &mut TestAppContext) {
+    struct SelectionTestRoot {
+        card: gpui_kit::Entity<ThinkingBlock>,
+    }
+
+    impl Render for SelectionTestRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(gpui_kit::base::TextSelectionLayer)
+                .child(self.card.clone())
+        }
+    }
+
+    fn settle(
+        handle: WindowHandle<SelectionTestRoot>,
+        card: &gpui_kit::Entity<ThinkingBlock>,
+        cx: &mut TestAppContext,
+    ) {
         for _ in 0..6 {
             frame(handle, cx);
             cx.run_until_parked();
         }
-        handle
-            .update(cx, |card, _, _| {
+        cx.update(|cx| {
+            card.update(cx, |card, _| {
                 assert!(card.body.task.is_none());
                 assert_eq!(card.body.prepared_revision, card.source_revision);
                 assert_eq!(card.body.prepared_epoch, card.body.epoch);
                 assert!(card.body.prepared.is_some());
-            })
-            .unwrap();
+            });
+        });
     }
 
     #[gpui_kit::test]
@@ -1380,12 +1396,16 @@ mod quote_lifecycle_tests {
             cx.set_global(vega_theme::Theme::light());
         });
         let handle = cx.open_window(size(px(320.), px(900.)), |_, cx| {
-            let mut card = ThinkingBlock::new(cx);
-            card.append(source, false, usize::MAX);
-            card.set_expanded(true, cx);
-            card
+            let card = cx.new(|cx| {
+                let mut card = ThinkingBlock::new(cx);
+                card.append(source, false, usize::MAX);
+                card.set_expanded(true, cx);
+                card
+            });
+            SelectionTestRoot { card }
         });
-        settle(handle, cx);
+        let card = handle.update(cx, |root, _, _| root.card.clone()).unwrap();
+        settle(handle, &card, cx);
         let painted = frame(handle, cx);
         let first = painted
             .text
@@ -1402,28 +1422,30 @@ mod quote_lifecycle_tests {
         let start_source = source.find("内层é").unwrap();
         let end_source = source.len();
         let (copy, stale, epoch, revision, identity) = handle
-            .update(cx, |card, _, _| {
-                let prepared = card.body.prepared.as_ref().unwrap();
-                let start = prepared
-                    .rendered_position(&vega_markdown::SourcePosition {
-                        source: start_source..start_source,
-                        offset: 0,
-                    })
-                    .unwrap();
-                let end = prepared
-                    .rendered_position(&vega_markdown::SourcePosition {
-                        source: end_source..end_source,
-                        offset: 0,
-                    })
-                    .unwrap();
-                assert_eq!(&prepared.text[start..end], "内层é mixed中\n\n终点Ω");
-                (
-                    card.source_copy.clone(),
-                    prepared.as_ref().clone(),
-                    card.body.epoch,
-                    card.source_revision,
-                    card.source_identity,
-                )
+            .update(cx, |_, _, cx| {
+                card.update(cx, |card, _| {
+                    let prepared = card.body.prepared.as_ref().unwrap();
+                    let start = prepared
+                        .rendered_position(&vega_markdown::SourcePosition {
+                            source: start_source..start_source,
+                            offset: 0,
+                        })
+                        .unwrap();
+                    let end = prepared
+                        .rendered_position(&vega_markdown::SourcePosition {
+                            source: end_source..end_source,
+                            offset: 0,
+                        })
+                        .unwrap();
+                    assert_eq!(&prepared.text[start..end], "内层é mixed中\n\n终点Ω");
+                    (
+                        card.source_copy.clone(),
+                        prepared.as_ref().clone(),
+                        card.body.epoch,
+                        card.source_revision,
+                        card.source_identity,
+                    )
+                })
             })
             .unwrap();
         drag_selection(handle, cx, from, to);
@@ -1434,13 +1456,15 @@ mod quote_lifecycle_tests {
             expected
         );
         handle
-            .update(cx, |card, _, cx| {
-                card.append("\n>\n> 新增🙂 tail", false, usize::MAX);
-                cx.notify();
+            .update(cx, |_, _, cx| {
+                card.update(cx, |card, cx| {
+                    card.append("\n>\n> 新增🙂 tail", false, usize::MAX);
+                    cx.notify();
+                })
             })
             .unwrap();
         cx.simulate_window_resize(handle.into(), size(px(620.), px(900.)));
-        settle(handle, cx);
+        settle(handle, &card, cx);
         cx.update(|cx| {
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                 "clipboard-sentinel".to_owned(),
@@ -1454,10 +1478,12 @@ mod quote_lifecycle_tests {
         let current = frame(handle, cx);
         assert!(!text_bounds(&current, "新增").is_empty());
         handle
-            .update(cx, |card, _, cx| {
-                assert_ne!(epoch, card.body.epoch);
-                assert!(!card.complete_preparation(stale, revision, epoch, identity, cx));
-                assert_eq!(card.body.prepared_revision, card.source_revision);
+            .update(cx, |_, _, cx| {
+                card.update(cx, |card, cx| {
+                    assert_ne!(epoch, card.body.epoch);
+                    assert!(!card.complete_preparation(stale, revision, epoch, identity, cx));
+                    assert_eq!(card.body.prepared_revision, card.source_revision);
+                })
             })
             .unwrap();
         let after = frame(handle, cx);
@@ -1473,7 +1499,7 @@ mod quote_lifecycle_tests {
             expected
         );
         cx.simulate_window_resize(handle.into(), size(px(260.), px(900.)));
-        settle(handle, cx);
+        settle(handle, &card, cx);
         cx.update(|cx| {
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                 "clipboard-sentinel".to_owned(),

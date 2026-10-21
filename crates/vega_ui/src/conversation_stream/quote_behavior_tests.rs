@@ -103,6 +103,7 @@ impl Render for QuoteView {
             .overflow_hidden()
             .text_size(px(Typography::CONVERSATION))
             .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+            .child(gpui_kit::base::TextSelectionLayer)
             .child(body)
     }
 }
