@@ -2,6 +2,8 @@
 
 ## 状态、授权与基线
 
+2026-10-22 真实研究暴露的原生提示兼容缺口、最新本地研究授权、精确上游补丁应用和付费前零调用检查，见[原生提示兼容修复](vega-harness-native-prompt-surface.md)。以下 v2 实现与验证记录保留其当时状态；后续研究结果以该修复规格和 Issue 进度为准。
+
 - Issue：[#522](https://github.com/puzige/vega/issues/522)。规格 v2，2026-10-21；原生worker与controller已实现并取得独立审查、带冻结测试的云端GREEN。独立删测、最终head门禁与合并以[PR530](https://github.com/puzige/vega/pull/530)后续记录为准；真实实验未运行。
 - 用户明确要求接手本卡；实验模型固定为 `gpt-6.1-sol`，思考强度 `max`。真实调用费用上限、可用原生 API route/凭据与隔离实验环境未明确，不启动付费模型搜索或跑批。
 - 已 fetch 并从最新 `origin/master` 建立 `feat/522-harness-pilot`；生产未改基线 `9be433a147b5aad9848e32e30afaa9fa23c5915e`。主 Agent 已完成基线同步，子 Agent 不再就此询问用户。

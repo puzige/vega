@@ -1,0 +1,89 @@
+diff --git a/harness2/core/prompts.py b/harness2/core/prompts.py
+index 9ccacf23b64ac15b06a1939f26224960f56d757c..7b777a693b10f7330230f7ac66717d928fa5360a 100644
+--- a/harness2/core/prompts.py
++++ b/harness2/core/prompts.py
+@@ -644,6 +644,84 @@ def _build_surface_texts() -> dict[str, _SurfaceText]:
+             ),
+             tts_surface=oc_tts,
+         ),
++        "vega_native": _SurfaceText(
++            surface_md="""\
++# WHAT YOU CAN CHANGE: VEGA NATIVE
++
++The solver is Vega's native Runtime. The authoring channel edits guidance; it does not replace
++that Runtime, install another solver, or grant tools and permissions.
++
++Follow this mission's designated harness directory. Only `strategy.md` may change in this
++study. It is the native harness's always-on guidance. Preserve these three approved files at
++their existing paths with their complete bytes unchanged:
++- `skills/record-format/SKILL.md`
++- `skills/table-total/SKILL.md`
++- `skills/status-line/SKILL.md`
++Do not add, delete, rename, or modify skills or any other harness file. No scripts, skill
++helpers, plugins, hooks, subagents, configuration, dependencies, or executable components.
++
++An approved skill is on demand. Tell the solver to invoke its advertised native `load_skill`
++tool when that skill's trigger applies, and to use its result. Mentioning a skill or claiming
++to have used it is not activation. The authoring channel does not invoke the solver's tools.
++
++The Runtime's actual tool schemas, permission decisions, fixed policy, model, and limits are
++authoritative. Guidance cannot create a capability, change an output boundary, or approve a
++skill. Use only the declared native tools and requested artifacts. A tool error needs a bounded
++fallback consistent with those schemas and permissions; repeated attempts are not progress.
++
++Read the evidence before editing. Keep guidance general to the task family; never copy task
++answers or source-specific facts into durable strategy. Keep a correct baseline unchanged when
++the evidence does not justify an edit. Follow the mission's requested output and notes format.
++""",
++            inv="""\
++# YOUR DIMENSION: INV -- how the native agent WORKS
++
++Improve procedure, source reading, native tool use, bounded recovery, and completion. Identify
++the earliest concrete divergence in the trajectories and express the smallest supported fix
++in `strategy.md`. Distinguish bad arguments, permission denial, missing capability, timeout,
++and unread output before prescribing one bounded fallback and stop condition.
++
++Use the Runtime's advertised schemas. When a frozen approved skill fits, guide native
++`load_skill` activation; do not alter its body or introduce code, hooks, configuration, or
++subagents. Reserve room for every requested artifact and reopen the {deliverable} to check its
++values and shape. A successful write call alone does not prove delivery.
++
++{levers}
++
++Do not add domain facts or professional rules. The parallel DOM candidate owns those.
++""",
++            dom="""\
++# YOUR DIMENSION: DOM -- what the task-family practitioner KNOWS
++
++Improve the rules the solver can apply to the {deliverable}: controlling sources, required
++fields and structure, source conflicts, consistency checks, and uncertainty. Cite observed
++omissions or divergences. Put only reusable guidance in `strategy.md`; retrieve task-specific
++facts from the supplied sources instead of memorizing them.
++
++The three approved skill bodies are frozen. Reuse them through the native solver's advertised
++`load_skill` tool when their triggers fit; do not add or revise skills, scripts, hooks,
++subagents, configuration, or tools. Keep guidance relevant to later tasks in this {domain}.
++Never invent an authority, identifier, reference, or unsupported source fact.
++
++{levers}
++
++Do not redesign reading order, retries, tool mechanics, or budgets. The parallel INV candidate
++owns procedure. Keep the native Runtime's schemas, policy, permissions, model, and limits fixed.
++""",
++            tts_surface="""\
++# EDITABLE HARNESS SURFACE: VEGA NATIVE
++
++In the mission-designated harness tree, edit only `strategy.md`. Preserve the exact paths and
++complete bytes of `skills/record-format/SKILL.md`, `skills/table-total/SKILL.md`, and
++`skills/status-line/SKILL.md`. Do not add, delete, rename, or change any skill or other file.
++No scripts, helpers, plugins, hooks, subagents, configuration, or executable components.
++
++The solver is Vega's native Runtime. Approved skills are activated through its advertised
++`load_skill` tool; mentioning them is not activation. Guidance cannot change the Runtime's
++actual schemas, permissions, fixed policy, model, limits, or declared output boundaries.
++Follow the mission's output and notes format, and keep the baseline when no edit is supported.
++""",
++        ),
+         "codex": _SurfaceText(
+             surface_md=_SURFACE_CODEX,
+             inv=_INV_TEMPLATE.replace(

@@ -1,10 +1,12 @@
 import argparse
 from contextlib import contextmanager
+import hashlib
 import importlib
 import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -13,6 +15,12 @@ import threading
 from types import SimpleNamespace
 
 import harness_pilot as pilot
+
+
+PROMPT_SURFACE_PATH = 'harness2/core/prompts.py'
+PROMPT_SURFACE_PATCH_PATH = (Path(__file__).resolve().parents[1]
+                             / 'research/harness2/patches/vega-native-prompt-surface.diff')
+PROMPT_SURFACE_PATCH_SHA256 = '8db17ca7306a24cd954062bba4609a2551d495a195eecf58a3f4c8e1cff70d6d'
 
 
 @contextmanager
@@ -35,19 +43,68 @@ def _git(root, *arguments):
     return result.stdout.strip()
 
 
-def _load_upstream(root):
+def _git_bytes(root, *arguments):
+    result = subprocess.run(['git', '-C', str(root), *arguments],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode:
+        raise ValueError('Cannot verify the pinned Harness2 source')
+    return result.stdout
+
+
+def _verify_upstream_source(root):
     root = Path(root).resolve()
     if (root / '.env').exists():
         raise ValueError('Use an isolated Harness2 checkout without an auto-loaded .env file')
-    if _git(root, 'rev-parse', 'HEAD') != pilot.UPSTREAM_REVISION:
+    if _git_bytes(root, 'rev-parse', 'HEAD').strip() != pilot.UPSTREAM_REVISION.encode():
         raise ValueError('Harness2 checkout must match the fixed upstream revision')
-    if _git(root, 'status', '--porcelain', '--untracked-files=normal', '--', 'harness2', 'pyproject.toml'):
-        raise ValueError('Harness2 source must be unchanged, including untracked importable files')
+    patch_path = Path(PROMPT_SURFACE_PATCH_PATH)
+    if patch_path.is_symlink() or not patch_path.is_file():
+        raise ValueError('The approved native prompt compatibility patch is unavailable')
+    patch = patch_path.read_bytes()
+    if hashlib.sha256(patch).hexdigest() != PROMPT_SURFACE_PATCH_SHA256:
+        raise ValueError('The approved native prompt compatibility patch changed')
+    path = re.escape(PROMPT_SURFACE_PATH.encode())
+    header = re.match(rb'\Adiff --git a/' + path + rb' b/' + path
+                      + rb'\nindex ([0-9a-f]{40})\.\.([0-9a-f]{40}) 100644\n--- a/'
+                      + path + rb'\n\+\+\+ b/' + path + rb'\n', patch)
+    if header is None or patch.count(b'diff --git ') != 1:
+        raise ValueError('The approved native prompt patch must change one regular source file')
+    if _git_bytes(root, 'diff', '--cached', '--no-ext-diff', '--no-textconv', '--binary', '--full-index'):
+        raise ValueError('Harness2 staged changes are not allowed')
+    status = _git_bytes(root, 'status', '--porcelain=v1', '--untracked-files=all', '-z', '--', '.', ':!dependencies')
+    if status != b' M ' + PROMPT_SURFACE_PATH.encode() + b'\0':
+        raise ValueError('Install only the approved native prompt patch; other source changes are not allowed')
+    difference = _git_bytes(root, 'diff', '--no-ext-diff', '--no-textconv', '--no-color',
+                            '--binary', '--full-index', '--unified=3', '--diff-algorithm=myers',
+                            '--src-prefix=a/', '--dst-prefix=b/', 'HEAD', '--')
+    if difference != patch:
+        raise ValueError('Harness2 differs from the exact approved native prompt patch')
+    if _git_bytes(root, 'rev-parse', 'HEAD:' + PROMPT_SURFACE_PATH).strip() != header[1]:
+        raise ValueError('The native prompt patch does not match its pinned base source')
+    source_path = root / PROMPT_SURFACE_PATH
+    if source_path.is_symlink() or not source_path.is_file() or not source_path.resolve().is_relative_to(root):
+        raise ValueError('The patched native prompt source is not a regular checkout file')
+    source = source_path.read_bytes()
+    blob = hashlib.sha1(b'blob ' + str(len(source)).encode() + b'\0' + source).hexdigest()
+    if blob.encode() != header[2]:
+        raise ValueError('The actual native prompt source bytes do not match the approved patch')
+    return {'upstream_revision': pilot.UPSTREAM_REVISION,
+            'prompt_surface_patch_sha256': hashlib.sha256(patch).hexdigest(),
+            'prompt_surface_source_sha256': hashlib.sha256(source).hexdigest()}
+
+
+def _load_upstream(root):
+    root = Path(root).resolve()
+    source_identity = _verify_upstream_source(root)
     existing = sys.modules.get('harness2')
     if existing is not None:
         source = getattr(existing, '__file__', None)
         if source is None or not Path(source).resolve().is_relative_to(root):
             raise ValueError('A different Harness2 installation is already imported')
+    cached_prompts = sys.modules.get('harness2.core.prompts')
+    if (cached_prompts is not None
+            and getattr(cached_prompts, '_vega_upstream_source', None) != source_identity):
+        raise ValueError('Cached native prompt code has no matching source identity; use a fresh process')
     sys.path.insert(0, str(root))
     previous = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
@@ -58,16 +115,23 @@ def _load_upstream(root):
         proposer = importlib.import_module('harness2.core.proposer')
         schedule = importlib.import_module('harness2.core.schedule')
         opencode = importlib.import_module('harness2.substrate.opencode')
+        prompts = importlib.import_module('harness2.core.prompts')
     except ImportError as error:
         raise ValueError('Install the pinned upstream dependencies in the isolated research environment') from error
     finally:
         sys.dont_write_bytecode = previous
         sys.path.remove(str(root))
-    for module in (spec, tree, base, proposer, schedule, opencode):
+    for module in (spec, tree, base, proposer, schedule, opencode, prompts):
         if not Path(module.__file__).resolve().is_relative_to(root):
             raise ValueError('Harness2 imported source outside the pinned checkout')
+    if Path(prompts.__file__).resolve() != root / PROMPT_SURFACE_PATH:
+        raise ValueError('Native prompts did not load from the approved source file')
+    if _verify_upstream_source(root) != source_identity:
+        raise ValueError('Native prompt source changed during import')
+    prompts._vega_upstream_source = dict(source_identity)
     return SimpleNamespace(spec=spec, tree=tree, base=base, proposer=proposer,
-                           schedule=schedule, opencode=opencode)
+                           schedule=schedule, opencode=opencode, prompts=prompts,
+                           upstream_source=source_identity)
 
 
 def _opencode_profile(path, channel_model):
@@ -243,9 +307,28 @@ class VegaAdapter:
         pilot._harness_payload(tree, self.trusted_skill_approvals)
 
     def preflight(self):
+        source_identity = _verify_upstream_source(self.upstream_root)
+        if getattr(self.api, 'upstream_source', source_identity) != source_identity:
+            raise ValueError('Native prompt source differs from the loaded framework')
+        cached = sys.modules.get('harness2.core.prompts')
+        if (cached is not None and (cached is not self.api.prompts
+                or getattr(cached, '_vega_upstream_source', None) != source_identity)):
+            raise ValueError('Cached native prompt code differs from its verified source')
+        try:
+            prompts = self.api.prompts
+            profile = self.spec.prompts
+            surface = self.substrate.surface()
+            rendered = {
+                'INV': prompts.propose(profile, 'INV', surface, k=1, index=1),
+                'DOM': prompts.propose(profile, 'DOM', surface, k=1, index=1),
+                'aggregate': prompts.aggregate(profile, surface, k=1, index=1),
+                'compose': prompts.compose_round(profile, surface, t=1, k=1),
+            }
+            if any(not isinstance(text, str) or not text.strip() for text in rendered.values()):
+                raise ValueError('A native prompt template returned no text')
+        except Exception as error:
+            raise ValueError('Native prompt template preflight failed: ' + type(error).__name__) from error
         self.api.opencode.OpencodeSubstrate().preflight()
-        if _git(self.upstream_root, 'rev-parse', 'HEAD') != pilot.UPSTREAM_REVISION:
-            raise ValueError('Pinned upstream changed')
         if pilot.digest(pilot._read_json(self.opencode_config)) != pilot.digest(self.opencode_document):
             raise ValueError('OpenCode configuration changed')
         task = next(iter(self._tasks.values()))
@@ -256,7 +339,7 @@ class VegaAdapter:
             raise ValueError('Configure explicit native pricing before a paid optimization search')
         return {'status': 'ready', 'transport_verified': False, 'live_calls': 0,
                 'provider_identity': pilot.launcher_identity(self.launcher),
-                'upstream_revision': pilot.UPSTREAM_REVISION,
+                **source_identity, 'native_prompt_templates_sha256': pilot.digest(rendered),
                 'opencode_config_sha256': pilot.digest(self.opencode_document)}
 
     def execute(self, task_id, harness_dir, run_id, *, timeout=None):
@@ -490,7 +573,10 @@ def optimize(adapter, *, library_root, budget_usd, isolation_label,
         state = root / 'search_identity.json'
         if state.exists():
             raise ValueError('Search namespace already exists; inspect its fixed evidence instead of replaying it')
-        identity = {'schema_version': 1, 'upstream_revision': pilot.UPSTREAM_REVISION,
+        identity = {'schema_version': 1, 'upstream_revision': preflight['upstream_revision'],
+                    'prompt_surface_patch_sha256': preflight['prompt_surface_patch_sha256'],
+                    'prompt_surface_source_sha256': preflight['prompt_surface_source_sha256'],
+                    'native_prompt_templates_sha256': preflight['native_prompt_templates_sha256'],
                     'catalog_sha256': pilot.digest(adapter.catalog),
                     'baseline_sha256': pilot.digest(pilot.load_harness(adapter.base_harness())),
                     'model': adapter.model, 'limits': adapter.limits,
