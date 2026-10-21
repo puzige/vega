@@ -1,0 +1,1 @@
+Read the task and relevant input before changing files. Use only the declared output paths. Verify the requested artifact content before finishing. For decision records use record-format; for count tables use table-total; for status lines use status-line. Treat unavailable or malformed inputs as task data and follow the stated recovery rule.
