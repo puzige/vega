@@ -31,3 +31,25 @@
 5. 明确应用已批准的补丁，在本地真实固定上游完成零模型检查，再用新 output namespace 重启优化集搜索。原失败研究目录不覆盖；冻结候选后再执行留出配对，不自动采用到日常 Vega。
 
 回滚为撤销本兼容修复和研究环境中的精确补丁；原 App、用户配置、CPA 服务与数据库均无迁移。
+
+## 先行验证记录
+
+- 测试提交 `8125c8934e908fee59eb83cac828a0bb32f37b3a`，5项Python测试已于生产未改时完成并独立审查；冻结SHA256 `99904883886b27b5a257d8784de887e1ea899e3eecdd37f449bb7964508624ab`。
+- [有效RED39630336171](https://github.com/puzige/vega/actions/runs/39630336171)：主组40项执行，5个模板异常子场景 `ValueError not raised`；另9个缺helper接口错误、1个旧来源准入拒绝，原始输出 failures=5/errors=10。其它5+15项Python通过，Format/Clippy成功，Rust步骤跳过而未发现/执行。原始来源与patch固定于[PR531](https://github.com/puzige/vega/pull/531)；此后最小实现不得改冻结测试。
+
+## 研究环境应用与真实零模型检查
+
+固定上游 HEAD 后，显式应用本仓库补丁；不在加载器内自动安装、改源码或修改私有注册表：
+
+```sh
+git -C /isolated/harness2 apply --check /path/to/vega/research/harness2/patches/vega-native-prompt-surface.diff
+git -C /isolated/harness2 apply /path/to/vega/research/harness2/patches/vega-native-prompt-surface.diff
+```
+
+之后使用全新 Python 3.12/3.13 进程。补丁 SHA256 为 `8db17ca7306a24cd954062bba4609a2551d495a195eecf58a3f4c8e1cff70d6d`，补丁后实际源 SHA256 为 `b6f7389ed27dd10f3d921d6d672ae186aef46562b68fb56c78ba5de6f0f017f8`。上游原始 SHA 与变更来源分别记录，不把批准补丁伪称未修改源。
+
+安装器生成的 `dependencies/` 只从未跟踪 status 清点中排除，由 OpenCode/Bun 各自的固定版本、官方兼容补丁与执行文件身份单独核验；全仓 staged 与精确 tracked diff 检查仍保留，其它未知源码不放行。
+
+2026-10-22 本地真实研究检查已通过：全新进程、无模型凭据，实际固定上游和批准补丁下调用真实 bridge preflight，INV/DOM/aggregate/compose 四模板均完成构造，长度分别为 7245/7356/5486/4044 字符；模板集 SHA256 `c804c01367d301ebc6c548e791464a7bcae804afdfaed9a9995cc568c26095b5`。原生 worker 仅结构性 preflight，live_calls=0、transport_verified=false，不创建 study runs 目录，约299毫秒；这不是新的模型效果或传输验证。
+
+补丁和实现已由非实现 Agent 独立静态审查；五项先行测试及旧 controller/测试字节未改。完整同测试 CI GREEN 仍须按 PR531 的最终 head 记录核实，真实优化与留出收益仍待研究结果。
