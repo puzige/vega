@@ -14,7 +14,7 @@ enum Class {}
     not(any(target_os = "macos", target_os = "ios")),
     link(name = "BlocksRuntime", kind = "dylib")
 )]
-extern {
+extern "C" {
     static _NSConcreteStackBlock: [*mut c_void; 32];
 
     fn _Block_copy(block: *const c_void) -> *mut c_void;
@@ -29,7 +29,7 @@ macro_rules! block_args_impl {
     ($($a:ident : $t:ident),*) => (
         impl<$($t),*> BlockArguments for ($($t,)*) {
             unsafe fn call_block<R>(self, block: *mut Block<Self, R>) -> R {
-                let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+                let invoke: unsafe extern "C" fn(*mut Block<Self, R> $(, $t)*) -> R = {
                     let base = block as *mut BlockBase<Self, R>;
                     mem::transmute((*base).invoke)
                 };
@@ -59,7 +59,7 @@ struct BlockBase<A, R> {
     isa: *const Class,
     flags: c_int,
     _reserved: c_int,
-    invoke: unsafe extern fn(*mut Block<A, R>, ...) -> R,
+    invoke: unsafe extern "C" fn(*mut Block<A, R>, ...) -> R,
 }
 
 #[repr(C)]
@@ -132,7 +132,7 @@ macro_rules! concrete_block_impl {
             type Ret = R;
 
             fn into_concrete_block(self) -> ConcreteBlock<($($t,)*), R, X> {
-                unsafe extern fn $f<$($t,)* R, X>(
+                unsafe extern "C" fn $f<$($t,)* R, X>(
                         block_ptr: *mut ConcreteBlock<($($t,)*), R, X>
                         $(, $a: $t)*) -> R
                         where X: Fn($($t,)*) -> R {
@@ -140,7 +140,7 @@ macro_rules! concrete_block_impl {
                     (block.closure)($($a),*)
                 }
 
-                let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+                let f: unsafe extern "C" fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
                 unsafe {
                     ConcreteBlock::with_invoke(mem::transmute(f), self)
                 }
@@ -181,7 +181,7 @@ where
 }
 
 impl<A, R, F> ConcreteBlock<A, R, F> {
-    unsafe fn with_invoke(invoke: unsafe extern fn(*mut Self, ...) -> R, closure: F) -> Self {
+    unsafe fn with_invoke(invoke: unsafe extern "C" fn(*mut Self, ...) -> R, closure: F) -> Self {
         ConcreteBlock {
             base: BlockBase {
                 isa: ptr::addr_of!(_NSConcreteStackBlock).cast(),
@@ -234,18 +234,18 @@ impl<A, R, F> DerefMut for ConcreteBlock<A, R, F> {
     }
 }
 
-unsafe extern fn block_context_dispose<B>(block: &mut B) {
+unsafe extern "C" fn block_context_dispose<B>(block: &mut B) {
     ptr::read(block);
 }
 
-unsafe extern fn block_context_copy<B>(_dst: &mut B, _src: &B) {}
+unsafe extern "C" fn block_context_copy<B>(_dst: &mut B, _src: &B) {}
 
 #[repr(C)]
 struct BlockDescriptor<B> {
     _reserved: c_ulong,
     block_size: c_ulong,
-    copy_helper: unsafe extern fn(&mut B, &B),
-    dispose_helper: unsafe extern fn(&mut B),
+    copy_helper: unsafe extern "C" fn(&mut B, &B),
+    dispose_helper: unsafe extern "C" fn(&mut B),
 }
 
 impl<B> BlockDescriptor<B> {

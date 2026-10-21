@@ -15,15 +15,15 @@ production or development dependencies.
 - Release commit: `47178790cfc9d4a8b092051d8b413b78bd31254a` (`Bumped to version 0.1.6.`).
 - Original source: <https://github.com/SSheldon/rust-block/blob/47178790cfc9d4a8b092051d8b413b78bd31254a/src/lib.rs>.
 - Original `src/lib.rs` SHA-256: `eb31678adf63b53109d9b94eba23699fd5f9ebfdb950f6e1a57ad51bb6a146fa`.
+- Vendored production `src/lib.rs` SHA-256: `f7c2001a86b40340fcc82b18fbb624d6ab0295956f3178256c0cd83619d0f67d`.
 
 The cached archive was checksum-verified before copying. Its source matches
 the release commit byte-for-byte. No upstream release newer than `0.1.6` was
 available when this correction was selected.
 
-## Production correction
+## Production corrections
 
-Only two production expressions differ after normalizing comments and
-formatting:
+Two FFI corrections replace the invalid source representation:
 
 1. Declare `_NSConcreteStackBlock` as `[*mut c_void; 32]`, not as the
    uninhabited private `Class` enum.
@@ -31,8 +31,17 @@ formatting:
    the same symbol address without constructing an uninhabited reference.
 
 The representation follows
-[LLVM BlocksRuntime's native declaration](https://github.com/llvm/llvm-project/blob/main/compiler-rt/lib/BlocksRuntime/data.c):
+[LLVM BlocksRuntime's native declaration](https://github.com/llvm/llvm-project/blob/b8665226ec21e500dd210a39b8ca6c99dd7f4f51/compiler-rt/lib/BlocksRuntime/data.c#L33):
 `void * _NSConcreteStackBlock[32] = { 0 };`.
+
+Separately, every upstream implicit `extern` is spelled `extern "C"`,
+including the foreign block, function-pointer types, and macro-generated
+callbacks. This preserves the existing implicit C calling convention.
+[Initial cloud run 39529303170](https://github.com/puzige/vega/actions/runs/39529303170)
+on `80a863f65b684352148ffba93f9a61c2816e3bea` exposed 46 `missing_abi`
+warnings per compilation at ten source sites. The explicit spelling corrects
+those evidence-backed deprecations without changing behavior or suppressing
+diagnostics.
 
 The private pointer-marker type, public API, callback signatures, block
 layout, allocation, copying, disposal, target-specific library links, and
@@ -52,9 +61,8 @@ This is not an unmodified redistribution of the complete archive:
 - Omit upstream manifest exclusions for absent CI scripts and iOS test
   material. Keep only the production library target, with doctests disabled.
 - Apply whitespace formatting and optional trailing commas without changing
-  production tokens beyond the two corrections above. Preserve implicit
-  `extern` ABIs using rustfmt's `force_explicit_abi=false` option rather than
-  introducing unrelated legacy warning fixes.
+  production tokens beyond the two FFI corrections and explicit C ABI spelling
+  above. Default rustfmt formatting is used.
 
 The complete vendored file inventory is `Cargo.toml`, `src/lib.rs`,
 `README.md`, and `LICENSE-MIT`. It contains no test target, fixture, helper,
@@ -85,12 +93,15 @@ was not captured: the diagnostic-only workflow change could not be pushed
 because the OAuth credential lacks GitHub `workflow` scope. The workflow is
 unchanged, and no permission workaround is attempted.
 
-Fixed-source compilation, linking, and absence of the target diagnostic
-remain for cloud PR verification. Require active resolution to this copy,
-explicit `block v0.1.6 (.../vendor/block)` compilation evidence or matching
-source fingerprints, and inspection of complete Clippy and Nextest logs.
-A green gate or missing summary banner alone is not proof: path dependencies
-can have different diagnostic handling. The native detailed-report limitation
-remains explicit. Ordinary warnings from upstream implicit `extern` ABIs may
-become visible for the local path package; do not suppress them or make
-speculative cleanups without cloud evidence.
+The initial cloud run linked above passed all jobs. Both Clippy and Nextest
+explicitly compiled or checked `block v0.1.6 (.../vendor/block)`; their
+complete logs contained no target future-incompatibility diagnostic, but did
+contain the implicit-ABI warnings described above.
+
+This explicit-ABI revision still requires independent review and the full
+unchanged cloud gate on its exact head. Require active resolution to this
+copy, explicit vendored-source compilation evidence or matching source
+fingerprints, and complete Clippy and Nextest logs with no vendored compiler
+warnings or target future-incompatibility diagnostic. A green gate or missing
+summary banner alone is not proof: path dependencies can have different
+diagnostic handling. The native detailed-report limitation remains explicit.
