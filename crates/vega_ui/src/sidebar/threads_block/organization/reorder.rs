@@ -316,7 +316,8 @@ impl ThreadsBlock {
         let drag_item = item.clone();
         let hover_item = item.clone();
         let pressed_item = item.clone();
-        row.relative()
+        let row = row
+            .relative()
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
                 if event.pressed_button.is_none() {
                     if this.organization.as_ref().is_some_and(|org| org.pending) {
@@ -390,7 +391,9 @@ impl ThreadsBlock {
                 .top_0()
                 .left_0()
                 .size_full(),
-            )
-            .into_any_element()
+            );
+        #[cfg(test)]
+        let row = gpui_kit::test::TestSupportExt::test_support(row);
+        row.into_any_element()
     }
 }

@@ -1,3 +1,8 @@
+#[cfg(test)]
+mod project_removal_boundaries_tests;
+#[cfg(test)]
+mod project_removal_tests;
+
 use vega_store::Store;
 use vega_store::codex_tasks as store_codex_tasks;
 use vega_store::projects as store_projects;
