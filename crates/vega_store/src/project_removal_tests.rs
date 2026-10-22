@@ -209,7 +209,8 @@ fn fixture(schema_31: bool) -> Fixture {
                 .unchecked_transaction()
                 .expect("legacy migration transaction");
             tx.execute_batch(sql).expect("apply legacy migration");
-            tx.pragma_update(None, "user_version", index + 1)
+            let version = u32::try_from(index + 1).expect("legacy version fits u32");
+            tx.pragma_update(None, "user_version", version)
                 .expect("record legacy version");
             tx.commit().expect("commit legacy migration");
             if index == 4 {
@@ -267,13 +268,14 @@ fn fixture(schema_31: bool) -> Fixture {
 fn assert_removal_preserves_history(fixture: &Fixture) {
     let conn = fixture.store.conn();
     let mut expected = database_rows(conn);
-    let project_column: usize = conn
+    let project_column: i64 = conn
         .query_row(
             "SELECT cid FROM pragma_table_info('threads') WHERE name = 'project_id'",
             [],
             |row| row.get(0),
         )
         .expect("find nullable binding column");
+    let project_column = usize::try_from(project_column).expect("binding column fits usize");
     for row in expected.get_mut("threads").expect("threads observation") {
         if row[project_column] == Value::Text(fixture.removed.id.clone()) {
             row[project_column] = Value::Null;
