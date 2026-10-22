@@ -339,7 +339,7 @@ impl ArtifactCard {
             self.focus_subscriptions
                 .push(cx.on_focus_in(focus, window, |_, _, cx| cx.notify()));
             self.focus_subscriptions
-                .push(cx.on_focus_out(focus, window, |this, window, cx| {
+                .push(cx.on_focus_out(focus, window, |this, _, window, cx| {
                     if !this
                         .compact_focus
                         .iter()
@@ -962,8 +962,8 @@ pub(crate) mod tests {
     use super::observation::*;
     use gpui_kit::test::{ElementSnapshot, TestSupportExt, TestWindowExt};
     use gpui_kit::{
-        Bounds, Hsla, Pixels, Render, TestAppContext, WindowBounds, WindowHandle, WindowOptions,
-        size,
+        Bounds, Hsla, InputEvent, Pixels, Render, TestAppContext, WindowBounds, WindowHandle,
+        WindowOptions, size,
     };
     use vega_conversation::history::{AssistantStatus, HistoryEntry, HistoryPage};
     use vega_conversation::types::{

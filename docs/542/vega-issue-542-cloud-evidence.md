@@ -122,4 +122,46 @@ The initial whole-suffix selector above is sensitive to a newly necessary test-o
 
 Controller/projection whole-suffix hashes also remain unchanged. The observer module, Cargo manifests/lock, temporary fixtures/support, and upstream Composer/selection observation wiring have no delta. No test initializer exception was needed; no tests, data, assertions, or expectations were changed.
 
-Next gate: independently review the pinned implementation and validate the same frozen tests in existing draft-PR Actions. No GREEN, test deletion, ready PR, merge, installation, or manual acceptance is claimed.
+## First implementation validation — compile failure, not GREEN
+
+- Associated implementation head: `7acb4bc225eb83184a3f7436b2afca3b7ddd2a97`.
+- Run: <https://github.com/puzige/vega/actions/runs/39839237766>, created `2026-10-22T19:20:39Z`, completed with failure.
+- Actual Clippy checkout: synthetic PR merge `503b9249df39528782a50c6bace3592bf8ba4628`.
+- Clippy: <https://github.com/puzige/vega/actions/runs/39839237766/job/120035567118>.
+- Nextest: <https://github.com/puzige/vega/actions/runs/39839237766/job/120035567720>.
+- Required aggregator: <https://github.com/puzige/vega/actions/runs/39839237766/job/120037591389>.
+
+The parent inspected the full failed-step diagnostics before choosing a repair. Format and Python release-script steps succeeded. Both Rust jobs stopped during compilation; no behavior assertion executed and runtime discovery/execution/pass/fail/ignore/skip counts were not obtained.
+
+### Responsible layers
+
+1. **Production API defect** at `artifact_card.rs:342`: `Context::on_focus_out` requires a four-argument callback, including `FocusOutEvent`, while the implementation supplied three arguments.
+2. **Previously masked harness import defect** at `artifact_card.rs:1003,1031,1042`: the frozen pointer-event helpers call `to_platform_input`, but the `gpui_kit::InputEvent` trait is not in scope. The implementation did not change these helpers. The earlier minimum-interface RED stopped before this compilation stage and was not proof of a clean harness.
+
+Original diagnostic excerpts:
+
+```text
+error[E0593]: closure is expected to take 4 arguments, but it takes 3 arguments
+   --> crates/vega_ui/src/artifact_card.rs:342:26
+342 | .push(cx.on_focus_out(focus, window, |this, window, cx| {
+    |          ^^^^^^^^^^^^                ------------------ takes 3 arguments
+    |          expected closure that takes 4 arguments
+
+error[E0599]: no method named `to_platform_input` found for struct `gpui_kit::MouseMoveEvent` in the current scope
+    --> crates/vega_ui/src/artifact_card.rs:1003:14
+help: trait `InputEvent` which provides `to_platform_input` is implemented but not in scope; perhaps you want to import it
+```
+
+MouseDownEvent and MouseUpEvent report the same missing trait import. The locked GPUI `on_focus_out` signature is `FnMut(&mut T, FocusOutEvent, &mut Window, &mut Context<T>)`; its `InputEvent` trait defines `to_platform_input` for these event types.
+
+A separate nonwriter reviewer approved the ignored focus-event callback parameter and missing `InputEvent` import before editing. The original implementation writer then applied exactly these two corrections and stopped writes. The callback body, event simulation, fixtures, durations, expectations, assertions, and acceptance are unchanged. Parent reproduced the scoped binary-diff SHA-256 `96ff1050cdb489cc93a29bfe825b6fd4dcb2d4f15c9e7f1e6eac2255dc1f828e` and confirmed whole-workspace fmt and diff checks. The import-only harness correction is explicitly distinguished from product behavior; it is not a new behavior test or a valid behavior RED.
+
+## Independent implementation finding — new boundary cycle required
+
+The nonwriter implementation review of `7acb4bc225eb83184a3f7436b2afca3b7ddd2a97` returned changes required: the callback compile defect above and a separate reconciliation/deduplication defect. `ArtifactGroup.files` caches the initial escaped label, but reconciliation can update the actual projection label. Capturing `a.txt`, reconciling its rename to `b.txt`, then capturing another edit of `b.txt` in the same turn can append a second row because the first remains keyed by `a.txt`, although it displays `b.txt`.
+
+The parent confirmed the responsible paths: real reconciliation assigns `next_label` in the artifact service; controller metadata delivery applies it; the group observer only synchronizes errors while capture matches the stale cached key. This violates same-file/latest-capability aggregation, rather than representing a runner or observation failure.
+
+This rename/reconcile boundary is absent from the frozen 22 tests. The original cycle is therefore paused under execution-guide §7.2: preserve all original assertions and source evidence, record an additive boundary-cycle specification against the existing implementation, author and independently review a focused observable regression while the deduplication implementation remains unchanged, obtain valid Actions RED, then make the minimal deduplication correction and require all original tests plus the new boundary test GREEN. No deduplication fix or retrospective proving test is authorized before that new RED. No product choice or safety contract is relaxed.
+
+The API/import repair is an independently reviewed prerequisite that lets the test environment compile far enough to evaluate the new boundary; it does not implement the deduplication fix. No GREEN, test deletion, ready PR, merge, installation, or manual acceptance is claimed.
