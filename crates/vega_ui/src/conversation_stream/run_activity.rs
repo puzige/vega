@@ -1169,6 +1169,11 @@ impl RunActivityGroup {
         self.collapsed_sticky.take()
     }
 
+    #[cfg(feature = "question-test-support")]
+    pub(crate) fn question_test_label(&self) -> String {
+        self.label()
+    }
+
     fn label(&self) -> String {
         let duration = self.execution_duration_ms.or_else(|| {
             self.started_at

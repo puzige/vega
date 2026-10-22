@@ -37,6 +37,8 @@ mod notifications;
 mod pending_messages;
 mod pricing;
 mod privacy;
+#[cfg(test)]
+mod question_wait_tests;
 mod reasoning;
 mod render;
 mod scroll_state;
@@ -95,6 +97,8 @@ impl ModelSelectionRefresh {
 }
 
 pub(crate) struct VegaWindow {
+    #[cfg(test)]
+    question_test_config: Option<PathBuf>,
     pub(crate) composer_prediction_config_generation: u64,
     pub(crate) composer_prediction: Option<composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
@@ -279,6 +283,10 @@ impl VegaWindow {
         })
         .detach();
         let mut window = Self {
+            #[cfg(test)]
+            question_test_config: cx
+                .try_global::<question_wait_tests::QuestionTestShell>()
+                .map(|shell| shell.0.clone()),
             composer_prediction_config_generation: 0,
             composer_prediction: None,
             updater: crate::updater::Updater::default(),
@@ -335,6 +343,13 @@ impl VegaWindow {
             model_catalog_generation: 0,
             deferred_model_refresh: None,
         };
+        #[cfg(test)]
+        if cx
+            .try_global::<question_wait_tests::QuestionTestShell>()
+            .is_some()
+        {
+            return window;
+        }
         window.start_pricing_load(cx);
         window.start_updater(cx);
         window

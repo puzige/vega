@@ -14,7 +14,17 @@ struct NotificationTargets {
 
 impl Global for NotificationTargets {}
 
+#[cfg(test)]
+pub(crate) struct QuestionNotificationUnavailable;
+
+#[cfg(test)]
+impl Global for QuestionNotificationUnavailable {}
+
 pub(crate) fn init(cx: &mut App) {
+    #[cfg(test)]
+    if cx.try_global::<QuestionNotificationUnavailable>().is_some() {
+        return;
+    }
     if cx
         .try_global::<NotificationTargets>()
         .is_some_and(|state| state.identity_initialized)
