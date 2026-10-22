@@ -15,6 +15,9 @@ mod prepare;
 mod probe;
 mod progress;
 
+#[cfg(test)]
+mod preparation_session_tests;
+
 pub use components::ManagedComponents;
 pub use control::{ComputerUseControl, ControlPhase, ControlSnapshot};
 pub use diagnostics::ExecutorFailure;

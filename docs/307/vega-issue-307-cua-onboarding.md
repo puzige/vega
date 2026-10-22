@@ -4,6 +4,20 @@
 
 本规格冻结 #307 的第一轮范围。用户 2026-10-22 裁决：采用悬浮卡片形态（方案 B）；浏览器扩展流程不在本轮；**卡片跟随系统设置窗口移动**（2026-10-22 二次裁决，取代“先不跟随”）。
 
+第二阶段恢复检查点：同步基线 `92f281e5a5a56230fa4e4a8a8cf1ab6f20e9670b`；测试计划见 [phase2 TEST-FIRST](vega-issue-307-phase2-test-plan.md)。本次修订纠正 R12 阴影符号，限定 F7/F12/R19 的源码证据边界，并在 R3a 记录新的先测后修澄清；不把阶段一空集门禁视为完整功能交付。
+
+## 最新范围裁决（优先于下文旧轮次条款）
+
+用户在恢复阶段选择“本轮只做引导与权限状态”。依据锁定驱动的 [集成阻碍证据](vega-issue-307-phase2-driver-blocker.md)，本轮范围调整如下，旧条款仅在不冲突时继续适用：
+
+- 保留跟随式悬浮卡片、真实 `.app` 拖拽、组件与两项 TCC 状态、分别打开系统设置、手动重新检测，以及运行结束后持续可见的准备入口；浏览器仍不在范围内。
+- 所有准备检查固定 `prompt:false, probe_direct_capture:false`，复用同一嵌入式会话。点击权限动作只打开对应系统设置，不调用 prompt true，不新增原生权限或实际抓取桥接。取代旧 R7 与阶段一 UserInitiated 的集成用法；模型预检不变。
+- 实际抓取显示“未验证”，不得把 Granted 静态开关等同于 desktop ready。R3a 的未检测/失败区分继续有效。真实直采就绪及更新后实际抓取验证延后，不纳入本轮 A2/A3 完成声明。
+- 本轮不承诺全部就绪后自动完成或自动撤卡，取代旧 R18/R19 中自动撤除部分。权限状态更新后用户可关闭卡片；关闭不改变权限或能力开关。跟随与探测均在关闭时停止，拒绝过期回调。
+- “返回任务”不等同于“已验证可操控”：回到原会话由用户重新发起任务，仍走既有目标授权、新观察和失败处理；不得自动恢复旧动作、复用旧观察。取代旧 R21 的 Ready 门槛与 A3 的完整准备承诺。
+- 运行时互斥与会话回收、缺失/未知/忙碌分别呈现、错误可重试、R10–R17 的跟随/冻结/拖拽/键盘要求及 R20 持续入口继续有效。管理员验证框不得遮挡仍为手测要求，不因取消自动完成而删除。
+- 本次是明确验收变化：重开阶段二 TEST-FIRST，先冻结缩小范围的断言并取得云端有效 RED，再实现。旧计划中的非提示直采、自动 Ready/撤除测试不再属于本轮，不以删测换绿；这些测试尚未编写或执行。
+
 ## 1. 问题与已确认根因
 
 正式构建在 TCC 开关显示 on 的情况下仍可能在首次 `ComputerObserve` 预检失败，运行约 8 秒后中断，主界面只剩“已中断 / 含已拒绝操作”，错误文本埋在可折叠工具结果里，没有持续可见的下一步入口。
@@ -37,11 +51,11 @@ F5. GPUI 0.3.4 已内建原生外部文件拖拽：`on_drag` + `external_drag_pa
 
 F6. 拖拽结束回调只记录 `operation` 到 debug 日志，不向应用暴露“是否被接受”。因此卡片不得以“落点被接受”作为成功判据。
 
-F7. `WindowKind::Floating` → `NSPanel` + `NSFloatingWindowLevel(3)`（`gpui-pre-macos/src/window.rs:949,1129`）。该层级低于系统设置的授权验证框，符合“不遮挡管理员验证”的要求；`WindowKind::PopUp` 硬编码 level 101（`:1159`），高于验证框，不得用于本卡片。GPUI 无窗口移动 API（`PlatformWindow` 只有 `bounds/resize/window_bounds/start_window_move`）、无隐藏红绿灯 API、无设置 `NSWindowCollectionBehavior` 的 API；`titlebar: None` 仍是 `NSTitledWindowMask` + full-size content view。
+F7. `WindowKind::Floating` → `NSPanel` + `NSFloatingWindowLevel(3)`（`gpui-pre-macos/src/window.rs:949,1129`）。该层级本身不能证明“不遮挡管理员验证”，实际叠放必须手测；`WindowKind::PopUp` 硬编码 level 101（`:1159`），高于验证框，不得用于本卡片。GPUI 无窗口移动 API（`PlatformWindow` 只有 `bounds/resize/window_bounds/start_window_move`）、无隐藏红绿灯 API、无设置 `NSWindowCollectionBehavior` 的 API；`titlebar: None` 仍是 `NSTitledWindowMask` + full-size content view。
 
 F11. 拖拽一旦开始，GPUI 会在指针移出 viewport 时把拖拽交给平台（`hand_active_drag_to_platform` 取走 `active_drag`，`gpui-pre/src/window.rs:5381-5405`、`app.rs:2550`），此后 `App::has_active_drag()` 为 false，且 `FileDropEvent::Ended` 不暴露给元素监听。因此“拖拽进行中”只能由 `on_drag` 的构造回调在发起瞬间置位，无法从 GPUI 状态可靠推断结束。
 
-F12. 卡片自有的 `NSPanel` 无公开访问器：`Window::window_handle()` 只给 NSView 指针（需 `raw-window-handle` 直接依赖），`[NSApp windows]` 可按标题枚举。GPUI 仅在创建时按 `TitlebarOptions.title` 调用一次 `setTitle:`，之后不覆写；`setTitleVisibility:` 隐藏绘制但不影响 `title` 值。
+F12. 卡片自有的 `NSPanel` 无公开访问器：`Window::window_handle()` 只给 NSView 指针（需 `raw-window-handle` 直接依赖），`[NSApp windows]` 可按标题枚举。GPUI 创建时按 `TitlebarOptions.title` 设置标题，之后仍提供 `set_window_title`；本卡调用方必须维持唯一标记不被覆写；`setTitleVisibility:` 隐藏绘制但不影响 `title` 值。
 
 F13. 移动与层级所需的 objc 调用（`setFrameOrigin:`、`setStyleMask:`、`setLevel:`、`setCollectionBehavior:`）在本仓已有零依赖先例：`crates/vega/src/window/image_preview/native/macos.rs` 用裸 `objc_msgSend` + `#[link(name = "objc")]` + `#[link(name = "AppKit", kind = "framework")]`，不引入任何 crate 依赖。
 
@@ -67,6 +81,8 @@ R1. 准备状态由四个互相独立的事实组成，禁止合并为单一布�
 R2. `Unknown` 只用于探测本身失败（传输、协议、超时）。探测失败不得写成 `Denied`，`Denied` 也不得写成 `Unknown`。
 
 R3. 屏幕录制为 `Granted` 但直采状态不是 `Ready` 时，必须表达为独立状态“开关已开启但当前构建实际抓取未就绪”，并与“未授权”区分。这是本卡的核心判据，不得折叠。
+
+R3a. 第二阶段验收澄清（实现前冻结）：`NotChecked` 表示尚未验证，不能声称实际抓取失败或直接要求重新授权；下一步为“重新检测”。`NotReady(reason)` 才是已探测但未就绪的事实，保留具体原因和恢复动作。二者均不得显示就绪。此前阶段一未覆盖该区分，本次重新先测后修，不以阶段一 GREEN 追认。
 
 R4. 目标授权（本次窗口/标签）不进入准备状态，继续由既有 `ComputerUseControl` 生命周期表达。
 
@@ -99,7 +115,7 @@ R12. 定位计算必须是可独立验证的纯函数：输入为设置窗口 fr
 - 两种情形均 clamp 到 `[visible.x - CARD_SHADOW_PADDING, visible.max_x() + CARD_SHADOW_PADDING - card.width]` 与 `[visible.y - CARD_SHADOW_PADDING, visible.max_y() + CARD_SHADOW_PADDING - card.height]`
 - `CARD_SHADOW_PADDING = 24`（卡片阴影预留边距）、`CARD_INSET = 18`（距窗口右下角内缩）
 
-不变量：卡片可见边界（原点加尺寸再加阴影边距）应落在 `settings.max_x() - CARD_INSET` 与 `settings.max_y() - CARD_INSET` 上，未被 clamp 时必须精确成立。
+不变量：卡片可见边界（原点加尺寸再减阴影边距）应落在 `settings.max_x() - CARD_INSET` 与 `settings.max_y() - CARD_INSET` 上，未被 clamp 时必须精确成立。
 
 R12a. 跟随：卡片可见期间按约 150ms 的节奏重读系统设置窗口 frame，并在位置变化超过 1pt 时把卡片移到新位置，使用无动画的 `setFrameOrigin:`，避免逐帧动画叠加成漂移。不得以固定屏幕角落代替读取失败时的上一次有效位置；读到 frame 后即恢复跟随。
 
@@ -121,7 +137,7 @@ R17. 卡片提供“重新检测”；辅助功能与屏幕录制分别提供“
 
 R18. 全部必需项就绪后卡片显示完成态并自动撤除；用户可随时关闭。关闭卡片不改变任何已授予权限，也不改变能力开关。
 
-R19. 卡片不得盖住系统随后弹出的授权验证框：卡片位置取右下角内侧、层级固定为 3（F7），且在探测到就绪后立即撤除。系统设置随后弹出的管理员验证框是同进程的另一个 layer 0 窗口，因此跟随取“面积最大”的窗口（F9），不得按窗口顺序取最前。
+R19. 卡片不得盖住系统随后弹出的授权验证框：卡片位置取右下角内侧、层级固定为 3（F7），且在探测到就绪后立即撤除。跟随取同进程 layer 0 候选中“面积最大”的窗口（F9），不得按窗口顺序取最前；这只是目标识别策略，不证明验证框的层级或可见性。R19 的实际叠放仍需用户手测，未验证前不得宣称已满足。
 
 ### 4.4 会话侧回到准备
 
