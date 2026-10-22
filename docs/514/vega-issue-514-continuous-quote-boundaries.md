@@ -2,7 +2,7 @@
 
 ## 状态与基线
 
-- Issue：[#514](https://github.com/puzige/vega/issues/514)，复用 Draft [PR #529](https://github.com/puzige/vega/pull/529)。方案 v4（2026-10-22）：原引用边界与列表标记实现已存在；v3 针对解析边界补开 TEST-FIRST 并纠正无头字体观察，v4 记录独立审查新发现的列表内引用缩进边界，另开先测后修周期，不追认已完成实现。
+- Issue：[#514](https://github.com/puzige/vega/issues/514)，复用 Draft [PR #529](https://github.com/puzige/vega/pull/529)。方案 v5（2026-10-22）：原引用边界与列表标记实现已存在；v3 针对解析边界补开 TEST-FIRST 并纠正无头字体观察，v4 记录列表内引用缩进边界，v5 记录较宽列表标记后的 dedented 顶层围栏；两项独立审查新发现均先测后修，不追认已完成实现。
 - 初始基线：`e542175a726f3ab074d9e9fe63bd5f0383804b90`；分支 `feat/514-continuous-quotes`。本轮生产未改基线为 `7ec15f2c44269d7e068e853ed797f651668dc019`，保留公开 head `ae1888267fd8b05db1c388c01ed80bfc40643a1b`，并 merge 同步主库 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`，不重写历史。
 - 主 Agent 负责规格、协调、审查与集成；专职子 Agent 写测试及实现。遵守[执行总纲](../vega-exec-guide.md)、[测试生命周期](../vega-rust-test-delivery-lifecycle.md)和[设计守则](../vega-design-guidelines.md)。本地不运行 Vega、编译或测试。
 - 用户补充截图显示单段长引用自然换行、左侧竖线连续，作为单段回归参考，不作为多段落已通过的证据。
@@ -113,7 +113,7 @@
 
 独立实现审查于 2026-10-22T08:02:37Z 报告新边界：在 `- item\n\n  > quote one\n  >\n  > quote two` 中，引用位于列表项内部。当前模型只记录 quote identity 与行的 list depth，丢失两种容器的祖先顺序。`render_rows::markdown_blocks` 先把列表 inset 加在正文 body，`quote_blocks` 却在 body 外绘制 rail；Thinking 文字 inset 包含 list depth，而 rail x 仅依赖 quote depth。相对文本列，文字仍在 x=38px，rail 从旧路径的 x=24px 移到 x=0px。主 Agent 已读回固定 `ea64ee4dc3cb682d67c84bf2963cf83c79acd59d` 与 master 的相关分支，确认这是不同于 mdstream 围栏的产品 UI 回归；尚无本轮几何执行证据。
 
-该新边界暂停最终交付，不改 v3 冻结的 24 项，不在 mdstream 补丁中夹带 UI 修复。以 UI 生产等同 `ea64ee4dc3cb682d67c84bf2963cf83c79acd59d` 的实现前状态编写新测试，独立审查、云端有效 RED 后才修；待 v3 同一测试 GREEN 后分开记录 v4 周期。
+该新边界暂停最终交付，不改 v3 冻结的 24 项，不在 mdstream 补丁中夹带 UI 修复。以 UI 生产等同 `ea64ee4dc3cb682d67c84bf2963cf83c79acd59d` 的实现前状态编写新测试，独立审查、云端有效 RED 后才修；v3 的未闭合波浪围栏 pending 断言仍未 GREEN；为避免盲修后再发现同类边界，可在当前 `27b88c2e9934a01aa912ed95fc26b6ec3fd3470a` 基线上先编写 v4/v5 新测试，与原24项共同执行并分别确认目标 RED。v4/v5 各自先测后修，不把已存在 v3 失败当作其 RED；全体同一冻结集 GREEN 前不得删测。
 
 ### 先行验收与算术
 
@@ -133,3 +133,27 @@
 1. 在投影保存每个 quote 容器创建时已有的列表祖先 inset/深度，身份、quote depth 与 list depth 保持独立；不能在渲染时用任意后代行的 list 状态反推 quote owner 的位置。
 2. 普通/可选择 quote container 以相对父 quote 的列表祖先增量定位 rail，正文只消费一次列表 inset，避免双重缩进；Thinking 以相同 owner 原点画 rail，宽度/锚点消费者保持一致。不重构所有 Markdown 容器、不全量 reparse。
 3. 新冻结几何测试与原24项同一云端 GREEN、独立实现审查后再进入证据固定/删测/最终门禁；新 cycle 源码/RED/实现/GREEN 与 v3 分列，不复用 v3 RED 冒充本边界证据。
+
+## 独立追加周期：较宽列表标记后的顶层围栏（v5，生产未改）
+
+### 新证据、验收与区分度
+
+独立 mdstream 实现审查于 2026-10-22T08:20:45Z 报告 `27b88c2e9934a01aa912ed95fc26b6ec3fd3470a` 中的 guard 使用 `is_list_continuation`，该现有 heuristic 只看至少两空格，不依据当前列表 marker 宽度。`10. item\n  ```text\n# literal\n  ```\n` 的 `10. ` marker 占4列，两格围栏已退出列表，必须开始顶层代码块。过宽 guard 却使 List 模式继续，后续 `# literal` 被 heading interrupt 拆成标题。主 Agent 已读回 facts/machine/detector 与 pinned pulldown 的 marker-width 规则，确认是本补丁引入的独立产品边界，尚未执行；原24项的顶层对照只有0缩进，不能排除它。
+
+- 原24项冻结且保留；v5 新用例在生产未进一步修改的 `27b88c2e9934a01aa912ed95fc26b6ec3fd3470a` 上先编写、独立审查、Actions 有效 RED，再修，不修改原测试追认。
+- 明确公开树：`10.` 的列表保留 ordered/start=10/item，后接独立 CodeBlock(language=text, code=`# literal\n`)；不能出现额外 Heading/伪代码块或吞掉后续正文。普通源文与所有真实空行逐字保留。
+- 完整输入、Unicode字符和语法chunk schedule均检查；反引号/波浪围栏、2格/3格dedent代表、较宽有序marker的真正4格或更多延续close对照，用最少有区分度表覆盖。真正列表close不能回退到v3误拆，dedented顶层代码内部的heading语法不能被当作块边界。
+- v4几何和v5解析是不同原因、不同断言，可在同一先行测试提交及现有Actions执行，但记录各自目标失败，不用一个RED替代另一个；任一编译/观测/环境失败单独处理。不得为节省CI删减原24项。
+- 冻结前独立方案审查（08:45:50Z）补齐真正列表围栏内部的 literal 保护：`- ~~~text\n  # literal\n  \n  second\n  ~~~\n\nafter` 必须产出 list(code=`# literal\n\nsecond\n`) 与独立 after 段落，不能因 heading/thematic/blank 等普通块中断规则拆开代码。未闭合快照同样保留字面内容，无合成~~；反引号与较宽列表的真实归属对照同理。此澄清在 v4/v5 新测试冻结前，不改原24项；必须纳入新先行补丁及本轮云端验证。
+
+### 最小实施计划（v5 有效 RED 后）
+
+只在本地0.3补丁内传递必要的当前列表项延续缩进/围栏上下文，使新围栏边界依据真实marker宽度与所属项，而不是固定两空格；保持其他生产/adapter/cache/source契约，不引入全量reparse或0.4。独立可行性审查确认现有 BlockMachine/process_line 可保存所属项的内容缩进、quote/list前缀及活动围栏字符/长度，先于普通 heading/thematic/blank中断判断保护字面内容；匹配的所属close只结束内部围栏，不结束外部List。dedent退出所属容器时恢复正常顶层边界；incomplete-tail只能预览，不重复消费半截marker/fence；block/reset/compaction同步上下文。
+
+pending display消费同一活动围栏上下文，在trim/setext/inline repair之前保护代码字节；不靠全buffer三字符计数或只找16KiB tail内opener，不将整个List重标为CodeFence，不禁用所有pending显示，也不额外每append全量pulldown解析。具体最小状态机方案先于实现审查；若发现支持边界无法在最小方案内闭合，先记录证据与必要验收变化，不扩大parser重写或暗改断言。与v4 UI修改分清文件/语义差异，同一冻结完整集GREEN后才进入删测。
+
+### 同一 v3 冻结集的残余 pending 缺陷（非新增验收）
+
+`27b88c2e9934a01aa912ed95fc26b6ec3fd3470a` 的 Actions `39746319972`：24 执行/23 通过/1 失败/0 跳过，Clippy 与 Python 通过；日志确认编译 vendor/mdstream。原完整输入及 UI 复制已通过，同一 `list_fence_snapshots_keep_unrelated_committed_nodes_frozen` 在 tilde/unquoted/首个未闭合快照多 `Paragraph("~~")`，原期望不变。这不是测试观察错误：List 路径进入 pending terminator，`is_inside_incomplete_multiline_code_block` 只认三反引号，`balance_strikethrough` 将 `~~~` 的一对 `~~` 误作未闭合行内标记，在正文后追加合成 `~~`。
+
+该行为已经属于 v3 先行冻结中间快照断言并获得有效 RED，可按原目标修 pending 围栏识别/repair 责任层，不另补测试追认，也不在 UI 删除合成字符或禁用所有 pending 显示。保留真实代码空行、原 strikethrough 配置、committed 缓存；具体最小状态识别需和 v5 围栏归属共同闭合，生产修改仍等 v4/v5 新先行用例独立审查及各自有效 RED 后组织。

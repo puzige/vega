@@ -1077,3 +1077,310 @@ fn copy_between(
     drag_selection(handle, cx, from, to);
     cx.update(|cx| copy.copy_selected_text(cx));
 }
+
+mod container_order_tests {
+    use super::*;
+
+    const FIRST: &str =
+        "quote-one 中文 mixed words wrap inside the real list and quote ancestor columns";
+    const SECOND: &str =
+        "quote-two 🙂 more words keep the paragraph visible while the window changes width";
+
+    #[derive(Clone, Copy, Debug)]
+    enum Ancestry {
+        ListQuote,
+        NestedListQuote,
+        QuoteList,
+        QuoteListQuote,
+    }
+
+    fn paragraph(text: &str) -> RenderNode {
+        RenderNode::Paragraph {
+            spans: vec![Inline::Text(text.to_owned())],
+        }
+    }
+
+    fn quote(children: Vec<RenderNode>) -> RenderNode {
+        RenderNode::BlockQuote { children }
+    }
+
+    fn list(children: Vec<RenderNode>) -> RenderNode {
+        RenderNode::List(ListBlock {
+            ordered: false,
+            start: 1,
+            items: vec![vega_markdown::ListItem {
+                checked: None,
+                children,
+            }],
+        })
+    }
+
+    fn fixture(ancestry: Ancestry) -> (String, Vec<RenderNode>) {
+        let pair = vec![paragraph(FIRST), paragraph(SECOND)];
+        let (source, node) = match ancestry {
+            Ancestry::ListQuote => (
+                format!("- item\n\n  > {FIRST}\n  >\n  > {SECOND}\n\n"),
+                list(vec![paragraph("item"), quote(pair)]),
+            ),
+            Ancestry::NestedListQuote => (
+                format!(
+                    "- parent-item\n  - nested-item\n\n    > {FIRST}\n    >\n    > {SECOND}\n\n"
+                ),
+                list(vec![
+                    paragraph("parent-item"),
+                    list(vec![paragraph("nested-item"), quote(pair)]),
+                ]),
+            ),
+            Ancestry::QuoteList => (
+                format!(
+                    "> outer-before\n>\n> - item\n>\n> {FIRST}\n>\n> {SECOND}\n>\n> outer-after\n\n"
+                ),
+                quote(vec![
+                    paragraph("outer-before"),
+                    list(vec![paragraph("item")]),
+                    paragraph(FIRST),
+                    paragraph(SECOND),
+                    paragraph("outer-after"),
+                ]),
+            ),
+            Ancestry::QuoteListQuote => (
+                format!(
+                    "> outer-before\n>\n> - item\n>\n>   > {FIRST}\n>   >\n>   > {SECOND}\n>\n> outer-after\n\n"
+                ),
+                quote(vec![
+                    paragraph("outer-before"),
+                    list(vec![paragraph("item"), quote(pair)]),
+                    paragraph("outer-after"),
+                ]),
+            ),
+        };
+        (
+            format!("outside-before\n\n{source}outside-after\n"),
+            vec![
+                paragraph("outside-before"),
+                node,
+                paragraph("outside-after"),
+            ],
+        )
+    }
+
+    fn parsed_nodes(stream: &MarkdownStream) -> Vec<RenderNode> {
+        let snapshot = stream.snapshot();
+        snapshot
+            .blocks
+            .iter()
+            .flat_map(|block| block.nodes.iter())
+            .chain(
+                snapshot
+                    .pending
+                    .into_iter()
+                    .flat_map(|block| block.nodes.iter()),
+            )
+            .cloned()
+            .collect()
+    }
+
+    fn paragraph_bounds(painted: &Frame, expected: &str) -> Bounds<Pixels> {
+        let start = painted
+            .text
+            .iter()
+            .position(|run| !run.text.is_empty() && expected.starts_with(run.text.as_str()))
+            .expect("painted paragraph start");
+        let mut content = String::new();
+        let mut bounds: Option<Bounds<Pixels>> = None;
+        for run in &painted.text[start..] {
+            content.push_str(&run.text);
+            assert!(
+                expected.starts_with(&content),
+                "paragraph changed: {content:?}"
+            );
+            let next = run.layout.bounds();
+            bounds = Some(bounds.map_or(next, |bounds| bounds.union(&next)));
+            if content == expected {
+                return bounds.expect("painted paragraph bounds");
+            }
+        }
+        panic!("incomplete painted paragraph: {content:?}");
+    }
+
+    fn verify_geometry(painted: &Frame, ancestry: Ancestry, width: f32, path: Path) -> f32 {
+        let before = text_bounds(painted, "outside-before");
+        let after = text_bounds(painted, "outside-after");
+        let first = paragraph_bounds(painted, FIRST);
+        let second = paragraph_bounds(painted, SECOND);
+        let origin = f32::from(before.left());
+        let indent = Layout::MARKDOWN_LIST_INDENT;
+        let gutter = 2. + Layout::MARKDOWN_CODE_PADDING;
+        let (quote_x, text_x) = match ancestry {
+            Ancestry::ListQuote => (indent, indent + gutter),
+            Ancestry::NestedListQuote => (2. * indent, 2. * indent + gutter),
+            Ancestry::QuoteList => (0., gutter),
+            Ancestry::QuoteListQuote => (gutter + indent, 2. * gutter + indent),
+        };
+        let quote_x = origin + quote_x;
+        let (item_text, item_x) = match ancestry {
+            Ancestry::ListQuote => ("item", indent),
+            Ancestry::NestedListQuote => ("nested-item", 2. * indent),
+            Ancestry::QuoteList | Ancestry::QuoteListQuote => ("item", gutter + indent),
+        };
+        let item = text_bounds(painted, item_text);
+        assert!(
+            (f32::from(item.left()) - origin - item_x).abs() < 0.2,
+            "{path:?} {ancestry:?}: list item column changed: {item:?}"
+        );
+        if matches!(ancestry, Ancestry::NestedListQuote) {
+            let parent = text_bounds(painted, "parent-item");
+            assert!((f32::from(parent.left()) - origin - indent).abs() < 0.2);
+        }
+        assert!(
+            painted
+                .rails
+                .iter()
+                .any(|rail| (rail.left - quote_x).abs() < 0.2),
+            "{path:?} {ancestry:?}: expected rail x={quote_x}, actual {:?}",
+            painted.rails
+        );
+        for bounds in [first, second] {
+            assert!(
+                (f32::from(bounds.left()) - origin - text_x).abs() < 0.2,
+                "{path:?} {ancestry:?}: text inset changed: {bounds:?}"
+            );
+        }
+        assert!(
+            (f32::from(second.top() - first.bottom()) - Layout::MARKDOWN_BLOCK_GAP).abs() < 0.2,
+            "{path:?} {ancestry:?}: quote paragraph gap changed"
+        );
+        covered(
+            painted,
+            quote_x,
+            f32::from(first.top()),
+            f32::from(second.bottom()),
+        );
+        let has_outer = matches!(ancestry, Ancestry::QuoteList | Ancestry::QuoteListQuote);
+        let (top, bottom) = if has_outer {
+            let outer_before = text_bounds(painted, "outer-before");
+            let outer_after = text_bounds(painted, "outer-after");
+            assert!((f32::from(outer_before.left()) - origin - gutter).abs() < 0.2);
+            assert_eq!(outer_before.left(), outer_after.left());
+            covered(
+                painted,
+                origin,
+                f32::from(outer_before.top()),
+                f32::from(outer_after.bottom()),
+            );
+            if matches!(ancestry, Ancestry::QuoteListQuote) {
+                absent(
+                    painted,
+                    quote_x,
+                    f32::from(outer_before.top()),
+                    f32::from(first.top()) - 0.3,
+                );
+                absent(
+                    painted,
+                    quote_x,
+                    f32::from(second.bottom()) + 0.3,
+                    f32::from(outer_after.bottom()),
+                );
+            }
+            (outer_before.top(), outer_after.bottom())
+        } else {
+            absent(
+                painted,
+                quote_x,
+                f32::from(item.top()),
+                f32::from(item.bottom()),
+            );
+            (first.top(), second.bottom())
+        };
+        for rail in &painted.rails {
+            assert!((rail.right - rail.left - 2.).abs() < 0.2);
+            assert!(
+                (rail.left - quote_x).abs() < 0.2
+                    || (has_outer && (rail.left - origin).abs() < 0.2),
+                "{path:?} {ancestry:?}: unrelated rail {rail:?}"
+            );
+            assert!(rail.top >= f32::from(top) - 0.2);
+            assert!(rail.bottom <= f32::from(bottom) + 0.2);
+        }
+        for x in [origin, quote_x] {
+            absent(
+                painted,
+                x,
+                f32::from(before.top()),
+                f32::from(before.bottom()),
+            );
+            absent(
+                painted,
+                x,
+                f32::from(after.top()),
+                f32::from(after.bottom()),
+            );
+        }
+        assert_eq!(after.left(), before.left());
+        for run in &painted.text {
+            let bounds = run.layout.bounds();
+            assert!(bounds.left() >= before.left() - px(0.2));
+            assert!(
+                bounds.right() <= px(width + 0.2),
+                "{path:?} {ancestry:?}: text exceeds width {width}: {bounds:?}"
+            );
+        }
+        f32::from(first.size.height + second.size.height)
+    }
+
+    fn verify_ancestry(cx: &mut TestAppContext, ancestry: Ancestry) {
+        let (source, expected) = fixture(ancestry);
+        let mut stream = MarkdownStream::new();
+        stream.append(&source);
+        assert_eq!(parsed_nodes(&stream), expected, "pending {ancestry:?}");
+        stream.finish();
+        assert_eq!(parsed_nodes(&stream), expected, "finished {ancestry:?}");
+        for path in PATHS {
+            let handle = open(cx, path, &source, 240.);
+            let mut narrow = None;
+            let mut narrow_rails = None;
+            for width in [240., 760., 240.] {
+                cx.simulate_window_resize(handle.into(), size(px(width), px(12000.)));
+                handle
+                    .update(cx, |view, _, cx| {
+                        view.width = width;
+                        cx.notify();
+                    })
+                    .unwrap();
+                let painted = frame(handle, cx);
+                let height = verify_geometry(&painted, ancestry, width, path);
+                if let Some(narrow_height) = narrow {
+                    if width == 760. {
+                        assert!(height < narrow_height, "{path:?} {ancestry:?}: no reflow");
+                    } else {
+                        assert!((height - narrow_height).abs() < 0.2);
+                        assert_eq!(Some(&painted.rails), narrow_rails.as_ref());
+                    }
+                } else {
+                    narrow = Some(height);
+                    narrow_rails = Some(painted.rails.clone());
+                }
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn list_owned_quote_rails_start_at_the_list_content_column(cx: &mut TestAppContext) {
+        verify_ancestry(cx, Ancestry::ListQuote);
+    }
+
+    #[gpui_kit::test]
+    fn nested_list_owned_quote_rails_keep_both_list_insets(cx: &mut TestAppContext) {
+        verify_ancestry(cx, Ancestry::NestedListQuote);
+    }
+
+    #[gpui_kit::test]
+    fn outer_quote_rails_do_not_follow_descendant_list_insets(cx: &mut TestAppContext) {
+        verify_ancestry(cx, Ancestry::QuoteList);
+    }
+
+    #[gpui_kit::test]
+    fn inner_list_owned_quote_rails_preserve_the_outer_quote_origin(cx: &mut TestAppContext) {
+        verify_ancestry(cx, Ancestry::QuoteListQuote);
+    }
+}

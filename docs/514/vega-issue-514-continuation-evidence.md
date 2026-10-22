@@ -6,7 +6,7 @@
 - 本轮计时起点：2026-10-22T06:32:17Z。恢复并核对历史工作、现行规则、原始 CI 失败及实际接口；2026-10-22T06:53:15Z 已完成 v3 规格差异静态检查。后续阶段按真实结果追加，不把委派受理当作完成。
 - 公开旧 head：`ae1888267fd8b05db1c388c01ed80bfc40643a1b`。本地同步 head：`7ec15f2c44269d7e068e853ed797f651668dc019`，merge 主库 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`，保留已有测试/实现提交，无 force-push。
 - v3 规格 SHA256（先行测试前）：`cf733965f647607b95fec9f95177e20334a01de1894b6e59ac39a90fca50e159`。代码实现仍由专职子 Agent；独立审查默认只读、绑定停写版本。
-- 当前本轮委派：spawn 2（一个测试/观察修正写入者，一个独立审查者），followup 4（独立审查新停写测试补丁；有效 RED 后同一写入者实施最小 mdstream 0.3 补丁；独立审查固定 UI 生产差异；独立审查新停写 mdstream 补丁）。不重复历史已完成工作。解析生产实现仅在下述本轮有效 RED 确认后授权。
+- 当前本轮委派：spawn 2（一个测试/观察修正写入者，一个独立审查者），followup 7（独立审查新停写测试补丁；有效 RED 后同一写入者实施最小 mdstream 0.3 补丁；独立审查固定 UI 生产差异；独立审查新停写 mdstream 补丁；按两项新发现编写 v4/v5 先行测试；独立方案审查真实围栏上下文与 pending 修复责任层；独立审查停写的7项新测试增量）。不重复历史已完成工作。解析生产实现仅在下述本轮有效 RED 确认后授权。
 
 ## 阶段与委派记录
 
@@ -43,8 +43,25 @@
 - mdstream 写入者 07:47:50Z–08:10:49Z，22m59s 主动实现（含静态工具纠正）；停写 READY，source patch SHA256 `8cc3af5dd3ef76d2a27b94f542d658697554b482dec49741b8b6afc60e9e0249`，manifest SHA256 `c4b8ab9a4469078119ac76997bcd2ebb00355c8c932cb7254b11b91b571075d9`。43 个 vendor 文件 + root Cargo patch/lock，39 个 Rust 源来自确切发行包；唯一逻辑增量是列表延续围栏不 interrupt。测试/observer/UI 与冻结 head 逐字相同。
 - 主 Agent 08:12:51Z 独立复算补丁 SHA256、许可证 Git blob、静态格式/差异检查，全部一致/退出 0。新 mdstream 停写内容已交同一独立审查者，只审该新语义与 vendor/锁文件增量；可与同版本云端 GREEN 并行，未完成不称通过。
 - 独立 UI 生产审查在固定 `ea64ee4dc3cb682d67c84bf2963cf83c79acd59d` 上进行，07:50:05Z–08:02:37Z，12m32s，只读。其余引用连续/代码分组/marker/选序/Thinking mask/culling/缓存未见额外实质问题；发现新的 List→Quote 祖先顺序导致 rail 丢失列表缩进，阻断最终交付。
-- 主 Agent 08:03Z 读回原分支及 master 相关代码确认责任层为 UI 产品缺陷，不是 mdstream/测试接线故障。先更新 v4 spec（SHA256 `b4db40ec42db9ad0508d1defe0e9f56a52ba9da60b4da7a73d4755e29ec8d4fe`），列 quote-in-list/list-in-quote/深层算术与独立先测后修周期；本 mdstream 写入者未改 UI 或测试。原始发现记录 [PR comment](https://github.com/puzige/vega/pull/529#issuecomment-6335907535)。先取得 v3 同24项 GREEN 再写 v4 新测试，绝不 retroactively 改24项或把本轮 RED 当 v4 证据。
+- 主 Agent 08:03Z 读回原分支及 master 相关代码确认责任层为 UI 产品缺陷，不是 mdstream/测试接线故障。先更新 v4 spec（SHA256 `b4db40ec42db9ad0508d1defe0e9f56a52ba9da60b4da7a73d4755e29ec8d4fe`），列 quote-in-list/list-in-quote/深层算术与独立先测后修周期；本 mdstream 写入者未改 UI 或测试。原始发现记录 [PR comment](https://github.com/puzige/vega/pull/529#issuecomment-6335907535)。原计划先取得 v3 同24项 GREEN；在下述残余 pending 缺陷与 v5 review 发现后，先在当前实现上补齐 v4/v5 独立先行测试再修，原24项冻结不改，也不把 v3 RED 当 v4/v5 证据。
 - 新返工分类：v4 属遗漏边界/产品回归，单独重开周期；mdstream 实现中直接 Cargo 的 toolchain selector 和格式 file/stdin CRLF 差异为静态工具层纠正，没有新 CI 失败或验收放宽。具体原始记录见 mdstream patch evidence。07:58Z vendor 新产物、08:11Z patch evidence 已观察，不是持续20分钟无产物。
+
+## v3 残余失败及 v4/v5 先行测试重开
+
+- 原 vendor 停写补丁已提交/推送为 `27b88c2e9934a01aa912ed95fc26b6ec3fd3470a`。独立 mdstream 审查 08:13:59Z–08:20:45Z，6m46s，独立确认来源/39文件/38文件token等价+唯一guard/367literal/291comments/双许可/924依赖图及冻结测试不变；另发现 guard 的两空格heuristic错误吞入较宽列表marker后的 dedented 顶层围栏，阻断，不标审查通过。
+- [Actions 39746319972](https://github.com/puzige/vega/actions/runs/39746319972)，Nextest job `119715543602`：24 项启动/执行，23 通过/1 失败/0 跳过，执行1.179s；Clippy `119715543343` 与 Python60项成功，summary `119722007987` 失败。原UI复制、完整围栏输入已通过；实际日志明确编译本地vendor/mdstream0.3，证实patch生效。
+- 残余是原冻结 `list_fence_snapshots_keep_unrelated_committed_nodes_frozen` 在 tilde/unquoted/未闭合首快照，多 `Paragraph("~~")`。主 Agent 08:31Z 读取原始失败，08:32Z 核对 pending pipeline/repair/context/inline：List pending终止器只识别反引号代码区，误以~~~为未闭合删除线，追加合成~~。产品pending repair，不改断言或UItrim；原v3冻结已覆盖并有效RED，不为该原目标事后补测。
+- 新 parser dedent 边界为独立 v5，已先修规格（v5含两项新独立周期，SHA256 `1d259ed160b99cc483e0550f9d7c5e8bdadebb841c33edbb6539c91120d0edc4`）；v4/v5 可同一先行测试提交但各自须在云端观察目标失败，原24项保留。08:35Z 向同一已停写writer发送具体 TEST-ONLY followup，生产冻结不动，先新测试/独立审查/RED再实施。
+- 返工归因：本次v3实现1次尚未GREEN，残余是原目标分支被早先backtick失败遮蔽而新可见；v4/v5为独立审查发现的两项产品/遗漏边界，分别重开周期，不放宽验收。不是外部CI或无头观察故障。不因原test函数再次失败自动重复盲修；已读原日志、识别不同首失败及责任层，下一验证为新边界测试各自RED。
+- 第二轮CI run创建08:14:50Z，Clippy08:14:53Z–08:19:01Z（4m08s），Nextest08:15:14Z–08:30:30Z（15m16s），summary08:30:32Z–08:30:35Z。主会话08:20:21Z、08:25:20Z、08:30:34Z状态查询，首次两者相隔4m59s，为命令计时边缘，后续改用查询完成后完整sleep300s确保不少于5min；无watch/短循环。push08:14:44Z到确认Nextest完成08:30:34Z等待墙钟15m50s。
+- 上述结果与责任层已固定 [PR comment](https://github.com/puzige/vega/pull/529#issuecomment-6336398417)。仍未全体GREEN/删测/正式PR/合并。
+
+## v4/v5 冻结前方案审查
+
+- 同一独立审查者 08:38:47Z–08:45:50Z，7m03s；只读固定 `27b88c2e9934a01aa912ed95fc26b6ec3fd3470a` 与 v5 spec `1d259ed160b99cc483e0550f9d7c5e8bdadebb841c33edbb6539c91120d0edc4`，未看移动测试。确认可通过现有逐行 BlockMachine 维护实际marker内容缩进与活动围栏，pending display共用该上下文，避免固定两空格/全buffer字符计数/新增全量解析。
+- 审查补出一项冻结前实质边界：真实列表围栏 body 内的 `# literal`/空行也必须保护，不仅 dedented 顶层围栏。主 Agent 已在尚未冻结的新 v5 用例前补明确公开树与中间快照验收，后续 spec SHA256 `50fdca3643ed8c11c9655ee8a16680388d2f03589b3efafcda046d9426084aa8`；原24项不改。实现仍未进一步修改。
+- 同一writer 08:36:44Z–09:08:42Z，31m58s 主动 TEST-ONLY，已停写 READY；在原两个测试文件后只追加133/307行，原10801/35114字节前缀逐字不变。新7项定义（4UI+3parser），总31源码定义，不冒充发现或执行数。测试diffSHA256 `b5df8f9f475cb82e5821806613e93423d3eaa92861a735ffb4a1b695dbc8c3cf`。原24项、生产、全部47vendor文件、Cargo/workflows不变。期间补齐冻结前澄清，无生产改动。
+- 主 Agent 09:10:14Z 核对 HEAD/source/spec/evidence hashes一致、差异检查退出0；独立测试增量审查09:11:12Z–09:16:44Z，5m32s，PASS无实质阻碍，确认实际pending/final树/三路径几何/围栏literal观察与全部冻结断言。各自云端目标RED仍待取得，下一步提交/push精确版本。
 
 ## mdstream 0.3 来源核对（只读静态证据）
 

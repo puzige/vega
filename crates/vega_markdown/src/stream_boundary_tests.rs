@@ -311,3 +311,136 @@ fn late_reference_definitions_update_only_the_affected_committed_block() {
     assert_eq!(identity(&stream.snapshot().blocks[0]), stable);
     assert_eq!(stream.snapshot().blocks[0].nodes, &[paragraph("stable")]);
 }
+
+mod list_fence_ownership_tests {
+    use super::*;
+
+    fn ordered_list(start: u64, children: Vec<RenderNode>) -> RenderNode {
+        RenderNode::List(ListBlock {
+            ordered: true,
+            start,
+            items: vec![ListItem {
+                checked: None,
+                children,
+            }],
+        })
+    }
+
+    fn schedules(source: &str) -> [(&str, Vec<&str>); 3] {
+        let [whole, characters, _] = chunk_schedules(source);
+        let mut boundaries = vec![0, source.len()];
+        for (index, character) in source.char_indices() {
+            if character.is_ascii_digit() || matches!(character, '.' | ' ' | '`' | '~' | '#' | '\n')
+            {
+                boundaries.extend([index, index + character.len_utf8()]);
+            }
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        let chunks = boundaries
+            .windows(2)
+            .map(|pair| &source[pair[0]..pair[1]])
+            .collect();
+        [whole, characters, ("ordered_syntax_boundaries", chunks)]
+    }
+
+    #[test]
+    fn dedented_fences_after_wide_ordered_markers_keep_heading_syntax_as_code() {
+        for spaces in [2, 3] {
+            let indent = " ".repeat(spaces);
+            for fence in ["```", "~~~"] {
+                let source = format!(
+                    "10. item中\n{indent}{fence}text\n# literal\n{indent}{fence}\n\nafter🙂\n"
+                );
+                let expected = vec![
+                    ordered_list(10, vec![paragraph("item中")]),
+                    code("# literal\n"),
+                    paragraph("after🙂"),
+                ];
+                for (schedule, chunks) in schedules(&source) {
+                    let mut stream = MarkdownStream::new();
+                    for chunk in chunks {
+                        stream.append(chunk);
+                    }
+                    let context = format!("spaces={spaces} fence={fence} schedule={schedule}");
+                    assert_eq!(visible_nodes(&stream), expected, "{context}");
+                    finish_with_expected(&mut stream, &expected, &context);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_list_fence_continuations_preserve_code_blank_lines() {
+        for (start, spaces) in [(10, 4), (100, 5)] {
+            let indent = " ".repeat(spaces);
+            for fence in ["```", "~~~"] {
+                let source = format!(
+                    "{start}. {fence}text\n{indent}first🙂\n{indent}\n{indent}second\n{indent}\n{indent}{fence}\n\nafter中\n"
+                );
+                let expected = vec![
+                    ordered_list(start, vec![code("first🙂\n\nsecond\n\n")]),
+                    paragraph("after中"),
+                ];
+                for (schedule, chunks) in schedules(&source) {
+                    let mut stream = MarkdownStream::new();
+                    for chunk in chunks {
+                        stream.append(chunk);
+                    }
+                    let context =
+                        format!("start={start} spaces={spaces} fence={fence} schedule={schedule}");
+                    assert_eq!(visible_nodes(&stream), expected, "{context}");
+                    finish_with_expected(&mut stream, &expected, &context);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn list_fence_bodies_keep_block_syntax_literal_in_pending_and_final_snapshots() {
+        for (marker, start, spaces) in [("-", None, 2), ("10.", Some(10), 4)] {
+            let indent = " ".repeat(spaces);
+            for fence in ["```", "~~~"] {
+                let expected_list = |text: &str| match start {
+                    Some(start) => ordered_list(start, vec![code(text)]),
+                    None => list(code(text)),
+                };
+                let mut source = format!("{marker} {fence}text\n");
+                let mut stream = MarkdownStream::new();
+                stream.append(&source);
+                for (delta, text) in [
+                    (format!("{indent}# literal\n"), "# literal\n"),
+                    (format!("{indent}\n"), "# literal\n\n"),
+                    (format!("{indent}---\n"), "# literal\n\n---\n"),
+                    (format!("{indent}second\n"), "# literal\n\n---\nsecond\n"),
+                    (format!("{indent}{fence}\n"), "# literal\n\n---\nsecond\n"),
+                ] {
+                    source.push_str(&delta);
+                    stream.append(&delta);
+                    assert_eq!(
+                        visible_nodes(&stream),
+                        vec![expected_list(text)],
+                        "marker={marker} fence={fence} delta={delta:?}"
+                    );
+                }
+                source.push_str("\nafter🙂\n");
+                stream.append("\nafter🙂\n");
+                let expected = vec![
+                    expected_list("# literal\n\n---\nsecond\n"),
+                    paragraph("after🙂"),
+                ];
+                assert_eq!(visible_nodes(&stream), expected);
+                finish_with_expected(&mut stream, &expected, "list code literal snapshots");
+                for (schedule, chunks) in schedules(&source) {
+                    let mut stream = MarkdownStream::new();
+                    for chunk in chunks {
+                        stream.append(chunk);
+                    }
+                    let context = format!("marker={marker} fence={fence} schedule={schedule}");
+                    assert_eq!(visible_nodes(&stream), expected, "{context}");
+                    finish_with_expected(&mut stream, &expected, &context);
+                }
+            }
+        }
+    }
+}
