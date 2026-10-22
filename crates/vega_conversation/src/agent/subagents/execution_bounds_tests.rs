@@ -1173,14 +1173,35 @@ async fn native_entry_token_admission_counts_complete_system_and_tool_schemas_an
 
 #[tokio::test]
 async fn native_current_stage_token_admission_counts_json_arguments_and_real_tool_results() {
-    let content = "written content ".repeat(20_000);
-    let script = || {
-        vec![
+    async fn run_case(input_limit: u64, content: &str) -> (Vec<ChatRequest>, serde_json::Value) {
+        let mut fixture = Fixture::new();
+        let workspace = fixture._directory.path().join("workspace");
+        fs::create_dir(&workspace).expect("owned workspace");
+        assert_eq!(
+            fixture
+                .store
+                .conn()
+                .execute(
+                    "UPDATE projects SET path = ?1 WHERE id = (SELECT project_id FROM threads WHERE id = 'parent')",
+                    [workspace.to_str().expect("workspace path")],
+                )
+                .expect("separate project from database and checkpoints"),
+            1
+        );
+        fixture.tools = vega_tools::Tools::new(&workspace).expect("isolated tools");
+        fs::write(
+            workspace.join("context-evidence.txt"),
+            "retained tool result ".repeat(3000),
+        )
+        .expect("owned read fixture");
+        let write_input = serde_json::json!({"path":"context-created.txt","content":content});
+        assert!(write_input.to_string().len() < 256 * 1024);
+        let provider = ScriptedProvider::with(vec![
             tool_response(
                 "Produce the scoped file",
                 "context-write",
                 "write",
-                serde_json::json!({"path":"context-created.txt","content":content}),
+                write_input,
             ),
             tool_response(
                 "Read retained evidence",
@@ -1189,30 +1210,65 @@ async fn native_current_stage_token_admission_counts_json_arguments_and_real_too
                 serde_json::json!({"path":"context-evidence.txt"}),
             ),
             final_response("tool context accepted"),
-        ]
-    };
-    let (large, accepted) = native_context_stage(
-        "Retain all arguments and tool evidence",
-        Some(fixture_context_budget(1_000_000, false)),
-        script(),
-    )
-    .await;
-    assert_eq!(accepted["agents"][0]["state"], "completed");
+        ]);
+        let mut supervisor = Supervisor::new();
+        let hook = supervisor.hook();
+        let observer = supervisor.receipt_observer();
+        let mut launch = fixture.launch(&provider, TestHost::new(true));
+        launch.settings.system_prompt = "Retain all arguments and tool evidence".into();
+        launch.settings.context_budget = Some(fixture_context_budget(input_limit, false));
+        launch.settings.authority.permission_mode = RuntimePermissionMode::FullAccess;
+        let parent = async {
+            let snapshot = spawn(&hook, &observer, "Retain this exact user constraint").await;
+            bounded(wait(&hook, &snapshot, None)).await
+        };
+        let receipt = supervisor.run(parent.boxed_local(), launch).await;
+        let requests = provider.requests.lock().expect("requests").clone();
+        assert_eq!(
+            fs::read_to_string(workspace.join("context-created.txt"))
+                .unwrap_or_else(|error| panic!("write failed: {error}; receipt={receipt}")),
+            content
+        );
+        let audit = vega_store::tool_calls::find_state(fixture.store.conn(), "context-write")
+            .expect("stored write")
+            .expect("write audit");
+        assert_eq!(audit.status, "success", "receipt={receipt}");
+        assert!(!audit.input_json.contains(content));
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&audit.input_json)
+                .expect("audit JSON")
+                .get("content")
+                .is_none()
+        );
+        (requests, receipt)
+    }
+
+    let content = "written content ".repeat(8000);
+    let (large, accepted) = run_case(1_000_000, &content).await;
+    assert_eq!(
+        accepted["agents"][0]["state"], "completed",
+        "receipt={accepted}"
+    );
     assert_eq!(large.len(), 3);
     let second = &large[1];
     let third = &large[2];
-    assert!(
-        second
-            .messages
-            .iter()
-            .flat_map(|message| &message.tool_calls)
-            .any(|call| call.input_json.contains(&content))
-    );
+    let second_wire = vega_runtime::project_model_messages(&second.messages)
+        .expect("actual model tool projection");
+    let write_call = second_wire
+        .iter()
+        .flat_map(|message| &message.tool_calls)
+        .find(|call| call.id == "context-write")
+        .expect("live write arguments");
+    let write_input: serde_json::Value =
+        serde_json::from_str(&write_call.input_json).expect("wire write JSON");
+    assert_eq!(write_input["content"], content);
+    assert!(write_call.input_json.len() < 256 * 1024);
     assert!(
         third
             .messages
             .iter()
             .any(|message| message.role == ChatRole::Tool
+                && message.tool_call_id.as_deref() == Some("context-read")
                 && message.content.contains("retained tool result"))
     );
     let first_tokens = vega_runtime::estimate_wire_context(&large[0].messages, &large[0].tools)
@@ -1225,26 +1281,12 @@ async fn native_current_stage_token_admission_counts_json_arguments_and_real_too
         .expect("tool result input")
         .input_tokens;
     assert!(first_tokens < second_tokens && second_tokens < third_tokens);
-    assert!(
-        second
-            .messages
-            .iter()
-            .flat_map(|message| &message.tool_calls)
-            .map(|call| call.input_json.len())
-            .sum::<usize>()
-            > 256 * 1024
-    );
     for (input_limit, allowed_calls) in [(second_tokens - 1, 1), (third_tokens - 1, 2)] {
-        let (requests, rejected) = native_context_stage(
-            "Retain all arguments and tool evidence",
-            Some(fixture_context_budget(input_limit, false)),
-            script(),
-        )
-        .await;
+        let (requests, rejected) = run_case(input_limit, &content).await;
         assert_eq!(
             requests.len(),
             allowed_calls,
-            "the over-budget next request never reaches the provider"
+            "the over-budget next request never reaches the provider; receipt={rejected}"
         );
         assert_ne!(rejected["agents"][0]["state"], "completed");
     }
