@@ -1288,7 +1288,8 @@ async fn live_ui_uses_the_runtime_clock_and_matches_saved_terminal_work(cx: &mut
         Some("Worked for 7s")
     );
     let stored: u64 = cx.update(|cx| {
-        cx.global::<VegaStore>()
+        let value = cx
+            .global::<VegaStore>()
             .0
             .as_ref()
             .unwrap()
@@ -1296,9 +1297,10 @@ async fn live_ui_uses_the_runtime_clock_and_matches_saved_terminal_work(cx: &mut
             .query_row(
                 "SELECT execution_duration_ms FROM assistant_run_durations WHERE message_id = ?1",
                 [&result.assistant_message_id],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
-            .unwrap()
+            .unwrap();
+        u64::try_from(value).unwrap()
     });
     assert_eq!(stored, 7_000);
 }

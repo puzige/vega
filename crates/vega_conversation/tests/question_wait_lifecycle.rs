@@ -120,14 +120,16 @@ impl Fixture {
     }
 
     fn stored_duration(&self, message: &str) -> u64 {
-        self.store
+        let value = self
+            .store
             .conn()
             .query_row(
                 "SELECT execution_duration_ms FROM assistant_run_durations WHERE message_id = ?1",
                 [message],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
-            .unwrap()
+            .unwrap();
+        u64::try_from(value).unwrap()
     }
 }
 
