@@ -158,7 +158,7 @@ fn populate_history(conn: &Connection, id: &str, position: usize) {
     )
     .expect("seed message");
     conn.execute(
-        "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, output_full_path, status, approval, exit_code, duration_ms, created_at, finished_at, text_offset) VALUES (?1, ?2, ?3, 1, 'read', '{\"path\":\"fixture.txt\"}', 'Preserved tool output', '/synthetic/tool-output', 'success', 'once', 0, 17, 603, 604, 4)",
+        "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, output_full_path, status, approval, exit_code, duration_ms, created_at, finished_at, text_offset_bytes) VALUES (?1, ?2, ?3, 1, 'read', '{\"path\":\"fixture.txt\"}', 'Preserved tool output', '/synthetic/tool-output', 'success', 'once', 0, 17, 603, 604, 4)",
         params![format!("tool-{id}"), id, message_id],
     )
     .expect("seed tool");
