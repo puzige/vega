@@ -26,17 +26,14 @@ pub(crate) fn input_bounds(id: EntityId, bounds: Bounds<Pixels>, cx: &mut App) {
     }
 }
 
-pub(crate) fn thumbnail_bounds(id: EntityId, bounds: Bounds<Pixels>, cx: &mut App) {
-    if cx.has_global::<PaintedGeometry>() {
-        cx.global_mut::<PaintedGeometry>()
-            .thumbnails
-            .insert(id, bounds);
-    }
+enum BoundsTarget {
+    Region(&'static str),
+    Thumbnail(EntityId),
 }
 
 struct ObservedBounds<E> {
     inner: E,
-    name: &'static str,
+    target: BoundsTarget,
 }
 
 pub(crate) fn observe_bounds(
@@ -45,7 +42,18 @@ pub(crate) fn observe_bounds(
 ) -> gpui_kit::AnyElement {
     ObservedBounds {
         inner: element.into_element(),
-        name,
+        target: BoundsTarget::Region(name),
+    }
+    .into_any_element()
+}
+
+pub(crate) fn observe_thumbnail_bounds(
+    element: impl IntoElement,
+    id: EntityId,
+) -> gpui_kit::AnyElement {
+    ObservedBounds {
+        inner: element.into_element(),
+        target: BoundsTarget::Thumbnail(id),
     }
     .into_any_element()
 }
@@ -120,9 +128,15 @@ impl<E: Element> Element for ObservedBounds<E> {
         cx: &mut App,
     ) {
         if cx.has_global::<PaintedGeometry>() {
-            cx.global_mut::<PaintedGeometry>()
-                .regions
-                .insert(self.name, bounds);
+            let geometry = cx.global_mut::<PaintedGeometry>();
+            match self.target {
+                BoundsTarget::Region(name) => {
+                    geometry.regions.insert(name, bounds);
+                }
+                BoundsTarget::Thumbnail(id) => {
+                    geometry.thumbnails.insert(id, bounds);
+                }
+            }
         }
         self.inner
             .paint(id, inspector, bounds, layout, state, window, cx);

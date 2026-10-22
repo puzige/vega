@@ -41,7 +41,6 @@ impl Render for ComposerHost {
 }
 
 struct ComposerHarness {
-    cx: HeadlessAppContext,
     window: WindowHandle<ComposerHost>,
     stream: Entity<ConversationStream>,
     input: Entity<TextInput>,
@@ -49,6 +48,7 @@ struct ComposerHarness {
     escaped: Rc<RefCell<usize>>,
     submissions: Rc<RefCell<Vec<ComposerSubmitted>>>,
     previews: Rc<RefCell<Vec<Entity<crate::image_preview::ImagePreview>>>>,
+    cx: HeadlessAppContext,
 }
 
 fn thread() -> Thread {
@@ -121,7 +121,6 @@ impl ComposerHarness {
         let stream = cx.update(|cx| host.read(cx).stream.clone());
         let input = cx.update(|cx| stream.read(cx).input.clone());
         let mut harness = Self {
-            cx,
             window,
             stream,
             input,
@@ -129,6 +128,7 @@ impl ComposerHarness {
             escaped,
             submissions,
             previews,
+            cx,
         };
         harness.focus_input();
         harness.draw();
@@ -280,7 +280,10 @@ impl ComposerHarness {
     }
 
     fn resize(&mut self, width: f32) {
-        self.update(|window, _| window.resize(size(px(width), px(900.))));
+        self.update(|window, cx| {
+            window.resize(size(px(width), px(900.)));
+            window.bounds_changed(cx);
+        });
         self.draw();
     }
 
@@ -450,7 +453,10 @@ fn attachment_wrap_preserves_actual_composer_height_preview_remove_and_send() {
         harness.set_text("complete attachment draft");
         let originals = harness.attach(&[(2400, 1200), (1200, 2400), (1800, 1800), (1600, 900)]);
         let wide = harness.thumbnails();
-        assert!(wide.iter().all(|bounds| bounds.top() == wide[0].top()));
+        assert!(
+            wide.iter().all(|bounds| bounds.top() == wide[0].top()),
+            "wide thumbnails must share a row: {wide:?}"
+        );
         harness.resize(330.);
         let narrow = harness.thumbnails();
         assert!(
@@ -600,7 +606,7 @@ fn composer_scrollbar_drag_and_track_update_visible_text_without_selection_chang
 #[test]
 fn composer_row_bounds_and_scrollbar_follow_actual_overflow_only() {
     let mut harness = ComposerHarness::new(720., false, true);
-    let line_height = px(Typography::BODY * Typography::BODY_LINE_HEIGHT);
+    let line_height = px(Typography::BODY * Typography::BODY_LINE_HEIGHT).round();
     for (text, rows, overflow) in [
         (String::new(), 1, false),
         ("short draft".into(), 1, false),
@@ -608,8 +614,14 @@ fn composer_row_bounds_and_scrollbar_follow_actual_overflow_only() {
         (numbered_draft(9), 8, true),
     ] {
         harness.set_text(&text);
+        let viewport = harness.viewport();
+        let rendered_rows = harness
+            .recorder
+            .frame()
+            .text_rows(viewport, harness.scale());
         assert!(
-            (f32::from(harness.viewport().size.height - line_height * rows as f32)).abs() <= 1.
+            (f32::from(harness.viewport().size.height - line_height * rows as f32)).abs() <= 1.,
+            "viewport={viewport:?}, line_height={line_height:?}, expected_rows={rows}, text={text:?}, rendered_rows={rendered_rows:?}"
         );
         if !text.is_empty() {
             assert_eq!(harness.rows().len(), rows);
@@ -629,9 +641,22 @@ fn latin_and_cjk_soft_wrap_scroll_and_reflow_without_losing_text() {
         let mut harness = ComposerHarness::new(720., false, true);
         let short = character.to_string().repeat(70);
         harness.set_text(&short);
-        let wide_height = harness.viewport().size.height;
+        let wide_viewport = harness.viewport();
+        let wide_height = wide_viewport.size.height;
+        let wide_rows = harness
+            .recorder
+            .frame()
+            .text_rows(wide_viewport, harness.scale());
         harness.resize(330.);
-        assert!(harness.viewport().size.height > wide_height);
+        let narrow_viewport = harness.viewport();
+        let narrow_rows = harness
+            .recorder
+            .frame()
+            .text_rows(narrow_viewport, harness.scale());
+        assert!(
+            harness.viewport().size.height > wide_height,
+            "text={short:?}, wide_viewport={wide_viewport:?}, wide_rows={wide_rows:?}, narrow_viewport={narrow_viewport:?}, narrow_rows={narrow_rows:?}"
+        );
         let content = format!("FIRST{}LAST", character.to_string().repeat(800));
         harness.set_text(&content);
         assert_eq!(harness.rows().len(), 8);
@@ -734,7 +759,7 @@ fn shortening_clearing_and_sending_use_the_full_draft_and_reset_viewport() {
     assert_eq!(harness.rows(), ["fresh draft"]);
     assert_eq!(
         harness.viewport().size.height,
-        px(Typography::BODY * Typography::BODY_LINE_HEIGHT)
+        px(Typography::BODY * Typography::BODY_LINE_HEIGHT).round()
     );
     harness.assert_caret_painted();
 }

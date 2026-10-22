@@ -53,3 +53,18 @@
 - 主 Agent 对停写版本重跑 `cargo fmt --all -- --check`、`git diff --check` 均退出 0；fetch 后与 origin/master 无差异（0 ahead / 0 behind），生产基线未变。
 - 共 13 个先行测试；预期长文本滚动/滚动条行为失败，短内容/单行/大编辑器为阳性对照。图片是否产生基线失败等待 CI，不能预先声称 RED。
 - 下一步：本补丁作为 tests-first 提交及 draft PR 运行现有 Actions。只有目标行为缺失的有效 RED 才进入生产修复；无关编译/观察层失败先诊断，保留断言与原始失败。
+
+## 首轮 Actions 与责任层诊断
+
+先行测试提交：`71fbd69f7e51574c37595d5bd7b26eba5a23018c`；[draft PR #539](https://github.com/puzige/vega/pull/539)。
+[run 39762723610](https://github.com/puzige/vega/actions/runs/39762723610)，[Nextest job 119770594344](https://github.com/puzige/vega/actions/runs/39762723610/job/119770594344)。命令沿用现有 `cargo nextest list --workspace --message-format json` 与非空 `cargo nextest run --workspace`。Clippy/fmt job 成功。
+
+Nextest 原始总结：13 executed，2 passed，11 failed，0 skipped；ignored 精确清点未取得，不猜测。单行输入和 full editor 阳性对照通过。
+
+- **有效行为 RED**：`composer_wheel_and_trackpad_reach_both_ends_without_editing_or_snapback` 在 +3 行滚轮后仍显示 `draft 13`–`draft 20`，期望 `draft 10`–`draft 17`；滚动条用例在缺少可见 scrollbar 处失败。
+- **观察点错误，非产品 RED**：图片测试实际 sprite `(45,733;72×36)`，绝对定位 tracker canvas 却报告 thumbnail `(45,787;72×72)`。tracker 放在图片之后且无 inset，并不可靠代表外层缩略图盒。移到实际外层 Element 的透明观察 wrapper，不修改布局或断言。
+- **测试清理错误，非产品 RED**：IME 用例在 HeadlessAppContext drop 时报告 leaked ConversationStream/TextInput。Harness 中 context 字段先于 entity 字段 drop；应释放句柄后再 drop context，不关闭泄漏断言。
+- **测试尺寸前提，待修观察层**：8 行高度测试用未取整 `13×1.55=20.15`，而 GPUI `TextStyle::line_height_in_pixels` 按像素取整为 20；8 行误差 `1.2 > 1`。仅纠正测量单位，不放宽容差。
+- **测试 resize 前提，待修观察层**：`TestWindow::resize` 仅改平台 bounds，不触发布局 callback；需通过公开 `Window::bounds_changed(cx)` 使 viewport 更新。不把未发生的缩窄当产品失败。
+
+主 Agent 已读取原始日志与锁定源码完成责任层诊断；下一轮先修观察层并独立核对，不改 A1–A8，不改行为断言、不重试换绿、不先实现或补测追认。图片是否为有效 RED 等正确观察点的云端证据。
