@@ -455,10 +455,10 @@ async fn explicit_zero_and_finite_waits_preserve_snapshot_semantics() {
         wait(&hook, &reserved.snapshot, Some(0)).await["timed_out"],
         true
     );
+    tokio::time::pause();
     let pending = wait(&hook, &reserved.snapshot, Some(500));
     tokio::pin!(pending);
     assert!(futures::poll!(&mut pending).is_pending());
-    tokio::time::pause();
     tokio::time::advance(Duration::from_millis(499)).await;
     assert!(futures::poll!(&mut pending).is_pending());
     tokio::time::advance(Duration::from_millis(1)).await;
