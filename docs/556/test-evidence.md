@@ -42,6 +42,10 @@ The previous direct ChildProvider byte-cap assertions and the 64KiB rejection ca
 
 The independent reviewer approved the v3 context design before test revision. Existing budget-accounting and valid-large-input controls may already pass on the baseline; they are not claimed as new behavior. The new continuation projection and delegated-only disabling of automatic summaries still require behavioral RED.
 
+The revised 25-case source is committed at `5518f748` with SHA256 `48812d61121001ba24852d035b591e9334cebebdcce18d3912d1a309908d31cd`. Five compatibility cases cover all provider entry methods, complete native input/schema accounting, tool JSON/results, large followup user constraints and images. None is claimed as new behavior where it already passes.
+
+Before v3 RED, the branch incorporated master `6615748f91273bfb8ee424011b3b5a09b3777d2b` at merge `58c03afc2fc15ebeabb961dbfd16947a9b3248bd`. This includes #557's estimator v3 and initial-input compaction correction. Tests use the existing estimator and real historical messages for the ordinary-parent compaction control; they do not restore the old image byte surcharge or depend on a futile first-input summary. Production changes for #556 remain absent. Independent review of this revised test version is pending.
+
 ## Remaining gates
 
 Production implementation initially began after corrected v1 behavioral RED, then stopped for the v2 acceptance correction. New v3 RED and a newly frozen test set are required before it resumes. Same-test GREEN, independent implementation review, complete source/patch archive in the PR, separate test/support deletion, cleanup review and final exact-head full CI are pending. No delivery or actual speed improvement is claimed by this RED evidence.

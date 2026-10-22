@@ -1,7 +1,7 @@
 # Native execution bounds after #514
 
 Status: acceptance v3, revised before resumed production implementation. Related: #556, #514 / #529, #525 / #532, #522.
-Baseline: `871f91f246e90753743a256cee1eec315e74effc`. User authorization: 2026-10-22, implement execution mechanisms, retain independent review and CI.
+Observation/v1 baseline: `871f91f246e90753743a256cee1eec315e74effc`. V3 production baseline: `6615748f91273bfb8ee424011b3b5a09b3777d2b`, including the existing #557 image-budget and initial-input compaction correction. User authorization: 2026-10-22, implement execution mechanisms, retain independent review and CI.
 
 ## Evidence and limits
 
