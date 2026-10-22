@@ -9,6 +9,7 @@ This is the actual completed observation, not a treatment/control experiment. Na
 | First start → merge | 30,477,897 ms | 8h27m57.897s wall time |
 | First start → native terminal | 30,576,512 ms | 8h29m36.512s wall time |
 | Spawn / followup / wait | 5 / 19 / 215 | Actual native tool calls |
+| Explicit wait inputs | 214 × 60000 ms; 1 × 1000 ms | All 215 calls supplied a timeout; a default-only fix misses this pattern |
 | Successful model calls | 894 | Parent 483, children 411 |
 | All model request interval union | 24,096,778 ms | 6h41m36.778s; includes unknown provider queue time, not pure reasoning CPU |
 | Summary interval union | 2,302,245 ms | 38m22.245s; outer/inner events de-duplicated |
@@ -46,7 +47,7 @@ Report all pairs before aggregating. Three pairs are a small directional pilot, 
 
 | Claim | Required evidence | Current status |
 | --- | --- | --- |
-| No default timeout wake loop | Native-path controlled-time test, unchanged dependency across multiple old timeout periods | Pending Actions |
+| No repeated explicit/default wait timeout loop | Native-path replay of explicit 60000-ms calls, shared positive/zero allowance, target identity and terminal-delivery checks | v1 default case RED; revised v2 cases pending Actions |
 | Stage stops at active allowance and drains safely | Controlled-time native lifecycle test with real queue transitions and release failure | Pending Actions |
 | Stage context bounded without dropped user constraints | Provider-request capture through native followup preparation; large logs, images, long tool inputs and stale source cases | Pending Actions |
 | Independent review and CI retained | This PR's test review, RED/GREEN, implementation review, source archive, deletion review and final head gate | Pending |
