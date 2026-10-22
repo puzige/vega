@@ -192,3 +192,18 @@ Classification: **harness macro-name shadowing**, neither target boundary RED no
 A nonwriter reviewed and approved an exact controller test import-only replacement. The original writer applied it and stopped writes, preserving all six qualified GPUI attributes, test bodies, assertions, fixtures, production code, and runtime settings. Scoped binary-diff SHA-256: `f7514fb9a564379551caa0b10dd9295a526b9d994a0dd8029da3adb0e3c9c6b1`. Whole-file content outside the import block is unchanged; no recursion limit or test ignore was introduced.
 
 A required fetch found newer master `5fb9a3d0491c620a901e67a0e3f348ba05bd76c6` (bounded native delegation/context, #561). Parent inspected the nonoverlapping paths and merged it without conflicts as `2d638b37f93743837fc3f44a4403f400f12b90cb`, preserving the stopped import patch and all prior commits. Artifact implementation and test files were unchanged by that integration. The next existing Actions run must evaluate this current integrated baseline; no prior result substitutes for it. Deduplication repair remains withheld until valid boundary RED.
+
+## Explicit-import correction — incomplete inventory failure
+
+- Import-hygiene commit: `b68bda5644c76962ddc375585e65bf54ecd817e1`.
+- Run: <https://github.com/puzige/vega/actions/runs/39844416136>, created `2026-10-22T19:56:03Z`, failure.
+- Actual Nextest checkout: `80c388351d6aad2f1de1e0867b8ce25e9091cefa`, synthetic merge of that head into master `5fb9a3d0491c620a901e67a0e3f348ba05bd76c6`.
+- Nextest: <https://github.com/puzige/vega/actions/runs/39844416136/job/120053787072>.
+- Clippy: <https://github.com/puzige/vega/actions/runs/39844416136/job/120053786616>.
+- Required aggregator: <https://github.com/puzige/vega/actions/runs/39844416136/job/120060129508>.
+
+Macro recursion is no longer reported. Both jobs instead fail on five controller harness import errors introduced by the incomplete explicit-import list: three E0599 `update_global` calls (lines 1413, 1559, 1616) require `gpui_kit::BorrowAppContext`, and two E0433 `WorkspaceFileId` uses (1424, 1816) require the existing conversation type. The parent inspected both original job logs and the locked trait definition. No behavior assertions ran; discovery/execution/pass/fail/ignore/skip counts remain unavailable, and this is not boundary RED or GREEN.
+
+The prior import-list reviewer independently diagnosed the omissions: its inventory missed the extension trait and omitted a known identifier when assembling the final list. The reviewer acknowledged the responsible harness layer and approved exactly two missing named imports, preserving the existing methods, bodies, assertions, fixtures, and execution settings. Do not replace `update_global`, restore wildcards, raise recursion limits, or suppress these errors. The same writer received only this two-import repair scope; no deduplication repair is authorized.
+
+The whole-run status initially remained queued even though Nextest had finished; later its completed job log was retrievable through the existing GitHub job-log API while Clippy was running. CLI refusal to supply logs was treated as an observation limitation, never success or target RED. Clippy's eventual raw log confirmed the same five missing-import errors.

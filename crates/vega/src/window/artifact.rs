@@ -1212,6 +1212,7 @@ mod tests {
         SummaryCost, TaskBackend, TaskCostSummary, TaskSummaryOutcome, Thread, ThreadMode,
         ThreadStatus, ToolCall, ToolCallStatus, ToolResult, VegaStore, VegaWindow,
     };
+    use gpui_kit::BorrowAppContext;
     use gpui_kit::{
         App, AppContext, Bounds, Context, Entity, Global, IntoElement, ParentElement, Render,
         Styled, TestAppContext, Window, WindowBounds, WindowHandle, WindowOptions, div, px, size,
@@ -1221,6 +1222,7 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
     use vega_conversation::types::ArtifactCard as ArtifactProjection;
+    use vega_conversation::types::WorkspaceFileId;
     use vega_theme::theme;
     use vega_ui::artifact_card::observation::{
         frame, group_painted, group_texts, items, ordered, painted, texts,
