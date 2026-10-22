@@ -1608,7 +1608,8 @@ pub(crate) mod tests {
                         hover_point(window, target.bounds().center(), cx);
                     });
                     cx.run_until_parked();
-                    cx.advance_clock(std::time::Duration::from_secs(1));
+                    cx.executor()
+                        .advance_clock(std::time::Duration::from_secs(1));
                     cx.run_until_parked();
                     in_window(cx, handle, |_, window, cx| {
                         frame(window, cx);

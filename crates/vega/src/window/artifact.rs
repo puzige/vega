@@ -1376,7 +1376,7 @@ mod tests {
 
     fn rendered(
         handle: WindowHandle<StreamHost>,
-        cx: &TestAppContext,
+        cx: &mut TestAppContext,
         assertion: impl FnOnce(&Window, &App),
     ) {
         cx.update_window(handle.into(), |_, window, cx| {
