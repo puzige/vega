@@ -1,0 +1,618 @@
+{
+  "schema_version": 1,
+  "dataset_version": "vega-microtasks-v1",
+  "tasks": [
+    {
+      "task_id": "routing-owner",
+      "domain": "retrieval",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read routing.txt. Save the primary owner and fallback for the blue queue to answer.json, with keys owner and fallback.",
+      "seed_files": {
+        "routing.txt": "queue,owner,fallback\nblue,Ada,Milo\ngreen,Ivo,Nia\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "owner": "Ada",
+              "fallback": "Milo"
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "shipment-total",
+      "domain": "retrieval",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read shipments.csv. Sum units for shipped rows only. Save {\"shipped_units\": number} to answer.json.",
+      "seed_files": {
+        "shipments.csv": "id,status,units\nA,shipped,7\nB,pending,19\nC,shipped,5\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "shipped_units": 12
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "runbook-current",
+      "domain": "retrieval",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read both runbook files. Select the instruction with the newer explicit revision, regardless of its filename. Save its exact command as one line in answer.txt.",
+      "seed_files": {
+        "runbook-new.txt": "revision: 2\ncommand: restart blue\n",
+        "runbook-archive.txt": "revision: 5\ncommand: drain green\n"
+      },
+      "writable_paths": [
+        "answer.txt"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.txt": {
+            "kind": "text",
+            "value": "drain green\n"
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "meeting-actions",
+      "domain": "retrieval",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read notes.md. Save the assigned actions to answer.json as an array of {owner, action}, preserving note order and excluding discussion-only lines.",
+      "seed_files": {
+        "notes.md": "# Notes\nDiscussion: move the review date.\nAction — Emi: send agenda\nDiscussion: improve the dashboard.\nAction — Noor: check capacity\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": [
+              {
+                "owner": "Emi",
+                "action": "send agenda"
+              },
+              {
+                "owner": "Noor",
+                "action": "check capacity"
+              }
+            ]
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "stock-threshold",
+      "domain": "retrieval",
+      "split": "holdout",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read stock.json. Save alphabetically sorted names whose available quantity is below their reorder threshold to answer.json under key reorder.",
+      "seed_files": {
+        "stock.json": "{\"items\":[{\"name\":\"bolt\",\"available\":4,\"threshold\":5},{\"name\":\"cap\",\"available\":3,\"threshold\":3},{\"name\":\"axle\",\"available\":0,\"threshold\":2}]}\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "reorder": [
+                "axle",
+                "bolt"
+              ]
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "coverage-window",
+      "domain": "retrieval",
+      "split": "holdout",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read windows.txt. Which non-overlapping window contains minute 75? Use inclusive start and exclusive end. Save {\"window\": name} in answer.json.",
+      "seed_files": {
+        "windows.txt": "dawn: 0..60\nday: 60..120\nnight: 120..180\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "window": "day"
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "config-port",
+      "domain": "file_edit",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read service.toml. Write a revised copy to revised.toml changing only port from 4100 to 4200; preserve every other byte.",
+      "seed_files": {
+        "service.toml": "name = \"demo\"\nport = 4100\nworkers = 2\n"
+      },
+      "writable_paths": [
+        "revised.toml"
+      ],
+      "oracle": {
+        "artifacts": {
+          "revised.toml": {
+            "kind": "text",
+            "value": "name = \"demo\"\nport = 4200\nworkers = 2\n"
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "csv-status",
+      "domain": "file_edit",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read jobs.csv. Write revised.csv changing only job b status from queued to ready. Keep the header, row order, and other values unchanged.",
+      "seed_files": {
+        "jobs.csv": "id,status,priority\na,ready,2\nb,queued,1\nc,queued,3\n"
+      },
+      "writable_paths": [
+        "revised.csv"
+      ],
+      "oracle": {
+        "artifacts": {
+          "revised.csv": {
+            "kind": "text",
+            "value": "id,status,priority\na,ready,2\nb,ready,1\nc,queued,3\n"
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "json-retry",
+      "domain": "file_edit",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read client.json. Save revised.json with retry_limit set to 3, preserving all other JSON fields and values.",
+      "seed_files": {
+        "client.json": "{\"retry_limit\":1,\"endpoint\":\"demo.invalid\",\"labels\":[\"blue\",\"safe\"]}\n"
+      },
+      "writable_paths": [
+        "revised.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "revised.json": {
+            "kind": "json",
+            "value": {
+              "retry_limit": 3,
+              "endpoint": "demo.invalid",
+              "labels": [
+                "blue",
+                "safe"
+              ]
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "checklist-one",
+      "domain": "file_edit",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read checklist.md. Write revised.md marking only the second checkbox complete. Preserve all other bytes.",
+      "seed_files": {
+        "checklist.md": "# Launch\n- [ ] prepare\n- [ ] review\n- [ ] publish\n"
+      },
+      "writable_paths": [
+        "revised.md"
+      ],
+      "oracle": {
+        "artifacts": {
+          "revised.md": {
+            "kind": "text",
+            "value": "# Launch\n- [ ] prepare\n- [x] review\n- [ ] publish\n"
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "manifest-target",
+      "domain": "file_edit",
+      "split": "holdout",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read manifest.json. Save revised.json changing only the beta component version to 2.4.1.",
+      "seed_files": {
+        "manifest.json": "{\"components\":{\"alpha\":\"1.0.0\",\"beta\":\"2.4.0\"},\"channel\":\"trial\"}\n"
+      },
+      "writable_paths": [
+        "revised.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "revised.json": {
+            "kind": "json",
+            "value": {
+              "components": {
+                "alpha": "1.0.0",
+                "beta": "2.4.1"
+              },
+              "channel": "trial"
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "quoted-token",
+      "domain": "file_edit",
+      "split": "holdout",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read guide.txt. Write revised.txt replacing only the standalone token RED with GREEN. Preserve REDWOOD and lower-case red, whitespace and punctuation.",
+      "seed_files": {
+        "guide.txt": "RED REDWOOD\nred, RED.\n"
+      },
+      "writable_paths": [
+        "revised.txt"
+      ],
+      "oracle": {
+        "artifacts": {
+          "revised.txt": {
+            "kind": "text",
+            "value": "GREEN REDWOOD\nred, GREEN.\n"
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "missing-primary",
+      "domain": "recovery",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "First read primary.txt. If it is unavailable, read fallback.txt. Save the resolved contact as {\"contact\": value} to answer.json.",
+      "seed_files": {
+        "fallback.txt": "contact: Ari\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "contact": "Ari"
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "malformed-source",
+      "domain": "recovery",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read primary.json. If it is not valid JSON, use backup.json. Save the selected region to answer.json as {\"region\": value}.",
+      "seed_files": {
+        "primary.json": "{\"region\":",
+        "backup.json": "{\"region\":\"west\"}\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "region": "west"
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "unknown-enum",
+      "domain": "recovery",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read state.txt. Only open and closed are valid. If the source contains any other state, save {\"status\":\"needs_review\",\"raw\":source_value} to answer.json. Do not guess a valid replacement.",
+      "seed_files": {
+        "state.txt": "paused\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "status": "needs_review",
+              "raw": "paused"
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "conflict-evidence",
+      "domain": "recovery",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read active.txt and backup.txt. Both have the same revision but disagree on the owner. Save {\"status\":\"conflict\",\"owners\":[...]} to answer.json with owners alphabetically sorted; do not choose one.",
+      "seed_files": {
+        "active.txt": "revision: 8\nowner: Ren\n",
+        "backup.txt": "revision: 8\nowner: Lea\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "status": "conflict",
+              "owners": [
+                "Lea",
+                "Ren"
+              ]
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "empty-primary",
+      "domain": "recovery",
+      "split": "holdout",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read roster.csv. Ignore blank rows. If no data rows remain, use roster-backup.csv. Save the single selected owner under owner in answer.json.",
+      "seed_files": {
+        "roster.csv": "owner\n\n",
+        "roster-backup.csv": "owner\nTao\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "owner": "Tao"
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "missing-field",
+      "domain": "recovery",
+      "split": "holdout",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Read request.json. The owner field is required; when absent, save {\"status\":\"incomplete\",\"missing\":[\"owner\"]} to answer.json instead of inventing a value.",
+      "seed_files": {
+        "request.json": "{\"title\":\"Prepare demo\",\"priority\":2}\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "status": "incomplete",
+              "missing": [
+                "owner"
+              ]
+            }
+          }
+        },
+        "required_skills": []
+      }
+    },
+    {
+      "task_id": "decision-record",
+      "domain": "skills",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Use the record-format skill. Read decision.txt and save the required JSON decision record to answer.json.",
+      "seed_files": {
+        "decision.txt": "Task: rotate demo queue\nDecision: approve\nOwner: Ada\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "task": "rotate demo queue",
+              "decision": "approve",
+              "owner": "Ada"
+            }
+          }
+        },
+        "required_skills": [
+          "record-format"
+        ]
+      }
+    },
+    {
+      "task_id": "table-verified",
+      "domain": "skills",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Use the table-total skill. Read counts.csv and save the skill-defined JSON result to answer.json.",
+      "seed_files": {
+        "counts.csv": "name,count\na,2\nb,5\nc,1\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "rows": 3,
+              "total": 8
+            }
+          }
+        },
+        "required_skills": [
+          "table-total"
+        ]
+      }
+    },
+    {
+      "task_id": "status-blocked",
+      "domain": "skills",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Use the status-line skill. Read status.txt and save the skill-defined status line to answer.txt.",
+      "seed_files": {
+        "status.txt": "task: package demo\nstate: blocked\nnext: provide manifest\n"
+      },
+      "writable_paths": [
+        "answer.txt"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.txt": {
+            "kind": "text",
+            "value": "package demo | blocked | provide manifest\n"
+          }
+        },
+        "required_skills": [
+          "status-line"
+        ]
+      }
+    },
+    {
+      "task_id": "decision-defer",
+      "domain": "skills",
+      "split": "optimization",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Use the record-format skill. Read decision.txt and save the required JSON decision record to answer.json.",
+      "seed_files": {
+        "decision.txt": "Task: migrate sample cache\nDecision: defer\nOwner: Noor\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "task": "migrate sample cache",
+              "decision": "defer",
+              "owner": "Noor"
+            }
+          }
+        },
+        "required_skills": [
+          "record-format"
+        ]
+      }
+    },
+    {
+      "task_id": "table-zero",
+      "domain": "skills",
+      "split": "holdout",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Use the table-total skill. Read counts.csv and save the skill-defined JSON result to answer.json.",
+      "seed_files": {
+        "counts.csv": "name,count\na,0\nb,4\n"
+      },
+      "writable_paths": [
+        "answer.json"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.json": {
+            "kind": "json",
+            "value": {
+              "rows": 2,
+              "total": 4
+            }
+          }
+        },
+        "required_skills": [
+          "table-total"
+        ]
+      }
+    },
+    {
+      "task_id": "status-ready",
+      "domain": "skills",
+      "split": "holdout",
+      "source": "original-synthetic-vega-microtasks-v1",
+      "task_prompt": "Use the status-line skill. Read status.txt and save the skill-defined status line to answer.txt.",
+      "seed_files": {
+        "status.txt": "task: review sample\nstate: ready\nnext: inspect diff\n"
+      },
+      "writable_paths": [
+        "answer.txt"
+      ],
+      "oracle": {
+        "artifacts": {
+          "answer.txt": {
+            "kind": "text",
+            "value": "review sample | ready | inspect diff\n"
+          }
+        },
+        "required_skills": [
+          "status-line"
+        ]
+      }
+    }
+  ]
+}
