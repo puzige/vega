@@ -349,6 +349,16 @@ impl ConversationStream {
             .id("message-anchor-rail")
             .aria_label("消息导航，使用上下键选择，Enter跳转，Esc关闭预览")
             .tab_stop(true)
+            .map(|rail| {
+                #[cfg(test)]
+                {
+                    gpui_kit::TestSupportExt::test_support(rail)
+                }
+                #[cfg(not(test))]
+                {
+                    rail
+                }
+            })
             .track_focus(&self.message_anchor_focus)
             .absolute()
             .left(px(rail_left))
@@ -494,6 +504,16 @@ impl ConversationStream {
                                         colors.conversation_marker
                                     }),
                             )
+                            .map(|marker| {
+                                #[cfg(test)]
+                                {
+                                    gpui_kit::TestSupportExt::test_support(marker)
+                                }
+                                #[cfg(not(test))]
+                                {
+                                    marker
+                                }
+                            })
                     }),
             )
             .into_any_element();
@@ -553,6 +573,16 @@ fn render_message_anchor_preview(
                 cx.notify();
             }),
         )
+        .map(|preview| {
+            #[cfg(test)]
+            {
+                gpui_kit::TestSupportExt::test_support(preview)
+            }
+            #[cfg(not(test))]
+            {
+                preview
+            }
+        })
         .into_any_element()
 }
 
