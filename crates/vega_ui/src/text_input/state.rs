@@ -27,6 +27,7 @@ impl TextInput {
             mouse_selection: None,
             bare_chrome: false,
             editor_scroll: None,
+            scroll_handle: element::TextScrollHandle::default(),
             scrollable_editor: false,
             scroll_fade_on_base: false,
             total_visual_rows: 1,
@@ -100,6 +101,9 @@ impl TextInput {
         self.marked_range = None;
         self.rows = self.min_rows;
         self.first_visible_row = 0;
+        self.total_visual_rows = 1;
+        self.editor_scroll = None;
+        self.scroll_handle.reset();
         cx.notify();
     }
 
@@ -110,6 +114,8 @@ impl TextInput {
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
+        self.editor_scroll = None;
+        self.scroll_handle.reset();
         self.update_logical_viewport();
         cx.notify();
     }

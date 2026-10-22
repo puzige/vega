@@ -351,6 +351,10 @@ impl ConversationStream {
             return false;
         }
         self.context_control.estimate = Some(record.predicted_input);
+        // The record carries the runtime's own per-run input budget, so the
+        // ring has a real denominator during the run instead of only after the
+        // post-run projection refresh.
+        self.context_control.model_input_limit = Some(record.input_budget);
         self.context_control.live_accounting = Some((message_id.to_string(), record));
         cx.notify();
         true
