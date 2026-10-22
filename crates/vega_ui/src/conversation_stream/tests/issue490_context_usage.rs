@@ -57,27 +57,29 @@ fn accounting(predicted_input: u64, input_budget: u64, revision: u64) -> Context
 #[gpui_kit::test]
 async fn issue490_accounting_supplies_runtime_input_budget_as_denominator(cx: &mut TestAppContext) {
     let window = setup(cx);
-    window.update(cx, |stream, _, cx| {
-        stream.begin_composer_run(cx);
-        stream.apply_event(
-            ConversationEvent::MessageStarted {
-                message_id: "run-1".into(),
-                seq: 1,
-            },
-            cx,
-        );
-        assert!(stream.apply_context_accounting(
-            "context-thread",
-            "mock",
-            "run-1",
-            accounting(120_000, 400_000, 1),
-            cx,
-        ));
-        assert_eq!(
-            stream.context_usage_source(),
-            (Some(120_000), Some(400_000))
-        );
-    });
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "run-1".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            assert!(stream.apply_context_accounting(
+                "context-thread",
+                "mock",
+                "run-1",
+                accounting(120_000, 400_000, 1),
+                cx,
+            ));
+            assert_eq!(
+                stream.context_usage_source(),
+                (Some(120_000), Some(400_000))
+            );
+        })
+        .expect("window update");
 }
 
 /// C490-05: a projection refresh during the run updates the denominator but must
@@ -87,35 +89,37 @@ async fn issue490_projection_limit_is_kept_while_accounting_owns_numerator(
     cx: &mut TestAppContext,
 ) {
     let window = setup(cx);
-    window.update(cx, |stream, _, cx| {
-        stream.begin_composer_run(cx);
-        stream.apply_event(
-            ConversationEvent::MessageStarted {
-                message_id: "run-1".into(),
-                seq: 1,
-            },
-            cx,
-        );
-        assert!(stream.apply_context_accounting(
-            "context-thread",
-            "mock",
-            "run-1",
-            accounting(120_000, 400_000, 1),
-            cx,
-        ));
-        assert!(stream.apply_context_projection(
-            "context-thread",
-            "mock",
-            None,
-            ContextUsageProjection::new(Some(500_000), Some(999_000)),
-            false,
-            cx,
-        ));
-        assert_eq!(
-            stream.context_usage_source(),
-            (Some(120_000), Some(500_000))
-        );
-    });
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "run-1".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            assert!(stream.apply_context_accounting(
+                "context-thread",
+                "mock",
+                "run-1",
+                accounting(120_000, 400_000, 1),
+                cx,
+            ));
+            assert!(stream.apply_context_projection(
+                "context-thread",
+                "mock",
+                None,
+                ContextUsageProjection::new(Some(500_000), Some(999_000)),
+                false,
+                cx,
+            ));
+            assert_eq!(
+                stream.context_usage_source(),
+                (Some(120_000), Some(500_000))
+            );
+        })
+        .expect("window update");
 }
 
 /// C490-04: with no accounting and no projection the ring has no denominator and
@@ -123,26 +127,30 @@ async fn issue490_projection_limit_is_kept_while_accounting_owns_numerator(
 #[gpui_kit::test]
 async fn issue490_without_accounting_no_denominator_is_invented(cx: &mut TestAppContext) {
     let window = setup(cx);
-    window.update(cx, |stream, _, _cx| {
-        assert_eq!(stream.context_usage_source(), (None, None));
-    });
+    window
+        .update(cx, |stream, _, _cx| {
+            assert_eq!(stream.context_usage_source(), (None, None));
+        })
+        .expect("window update");
 }
 
 /// C490-03: outside a run the projection is the denominator source.
 #[gpui_kit::test]
 async fn issue490_projection_limit_applies_when_no_run_is_active(cx: &mut TestAppContext) {
     let window = setup(cx);
-    window.update(cx, |stream, _, cx| {
-        assert!(stream.apply_context_projection(
-            "context-thread",
-            "mock",
-            None,
-            ContextUsageProjection::new(Some(500_000), Some(5_000)),
-            false,
-            cx,
-        ));
-        assert_eq!(stream.context_usage_source(), (Some(5_000), Some(500_000)));
-    });
+    window
+        .update(cx, |stream, _, cx| {
+            assert!(stream.apply_context_projection(
+                "context-thread",
+                "mock",
+                None,
+                ContextUsageProjection::new(Some(500_000), Some(5_000)),
+                false,
+                cx,
+            ));
+            assert_eq!(stream.context_usage_source(), (Some(5_000), Some(500_000)));
+        })
+        .expect("window update");
 }
 
 /// C490-07: switching the thread model clears both values until the new model's
@@ -150,18 +158,20 @@ async fn issue490_projection_limit_applies_when_no_run_is_active(cx: &mut TestAp
 #[gpui_kit::test]
 async fn issue490_model_change_clears_usage(cx: &mut TestAppContext) {
     let window = setup(cx);
-    window.update(cx, |stream, _, cx| {
-        assert!(stream.apply_context_projection(
-            "context-thread",
-            "mock",
-            None,
-            ContextUsageProjection::new(Some(500_000), Some(5_000)),
-            false,
-            cx,
-        ));
-        let mut thread = stream.thread.clone();
-        thread.model = "other".into();
-        stream.apply_thread(thread, cx);
-        assert_eq!(stream.context_usage_source(), (None, None));
-    });
+    window
+        .update(cx, |stream, _, cx| {
+            assert!(stream.apply_context_projection(
+                "context-thread",
+                "mock",
+                None,
+                ContextUsageProjection::new(Some(500_000), Some(5_000)),
+                false,
+                cx,
+            ));
+            let mut thread = stream.thread.clone();
+            thread.model = "other".into();
+            stream.apply_thread(thread, cx);
+            assert_eq!(stream.context_usage_source(), (None, None));
+        })
+        .expect("window update");
 }
