@@ -245,6 +245,28 @@ impl VegaWindow {
         self.artifact_controller.retire_drained();
     }
 
+    pub(crate) fn detach_finished_computer_use(
+        &mut self,
+        generation: u64,
+        thread_id: &str,
+        stream: &Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.agent_controller.matches(generation, thread_id, stream) {
+            return;
+        }
+        let outgoing_error = self
+            .agent_controller
+            .active
+            .get(thread_id)
+            .and_then(|active| active.computer_use.as_ref())
+            .and_then(|control| control.status().error);
+        let context = stream.read(cx).computer_use_task_context();
+        stream.update(cx, |stream, cx| {
+            stream.detach_computer_use_control(&context, outgoing_error, cx);
+        });
+    }
+
     /// Applies one drained batch through the production ownership boundary.
     /// The caller remains responsible for finished-run reload and UI recovery.
     pub(crate) fn apply_agent_batch_ingress(
@@ -375,6 +397,7 @@ impl VegaWindow {
         };
         let reference_failure = batch.reference_failure;
         self.poison_artifact_agent_generation(generation, stream);
+        self.detach_finished_computer_use(generation, thread_id, stream, cx);
         let Some(run) = self.agent_controller.finish(generation, thread_id, stream) else {
             return AgentBatchIngress::Stale;
         };
