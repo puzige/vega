@@ -624,7 +624,7 @@ impl ThreadsBlock {
                 .text_color(colors.text_tertiary)
                 .child("暂无最近任务")
         });
-        div()
+        let recents = div()
             .id("organization-recents")
             .flex()
             .flex_col()
@@ -637,8 +637,10 @@ impl ThreadsBlock {
                     .flex_col()
                     .children(empty)
                     .children(rows),
-            )
-            .into_any_element()
+            );
+        #[cfg(test)]
+        let recents = gpui_kit::test::TestSupportExt::test_support(recents);
+        recents.into_any_element()
     }
 
     fn render_projects_pi(
@@ -953,14 +955,21 @@ impl ThreadsBlock {
                         !actions_visible,
                         cx,
                     ))
-                    .child(self.vector_control(
-                        format!("project-more-{}", project.id),
-                        format!("{} 项目操作", project.name),
-                        crate::icons::Icon::More,
-                        Control::Menu(OrganizationMenu::Project(project_for_menu)),
-                        !actions_visible,
-                        cx,
-                    )),
+                    .child(
+                        self.vector_control(
+                            format!("project-more-{}", project.id),
+                            format!("{} 项目操作", project.name),
+                            crate::icons::Icon::More,
+                            Control::Menu(OrganizationMenu::Project(project_for_menu)),
+                            !actions_visible,
+                            cx,
+                        )
+                        .map(|control| {
+                            #[cfg(test)]
+                            let control = gpui_kit::test::TestSupportExt::test_support(control);
+                            control
+                        }),
+                    ),
             );
         let mut section = div()
             .id(ElementId::Name(
