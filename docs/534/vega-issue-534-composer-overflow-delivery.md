@@ -82,3 +82,17 @@ Nextest 原始总结：13 executed，2 passed，11 failed，0 skipped；ignored 
 冻结来源：[测试源码](https://github.com/puzige/vega/blob/438b442b22666b316571544cbf0dd18f0884b968/crates/vega_ui/src/conversation_stream/composer_overflow_tests.rs)，SHA-256 `f992b3baeaef49e0d0b11b0dd389ff5afb0890736f7c7f41f82a1ec391100b6e`；观察器 SHA-256 `66bc47a673bb9e0f2753374722b446efd2236ace62dd15dfec16a76101b80747`。主 Agent 已独立核对修正差异；验收、数据、容差未放宽。
 
 本轮从此冻结测试，不补测、不追改预期。专职生产写入者获得实施授权：固定真实 img 尺寸与裁剪，修 Composer 滚轮、滚动条和光标跟随协调；不更改预测、IME、发送数据或单行/大编辑器契约。本地仍仅静态检查，等待停写版本与同一测试云端 GREEN。
+
+## 首轮生产 GREEN 与独立审查追加边界
+
+生产提交：`6d42df0e8451a5307553f32a837d4c9d093ba265`。专职写入者 READY 停写；四个生产文件的原始差异 SHA-256 `50af6c5ad2d7950405e71cbff623863b00ad677699e6ca7b0fcd2f6d149aeb7c`。
+
+[run 39768887370](https://github.com/puzige/vega/actions/runs/39768887370)，[Nextest job 119791131907](https://github.com/puzige/vega/actions/runs/39768887370/job/119791131907)，[Clippy job 119791131313](https://github.com/puzige/vega/actions/runs/39768887370/job/119791131313)，[required check 119793917149](https://github.com/puzige/vega/actions/runs/39768887370/job/119793917149) 全部成功。
+
+- 同一冻结 13 个测试：13 discovered，13 executed，13 passed，0 failed，0 skipped；ignored 未单独提取。Python 三组 5+15+40 全部 OK。
+- 主 Agent 对比冻结提交与 GREEN 提交的测试/观察器，diff 为空；未修改断言、数据或跳过用例。
+- 原始源码、patch、完整 SHA 和 RED/GREEN 证据在 [PR #539 留档](https://github.com/puzige/vega/pull/539#issuecomment-6339552984)并通过 API 读回来源可达。
+
+独立非实现者审查请求更改：`text_input/element.rs:225–253` 在完整剩余字符串中按下一字形位置选断点，然后独立排版前缀，却不检查最终前缀宽度。上下文字距会使独立前缀比先前位置更宽，存在 A5 未覆盖的裁切/进入滚动条槽风险。主 Agent 已复查实际 `closest_index_for_x` / `x_for_index` / `shape_line` 语义，确认责任层为生产折行逻辑而非 CI 或旧测试错误。
+
+这是遗漏边界，不把旧 GREEN 充作其证据，也不实现后补测。规格 v1.1 追加 A9，以 `6d42df0e8451a5307553f32a837d4c9d093ba265` 为新生产基线重新先测后修；先保留旧 13 个测试并写 A9 及必要阳性对照，再独立审查/云端有效 RED 后修生产。原轮 A1–A8 的 GREEN 结论保留，新轮全部回归仍须 GREEN；现阶段不删测、不转正式、不合并。

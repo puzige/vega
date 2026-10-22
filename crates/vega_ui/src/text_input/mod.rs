@@ -88,6 +88,8 @@ mod element;
 mod input_handler;
 mod mouse_selection;
 mod state;
+#[cfg(test)]
+mod wrapping_tests;
 
 /// Explicit Composer-only clipboard intent; never log clipboard payloads.
 pub struct ImagePaste(pub std::sync::Arc<ClipboardItem>);

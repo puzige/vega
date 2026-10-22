@@ -143,7 +143,7 @@ impl<E: Element> Element for ObservedBounds<E> {
     }
 }
 
-struct ObservableFont;
+pub(crate) struct ObservableFont;
 
 impl PlatformTextSystem for ObservableFont {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
@@ -345,18 +345,22 @@ impl PlatformHeadlessRenderer for RecordingRenderer {
 }
 
 pub(crate) fn context(dark: bool) -> (HeadlessAppContext, SceneRecorder) {
+    context_with_font(dark, Arc::new(ObservableFont))
+}
+
+pub(crate) fn context_with_font(
+    dark: bool,
+    font: Arc<dyn PlatformTextSystem>,
+) -> (HeadlessAppContext, SceneRecorder) {
     let recorder = SceneRecorder::default();
     let renderer_recorder = recorder.clone();
-    let mut cx = HeadlessAppContext::with_platform(
-        Arc::new(ObservableFont),
-        Arc::new(gpui_kit::assets::Assets),
-        move || {
+    let mut cx =
+        HeadlessAppContext::with_platform(font, Arc::new(gpui_kit::assets::Assets), move || {
             Some(Box::new(RecordingRenderer {
                 recorder: renderer_recorder.clone(),
                 atlas: Arc::new(RecordingAtlas::default()),
             }))
-        },
-    );
+        });
     cx.update(|cx| {
         gpui_kit::init(cx);
         crate::init(cx);
