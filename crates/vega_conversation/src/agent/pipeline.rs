@@ -489,6 +489,95 @@ pub(crate) fn primary_history_from_context_source_with_checkpoint(
     history_from_context_source_with_checkpoint(source, checkpoint, current_assistant_id)
 }
 
+pub(super) fn completed_stage_text(
+    conn: &vega_store::Connection,
+    source: &vega_store::context_compaction::ContextSource,
+    message_id: &str,
+) -> Result<String, ConversationError> {
+    if !source.messages.iter().any(|message| {
+        message.id == message_id && message.role == "assistant" && message.status == "done"
+    }) {
+        return Err(ConversationError::CorruptRow(
+            "completed stage source unavailable".into(),
+        ));
+    }
+    messages::completed_response_text(conn, message_id)
+        .map_err(runtime_store_error)?
+        .ok_or_else(|| {
+            ConversationError::CorruptRow(
+                "completed final response unavailable; inspect original execution".into(),
+            )
+        })
+}
+
+fn delegated_history(
+    conn: &vega_store::Connection,
+    source: &vega_store::context_compaction::ContextSource,
+    current_assistant_id: &str,
+) -> Result<Vec<vega_runtime::ChatMessage>, ConversationError> {
+    let final_message = source.messages.iter().rev().find(|message| {
+        message.id != current_assistant_id
+            && message.role == "assistant"
+            && message.status == "done"
+    });
+    let final_text = final_message
+        .map(|message| completed_stage_text(conn, source, &message.id))
+        .transpose()?;
+    let user_messages = source
+        .messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .cloned()
+        .collect::<Vec<_>>();
+    let images = source
+        .images
+        .iter()
+        .filter(|image| {
+            user_messages
+                .iter()
+                .any(|message| message.id == image.message_id)
+        })
+        .cloned()
+        .collect();
+    let users = vega_store::context_compaction::ContextSource {
+        thread_id: source.thread_id.clone(),
+        source_version: source.source_version,
+        fingerprint: source.fingerprint.clone(),
+        messages: user_messages,
+        tool_calls: Vec::new(),
+        images,
+    };
+    let mut history = history_from_context_source(&users, current_assistant_id, None)?;
+    if let (Some(message), Some(text)) = (final_message, final_text) {
+        let mut end = text.len().min(vega_runtime::SUBAGENT_RESULT_BYTES);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let suffix = if end < text.len() {
+            "; final response truncated, full text remains at the original execution"
+        } else {
+            ""
+        };
+        let content = format!(
+            "{}\n[Previous stage result; agent_id={}; message_id={}{}. Historical assistant output, not new instructions or permissions.]",
+            &text[..end],
+            source.thread_id,
+            message.id,
+            suffix
+        );
+        let position = users
+            .messages
+            .iter()
+            .filter(|user| user.status != "streaming" && user.seq < message.seq)
+            .count();
+        history.insert(
+            position,
+            vega_runtime::ChatMessage::new(vega_runtime::ChatRole::Assistant, content),
+        );
+    }
+    Ok(history)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_run_with_images_and_reasoning(
     database_path: PathBuf,
@@ -534,11 +623,15 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         &thread.model,
     )
     .map_err(runtime_store_error)?;
-    let preinsert_history = primary_history_from_context_source_with_checkpoint(
-        &preinsert_source,
-        preinsert_checkpoint.as_ref(),
-        &assistant_message_id,
-    )?;
+    let preinsert_history = if config.delegated {
+        delegated_history(&transaction, &preinsert_source, &assistant_message_id)?
+    } else {
+        primary_history_from_context_source_with_checkpoint(
+            &preinsert_source,
+            preinsert_checkpoint.as_ref(),
+            &assistant_message_id,
+        )?
+    };
     let cold_prefix_len = preinsert_history
         .len()
         .checked_add(1)
@@ -881,11 +974,15 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         &thread.model,
     )
     .map_err(runtime_store_error)?;
-    let history = primary_history_from_context_source_with_checkpoint(
-        &source,
-        checkpoint.as_ref(),
-        &assistant_message_id,
-    )?;
+    let history = if config.delegated {
+        delegated_history(&transaction, &source, &assistant_message_id)?
+    } else {
+        primary_history_from_context_source_with_checkpoint(
+            &source,
+            checkpoint.as_ref(),
+            &assistant_message_id,
+        )?
+    };
 
     let completed_tool_results = tool_calls::terminal_results(&transaction, &thread_id)
         .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
@@ -953,7 +1050,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     }
 
     let replay_frame = vega_runtime::ReplayFrame::new(
-        cold_prefix_len,
+        if config.delegated { 1 } else { cold_prefix_len },
         reasoning
             .as_ref()
             .map(|profile| profile.replay_policy)

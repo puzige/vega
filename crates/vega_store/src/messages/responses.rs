@@ -128,3 +128,34 @@ pub(super) fn for_page(
     }
     Ok(validated)
 }
+
+pub fn completed_response_text(
+    conn: &Connection,
+    message_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    let Some(owner) = find(conn, message_id)? else {
+        return Ok(None);
+    };
+    if owner.role != "assistant" || owner.status != "done" {
+        return Ok(None);
+    }
+    let responses = read_for_message(conn, message_id)?;
+    let mut end = 0;
+    let mut final_text = None;
+    for response in responses {
+        if !response.valid_for(&owner.content)
+            || response.text_start_bytes < end
+            || final_text.is_some()
+        {
+            return Ok(None);
+        }
+        end = response.text_end_bytes;
+        if response.kind == "final" {
+            final_text = owner
+                .content
+                .get(response.text_start_bytes..response.text_end_bytes)
+                .map(str::to_string);
+        }
+    }
+    Ok(final_text)
+}
