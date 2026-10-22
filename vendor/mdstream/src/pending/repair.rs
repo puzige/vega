@@ -46,7 +46,18 @@ impl<'a> PendingRepair<'a> {
                 continue;
             }
             if start > cursor {
-                out.push_str(&self.apply_prose(&text[cursor..start]));
+                let prose = &text[cursor..start];
+                let separator_start = prose
+                    .char_indices()
+                    .rev()
+                    .find_map(|(index, character)| {
+                        (!matches!(character, ' ' | '\t' | '\r' | '\n'))
+                            .then_some(index + character.len_utf8())
+                    })
+                    .unwrap_or_default();
+                let (prose, separator) = prose.split_at(separator_start);
+                out.push_str(&self.apply_prose(prose));
+                out.push_str(separator);
             }
             out.push_str(&text[start.max(cursor)..end]);
             cursor = end;

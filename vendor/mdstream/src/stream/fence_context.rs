@@ -34,6 +34,22 @@ impl FenceContext {
         !owners.is_empty() && fence_start(&line[cursor.byte..]).is_some()
     }
 
+    pub(crate) fn continues_list_quote(&self, line: &str) -> bool {
+        let mut cursor = Cursor::default();
+        let mut in_list = false;
+        for owner in &self.containers {
+            if !cursor.consume_owner(line, *owner) {
+                return false;
+            }
+            match owner {
+                Container::List { .. } => in_list = true,
+                Container::Quote if in_list => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub(crate) fn observe_line(&mut self, line: &str, start: usize, end: usize, complete: bool) {
         if let Some(fence) = &self.active {
             if let Some(content) = strip_owners(line, &fence.owners) {

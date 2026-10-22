@@ -23,8 +23,9 @@ Rust 1.98.0 formatting with Unix line endings. Two test-only tail modules
 are omitted before copying:
 `src/stream.rs::html_state_tests` and
 `src/adapters/pulldown.rs::tests` (the latter gated by `all(test, feature = "sync")`).
-Production semantic changes are confined to fence ownership and pending
-repair, with lifecycle wiring in `src/stream.rs`, `src/stream/{block_machine,
+Production semantic changes are confined to fence ownership, list-owned
+quote continuation and pending repair, with lifecycle wiring in
+`src/stream.rs`, `src/stream/{block_machine,
 boundary_detector,machine,engine,compaction}.rs`, and
 `src/pending/{pipeline,repair,repair/context}.rs`.
 
@@ -37,10 +38,20 @@ The existing complete-line cursor advances the context, incomplete tails
 preview without consuming it, and block transitions/reset/compaction keep
 its lifecycle and byte offsets aligned.
 
+The same maintained container path identifies an existing quote inside a
+list when a continuation line satisfies the owning list's actual content
+indent. In List mode this suppresses only the generic new-quote interrupt;
+it does not protect prose as code or attach a dedented independent quote
+to the list. Complete lines still update ownership, and incomplete-tail
+boundary checks only read it.
+
 Pending display shares protected fence ranges with that context, copying
 code bytes before trailing-space, setext or inline repair while continuing
 to repair eligible prose. Closed ranges remain protected in the pending
-container. The standalone terminator uses the same private scanner; the
+container. At a prose-to-fence seam, trailing whitespace and line endings
+are saved and copied verbatim after prose repair, placing any synthetic
+inline closer before the separators rather than on the fence's line.
+The standalone terminator uses the same private scanner; the
 streaming path does not scan the whole buffer per append. The existing
 top-level code-fence incremental fast path and pending transformers remain.
 No source text, blank code lines, adapters, cache identity or reference

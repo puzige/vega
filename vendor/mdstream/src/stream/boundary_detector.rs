@@ -26,6 +26,7 @@ pub(super) struct BoundaryDetector<'a> {
     curr_has_newline: bool,
     custom_boundary_starts: bool,
     owned_fence_line: bool,
+    owned_quote_continuation: bool,
 }
 
 impl<'a> BoundaryDetector<'a> {
@@ -36,6 +37,7 @@ impl<'a> BoundaryDetector<'a> {
         curr_has_newline: bool,
         custom_boundary_starts: bool,
         owned_fence_line: bool,
+        owned_quote_continuation: bool,
     ) -> Self {
         Self {
             current_mode,
@@ -44,6 +46,7 @@ impl<'a> BoundaryDetector<'a> {
             curr_has_newline,
             custom_boundary_starts,
             owned_fence_line,
+            owned_quote_continuation,
         }
     }
 
@@ -130,6 +133,7 @@ impl<'a> BoundaryDetector<'a> {
         if is_blockquote_start(curr)
             && !is_blockquote_start(prev)
             && !matches!(self.current_mode, BlockMode::BlockQuote)
+            && !self.owned_quote_continuation
         {
             return true;
         }

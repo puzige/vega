@@ -208,6 +208,8 @@ impl MdStream {
                 self.block_machine.current_mode,
                 BlockMode::List | BlockMode::BlockQuote
             ) && self.block_machine.fence_context.protects_line(curr),
+            matches!(self.block_machine.current_mode, BlockMode::List)
+                && self.block_machine.fence_context.continues_list_quote(curr),
         );
         detector
             .detect(prev, curr, curr_line_index)

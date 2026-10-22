@@ -6,7 +6,7 @@
 - 本轮计时起点：2026-10-22T06:32:17Z。恢复并核对历史工作、现行规则、原始 CI 失败及实际接口；2026-10-22T06:53:15Z 已完成 v3 规格差异静态检查。后续阶段按真实结果追加，不把委派受理当作完成。
 - 公开旧 head：`ae1888267fd8b05db1c388c01ed80bfc40643a1b`。本地同步 head：`7ec15f2c44269d7e068e853ed797f651668dc019`，merge 主库 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`，保留已有测试/实现提交，无 force-push。
 - v3 规格 SHA256（先行测试前）：`cf733965f647607b95fec9f95177e20334a01de1894b6e59ac39a90fca50e159`。代码实现仍由专职子 Agent；独立审查默认只读、绑定停写版本。
-- 当前本轮委派：spawn 3（原测试/实现写入者、独立审查者、保留同补丁的恢复收尾写入者），followup 12（前10次记录不变；新增v6真实parser前提单测增量；独立审查完整v6停写测试）。不重复历史已完成工作。解析生产实现仅在下述本轮有效 RED 确认后授权。
+- 当前本轮委派：spawn 3（原测试/实现写入者、独立审查者、保留同补丁的恢复收尾写入者），followup 14（前13次记录不变；新增停写parser-only实现的独立审查）。不重复历史已完成工作。解析生产实现仅在下述本轮有效 RED 确认后授权。
 
 ## 阶段与委派记录
 
@@ -109,6 +109,20 @@
 - 具体followup增量11:42:17Z–11:48:07Z（5m50s），只增加1项parser quotecontinuation测试，depth0/1与dedented独立quote控制，原37个定义字节前缀保留。合计31+7=38源码定义，不冒充发现/执行数。
 - 停写testdiffSHA256 `990101edac06cf79d337ca78e437ee2c9a4ec083638eb05a94245c32b534178c`，二文件manifest `61ceaf1555a615dfbdbf7c865afbc7b18be10583b5a03808e75383588af39d0a`，test evidence SHA256 `58c3a88e3edd8777aa8ea25a567a2158bf8c7a9a6e409e822ce71ab08ce0d4d9`；父Agent11:49:02Z复算一致、diffcheck0。
 - 独立测试审查11:49:54Z–11:58:23Z（8m29s），PASS无实质阻碍；两个原测试前缀与507受保护tracked路径逐字不变，认可真实parser前提、pending/final修复差异、geometry/copy观察与分层顺序。现可commit/push现有PR，首轮仅确认parser前提与prosefence有效RED，UI前提失败不计几何RED。未做生产改动。
+
+## v6 parser阶段有效 RED
+
+- 测试head `c780eb5ead8711f364bec54728d94d4244897669`，只追加经独立审查的v6测试及spec/evidence；GitHub parser blob `5446aef5104880f50a4515bf5d1ab7b696cc6808`读回与本地一致。
+- [Actions39774947305](https://github.com/puzige/vega/actions/runs/39774947305)，Nextest `119811411225` Starting38/15binaries，38执行32通过6失败0跳过1.412s；Clippy `119811410237` 与Python60成功，summary `119814365248`失败。原31全部通过。
+- Prosefence的backtick/tilde两项stage0实际List(proseText before~~unfinished)后多Paragraph("~~  ```text literal")同类，预期同List内Strikethrough prose+Code literal。quote-first parser depth0/whole第一段提前committed，预期committed空/pending包含两paragraph的同一ListQuote。dedented与balanced-prose控制通过。均为责任层目标行为RED，不是compile/fixture故障。
+- 三项UI新测试均停在pending真实树前提，明确**不是UI几何RED**；同一38项先冻结，parser-only修复后才继续验证UI自身RED。12:13:19Zfetch确认master未变，父Agent读回原始日志后委派仅vendor ownedquote continuation与pending拼接修复，禁止UI生产改动。
+- run12:00:53Z–12:07:45Z（6m52s），Clippy12:00:57Z–12:05:08Z（4m11s），Nextest12:00:57Z–12:07:38Z（6m41s）。查询12:06:40Z/12:11:59Z相隔5m19s，push12:00:48Z到完成读取等待11m11s。原始证据 [PR comment](https://github.com/puzige/vega/pull/529#issuecomment-6340450279)。
+
+## v6 parser-only实现停写
+
+- writer12:14:37Z–12:24:32Z（9m55s）停写READY，4个Rust+README，48+/4-；diffSHA256 `b90d326d61fd410ce9d10e0edc1fd99d464c82372c325655f4efa33c2e579cf6`，5文件manifest `82863636d58696d7f61e8525f9b88c56244f79b42f0e618422b2cd1cafd79304`；证据report `c96b2d8df51fde04d140d61cbbe7735398851c53da5c2910590e20c6df2cfed4`。
+- 无变更容器状态的quote continuation predicate，只在List模式抑制通用quote interrupt；pending repair将closer放在原separator前并原样重附换行/protectedcode。原38测试与UI生产、hooks/Cargo/workflow等509受保护路径逐字保持；本地fmt/vendorfmt/diff0，不编译或运行。
+- 父Agent12:25:32Z复算diff/report一致、范围/测试/UI冻结检查0。已将同一停写版本交独立reviewer，可与该版本Actions并行；尚未parserGREEN或UI自身几何RED，不改UI。
 
 ## mdstream 0.3 来源核对（只读静态证据）
 
