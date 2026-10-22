@@ -2710,7 +2710,7 @@ async fn late_permission_and_question_attention_cannot_forgive_exhausted_activit
         let (pending, expired) = if question {
             let queue = UserQuestionQueue::with_activity(activity.clone());
             let _listener = queue.subscribe();
-            let input = vega_runtime::UserQuestionInput::from_json(&serde_json::json!({"questions":[{"id":"late-choice","header":"Choice","question":"Choose?","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}]}]}).to_string()).expect("question input");
+            let input = vega_runtime::UserQuestionInput::from_json(&serde_json::json!({"questions":[{"id":"late_choice","header":"Choice","question":"Choose?","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}]}]}).to_string()).expect("question input");
             let answer = vega_runtime::RuntimeUserQuestionHook::request(
                 &queue,
                 vega_runtime::RuntimeUserQuestionRequest {
