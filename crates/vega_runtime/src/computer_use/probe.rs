@@ -7,11 +7,13 @@ use super::{
     },
     control,
     diagnostics::{self, Stage, checked},
-    preparation_from_check_permissions, unknown_preparation,
+    unknown_preparation,
 };
 use serde_json::{Value, json};
 use std::{
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     process::Stdio,
     time::Duration,
 };
@@ -19,28 +21,73 @@ use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 use vega_mcp::ManagedClient;
 
-pub struct PreparationProbe;
+pub(super) use super::preparation_session::{
+    PreparationSession, PreparationTransport, PreparationTransportFactory,
+};
+
+pub struct PreparationProbe(PreparationSession<EmbeddedFactory>);
 
 impl PreparationProbe {
-    pub async fn detect(mode: PromptMode, cancel: &CancellationToken) -> Preparation {
-        if cancel.is_cancelled() || control::owner_busy() {
-            return unknown_preparation(ComponentState::Available);
-        }
-        let components = match ManagedComponents::detect() {
-            Ok(components) => components,
+    pub fn open(cancel: CancellationToken) -> Result<Self, Error> {
+        PreparationSession::open(
+            EmbeddedFactory,
+            control::OwnershipAuthority::shared(),
+            cancel,
+        )
+        .map(Self)
+    }
+
+    pub async fn check(&mut self) -> Result<Preparation, Error> {
+        self.0.check().await
+    }
+
+    pub async fn close(&mut self) -> Result<(), Error> {
+        self.0.close().await
+    }
+
+    pub async fn cleanup_pending() -> Result<(), Error> {
+        control::OwnershipAuthority::shared()
+            .cleanup_pending()
+            .await
+    }
+
+    pub async fn detect(_mode: PromptMode, cancel: &CancellationToken) -> Preparation {
+        let mut session = match Self::open(cancel.clone()) {
+            Ok(session) => session,
             Err(error) => return unknown_preparation(component_state(error)),
         };
-        let Ok(mut session) = Session::spawn(&components) else {
-            return unknown_preparation(ComponentState::Available);
-        };
-        let probe = session.check_permissions(mode, cancel).await;
-        session.reclaim().await;
-        match probe {
-            Ok(structured) => {
-                preparation_from_check_permissions(ComponentState::Available, structured.as_ref())
-            }
-            Err(_) => unknown_preparation(ComponentState::Available),
-        }
+        let result = session.check().await;
+        let _ = session.close().await;
+        result.unwrap_or_else(|_| unknown_preparation(ComponentState::Available))
+    }
+}
+
+struct EmbeddedFactory;
+
+impl PreparationTransportFactory for EmbeddedFactory {
+    type Transport = Session;
+
+    fn open(&mut self) -> Result<Session, Error> {
+        Session::spawn(&ManagedComponents::detect()?)
+    }
+}
+
+impl PreparationTransport for Session {
+    fn check_permissions(
+        &mut self,
+        _prompt: bool,
+        _probe_direct_capture: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>> {
+        Box::pin(async move {
+            let cancel = CancellationToken::new();
+            tokio::time::timeout(Duration::from_secs(15), self.inspect(&cancel))
+                .await
+                .map_err(|_| Error::Unavailable)?
+        })
+    }
+
+    fn cleanup(&mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
+        Box::pin(self.reclaim())
     }
 }
 
@@ -48,13 +95,15 @@ fn component_state(error: Error) -> ComponentState {
     match error {
         Error::IncompatibleComponents => ComponentState::Incompatible,
         Error::UnsupportedPlatform => ComponentState::UnsupportedPlatform,
-        _ => ComponentState::Missing,
+        Error::MissingComponents => ComponentState::Missing,
+        _ => ComponentState::Available,
     }
 }
 
 struct Session {
     daemon: Child,
     client: Option<ManagedClient>,
+    initialized: bool,
     root: PathBuf,
     socket: PathBuf,
     executable: PathBuf,
@@ -68,6 +117,7 @@ impl Session {
             Ok(daemon) => Ok(Self {
                 daemon,
                 client: None,
+                initialized: false,
                 root,
                 socket,
                 executable: components.cua.clone(),
@@ -79,16 +129,11 @@ impl Session {
         }
     }
 
-    async fn check_permissions(
-        &mut self,
-        mode: PromptMode,
-        cancel: &CancellationToken,
-    ) -> Result<Option<Value>, Error> {
+    async fn inspect(&mut self, cancel: &CancellationToken) -> Result<Option<Value>, Error> {
         self.connect(cancel).await?;
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let prompt = mode.prompt();
         let result = checked(
             Capability::Desktop,
             Stage::Permissions,
@@ -97,7 +142,7 @@ impl Session {
                 .ok_or(Error::Unavailable)?
                 .call(
                     "check_permissions",
-                    json!({"prompt": prompt, "probe_direct_capture": prompt}),
+                    json!({"prompt": false, "probe_direct_capture": false}),
                     cancel,
                 )
                 .await,
@@ -106,6 +151,9 @@ impl Session {
     }
 
     async fn connect(&mut self, cancel: &CancellationToken) -> Result<(), Error> {
+        if self.initialized {
+            return Ok(());
+        }
         let ready = async {
             for _ in 0..100 {
                 if self
@@ -146,23 +194,33 @@ impl Session {
             .ok_or(Error::Unavailable)?
             .initialize("2025-06-18", DESKTOP_TOOLS, cancel)
             .await
-            .map_err(|error| diagnostics::transport(Capability::Desktop, Stage::Initialize, error))
+            .map_err(|error| {
+                diagnostics::transport(Capability::Desktop, Stage::Initialize, error)
+            })?;
+        self.initialized = true;
+        Ok(())
     }
 
-    async fn reclaim(mut self) {
+    async fn reclaim(&mut self) -> Result<(), Error> {
+        let _ = self.daemon.start_kill();
         if let Some(client) = self.client.as_mut() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), client.shutdown()).await;
+            let stopped = tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+                .await
+                .map_err(|_| Error::Unavailable)?;
+            if !stopped {
+                return Err(Error::Unavailable);
+            }
+            self.client = None;
         }
-        let _ = self.daemon.start_kill();
-        let _ = tokio::time::timeout(Duration::from_secs(2), self.daemon.wait()).await;
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = self.daemon.start_kill();
-        let _ = std::fs::remove_dir_all(&self.root);
+        tokio::time::timeout(Duration::from_secs(2), self.daemon.wait())
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .map_err(|_| Error::Unavailable)?;
+        match std::fs::remove_dir_all(&self.root) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(Error::Unavailable),
+        }
     }
 }
 

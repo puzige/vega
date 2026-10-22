@@ -11,6 +11,8 @@ mod control;
 mod diagnostics;
 pub mod guide;
 mod media;
+mod ownership;
+mod preparation_session;
 mod prepare;
 mod probe;
 mod progress;

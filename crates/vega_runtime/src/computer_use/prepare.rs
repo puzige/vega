@@ -57,7 +57,7 @@ impl Preparation {
     pub fn needs_screen_recording_settings(&self) -> bool {
         match self.screen_recording {
             PermissionState::Denied => true,
-            PermissionState::Granted => self.direct_capture != DirectCapture::Ready,
+            PermissionState::Granted => matches!(self.direct_capture, DirectCapture::NotReady(_)),
             PermissionState::Unknown => false,
         }
     }

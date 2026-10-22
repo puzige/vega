@@ -1,19 +1,11 @@
+pub(super) use super::ownership::OwnershipAuthority;
 use super::{Capability, ComputerUseError, DesktopTarget, Observation, Target};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-
-static OWNER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-
-pub(super) fn owner_busy() -> bool {
-    match OWNER.get_or_init(|| Mutex::new(None)).lock() {
-        Ok(owner) => owner.is_some(),
-        Err(_) => true,
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlPhase {
@@ -59,6 +51,7 @@ struct State {
 
 struct Inner {
     run_id: String,
+    authority: Arc<OwnershipAuthority>,
     state: Mutex<State>,
     changed: watch::Sender<u64>,
 }
@@ -135,9 +128,14 @@ impl ComputerUseControl {
     }
 
     pub fn new() -> Self {
+        Self::with_authority(OwnershipAuthority::shared())
+    }
+
+    pub(super) fn with_authority(authority: Arc<OwnershipAuthority>) -> Self {
         let (changed, _) = watch::channel(0);
         Self(Arc::new(Inner {
             run_id: ulid::Ulid::generate().to_string(),
+            authority,
             state: Mutex::new(State {
                 phase: ControlPhase::Disconnected,
                 capability: None,
@@ -421,8 +419,10 @@ impl ComputerUseControl {
     }
 
     pub(crate) fn begin(&self, capability: Capability) -> Result<u64, ComputerUseError> {
-        let mut owner = OWNER
-            .get_or_init(|| Mutex::new(None))
+        let mut owner = self
+            .0
+            .authority
+            .owner
             .lock()
             .map_err(|_| ComputerUseError::Unavailable)?;
         if owner.as_ref().is_some_and(|id| id != &self.0.run_id) {
@@ -757,11 +757,7 @@ impl ComputerUseControl {
     }
 
     pub(crate) fn release(&self) {
-        if let Ok(mut owner) = OWNER.get_or_init(|| Mutex::new(None)).lock()
-            && owner.as_ref() == Some(&self.0.run_id)
-        {
-            *owner = None;
-        }
+        self.0.authority.release(&self.0.run_id);
     }
 }
 

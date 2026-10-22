@@ -5,7 +5,7 @@ pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{
     Capability, ComponentState, ComputerUseControl, ComputerUseError, ComputerUseRun, ControlPhase,
     ControlSnapshot, DesktopTarget, DirectCapture, DirectCaptureReason, ExtensionState,
-    ManagedComponents, Observation, PermissionState, Preparation, PromptMode,
+    ManagedComponents, Observation, PermissionState, Preparation, PreparationProbe, PromptMode,
     SUPERSEDED_CONTROL_OUTPUT, Target, preparation_from_check_permissions, unknown_preparation,
 };
 
