@@ -5,7 +5,7 @@
 - Issue：[#546](https://github.com/puzige/vega/issues/546)；规格：[v1.1](vega-issue-546-composer-capsules.md)。
 - 用户确认：只改 Compose 底栏模型选择与权限切换。其他文字按钮、图标按钮不随本卡变更。
 - 开始基线：`83fd51d79940516029cdc1eaf8e81566870c877b`。
-- 阶段：有效 RED 后最小实现；尚未取得同测 GREEN、尚未合并或原生手测。
+- 阶段：同一冻结测试已取得云端 GREEN；临时 Rust 测试及观察接线已清理并停写，等待独立清理审查和最终空集门禁。尚未合并或用户原生手测；后续精确 head／门禁／合并结论固定在 PR 与 Issue，避免以文档状态代替真实结果。
 
 ## 同类样式盘点（静态事实，未改动）
 
@@ -26,7 +26,7 @@
 
 ## 验证记录
 
-待先行测试审查与现有 Actions 结果后补充准确提交、源码、RED/GREEN 和最终 head 证据。所有本地测试、编译与原生运行均未执行。
+先行测试、有效 RED 与同测 GREEN 证据如下；最终删测 head 门禁另行记录，不用空集结果替代带测试 GREEN。所有本地测试、编译、打包与原生运行均未执行。
 
 ### 先行测试阶段检查点（未 READY）
 
@@ -74,4 +74,27 @@
 - hover 目标失败在四角断言：actual `[8.0, 8.0, 8.0, 8.0]`，expected `[14.0, 14.0, 14.0, 14.0]`。
 - 独立 Clippy 失败为测试第 2 行未使用的 `gpui_kit as gpui` 导入；不是 RED 理由。只删除该导入，行为数据、fixture 和断言冻结不变，无 suppress/retry 求绿。
 
-生产外观在上述失败实际执行前未改；原始源码与 patch 可从提交及 PR 找回。主 Agent 阅读原始日志分类后，派专职写入者修改两个触发器及专属几何 token；仍需独立实现审查与同一冻结测试 GREEN。
+生产外观在上述失败实际执行前未改；原始源码与 patch 可从提交及 PR 找回。主 Agent 阅读原始日志分类后，派专职写入者修改两个触发器及专属几何 token，随后取得下述独立实现审查与同一冻结测试 GREEN。
+
+### 最小实现与同一测试 GREEN
+
+- 实现提交：[`cd77f0da19c5f41f87011881e6fa0b522557d867`](https://github.com/puzige/vega/commit/cd77f0da19c5f41f87011881e6fa0b522557d867)，晚于有效 RED。生产差异仅为三个 `COMPOSER_TEXT_TRIGGER_*` token 及模型／权限两个触发器的几何和交互表面；文字、图标、警示色、事件、guard、焦点与宽度预留逻辑不变。
+- UI 测试只删除云端 Clippy 报告的未使用导入；恢复该行精确还原冻结 SHA256 `7e891183c3274291716d18fd95c4e04038b0acc54497de57e4cc1916150a67d9`。GREEN 文件 SHA256 `1166b0760dfd440eef9869c192a47c022dfe5f30b716d79439acea223b8e32e9`；runtime 测试 SHA256 仍为 `4699ed5e9b3b536297edca7a5db044b382a7f50869a357fcd734af0d3f57f938`。数据、目标和断言没有修改。
+- [GREEN run 39818364443](https://github.com/puzige/vega/actions/runs/39818364443)，[Nextest 119962713371](https://github.com/puzige/vega/actions/runs/39818364443/job/119962713371)、[Clippy 119962713659](https://github.com/puzige/vega/actions/runs/39818364443/job/119962713659)、[required check 119966457829](https://github.com/puzige/vega/actions/runs/39818364443/job/119966457829) 全部成功。
+- 原始 Nextest 输出：`9 tests run: 9 passed, 0 skipped`；9 发现／9 执行／9 通过／0 失败／0 skipped，源码无 ignored 声明。Python 三组分别 5、15、40 项，均 `OK`。主 Agent 在继续阶段重新读取原始日志与精确 head 核实。
+- 非实现写入者已独立审查该实现 head，结论 PASS、无阻断；最终删测差异仍需单独审查。GPUI NoopTextSystem／图标生产参数观察不等于原生字体或 SVG 像素验收，真实系统集成仍待用户手测。
+
+### 可恢复的测试与验证来源
+
+- 原始 [UI 测试源码](https://github.com/puzige/vega/blob/fa26cfe33c143ca7d850b8544dd5668bb6c677ab/crates/vega_ui/src/conversation_stream/capsule_tests.rs) 与 [runtime 测试源码](https://github.com/puzige/vega/blob/fa26cfe33c143ca7d850b8544dd5668bb6c677ab/crates/vega_runtime/tests/full_access_permission.rs)，完整测试提交为 `fa26cfe33c143ca7d850b8544dd5668bb6c677ab`。
+- 原始测试及独占接线的完整补丁已内联保存在 [PR 评论](https://github.com/puzige/vega/pull/558#issuecomment-6346638233)，[同测 GREEN 证据](https://github.com/puzige/vega/pull/558#issuecomment-6346638798)另行固定。主 Agent 已读回评论正文及源码 blob（UI Git blob `ef459782b2a0ee1b281de4279c3893c23da6d831`、32,934 bytes）；不依赖本机临时文件或过期 artifact。
+
+### GREEN 后清理与最终门禁（进行中）
+
+继续前已 fetch 并同步远端任务分支。远端 master 从 `871f91f246e90753743a256cee1eec315e74effc` 前进至 `2ba904f7074115de5ee89cc18c376c083f803357`，唯一差异是 `docs/554/vega-issue-554-panel-motion-study.md`；同步没有修改任何被验证代码或测试，不需要把文档更新当作新的产品行为轮次。
+
+上轮清理执行在续接时已无活跃子执行，工作区仍干净、测试尚在且哈希与 GREEN 一致。专职写入者沿用该已验证检查点，现已完成清理并停止写入：删除 8 个 UI 测试、1 个 runtime 测试、临时观察器、8 个 render debug selector、1 个 slider selector、1 处 `.test_support()` 与独占 dev feature 接线，不改生产行为。
+
+主 Agent 独立复核：`Cargo.toml`、`thinking_slider.rs` 与 `Cargo.lock` 和当前 master 逐字节一致；最终生产差异仅为 `vega_theme/src/lib.rs` 的三个 token 与 `render.rs` 两个触发器样式，标签／图标生产调用恢复为基线直接形式。清理后 `render.rs` SHA256 为 `329c65ae9f0a109946cfd5dfd6050356bab2cdf059d68bddeaba5f648bf12ebe`，theme SHA256 保持 `d4bb9284042b4f597f3195fb42f3119ded8a5c8a713e65c77bed9090465e6cf0`。五个获派文件相对同步后 HEAD 的完整二进制补丁 SHA256 为 `2a41dfb0b81c575e01e06b455b8709f8c905b9426cd1158f2bea1b61130e3ad8`。
+
+最终版本本地 `cargo fmt --all -- --check` 与 `git diff --check` 退出 0；对任务专用接线与 Rust 测试属性的静态扫描无匹配。静态扫描不是发现／执行结果；未运行本地代码、编译、Clippy 或测试。下一步是该停写版本的非实现者独立审查，以及独立清理提交的云端完整门禁，必须明确确认 `no Rust tests`（0 发现／0 执行）；未取得前不标通过、不转正式 PR。最终清理提交 SHA、审查与 run／job 结论在 PR／Issue 按完整 SHA 读回固定。
