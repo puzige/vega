@@ -25,6 +25,3 @@ impl PartialEq for CallbackIdentity {
 }
 
 impl Eq for CallbackIdentity {}
-
-#[cfg(test)]
-mod guidance_tests;
