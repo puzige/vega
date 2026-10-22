@@ -110,3 +110,13 @@ The workflow ran 19:15:35–19:20:01 UTC (266,000 ms), first observed complete a
 - [Corrected boundary delta and documentation](https://github.com/puzige/vega/compare/857de90459e21cd5908120688a5f522eee2a7bf0...a326bcb0addd9936489120e0a95969640b0799e8.diff): 25,834 bytes, SHA256 `7d92d41064cc2903315364b09495c4c5a9e000814be01ab3b36bfcac7cefd130`. Test-file-only patch: 10,994 bytes, SHA256 `d52aecf307760063f824469d14ade210aebaaa9c065afcd272c6eea67edd8950`.
 
 Both corrected remote inputs were fetched back at 19:16:06 UTC. Together with the original v3 support patch they preserve the complete frozen setup. Same-source GREEN and the remaining delivery gates are still pending.
+
+## Same-source GREEN and independent implementation review
+
+Implementation head `2a5041d43ec96987d398f994d1990fdd566fdd6b` closes the three reviewed lifecycle windows and removes the production panic. The non-writer reviewer independently approved this exact head, rechecking affected expiry, cancellation, persistence, release and budget invariants and retaining unchanged prior review conclusions. There are no remaining implementation review blockers.
+
+[Actions 39839892352](https://github.com/puzige/vega/actions/runs/39839892352), [Nextest job 120037807658](https://github.com/puzige/vega/actions/runs/39839892352/job/120037807658), executed **28 cases: 28 passed, zero failed, zero skipped**, in 2.154 seconds. Format, all-target Clippy, all 60 Python tests and required `check (fmt, clippy, test)` passed. [GREEN test source](https://github.com/puzige/vega/blob/2a5041d43ec96987d398f994d1990fdd566fdd6b/crates/vega_conversation/src/agent/subagents/execution_bounds_tests.rs) was fetched back and has the same frozen SHA256 `267f9e8adcaacbeca5640e678bbd8c96a82c078e997bfbf8473df48884628d39` as corrected RED. No test, expectation or helper changed during repair.
+
+The workflow ran 19:25:12–19:28:46 UTC (214,000 ms), first observed complete at 19:30:18 (92,000 ms later). Nextest ran 19:25:14–19:28:00; Clippy 19:25:15–19:28:38. These overlap. The GREEN result establishes deterministic mechanism correctness at this source, not real native task speed or user manual acceptance.
+
+After fixing this evidence in the PR, remove only the Rust test file, its `cfg(test)` module wiring, the conversation crate's test-only tempfile/Tokio test-util declarations and the corresponding conversation dependency edge in Cargo.lock. Production and common CI/Python support remain. Independent cleanup review and the exact cleaned head's full CI, including `no Rust tests` with 0 discovered/0 executed, remain mandatory; their immutable SHA/run evidence will be recorded in the PR without changing the checked head.
