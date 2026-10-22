@@ -2,7 +2,25 @@ use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollFadeTopGuards};
+use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, anchored, canvas, point};
+
+#[cfg(test)]
+#[path = "capsule_tests.rs"]
+mod capsule_tests;
+
+#[cfg(test)]
+use capsule_tests::{observe_capsule_icon, observe_capsule_text};
+
+#[cfg(not(test))]
+fn observe_capsule_text<T: IntoElement>(_: impl Into<String>, text: T) -> T {
+    text
+}
+
+#[cfg(not(test))]
+fn observe_capsule_icon(_: &'static str, glyph: crate::icons::Icon, ink: Rgba) -> AnyElement {
+    crate::icons::icon(glyph, ink)
+}
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
@@ -237,6 +255,7 @@ impl ConversationStream {
             .child(
                 div()
                     .on_drop(cx.listener(Self::drop_images))
+                    .debug_selector(|| "capsule-composer".into())
                     .w_full()
                     .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                     .min_h(px(Layout::COMPOSER_MIN_HEIGHT))
@@ -315,6 +334,7 @@ impl ConversationStream {
                                     }),
                                 )
                                 .size(px(Layout::TITLEBAR_CONTROL_SIZE))
+                                .debug_selector(|| "capsule-add".into())
                                 .track_focus(&self.action_focus[0]),
                             )
                             .when(self.thread.backend == TaskBackend::Native, |row| {
@@ -341,6 +361,7 @@ impl ConversationStream {
                                     row.child(
                                         div()
                                             .id("composer-send")
+                                            .debug_selector(|| "capsule-send".into())
                                             .aria_label("发送")
                                             .track_focus(&self.action_focus[1])
                                             .tab_stop(true)
@@ -419,6 +440,7 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-permission-status")
+                    .debug_selector(|| "capsule-permission".into())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .flex_shrink_0()
                     .flex()
@@ -437,13 +459,12 @@ impl ConversationStream {
                         MouseButton::Left,
                         cx.listener(Self::toggle_permission_picker),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_shrink_0()
-                            .child(crate::icons::icon(glyph, ink)),
-                    )
-                    .child(label),
+                    .child(div().flex().flex_shrink_0().child(observe_capsule_icon(
+                        "permission-icon",
+                        glyph,
+                        ink,
+                    )))
+                    .child(observe_capsule_text("permission-label", label)),
             )
             .when(self.permission_picker_open, |chip| {
                 chip.child(self.render_permission_picker(cx))
@@ -495,6 +516,7 @@ impl ConversationStream {
                 };
                 div()
                     .id(("composer-permission-option", index))
+                    .debug_selector(move || format!("capsule-permission-option-{index}"))
                     .min_h(px(44.))
                     .flex_shrink_0()
                     .px_2()
@@ -525,13 +547,19 @@ impl ConversationStream {
                                 div()
                                     .text_size(px(Typography::SIDEBAR))
                                     .text_color(ink)
-                                    .child(permission_label(mode)),
+                                    .child(observe_capsule_text(
+                                        format!("permission-option-label-{index}"),
+                                        permission_label(mode),
+                                    )),
                             )
                             .child(
                                 div()
                                     .text_size(px(Typography::METADATA))
                                     .text_color(colors.text_tertiary)
-                                    .child(permission_description(mode)),
+                                    .child(observe_capsule_text(
+                                        format!("permission-option-description-{index}"),
+                                        permission_description(mode),
+                                    )),
                             ),
                     )
                     // Fixed marker column: the selected row carries the check, and
@@ -1157,6 +1185,7 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-model")
+                    .debug_selector(|| "capsule-model".into())
                     .aria_label(current.to_owned())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .track_focus(&self.model_focus)
@@ -1199,13 +1228,15 @@ impl ConversationStream {
                                     .min_w_0()
                                     .flex_shrink_1()
                                     .truncate()
-                                    .child(current.to_owned()),
+                                    .child(observe_capsule_text("model-label", current.to_owned())),
                             )
-                            .child(crate::icons::icon(
+                            .child(observe_capsule_icon(
+                                "model-chevron",
                                 crate::icons::Icon::ChevronDown,
                                 colors.text_tertiary,
                             )),
-                    ),
+                    )
+                    .test_support(),
             )
             .child(self.render_model_picker_layers(cx))
             .into_any_element()
@@ -1251,6 +1282,7 @@ impl ConversationStream {
         gpui_kit::deferred(
             div()
                 .id("composer-model-menu")
+                .debug_selector(|| "capsule-model-menu".into())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .absolute()
                 .bottom(gpui_kit::relative(1.0))
@@ -1291,6 +1323,7 @@ impl ConversationStream {
                             let model = model.clone();
                             let label = model.clone();
                             div()
+                                .debug_selector(move || format!("capsule-model-option-{index}"))
                                 .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                                 .flex_shrink_0()
                                 .px_2()

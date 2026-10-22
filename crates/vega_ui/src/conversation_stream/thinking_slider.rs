@@ -793,6 +793,7 @@ impl ThinkingSlider {
     ) -> AnyElement {
         div()
             .id("thinking-slider-title")
+            .debug_selector(|| "capsule-slider-title".into())
             .flex()
             .items_center()
             .justify_center()
