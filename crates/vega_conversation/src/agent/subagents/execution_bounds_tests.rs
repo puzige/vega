@@ -16,6 +16,7 @@ impl Fixture {
         let directory = tempfile::tempdir().expect("temporary workspace");
         let database = directory.path().join("test.sqlite");
         let store = Store::open(&database).expect("test store");
+        store.migrate().expect("temporary store schema");
         let project = vega_store::projects::create(
             store.conn(),
             directory.path().to_str().expect("workspace path"),
