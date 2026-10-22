@@ -2,6 +2,7 @@ use super::{DesktopGeometry, NativeError, Rect, Screen};
 use std::ffi::{CStr, c_char, c_void};
 
 type Object = *mut c_void;
+type Selector = *const c_void;
 type CfType = *const c_void;
 
 #[cfg(target_arch = "aarch64")]
@@ -62,7 +63,7 @@ unsafe extern "C" {
 #[link(name = "objc")]
 unsafe extern "C" {
     fn objc_getClass(name: *const c_char) -> Object;
-    fn sel_registerName(name: *const c_char) -> Object;
+    fn sel_registerName(name: *const c_char) -> Selector;
     fn objc_msgSend();
     #[cfg(target_arch = "x86_64")]
     fn objc_msgSend_stret();
@@ -447,7 +448,7 @@ fn bool_value(value: ObjcBool) -> bool {
 unsafe fn send_object(receiver: Object, selector: &'static CStr) -> Object {
     // SAFETY: Callers supply a live receiver and a selector returning an Objective-C object without arguments.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object) -> Object =
+        let send: unsafe extern "C" fn(Object, Selector) -> Object =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(receiver, sel_registerName(selector.as_ptr()))
     }
@@ -456,7 +457,7 @@ unsafe fn send_object(receiver: Object, selector: &'static CStr) -> Object {
 unsafe fn send_object_arg(receiver: Object, selector: &'static CStr, argument: Object) -> Object {
     // SAFETY: The selector takes one object argument and returns an object; both inputs remain live during dispatch.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object, Object) -> Object =
+        let send: unsafe extern "C" fn(Object, Selector, Object) -> Object =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(receiver, sel_registerName(selector.as_ptr()), argument)
     }
@@ -465,7 +466,7 @@ unsafe fn send_object_arg(receiver: Object, selector: &'static CStr, argument: O
 unsafe fn send_index(array: Object, index: usize) -> Object {
     // SAFETY: The live NSArray and NSUInteger index are validated against its bounded count before dispatch.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object, usize) -> Object =
+        let send: unsafe extern "C" fn(Object, Selector, usize) -> Object =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(array, sel_registerName(c"objectAtIndex:".as_ptr()), index)
     }
@@ -474,7 +475,7 @@ unsafe fn send_index(array: Object, index: usize) -> Object {
 unsafe fn send_bool(receiver: Object, selector: &'static CStr) -> bool {
     // SAFETY: The selector returns BOOL, represented as bool on arm64 and signed char on x86_64.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object) -> ObjcBool =
+        let send: unsafe extern "C" fn(Object, Selector) -> ObjcBool =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         bool_value(send(receiver, sel_registerName(selector.as_ptr())))
     }
@@ -483,7 +484,7 @@ unsafe fn send_bool(receiver: Object, selector: &'static CStr) -> bool {
 unsafe fn send_bool_arg(receiver: Object, selector: &'static CStr, argument: Object) -> bool {
     // SAFETY: The live receiver's selector takes one object argument and returns the architecture-specific BOOL.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object, Object) -> ObjcBool =
+        let send: unsafe extern "C" fn(Object, Selector, Object) -> ObjcBool =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         bool_value(send(
             receiver,
@@ -496,7 +497,7 @@ unsafe fn send_bool_arg(receiver: Object, selector: &'static CStr, argument: Obj
 unsafe fn send_unsigned(receiver: Object, selector: &'static CStr) -> usize {
     // SAFETY: The selector returns NSUInteger, which is pointer-sized unsigned on the supported macOS targets.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object) -> usize =
+        let send: unsafe extern "C" fn(Object, Selector) -> usize =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(receiver, sel_registerName(selector.as_ptr()))
     }
@@ -505,7 +506,7 @@ unsafe fn send_unsigned(receiver: Object, selector: &'static CStr) -> usize {
 unsafe fn send_signed(receiver: Object, selector: &'static CStr) -> isize {
     // SAFETY: The selector returns NSInteger, which is pointer-sized signed on the supported macOS targets.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object) -> isize =
+        let send: unsafe extern "C" fn(Object, Selector) -> isize =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(receiver, sel_registerName(selector.as_ptr()))
     }
@@ -514,7 +515,7 @@ unsafe fn send_signed(receiver: Object, selector: &'static CStr) -> isize {
 unsafe fn send_pid(application: Object) -> i32 {
     // SAFETY: NSRunningApplication.processIdentifier returns pid_t, a signed 32-bit integer on macOS.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object) -> i32 =
+        let send: unsafe extern "C" fn(Object, Selector) -> i32 =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(application, sel_registerName(c"processIdentifier".as_ptr()))
     }
@@ -523,7 +524,7 @@ unsafe fn send_pid(application: Object) -> i32 {
 unsafe fn set_unsigned(receiver: Object, selector: &'static CStr, value: usize) {
     // SAFETY: The owned NSPanel selector takes NSUInteger by value and returns void.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object, usize) =
+        let send: unsafe extern "C" fn(Object, Selector, usize) =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(receiver, sel_registerName(selector.as_ptr()), value);
     }
@@ -532,7 +533,7 @@ unsafe fn set_unsigned(receiver: Object, selector: &'static CStr, value: usize) 
 unsafe fn set_signed(receiver: Object, selector: &'static CStr, value: isize) {
     // SAFETY: The owned NSPanel selector takes NSInteger by value and returns void.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object, isize) =
+        let send: unsafe extern "C" fn(Object, Selector, isize) =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(receiver, sel_registerName(selector.as_ptr()), value);
     }
@@ -541,7 +542,7 @@ unsafe fn set_signed(receiver: Object, selector: &'static CStr, value: isize) {
 unsafe fn set_origin(panel: Object, point: NSPoint) {
     // SAFETY: setFrameOrigin: takes the repr(C) two-double NSPoint by value, not a pointer, and returns void.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object, NSPoint) =
+        let send: unsafe extern "C" fn(Object, Selector, NSPoint) =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(panel, sel_registerName(c"setFrameOrigin:".as_ptr()), point);
     }
@@ -551,7 +552,7 @@ unsafe fn set_origin(panel: Object, point: NSPoint) {
 unsafe fn send_rect(receiver: Object, selector: &'static CStr) -> NSRect {
     // SAFETY: On arm64 a repr(C) four-double NSRect uses ordinary objc_msgSend with its native aggregate return ABI.
     unsafe {
-        let send: unsafe extern "C" fn(Object, Object) -> NSRect =
+        let send: unsafe extern "C" fn(Object, Selector) -> NSRect =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(receiver, sel_registerName(selector.as_ptr()))
     }
@@ -561,7 +562,7 @@ unsafe fn send_rect(receiver: Object, selector: &'static CStr) -> NSRect {
 unsafe fn send_rect(receiver: Object, selector: &'static CStr) -> NSRect {
     // SAFETY: On x86_64 the 32-byte NSRect uses objc_msgSend_stret with the result pointer before self and selector.
     unsafe {
-        let send: unsafe extern "C" fn(*mut NSRect, Object, Object) =
+        let send: unsafe extern "C" fn(*mut NSRect, Object, Selector) =
             std::mem::transmute(objc_msgSend_stret as unsafe extern "C" fn());
         let mut rect = NSRect::default();
         send(&mut rect, receiver, sel_registerName(selector.as_ptr()));
