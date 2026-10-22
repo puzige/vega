@@ -257,21 +257,18 @@ impl ThreadsBlock {
         // `&mut self` section renderer runs, so no borrow of
         // `self.organization` is held across it. `render_recents_pi` is
         // `&mut self` because lazy loading records the live total.
-        let Some((snapshot, show_archived, menu_open, projects_error)) =
-            self.organization.as_ref().map(|org| {
-                (
-                    org.snapshot.clone().map(|mut snapshot| {
-                        if let Some((_, order)) = &org.reorder.pointer_order {
-                            snapshot.preferences.manual_thread_order = order.clone();
-                        }
-                        snapshot
-                    }),
-                    org.archive,
-                    org.menu.is_some(),
-                    org.projects.read(cx).error.clone(),
-                )
-            })
-        else {
+        let Some((snapshot, show_archived, menu_open)) = self.organization.as_ref().map(|org| {
+            (
+                org.snapshot.clone().map(|mut snapshot| {
+                    if let Some((_, order)) = &org.reorder.pointer_order {
+                        snapshot.preferences.manual_thread_order = order.clone();
+                    }
+                    snapshot
+                }),
+                org.archive,
+                org.menu.is_some(),
+            )
+        }) else {
             return div().into_any_element();
         };
         let Some(snapshot) = snapshot else {
@@ -344,7 +341,6 @@ impl ThreadsBlock {
         body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
         body = body.children(menu_open.then(|| self.render_organization_menu(cx)));
-        body = body.children(projects_error.map(|message| error_bar(message, &colors)));
         body = body.children(
             self.error
                 .clone()

@@ -311,12 +311,20 @@ pub fn codex_task_identity(
         ConversationError::CorruptRow("Codex task is missing its snapshot".to_string())
     })?;
     let snapshot = codex_snapshot_from_row(&snapshot)?;
-    if (!thread.project_id.is_empty()).then_some(thread.project_id.as_str())
-        != snapshot.workspace.project_id.as_deref()
-    {
-        return Err(ConversationError::CorruptRow(
-            "Codex project binding".to_string(),
-        ));
+    let project_id = (!thread.project_id.is_empty()).then_some(thread.project_id.as_str());
+    let snapshot_project_id = snapshot.workspace.project_id.as_deref();
+    if project_id != snapshot_project_id {
+        let removed_project = match (project_id, snapshot_project_id) {
+            (None, Some(project_id)) => {
+                !store_projects::project_exists(store.conn(), project_id).map_err(store_error)?
+            }
+            _ => false,
+        };
+        if !removed_project {
+            return Err(ConversationError::CorruptRow(
+                "Codex project binding".to_string(),
+            ));
+        }
     }
     let session_creation = store_codex_tasks::find_session_creation(store.conn(), thread_id)
         .map_err(store_error)?
@@ -407,12 +415,25 @@ pub fn bind_codex_task(
         .ok_or_else(|| ConversationError::CorruptRow("Codex task identity".to_string()))
 }
 
+fn validate_codex_project_registration(
+    store: &Store,
+    snapshot: &CodexExecutionSnapshot,
+) -> Result<(), ConversationError> {
+    if let Some(project_id) = snapshot.workspace.project_id.as_deref()
+        && !store_projects::project_exists(store.conn(), project_id).map_err(store_error)?
+    {
+        return Err(ConversationError::NoProject);
+    }
+    Ok(())
+}
+
 pub fn begin_codex_session_creation(
     store: &Store,
     thread_id: &str,
 ) -> Result<CodexSessionCreationState, ConversationError> {
     let identity =
         codex_task_identity(store, thread_id)?.ok_or(ConversationError::InvalidTaskIdentity)?;
+    validate_codex_project_registration(store, &identity.snapshot)?;
     if identity.session_creation != CodexSessionCreationState::Absent {
         return Err(ConversationError::InvalidCodexSessionTransition);
     }
@@ -501,6 +522,7 @@ pub fn codex_prompt_binding(
     let Some(identity) = identity else {
         return Ok(None);
     };
+    validate_codex_project_registration(store, &identity.snapshot)?;
     let Some(session_id) = store_codex_tasks::find_prompt_eligible_session(store.conn(), thread_id)
         .map_err(store_error)?
     else {

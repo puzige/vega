@@ -49,6 +49,11 @@ schema 迁移保留不可变身份，不做用户数据补丁或后台清理；�
 
 ## 阶段记录
 
+- 当前阶段（2026-10-22 11:16 UTC）：完整有效 RED 已确认，冻结 `fc4926cb0fab0c111e532266b9abf84d4e110b45` 的五份测试后进入专职子 Agent 最小实现；未修改断言或扩张验收。
+- 先行包 `9e57b7889f488d75fd891ff8dd075c9eb1bca9ab` 已获完整独立静态审查并建立 [draft PR #540](https://github.com/puzige/vega/pull/540)。首轮 [39765008946](https://github.com/puzige/vega/actions/runs/39765008946) 在 `usize` SQL 读写编译失败，无行为断言，不计RED；经独立方案审查，以 `c6712e0294fb6dacb89228102e2bda12a96b16bf` 仅修正检查型数字转换。第二轮 [39766103277](https://github.com/puzige/vega/actions/runs/39766103277) 30执行/13通过/17失败/0跳过，Clippy成功；6个旧Store fixture错误列名挡住行为，其余目标失败已有有效局部证据。独立审查后 `fc4926cb0fab0c111e532266b9abf84d4e110b45` 仅将fixture `text_offset` 对齐实际 `text_offset_bytes`、值4不变。原始失败和补丁固定在PR，无重试换绿。
+- 完整有效 RED：[run39767902989 / Nextest](https://github.com/puzige/vega/actions/runs/39767902989/job/119787831314)，head `fc4926cb0fab0c111e532266b9abf84d4e110b45`，30执行/15通过/15失败/0跳过，Clippy成功；失败为6个conversation移除FK、4个Store移除FK、缺少新INSERT guard、缺少0032、Codex菜单移除后路由未清、两处错误提示不可见。实际提示y608/668超过600高视口，非观测故障；原有worktree-only/liveflow与键盘跨窗口worker重试等阳性对照已通过。无fixture/编译阻塞。
+- 冻结Store原套件更新后SHA-256 `5f30d6a5e910bc0c20ca16f5fd17962f61c4c0ce1501a3b7628ce1e664bebaa1`；其余四份hash与下列READY检查点一致。实现阶段不得追改测试；带相同测试GREEN与最终删测门禁仍待取得。
+
 - 2026-10-22 10:26 UTC 集成检查点：UI 恢复写入者经取消确认 terminal interrupted，已停止；保留其完整工作包，未重做。tracked diff SHA-256 `d3ca050082d12829d4a3846b6dd725870f16371670ce83257976424de09c5fc2`；Store 原套件 `48f9e8d2491eb6efbf97b4814d91d52364d89803a14fc407f110b22346d0da1b`，conversation 原套件 `4776e2403a2bccff06552fbcd86bdb88fdb38a77ccd87ed9549ac380a0d2d969`，UI 套件 `4d885d2ce85b2abbbfaa729bb6cec20aa04359299b3eb107e36fc2cbb8f34b03`。五份测试文件共30个目标；还需静态集成/接线确认，不声称有效RED。
 - v2 独立补充测试写入者已 READY 停写；Store 边界套件 `a375d5bd24e96f2f307d970f5c84f0fb030298ba956dabadc946ef0b053dc438`、conversation 边界套件 `1c75f15baca96c43241277692341ad4241c0a749d3cd082a55954a84f1b99236`（5+4目标），文件级 rustfmt --check成功且独立静态审查无阻塞。可复用该内容审查，仅后续集成delta需再审；未运行行为测试。下一步以已完成补丁收尾并冻结，不扩充验收。
 
