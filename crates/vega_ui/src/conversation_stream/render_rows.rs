@@ -1282,6 +1282,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                             super::quote_behavior_tests::observed_text(
                                 content.clone(),
                                 StyledText::new(content),
+                                None,
                             )
                         }
                         #[cfg(not(test))]
@@ -1307,6 +1308,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                                 super::quote_behavior_tests::observed_text(
                                     content.to_owned(),
                                     StyledText::new(content),
+                                    None,
                                 )
                             }
                             #[cfg(not(test))]

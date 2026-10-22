@@ -2,8 +2,8 @@
 
 ## 状态与基线
 
-- Issue：[#514](https://github.com/puzige/vega/issues/514)。方案 v2，先行测试阶段；生产尚未修改，测试待编写、独立审查及 Actions RED。
-- 基线：`e542175a726f3ab074d9e9fe63bd5f0383804b90`；分支 `feat/514-continuous-quotes`。
+- Issue：[#514](https://github.com/puzige/vega/issues/514)，复用 Draft [PR #529](https://github.com/puzige/vega/pull/529)。方案 v3（2026-10-22）：原引用边界与列表标记实现已存在，本轮针对解析边界补开 TEST-FIRST 周期，并纠正无头字体观察，不追认已完成实现。
+- 初始基线：`e542175a726f3ab074d9e9fe63bd5f0383804b90`；分支 `feat/514-continuous-quotes`。本轮生产未改基线为 `7ec15f2c44269d7e068e853ed797f651668dc019`，保留公开 head `ae1888267fd8b05db1c388c01ed80bfc40643a1b`，并 merge 同步主库 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`，不重写历史。
 - 主 Agent 负责规格、协调、审查与集成；专职子 Agent 写测试及实现。遵守[执行总纲](../vega-exec-guide.md)、[测试生命周期](../vega-rust-test-delivery-lifecycle.md)和[设计守则](../vega-design-guidelines.md)。本地不运行 Vega、编译或测试。
 - 用户补充截图显示单段长引用自然换行、左侧竖线连续，作为单段回归参考，不作为多段落已通过的证据。
 
@@ -38,7 +38,7 @@
 2. 在 `render_rows.rs` 基于真实归属构造边界或装饰，让同一引用的装饰包含内部间距，外部间距不带边界。选中/非选中路径共享一致的几何规则。引用正文按剩余宽度布局，竖线不可挤宽正文；嵌套按每层现有竖线宽度 2px 与 `MARKDOWN_CODE_PADDING` 递进。
 3. 保留原有块间/段间 token，不以压缩段距解决断线；内部具体间距沿用现有值，本卡不做整体排版重设计。
 4. 同步 `thinking_body.rs` 中的装饰、文字宽度及位置计算，保持选择源映射及滚动裁剪正确；不改变其流式生命周期。
-5. 不新增生产依赖、不改 Markdown 解析或源文本、不改持久化/运行时配置、不触碰 #485 横向代码拖选调度。允许独立审查后的临时 `gpui_kit/test-support` dev-only 接线，GREEN 后一并移除。
+5. 原引用边界周期不新增生产依赖、不改 Markdown 解析或源文本、不改持久化/运行时配置、不触碰 #485 横向代码拖选调度。用户现明确授权下述独立周期的 mdstream 0.3 最小边界补丁，不迁移 0.4、不引入新 crate。允许独立审查后的临时 `gpui_kit/test-support` dev-only 接线，GREEN 后一并移除。
 
 只读技术审查已确认：引用身份采用 stream block ID 与确定性解析树遍历身份组合，每行携带独立的引用祖先路径，不复用列表 depth；保留子节点原始 kind，逐项审查现有 Quote 消费者。普通/可选择路径按祖先前缀构造容器，每个容器拥有自己的全高边界；段间距在容器内，独立块外距在容器外。Thinking 按引用容器累计 body 坐标中的边界 span，并在 BodyElement 层独立于逐段可见性剔除进行绘制，应用相同 y_offset 与 content mask。只将装饰挂在第一段并延长高度不可接受，因为首段离屏会使仍应可见的竖线被剔除。测试以实际绘制区间并集断言，不约束必须产生一个 quad。若改变上述验收含义，必须先更新规格并重新开始测试周期。
 
@@ -79,4 +79,30 @@
 
 追加用例先验证解析器实际输出，避免把不支持的 Markdown 当作任务列表：`- # heading-first`、列表项内围栏代码；task 变体仅在解析器识别 checkbox 时断言。测试需验证普通/可选择/Thinking 的实际布局及可选择路径复制结果，而非只检查 marker 字段。
 
-候选最小方案：独立列表项开始信息（marker、checked）与底层 kind、引用祖先、列表 depth 分离；渲染/选择与 Thinking 同步消费，必要时调整间距/高度消费者。该标记修复尚未实施，先冻结追加测试并取得本周期 RED；原 16 个测试保持不变。新增测试不是原周期先行证据。
+列表标记周期已实施：独立列表项开始信息（marker、checked）与底层 kind、引用祖先、列表 depth 分离，渲染/选择与 Thinking 同步消费。先行测试 `b21f635eecb256fdb13c4177df0680eccbea254d` 的 [Actions 39577022103](https://github.com/puzige/vega/actions/runs/39577022103) 执行 19 项，16 通过/3 个新增目标失败/0 跳过，构成该周期 RED；后续实现 `ae1888267fd8b05db1c388c01ed80bfc40643a1b` 的 [Actions 39578674519](https://github.com/puzige/vega/actions/runs/39578674519) 执行 19 项，17 通过/2 失败/0 跳过，Clippy 通过。原 16 项已通过，但全部 19 项尚未 GREEN，不得删测。
+
+## 独立追加周期：列表围栏的流边界（v3）
+
+### 证据与责任层
+
+原始失败为 `nonparagraph_first_list_items_copy_markers_in_visible_order`：Selectable、非引用输入预期 `before\n\n• code-first\nsecond-line\n\nafter`，实际在 `after` 前多一个换行。静态调用链是 `MarkdownStream::append` → mdstream `machine::is_new_block_boundary` → `BoundaryDetector::current_line_can_interrupt`：列表模式遇到缩进的关闭围栏仍按新围栏起点拆块，关闭围栏随后成为另一代码块的开头。该归因为待本轮公开解析边界断言确认的产品依赖缺陷，不能在 UI 复制层 trim 或吞分隔符掩盖。
+
+### 先行验收
+
+- 用公开 `MarkdownStream::append / snapshot / finish` 检查显式期望的 `RenderNode` 树：列表内完整围栏属于该列表项，后续普通正文不被吞进代码或生成伪代码块。普通与引用内列表均覆盖；不能只拿两个同样错误的解析结果互比。
+- 对完整输入、逐 Unicode 字符及在列表标记、开/关围栏、换行附近分割的合法 UTF-8 chunk schedule 验证最终相同的明确期望；检查有意义的中间快照，finish 幂等。
+- 真实代码内部空行与关闭围栏前的真实空行逐字保留，不允许 trim、删空行或改写源文；无空行的原 UI 复制断言完全保留。包含反引号和波浪围栏、列表结束后的顶层围栏对照，确保最小规则不会吞掉真实的新块。
+- 流式缓存边界保持：已 committed 的无关块 ID/version/借用节点身份及内容不随追加而重算；后置引用定义仍只使相关块失效并产出正确链接。用稳定快照边界观察，不扩大生产公共 API。
+- 原 19 个测试与业务断言保持；新增用例不是旧周期的先行证据。本轮解析生产实现尚未改变，先独立审查测试并由同一 Draft PR 取得云端有效 RED，再冻结修复。
+
+### 最小实现计划（仅在有效 RED 后）
+
+1. 沿用锁定的 mdstream `=0.3.0` 与现有 committed/pending、adapter、版本失效契约。依据已有 vendoring 预案，从确切 0.3.0 发行源固定来源、checksum、双许可，采用本地 patch 路径；不迁移 0.4，不引入新依赖或上游测试集合。
+2. 只修列表延续行的围栏边界误判，具体最小条件由冻结测试和源代码状态机共同确定；不通过每 token 全量 reparse、重写源文本或 UI 复制补偿实现。原有顶层围栏和非列表规则不泛化重写。
+3. 独立审查 vendored 来源与语义增量；同一冻结测试全部 GREEN 后固定源码/完整 SHA/run/job，再独立删测，最新 head 全量空集门禁通过后才交付。
+
+## 测试观察修正：无头字体（v3，不改验收）
+
+- 原 `heading_first_list_items_keep_visible_marker_and_heading_style` 在 marker 位置、H1 字号断言后，通过 shaped run 的 `font_id` 反查字体得到 None。实际 GPUI `NoopTextSystem::font_id` 返回 1，但 `layout_line` 忽略输入 font runs 并生成 ID 0；反查该 dummy ID 不是有效字重观察。
+- 在真实渲染/布局边界以 cfg(test) 观察实际送入 `StyledText / shape_text` 的有效 `TextRun.font`，与已有可见文本及布局记录绑定；覆盖普通、可选择、Thinking，不能仅调用样式 helper 或从期望 token 伪造记录。生产行为不变。
+- 保留 H1 字号与 `Typography::HEADING_PAGE_WEIGHT` 的原断言含义，观察修正不删除、跳过、默认化或弱化字重要求；用同一真实路径中的普通正文作区分度对照，证明观察不会恒为标题字重。该接线先经独立审查，云端结果仍待取得。

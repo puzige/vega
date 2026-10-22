@@ -26,7 +26,7 @@ pub(super) fn styled_text(content: String, runs: Vec<TextRun>) -> AnyElement {
         })
     } else {
         #[cfg(test)]
-        return super::quote_behavior_tests::observed_text(content, text);
+        return super::quote_behavior_tests::observed_text(content, text, Some(runs));
         #[cfg(not(test))]
         text.into_any_element()
     }
@@ -115,7 +115,12 @@ impl Element for InlineCodeText {
         self.text
             .prepaint(id, inspector, bounds, &mut (), window, cx);
         #[cfg(test)]
-        super::quote_behavior_tests::observe_text(&self.content, self.text.layout(), window);
+        super::quote_behavior_tests::observe_text(
+            &self.content,
+            self.text.layout(),
+            &self.runs,
+            window,
+        );
         InlineCodePrepaint {
             lines: shape(self.content.clone(), &self.runs, self.text.layout(), window),
             hitbox: (!self.links.is_empty()).then(|| {

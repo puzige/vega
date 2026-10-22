@@ -67,13 +67,30 @@ fn heading_first_list_items_keep_visible_marker_and_heading_style(cx: &mut TestA
             assert!(marker.left() < heading.layout.bounds().left(), "{path:?}");
             let shaped = heading.layout.line_layout_for_index(0).unwrap();
             assert_eq!(shaped.font_size(), px(Typography::MARKDOWN_H1), "{path:?}");
-            let weight = cx.update(|cx| {
-                cx.text_system()
-                    .get_font_for_id(shaped.runs()[0].font_id)
-                    .unwrap()
-                    .weight
-            });
+            let weight = heading.runs.first().unwrap().font.weight;
             assert_eq!(weight, Typography::HEADING_PAGE_WEIGHT, "{path:?}");
+            assert_eq!(
+                heading.runs.iter().map(|run| run.len).sum::<usize>(),
+                heading.text.len(),
+                "{path:?}"
+            );
+            assert!(
+                heading.runs.iter().all(|run| run.font.weight == weight),
+                "{path:?}"
+            );
+            let body = painted
+                .text
+                .iter()
+                .find(|run| run.text == "before")
+                .unwrap();
+            assert_eq!(
+                body.layout.line_layout_for_index(0).unwrap().font_size(),
+                px(Typography::CONVERSATION),
+                "{path:?}"
+            );
+            let body_weight = body.runs.first().unwrap().font.weight;
+            assert_eq!(body_weight, FontWeight::NORMAL, "{path:?}");
+            assert_ne!(body_weight, weight, "{path:?}");
             if quote {
                 continuous(&painted, "before", "after");
             }

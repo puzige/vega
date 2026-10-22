@@ -85,6 +85,8 @@ impl SelectionDocumentBuilder {
                 )
                 .into(),
             ),
+            #[cfg(test)]
+            observed_runs: Some(runs.clone()),
             text: StyledText::new(text.to_owned()).with_runs(runs),
             content: text.to_owned().into(),
             order: (content_range.start as u64, 0),
@@ -109,7 +111,15 @@ impl SelectionDocumentBuilder {
         styled: StyledText,
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
-        self.append(text, styled, None, Vec::new(), id_prefix)
+        self.append(
+            text,
+            styled,
+            None,
+            Vec::new(),
+            id_prefix,
+            #[cfg(test)]
+            None,
+        )
     }
 
     pub(crate) fn append_styled_runs(
@@ -120,10 +130,20 @@ impl SelectionDocumentBuilder {
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
         let styled = StyledText::new(text.to_owned()).with_runs(runs.clone());
+        #[cfg(test)]
+        let observed_runs = Some(runs.clone());
         let paint_runs = (runs.iter().any(|run| run.background_color.is_some())
             || !links.is_empty())
         .then_some(runs);
-        self.append(text, styled, paint_runs, links, id_prefix)
+        self.append(
+            text,
+            styled,
+            paint_runs,
+            links,
+            id_prefix,
+            #[cfg(test)]
+            observed_runs,
+        )
     }
 
     fn append(
@@ -133,6 +153,7 @@ impl SelectionDocumentBuilder {
         paint_runs: Option<Vec<TextRun>>,
         links: Vec<LinkRange>,
         id_prefix: &str,
+        #[cfg(test)] observed_runs: Option<Vec<TextRun>>,
     ) -> gpui_kit::AnyElement {
         let start = self.content.len();
         self.content.push_str(text);
@@ -151,6 +172,8 @@ impl SelectionDocumentBuilder {
         let fragment =
             move |range: Range<usize>, content: SharedString, paint_runs: Vec<TextRun>| {
                 let styled = StyledText::new(content.clone()).with_runs(paint_runs.clone());
+                #[cfg(test)]
+                let observed_runs = Some(paint_runs.clone());
                 let paint_runs = paint_runs
                     .iter()
                     .any(|run| run.background_color.is_some())
@@ -158,6 +181,8 @@ impl SelectionDocumentBuilder {
                 SelectableStyledText {
                     id: ElementId::Name(format!("{fragment_id}-fragment-{}", range.start).into()),
                     text: styled,
+                    #[cfg(test)]
+                    observed_runs,
                     content,
                     content_range: start + range.start..start + range.end,
                     logical_range: start..end,
@@ -176,6 +201,8 @@ impl SelectionDocumentBuilder {
             SelectableStyledText {
                 id: ElementId::Name(format!("{id_prefix}-selection-run-{order}").into()),
                 text: styled,
+                #[cfg(test)]
+                observed_runs,
                 content: text.into(),
                 content_range: start..end,
                 logical_range: start..end,
@@ -227,6 +254,8 @@ impl SelectionDocumentBuilder {
 struct SelectableStyledText {
     id: ElementId,
     text: StyledText,
+    #[cfg(test)]
+    observed_runs: Option<Vec<TextRun>>,
     content: SharedString,
     content_range: Range<usize>,
     logical_range: Range<usize>,
@@ -271,6 +300,10 @@ impl Element for SelectableStyledText {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        #[cfg(test)]
+        if self.observed_runs.is_none() {
+            self.observed_runs = Some(vec![window.text_style().to_run(self.content.len())]);
+        }
         let (layout, ()) = self.text.request_layout(id, inspector_id, window, cx);
         (layout, ())
     }
@@ -287,7 +320,12 @@ impl Element for SelectableStyledText {
         self.text
             .prepaint(id, inspector_id, bounds, &mut (), window, cx);
         #[cfg(test)]
-        super::quote_behavior_tests::observe_text(&self.content, self.text.layout(), window);
+        super::quote_behavior_tests::observe_text(
+            &self.content,
+            self.text.layout(),
+            self.observed_runs.as_deref().expect("rendered text runs"),
+            window,
+        );
         self.runs.borrow_mut().push(LaidOutRun {
             text: self.content.clone(),
             layout: self.text.layout().clone(),

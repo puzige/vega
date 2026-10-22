@@ -7,6 +7,7 @@ use std::{cell::RefCell, rc::Rc};
 pub(crate) struct PaintedText {
     pub(crate) text: String,
     pub(crate) layout: TextLayout,
+    pub(crate) runs: Vec<gpui_kit::TextRun>,
 }
 
 thread_local! {
@@ -23,7 +24,12 @@ pub(crate) fn model_input(model: &mut StreamModel) {
     });
 }
 
-pub(super) fn observe_text(text: &str, layout: &TextLayout, window: &Window) {
+pub(super) fn observe_text(
+    text: &str,
+    layout: &TextLayout,
+    runs: &[gpui_kit::TextRun],
+    window: &Window,
+) {
     if layout
         .bounds()
         .intersect(&window.content_mask().bounds)
@@ -35,6 +41,7 @@ pub(super) fn observe_text(text: &str, layout: &TextLayout, window: &Window) {
         observations.push(PaintedText {
             text: text.to_owned(),
             layout: layout.clone(),
+            runs: runs.to_vec(),
         })
     });
 }
@@ -849,10 +856,20 @@ fn all_text_bounds(frame: &Frame) -> Bounds<Pixels> {
 struct ObservedText {
     content: String,
     text: StyledText,
+    runs: Option<Vec<gpui_kit::TextRun>>,
 }
 
-pub(super) fn observed_text(content: String, text: StyledText) -> AnyElement {
-    ObservedText { content, text }.into_any_element()
+pub(super) fn observed_text(
+    content: String,
+    text: StyledText,
+    runs: Option<Vec<gpui_kit::TextRun>>,
+) -> AnyElement {
+    ObservedText {
+        content,
+        text,
+        runs,
+    }
+    .into_any_element()
 }
 
 impl IntoElement for ObservedText {
@@ -878,6 +895,9 @@ impl gpui_kit::Element for ObservedText {
         window: &mut Window,
         cx: &mut App,
     ) -> (gpui_kit::LayoutId, ()) {
+        if self.runs.is_none() {
+            self.runs = Some(vec![window.text_style().to_run(self.content.len())]);
+        }
         self.text.request_layout(id, inspector, window, cx)
     }
     fn prepaint(
@@ -891,7 +911,12 @@ impl gpui_kit::Element for ObservedText {
     ) {
         self.text
             .prepaint(id, inspector, bounds, &mut (), window, cx);
-        observe_text(&self.content, self.text.layout(), window);
+        observe_text(
+            &self.content,
+            self.text.layout(),
+            self.runs.as_deref().expect("rendered text runs"),
+            window,
+        );
     }
     fn paint(
         &mut self,
