@@ -138,6 +138,30 @@
 - 38冻结测试与hook/lifecycle suffix逐字不变，vendor/parser/Cargo/workflows等518受保护路径不变，静态fmt/diff/source-policy退出0；未编译/执行/Clippy。证据 `vega-issue-514-quote-first-ui-implementation-evidence.md` SHA256 `b43444c6d573b96bf6a3876c3429c814694357c0092ccae8edaba1cfdf036520`。
 - 父Agent13:17:34Z独立复算diff/三个文件/reporthash，范围/冻结检查退出0。停止写入后交同一独立reviewer审三文件新增组合及受影响不变量，可与同版本全38项Actions并行，尚未全体GREEN或最终审查批准。
 
+## v6 完整38项 GREEN 与独立UI审查通过
+
+- 实现精确head `6e99ac289a12aaa48a8369abd74e922d62b53cfb`；[Actions39785822871](https://github.com/puzige/vega/actions/runs/39785822871)，Nextest `119848628751` 明确38发现/38执行/38通过/0失败/0跳过，15binaries，1.764s；Clippy/fmt `119848628843`、Python60项、required `119852784191`全部成功。原38源与UI RED保持相同，未删/弱化。
+- 独立UI实施审查13:18:36Z–13:37:17Z（18m41s）PASS，精确commit/diff/3文件manifest `693aa51d6a6ca3c60a847287f6a77e51d474ab5ed33949a6d470c6a3af7c83c3`一致；518保护路径+observer/lifecycle支持不变；确认marker/rail/content0/24/38及24/48/62、复制顺序、Thinking源映射/culling和现有heading/code行为。不是仅靠writer自审。
+- run13:19:31Z–13:27:41Z（8m10s）；Nextest13:19:35Z–13:27:34Z（7m59s），Clippy13:19:34Z–13:23:51Z（4m17s）；状态13:26:00Z/13:32:03Z相隔6m03s，push13:19:25Z到完成读取等待12m38s。证据固定 [PR comment](https://github.com/puzige/vega/pull/529#issuecomment-6342080136)，四份测试GitHubblob读回与本地一致。
+- 测试源码入口：parser `5446aef5104880f50a4515bf5d1ab7b696cc6808`，quote `6a08c5f81a0273b8bf07887dd5141b15f0e3f09a`，marker `b54bda863c3e549932472e3b187a89ef28c554d0`，Thinking文件 `46f8f9fca7e492d100fcea0bf1f9f5c383596490`，均固定完整head，不依赖branch或短期artifact。
+- 删测前13:39Z fetch发现最新master `7c3734681ee654a22f0bae83c4c939f272704354`（#541无效Read校验），6文件无本卡重叠；安全merge/push任务head `d1c3ff4caeef234f903aa8b0ad61b5cba861ef75`13:40:16Z。原38及已审UI/parser不变，但先在新基线重验相同38GREEN再删测；当前未删/正式PR/合并。
+
+## 删测前最新基线重验与集成审查
+
+- `d1c3ff4caeef234f903aa8b0ad61b5cba861ef75` 的 [Actions39788905637](https://github.com/puzige/vega/actions/runs/39788905637) 已完整成功：Nextest `119859344266` 明确38发现/38执行/38通过/0失败/0跳过，1.939s；Clippy/fmt `119859344029`、Python5+15+40共60项、required `119863069405` 成功。run13:40:21Z–13:47:26Z（7m05s），Nextest13:40:25Z–13:47:19Z（6m54s），Clippy13:40:24Z–13:42:25Z（2m01s）；push13:40:16Z到完成读取13:52:31Z的观察等待12m15s。13:53:01Z原始日志与parser测试blob读回一致；本轮恢复后14:01–14:02Z再次读回run/jobs/logs与固定源码。
+- 13:53:44Z fetch发现master新增 `83fd51d79940516029cdc1eaf8e81566870c877b`（#534 composer overflow）。14:01:14Z干净ort合并/push任务head `849fd67ae0c1524bba18bf6f2010484c1a3b1f44`，仅image_preview、text_input三文件及docs534两文件，不与本卡生产/测试重叠。父Agent字节比较确认从已审6e99到849的markdown/conversation_stream/vendor/Cargo全部未变；四测试blob及v6spec SHA256一致。保留此前父Agent文档未提交修改、全部公共历史与主仓用户文件，无force-push。
+- 新head现有全38项重验 [Actions39792089235](https://github.com/puzige/vega/actions/runs/39792089235)，14:01:17Z创建，14:02:06Z首次状态queued；结果待取得，不以d1的GREEN代替新head门禁。未提前删测、转正式PR、合并或关闭Issue。
+- 本轮新增followup（累计17、spawn仍3）：同一非实现者reviewer对6e99→849的两次master增量及完整集成范围作只读审查，复用已审UI/parser结论，重点追踪共享text/selection风险；不重复已完成UI三文件审查，不代替后续删测/最终head审查。当前唯一可变路径是父Agent本证据文档，代码/测试停止写入；无实现writer活动。
+- 下一步：当前38 GREEN与集成审查无缺口并固定公开源码/证据后，专职writer独立删除Rust测试和独占支持；生产不变、Python/workflows/bench/release保留，停写后独立审删除差异并验证最终0发现/0执行完整门禁。
+
+## 849 集成 GREEN 与独立删测启动
+
+- 续接14:10:20Z确认HEAD仍为 `849fd67ae0c1524bba18bf6f2010484c1a3b1f44`，只有本续接文档未提交。用户要求继续后立即读状态：测试步骤已成功但API总状态尚in_progress。14:17:00Z查询遇TLS handshake timeout，归类外部状态查询故障，不是测试失败；等五分钟后14:22:37Z成功读取完整SUCCESS及原始日志。
+- Actions `39792089235`：Nextest `119870428987` 14:01:21–14:08:13Z，38发现/38执行/38通过/0失败/0跳过，1.181s；Clippy/fmt `119870428092` 14:01:20–14:04:27Z成功；Python5+15+40共60项；required `119873746804` 14:08:16–14:08:20Z成功。push14:01:14至最终状态读取14:22:37，观察等待21m23s（包含状态查询网络故障，不等于CI执行耗时）。
+- 续接list_agents返回空，旧集成审查结果无法通过当前工具取得；不冒充完成或重复恢复旧writer。新独立只读reviewer14:11:44–14:16:01Z（4m17s）审6e99→849增量PASS；确认本卡生产/测试/vendor/Cargo逐字一致，TextInput局部滚动不替代transcript selection，copy/link guards与quote geometry未变。无写入；不是删测或最终交付批准。
+- 最新GREEN、完整SHA及四份测试源码固定在 [PR comment](https://github.com/puzige/vega/pull/529#issuecomment-6343126549)，parser GitHub blob再次读回 `5446aef5104880f50a4515bf5d1ab7b696cc6808`。fetch/update确认master仍83fd51d7、Already up to date。
+- 专职删测writer启动，仅38项Rust测试及独占观察接线/dev支持；不改生产行为、Python/workflows/bench/release。报告将写 `vega-issue-514-test-deletion-evidence.md`，停写READY后独立审查再提交最终空集门禁。本次续接新增spawn2，历史累计spawn5/followup17；旧followup的终态未知，不计为已完成审查。
+
 ## mdstream 0.3 来源核对（只读静态证据）
 
 - 锁定版本与用户裁决：`=0.3.0`，不迁移 0.4；现有技术规格 §5.0 已列 vendoring 预案，无新 crate。
@@ -146,8 +170,15 @@
 - 上游固定提交许可：[MIT](https://github.com/Latias94/mdstream/blob/950d0926f54667f04aed87fad6cc9921aa74ef5c/LICENSE-MIT) blob `f7c57f575b1b78ac893b339ffafd9effe4bab286`，[Apache-2.0](https://github.com/Latias94/mdstream/blob/950d0926f54667f04aed87fad6cc9921aa74ef5c/LICENSE-APACHE) blob `cd9f8ad8d319325bf9237d5195735eebbfcdcfdc`。已读回 MIT 授权与原作者归属，发行 manifest 声明 `MIT OR Apache-2.0`。
 - 采用 vendor 时保留许可与可重建来源，剔除不被生产使用的 upstream 测试/接线，记录与发行包的语义差异；不整套恢复历史 Rust 测试或引入 upstream dev dependencies。
 
+## 独立删测停写与审查
+
+- `514-delete-v1` writer已停写；以849fd67a为基线的12文件source/lock diff SHA256 `540e75e4e04ed116ab15a56ec0e7b57b690d2e4a134dc166133d9a3e5be3e082`；报告 `vega-issue-514-test-deletion-evidence.md` SHA256 `8f925ff0b79a8de00ee739a76e66fd668a30f890e4ca706e122c6d7c1ed2a60a`。父Agent复算一致，静态fmt/metadata/diff成功；没有本地执行或编译。
+- 非实现者14:40:48–14:44:23Z（3m35s）独立审查PASS。38项静态清零，7个存续Rust文件仅移除测试接线；真实runs/IDs/source/copy/layout/rail/culling均保留。1091受保护路径逐字一致。锁文件924→914包、26边删除无新增；只有2条删除边源于保留包，另24条源于已删包；无版本/source/checksum变化。非可执行text围栏保留，无Rust测试或独占支持残留。
+- 本次续接新增followup1（累计18），针对新删测差异；累计spawn5。writer准确起止未完整记录，不能声称精确主动耗时；其静态工具层返工（symlink/encoding/projection parser）已留报告，不是产品失败或测试RED。
+- 14:45:48Z再次fetch，master仍83fd51d7且已被当前分支包含；已审source diff hash未变。文档edit因file_not_read被拒，无写入，重新read后补记。下一步独立提交删测并验证最终精确head完整空集CI；尚未转正式PR、合并或用户验收。
+
 ## 本地与云端边界
 
-本地仅做差异、格式和静态元数据检查；未运行 Vega、编译、Clippy、Rust/Python 测试、build 或打包。完整冻结测试已取得上述本轮有效 RED 与开发 GREEN，独立实现审查/删测/最终门禁仍未完成；后续只使用现有 PR Check，启动后五分钟状态查询，保留首次失败原始证据。
+本地仅做差异、格式和静态元数据检查；未运行 Vega、编译、Clippy、Rust/Python 测试、build 或打包。完整冻结测试已取得上述本轮有效 RED 与开发 GREEN，原UI/parser独立实施增量审查已完成，最新基线集成审查/38项重验与独立删测审查已完成，最终精确提交空集门禁仍未完成；后续只使用现有 PR Check，启动后五分钟状态查询，保留首次失败原始证据。
 
 最终交付前仍需：同一冻结测试云端全部 GREEN → PR 固定原始源码/完整 SHA/run/job/准确计数 → 独立删测提交及审查 → 最新完整 head 的 fmt、全目标 Clippy、Python、Rust 0 发现/0 执行 `no Rust tests` 门禁 → 正式 PR、squash merge → Issue OPEN / In review 等用户手测。空集不称 Rust 测试通过。

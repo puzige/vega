@@ -1333,21 +1333,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                     .flex_shrink_0()
                     .w(px(Layout::MARKDOWN_LIST_INDENT))
                     .text_color(colors.text_secondary)
-                    .child({
-                        #[cfg(test)]
-                        {
-                            let content = format!("{} ", line.marker);
-                            super::quote_behavior_tests::observed_text(
-                                content.clone(),
-                                StyledText::new(content),
-                                None,
-                            )
-                        }
-                        #[cfg(not(test))]
-                        {
-                            format!("{} ", line.marker).into_any_element()
-                        }
-                    }),
+                    .child(format!("{} ", line.marker).into_any_element()),
             );
             if let Some(checked) = line.checked {
                 row = row.child(
@@ -1359,21 +1345,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                         } else {
                             colors.text_tertiary
                         })
-                        .child({
-                            #[cfg(test)]
-                            {
-                                let content = if checked { "[x]" } else { "[ ]" };
-                                super::quote_behavior_tests::observed_text(
-                                    content.to_owned(),
-                                    StyledText::new(content),
-                                    None,
-                                )
-                            }
-                            #[cfg(not(test))]
-                            {
-                                (if checked { "[x]" } else { "[ ]" }).into_any_element()
-                            }
-                        }),
+                        .child((if checked { "[x]" } else { "[ ]" }).into_any_element()),
                 );
             }
             row = row.child(div().flex_1().min_w_0().child(markdown_text(

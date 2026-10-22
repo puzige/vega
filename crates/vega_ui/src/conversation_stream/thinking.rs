@@ -675,6 +675,3 @@ impl ConversationStream {
         }
     }
 }
-
-#[cfg(test)]
-pub(crate) use body::quote_test_body;
