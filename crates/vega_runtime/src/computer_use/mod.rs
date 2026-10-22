@@ -11,12 +11,17 @@ mod control;
 mod diagnostics;
 pub mod guide;
 mod media;
+mod prepare;
 mod progress;
 
 pub use components::ManagedComponents;
 pub use control::{ComputerUseControl, ControlPhase, ControlSnapshot};
 pub use diagnostics::ExecutorFailure;
 pub use media::{Observation, ToolObservationSource};
+pub use prepare::{
+    ComponentState, DirectCapture, DirectCaptureReason, ExtensionState, PermissionState,
+    Preparation, PromptMode, preparation_from_check_permissions, unknown_preparation,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

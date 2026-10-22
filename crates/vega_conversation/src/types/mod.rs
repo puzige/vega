@@ -3,8 +3,10 @@ pub use crate::composer_predictions::{ComposerPredictionFence, ComposerPredictio
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{
-    Capability, ComputerUseControl, ComputerUseRun, ControlPhase, ControlSnapshot, DesktopTarget,
-    ManagedComponents, Observation, SUPERSEDED_CONTROL_OUTPUT, Target,
+    Capability, ComponentState, ComputerUseControl, ComputerUseError, ComputerUseRun, ControlPhase,
+    ControlSnapshot, DesktopTarget, DirectCapture, DirectCaptureReason, ExtensionState,
+    ManagedComponents, Observation, PermissionState, Preparation, PromptMode,
+    SUPERSEDED_CONTROL_OUTPUT, Target, preparation_from_check_permissions, unknown_preparation,
 };
 
 use serde::{Deserialize, Deserializer, Serialize};
