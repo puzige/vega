@@ -393,6 +393,7 @@ impl Sidebar {
         });
         cx.subscribe(&projects_block, Self::on_projects_event)
             .detach();
+        cx.observe(&projects_block, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&sessions_block, Self::on_sessions_event)
             .detach();
         Self {
@@ -645,6 +646,7 @@ impl Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
+        let projects_error = self.projects_block.read(cx).error.clone();
         div()
             .id("sidebar")
             .flex()
@@ -664,6 +666,11 @@ impl Render for Sidebar {
                     .gap_3()
                     .child(self.render_brand(&colors, cx))
                     .child(self.render_new_task(cx, &colors))
+                    .children(
+                        projects_error.map(|message| {
+                            div().flex_shrink_0().child(error_bar(message, &colors))
+                        }),
+                    )
                     .child(
                         div()
                             .on_children_prepainted({
