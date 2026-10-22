@@ -52,12 +52,25 @@
 
 生产 diff SHA256：`cefc98813590938c6648669a0572bd762810e4fad0da658c08f834cabc53c075`。冻结测试与测试接线相对 RED 提交无差异。主 Agent 对全部改动执行 `rustfmt --edition 2024 --config skip_children=true --check` 和 `git diff --check`，通过；未执行代码。写入者已停止，固定内容可交独立审查与同测试 GREEN。
 
+## 同一冻结测试 GREEN
+
+- 实现提交：`b6bbfaf0baa7c479c7fc1d9449c2931e36faa1ce`，独立实现审查 READY，无 must-fix；生产 diff 和冻结测试身份复核一致。
+- [GREEN run 39818626096](https://github.com/puzige/vega/actions/runs/39818626096)，[Nextest job 119963618722](https://github.com/puzige/vega/actions/runs/39818626096/job/119963618722)。
+- 2026-10-22 17:01:53Z：原始输出 `40 tests run: 40 passed, 0 skipped`，发现 40，无 ignored。三组 Python 分别 5/15/40 测试通过；fmt、workspace/all-targets Clippy 与 required check 全部成功。
+- Nextest job 导出 SHA256：`86d2833d1bf1fcf809201b8ced586b64a211b2f801c9109b3a8abecdc111fccf`。主 Agent 读回日志并确认 RED→GREEN 期间原测试/接线零差异。
+- PR 已固定 RED/GREEN run/job、完整提交和源码/patch；GitHub API 读回原测试提交及 3 个文件成功，原始 patch 可读，导出 SHA256 `a761a3b4a87730e10a2fc02397ee834378425cc0231b53b0e7015fc0796ca9f6`。证据不依赖本机临时文件或过期 artifact。
+
+## 删测与集成
+
+- 独立核实原始 RED/GREEN 证据：完成。非写入者核对日志哈希/GitHub run head/原始断言，确认同一 40 个唯一测试身份：13 FAIL→PASS、27 PASS→PASS；测试与接线零差异，GREEN 门槛满足。
+- 原测试源码/patch 与 RED/GREEN 证据固定后独立删测：首次委派被中断；恢复时确认没有活跃子 Agent、删测未落盘，原 GREEN 产物完整保留。接替写入者完成限定清理并停写，仅删除 3 个测试文件和 pipeline 测试模块声明，共 1757 行；无生产行为或依赖改动。
+- 删除清单：`crates/vega_runtime/tests/image_context_budget.rs`、`crates/vega_conversation/tests/context_over_limit_message.rs`、`crates/vega_conversation/src/agent/pipeline_image_tests.rs`；`pipeline.rs` 仅移除末尾 4 行测试接线，恢复为原生产基线，SHA256 `feb1b3556d450b952b474cdcf69ec8fe3719232cb648ae78a5b8d02943ae5a41`。
+- 三个修复生产文件的 SHA256 与带测试 GREEN 完全一致；移除的 fixture/helper/模块没有剩余代码引用，Rust 测试属性/`cfg(test)` 静态扫描为空。manifest、lockfile、benchmark、Python 与 CI 未改。主 Agent 核对完整删除差异及 `git diff --check`，通过；静态清点不替代云端测试发现。
+- 恢复后 fetch 的集成基线为 `2ba904f7074115de5ee89cc18c376c083f803357`，相对原基线只新增 `docs/554/vega-issue-554-panel-motion-study.md`。无冲突同步，生产实现、冻结测试和依赖零差异；不重写 RED/GREEN 提交。原测试源码/patch、GREEN head/门禁和日志哈希再次读回一致。该文档同步与独立删测一并保存为第三个任务提交，父提交保留原始测试证据。
+
 ## 后续阶段
 
-- 最小生产实现：补丁已恢复并完成主 Agent 静态检查，待独立审查。
-- 同一冻结测试 GREEN：待现有 Actions。
-- 原测试源码/patch 与 RED/GREEN 证据固定后独立删测：待完成。
-- 最终 head 全门禁与 `no Rust tests`：待完成，不能代替带测试 GREEN。
+- 独立删测/最终版本审查与最新 head 完整云端门禁：待完成；必须确认 `no Rust tests`（0 发现/0 执行），不能代替带测试 GREEN。最新提交、run/job 与最终审查结论固定于 PR。
 - 用户手测/应用安装：未完成；代码合并不等于应用已更新。
 
 本地只执行快速静态、文件级格式和 diff 检查，无 Vega 执行/测试/编译/打包。
