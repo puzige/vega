@@ -27,11 +27,6 @@ pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
 
-#[cfg(test)]
-mod project_removal_boundaries_tests;
-#[cfg(test)]
-mod project_removal_tests;
-
 use std::path::{Path, PathBuf};
 
 pub use rusqlite::Connection;

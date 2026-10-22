@@ -647,7 +647,7 @@ impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let projects_error = self.projects_block.read(cx).error.clone();
-        let sidebar = div()
+        div()
             .id("sidebar")
             .flex()
             .flex_col()
@@ -704,11 +704,6 @@ impl Render for Sidebar {
                                 }
                             })
                             .id("sidebar-scroll")
-                            .map(|scroll| {
-                                #[cfg(test)]
-                                let scroll = gpui_kit::test::TestSupportExt::test_support(scroll);
-                                scroll
-                            })
                             // Organization content keeps an 8px application-edge inset;
                             // Pinned row surfaces extend 8px left of the title column.
                             .ml(px(-4.0))
@@ -728,10 +723,8 @@ impl Render for Sidebar {
                             ),
                     ),
             )
-            .child(Self::render_settings_entry(&colors, cx));
-        #[cfg(test)]
-        let sidebar = gpui_kit::test::TestSupportExt::test_support(sidebar);
-        sidebar.into_any_element()
+            .child(Self::render_settings_entry(&colors, cx))
+            .into_any_element()
     }
 }
 

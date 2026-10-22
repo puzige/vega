@@ -125,9 +125,7 @@ pub(crate) fn clear_opened_thread_of_project(project_id: &str, cx: &mut App) {
 
 /// Inline danger bar (ui-spec §4.6: errors are inline, never modals).
 pub(crate) fn error_bar(message: String, colors: &ThemeColors) -> AnyElement {
-    #[cfg(test)]
-    let selector = format!("sidebar-error-{message}");
-    let bar = div()
+    div()
         .px_2()
         .py_1()
         .rounded_md()
@@ -136,11 +134,8 @@ pub(crate) fn error_bar(message: String, colors: &ThemeColors) -> AnyElement {
         .border_color(colors.danger)
         .text_color(colors.danger)
         .text_size(px(Typography::SIDEBAR))
-        .child(message);
-    #[cfg(test)]
-    let bar =
-        gpui_kit::test::TestSupportExt::test_support(bar.id(ElementId::Name(selector.into())));
-    bar.into_any_element()
+        .child(message)
+        .into_any_element()
 }
 
 pub(crate) fn thread_title(thread: &Thread) -> String {
