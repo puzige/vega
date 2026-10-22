@@ -129,3 +129,15 @@ Nextest 原始总结：13 executed，2 passed，11 failed，0 skipped；ignored 
 合并前主 Agent 确认 master 已到 `48d958743cb66295ef3de9db31449f213263d417`，新增 #538 用量分母与 #540 Codex 项目历史，未修改本卡四个生产文件。首次空集 CI 的 checkout 已验证合成提交 `5b2bc2e53261c2c1c97ae6dc5e958d088ba0a8f7`，父为任务 head 与该 master；但仓库 `required_status_checks.strict = true`，PR 为 BEHIND。不得用 admin 绕过。
 
 因此正常同步最新 master（clean merge），从 `aa5a4825bf77cb413690d1d6cf23b9927462a7fe` 恢复完全相同的 16 测试和支持，在集成基线上重新 GREEN 后再次独立删测/最终门禁。该恢复不新增或修改验收，也不整目录恢复历史测试；只恢复本轮已留档的三个源文件及专用接线，保护 master 新增路径。旧证据保留，新 head 仍须验证。
+
+## 集成基线重新 GREEN 与最终相同删测补丁
+
+同步提交 `39629ee6198539c6eade560dde39d2c9f90967b2` 在 [run 39783853301](https://github.com/puzige/vega/actions/runs/39783853301)、Nextest 119841723364、Clippy 119841723625、required 119844738104 全部成功：同一 16 discovered/executed/passed，0 failed/skipped；Python 5+15+40 OK。
+
+期间 master 再新增 #541 Read 错误处理到 `7c3734681ee654a22f0bae83c4c939f272704354`，仅 6 个非 UI 路径。保留测试直接正常合并，得到最终带测试集成版本 `c56ce43be49fcf26c71d5cc2b0346f65982bd0fc`。本卡生产文件、16 测试和支持均与已批准 aa5a4825 字节一致。
+
+[run 39785676852](https://github.com/puzige/vega/actions/runs/39785676852)，[Nextest 119848110602](https://github.com/puzige/vega/actions/runs/39785676852/job/119848110602)，[Clippy 119848110896](https://github.com/puzige/vega/actions/runs/39785676852/job/119848110896)，[required 119852116551](https://github.com/puzige/vega/actions/runs/39785676852/job/119852116551) 全部 success：16 discovered/executed/passed，0 failed/skipped；Python 5+15+40 OK，ignored 未单独提取。fetch 后确认上述 master 是任务 head 祖先。
+
+在新的 GREEN 上，主 Agent 仅集成先前由专职写入者产出、独立审查批准的完全相同删测 patch（aa5a4825 → e315cb25，范围 Cargo.lock 与 vega_ui），SHA-256 仍为 `5b39e78187185384f60880ccfdd97074bee73cd876616f72fa2b3d5aeeb057ce`；`git apply --check` 成功，应用后重新算 hash 一致，检查最终对应生产/接线文件与首次批准清理版本 diff 为空。未重新编写代码，未影响上游路径，fmt/diff check 退出 0。
+
+最新带测试集成版本 [源码与证据](https://github.com/puzige/vega/pull/539#issuecomment-6342003900)在清理前已固定；接下来最终空集 head 仍须完整门禁通过、独立确认版本后才合并。

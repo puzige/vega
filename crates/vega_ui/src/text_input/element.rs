@@ -486,8 +486,6 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        #[cfg(test)]
-        crate::overflow_test_support::input_bounds(self.input.entity_id(), bounds, cx);
         let focus_handle = self.input.read(cx).focus_handle.clone();
         window.handle_input(
             &focus_handle,

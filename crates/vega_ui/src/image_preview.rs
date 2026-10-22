@@ -220,14 +220,6 @@ impl ImagePreview {
                 )
             })
             .child(Self::thumbnail_tracker(view))
-            .map(|element| {
-                #[cfg(test)]
-                let element = crate::overflow_test_support::observe_thumbnail_bounds(
-                    element,
-                    view.entity_id(),
-                );
-                element
-            })
             .into_any_element()
     }
 }
