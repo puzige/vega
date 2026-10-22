@@ -20,6 +20,8 @@ This is the actual completed observation, not a treatment/control experiment. Na
 
 Public delivery: [PR #529](https://github.com/puzige/vega/pull/529), [final full gate](https://github.com/puzige/vega/actions/runs/39798701301). Detailed native timings come from the user's scoped local observation records, not from the GitHub run alone. No credentials, full conversation export or private workspace paths are published here.
 
+The #532 commit (`e4f18c656aa69d192d095a4338a2108e6c9a3c2c`) changed the skill, execution guidance and injected system/delegation text. Its two Rust-file edits were prompt text, not wait scheduling, execution-budget or history-projection mechanisms. The 20-minute trigger was explicitly a diagnostic instruction, not runtime termination. The observed long stage therefore did not violate an enforced timer: none existed. This is a code-level explanation of why guidance alone could not prevent the pattern, not proof that every observed minute was avoidable.
+
 Important sources of rework were quote/list indentation ownership, wide ordered markers, pending tilde fences, double indentation of quote-first items, misplaced synthetic prose closers and a parser prerequisite blocking UI assertions. These are substantive defects. Removing independent review to suppress their discovery would not be an efficiency improvement.
 
 ## Prospective matched-pair record

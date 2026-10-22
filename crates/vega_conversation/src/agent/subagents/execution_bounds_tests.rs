@@ -438,70 +438,355 @@ async fn default_wait_suspends_across_former_timeout_without_releasing_active_ch
     assert_eq!(pending.await["timed_out"], false);
 }
 
-#[tokio::test]
-async fn explicit_zero_and_finite_waits_preserve_snapshot_semantics() {
-    let fixture = Fixture::new();
-    let provider = ScriptedProvider::default();
-    let supervisor = Supervisor::new();
-    let reserved = supervisor
+fn reserve_wait_target(
+    fixture: &Fixture,
+    supervisor: &Supervisor,
+    name: &str,
+) -> ReservedExecution {
+    supervisor
         .reserve(
-            &fixture.launch(&provider, TestHost::new(true)),
-            "spawn",
+            &fixture.launch(&ScriptedProvider::default(), TestHost::new(true)),
+            name,
             "spawn_agent",
-            &serde_json::json!({"name":"w","task":"work"}),
+            &serde_json::json!({"name":name,"task":"bounded work"}),
         )
-        .expect("reserve");
+        .expect("wait target")
+}
+
+fn targets_input(targets: &[&SubagentSnapshot], timeout: u64) -> serde_json::Value {
+    serde_json::json!({"targets":targets.iter().map(|target| serde_json::json!({"agent_id":target.agent_id,"message_id":target.message_id})).collect::<Vec<_>>(),"timeout_ms":timeout})
+}
+
+#[tokio::test]
+async fn first_zero_and_finite_observations_preserve_each_new_execution_deadline() {
+    let fixture = Fixture::new();
+    let supervisor = Supervisor::new();
+    let zero = reserve_wait_target(&fixture, &supervisor, "zero");
+    let finite = reserve_wait_target(&fixture, &supervisor, "finite");
     let hook = supervisor.hook();
-    assert_eq!(
-        wait(&hook, &reserved.snapshot, Some(0)).await["timed_out"],
-        true
-    );
+    let snapshot = bounded(wait(&hook, &zero.snapshot, Some(0))).await;
+    assert_eq!(snapshot["timed_out"], true);
+    assert_eq!(snapshot["timeout_coalesced"], false);
+    assert_eq!(snapshot["wake_reason"], "timeout");
     tokio::time::pause();
-    let pending = wait(&hook, &reserved.snapshot, Some(500));
+    let pending = wait(&hook, &finite.snapshot, Some(500));
     tokio::pin!(pending);
     assert!(futures::poll!(&mut pending).is_pending());
     tokio::time::advance(Duration::from_millis(499)).await;
     assert!(futures::poll!(&mut pending).is_pending());
     tokio::time::advance(Duration::from_millis(1)).await;
-    assert_eq!(pending.await["timed_out"], true);
-    assert!(!reserved.cancel.is_cancelled());
+    let receipt = bounded(pending).await;
+    supervisor.registry.cancel_all();
+    assert_eq!(receipt["timed_out"], true);
+    assert_eq!(receipt["timeout_coalesced"], false);
+    assert_eq!(receipt["wake_reason"], "timeout");
+}
+
+#[tokio::test]
+async fn positive_and_zero_share_one_observation_despite_call_ids_deadlines_and_progress() {
+    for (first_ms, repeated_ms) in [(0, 60_000), (500, 0), (500, 1_000), (0, 0)] {
+        let fixture = Fixture::new();
+        let supervisor = Supervisor::new();
+        let reserved = reserve_wait_target(&fixture, &supervisor, "worker");
+        let hook = supervisor.hook();
+        tokio::time::pause();
+        let first = hook.call(
+            "first-observation".into(),
+            "wait_agent".into(),
+            wait_input(&reserved.snapshot, Some(first_ms)),
+            CancellationToken::new(),
+        );
+        tokio::pin!(first);
+        let first_receipt = if first_ms == 0 {
+            bounded(first).await.expect("first snapshot")
+        } else {
+            assert!(futures::poll!(&mut first).is_pending());
+            tokio::time::advance(Duration::from_millis(first_ms)).await;
+            bounded(first).await.expect("first deadline")
+        };
+        assert_eq!(first_receipt["timed_out"], true);
+        let listed = bounded(hook.call(
+            "intervening-list".into(),
+            "list_agents".into(),
+            serde_json::json!({}),
+            CancellationToken::new(),
+        ))
+        .await;
+        assert!(listed.is_ok());
+        let source = vega_store::context_compaction::load_source(fixture.store.conn(), "parent")
+            .expect("read source");
+        assert!(!source.messages.is_empty());
+        let mut progress = reserved.snapshot.clone();
+        progress.result = "New progress and tool activity are not a released result".into();
+        supervisor
+            .registry
+            .update(progress)
+            .expect("progress update");
+        let repeated = hook.call(
+            "different-call-id".into(),
+            "wait_agent".into(),
+            wait_input(&reserved.snapshot, Some(repeated_ms)),
+            CancellationToken::new(),
+        );
+        tokio::pin!(repeated);
+        assert!(
+            futures::poll!(&mut repeated).is_pending(),
+            "a second zero must also coalesce"
+        );
+        for _ in 0..4 {
+            tokio::time::advance(Duration::from_secs(61)).await;
+            assert!(
+                futures::poll!(&mut repeated).is_pending(),
+                "elapsed deadlines cannot renew the allowance"
+            );
+        }
+        let mut terminal = reserved.snapshot.clone();
+        terminal.state = SubagentState::Completed;
+        supervisor
+            .registry
+            .update(terminal.clone())
+            .expect("persisted terminal");
+        assert!(
+            futures::poll!(&mut repeated).is_pending(),
+            "must still await host release"
+        );
+        supervisor.registry.finish(terminal, None);
+        let receipt = bounded(repeated).await.expect("released terminal");
+        supervisor.registry.cancel_all();
+        tokio::time::resume();
+        assert_eq!(receipt["timed_out"], false);
+        assert_eq!(receipt["timeout_coalesced"], true);
+        assert_eq!(receipt["wake_reason"], "terminal");
+    }
+}
+
+#[tokio::test]
+async fn allowance_validates_targets_before_claim_and_survives_reordering_subsets_and_new_targets()
+{
+    let fixture = Fixture::new();
+    let supervisor = Supervisor::new();
+    let a = reserve_wait_target(&fixture, &supervisor, "a");
+    let b = reserve_wait_target(&fixture, &supervisor, "b");
+    let c = reserve_wait_target(&fixture, &supervisor, "c");
+    let hook = supervisor.hook();
+    let mut unknown = b.snapshot.clone();
+    unknown.message_id = "unknown-execution".into();
+    assert!(
+        bounded(hook.call(
+            "invalid-target".into(),
+            "wait_agent".into(),
+            targets_input(&[&a.snapshot, &unknown], 0),
+            CancellationToken::new()
+        ))
+        .await
+        .is_err()
+    );
+    let valid_a = bounded(hook.call(
+        "valid-a-after-invalid".into(),
+        "wait_agent".into(),
+        targets_input(&[&a.snapshot], 0),
+        CancellationToken::new(),
+    ))
+    .await
+    .expect("invalid peer did not consume valid target allowance");
+    assert_eq!(valid_a["timeout_coalesced"], false);
+    let first = bounded(hook.call(
+        "valid-targets".into(),
+        "wait_agent".into(),
+        targets_input(&[&a.snapshot, &b.snapshot], 0),
+        CancellationToken::new(),
+    ))
+    .await
+    .expect("first snapshot");
+    assert_eq!(first["timeout_coalesced"], false);
+    tokio::time::pause();
+    for targets in [
+        vec![&b.snapshot, &a.snapshot],
+        vec![&a.snapshot],
+        vec![&b.snapshot],
+    ] {
+        let cancel = CancellationToken::new();
+        let repeated = hook.call(
+            "reordered-subset".into(),
+            "wait_agent".into(),
+            targets_input(&targets, 500),
+            cancel.clone(),
+        );
+        tokio::pin!(repeated);
+        assert!(futures::poll!(&mut repeated).is_pending());
+        tokio::time::advance(Duration::from_millis(501)).await;
+        assert!(
+            futures::poll!(&mut repeated).is_pending(),
+            "target arrays do not own allowances"
+        );
+        cancel.cancel();
+        assert!(matches!(bounded(repeated).await, Err(VegaError::Cancelled)));
+    }
+    let mixed = hook.call(
+        "new-target".into(),
+        "wait_agent".into(),
+        targets_input(&[&a.snapshot, &c.snapshot], 500),
+        CancellationToken::new(),
+    );
+    tokio::pin!(mixed);
+    assert!(futures::poll!(&mut mixed).is_pending());
+    tokio::time::advance(Duration::from_millis(499)).await;
+    assert!(futures::poll!(&mut mixed).is_pending());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let receipt = bounded(mixed)
+        .await
+        .expect("genuinely new execution deadline");
+    assert_eq!(receipt["timed_out"], true);
+    assert_eq!(receipt["timeout_coalesced"], false);
+    let repeated = hook.call(
+        "new-now-consumed".into(),
+        "wait_agent".into(),
+        targets_input(&[&c.snapshot], 0),
+        CancellationToken::new(),
+    );
+    tokio::pin!(repeated);
+    assert!(futures::poll!(&mut repeated).is_pending());
+    supervisor.registry.cancel_all();
+    assert!(bounded(repeated).await.is_err());
+}
+
+#[tokio::test]
+async fn concurrent_waits_cannot_both_claim_the_same_execution_allowance() {
+    let fixture = Fixture::new();
+    let supervisor = Supervisor::new();
+    let reserved = reserve_wait_target(&fixture, &supervisor, "worker");
+    let hook = supervisor.hook();
+    tokio::time::pause();
+    let first = hook.call(
+        "concurrent-a".into(),
+        "wait_agent".into(),
+        wait_input(&reserved.snapshot, Some(500)),
+        CancellationToken::new(),
+    );
+    let second = hook.call(
+        "concurrent-b".into(),
+        "wait_agent".into(),
+        wait_input(&reserved.snapshot, Some(500)),
+        CancellationToken::new(),
+    );
+    let race = futures::future::select(first, second);
+    tokio::pin!(race);
+    assert!(futures::poll!(&mut race).is_pending());
+    tokio::time::advance(Duration::from_millis(500)).await;
+    let (receipt, mut remaining) = match bounded(race).await {
+        futures::future::Either::Left(pair) | futures::future::Either::Right(pair) => pair,
+    };
+    assert_eq!(
+        receipt.expect("one finite observer")["timeout_coalesced"],
+        false
+    );
+    assert!(
+        futures::poll!(&mut remaining).is_pending(),
+        "the other concurrent observer must coalesce"
+    );
+    tokio::time::advance(Duration::from_secs(61)).await;
+    assert!(futures::poll!(&mut remaining).is_pending());
+    supervisor.registry.cancel_all();
+    assert!(bounded(remaining).await.is_err());
+}
+
+#[tokio::test]
+async fn delivered_terminal_does_not_rewake_mixed_pending_targets_but_new_release_does() {
+    let fixture = Fixture::new();
+    let supervisor = Supervisor::new();
+    let a = reserve_wait_target(&fixture, &supervisor, "a");
+    let b = reserve_wait_target(&fixture, &supervisor, "b");
+    let hook = supervisor.hook();
+    let initial = bounded(hook.call(
+        "initial".into(),
+        "wait_agent".into(),
+        targets_input(&[&a.snapshot, &b.snapshot], 0),
+        CancellationToken::new(),
+    ))
+    .await
+    .expect("snapshot");
+    assert_eq!(initial["timed_out"], true);
+    let mut first_terminal = a.snapshot.clone();
+    first_terminal.state = SubagentState::Completed;
+    supervisor.registry.finish(first_terminal, None);
+    assert_eq!(
+        bounded(wait(&hook, &a.snapshot, None)).await["timed_out"],
+        false
+    );
+    let repeated = hook.call(
+        "mixed-old-terminal".into(),
+        "wait_agent".into(),
+        targets_input(&[&a.snapshot, &b.snapshot], 0),
+        CancellationToken::new(),
+    );
+    tokio::pin!(repeated);
+    assert!(
+        futures::poll!(&mut repeated).is_pending(),
+        "already delivered terminal must not wake the running target"
+    );
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(121)).await;
+    assert!(futures::poll!(&mut repeated).is_pending());
+    let mut second_terminal = b.snapshot.clone();
+    second_terminal.state = SubagentState::Completed;
+    supervisor
+        .registry
+        .update(second_terminal.clone())
+        .expect("terminal persistence");
+    assert!(futures::poll!(&mut repeated).is_pending());
+    supervisor.registry.finish(second_terminal, None);
+    let receipt = bounded(repeated).await.expect("new released terminal");
+    assert_eq!(receipt["timeout_coalesced"], true);
+    assert_eq!(receipt["wake_reason"], "terminal");
+    let cached = bounded(hook.call(
+        "all-terminal".into(),
+        "wait_agent".into(),
+        targets_input(&[&b.snapshot, &a.snapshot], 0),
+        CancellationToken::new(),
+    ))
+    .await
+    .expect("all terminal cached results");
+    supervisor.registry.cancel_all();
+    assert_eq!(cached["timed_out"], false);
+    assert_eq!(cached["agents"].as_array().expect("targets").len(), 2);
 }
 
 #[tokio::test]
 async fn wait_cancellation_and_parent_end_release_waiters_without_success() {
-    let fixture = Fixture::new();
-    let provider = ScriptedProvider::default();
-    let supervisor = Supervisor::new();
-    let reserved = supervisor
-        .reserve(
-            &fixture.launch(&provider, TestHost::new(true)),
-            "spawn",
-            "spawn_agent",
-            &serde_json::json!({"name":"w","task":"work"}),
-        )
-        .expect("reserve");
-    let hook = supervisor.hook();
-    let cancel = CancellationToken::new();
-    let pending = hook.call(
-        "wait".into(),
-        "wait_agent".into(),
-        wait_input(&reserved.snapshot, None),
-        cancel.clone(),
-    );
-    tokio::pin!(pending);
-    assert!(futures::poll!(&mut pending).is_pending());
-    cancel.cancel();
-    assert!(matches!(pending.await, Err(VegaError::Cancelled)));
-    supervisor.registry.cancel_all();
-    let result = hook
-        .call(
+    for timeout in [None, Some(0), Some(60_000)] {
+        let fixture = Fixture::new();
+        let supervisor = Supervisor::new();
+        let reserved = reserve_wait_target(&fixture, &supervisor, "worker");
+        let hook = supervisor.hook();
+        assert_eq!(
+            bounded(wait(&hook, &reserved.snapshot, Some(0))).await["timed_out"],
+            true
+        );
+        let cancel = CancellationToken::new();
+        let pending = hook.call(
+            "wait".into(),
+            "wait_agent".into(),
+            wait_input(&reserved.snapshot, timeout),
+            cancel.clone(),
+        );
+        tokio::pin!(pending);
+        assert!(futures::poll!(&mut pending).is_pending());
+        cancel.cancel();
+        assert!(matches!(bounded(pending).await, Err(VegaError::Cancelled)));
+        let ended = hook.call(
             "ended".into(),
             "wait_agent".into(),
-            wait_input(&reserved.snapshot, None),
+            wait_input(&reserved.snapshot, timeout),
             CancellationToken::new(),
-        )
-        .await;
-    assert!(result.is_err());
+        );
+        tokio::pin!(ended);
+        assert!(
+            futures::poll!(&mut ended).is_pending(),
+            "cancelled observation must not refund allowance"
+        );
+        supervisor.registry.cancel_all();
+        assert!(bounded(ended).await.is_err());
+    }
 }
 
 #[tokio::test]
@@ -808,7 +1093,10 @@ async fn native_followup_excludes_old_progress_and_tools_but_preserves_users_fin
             "Original constraint: preserve independent review and CI",
         )
         .await;
-        let first = bounded(wait(&hook, &initial, None)).await;
+        let first_observation = bounded(wait(&hook, &initial, Some(0))).await;
+        assert_eq!(first_observation["timeout_coalesced"], false);
+        let first = bounded(wait(&hook, &initial, Some(60_000))).await;
+        assert_eq!(first["timeout_coalesced"], true);
         let stored_before = messages::find(fixture.store.conn(), &initial.message_id)
             .expect("stored source")
             .expect("source exists");
@@ -824,7 +1112,15 @@ async fn native_followup_excludes_old_progress_and_tools_but_preserves_users_fin
             "Current constraint: fix only the discovered defect",
         )
         .await;
-        let second = bounded(wait(&hook, &next, None)).await;
+        assert_eq!(initial.agent_id, next.agent_id);
+        assert_ne!(initial.message_id, next.message_id);
+        let next_observation = bounded(wait(&hook, &next, Some(0))).await;
+        assert_eq!(
+            next_observation["timeout_coalesced"], false,
+            "actual followup gets a new execution allowance"
+        );
+        let second = bounded(wait(&hook, &next, Some(60_000))).await;
+        assert_eq!(second["timeout_coalesced"], true);
         let requests = provider.requests.lock().expect("requests");
         let input = &requests.get(2).expect("followup entry request").messages;
         let after_reuse = &requests
@@ -996,8 +1292,11 @@ async fn native_questions_wake_once_per_request_and_pause_only_actual_pending_ti
     let parent = async {
         let snapshot = spawn(&hook, &observer, "Ask the two necessary questions").await;
         host.until(|| host.questions().has_pending()).await;
-        let first =
-            tokio::time::timeout(Duration::from_millis(750), wait(&hook, &snapshot, None)).await;
+        let first = tokio::time::timeout(
+            Duration::from_millis(750),
+            wait(&hook, &snapshot, Some(60_000)),
+        )
+        .await;
         if first.is_err() {
             host.cancel().cancel();
             bounded(wait(&hook, &snapshot, None)).await;
@@ -1005,7 +1304,7 @@ async fn native_questions_wake_once_per_request_and_pause_only_actual_pending_ti
         let first = first.expect("pending human question must wake parent");
         assert_eq!(first["timed_out"], false);
         assert_eq!(first["agents"][0]["state"], "running");
-        let repeated = wait(&hook, &snapshot, None);
+        let repeated = wait(&hook, &snapshot, Some(0));
         tokio::pin!(repeated);
         assert!(
             futures::poll!(&mut repeated).is_pending(),
@@ -1021,6 +1320,8 @@ async fn native_questions_wake_once_per_request_and_pause_only_actual_pending_ti
         host.until(|| host.questions().has_pending()).await;
         let second = bounded(&mut repeated).await;
         assert_eq!(second["timed_out"], false);
+        assert_eq!(second["timeout_coalesced"], true);
+        assert_eq!(second["wake_reason"], "attention");
         answer_question(&host.questions());
         let terminal = bounded(wait(&hook, &snapshot, None)).await;
         assert!(
@@ -1050,6 +1351,10 @@ async fn permission_attention_uses_the_existing_queue_without_stealing_its_liste
     let parent = async {
         let snapshot = spawn(&hook, &observer, "work").await;
         provider.request_count(1).await;
+        assert_eq!(
+            bounded(wait(&hook, &snapshot, Some(0))).await["timed_out"],
+            true
+        );
         let queue = host.permissions();
         let decision = queue.request(
             PermissionRequest {
@@ -1065,17 +1370,30 @@ async fn permission_attention_uses_the_existing_queue_without_stealing_its_liste
         );
         tokio::pin!(decision);
         assert!(futures::poll!(&mut decision).is_pending());
-        let attention =
-            tokio::time::timeout(Duration::from_millis(750), wait(&hook, &snapshot, None)).await;
+        let attention = tokio::time::timeout(
+            Duration::from_millis(750),
+            wait(&hook, &snapshot, Some(60_000)),
+        )
+        .await;
+        let repeated = wait(&hook, &snapshot, Some(0));
+        tokio::pin!(repeated);
+        let repeated_pending = futures::poll!(&mut repeated).is_pending();
         let visible = queue.take_pending();
         host.cancel().cancel();
         let _ = bounded(decision).await;
-        bounded(wait(&hook, &snapshot, None)).await;
+        bounded(&mut repeated).await;
         assert!(
             visible.is_some(),
             "UI must retain access to its original pending request"
         );
-        assert_eq!(attention.expect("permission attention")["timed_out"], false);
+        let attention = attention.expect("permission attention");
+        assert_eq!(attention["timed_out"], false);
+        assert_eq!(attention["timeout_coalesced"], true);
+        assert_eq!(attention["wake_reason"], "attention");
+        assert!(
+            repeated_pending,
+            "same pending permission cannot renew or wake a coalesced wait"
+        );
     };
     supervisor
         .run(
@@ -1423,6 +1741,7 @@ async fn bounded_native_stage_disables_compaction_but_ordinary_parent_retains_it
 
 struct ParentWaitProvider {
     requests: Mutex<Vec<ChatRequest>>,
+    explicit: bool,
 }
 
 impl Provider for ParentWaitProvider {
@@ -1447,16 +1766,32 @@ impl Provider for ParentWaitProvider {
                     .ok()
                     .and_then(|value| value.get("agent").cloned())
             });
+        let observed = request
+            .messages
+            .iter()
+            .filter(|message| message.role == ChatRole::Tool)
+            .any(|message| {
+                serde_json::from_str::<serde_json::Value>(&message.content)
+                    .is_ok_and(|value| value.get("timed_out").is_some())
+            });
         let events = if child {
             None
         } else if steered {
             Some(final_response("Applied steering once"))
         } else if let Some(agent) = spawned {
+            let mut input = serde_json::json!({"targets":[{"agent_id":agent["agent_id"],"message_id":agent["message_id"]}]});
+            if self.explicit {
+                input["timeout_ms"] = if observed { 60_000 } else { 0 }.into();
+            }
             Some(tool_response(
                 "Waiting for the existing child",
-                "parent-wait",
+                if self.explicit && !observed {
+                    "parent-wait-initial"
+                } else {
+                    "parent-wait"
+                },
                 "wait_agent",
-                serde_json::json!({"targets":[{"agent_id":agent["agent_id"],"message_id":agent["message_id"]}]}),
+                input,
             ))
         } else {
             Some(tool_response(
@@ -1495,10 +1830,11 @@ fn enqueue_steering(fixture: &Fixture, generation: &str, id: &str, text: &str) {
 
 #[tokio::test]
 async fn native_parent_wait_wakes_for_steering_before_or_during_wait_and_claims_once() {
-    for before_wait in [true, false] {
+    for (before_wait, explicit) in [(true, false), (false, false), (true, true), (false, true)] {
         let fixture = Fixture::new();
         let provider = ParentWaitProvider {
             requests: Mutex::new(Vec::new()),
+            explicit,
         };
         let host = TestHost::new(true);
         let cancel = CancellationToken::new();
@@ -1612,8 +1948,8 @@ async fn native_parent_wait_wakes_for_steering_before_or_during_wait_and_claims_
             .collect();
         assert_eq!(
             roots.len(),
-            3,
-            "one spawn turn, one suspended wait, one steered turn"
+            if explicit { 4 } else { 3 },
+            "one spawn, at most one initial snapshot, one suspended wait, one steered turn"
         );
         assert!(
             !roots
@@ -1731,4 +2067,164 @@ async fn completed_stage_is_not_retroactively_cancelled_while_host_release_is_pe
         "completed execution is not subject to retrospective budget cancellation"
     );
     assert_eq!(receipt["agents"][0]["state"], "completed");
+}
+
+struct ExplicitWaitReplayProvider {
+    roots: AtomicUsize,
+    requests: Mutex<Vec<ChatRequest>>,
+}
+
+impl Provider for ExplicitWaitReplayProvider {
+    fn chat_stream(
+        &self,
+        request: ChatRequest,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
+        let child = request.messages.iter().any(|message| {
+            message.role == ChatRole::User && message.content == "EXPLICIT_REPLAY_CHILD"
+        });
+        let events = if child {
+            None
+        } else {
+            let turn = self.roots.fetch_add(1, Ordering::SeqCst);
+            if turn == 0 {
+                Some(tool_response(
+                    "Delegate work",
+                    "replay-spawn",
+                    "spawn_agent",
+                    serde_json::json!({"name":"replay-worker","task":"EXPLICIT_REPLAY_CHILD"}),
+                ))
+            } else {
+                let agent = request
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == ChatRole::Tool)
+                    .find_map(|message| {
+                        serde_json::from_str::<serde_json::Value>(&message.content)
+                            .ok()
+                            .and_then(|value| value.get("agent").cloned())
+                    })
+                    .expect("real native spawn receipt");
+                Some(tool_response(
+                    "Await the same execution",
+                    &format!("replay-wait-{turn}"),
+                    "wait_agent",
+                    serde_json::json!({"targets":[{"agent_id":agent["agent_id"],"message_id":agent["message_id"]}],"timeout_ms":60000}),
+                ))
+            }
+        };
+        self.requests.lock().expect("requests").push(request);
+        async move {
+            let stream: EventStream = match events {
+                Some(events) => Box::pin(futures::stream::iter(events.into_iter().map(Ok))),
+                None => Box::pin(futures::stream::pending()),
+            };
+            Ok(stream)
+        }
+        .boxed()
+    }
+}
+
+#[tokio::test]
+async fn native_parent_explicit_sixty_second_replay_stops_provider_churn_after_first_timeout() {
+    let fixture = Fixture::new();
+    let provider = ExplicitWaitReplayProvider {
+        roots: AtomicUsize::new(0),
+        requests: Mutex::new(Vec::new()),
+    };
+    let host = TestHost::new(true);
+    let cancel = CancellationToken::new();
+    let waits_started = AtomicUsize::new(0);
+    let timed_out = AtomicUsize::new(0);
+    let run = super::super::entry::run_thread_task_with_automation_inner(
+        &fixture.store,
+        &provider,
+        &fixture.tools,
+        "parent",
+        "PARENT_EXPLICIT_REPLAY",
+        "Preserve all user constraints",
+        cancel.clone(),
+        &super::super::RejectPermissionHook,
+        |event| {
+            if matches!(event, ConversationEvent::ToolCallRunning { call_id } if call_id.starts_with("replay-wait-"))
+            {
+                waits_started.fetch_add(1, Ordering::SeqCst);
+            }
+            if let ConversationEvent::ToolCallFinished { call_id, result } = event
+                && call_id.starts_with("replay-wait-")
+                && serde_json::from_str::<serde_json::Value>(&result.output)
+                    .is_ok_and(|value| value["timed_out"] == true)
+            {
+                timed_out.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        },
+        PersistenceActorConfig::default().with_subagent_host(host.clone()),
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+    );
+    let driver = async {
+        host.until(|| waits_started.load(Ordering::SeqCst) == 1)
+            .await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::time::resume();
+        host.until(|| waits_started.load(Ordering::SeqCst) >= 2)
+            .await;
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(61)).await;
+            tokio::time::resume();
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let roots = provider.roots.load(Ordering::SeqCst);
+        let waits = waits_started.load(Ordering::SeqCst);
+        let timeouts = timed_out.load(Ordering::SeqCst);
+        cancel.cancel();
+        (roots, waits, timeouts)
+    };
+    tokio::pin!(run);
+    let (counts, result) = tokio::select! {
+        counts = driver => (counts, bounded(&mut run).await),
+        _ = &mut run => panic!("parent finished before explicit wait replay"),
+    };
+    let result = result.expect("cancelled native parent drains");
+    assert!(result.interrupted);
+    assert_eq!(
+        counts,
+        (3, 2, 1),
+        "one spawn model request, first timed wait, then one outstanding coalesced wait across four old deadlines"
+    );
+    let requests = provider.requests.lock().expect("requests");
+    assert_eq!(
+        requests.len(),
+        4,
+        "three parent calls and one actual child call"
+    );
+    let root_after_timeout = requests
+        .iter()
+        .rfind(|request| {
+            !request
+                .messages
+                .iter()
+                .any(|message| message.content == "EXPLICIT_REPLAY_CHILD")
+        })
+        .expect("root resumed once");
+    let timeout_receipt = root_after_timeout
+        .messages
+        .iter()
+        .filter(|message| message.role == ChatRole::Tool)
+        .find_map(|message| {
+            serde_json::from_str::<serde_json::Value>(&message.content)
+                .ok()
+                .filter(|value| value["timed_out"] == true)
+        })
+        .expect("first timeout retained in actual parent context");
+    assert_eq!(timeout_receipt["timeout_coalesced"], false);
+    assert_eq!(timeout_receipt["wake_reason"], "timeout");
 }
