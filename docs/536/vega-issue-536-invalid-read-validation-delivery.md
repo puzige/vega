@@ -6,7 +6,7 @@
 - 生产基线：`e4f18c656aa69d192d095a4338a2108e6c9a3c2c`。
 - 分支：`feat/536-invalid-read-validation`。
 - 冻结验收：[v1 规格](vega-issue-536-invalid-read-validation.md)。RED 前原始 SHA-256 `5351d774a9e3be7dc4b81d2c69e21b21b2ef2e1a5f20e7535c0e6d9057b952aa`；有效 RED 后仅补充 crate 根常量导出接线授权，当前文档 SHA-256 `2a2ee308e6b287ab7a415de8ac1938e88e0148a0fdb6044992d00b03d1aef000`，验收/数据/断言无变化。
-- 有效 RED 已确认，最小生产实现中；同一冻结测试 GREEN、实现独立审查、删测及最终门禁尚待执行。
+- v1 有效 RED 与同一 13 项 GREEN 已固定；独立实现审查发现 mixed-batch P1，暂停删测/交付。v2 新增 A8 第二周期，基线 `3612a970e41b1ec1998cc400c90406c82d92897b`；规格 SHA-256 `bffec1414f97ea8635a954c1d702cbdf033604f049966217c3ac9c6e6d529a56`，原 13 项测试不变。
 
 ## 委派恢复检查点
 
@@ -88,11 +88,34 @@ A1–A7 精确停写版本均经非写入者独立静态审查，无阻塞，允
 
 writer READY 后停止全部写入；主 Agent 读回完整差异、核对补丁哈希和四份冻结测试 hash 仍完全相同。writer 的 4 文件 rustfmt 与 diff 静态检查均退出 0；GREEN 和独立实现审查待现有 Actions/只读 reviewer。
 
+## v1 GREEN 与独立审查阻塞
+
+实现完整提交 `3612a970e41b1ec1998cc400c90406c82d92897b`，[Actions 39768987383](https://github.com/puzige/vega/actions/runs/39768987383) / [Nextest job 119791459564](https://github.com/puzige/vega/actions/runs/39768987383/job/119791459564)，真实 **13 discovered / 13 executed / 13 passed / 0 skipped**。fmt、all-targets Clippy、三组 Python 及 required check 全部成功。四份测试与 RED 提交逐字节一致，无重试或断言修改；Green 日志和源码留存 [PR 评论](https://github.com/puzige/vega/pull/541#issuecomment-6339548791)。
+
+独立 reviewer 对同一停写实现发现 **P1，未批准**：新的 Read 所有 Validation 来源守卫遮蔽原有 mixed question/Skill 批次拒绝分支。主 Agent 复核 `loop_.rs` 两处合法 `Rejected/Deny/Validation` 固定 mixed 输出、`pipeline.rs::valid_mixed_skill_rejection_input` 和旧投影分支，确认是产品兼容回归而非环境或观测故障。它影响首次保存和下一轮准备；不能用当前 13 项绿色合并。
+
+v2 明确新增 A8 遗漏边界，保留全部原测试，不删测。第二周期在上述 v1 实现基线上先写混合批次真实链/两输出投影与安全负例，独立审查、现有 Actions 新 RED 后再最小修正优先级。没有补测追认、伪造批准或放宽全局校验；新增提交保留两轮时序，不 amend/force-push 抹去证据。
+
+## v2 A8 先行测试与观测修正
+
+第二周期基线保持 `3612a970e41b1ec1998cc400c90406c82d92897b`，生产 P1 未修正。新增 `read_mixed_validation_tests.rs` 与 `agent/mod.rs` 的 3 行测试模块接线，原四份测试/13 函数和所有生产文件逐字节不变，无新增依赖。A8 共 4 函数：
+
+1. mixed-question 真实 conversation 链，两 alias × 合法对象/`{}`，含继续回答、重开 recovery/history、下一轮准备及同 ID 复用。
+2. 两种原 fixed mixed 输出 × 两 alias × 两输入共 8 组，真实 persist/终态校验/恢复投影/reused 边界阳性；Skill 只声明此层证据，不冒充完整 Skill 执行。
+3. 上述 8 组 × 14 个单字段伪造负例，验证 projection/terminal/persist 拒绝且 pending 状态不变。
+4. note/danger 负例验证实际严格 codec 编解码及 persist 拒绝，状态不变。
+
+首个停写版 818 行 SHA-256 `400365f3d914bfa626ca8d45ef0676ae373c4ed2a03717caf28999d019004c27`。独立审查发现 P2 观测故障：合法对象跨轮复用保留原生 Tool 消息，production ProgressReporter 会把 runtime notice 追加在工具 output 后；旧 helper 将整个消息等同固定错误，会在 P1 修正后产生无关失败。主 Agent 复查 provider/progress/loop 原始实现确认，归类为测试观察层，不是验收变化。
+
+仅修 helper 后的新停写版 828 行 SHA-256 `a717a92c6c1b9dc6b86b234ebbfa302b74475a0e883dacff46179305f16c0c16`：native Tool 仅剥离精确完整的唯一 Progress notice suffix，剩余 output 仍全文相等；observation 的 advisory 若存在也须精确匹配（null/错误类型/其他内容不接受）。不截任意尾部、不改脚本/可见文本/合法输入/复用场景或安全断言。修前后 delta +11/-1，SHA-256 `d13b2ff641afc6f4b9127e9142bb10c0da38d67a01f656bb28d1556b81fd0659`；原 13 项仍未改。
+
+writer 已停写，主 Agent 读回 helper 并验证其常量与实际 provider 输出一致；rustfmt/diff 静态检查退出 0。独立 reviewer 已复审该精确 delta，确认 P2 消除、无断言弱化并批准整个 A8 先行补丁进入 Actions；A8 尚无有效 RED，禁止生产修正。
+
 ## 待执行门禁
 
-1. 先行测试、独立审查和有效 RED 已完成；原始源码/完整 SHA 与失败留存在 PR。
-2. 最小实现已停写，固定提交后验证同一测试 GREEN 与独立实现审查。
-3. 带测试 GREEN 未取得前不删测。
+1. v2 A8 新先行测试、独立审查及有效 RED；原 13 项继续保持。
+2. 最小修正后同一原 13+A8 GREEN，与独立实现审查。
+3. 带全部同一测试 GREEN 和审查未通过前不删测。
 4. 在 PR 固定原测试可访问源码/patch、完整 SHA 及 RED/GREEN run/job。
 5. 独立删测提交、生产差异/独占支持清理审查、最终 head `no Rust tests` 完整门禁。
 6. 正式 PR 与合并；Issue 保持开放、In review 等用户 Native 手测。

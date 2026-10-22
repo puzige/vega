@@ -73,3 +73,6 @@ pub use skills::{SkillAssistantStatus, SkillRunRecovery, recover_skill_run};
 
 #[cfg(test)]
 mod read_validation_tests;
+
+#[cfg(test)]
+mod read_mixed_validation_tests;

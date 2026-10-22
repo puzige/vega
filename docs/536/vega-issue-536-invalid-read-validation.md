@@ -1,7 +1,7 @@
 # 无效读取的安全终态与整轮继续
 
 - Issue：[#536](https://github.com/puzige/vega/issues/536)
-- 规格版本：v1，2026-10-22；先行测试与独立审查前冻结验收，生产尚未修改。
+- 规格版本：v2，2026-10-22；v1 验收及原 13 项测试保持冻结，新增混合批次兼容回归 A8，按独立周期先测后修。
 - 生产基线：`e4f18c656aa69d192d095a4338a2108e6c9a3c2c`（亦为 v0.1.195）。
 - 分支：`feat/536-invalid-read-validation`。
 
@@ -22,6 +22,7 @@
 | A5 | 正常项目内读取；Full access 外部读取；需询问的外部读取分别批准与拒绝 | 正常内容与成功终态；外部读取仍遵守原有授权/拒绝规则及准确审计，不借无效读取通路绕过权限 | 真实工具与事件/存储；权限 hook 仅提供用户决定 |
 | A6 | 执行前取消，以及真实中断的 pending、approved、running 调用后恢复 | 取消不执行内容读取；已有取消与 recovery 拒绝/取消规则保持，不能把真正中断冒充校验错误 | runtime 边界与现有 recovery |
 | A7 | 伪造无效读取终态/审计：非空输入、成功/Failed 状态、错误输出、批准决定、错误来源、note/danger、执行元数据；不合法状态转移 | runtime 持久化及恢复投影仍 fail closed；其他工具不得因本卡获得通用豁免；禁止补写 approval 伪造执行 | 实际 persist/validate_recovered_projection 安全边界负例 |
+| A8（v2） | Read/read 在混合 Skill load 或 ask_user_question 批次中被现有策略拒绝；输入为合法对象或预检归一化 `{}` | 原有固定 mixed-batch 拒绝仍合法，无 Approved/Running/权限请求、无内容读取，整轮可继续；实时存储、重开历史和下一轮投影/复用一致；错误状态/来源/执行元数据或无效 input 仍被拒绝，不开放任意 Validation 豁免 | 至少真实 conversation 的 mixed-question 完整链，以及两种固定 mixed 输出的真实 persist/恢复投影/复用边界表 |
 
 表中多输入可由少量行为测试参数化覆盖，不为计数或内部字段制造重复测试。外部依赖仅隔离 provider/用户决定，不 mock 被测工具决策、授权、状态机或存储。测试不得依赖用户数据库、凭据、网络或真实 shell/外部应用。真实 Native UI 和模型集成由用户合并后手测，不添加自动真实 E2E。
 
@@ -41,6 +42,16 @@
 - 取消仍走现有 timeout 拒绝；真正中断调用仍走原 recovery，不迁移/修复既有用户记录。
 
 允许生产范围：`crates/vega_runtime/src/agent/{mod.rs,tools_exec.rs}` 与 `crates/vega_conversation/src/agent/pipeline.rs`。2026-10-22 有效 RED 后静态确认 runtime 的 `agent` 模块私有且 crate 根使用显式 re-export；补充允许 `crates/vega_runtime/src/lib.rs` 仅在既有 `pub use agent::{…}` 增加上述共享错误常量导出。这是原共享常量方案必要接线，不改变 v1 验收、数据、测试或安全语义，不新增行为 API。其他文件仍须先说明必要性并审查，不顺手扩大重构。
+
+## v2 遗漏回归与第二周期（先于修正）
+
+v1 实现 `3612a970e41b1ec1998cc400c90406c82d92897b` 已通过同一冻结 13 项测试（Actions `39768987383`），但独立实现审查发现 P1：新 Read Validation 守卫位于原 mixed-batch 分支之前，将合法 mixed question/Skill 拒绝误当 InvalidRead 声明并 corrupt。主 Agent 已复查 `loop_.rs` 的两处合法 `Rejected/Deny/Validation` 输出及 `pipeline.rs::valid_mixed_skill_rejection_input`/既有分支，归类为产品兼容回归，非测试接线或环境故障。
+
+新增 A8 是明确的遗漏边界，停止 v1 删测/交付，不补测追认已完成实现。第二周期生产基线固定为上述 v1 实现提交；原 A1–A7 的 13 项源码、数据、期望必须保持逐字节不变。先添加 A8 全部阳性/安全失败边界并独立审查，在同一 draft PR 现有 Actions 确认目标回归有效 RED 后，再修正守卫与既有 mixed 分支的优先级。新测试只验证真实入口，不复制生产算法或按实现输出反推预期；两个原 mixed 固定输出来自基线已有契约。
+
+修正只在 `vega_conversation/src/agent/pipeline.rs` 保留已验证的既有 mixed-batch 拒绝通路，让 InvalidRead 的严格声明分支不会遮蔽它；不放宽全局 source/state，不用任意错误字符串作为通用放行。不动 runtime 的两种既有批次策略、InvalidRead Rejected 修复、权限、恢复 SQL 或原冻结测试。A8 的负例至少拒绝错误 status/decision/source、执行元数据、非对象 input；原 13 项中所有 InvalidRead 伪造负例继续通过。
+
+第二周期顺序仍为：A8 生产未修正时写齐 → 独立审查 → Actions 有效 RED → 最小修正 → 原 13+A8 同一测试 GREEN → 独立实现审查 → 固定原始源码/完整 SHA/两轮 RED/GREEN → 独立删测 → 最终空集门禁。原三提交建议不能覆盖安全/测试顺序要求；第二周期新增提交保留历史，不 amend/force-push 抹去既有证据。
 
 ## 可行测试入口与接线
 
