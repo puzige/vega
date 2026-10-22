@@ -83,7 +83,8 @@ pub fn follow_target(
     if frozen {
         return None;
     }
-    let target = perch(settings?, card, visible);
+    let settings = settings?;
+    let target = perch(Some(settings), card, visible);
     if (target.0 - current.0).abs() <= FOLLOW_EPSILON
         && (target.1 - current.1).abs() <= FOLLOW_EPSILON
     {
