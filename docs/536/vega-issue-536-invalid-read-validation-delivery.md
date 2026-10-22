@@ -150,10 +150,18 @@ writer READY并停写。主 Agent 独立逐字节确认四接线文件加回原�
 
 源码静态扫描（含 xtask，389 个现存 Rust 文件）测试属性/条件接线/模块引用及可执行 rustdoc fence 均为 0；既有 `text` 图示不是 doctest。此为静态清点，不冒充云端 0 发现/0 执行。独立删测差异审查与最终 head 完整门禁仍待取得。
 
+## 首次最终空集门禁与合并前新基线
+
+独立删测完整提交 `e1a263b65c24e4b71b22b627d65a2f6616d36a64` 经非 writer 审查批准，原生产字节完整、范围/残留正确。[Actions 39778773695](https://github.com/puzige/vega/actions/runs/39778773695) / [Nextest 119824381995](https://github.com/puzige/vega/actions/runs/39778773695/job/119824381995) 确认 **no Rust tests，0 discovered / 0 executed**，fmt/Clippy/Python 与 required check 全部成功。主 Agent 读取原始 Starting0/Summary0，并用 GitHub API 读回 5 份 immutable 原始测试源码 blob，与本地完整先行提交一致；证据可在 squash/删分支后恢复。
+
+PR 转正式后，合并命令前再次 fetch 发现 master 新增 `48d958743cb66295ef3de9db31449f213263d417`（#540，Codex 历史保留、store 迁移0032、sidebar及相关文档）。祖先前置检查阻止 merge，PR仍OPEN；未绕过分支保护或将旧结果视为新基线验证。PR 已转回 Draft。
+
+主 Agent 静态确认上游无本卡4生产文件/规则/workflow重叠，merge 新 master 得本地集成 `e59c17c196efce4c9b9b4119375facdac2313222`。因新迁移可能影响真实存储 fixture，委派从固定可信提交 `3e3d4d2428b0e4afb403a05934ea19230b3d27d2` 仅恢复同一5测试与4接线，17项源码/预期逐字节不变；不恢复历史集合或新增用例。新集成 head 必须重新带测试 GREEN，再独立删测、最新 head 空集门禁及删测审查；旧17项GREEN/空集结果不能代替。
+
 ## 待执行门禁
 
-1. 独立删测提交与非 writer 的差异/生产残留审查。
-2. 最终 head 完整门禁须确认 `no Rust tests`（0 发现/0 执行），fmt/Clippy/Python 同时成功。
+1. 最新 master 基线恢复同一17项测试，Actions 重新GREEN。
+2. 再次独立删测与非 writer 差异/生产残留审查，最新 head 空集完整门禁。
 3. 正式 PR 与合并；Issue 保持开放、In review 等用户 Native 手测。
 
 本地未运行 Vega、编译、构建、Clippy、任何测试或打包；不修改用户数据库、运行配置或 CI workflow。

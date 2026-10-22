@@ -2322,3 +2322,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     }
     definitions
 }
+
+#[cfg(test)]
+#[path = "read_permission_tests.rs"]
+mod read_permission_tests;
