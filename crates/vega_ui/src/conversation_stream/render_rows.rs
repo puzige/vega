@@ -367,10 +367,13 @@ fn markdown_message_item(
         .flex()
         .flex_col()
         .children(markdown_blocks(model, colors, code_owner, |line, index| {
-            render_line(
-                line,
-                colors,
-                &format!("{id_prefix}-markdown-{message_id}-line-{index}"),
+            let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
+            let marker =
+                independent_list_marker(line).map(|marker| render_line(&marker, colors, &id));
+            let content = list_item_content(line);
+            (
+                marker,
+                render_line(content.as_ref().unwrap_or(line), colors, &id),
             )
         }))
         .children(
@@ -578,11 +581,20 @@ pub(crate) fn selectable_markdown_content(
                         && matches!(line.kind, LineKind::ListItem)));
             document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
         }
-        let element = render_line_selectable(line, colors, &mut document, index, copy.id);
+        let marker = independent_list_marker(line)
+            .map(|marker| render_line_selectable(&marker, colors, &mut document, index, copy.id));
+        let content = list_item_content(line);
+        let element = render_line_selectable(
+            content.as_ref().unwrap_or(line),
+            colors,
+            &mut document,
+            index,
+            copy.id,
+        );
         if !matches!(line.kind, LineKind::Rule) {
             previous = Some((line.block_id, line.kind, line.code_block.clone()));
         }
-        element
+        (marker, element)
     });
     selection_context_menu(
         document.wrap(body.children(blocks).into_any_element(), window, cx),
@@ -591,21 +603,42 @@ pub(crate) fn selectable_markdown_content(
     )
 }
 
+fn independent_list_marker(line: &StreamLine) -> Option<StreamLine> {
+    if !line.starts_list_item()
+        || (line.kind == LineKind::ListItem && line.list_marker_quote_depth().is_none())
+    {
+        return None;
+    }
+    let mut marker = line.clone();
+    if line.kind != LineKind::ListItem {
+        marker.quotes.clear();
+    }
+    marker.kind = LineKind::ListItem;
+    marker.spans.clear();
+    marker.table = None;
+    marker.code_block = None;
+    Some(marker)
+}
+
+fn list_item_content(line: &StreamLine) -> Option<StreamLine> {
+    line.list_marker_quote_depth()?;
+    let mut content = line.clone();
+    content.kind = LineKind::Paragraph;
+    content.marker.clear();
+    content.checked = None;
+    Some(content)
+}
+
 fn markdown_blocks(
     model: &StreamModel,
     colors: &ThemeColors,
     code_owner: Option<u64>,
-    mut render: impl FnMut(&StreamLine, usize) -> AnyElement,
+    mut render: impl FnMut(&StreamLine, usize) -> (Option<AnyElement>, AnyElement),
 ) -> Vec<AnyElement> {
     let lines: Vec<_> = model
         .committed_lines
         .iter()
         .chain(&model.pending_lines)
-        .collect();
-    let list_blocks: std::collections::HashSet<_> = lines
-        .iter()
-        .filter(|line| line.kind == LineKind::ListItem)
-        .map(|line| line.block_id)
         .collect();
     let mut blocks = Vec::new();
     let mut index = 0;
@@ -615,25 +648,26 @@ fn markdown_blocks(
         let previous = index.checked_sub(1).map(|index| lines[index]);
         let start = index;
         let block_id = line.block_id;
-        let in_list = list_blocks.contains(&block_id);
-        let previous_in_list = previous.is_some_and(|line| list_blocks.contains(&line.block_id));
+        let in_list = line.in_list;
+        let previous_in_list = previous.is_some_and(|line| line.in_list);
         let gap = markdown_block_gap(previous, line, in_list, previous_in_list);
-        let mut content = vec![render(line, index)];
+        let (marker, element) = render(line, index);
+        let mut content = vec![element];
         index += 1;
         if line.kind == LineKind::Code {
             while index < lines.len() && lines[index].continues_code_block(line) {
-                content.push(render(lines[index], index));
+                content.push(render(lines[index], index).1);
                 index += 1;
             }
         }
-        let body = div()
-            .w_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .mt(px(gap))
-            .when(in_list && line.kind != LineKind::ListItem, |body| {
-                body.pl(px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT))
-            });
+        let body = div().w_full().min_w_0().flex_shrink_0().when(
+            in_list && line.kind != LineKind::ListItem && marker.is_none(),
+            |body| {
+                body.pl(px(
+                    (line.list_content_inset() - line.quote_list_inset()).max(0.)
+                ))
+            },
+        );
         let body = if line.kind == LineKind::Code {
             let ordinal = code_ordinal;
             code_ordinal += 1;
@@ -680,9 +714,109 @@ fn markdown_blocks(
         } else {
             body.children(content)
         };
-        blocks.push(body.into_any_element());
+        let quote_marker_depth = line.list_marker_quote_depth();
+        let (body, quote_marker) = if quote_marker_depth.is_some() {
+            (body, marker.zip(quote_marker_depth))
+        } else if let Some(marker) = marker {
+            (
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .child(div().flex_shrink_0().child(marker))
+                    .child(div().flex_1().min_w_0().child(body)),
+                None,
+            )
+        } else {
+            (body, None)
+        };
+        blocks.push((
+            line.quotes.clone(),
+            gap,
+            quote_marker,
+            body.into_any_element(),
+        ));
     }
-    blocks
+    quote_blocks(&mut blocks.into_iter().peekable(), 0, None, colors)
+}
+
+type MarkdownBlock = (
+    Vec<model::QuoteOwner>,
+    f32,
+    Option<(AnyElement, usize)>,
+    AnyElement,
+);
+
+fn quote_blocks(
+    blocks: &mut std::iter::Peekable<impl Iterator<Item = MarkdownBlock>>,
+    depth: usize,
+    owner: Option<model::QuoteOwner>,
+    colors: &ThemeColors,
+) -> Vec<AnyElement> {
+    let mut result = Vec::new();
+    while let Some((ancestry, gap, _, _)) = blocks.peek() {
+        if depth > 0 && ancestry.get(depth - 1).copied() != owner {
+            break;
+        }
+        let gap = *gap;
+        if let Some(identity) = ancestry.get(depth).copied() {
+            let marker = blocks.peek_mut().and_then(|(_, first_gap, marker, _)| {
+                *first_gap = 0.;
+                if marker
+                    .as_ref()
+                    .is_some_and(|(_, marker_depth)| *marker_depth == depth)
+                {
+                    marker.take().map(|(marker, _)| marker)
+                } else {
+                    None
+                }
+            });
+            let list_inset =
+                (identity.list_inset() - owner.map_or(0., |owner| owner.list_inset())).max(0.);
+            let marker_inset = if marker.is_some() { list_inset } else { 0. };
+            let children = quote_blocks(blocks, depth + 1, Some(identity), colors);
+            result.push(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .mt(px(gap))
+                    .pl(px((list_inset - marker_inset).max(0.)))
+                    .flex()
+                    .children(
+                        marker
+                            .map(|marker| div().w(px(marker_inset)).flex_shrink_0().child(marker)),
+                    )
+                    .child(
+                        div()
+                            .w(px(2.))
+                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
+                            .flex_shrink_0()
+                            .bg(colors.border_subtle),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .children(children),
+                    )
+                    .into_any_element(),
+            );
+        } else if let Some((_, _, _, element)) = blocks.next() {
+            result.push(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .mt(px(gap))
+                    .child(element)
+                    .into_any_element(),
+            );
+        }
+    }
+    result
 }
 
 fn code_header(
@@ -733,28 +867,34 @@ pub(crate) fn markdown_block_gap(
     let Some(previous) = previous else {
         return 0.;
     };
-    if in_list && previous.block_id == current.block_id {
+    if in_list
+        && previous_in_list
+        && previous.block_id == current.block_id
+        && previous.quotes == current.quotes
+    {
         if current.kind == LineKind::ListItem {
             return Layout::MARKDOWN_LIST_ITEM_GAP;
         }
+        if !current.quotes.is_empty() {
+            return Layout::MARKDOWN_BLOCK_GAP;
+        }
         return Layout::MARKDOWN_LIST_PARAGRAPH_GAP;
+    }
+    if !previous.quotes.is_empty() || !current.quotes.is_empty() {
+        return Layout::MARKDOWN_BLOCK_GAP;
     }
     let after = if previous_in_list {
         Layout::MARKDOWN_BLOCK_GAP
     } else {
         match previous.kind {
             LineKind::Heading(_) => Layout::MARKDOWN_HEADING_AFTER,
-            LineKind::Code | LineKind::ListItem | LineKind::Table | LineKind::Quote => {
-                Layout::MARKDOWN_BLOCK_GAP
-            }
+            LineKind::Code | LineKind::ListItem | LineKind::Table => Layout::MARKDOWN_BLOCK_GAP,
             _ => Layout::CONVERSATION_PARAGRAPH_GAP,
         }
     };
     let before = match current.kind {
         LineKind::Heading(_) => Layout::MARKDOWN_HEADING_BEFORE,
-        LineKind::Code | LineKind::ListItem | LineKind::Table | LineKind::Quote => {
-            Layout::MARKDOWN_BLOCK_GAP
-        }
+        LineKind::Code | LineKind::ListItem | LineKind::Table => Layout::MARKDOWN_BLOCK_GAP,
         _ => 0.,
     };
     after.max(before)
@@ -796,7 +936,11 @@ fn render_line_selectable(
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .when(line.kind != LineKind::Code, |item| item.w_full())
+        .when(
+            line.kind != LineKind::Code
+                && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
+            |item| item.w_full(),
+        )
         .flex_shrink_0()
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -840,28 +984,6 @@ fn render_line_selectable(
             };
             item.child(code).into_any_element()
         }
-        LineKind::Quote => {
-            let selected = document.append_styled_runs(
-                &text,
-                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
-                link_ranges(&line.spans),
-                &format!("{id_prefix}-quote"),
-            );
-            item.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(
-                        div()
-                            .w(px(2.0))
-                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
-                            .flex_shrink_0()
-                            .bg(colors.border_subtle),
-                    )
-                    .child(selected),
-            )
-            .into_any_element()
-        }
         LineKind::Rule => item
             .py(px(4.0))
             .child(div().w_full().h(px(1.0)).bg(colors.border_subtle))
@@ -883,10 +1005,7 @@ fn render_line_selectable(
         LineKind::ListItem => {
             let marker = format!("{} ", line.marker);
             document.append_literal(&"  ".repeat(line.depth));
-            let mut row = div()
-                .pl(px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT))
-                .flex()
-                .flex_row();
+            let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
             let marker_text = document.append_styled(
                 &marker,
                 StyledText::new(marker.clone()),
@@ -1144,7 +1263,11 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
     let text_id = format!("{id_prefix}-text");
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .when(line.kind != LineKind::Code, |item| item.w_full())
+        .when(
+            line.kind != LineKind::Code
+                && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
+            |item| item.w_full(),
+        )
         .flex_shrink_0()
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -1186,26 +1309,6 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
             };
             item.child(code).into_any_element()
         }
-        LineKind::Quote => item
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(
-                        div()
-                            .w(px(2.0))
-                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
-                            .flex_shrink_0()
-                            .bg(colors.border_subtle),
-                    )
-                    .child(markdown_text(
-                        &line.spans,
-                        message_run_style(colors.text_primary),
-                        colors,
-                        format!("{id_prefix}-quote"),
-                    )),
-            )
-            .into_any_element(),
         LineKind::Rule => item
             .py(px(4.0))
             .child(div().w_full().h(px(1.0)).bg(colors.border_subtle))
@@ -1224,16 +1327,13 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
         }
         LineKind::Table => item.into_any_element(),
         LineKind::ListItem => {
-            let mut row = div()
-                .pl(px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT))
-                .flex()
-                .flex_row();
+            let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
             row = row.child(
                 div()
                     .flex_shrink_0()
                     .w(px(Layout::MARKDOWN_LIST_INDENT))
                     .text_color(colors.text_secondary)
-                    .child(format!("{} ", line.marker)),
+                    .child(format!("{} ", line.marker).into_any_element()),
             );
             if let Some(checked) = line.checked {
                 row = row.child(
@@ -1245,7 +1345,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                         } else {
                             colors.text_tertiary
                         })
-                        .child(if checked { "[x]" } else { "[ ]" }),
+                        .child((if checked { "[x]" } else { "[ ]" }).into_any_element()),
                 );
             }
             row = row.child(div().flex_1().min_w_0().child(markdown_text(

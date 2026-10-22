@@ -145,8 +145,6 @@ pub(crate) enum LineKind {
     Table,
     /// Code line (monospace on `code_bg`).
     Code,
-    /// Block-quote line (left bar + secondary color).
-    Quote,
     /// Thematic break (`---`).
     Rule,
     /// User message label row (「你」标记，卡片上方).
@@ -174,9 +172,25 @@ pub(crate) struct StreamLine {
     pub marker: String,
     /// Nesting depth for list rows (2-space indent per level).
     pub depth: usize,
+    pub(crate) in_list: bool,
+    pub(crate) quotes: Vec<QuoteOwner>,
     pub spans: Vec<StreamSpan>,
     pub table: Option<Arc<StreamTable>>,
     pub(crate) code_block: Option<Arc<StreamCodeBlock>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuoteOwner {
+    pub(crate) identity: (u64, usize),
+    pub(crate) list_depth: Option<usize>,
+}
+
+impl QuoteOwner {
+    pub(crate) fn list_inset(self) -> f32 {
+        self.list_depth.map_or(0., |depth| {
+            (depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,9 +245,45 @@ impl StreamLine {
             checked: None,
             marker: String::new(),
             depth: 0,
+            in_list: false,
+            quotes: Vec::new(),
             spans: Vec::new(),
             table: None,
             code_block: None,
+        }
+    }
+
+    pub(crate) fn starts_list_item(&self) -> bool {
+        !self.marker.is_empty()
+    }
+
+    pub(crate) fn list_marker_quote_depth(&self) -> Option<usize> {
+        if self.kind != LineKind::ListItem || !self.starts_list_item() {
+            return None;
+        }
+        self.quotes
+            .iter()
+            .position(|owner| owner.list_depth == Some(self.depth))
+    }
+
+    pub(crate) fn list_marker_inset(&self) -> f32 {
+        let parent_inset = self
+            .list_marker_quote_depth()
+            .and_then(|depth| depth.checked_sub(1))
+            .and_then(|depth| self.quotes.get(depth))
+            .map_or(0., |owner| owner.list_inset());
+        (self.depth as f32 * Layout::MARKDOWN_LIST_INDENT - parent_inset).max(0.)
+    }
+
+    pub(crate) fn quote_list_inset(&self) -> f32 {
+        self.quotes.last().map_or(0., |owner| owner.list_inset())
+    }
+
+    pub(crate) fn list_content_inset(&self) -> f32 {
+        if self.in_list {
+            (self.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+        } else {
+            0.
         }
     }
 
@@ -347,8 +397,9 @@ pub(crate) fn flatten_nodes(
     origin: BlockOrigin,
 ) -> Vec<StreamLine> {
     let mut lines = Vec::new();
+    let mut identity = 0;
     for node in nodes {
-        flatten_node(block_id, node, 0, origin, &mut lines);
+        flatten_node(block_id, node, None, origin, &mut lines, &mut identity);
     }
     lines
 }
@@ -356,10 +407,14 @@ pub(crate) fn flatten_nodes(
 pub(crate) fn flatten_node(
     block_id: u64,
     node: &RenderNode,
-    depth: usize,
+    list_depth: Option<usize>,
     origin: BlockOrigin,
     out: &mut Vec<StreamLine>,
+    identity: &mut usize,
 ) {
+    let node_identity = *identity;
+    *identity += 1;
+    let depth = list_depth.unwrap_or_default();
     match node {
         RenderNode::Paragraph { spans } => {
             let mut inline = Vec::new();
@@ -417,14 +472,25 @@ pub(crate) fn flatten_node(
                 offset = line_end + 1; // skip the '\n'
             }
         }
-        RenderNode::List(list) => flatten_list(block_id, list, depth, origin, out),
+        RenderNode::List(list) => flatten_list(
+            block_id,
+            list,
+            list_depth.map_or(0, |depth| depth + 1),
+            origin,
+            out,
+            identity,
+        ),
         RenderNode::BlockQuote { children } => {
+            let owner = QuoteOwner {
+                identity: (block_id, node_identity),
+                list_depth,
+            };
             let start = out.len();
             for child in children {
-                flatten_node(block_id, child, depth, origin, out);
+                flatten_node(block_id, child, list_depth, origin, out, identity);
             }
             for line in &mut out[start..] {
-                line.kind = LineKind::Quote;
+                line.quotes.insert(0, owner);
             }
         }
         RenderNode::Table(table) => flatten_table(block_id, table, out),
@@ -490,6 +556,7 @@ pub(crate) fn flatten_list(
     depth: usize,
     origin: BlockOrigin,
     out: &mut Vec<StreamLine>,
+    identity: &mut usize,
 ) {
     for (index, item) in list.items.iter().enumerate() {
         let marker = if list.ordered {
@@ -501,15 +568,22 @@ pub(crate) fn flatten_list(
         for child in &item.children {
             match child {
                 // 嵌套列表携带 depth+1（§5.3 嵌套列表分支）。
-                RenderNode::List(nested) => flatten_list(block_id, nested, depth + 1, origin, out),
-                other => flatten_node(block_id, other, depth, origin, out),
+                RenderNode::List(nested) => {
+                    flatten_list(block_id, nested, depth + 1, origin, out, identity)
+                }
+                other => flatten_node(block_id, other, Some(depth), origin, out, identity),
             }
+        }
+        for line in &mut out[start..] {
+            line.in_list = true;
         }
         if let Some(first) = out.get_mut(start) {
             first.marker = marker;
             first.depth = depth;
             first.checked = item.checked;
-            first.kind = LineKind::ListItem;
+            if first.kind == LineKind::Paragraph {
+                first.kind = LineKind::ListItem;
+            }
         }
     }
 }
