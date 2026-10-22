@@ -1975,3 +1975,7 @@ pub(crate) fn source_after_checkpoint(
     }
     Ok(projected)
 }
+
+#[cfg(test)]
+#[path = "pipeline_image_tests.rs"]
+mod pipeline_image_tests;
