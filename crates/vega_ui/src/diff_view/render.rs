@@ -35,7 +35,17 @@ impl Render for DiffView {
                     .justify_center()
                     .gap_3()
                     .text_color(colors.danger)
-                    .child(error_label(code))
+                    .child({
+                        #[cfg(feature = "test-support")]
+                        {
+                            crate::test_support::text(error_label(code), cx.entity_id())
+                                .into_any_element()
+                        }
+                        #[cfg(not(feature = "test-support"))]
+                        {
+                            error_label(code).into_any_element()
+                        }
+                    })
                     .when(self.refreshing && self.show_refresh_progress, |body| {
                         body.child(
                             div()
@@ -45,6 +55,13 @@ impl Render for DiffView {
                     })
                     .child(
                         diff_button("Retry", colors.warning, colors)
+                            .map(|button| {
+                                #[cfg(feature = "test-support")]
+                                let button = gpui_kit::test::TestSupportExt::test_support(
+                                    button.id("workspace-diff-retry"),
+                                );
+                                button
+                            })
                             .when(!self.refreshing, |button| button.cursor_pointer())
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::retry_clicked)),
                     )
@@ -56,7 +73,17 @@ impl Render for DiffView {
                     .items_center()
                     .justify_center()
                     .text_color(colors.text_tertiary)
-                    .child("Loading workspace diff…")
+                    .child({
+                        #[cfg(feature = "test-support")]
+                        {
+                            crate::test_support::text("Loading workspace diff…", cx.entity_id())
+                                .into_any_element()
+                        }
+                        #[cfg(not(feature = "test-support"))]
+                        {
+                            "Loading workspace diff…".into_any_element()
+                        }
+                    })
                     .into_any_element()
             } else if row_count == 0 {
                 div()
@@ -68,7 +95,17 @@ impl Render for DiffView {
                     .flex_col()
                     .gap_3()
                     .child(crate::icons::icon(Icon::Document, colors.text_tertiary))
-                    .child("当前没有工作区变更")
+                    .child({
+                        #[cfg(feature = "test-support")]
+                        {
+                            crate::test_support::current_text("当前没有工作区变更")
+                                .into_any_element()
+                        }
+                        #[cfg(not(feature = "test-support"))]
+                        {
+                            "当前没有工作区变更".into_any_element()
+                        }
+                    })
                     .child(
                         div()
                             .text_size(px(Typography::METADATA))
@@ -117,7 +154,17 @@ impl Render for DiffView {
                     .flex_col()
                     .gap_3()
                     .child(crate::icons::icon(Icon::Document, colors.text_tertiary))
-                    .child("当前没有工作区变更")
+                    .child({
+                        #[cfg(feature = "test-support")]
+                        {
+                            crate::test_support::current_text("当前没有工作区变更")
+                                .into_any_element()
+                        }
+                        #[cfg(not(feature = "test-support"))]
+                        {
+                            "当前没有工作区变更".into_any_element()
+                        }
+                    })
                     .child(
                         div()
                             .text_size(px(Typography::METADATA))
@@ -340,7 +387,16 @@ pub(crate) fn render_prepared_row(
                 },
                 colors.text_tertiary,
             ))
-            .child(div().min_w_0().flex_1().truncate().child(label))
+            .child(div().min_w_0().flex_1().truncate().child({
+                #[cfg(feature = "test-support")]
+                {
+                    crate::test_support::text(label, view.entity_id()).into_any_element()
+                }
+                #[cfg(not(feature = "test-support"))]
+                {
+                    label.into_any_element()
+                }
+            }))
             .child(
                 div()
                     .max_w(px(110.))
@@ -460,7 +516,16 @@ pub(crate) fn render_diff_line_div(
     };
     let mut text = div().min_w_0().flex_1().overflow_hidden().flex();
     for span in line.spans {
-        let mut element = div().child(span.text);
+        let mut element = div().child({
+            #[cfg(feature = "test-support")]
+            {
+                crate::test_support::current_text(span.text).into_any_element()
+            }
+            #[cfg(not(feature = "test-support"))]
+            {
+                span.text.into_any_element()
+            }
+        });
         if let Some(kind) = span.kind {
             let style = code_token_style(kind, colors);
             element = element.text_color(style.color).font_weight(style.weight);

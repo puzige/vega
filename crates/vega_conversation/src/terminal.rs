@@ -11,6 +11,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 const MAX_INPUT: usize = 64 * 1024;
 const SCROLLBACK: usize = 2_000;
 

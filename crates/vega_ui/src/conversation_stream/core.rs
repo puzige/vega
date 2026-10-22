@@ -238,6 +238,22 @@ pub(crate) struct PendingEcho {
 }
 
 impl ConversationStream {
+    #[cfg(feature = "test-support")]
+    pub fn observed_stream_text(&self) -> String {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                StreamEntry::Assistant { copy, .. } => Some(copy.original_text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn observed_viewport(&self) -> gpui_kit::Bounds<Pixels> {
+        self.list.viewport_bounds()
+    }
+
     pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
         if self.reading_preview == reading {
             return;

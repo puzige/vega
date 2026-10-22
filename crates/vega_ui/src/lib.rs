@@ -1,3 +1,6 @@
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 pub mod artifact_card;
 pub mod automation_editor;
 pub mod branch_selector;

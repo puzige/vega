@@ -3,6 +3,9 @@ name = "vega_ui"
 version.workspace = true
 edition.workspace = true
 
+[features]
+test-support = ["vega_conversation/test-support", "gpui_kit/test-support"]
+
 [dependencies]
 gpui_kit.workspace = true
 tracing.workspace = true

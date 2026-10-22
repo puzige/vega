@@ -26,6 +26,11 @@ impl DiffView {
         self.snapshot.as_ref().map(|snapshot| snapshot.generation)
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn observed_scroll(&self) -> gpui_kit::Point<gpui_kit::Pixels> {
+        self.scroll.0.borrow().base_handle.offset()
+    }
+
     pub fn layout(&self) -> DiffLayout {
         self.layout
     }

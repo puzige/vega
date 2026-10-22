@@ -33,6 +33,24 @@ impl TerminalView {
     /// Create a terminal whose project authority is resolved off the UI thread.
     pub fn for_target(target: TerminalTarget, cx: &mut Context<Self>) -> Self {
         let session = TerminalSession::start_target(target.clone()).ok();
+        Self::with_session(target, session, cx)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn with_test_session(session: TerminalSession, cx: &mut Context<Self>) -> Self {
+        Self::with_session(TerminalTarget::Directory(PathBuf::new()), Some(session), cx)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn observed_snapshot(&self) -> Option<&TerminalSnapshot> {
+        self.snapshot.as_ref()
+    }
+
+    fn with_session(
+        target: TerminalTarget,
+        session: Option<TerminalSession>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -376,7 +394,7 @@ fn paint_terminal(
                 let line = window
                     .text_system()
                     .shape_line(text.into(), size, &runs, None);
-                let _ = line.paint(
+                let painted = line.paint(
                     point(bounds.left(), bounds.top() + line_height * row as f32),
                     line_height,
                     TextAlign::Left,
@@ -384,6 +402,21 @@ fn paint_terminal(
                     window,
                     cx,
                 );
+                #[cfg(feature = "test-support")]
+                if painted.is_ok() {
+                    crate::test_support::record_text(
+                        window.current_view(),
+                        line.text.clone(),
+                        Bounds::new(
+                            point(bounds.left(), bounds.top() + line_height * row as f32),
+                            gpui_kit::size(line.width(), line_height),
+                        ),
+                        window,
+                        cx,
+                    );
+                }
+                #[cfg(not(feature = "test-support"))]
+                let _ = painted;
             }
             let mut fade = ScrollFadeMetrics::new(
                 bounds,

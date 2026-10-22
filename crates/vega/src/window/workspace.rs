@@ -6,6 +6,9 @@ use vega_ui::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollableFadeExt
 const MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH: f32 = 610.;
 const MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT: f32 = 480.;
 
+#[cfg(test)]
+mod motion_tests;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum TabKey {
     Subagents,
@@ -1189,11 +1192,38 @@ impl VegaWindow {
                     .group_hover(tab_group.clone(), |style| style.opacity(1.))
                     .in_focus(|style| style.opacity(1.))
                     .focus_visible(|style| style.opacity(1.))
+            })
+            .map(|close| {
+                #[cfg(test)]
+                let close = close.child({
+                    let entity = cx.entity_id();
+                    let label = SharedString::from(format!("close-{tab_selector}"));
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, cx| {
+                            vega_ui::test_support::record_text(
+                                entity,
+                                label.clone(),
+                                bounds,
+                                window,
+                                cx,
+                            );
+                        },
+                    )
+                    .absolute()
+                    .size_full()
+                });
+                close
             });
             strip = strip.child(
                 div()
                     .id(tab_selector.clone())
                     .aria_label(label.clone())
+                    .map(|tab| {
+                        #[cfg(test)]
+                        let tab = gpui_kit::test::TestSupportExt::test_support(tab);
+                        tab
+                    })
                     .flex_shrink_0()
                     .max_w_full()
                     .focusable()
@@ -1243,7 +1273,17 @@ impl VegaWindow {
                             .truncate()
                             .text_size(px(Typography::SIDEBAR))
                             .text_color(tab_color)
-                            .child(label),
+                            .child({
+                                #[cfg(test)]
+                                {
+                                    vega_ui::test_support::text(label, cx.entity_id())
+                                        .into_any_element()
+                                }
+                                #[cfg(not(test))]
+                                {
+                                    label.into_any_element()
+                                }
+                            }),
                     )
                     .child(close),
             );
@@ -1332,16 +1372,26 @@ impl VegaWindow {
                 .active
                 .as_ref()
                 .map(|active| active.image.clone().into_any_element()),
-            Some(TabKey::File(id)) => self
-                .workspace
-                .files
-                .get(&id)
-                .map(|view| view.clone().into_any_element()),
-            Some(TabKey::Terminal(id)) => self
-                .workspace
-                .terminals
-                .get(&id)
-                .map(|tab| tab.view.clone().into_any_element()),
+            Some(TabKey::File(id)) => self.workspace.files.get(&id).map(|view| {
+                #[cfg(test)]
+                {
+                    motion_tests::observe_body(view.clone())
+                }
+                #[cfg(not(test))]
+                {
+                    view.clone().into_any_element()
+                }
+            }),
+            Some(TabKey::Terminal(id)) => self.workspace.terminals.get(&id).map(|tab| {
+                #[cfg(test)]
+                {
+                    motion_tests::observe_body(tab.view.clone())
+                }
+                #[cfg(not(test))]
+                {
+                    tab.view.clone().into_any_element()
+                }
+            }),
             Some(TabKey::Diff) => cx
                 .global::<OpenedThread>()
                 .0
@@ -1354,7 +1404,14 @@ impl VegaWindow {
                         window.focus(&view.read(cx).focus_handle(cx), cx);
                         active.focus_intent = DiffFocusIntent::PreserveCurrent;
                     }
-                    view.into_any_element()
+                    #[cfg(test)]
+                    {
+                        motion_tests::observe_body(view)
+                    }
+                    #[cfg(not(test))]
+                    {
+                        view.into_any_element()
+                    }
                 }),
             Some(TabKey::Artifact(id)) => self
                 .artifact_controller
@@ -1399,7 +1456,21 @@ impl VegaWindow {
                 }
             })
             .child(header)
-            .child(div().flex_1().min_h_0().overflow_hidden().children(body))
+            .child(
+                div()
+                    .map(|body_container| {
+                        #[cfg(test)]
+                        let body_container = gpui_kit::test::TestSupportExt::test_support(
+                            body_container
+                                .id(SharedString::from(format!("workspace-body-{index}"))),
+                        );
+                        body_container
+                    })
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .children(body),
+            )
             .into_any_element()
     }
 
