@@ -111,9 +111,22 @@ v2 明确新增 A8 遗漏边界，保留全部原测试，不删测。第二周�
 
 writer 已停写，主 Agent 读回 helper 并验证其常量与实际 provider 输出一致；rustfmt/diff 静态检查退出 0。独立 reviewer 已复审该精确 delta，确认 P2 消除、无断言弱化并批准整个 A8 先行补丁进入 Actions；A8 尚无有效 RED，禁止生产修正。
 
+## v2 第二周期有效 RED
+
+- 先行提交 `337354c696d1cdb06b13ae60deb73dcfc4719d32`；[A8 原始源码](https://github.com/puzige/vega/blob/337354c696d1cdb06b13ae60deb73dcfc4719d32/crates/vega_conversation/src/agent/read_mixed_validation_tests.rs)、[原始 patch](https://github.com/puzige/vega/commit/337354c696d1cdb06b13ae60deb73dcfc4719d32.patch) 和 hash 已固定 [PR 评论](https://github.com/puzige/vega/pull/541#issuecomment-6340090564)。生产仍为 v1，未先修守卫。
+- [Actions 39774000120](https://github.com/puzige/vega/actions/runs/39774000120) / [Nextest job 119808255739](https://github.com/puzige/vega/actions/runs/39774000120/job/119808255739)，2026-10-22 UTC 11:53 启动、11:59 按 5 分钟节奏查询并读取失败。实际 **17 discovered / 17 executed：15 passed、2 failed、0 skipped**。
+- 两失败是新增真实 mixed-question 链的 ToolTerminal/ApprovalAudit，以及合法 mixed 拒绝终态阳性的 EventPipeline/ApprovalAudit。原 13 项和新增两组安全负例全部通过；fmt、全目标 Clippy、三组 Python 成功，不是编译/runner/notice helper 故障。
+- 主 Agent 确认第二周期产品 P1 有效 RED，冻结 A8 新源码与原 13 项后，才委派只移动 `pipeline.rs` 两类拒绝通路优先级的最小修正；不改任何断言或扩大校验豁免。
+
+## v2 最小修正停写版本
+
+唯一生产 writer 只在 `pipeline.rs::validate_recovered_projection` 将 16 行 InvalidRead 守卫原样移动到既有 mixed-batch 合法拒绝分支之后。mixed、grep 和 Read guard 内部条件逐字节未变，文件其余内容相同；未加入通用豁免、未修改测试/runtime/events/recovery/依赖。pipeline 文件 SHA-256 `734b1a80dc5bd9098f11bc912841317abe46784295937c75613364f99b2ea6a1`；相对第二周期测试提交的单文件补丁 SHA-256 `6db46900244a7f38fef7321f4c2f2a859b88a9d88c7a4623d79cd683687aa676`（2,168 bytes，+16/-16）。
+
+writer READY并停止写入，主 Agent 读回完整差异并复核补丁hash；五份冻结测试与各自先行提交逐字节相同。主 Agent 的 pipeline rustfmt/diff 静态检查退出 0。待固定实现提交、同一 17 项云端 GREEN 与独立增量实现审查；此时尚不删测。
+
 ## 待执行门禁
 
-1. v2 A8 新先行测试、独立审查及有效 RED；原 13 项继续保持。
+1. v2 A8 先行测试、独立审查及有效 RED 已固定；原 13 项继续保持。
 2. 最小修正后同一原 13+A8 GREEN，与独立实现审查。
 3. 带全部同一测试 GREEN 和审查未通过前不删测。
 4. 在 PR 固定原测试可访问源码/patch、完整 SHA 及 RED/GREEN run/job。
