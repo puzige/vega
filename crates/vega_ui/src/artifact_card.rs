@@ -1504,6 +1504,56 @@ pub(crate) mod tests {
     }
 
     #[gpui_kit::test]
+    fn artifact_group_merges_capture_after_reconciled_rename(cx: &mut TestAppContext) {
+        let handle = setup(cx, false);
+        in_window(cx, handle, |harness, _, cx| {
+            start(&harness.stream, "reconciled-rename", cx);
+            let mut original = projection(1, 1, Some(100));
+            original.label = "reports/a.txt".into();
+            let captured = capture(harness, "write-original", original, cx);
+            let mut renamed = captured.read(cx).projection().clone();
+            renamed.label = "reports/b.txt".into();
+            captured.update(cx, |card, cx| {
+                assert!(card.apply_metadata(renamed, cx));
+            });
+        });
+        in_window(cx, handle, |harness, window, cx| {
+            let mut latest = projection(1, 2, Some(200));
+            latest.label = "reports/b.txt".into();
+            capture(harness, "edit-renamed", latest, cx);
+            finish_with_summary(&harness.stream, "reconciled-rename", cx);
+            frame(window, cx);
+            assert!(painted().iter().any(|text| {
+                text.scope == "assistant" && text.text.contains("Answer for reconciled-rename.")
+            }));
+            let rendered = group_texts("reconciled-rename", 1);
+            assert_eq!(
+                rendered
+                    .iter()
+                    .filter(|text| text.as_str() == "reports/b.txt")
+                    .count(),
+                1
+            );
+            assert!(!rendered.contains(&"reports/a.txt".into()));
+            assert!(rendered.contains(&"200 B".into()));
+            assert!(!rendered.contains(&"100 B".into()));
+            hover_file(window, "reports/b.txt", cx);
+            click_control(window, "Preview file", cx);
+        });
+        in_window(cx, handle, |harness, _, _| {
+            assert_eq!(
+                harness.previews.borrow().as_slice(),
+                &[ArtifactPreviewRequested {
+                    thread_id: "thread".into(),
+                    project_id: "project".into(),
+                    card_id: ArtifactCardId::for_test(1, 1001),
+                    file_id: WorkspaceFileId::for_test(2, 1),
+                }]
+            );
+        });
+    }
+
+    #[gpui_kit::test]
     fn artifact_group_offers_show_more_beyond_the_visible_cap(cx: &mut TestAppContext) {
         let handle = setup(cx, false);
         in_window(cx, handle, |harness, window, cx| {
