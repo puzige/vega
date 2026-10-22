@@ -32,6 +32,8 @@ W3 is deliberately revised: each exact child execution gets one explicitly bound
 
 The implementer must first revise/add only wait acceptance tests, including a native parent-provider replay of the explicit 60000-ms pattern. The independent reviewer must inspect the changed contract and test-only version. Existing PR Actions must compile and establish new behavioral RED before production work resumes. Other v1 expectations remain frozen.
 
+The initial 24-case v2 candidate, `22d7c43ca6fd143bf2106e686bbbaa4909a1a085`, was independently reviewed before push and was not frozen. Review found that a fixed 30-ms yield did not establish actual wait-future admission, one permission test could poll a completed future twice, and cancellation needed a direct first-finite-wait case. The same implementer is correcting those test observations without changing production or weakening assertions. The explicit-timeout replay uses the real RuntimeLoop and Supervisor with a transparent Pending observer; child stages still enter the native pipeline. The parent receipt-ack sink is a fixture boundary, while the separate native-entry steering cases verify real entry wiring.
+
 ## Remaining gates
 
 Production implementation initially began after corrected v1 behavioral RED, then stopped for the v2 acceptance correction. New v2 RED and a newly frozen test set are required before it resumes. Same-test GREEN, independent implementation review, complete source/patch archive in the PR, separate test/support deletion, cleanup review and final exact-head full CI are pending. No delivery or actual speed improvement is claimed by this RED evidence.

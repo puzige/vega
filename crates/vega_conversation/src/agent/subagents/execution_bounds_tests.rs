@@ -787,6 +787,48 @@ async fn wait_cancellation_and_parent_end_release_waiters_without_success() {
         supervisor.registry.cancel_all();
         assert!(bounded(ended).await.is_err());
     }
+    for repeated_timeout in [0, 500] {
+        let fixture = Fixture::new();
+        let supervisor = Supervisor::new();
+        let reserved = reserve_wait_target(&fixture, &supervisor, "cancelled-first-observation");
+        let hook = supervisor.hook();
+        let cancel = CancellationToken::new();
+        let first = hook.call(
+            "first-finite-cancelled".into(),
+            "wait_agent".into(),
+            wait_input(&reserved.snapshot, Some(500)),
+            cancel.clone(),
+        );
+        tokio::pin!(first);
+        assert!(futures::poll!(&mut first).is_pending());
+        cancel.cancel();
+        assert!(matches!(bounded(first).await, Err(VegaError::Cancelled)));
+        let repeated = hook.call(
+            "after-first-cancellation".into(),
+            "wait_agent".into(),
+            wait_input(&reserved.snapshot, Some(repeated_timeout)),
+            CancellationToken::new(),
+        );
+        tokio::pin!(repeated);
+        let first_poll = futures::poll!(&mut repeated);
+        let starts_pending = first_poll.is_pending();
+        let mut remains_pending = false;
+        if starts_pending {
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_millis(501)).await;
+            let after_deadline = futures::poll!(&mut repeated);
+            remains_pending = after_deadline.is_pending();
+            tokio::time::resume();
+        }
+        supervisor.registry.cancel_all();
+        if remains_pending {
+            assert!(bounded(repeated).await.is_err());
+        }
+        assert!(
+            starts_pending && remains_pending,
+            "cancelling the first finite wait cannot refund its allowance to zero or positive waits"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1377,11 +1419,16 @@ async fn permission_attention_uses_the_existing_queue_without_stealing_its_liste
         .await;
         let repeated = wait(&hook, &snapshot, Some(0));
         tokio::pin!(repeated);
-        let repeated_pending = futures::poll!(&mut repeated).is_pending();
+        let repeated_poll = futures::poll!(&mut repeated);
+        let repeated_pending = repeated_poll.is_pending();
         let visible = queue.take_pending();
         host.cancel().cancel();
         let _ = bounded(decision).await;
-        bounded(&mut repeated).await;
+        if repeated_pending {
+            bounded(&mut repeated).await;
+        } else {
+            bounded(wait(&hook, &snapshot, None)).await;
+        }
         assert!(
             visible.is_some(),
             "UI must retain access to its original pending request"
@@ -2069,9 +2116,118 @@ async fn completed_stage_is_not_retroactively_cancelled_while_host_release_is_pe
     assert_eq!(receipt["agents"][0]["state"], "completed");
 }
 
+#[derive(Default)]
+struct WaitPollState {
+    count: usize,
+    pending: bool,
+    waker: Option<std::task::Waker>,
+}
+
+#[derive(Default)]
+struct WaitPollObserver {
+    calls: Mutex<BTreeMap<String, WaitPollState>>,
+    changed: Notify,
+}
+
+impl WaitPollObserver {
+    fn record(&self, call_id: &str, pending: bool, waker: &std::task::Waker) {
+        let mut calls = self.calls.lock().expect("wait observations");
+        let state = calls.entry(call_id.into()).or_default();
+        state.count += 1;
+        state.pending = pending;
+        state.waker = pending.then(|| waker.clone());
+        drop(calls);
+        self.changed.notify_waiters();
+    }
+
+    async fn after(&self, call_id: &str, previous: usize) -> bool {
+        bounded(async {
+            loop {
+                let changed = self.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if let Some(state) = self.calls.lock().expect("wait observations").get(call_id)
+                    && state.count > previous
+                {
+                    return state.pending;
+                }
+                changed.await;
+            }
+        })
+        .await
+    }
+
+    fn count(&self, call_id: &str) -> usize {
+        self.calls
+            .lock()
+            .expect("wait observations")
+            .get(call_id)
+            .expect("observed wait")
+            .count
+    }
+
+    fn wake_pending(&self, call_id: &str) {
+        let waker = self
+            .calls
+            .lock()
+            .expect("wait observations")
+            .get(call_id)
+            .and_then(|state| state.waker.clone());
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
+struct ObservedWaitHook {
+    inner: Arc<dyn vega_runtime::RuntimeSubagentHook>,
+    observer: Arc<WaitPollObserver>,
+}
+
+impl vega_runtime::RuntimeSubagentHook for ObservedWaitHook {
+    fn call(
+        &self,
+        call_id: String,
+        tool: String,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<serde_json::Value, VegaError>> {
+        let observe = tool == "wait_agent";
+        let observer = self.observer.clone();
+        let mut inner = self.inner.call(call_id.clone(), tool, input, cancel);
+        futures::future::poll_fn(move |context| {
+            let result = inner.as_mut().poll(context);
+            if observe {
+                observer.record(&call_id, result.is_pending(), context.waker());
+            }
+            result
+        })
+        .boxed()
+    }
+}
+
 struct ExplicitWaitReplayProvider {
     roots: AtomicUsize,
+    child_requests: AtomicUsize,
     requests: Mutex<Vec<ChatRequest>>,
+    called: Notify,
+}
+
+impl ExplicitWaitReplayProvider {
+    async fn child_requested(&self) {
+        bounded(async {
+            loop {
+                let called = self.called.notified();
+                tokio::pin!(called);
+                called.as_mut().enable();
+                if self.child_requests.load(Ordering::SeqCst) > 0 {
+                    return;
+                }
+                called.await;
+            }
+        })
+        .await;
+    }
 }
 
 impl Provider for ExplicitWaitReplayProvider {
@@ -2084,6 +2240,7 @@ impl Provider for ExplicitWaitReplayProvider {
             message.role == ChatRole::User && message.content == "EXPLICIT_REPLAY_CHILD"
         });
         let events = if child {
+            self.child_requests.fetch_add(1, Ordering::SeqCst);
             None
         } else {
             let turn = self.roots.fetch_add(1, Ordering::SeqCst);
@@ -2114,6 +2271,7 @@ impl Provider for ExplicitWaitReplayProvider {
             }
         };
         self.requests.lock().expect("requests").push(request);
+        self.called.notify_waiters();
         async move {
             let stream: EventStream = match events {
                 Some(events) => Box::pin(futures::stream::iter(events.into_iter().map(Ok))),
@@ -2126,62 +2284,77 @@ impl Provider for ExplicitWaitReplayProvider {
 }
 
 #[tokio::test]
-async fn native_parent_explicit_sixty_second_replay_stops_provider_churn_after_first_timeout() {
+async fn runtime_loop_and_supervisor_explicit_wait_replay_stops_provider_churn_after_first_timeout()
+{
     let fixture = Fixture::new();
     let provider = ExplicitWaitReplayProvider {
         roots: AtomicUsize::new(0),
+        child_requests: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
+        called: Notify::new(),
     };
     let host = TestHost::new(true);
     let cancel = CancellationToken::new();
     let waits_started = AtomicUsize::new(0);
     let timed_out = AtomicUsize::new(0);
-    let run = super::super::entry::run_thread_task_with_automation_inner(
-        &fixture.store,
+    let mut supervisor = Supervisor::new();
+    let receipt_observer = supervisor.receipt_observer();
+    let polls = Arc::new(WaitPollObserver::default());
+    let wrapper = Arc::new(ObservedWaitHook {
+        inner: supervisor.hook(),
+        observer: polls.clone(),
+    });
+    let mut request = fixture.request.clone();
+    request.tool_config = request.tool_config.with_subagents(Some(wrapper));
+    let parent = vega_runtime::run_agent_with_sink(
         &provider,
         &fixture.tools,
-        "parent",
-        "PARENT_EXPLICIT_REPLAY",
-        "Preserve all user constraints",
+        request,
         cancel.clone(),
-        &super::super::RejectPermissionHook,
         |event| {
-            if matches!(event, ConversationEvent::ToolCallRunning { call_id } if call_id.starts_with("replay-wait-"))
+            receipt_observer.persisted(&event);
+            if matches!(&event, RuntimeEvent::ToolCallRunning { call_id } if call_id.starts_with("replay-wait-"))
             {
                 waits_started.fetch_add(1, Ordering::SeqCst);
             }
-            if let ConversationEvent::ToolCallFinished { call_id, result } = event
-                && call_id.starts_with("replay-wait-")
+            if let RuntimeEvent::ToolCallFinished(result) = &event
+                && result.call_id.starts_with("replay-wait-")
                 && serde_json::from_str::<serde_json::Value>(&result.output)
                     .is_ok_and(|value| value["timed_out"] == true)
             {
                 timed_out.fetch_add(1, Ordering::SeqCst);
             }
-            Ok(())
+            std::future::ready(Ok(()))
         },
-        PersistenceActorConfig::default().with_subagent_host(host.clone()),
-        None,
-        None,
-        None,
-        Vec::new(),
-        Vec::new(),
     );
+    let mut launch = fixture.launch(&provider, host);
+    launch.cancel = cancel.clone();
+    let run = supervisor.run(parent.boxed_local(), launch);
     let driver = async {
-        host.until(|| waits_started.load(Ordering::SeqCst) == 1)
-            .await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            polls.after("replay-wait-1", 0).await,
+            "first actual wait registered its timer"
+        );
+        provider.child_requested().await;
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(61)).await;
         tokio::time::resume();
-        host.until(|| waits_started.load(Ordering::SeqCst) >= 2)
-            .await;
+        assert!(
+            polls.after("replay-wait-2", 0).await,
+            "second actual wait is suspended"
+        );
+        assert_eq!(timed_out.load(Ordering::SeqCst), 1);
         for _ in 0..4 {
-            tokio::time::sleep(Duration::from_millis(30)).await;
+            let previous = polls.count("replay-wait-2");
             tokio::time::pause();
             tokio::time::advance(Duration::from_secs(61)).await;
+            polls.wake_pending("replay-wait-2");
+            let pending = polls.after("replay-wait-2", previous).await;
             tokio::time::resume();
+            if !pending {
+                break;
+            }
         }
-        tokio::time::sleep(Duration::from_millis(30)).await;
         let roots = provider.roots.load(Ordering::SeqCst);
         let waits = waits_started.load(Ordering::SeqCst);
         let timeouts = timed_out.load(Ordering::SeqCst);
