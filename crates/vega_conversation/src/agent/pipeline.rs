@@ -1959,3 +1959,7 @@ pub(crate) fn source_after_checkpoint(
     }
     Ok(projected)
 }
+
+#[cfg(test)]
+#[path = "read_validation_audit_tests.rs"]
+mod read_validation_audit_tests;

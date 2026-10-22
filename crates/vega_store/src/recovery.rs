@@ -119,3 +119,7 @@ pub fn recover_thread_in_transaction(
         tools_cancelled,
     })
 }
+
+#[cfg(test)]
+#[path = "read_recovery_tests.rs"]
+mod read_recovery_tests;
