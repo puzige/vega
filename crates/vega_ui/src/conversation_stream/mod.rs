@@ -293,9 +293,6 @@ mod thinking_slider;
 use thinking::ThinkingBlock;
 mod utility_bar;
 
-#[cfg(test)]
-mod tests;
-
 pub use core::ConversationStream;
 pub use core::ModelPickerLevel;
 pub(crate) use core::*;
