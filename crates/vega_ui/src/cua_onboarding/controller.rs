@@ -90,7 +90,20 @@ impl CardController {
 
     pub fn view(&self) -> CardView {
         CardView {
-            component: self.preparation.as_ref().map(|value| value.component),
+            component: self.preparation.as_ref().map(|value| value.component).or(
+                match self.check_state {
+                    CheckState::Failed(ComputerUseError::MissingComponents) => {
+                        Some(ComponentState::Missing)
+                    }
+                    CheckState::Failed(ComputerUseError::IncompatibleComponents) => {
+                        Some(ComponentState::Incompatible)
+                    }
+                    CheckState::Failed(ComputerUseError::UnsupportedPlatform) => {
+                        Some(ComponentState::UnsupportedPlatform)
+                    }
+                    _ => None,
+                },
+            ),
             accessibility: self
                 .preparation
                 .as_ref()

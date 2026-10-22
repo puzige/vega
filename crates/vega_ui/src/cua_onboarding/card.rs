@@ -1,10 +1,10 @@
 use super::controller::{CardAction, CardController, CardEffect, CheckTicket};
 use super::native::{self, DesktopGeometry, Screen};
 use super::placement::{Rect, follow_target, perch};
-use super::session::{self, ProbeClient, ServiceStatus};
+use super::session::{self, InspectionIntent, ProbeClient, ServiceStatus};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, Context, DisplayId, FocusHandle, TitlebarOptions, Window,
+    App, Bounds, Context, DisplayId, FocusHandle, ScrollHandle, TitlebarOptions, Window,
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, point, px,
     size,
 };
@@ -102,6 +102,10 @@ pub struct GuidanceCard {
     panel_fault: Option<PanelFault>,
     cancel: CancellationToken,
     focus: FocusHandle,
+    body_scroll: ScrollHandle,
+    body_focus: FocusHandle,
+    body_action_focuses: [FocusHandle; 3],
+    body_action_items: [usize; 3],
 }
 
 pub fn open(
@@ -193,6 +197,10 @@ impl GuidanceCard {
             panel_fault: placement.fault,
             cancel: CancellationToken::new(),
             focus: cx.focus_handle(),
+            body_scroll: ScrollHandle::new(),
+            body_focus: cx.focus_handle().tab_stop(true),
+            body_action_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            body_action_items: [0; 3],
         }
     }
 
@@ -203,6 +211,12 @@ impl GuidanceCard {
             let _ = weak.update(cx, |card, _| card.invalidate());
             true
         });
+        for focus in self.body_action_focuses.clone() {
+            cx.on_focus(&focus, window, |card, window, cx| {
+                card.reveal_body_focus(window, cx);
+            })
+            .detach();
+        }
         window.focus(&self.focus, cx);
         if let Some(error) = self.service_status.last_inspection_error {
             for effect in self.controller.act(CardAction::Recheck) {
@@ -210,11 +224,9 @@ impl GuidanceCard {
                     self.controller.complete(ticket, Err(error));
                 }
             }
-        } else if self.service_status.cleanup == session::CleanupStatus::Clear
-            && self.service_status.last_close_error.is_none()
-            && self.service_status.failure.is_none()
-        {
-            self.dispatch(CardAction::Recheck, window, cx);
+        } else if self.service_status.can_start_automatically() {
+            let effects = self.controller.act(CardAction::Recheck);
+            self.apply_effects(effects, InspectionIntent::Automatic, window, cx);
         }
         let cancel = self.cancel.clone();
         cx.spawn_in(window, async move |weak, cx| {
@@ -245,13 +257,14 @@ impl GuidanceCard {
 
     fn dispatch(&mut self, action: CardAction, window: &mut Window, cx: &mut Context<Self>) {
         let effects = self.controller.act(action);
-        self.apply_effects(effects, window, cx);
+        self.apply_effects(effects, InspectionIntent::Manual, window, cx);
         cx.notify();
     }
 
     fn apply_effects(
         &mut self,
         effects: Vec<CardEffect>,
+        intent: InspectionIntent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -272,7 +285,7 @@ impl GuidanceCard {
                         self.client
                             .as_ref()
                             .ok_or(session::AdapterError::Unavailable)?
-                            .inspect(ticket.clone(), prompt, probe_direct_capture)
+                            .inspect(ticket.clone(), prompt, probe_direct_capture, intent)
                     });
                     match result {
                         Ok(()) => self.pending = Some(ticket),
@@ -287,7 +300,7 @@ impl GuidanceCard {
                 }
                 CardEffect::OpenUrl(url) => {
                     cx.open_url(&url);
-                    if !matches!(self.tracking, Tracking::Disabled) {
+                    if matches!(self.tracking, Tracking::Waiting) {
                         self.tracking = Tracking::Seeking(INITIAL_SETTINGS_ATTEMPTS);
                     }
                     self.external_dispatch =
@@ -334,7 +347,7 @@ impl GuidanceCard {
                         self.pending = None;
                     }
                     let effects = self.controller.complete(response.ticket, response.result);
-                    self.apply_effects(effects, window, cx);
+                    self.apply_effects(effects, InspectionIntent::Manual, window, cx);
                     cx.notify();
                 }
                 Ok(None) => break,

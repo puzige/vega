@@ -48,12 +48,21 @@ impl GuidanceCard {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
+        let focus = match action {
+            CardAction::RevealInFinder => Some(&self.body_action_focuses[0]),
+            CardAction::AccessibilitySettings => Some(&self.body_action_focuses[1]),
+            CardAction::ScreenRecordingSettings => Some(&self.body_action_focuses[2]),
+            _ => None,
+        };
         div()
             .id(id)
             .role(gpui_kit::Role::Button)
             .aria_label(label)
             .tab_stop(enabled)
             .focusable()
+            .when_some(focus, |button, focus| {
+                button.track_focus(&focus.clone().tab_stop(enabled))
+            })
             .px(px(Layout::IMAGE_PREVIEW_GAP))
             .py(px(Layout::TITLEBAR_CONTROL_GAP))
             .rounded(px(Layout::PANEL_RADIUS))
@@ -75,14 +84,44 @@ impl GuidanceCard {
                     card.dispatch(action, window, cx);
                 }
             }))
-            .on_key_down(cx.listener(move |card, event: &KeyDownEvent, window, cx| {
-                if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    card.dispatch(action, window, cx);
-                    cx.stop_propagation();
-                }
-            }))
             .child(label)
             .into_any_element()
+    }
+
+    pub(super) fn reveal_body_focus(&self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .body_action_focuses
+            .iter()
+            .position(|focus| focus.is_focused(window))
+        {
+            self.body_scroll
+                .scroll_to_item(self.body_action_items[index]);
+            cx.notify();
+        }
+    }
+
+    fn scroll_body(&self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.body_focus.contains_focused(window, cx) {
+            return false;
+        }
+        let viewport = self.body_scroll.bounds().size.height;
+        let max = self.body_scroll.max_offset().y.max(px(0.));
+        let current = self.body_scroll.offset();
+        let line = px(Typography::BODY * Typography::BODY_LINE_HEIGHT);
+        let target = match key {
+            "up" => current.y + line,
+            "down" => current.y - line,
+            "pageup" => current.y + viewport,
+            "pagedown" => current.y - viewport,
+            "home" => px(0.),
+            "end" => -max,
+            _ => return false,
+        };
+        self.body_scroll
+            .set_offset(gpui_kit::point(current.x, target.clamp(-max, px(0.))));
+        window.focus(&self.body_focus, cx);
+        cx.notify();
+        true
     }
 
     fn app_row(&self, view: &CardView, cx: &mut Context<Self>) -> AnyElement {
@@ -271,9 +310,15 @@ impl GuidanceCard {
 }
 
 impl Render for GuidanceCard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let view = self.controller.view();
+        let feedback = self.feedback(&view, colors);
+        let body_action_items = [feedback.len(), feedback.len() + 2, feedback.len() + 3];
+        if self.body_action_items != body_action_items {
+            self.body_action_items = body_action_items;
+            self.reveal_body_focus(window, cx);
+        }
         let heading = div()
             .flex()
             .flex_shrink_0()
@@ -317,7 +362,8 @@ impl Render for GuidanceCard {
         let body = div()
             .id("preparation-scroll-body")
             .tab_stop(true)
-            .focusable()
+            .track_focus(&self.body_focus)
+            .track_scroll(&self.body_scroll)
             .role(gpui_kit::Role::ScrollView)
             .aria_label("准备状态与操作")
             .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
@@ -327,7 +373,7 @@ impl Render for GuidanceCard {
             .flex()
             .flex_col()
             .gap(px(Layout::CONTENT_PADDING))
-            .children(self.feedback(&view, colors))
+            .children(feedback)
             .child(self.app_row(&view, cx))
             .child(
                 div().flex().justify_between().child("电脑操控组件").child(
@@ -395,6 +441,12 @@ impl Render for GuidanceCard {
                         } else {
                             window.focus_next(cx);
                         }
+                        card.reveal_body_focus(window, cx);
+                        cx.stop_propagation();
+                    }
+                    key if !event.keystroke.modifiers.modified()
+                        && card.scroll_body(key, window, cx) =>
+                    {
                         cx.stop_propagation();
                     }
                     _ => {}

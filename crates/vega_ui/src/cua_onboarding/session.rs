@@ -20,6 +20,120 @@ pub struct ServiceStatus {
     pub failure: Option<String>,
 }
 
+impl ServiceStatus {
+    pub fn can_start_automatically(&self) -> bool {
+        self.cleanup == CleanupStatus::Clear
+            && self.last_close_error.is_none()
+            && self.last_inspection_error.is_none()
+            && self.failure.is_none()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum InspectionIntent {
+    Automatic,
+    Manual,
+}
+
+#[derive(Clone)]
+enum Admission {
+    Automatic(Arc<()>),
+    Manual,
+}
+
+#[derive(Default)]
+struct ServiceState {
+    status: ServiceStatus,
+    revision: Arc<()>,
+    clients: Vec<ClientState>,
+    reclaiming: bool,
+}
+
+struct ClientState {
+    identity: Arc<()>,
+    retiring: bool,
+}
+
+impl ServiceState {
+    fn snapshot(&self) -> ServiceStatus {
+        let mut status = self.status.clone();
+        if status.cleanup == CleanupStatus::Clear
+            && (self.reclaiming || self.clients.iter().any(|client| client.retiring))
+        {
+            status.cleanup = CleanupStatus::Reclaiming;
+        }
+        status
+    }
+
+    fn validate(
+        &self,
+        admission: &Admission,
+        cancel: &CancellationToken,
+    ) -> Result<(), ComputerUseError> {
+        if cancel.is_cancelled() {
+            return Err(ComputerUseError::Cancelled);
+        }
+        if self.status.failure.is_some() {
+            return Err(ComputerUseError::Unavailable);
+        }
+        let status = self.snapshot();
+        let blocked = match admission {
+            Admission::Automatic(revision) => {
+                !Arc::ptr_eq(revision, &self.revision) || !status.can_start_automatically()
+            }
+            Admission::Manual => self.clients.iter().any(|client| client.retiring),
+        };
+        if blocked {
+            return Err(match status.cleanup {
+                CleanupStatus::Failed(error) => error,
+                _ => status
+                    .last_close_error
+                    .or(status.last_inspection_error)
+                    .unwrap_or(ComputerUseError::NotReady),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct ClientLease {
+    identity: Arc<()>,
+    cancel: CancellationToken,
+    state: Arc<Mutex<ServiceState>>,
+}
+
+impl ClientLease {
+    fn cancel(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(client) = state
+                .clients
+                .iter_mut()
+                .find(|client| Arc::ptr_eq(&client.identity, &self.identity))
+                && !client.retiring
+            {
+                client.retiring = true;
+                state.revision = Arc::new(());
+            }
+            self.cancel.cancel();
+        } else {
+            self.cancel.cancel();
+        }
+    }
+
+    fn finish(&self) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(index) = state
+                .clients
+                .iter()
+                .position(|client| Arc::ptr_eq(&client.identity, &self.identity))
+        {
+            state.clients.remove(index);
+            state.revision = Arc::new(());
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdapterError {
     Unavailable,
@@ -47,13 +161,13 @@ pub struct InspectionResult {
 #[derive(Clone)]
 struct InspectionRequest {
     ticket: CheckTicket,
+    admission: Admission,
 }
 
 pub struct ProbeClient {
     requests: watch::Sender<Option<InspectionRequest>>,
     responses: mpsc::Receiver<InspectionResult>,
-    cancel: CancellationToken,
-    state: Arc<Mutex<ServiceStatus>>,
+    lease: ClientLease,
 }
 
 impl ProbeClient {
@@ -64,20 +178,38 @@ impl ProbeClient {
         }
         let (requests, incoming) = watch::channel(None);
         let (responses, outgoing) = mpsc::channel();
-        let cancel = service.cancel.child_token();
-        service
+        let lease = ClientLease {
+            identity: Arc::new(()),
+            cancel: service.cancel.child_token(),
+            state: service.state,
+        };
+        {
+            let mut state = lease.state.lock().map_err(|_| AdapterError::Unavailable)?;
+            if lease.cancel.is_cancelled() || state.status.failure.is_some() {
+                return Err(AdapterError::Unavailable);
+            }
+            state.clients.push(ClientState {
+                identity: lease.identity.clone(),
+                retiring: false,
+            });
+        }
+        if service
             .commands
             .send(ServiceCommand::Attach {
                 incoming,
                 responses,
-                cancel: cancel.clone(),
+                lease: lease.clone(),
             })
-            .map_err(|_| AdapterError::Unavailable)?;
+            .is_err()
+        {
+            lease.cancel();
+            lease.finish();
+            return Err(AdapterError::Unavailable);
+        }
         Ok(Self {
             requests,
             responses: outgoing,
-            cancel,
-            state: service.state,
+            lease,
         })
     }
 
@@ -86,15 +218,25 @@ impl ProbeClient {
         ticket: CheckTicket,
         prompt: bool,
         probe_direct_capture: bool,
+        intent: InspectionIntent,
     ) -> Result<(), AdapterError> {
         if prompt || probe_direct_capture {
             return Err(AdapterError::InvalidInspection);
         }
-        if self.cancel.is_cancelled() || self.status().failure.is_some() {
+        let state = self
+            .lease
+            .state
+            .lock()
+            .map_err(|_| AdapterError::Unavailable)?;
+        if self.lease.cancel.is_cancelled() || state.status.failure.is_some() {
             return Err(AdapterError::Unavailable);
         }
+        let admission = match intent {
+            InspectionIntent::Automatic => Admission::Automatic(state.revision.clone()),
+            InspectionIntent::Manual => Admission::Manual,
+        };
         self.requests
-            .send(Some(InspectionRequest { ticket }))
+            .send(Some(InspectionRequest { ticket, admission }))
             .map_err(|_| AdapterError::Unavailable)
     }
 
@@ -106,12 +248,8 @@ impl ProbeClient {
         }
     }
 
-    pub fn status(&self) -> ServiceStatus {
-        snapshot(&self.state)
-    }
-
     pub fn cancel(&self) {
-        self.cancel.cancel();
+        self.lease.cancel();
     }
 }
 
@@ -124,7 +262,7 @@ impl Drop for ProbeClient {
 #[derive(Clone)]
 struct Service {
     commands: async_mpsc::UnboundedSender<ServiceCommand>,
-    state: Arc<Mutex<ServiceStatus>>,
+    state: Arc<Mutex<ServiceState>>,
     cancel: CancellationToken,
 }
 
@@ -132,16 +270,16 @@ enum ServiceCommand {
     Attach {
         incoming: watch::Receiver<Option<InspectionRequest>>,
         responses: mpsc::Sender<InspectionResult>,
-        cancel: CancellationToken,
+        lease: ClientLease,
     },
     Shutdown(oneshot::Sender<ServiceStatus>),
 }
 
 static SERVICE: OnceLock<Mutex<Option<Service>>> = OnceLock::new();
 
-fn snapshot(state: &Mutex<ServiceStatus>) -> ServiceStatus {
+fn snapshot(state: &Mutex<ServiceState>) -> ServiceStatus {
     match state.lock() {
-        Ok(state) => state.clone(),
+        Ok(state) => state.snapshot(),
         Err(_) => ServiceStatus {
             cleanup: CleanupStatus::Failed(ComputerUseError::Unavailable),
             last_close_error: None,
@@ -151,16 +289,11 @@ fn snapshot(state: &Mutex<ServiceStatus>) -> ServiceStatus {
     }
 }
 
-fn set_failure(state: &Mutex<ServiceStatus>, failure: String) {
+fn set_failure(state: &Mutex<ServiceState>, failure: String) {
     tracing::error!(%failure, "preparation service unavailable");
     if let Ok(mut state) = state.lock() {
-        state.failure = Some(failure);
-    }
-}
-
-fn set_cleanup(state: &Mutex<ServiceStatus>, cleanup: CleanupStatus) {
-    if let Ok(mut state) = state.lock() {
-        state.cleanup = cleanup;
+        state.status.failure = Some(failure);
+        state.revision = Arc::new(());
     }
 }
 
@@ -190,7 +323,7 @@ fn service() -> Result<Service, AdapterError> {
         return Ok(service.clone());
     }
     let (commands, incoming) = async_mpsc::unbounded_channel();
-    let state = Arc::new(Mutex::new(ServiceStatus::default()));
+    let state = Arc::new(Mutex::new(ServiceState::default()));
     let cancel = CancellationToken::new();
     let service = Service {
         commands,
@@ -219,7 +352,7 @@ fn service() -> Result<Service, AdapterError> {
 
 async fn serve(
     mut commands: async_mpsc::UnboundedReceiver<ServiceCommand>,
-    state: Arc<Mutex<ServiceStatus>>,
+    state: Arc<Mutex<ServiceState>>,
     cancel: CancellationToken,
 ) {
     let gate = Arc::new(tokio::sync::Mutex::new(()));
@@ -227,8 +360,8 @@ async fn serve(
     loop {
         tokio::select! {
             command = commands.recv() => match command {
-                Some(ServiceCommand::Attach { incoming, responses, cancel }) => {
-                    workers.spawn(run_worker(incoming, responses, cancel, state.clone(), gate.clone()));
+                Some(ServiceCommand::Attach { incoming, responses, lease }) => {
+                    workers.spawn(run_worker(incoming, responses, lease, gate.clone()));
                 }
                 Some(ServiceCommand::Shutdown(reply)) => {
                     cancel.cancel();
@@ -267,11 +400,27 @@ async fn serve(
 
 async fn reclaim(
     probe: Option<PreparationProbe>,
-    state: &Mutex<ServiceStatus>,
+    state: &Mutex<ServiceState>,
     gate: &tokio::sync::Mutex<()>,
 ) -> Result<(), ComputerUseError> {
     let _guard = gate.lock().await;
-    set_cleanup(state, CleanupStatus::Reclaiming);
+    reclaim_locked(probe, state, None).await
+}
+
+async fn reclaim_locked(
+    probe: Option<PreparationProbe>,
+    state: &Mutex<ServiceState>,
+    recovery: Option<&ClientLease>,
+) -> Result<(), ComputerUseError> {
+    {
+        let mut state = state.lock().map_err(|_| ComputerUseError::Unavailable)?;
+        if let Some(lease) = recovery {
+            state.validate(&Admission::Manual, &lease.cancel)?;
+        }
+        state.reclaiming = true;
+        state.revision = Arc::new(());
+    }
+    let retiring_probe = probe.is_some();
     let close_error = if let Some(mut probe) = probe {
         let error = probe.close().await.err();
         drop(probe);
@@ -281,11 +430,17 @@ async fn reclaim(
     };
     let result = PreparationProbe::cleanup_pending().await;
     if let Ok(mut state) = state.lock() {
-        state.cleanup = match result {
+        state.reclaiming = false;
+        state.status.cleanup = match result {
             Ok(()) => CleanupStatus::Clear,
             Err(error) => CleanupStatus::Failed(error),
         };
-        state.last_close_error = close_error;
+        if close_error.is_some() {
+            state.status.last_close_error = close_error;
+        } else if !retiring_probe && result.is_ok() {
+            state.status.last_close_error = None;
+        }
+        state.revision = Arc::new(());
     }
     result
 }
@@ -293,15 +448,14 @@ async fn reclaim(
 async fn run_worker(
     mut incoming: watch::Receiver<Option<InspectionRequest>>,
     responses: mpsc::Sender<InspectionResult>,
-    cancel: CancellationToken,
-    state: Arc<Mutex<ServiceStatus>>,
+    lease: ClientLease,
     gate: Arc<tokio::sync::Mutex<()>>,
 ) {
     let mut probe = None;
     loop {
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => break,
+            _ = lease.cancel.cancelled() => break,
             changed = incoming.changed() => {
                 if changed.is_err() {
                     break;
@@ -311,23 +465,8 @@ async fn run_worker(
         let Some(request) = incoming.borrow_and_update().clone() else {
             continue;
         };
-        if snapshot(&state).failure.is_some() {
-            let _ = responses.send(InspectionResult {
-                ticket: request.ticket,
-                result: Err(ComputerUseError::Unavailable),
-            });
-            continue;
-        }
-        let result = inspect(&mut probe, &cancel, &state, &gate).await;
-        if !cancel.is_cancelled()
-            && let Ok(mut state) = state.lock()
-        {
-            state.last_inspection_error = result.as_ref().err().copied();
-        }
-        if result.is_err() && probe.is_some() {
-            let _outcome = reclaim(probe.take(), &state, &gate).await;
-        }
-        if cancel.is_cancelled()
+        let result = inspect(&mut probe, &lease, &request.admission, &gate).await;
+        if lease.cancel.is_cancelled()
             || responses
                 .send(InspectionResult {
                     ticket: request.ticket,
@@ -338,26 +477,52 @@ async fn run_worker(
             break;
         }
     }
-    cancel.cancel();
+    lease.cancel();
     if probe.is_some() {
-        let _outcome = reclaim(probe, &state, &gate).await;
+        let _outcome = reclaim(probe, &lease.state, &gate).await;
     }
+    lease.finish();
 }
 
 async fn inspect(
     probe: &mut Option<PreparationProbe>,
-    cancel: &CancellationToken,
-    state: &Mutex<ServiceStatus>,
+    lease: &ClientLease,
+    admission: &Admission,
     gate: &tokio::sync::Mutex<()>,
 ) -> Result<Preparation, ComputerUseError> {
-    if probe.is_none() {
-        reclaim(None, state, gate).await?;
-        *probe = Some(PreparationProbe::open(cancel.clone())?);
+    let _guard = gate.lock().await;
+    if probe.is_none() && matches!(admission, Admission::Manual) {
+        reclaim_locked(None, &lease.state, Some(lease)).await?;
     }
-    match probe.as_mut() {
-        Some(probe) => probe.check().await,
-        None => Err(ComputerUseError::Unavailable),
+    let opened = {
+        let state = lease
+            .state
+            .lock()
+            .map_err(|_| ComputerUseError::Unavailable)?;
+        state.validate(admission, &lease.cancel)?;
+        if probe.is_none() {
+            PreparationProbe::open(lease.cancel.clone()).map(|session| *probe = Some(session))
+        } else {
+            Ok(())
+        }
+    };
+    let result = match opened {
+        Ok(()) => match probe.as_mut() {
+            Some(probe) => probe.check().await,
+            None => Err(ComputerUseError::Unavailable),
+        },
+        Err(error) => Err(error),
+    };
+    if let Ok(mut state) = lease.state.lock()
+        && !lease.cancel.is_cancelled()
+    {
+        state.status.last_inspection_error = result.as_ref().err().copied();
+        state.revision = Arc::new(());
     }
+    if result.is_err() && probe.is_some() {
+        let _outcome = reclaim_locked(probe.take(), &lease.state, None).await;
+    }
+    result
 }
 
 struct QuitHookInstalled;

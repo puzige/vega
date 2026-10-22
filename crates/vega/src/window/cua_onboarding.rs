@@ -269,12 +269,6 @@ impl VegaWindow {
             .interaction_surface(colors.bg_elevated, colors.bg_hover, colors.bg_active, true)
             .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
             .on_click(cx.listener(move |owner, _, _, cx| owner.retry_preparation(cx)))
-            .on_key_down(cx.listener(move |owner, event: &KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    owner.retry_preparation(cx);
-                    cx.stop_propagation();
-                }
-            }))
             .child("重试");
         let dismiss = div()
             .id("preparation-open-dismiss")
@@ -291,13 +285,6 @@ impl VegaWindow {
             .on_click(cx.listener(|owner, _, _, cx| {
                 owner.onboarding.failed = None;
                 cx.notify();
-            }))
-            .on_key_down(cx.listener(|owner, event: &KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    owner.onboarding.failed = None;
-                    cx.notify();
-                    cx.stop_propagation();
-                }
             }))
             .child("关闭");
         if !origin.is_current(self, cx) {
