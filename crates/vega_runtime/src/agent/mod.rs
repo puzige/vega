@@ -66,6 +66,7 @@ pub const LEGACY_BASH_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid bash inp
 /// Stable content-free result when cancellation is observed after durable
 /// approval/running but before any tool worker starts.
 pub const CANCELLED_BEFORE_EXECUTION_OUTPUT: &str = "Tool cancelled before execution.";
+pub const INVALID_READ_INPUT_OUTPUT: &str = r#"Tool error: read requires path identifying a regular text file. Expected {"path":"src/lib.rs","offset":null,"limit":null}"#;
 
 const OUTPUT_HALF_LINES: usize = 2_000;
 const OUTPUT_TRUNCATION_MARKER: &str = "…[tool output truncated: middle lines omitted]";
