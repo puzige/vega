@@ -85,8 +85,31 @@ writer 在 `9b901a34ee00611f73fbd58275c7087282af5e2c` 交付 READY（仅 test-fi
 - 其余 14 个非 docs 文件内容未变，已获非写入者有限范围 READY：核对 app/conversation 10 测试、真实接受事务与独立发送管线、两条 runtime 接受入口、3 种页外关系查询、历史负对照、controller 门禁及 ingress 静态接线；未发现目标缺失 API 以外的 harness/可见性阻塞，非测试路径未见生产行为变化。这不是全包放行或有效 RED。
 - fetch 后同步到 `6615748f91273bfb8ee424011b3b5a09b3777d2b`，增量为 #546 Composer 模型/权限胶囊及其 theme 常量、文档，不改本稿 15 文件；全包内容标识不变。相同 reviewer 继续只读审固定 UI 修订及受影响不变量；完整包放行待取得，不以 writer READY 或部分审查代替。
 
+## 完整测试审查、测试提交与首轮 Actions
+
+非写入者已在生产基线 `6615748f91273bfb8ee424011b3b5a09b3777d2b` 完成全包静态审查并返回 READY；既有 14 文件结论与 UI 8 测试结论合并，核对 A1–A7 的真实可观察边界，两项夹具修正无已知阻塞。审查者独立复算上述 15 文件包哈希与三个测试源哈希一致，确认提交动作未改变内容。
+
+- 先行测试提交：`afb5ee6c04ad8d044350d9ca917599ce1a8396a5`，生产行为未修改。
+- Draft PR：[563](https://github.com/puzige/vega/pull/563)。PR 固定测试源码、完整 SHA 与原始 commit patch 链接；主 Agent 通过 GitHub contents API 按该 SHA 读回三份源码，内容哈希全部一致。
+- 首轮 Actions：[39828573161](https://github.com/puzige/vega/actions/runs/39828573161)，测试 head 为上述提交。
+- Nextest：[job 119998319417](https://github.com/puzige/vega/actions/runs/39828573161/job/119998319417)，构建测试目标失败：7 个 E0609/E0599，均为 `MessagePage.continuations`、`ConversationEvent::RunContinued`、`HistoryEntry::RunContinuation` 目标接口缺失。未完成测试发现，行为断言尚未执行，不报告发现/执行计数为通过。
+- Clippy：[job 119998319678](https://github.com/puzige/vega/actions/runs/39828573161/job/119998319678)，除目标接口缺失外还报告 UI 测试第 3 行 `unused import: gpui`，由 `-D warnings` 拒绝。它是无关测试接线错误，不能计入接口缺失 RED。
+- Required check：[job 119999998412](https://github.com/puzige/vega/actions/runs/39828573161/job/119999998412) 失败。原始 failed-job 日志 803 行，SHA-256 `870007faddb030b334ed9a091a92f62d18e19a80d5180d42ac9752ffa4b45305`；永久原始证据为上述 Actions run/job，本机日志不是唯一来源。
+
+主 Agent 检查完整失败签名，当前不将整轮认定有效 RED，不进入生产实现。仅修测试接线并重新验证，不 rerun 覆盖首轮证据。
+
+## 导入接线修订（无验收变化）
+
+同一 writer 仅移除 UI 未使用 `gpui` 导入，并按 rustfmt 交换相邻导入顺序；曾因严格单行范围保留 fmt=1，主 Agent 授权相邻排序后 fmt=0。未加 allow、ignore、retry，全部数据、断言、测试定义和生产行为保持不变。
+
+- 当前 15 文件非 docs 包 SHA-256：`e1af873b425215fb515e55745579f0ffaa980027d5ddca01240bb6c811d6f707`。
+- UI 源 51,393 字节，SHA-256：`de91195caef46ae787344ce0da6c6b3024a82edb0c933dc6ac4b873e6044856d`。
+- app/conversation 哈希、其余 14 个文件内容未变，仍为 18 测试定义。
+- 主 Agent 逐字节核对：除顶端导入行外，UI 从 `use vega_conversation` 起与 `afb5ee6c04ad8d044350d9ca917599ce1a8396a5` 完全一致。
+- writer 已停止写入，fmt/diff 静态检查退出 0；独立 reviewer 正在增量核对该导入修订，之后需新一轮 Actions 确认有效 RED，当前未取得。
+
 ## 未执行阶段
 
 - 本地 Vega 运行/编译/构建/测试/CUA：未执行。
-- 云端 RED/GREEN、发现/执行/通过/失败/忽略/跳过数量：未取得。
-- Draft PR、实现、独立删测及最终空集门禁：尚未进行。
+- 有效云端 RED、带测试 GREEN、发现/执行/通过/失败/忽略/跳过数量：未取得。
+- 生产实现、独立删测及最终空集门禁：尚未进行。

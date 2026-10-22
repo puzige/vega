@@ -1,6 +1,6 @@
 use super::*;
+use gpui_kit::TestAppContext;
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{TestAppContext, gpui};
 use vega_conversation::types::{ConversationStopReason, ThreadStatus};
 
 thread_local! {
