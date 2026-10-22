@@ -1004,99 +1004,250 @@ async fn cancelled_child_preserves_partial_evidence_and_never_claims_completion(
 }
 
 #[tokio::test]
-async fn child_provider_enforces_text_cap_at_every_provider_entry_without_forwarding() {
+async fn child_provider_entry_methods_forward_legal_large_requests_without_new_byte_quotas() {
     let provider = ScriptedProvider::default();
     let scoped = ChildProvider {
         inner: &provider,
         reader: None,
     };
+    let content = "界".repeat(90 * 1024);
     let request = ChatRequest {
-        messages: vec![ChatMessage::new(ChatRole::User, "界".repeat(90 * 1024))],
+        messages: vec![ChatMessage::new(ChatRole::User, content.clone())],
         ..Default::default()
     };
     assert!(
         scoped
             .chat_stream(request.clone(), CancellationToken::new())
             .await
-            .is_err()
+            .is_ok()
     );
     assert!(
         scoped
             .chat_stream_once(request.clone(), CancellationToken::new())
             .await
-            .is_err()
+            .is_ok()
     );
     assert!(
         scoped
             .chat_stream_recovering(request, CancellationToken::new())
             .await
-            .is_err()
-    );
-    assert!(provider.requests.lock().expect("requests").is_empty());
-}
-
-#[tokio::test]
-async fn child_provider_text_cap_aggregates_messages_and_allows_bounded_input() {
-    let provider = ScriptedProvider::default();
-    let scoped = ChildProvider {
-        inner: &provider,
-        reader: None,
-    };
-    let over = ChatRequest {
-        messages: (0..5)
-            .map(|_| ChatMessage::new(ChatRole::User, "x".repeat(60 * 1024)))
-            .collect(),
-        ..Default::default()
-    };
-    assert!(
-        scoped
-            .chat_stream(over, CancellationToken::new())
-            .await
-            .is_err()
-    );
-    let bounded = ChatRequest {
-        messages: vec![ChatMessage::new(ChatRole::User, "x".repeat(255 * 1024))],
-        ..Default::default()
-    };
-    assert!(
-        scoped
-            .chat_stream(bounded, CancellationToken::new())
-            .await
             .is_ok()
     );
-    assert_eq!(provider.requests.lock().expect("requests").len(), 1);
+    let requests = provider.requests.lock().expect("requests");
+    assert_eq!(requests.len(), 3);
+    for request in requests.iter() {
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0].content, content);
+    }
+}
+
+fn fixture_context_budget(input_limit: u64, automatic: bool) -> vega_runtime::ContextBudget {
+    let policy = vega_store::context_compaction::ModelContextPolicy {
+        provider: "fixture-provider".into(),
+        model: "fixture-model".into(),
+        input_limit: Some(input_limit),
+        output_reserve: Some(4096),
+        automatic_compaction: automatic,
+        updated_at: 1,
+    };
+    let budget = super::super::compaction::model_context_budget(&policy)
+        .expect("persisted input policy conversion")
+        .expect("configured policy");
+    assert_eq!(budget.input_budget(), input_limit);
+    assert_eq!(budget.total_limit(), input_limit + 4096);
+    assert_eq!(budget.output_reserve(), 4096);
+    budget
+}
+
+async fn native_context_stage(
+    system: &str,
+    budget: Option<vega_runtime::ContextBudget>,
+    scripts: Vec<Vec<ProviderEvent>>,
+) -> (Vec<ChatRequest>, serde_json::Value) {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture._directory.path().join("context-evidence.txt"),
+        "retained tool result ".repeat(3000),
+    )
+    .expect("owned read fixture");
+    let provider = ScriptedProvider::with(scripts);
+    let host = TestHost::new(true);
+    let mut supervisor = Supervisor::new();
+    let hook = supervisor.hook();
+    let observer = supervisor.receipt_observer();
+    let mut launch = fixture.launch(&provider, host);
+    launch.settings.system_prompt = system.into();
+    launch.settings.context_budget = budget;
+    launch.settings.authority.permission_mode = RuntimePermissionMode::FullAccess;
+    let parent = async {
+        let snapshot = spawn(&hook, &observer, "Retain this exact user constraint").await;
+        bounded(wait(&hook, &snapshot, None)).await
+    };
+    let receipt = supervisor.run(parent.boxed_local(), launch).await;
+    let requests = provider.requests.lock().expect("requests").clone();
+    (requests, receipt)
 }
 
 #[tokio::test]
-async fn request_ceiling_counts_system_and_tool_arguments_as_well_as_tool_results() {
-    let provider = ScriptedProvider::default();
-    let scoped = ChildProvider {
-        inner: &provider,
-        reader: None,
-    };
-    let request = ChatRequest {
-        messages: vec![
-            ChatMessage::new(ChatRole::System, "s".repeat(80 * 1024)),
-            ChatMessage::new(ChatRole::User, "u".repeat(32 * 1024)),
-            ChatMessage::assistant_with_tools(
-                "a".repeat(32 * 1024),
-                vec![vega_runtime::ChatToolCall {
-                    id: "write-large".into(),
-                    name: "write".into(),
-                    input_json: serde_json::json!({"content":"x".repeat(120 * 1024)}).to_string(),
-                }],
-            ),
-            ChatMessage::new(ChatRole::Tool, "t".repeat(16 * 1024)),
-        ],
-        ..Default::default()
-    };
+async fn native_entry_token_admission_counts_complete_system_and_tool_schemas_and_preserves_none() {
+    let system = format!("UNTRUNCATED_SYSTEM {}", "context ".repeat(40_000));
+    let (large, accepted) = native_context_stage(
+        &system,
+        Some(fixture_context_budget(1_000_000, false)),
+        vec![final_response("accepted intact")],
+    )
+    .await;
+    assert_eq!(accepted["agents"][0]["state"], "completed");
+    assert_eq!(large.len(), 1);
+    let request = &large[0];
     assert!(
-        scoped
-            .chat_stream(request, CancellationToken::new())
-            .await
-            .is_err()
+        request
+            .messages
+            .iter()
+            .any(|message| message.role == ChatRole::System && message.content.contains(&system))
     );
-    assert!(provider.requests.lock().expect("requests").is_empty());
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|message| message.role == ChatRole::User
+                && message.content == "Retain this exact user constraint")
+    );
+    assert!(!request.tools.is_empty());
+    let estimate = vega_runtime::estimate_wire_context(&request.messages, &request.tools)
+        .expect("assembled input");
+    let without_tools = vega_runtime::estimate_wire_context(&request.messages, &[])
+        .expect("schema-free comparison");
+    assert!(without_tools.input_tokens < estimate.input_tokens);
+    assert!(
+        request
+            .messages
+            .iter()
+            .map(|message| message.content.len())
+            .sum::<usize>()
+            > 256 * 1024
+    );
+    let (small, rejected) = native_context_stage(
+        &system,
+        Some(fixture_context_budget(estimate.input_tokens - 1, false)),
+        vec![final_response("must not dispatch")],
+    )
+    .await;
+    assert!(
+        small.is_empty(),
+        "the same assembled input exceeds its configured token allowance"
+    );
+    assert_ne!(rejected["agents"][0]["state"], "completed");
+    let (exact, accepted) = native_context_stage(
+        &system,
+        Some(fixture_context_budget(estimate.input_tokens, false)),
+        vec![final_response("exact input allowance")],
+    )
+    .await;
+    assert_eq!(
+        exact.len(),
+        1,
+        "input_limit is not reduced by the output reserve a second time"
+    );
+    assert_eq!(exact[0].max_tokens, request.max_tokens);
+    assert_eq!(accepted["agents"][0]["state"], "completed");
+    let (legacy, accepted) = native_context_stage(
+        &system,
+        None,
+        vec![final_response("legacy capacity unknown")],
+    )
+    .await;
+    assert_eq!(
+        legacy.len(),
+        1,
+        "None retains legacy admission without an invented capacity"
+    );
+    assert_eq!(accepted["agents"][0]["state"], "completed");
+    assert!(
+        legacy[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains(&system))
+    );
+}
+
+#[tokio::test]
+async fn native_current_stage_token_admission_counts_json_arguments_and_real_tool_results() {
+    let content = "written content ".repeat(20_000);
+    let script = || {
+        vec![
+            tool_response(
+                "Produce the scoped file",
+                "context-write",
+                "write",
+                serde_json::json!({"path":"context-created.txt","content":content}),
+            ),
+            tool_response(
+                "Read retained evidence",
+                "context-read",
+                "read",
+                serde_json::json!({"path":"context-evidence.txt"}),
+            ),
+            final_response("tool context accepted"),
+        ]
+    };
+    let (large, accepted) = native_context_stage(
+        "Retain all arguments and tool evidence",
+        Some(fixture_context_budget(1_000_000, false)),
+        script(),
+    )
+    .await;
+    assert_eq!(accepted["agents"][0]["state"], "completed");
+    assert_eq!(large.len(), 3);
+    let second = &large[1];
+    let third = &large[2];
+    assert!(
+        second
+            .messages
+            .iter()
+            .flat_map(|message| &message.tool_calls)
+            .any(|call| call.input_json.contains(&content))
+    );
+    assert!(
+        third
+            .messages
+            .iter()
+            .any(|message| message.role == ChatRole::Tool
+                && message.content.contains("retained tool result"))
+    );
+    let first_tokens = vega_runtime::estimate_wire_context(&large[0].messages, &large[0].tools)
+        .expect("first input")
+        .input_tokens;
+    let second_tokens = vega_runtime::estimate_wire_context(&second.messages, &second.tools)
+        .expect("JSON input")
+        .input_tokens;
+    let third_tokens = vega_runtime::estimate_wire_context(&third.messages, &third.tools)
+        .expect("tool result input")
+        .input_tokens;
+    assert!(first_tokens < second_tokens && second_tokens < third_tokens);
+    assert!(
+        second
+            .messages
+            .iter()
+            .flat_map(|message| &message.tool_calls)
+            .map(|call| call.input_json.len())
+            .sum::<usize>()
+            > 256 * 1024
+    );
+    for (input_limit, allowed_calls) in [(second_tokens - 1, 1), (third_tokens - 1, 2)] {
+        let (requests, rejected) = native_context_stage(
+            "Retain all arguments and tool evidence",
+            Some(fixture_context_budget(input_limit, false)),
+            script(),
+        )
+        .await;
+        assert_eq!(
+            requests.len(),
+            allowed_calls,
+            "the over-budget next request never reaches the provider"
+        );
+        assert_ne!(rejected["agents"][0]["state"], "completed");
+    }
 }
 
 #[tokio::test]
@@ -1248,14 +1399,18 @@ async fn native_followup_excludes_old_progress_and_tools_but_preserves_users_fin
         .await;
 }
 
-#[tokio::test]
-async fn native_followup_rejects_oversized_packet_before_another_provider_request() {
+async fn native_followup_context_case(input_limit: u64) -> (Vec<ChatRequest>, serde_json::Value) {
     let fixture = Fixture::new();
-    let provider = ScriptedProvider::with(vec![final_response(&"界".repeat(6000))]);
+    let provider = ScriptedProvider::with(vec![
+        final_response(&"界".repeat(6000)),
+        final_response("full user constraints accepted"),
+    ]);
     let host = TestHost::new(true);
     let mut supervisor = Supervisor::new();
     let hook = supervisor.hook();
     let observer = supervisor.receipt_observer();
+    let mut launch = fixture.launch(&provider, host);
+    launch.settings.context_budget = Some(fixture_context_budget(input_limit, false));
     let parent = async {
         let initial = spawn(&hook, &observer, &"a".repeat(30 * 1024)).await;
         let first = bounded(wait(&hook, &initial, None)).await;
@@ -1269,32 +1424,112 @@ async fn native_followup_rejects_oversized_packet_before_another_provider_reques
         );
         assert_eq!(first["agents"][0]["message_id"], initial.message_id);
         let next = followup(&hook, &observer, &initial, &"b".repeat(30 * 1024)).await;
-        let result =
-            tokio::time::timeout(Duration::from_millis(750), wait(&hook, &next, None)).await;
-        let provider_count = provider.requests.lock().expect("requests").len();
-        if result.is_err() {
-            host.cancel().cancel();
-            bounded(wait(&hook, &next, None)).await;
-        }
-        assert_eq!(
-            provider_count, 1,
-            "oversized source must fail before provider entry"
-        );
-        let receipt = result.expect("bounded preparation failure");
-        assert_ne!(receipt["agents"][0]["state"], "completed");
-        assert!(
-            receipt["agents"][0]["result"]
-                .as_str()
-                .expect("failure")
-                .contains("context")
-        );
+        bounded(wait(&hook, &next, None)).await
     };
-    supervisor
-        .run(
-            parent.boxed_local(),
-            fixture.launch(&provider, host.clone()),
+    let receipt = supervisor.run(parent.boxed_local(), launch).await;
+    let requests = provider.requests.lock().expect("requests").clone();
+    (requests, receipt)
+}
+
+#[tokio::test]
+async fn native_followup_allows_large_complete_constraints_within_tokens_and_rejects_over_budget() {
+    let (large, accepted) = native_followup_context_case(1_000_000).await;
+    assert_eq!(large.len(), 2);
+    assert_eq!(accepted["agents"][0]["state"], "completed");
+    let request = &large[1];
+    for original in ["a".repeat(30 * 1024), "b".repeat(30 * 1024)] {
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|message| message.role == ChatRole::User && message.content == original)
+        );
+    }
+    assert!(
+        request
+            .messages
+            .iter()
+            .map(|message| message.content.len())
+            .sum::<usize>()
+            > 64 * 1024
+    );
+    let input_limit = vega_runtime::estimate_wire_context(&request.messages, &request.tools)
+        .expect("complete followup estimate")
+        .input_tokens
+        - 1;
+    let first_estimate = vega_runtime::estimate_wire_context(&large[0].messages, &large[0].tools)
+        .expect("first stage estimate")
+        .input_tokens;
+    assert!(first_estimate < input_limit);
+    let (small, rejected) = native_followup_context_case(input_limit).await;
+    assert_eq!(
+        small.len(),
+        1,
+        "over-budget followup never reaches the provider"
+    );
+    assert_ne!(rejected["agents"][0]["state"], "completed");
+}
+
+async fn native_image_followup(input_limit: u64) -> (Vec<ChatRequest>, serde_json::Value) {
+    let fixture = Fixture::new();
+    let mut supervisor = Supervisor::new();
+    let source = seed_completed(&fixture, &supervisor, true).await;
+    let provider = ScriptedProvider::with(vec![final_response("image constraint retained")]);
+    let host = TestHost::new(true);
+    let hook = supervisor.hook();
+    let observer = supervisor.receipt_observer();
+    let mut launch = fixture.launch(&provider, host);
+    launch.settings.context_budget = Some(fixture_context_budget(input_limit, false));
+    let parent = async {
+        let next = followup(
+            &hook,
+            &observer,
+            &source,
+            "Retain the original image instruction",
         )
         .await;
+        bounded(wait(&hook, &next, None)).await
+    };
+    let receipt = supervisor.run(parent.boxed_local(), launch).await;
+    let requests = provider.requests.lock().expect("requests").clone();
+    (requests, receipt)
+}
+
+#[tokio::test]
+async fn native_followup_token_admission_charges_preserved_user_images_before_provider_dispatch() {
+    let (large, accepted) = native_image_followup(1_000_000).await;
+    assert_eq!(large.len(), 1);
+    assert_eq!(accepted["agents"][0]["state"], "completed");
+    let request = &large[0];
+    let image_user = request
+        .messages
+        .iter()
+        .find(|message| {
+            message.role == ChatRole::User
+                && message.content == "Intervening user constraint and resolved reference content"
+        })
+        .expect("original image instruction");
+    assert_eq!(image_user.images.len(), 1);
+    assert_eq!(
+        (image_user.images[0].width(), image_user.images[0].height()),
+        (1, 1)
+    );
+    let full = vega_runtime::estimate_wire_context(&request.messages, &request.tools)
+        .expect("image request");
+    let mut without_images = request.messages.clone();
+    for message in &mut without_images {
+        message.images.clear();
+    }
+    let text_only = vega_runtime::estimate_wire_context(&without_images, &request.tools)
+        .expect("image-free comparison");
+    assert_eq!(full.image_count, 1);
+    assert!(text_only.input_tokens < full.input_tokens);
+    let (small, rejected) = native_image_followup(full.input_tokens - 1).await;
+    assert!(
+        small.is_empty(),
+        "the preserved image puts the complete input over its configured allowance"
+    );
+    assert_ne!(rejected["agents"][0]["state"], "completed");
 }
 
 fn question_response(id: &str) -> Vec<ProviderEvent> {
@@ -1719,6 +1954,7 @@ async fn bounded_native_stage_disables_compaction_but_ordinary_parent_retains_it
     let inherited = vega_runtime::ContextBudget::new(110, 10, true).expect("context budget");
     let host = TestHost::new(true);
     let mut supervisor = Supervisor::new();
+    let source = seed_completed(&fixture, &supervisor, false).await;
     let hook = supervisor.hook();
     let observer = supervisor.receipt_observer();
     let mut launch = fixture.launch(&provider, host.clone());
@@ -1728,13 +1964,20 @@ async fn bounded_native_stage_disables_compaction_but_ordinary_parent_retains_it
         "fixture-model",
     ));
     let parent = async {
-        let snapshot = spawn(&hook, &observer, &"bounded task ".repeat(150)).await;
+        let snapshot = followup(&hook, &observer, &source, &"bounded task ".repeat(150)).await;
         let receipt = bounded(wait(&hook, &snapshot, None)).await;
         assert_ne!(receipt["agents"][0]["state"], "completed");
         assert!(provider.requests.lock().expect("requests").is_empty());
     };
     supervisor.run(parent.boxed_local(), launch).await;
     let child_compactions = host.compactions.load(Ordering::SeqCst);
+    messages::finish(
+        fixture.store.conn(),
+        "parent-run",
+        "Retained prior assistant evidence for the ordinary conversation",
+        "done",
+    )
+    .expect("complete ordinary parent history");
     let mut ordinary_compactions = 0;
     let _ = bounded(super::super::entry::run_thread_task_with_automation_inner(
         &fixture.store,
