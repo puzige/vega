@@ -47,6 +47,8 @@ F13. 移动与层级所需的 objc 调用（`setFrameOrigin:`、`setStyleMask:`�
 
 F8. GPUI 窗口坐标为顶左原点，`window_bounds.origin.y` 相对目标屏幕 frame 顶部；AppKit 为底左原点。互转必须用该屏幕 `frame.height` 与 `frame.origin.y`。
 
+F8a. 本卡所有定位与跟随计算统一在顶左原点坐标系统内进行：`y` 向下增大，屏幕可见区 `visible.y` 为顶部、`visible.max_y()` 为底部。微信流那套 `y = settings.minY + inset - padding` 是 AppKit 底左原点写法，直接搬到 GPUI 会把卡片落到窗口右上角，禁止照抄。
+
 F9. 系统设置进程 bundle id 为 `com.apple.systempreferences`；其窗口 bounds 与 owner PID 经 `CGWindowListCopyWindowInfo` 读取，不需要任何 TCC 权限。授权验证框是同进程的另一个 layer 0 窗口，因此必须按面积取最大窗口，不能按顺序取最前。
 
 F10. 当前构建 `Identifier=ai.vega`、`Signature=adhoc`、`TeamIdentifier=not set`。adhoc 重新签名后旧授权记录可能不再匹配当前构建，这是常态。
@@ -90,19 +92,26 @@ R10b. 卡片窗口按 F12 的唯一标题标记识别。识别失败时不得 pa
 
 R11. 卡片位置：读取系统设置窗口 frame（F8/F9），落在其右下角内侧，留 18pt 内缩，并 clamp 到该屏 `visibleFrame`。系统设置尚未出现时按固定节奏重试，超过上限后落到主屏右下角。
 
-R12. 定位计算必须是可独立验证的纯函数：输入为设置窗口 frame（可缺失）、卡片尺寸、屏幕可见 frame，输出卡片原点。
+R12. 定位计算必须是可独立验证的纯函数：输入为设置窗口 frame（可缺失）、卡片尺寸、屏幕可见 frame，输出卡片原点。坐标约定按 F8a（顶左原点）：
+
+- 设置窗口存在：`x = settings.max_x() - CARD_INSET + CARD_SHADOW_PADDING - card.width`，`y = settings.max_y() - CARD_INSET + CARD_SHADOW_PADDING - card.height`
+- 设置窗口缺失：落在可见区右下角，`x = visible.max_x() + CARD_SHADOW_PADDING - card.width - 24`，`y = visible.max_y() + CARD_SHADOW_PADDING - card.height - 24`
+- 两种情形均 clamp 到 `[visible.x - CARD_SHADOW_PADDING, visible.max_x() + CARD_SHADOW_PADDING - card.width]` 与 `[visible.y - CARD_SHADOW_PADDING, visible.max_y() + CARD_SHADOW_PADDING - card.height]`
+- `CARD_SHADOW_PADDING = 24`（卡片阴影预留边距）、`CARD_INSET = 18`（距窗口右下角内缩）
+
+不变量：卡片可见边界（原点加尺寸再加阴影边距）应落在 `settings.max_x() - CARD_INSET` 与 `settings.max_y() - CARD_INSET` 上，未被 clamp 时必须精确成立。
 
 R12a. 跟随：卡片可见期间按约 150ms 的节奏重读系统设置窗口 frame，并在位置变化超过 1pt 时把卡片移到新位置，使用无动画的 `setFrameOrigin:`，避免逐帧动画叠加成漂移。不得以固定屏幕角落代替读取失败时的上一次有效位置；读到 frame 后即恢复跟随。
 
 R12b. 拖拽冻结：从 `on_drag` 构造回调置位的那一刻起，本次卡片生命周期内停止跟随（F11）。理由是在用户手势中途移动窗口会让拖拽源从光标下移走。冻结只停止移动，不影响检测与状态迁移。
 
-R12c. 跟随的决策必须是可独立验证的纯函数：输入为设置窗口 frame（可缺失）、卡片尺寸、屏幕可见 frame、卡片当前原点、冻结标志，输出 `Option` 新原点（`None` 表示不移动）。阈值、缺失回退与冻结都在该函数内判定，驱动循环不得另带位置逻辑。
+R12c. 跟随的决策必须是可独立验证的纯函数：输入为设置窗口 frame（可缺失）、卡片尺寸、屏幕可见 frame、卡片当前原点、冻结标志，输出 `Option` 新原点（`None` 表示不移动）。阈值、缺失回退与冻结都在该函数内判定，驱动循环不得另带位置逻辑。目标位置必须与 R12 的 `perch` 完全一致（单一位置约定），不得在跟随路径上另算相对偏移；仅当新目标与当前原点任一轴差超过 `FOLLOW_EPSILON = 1` 时才返回新原点。
 
 R12d. 跟随不得阻止撤除：检测到就绪后的自动撤除优先于任何进行中的跟随校正。
 
 R13. 卡片内提供一行可拖拽的 Vega 应用条目，载荷为应用 bundle 路径，`is_directory = true`，即系统认可的“把 .app 拖进权限列表”路径。
 
-R14. bundle 路径无法解析（开发构建、非标准安装）时，该行不得伪装为可拖拽：隐藏拖拽源，改为静态说明与“在 Finder 中显示”入口。
+R14. bundle 路径无法解析（开发构建、非标准安装）时，该行不得伪装为可拖拽：隐藏拖拽源，改为静态说明与“在 Finder 中显示”入口。解析判据：可执行文件必须位于 `<bundle>.app/Contents/MacOS/vega` 三层结构内，`<bundle>.app` 目录名以 `.app` 结尾，且可执行文件名必须为 `vega`；任一条件不满足即视为无法解析。
 
 R15. 卡片按 R1 的四项事实分别呈现状态与下一步，不得只显示一句“缺少权限”。必需动作必须可键盘到达并具有可访问名称。
 
