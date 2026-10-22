@@ -40,7 +40,7 @@ Ticket 文档统一放在 `docs/<ticket>/`，同编号规格、交接与交付�
 
 共用 [vega-kanban-delivery](../.agents/skills/vega-kanban-delivery/SKILL.md)，队列细则见 [Issue 工作流](vega-issue-workflow.md)。**当前用户裁决统一使用 Agent，不按厂商、宿主或模型划分职责、权限或队列**；主会话/子 Agent 是协作职责，不是厂商身份。主 Agent 可接手同卡全流程，不因缺旧交接或等待另一角色停工；旧分工仅作历史。产品裁决和超授权操作仍由用户决定，白名单外依赖仍须批准。
 
-委派就绪、增量复审与证据复用按 [skill「分析、委派与连续推进」](../.agents/skills/vega-kanban-delivery/SKILL.md#分析委派与连续推进) 执行：实现产物明确就绪、写入者停止该范围写入后才审该实现；方案/测试的前置审查仍按 §7.2。追加委派/复审须有具体新工作、差异、证据或问题，复用未改结论仍须检查增量、受影响不变量与完整最终 head。已有诊断不能替代本轮必需 RED/GREEN 或最终 required check；独立调查可并行，等待遵守既有取消、用户输入及 CI 查询节奏。
+开工包、READY/增量 followup、固定协作者、失败诊断与中断恢复按 [skill「分析、委派与连续推进」](../.agents/skills/vega-kanban-delivery/SKILL.md#分析委派与连续推进) 执行。实现审查须绑定已停写的精确内容版本，可与该版本的现有 Actions 并行；方案/测试前置审查仍按 §7.2。复用结论仍须审增量、受影响不变量，并独立确认完整最终 head 与 required check。原始证据可按需复查，不能替代本轮必需 RED/GREEN；等待遵守既有取消、用户输入及 5 分钟 CI 查询节奏。
 
 **Agent 执行三铁律：**
 1. **spec 先行，范围不扩张**。缺口由主 Agent 在授权内先分析、补齐或修订 spec；不能代码先行、绕过冻结验收或自行决定需用户裁决的产品取舍。真实阻碍按 §6 上报。
