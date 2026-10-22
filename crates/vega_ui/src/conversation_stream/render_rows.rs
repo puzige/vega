@@ -370,7 +370,11 @@ fn markdown_message_item(
             let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
             let marker =
                 independent_list_marker(line).map(|marker| render_line(&marker, colors, &id));
-            (marker, render_line(line, colors, &id))
+            let content = list_item_content(line);
+            (
+                marker,
+                render_line(content.as_ref().unwrap_or(line), colors, &id),
+            )
         }))
         .children(
             failure.map(|reason| div().child(plain_error_notice(reason.message(), colors.danger))),
@@ -579,7 +583,14 @@ pub(crate) fn selectable_markdown_content(
         }
         let marker = independent_list_marker(line)
             .map(|marker| render_line_selectable(&marker, colors, &mut document, index, copy.id));
-        let element = render_line_selectable(line, colors, &mut document, index, copy.id);
+        let content = list_item_content(line);
+        let element = render_line_selectable(
+            content.as_ref().unwrap_or(line),
+            colors,
+            &mut document,
+            index,
+            copy.id,
+        );
         if !matches!(line.kind, LineKind::Rule) {
             previous = Some((line.block_id, line.kind, line.code_block.clone()));
         }
@@ -593,15 +604,29 @@ pub(crate) fn selectable_markdown_content(
 }
 
 fn independent_list_marker(line: &StreamLine) -> Option<StreamLine> {
-    if !line.starts_list_item() || line.kind == LineKind::ListItem {
+    if !line.starts_list_item()
+        || (line.kind == LineKind::ListItem && line.list_marker_quote_depth().is_none())
+    {
         return None;
     }
     let mut marker = line.clone();
+    if line.kind != LineKind::ListItem {
+        marker.quotes.clear();
+    }
     marker.kind = LineKind::ListItem;
     marker.spans.clear();
     marker.table = None;
     marker.code_block = None;
     Some(marker)
+}
+
+fn list_item_content(line: &StreamLine) -> Option<StreamLine> {
+    line.list_marker_quote_depth()?;
+    let mut content = line.clone();
+    content.kind = LineKind::Paragraph;
+    content.marker.clear();
+    content.checked = None;
+    Some(content)
 }
 
 fn markdown_blocks(
@@ -689,22 +714,38 @@ fn markdown_blocks(
         } else {
             body.children(content)
         };
-        let body = if let Some(marker) = marker {
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .child(div().flex_shrink_0().child(marker))
-                .child(div().flex_1().min_w_0().child(body))
+        let quote_marker_depth = line.list_marker_quote_depth();
+        let (body, quote_marker) = if quote_marker_depth.is_some() {
+            (body, marker.zip(quote_marker_depth))
+        } else if let Some(marker) = marker {
+            (
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .child(div().flex_shrink_0().child(marker))
+                    .child(div().flex_1().min_w_0().child(body)),
+                None,
+            )
         } else {
-            body
+            (body, None)
         };
-        blocks.push((line.quotes.clone(), gap, body.into_any_element()));
+        blocks.push((
+            line.quotes.clone(),
+            gap,
+            quote_marker,
+            body.into_any_element(),
+        ));
     }
     quote_blocks(&mut blocks.into_iter().peekable(), 0, None, colors)
 }
 
-type MarkdownBlock = (Vec<model::QuoteOwner>, f32, AnyElement);
+type MarkdownBlock = (
+    Vec<model::QuoteOwner>,
+    f32,
+    Option<(AnyElement, usize)>,
+    AnyElement,
+);
 
 fn quote_blocks(
     blocks: &mut std::iter::Peekable<impl Iterator<Item = MarkdownBlock>>,
@@ -713,17 +754,26 @@ fn quote_blocks(
     colors: &ThemeColors,
 ) -> Vec<AnyElement> {
     let mut result = Vec::new();
-    while let Some((ancestry, gap, _)) = blocks.peek() {
+    while let Some((ancestry, gap, _, _)) = blocks.peek() {
         if depth > 0 && ancestry.get(depth - 1).copied() != owner {
             break;
         }
         let gap = *gap;
         if let Some(identity) = ancestry.get(depth).copied() {
-            if let Some((_, first_gap, _)) = blocks.peek_mut() {
+            let marker = blocks.peek_mut().and_then(|(_, first_gap, marker, _)| {
                 *first_gap = 0.;
-            }
+                if marker
+                    .as_ref()
+                    .is_some_and(|(_, marker_depth)| *marker_depth == depth)
+                {
+                    marker.take().map(|(marker, _)| marker)
+                } else {
+                    None
+                }
+            });
             let list_inset =
                 (identity.list_inset() - owner.map_or(0., |owner| owner.list_inset())).max(0.);
+            let marker_inset = if marker.is_some() { list_inset } else { 0. };
             let children = quote_blocks(blocks, depth + 1, Some(identity), colors);
             result.push(
                 div()
@@ -731,8 +781,12 @@ fn quote_blocks(
                     .min_w_0()
                     .flex_shrink_0()
                     .mt(px(gap))
-                    .pl(px(list_inset))
+                    .pl(px((list_inset - marker_inset).max(0.)))
                     .flex()
+                    .children(
+                        marker
+                            .map(|marker| div().w(px(marker_inset)).flex_shrink_0().child(marker)),
+                    )
                     .child(
                         div()
                             .w(px(2.))
@@ -750,7 +804,7 @@ fn quote_blocks(
                     )
                     .into_any_element(),
             );
-        } else if let Some((_, _, element)) = blocks.next() {
+        } else if let Some((_, _, _, element)) = blocks.next() {
             result.push(
                 div()
                     .w_full()
@@ -951,10 +1005,7 @@ fn render_line_selectable(
         LineKind::ListItem => {
             let marker = format!("{} ", line.marker);
             document.append_literal(&"  ".repeat(line.depth));
-            let mut row = div()
-                .pl(px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT))
-                .flex()
-                .flex_row();
+            let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
             let marker_text = document.append_styled(
                 &marker,
                 StyledText::new(marker.clone()),
@@ -1276,10 +1327,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
         }
         LineKind::Table => item.into_any_element(),
         LineKind::ListItem => {
-            let mut row = div()
-                .pl(px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT))
-                .flex()
-                .flex_row();
+            let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
             row = row.child(
                 div()
                     .flex_shrink_0()

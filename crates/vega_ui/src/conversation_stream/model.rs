@@ -257,6 +257,24 @@ impl StreamLine {
         !self.marker.is_empty()
     }
 
+    pub(crate) fn list_marker_quote_depth(&self) -> Option<usize> {
+        if self.kind != LineKind::ListItem || !self.starts_list_item() {
+            return None;
+        }
+        self.quotes
+            .iter()
+            .position(|owner| owner.list_depth == Some(self.depth))
+    }
+
+    pub(crate) fn list_marker_inset(&self) -> f32 {
+        let parent_inset = self
+            .list_marker_quote_depth()
+            .and_then(|depth| depth.checked_sub(1))
+            .and_then(|depth| self.quotes.get(depth))
+            .map_or(0., |owner| owner.list_inset());
+        (self.depth as f32 * Layout::MARKDOWN_LIST_INDENT - parent_inset).max(0.)
+    }
+
     pub(crate) fn quote_list_inset(&self) -> f32 {
         self.quotes.last().map_or(0., |owner| owner.list_inset())
     }

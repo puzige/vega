@@ -398,17 +398,24 @@ impl PreparedBody {
                 line.in_list,
                 previous.is_some_and(|line| line.in_list),
             ));
-            let list_inset = if line.in_list && !line.starts_list_item() {
-                px(line.list_content_inset())
-            } else {
-                px(0.)
-            };
+            let quote_marker_depth = line.list_marker_quote_depth();
+            let list_inset =
+                if line.in_list && (!line.starts_list_item() || quote_marker_depth.is_some()) {
+                    px(line.list_content_inset())
+                } else {
+                    px(0.)
+                };
             let gutter = px(2. + Layout::MARKDOWN_CODE_PADDING);
             let mut inset = list_inset + gutter * line.quotes.len() as f32;
-            if line.kind == LineKind::Code && line.starts_list_item() {
+            if (line.kind == LineKind::Code && line.starts_list_item())
+                || quote_marker_depth.is_some()
+            {
                 append_separator(&mut content, previous_text, line);
                 let mut marker = PreparedBlock {
-                    origin: point(gutter * line.quotes.len() as f32, y),
+                    origin: point(
+                        gutter * quote_marker_depth.unwrap_or(line.quotes.len()) as f32,
+                        y,
+                    ),
                     ..Default::default()
                 };
                 let width = layout_list_marker(&mut marker, &mut content, line, style, text_system);
@@ -416,7 +423,9 @@ impl PreparedBody {
                     width,
                     px(Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT),
                 );
-                inset += width;
+                if quote_marker_depth.is_none() {
+                    inset += width;
+                }
                 blocks.push(marker);
             }
             let block_style = PreparationStyle {
@@ -474,9 +483,11 @@ impl PreparedBody {
                         color: style.colors.border_subtle,
                     });
                 } else {
-                    append_separator(&mut content, previous_text, line);
+                    if quote_marker_depth.is_none() {
+                        append_separator(&mut content, previous_text, line);
+                    }
                     previous_text = Some(line);
-                    if line.starts_list_item() {
+                    if line.starts_list_item() && quote_marker_depth.is_none() {
                         x = layout_list_marker(&mut block, &mut content, line, style, text_system);
                     }
                     let height = layout_text(
