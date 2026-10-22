@@ -1053,6 +1053,22 @@ pub(crate) fn validate_recovered_projection(
             "terminal tool call {call_id} has invalid safe projection"
         ))
     };
+    if matches!(tool, "Read" | "read")
+        && (approval.source == ApprovalSource::Validation
+            || output == vega_runtime::INVALID_READ_INPUT_OUTPUT)
+    {
+        return (input_json == "{}"
+            && output == vega_runtime::INVALID_READ_INPUT_OUTPUT
+            && status == RuntimeToolStatus::Rejected
+            && approval.decision == Approval::Deny
+            && approval.source == ApprovalSource::Validation
+            && approval.note.is_none()
+            && approval.danger.is_none()
+            && exit_code.is_none()
+            && duration_ms.is_none())
+        .then(|| input_json.to_string())
+        .ok_or_else(corrupt);
+    }
     if tool == "grep"
         && (crate::types::grep_invalid_input_claim(input_json)
             || output == vega_runtime::GREP_INVALID_INPUT_OUTPUT)

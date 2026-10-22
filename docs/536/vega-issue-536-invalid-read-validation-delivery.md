@@ -5,8 +5,8 @@
 - Issue：[#536](https://github.com/puzige/vega/issues/536)，In progress，尚未交付。
 - 生产基线：`e4f18c656aa69d192d095a4338a2108e6c9a3c2c`。
 - 分支：`feat/536-invalid-read-validation`。
-- 冻结契约：[v1 规格](vega-issue-536-invalid-read-validation.md)，SHA-256 `5351d774a9e3be7dc4b81d2c69e21b21b2ef2e1a5f20e7535c0e6d9057b952aa`。
-- 生产尚未修改；先行测试仍在编写，未获得 Actions RED/GREEN，不将静态结论称为测试通过。
+- 冻结验收：[v1 规格](vega-issue-536-invalid-read-validation.md)。RED 前原始 SHA-256 `5351d774a9e3be7dc4b81d2c69e21b21b2ef2e1a5f20e7535c0e6d9057b952aa`；有效 RED 后仅补充 crate 根常量导出接线授权，当前文档 SHA-256 `2a2ee308e6b287ab7a415de8ac1938e88e0148a0fdb6044992d00b03d1aef000`，验收/数据/断言无变化。
+- 有效 RED 已确认，最小生产实现中；同一冻结测试 GREEN、实现独立审查、删测及最终门禁尚待执行。
 
 ## 委派恢复检查点
 
@@ -65,11 +65,34 @@ A1–A7 精确停写版本均经非写入者独立静态审查，无阻塞，允
 
 主 Agent 独立脚本核对 4 处既有文件原始 bytes 加唯一测试接线与当前文件完全相同；无生产逻辑、依赖、schema 或 CI 变化。已审查的原始测试内容在有效 RED 后冻结，后续不按实现输出反推断言。
 
+## 有效 RED（生产未改）
+
+- Draft PR：[#541](https://github.com/puzige/vega/pull/541)。先行测试完整提交 `78097943411dfae1f012c71379bf8a25e2c2ed50`，父生产基线 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`。
+- [原始测试 patch](https://github.com/puzige/vega/commit/78097943411dfae1f012c71379bf8a25e2c2ed50.patch) 与四个测试文件的该提交源码链接已固定在 [PR 证据评论](https://github.com/puzige/vega/pull/541#issuecomment-6339048781)，不依赖本机临时文件或 artifact。
+- [Actions 39766783686](https://github.com/puzige/vega/actions/runs/39766783686)，[Nextest job 119784103641](https://github.com/puzige/vega/actions/runs/39766783686/job/119784103641)。2026-10-22 UTC 10:56 启动，11:01 按 5 分钟节奏查询并读取原始失败；无自动重试。
+- `cargo nextest list --workspace --message-format json` 成功，`cargo nextest run --workspace` 实际运行 **13 tests across 15 binaries：8 passed、5 failed、0 skipped**。ignored 未另取得计数，源码无 ignore。两项完整链均在首个无效调用失败，不能声称首轮所有参数场景均执行。
+- 完整链原始失败：`Runtime(RuntimeFailure(RuntimeFailureDetail { stage: ToolTerminal, reason: ApprovalAudit, sqlite_code: None, sqlite_extended_code: None, io_kind: None }))`。两项分别是整轮继续和 reopen/reuse 场景，失败位置均为真实 conversation 入口返回。
+- A7 原始失败：严格 Validation 拒绝阳性为 `CorruptRow(... invalid safe projection)`；pending→Rejected 阳性为审批审计失败；取消/恢复冒用负例为 `Cancelled/ReadonlyTool claimed read validation output`。后者证明固定错误声明也须严格限制，不能回落通用读取。
+- 其他 8 项通过，含真实授权/取消/recovery 与已有伪造负例。Clippy job（fmt、workspace all-targets deny warnings）成功，三组 Python 检查成功；required check 因目标测试 RED 失败，未用作合并许可。
+
+失败归类：产品结果语义/审计投影缺陷，不是测试接线、无关编译或环境失败。有效 RED 已确认，冻结同一 13 项源码、数据和断言后委派唯一生产 writer，范围为规格 v1 最小三文件加原共享常量的 crate 根显式导出；该必要接线经主 Agent 静态复核后追加授权，不改变验收；不补测、不改预期、不 ignore、不重试换绿。
+
+## 最小实现停写版本
+
+唯一生产 writer 在有效 RED 后落实规格，4 文件内容相对先行测试提交的补丁 SHA-256 为 `8c2b21f8f4969f96e344f846f61cbc6530d6e85a7988e94b1f4d0341bf8e63ad`（5,513 bytes，+33/-16）：
+
+- `vega_runtime/src/agent/mod.rs` 增加固定错误全文常量，`src/lib.rs` 只显式导出该常量并格式换行。
+- `tools_exec.rs::invalid_read_result` 改用 `terminal_result` 返回 Rejected + validation audit，空执行元数据。
+- `vega_conversation/src/agent/pipeline.rs` 添加只限 read/Read 的严格声明分支：Validation 来源或固定错误触发，必须同时为 `{}`、原错误全文、Rejected/Deny/Validation、空 note/danger/exit/duration；不匹配直接 corrupt，不能回落通用读取。不单凭 `{}` 触发，保留取消和真实中断恢复。
+- 不改 loop/events/global approval source/state machine/recovery SQL，不伪造 approval，不加依赖/迁移或界面文案。
+
+writer READY 后停止全部写入；主 Agent 读回完整差异、核对补丁哈希和四份冻结测试 hash 仍完全相同。writer 的 4 文件 rustfmt 与 diff 静态检查均退出 0；GREEN 和独立实现审查待现有 Actions/只读 reviewer。
+
 ## 待执行门禁
 
-1. 先行测试已齐备并完成独立静态审查；正式执行结果仍待 Actions。
-2. draft PR 上现有 Actions 有效 RED；记录原始失败、准确发现/执行计数和完整提交 SHA。
-3. 最小实现，同一冻结测试云端 GREEN 与独立实现审查。
+1. 先行测试、独立审查和有效 RED 已完成；原始源码/完整 SHA 与失败留存在 PR。
+2. 最小实现已停写，固定提交后验证同一测试 GREEN 与独立实现审查。
+3. 带测试 GREEN 未取得前不删测。
 4. 在 PR 固定原测试可访问源码/patch、完整 SHA 及 RED/GREEN run/job。
 5. 独立删测提交、生产差异/独占支持清理审查、最终 head `no Rust tests` 完整门禁。
 6. 正式 PR 与合并；Issue 保持开放、In review 等用户 Native 手测。

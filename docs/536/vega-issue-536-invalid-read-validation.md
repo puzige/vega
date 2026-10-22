@@ -40,7 +40,7 @@
 - 复用现有 `validate_runtime_terminal`、pending→reject 存储转移与通用事件投影，不放宽全局状态机、不改全局 approval source 匹配、不新增 `ToolCallValidationRejected` 输入投影类型。
 - 取消仍走现有 timeout 拒绝；真正中断调用仍走原 recovery，不迁移/修复既有用户记录。
 
-允许生产范围：`crates/vega_runtime/src/agent/{mod.rs,tools_exec.rs}` 与 `crates/vega_conversation/src/agent/pipeline.rs`。若实际 API 需要其他文件，先向主 Agent 说明必要性并审查，不顺手扩大重构。
+允许生产范围：`crates/vega_runtime/src/agent/{mod.rs,tools_exec.rs}` 与 `crates/vega_conversation/src/agent/pipeline.rs`。2026-10-22 有效 RED 后静态确认 runtime 的 `agent` 模块私有且 crate 根使用显式 re-export；补充允许 `crates/vega_runtime/src/lib.rs` 仅在既有 `pub use agent::{…}` 增加上述共享错误常量导出。这是原共享常量方案必要接线，不改变 v1 验收、数据、测试或安全语义，不新增行为 API。其他文件仍须先说明必要性并审查，不顺手扩大重构。
 
 ## 可行测试入口与接线
 

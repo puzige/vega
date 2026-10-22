@@ -2156,12 +2156,12 @@ fn readonly_result(
 }
 
 fn invalid_read_result(call: &RuntimeToolCall) -> RuntimeToolResult {
-    let mut result = failed_tool_result(
+    terminal_result(
         call,
-        "read requires path identifying a regular text file. Expected {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}".into(),
-    );
-    result.approval = Some(validation_audit());
-    result
+        INVALID_READ_INPUT_OUTPUT.to_owned(),
+        RuntimeToolStatus::Rejected,
+        Some(validation_audit()),
+    )
 }
 
 pub(crate) fn failed_tool_result(call: &RuntimeToolCall, message: String) -> RuntimeToolResult {
