@@ -124,13 +124,36 @@ writer 已停写，主 Agent 读回 helper 并验证其常量与实际 provider 
 
 writer READY并停止写入，主 Agent 读回完整差异并复核补丁hash；五份冻结测试与各自先行提交逐字节相同。主 Agent 的 pipeline rustfmt/diff 静态检查退出 0。待固定实现提交、同一 17 项云端 GREEN 与独立增量实现审查；此时尚不删测。
 
+## v2 全部同一测试 GREEN 与独立批准
+
+- 最小修正完整提交 `fb8eac04fa610d97893c2f43147495e97b2f88bb`；[Actions 39775668315](https://github.com/puzige/vega/actions/runs/39775668315) / [Nextest 119813843049](https://github.com/puzige/vega/actions/runs/39775668315/job/119813843049)：**17 discovered / 17 executed / 17 passed / 0 skipped**，fmt、全目标 Clippy、三组 Python 及 required check 全绿。主 Agent 读取原始日志，不重试、不改测试。
+- 独立非 writer reviewer 对同一精确 head 增量批准：原 P1 消除，无新增阻塞；既有 mixed 合法分支恢复，Read guard 原样严格，codec/状态机/首次终态/历史准备/reused 仍共用真实校验。原未受影响结论复用，五份冻结测试 hash/bytes 未变。
+- [两轮源码、完整 SHA、RED/GREEN 与审查固定评论](https://github.com/puzige/vega/pull/541#issuecomment-6340460779) 已读回；原始源码/patch 不依赖 artifact。
+
+## 最新 master 集成再验证
+
+合并前 fetch 发现 master 新增 `6e50833202bb45f05c08f7bbc30a68be475609ff`（#538，仅两处 UI 上下文用量文件，无本卡生产/测试/规则/CI 重叠）。保留全部测试 merge 后完整 head `3e3d4d2428b0e4afb403a05934ea19230b3d27d2`，主 Agent 逐字节核对 4 个生产与 5 份测试等同已审查 fb8eac04 版本。
+
+该集成 head 的 [Actions 39776760811](https://github.com/puzige/vega/actions/runs/39776760811) / [Nextest 119817565406](https://github.com/puzige/vega/actions/runs/39776760811/job/119817565406) 再次 **17 discovered / 17 executed / 17 passed / 0 skipped**，全部 required gate 成功。主 Agent 读取原始 Summary 并固定 [PR 评论](https://github.com/puzige/vega/pull/541#issuecomment-6340595791)，未使用旧绿色代替新基线结果。
+
+全部 GREEN 与实现审查证据固定后，才委派独立删测阶段；只删本卡 5 个测试文件/17 函数与 4 处独占接线，不夹带生产变化、无独占依赖需清理。最终空集需另跑门禁，不能冒充上述行为测试 GREEN。
+
+## 独立删测停写版本
+
+删测基线为最新 master 集成且 17 项 GREEN 的 `3e3d4d2428b0e4afb403a05934ea19230b3d27d2`，先固定所有证据后才删除。代码专属删除补丁 SHA-256 `2af607ce5d44ce7f94ae0327a09f1b14e9cb91fe339574ecc869d1bdc7c627db`（86,045 bytes，9 文件，+0/-2317）：
+
+- 删除本卡 5 个开发测试文件（2+7+4+3+1，共 17 函数），原始源码和完整提交均已固定在 PR。
+- 移除 conversation `agent/mod.rs` 两模块、`pipeline.rs` audit 模块、runtime `tools_exec.rs` permission 模块、store `recovery.rs` recovery 模块的独占接线。
+- 没有测试独占依赖或外部 fixture，Cargo/lock、Python、CI、benchmark、迁移均未改变。
+
+writer READY并停写。主 Agent 独立逐字节确认四接线文件加回原测试尾部即可还原带测试 GREEN 原文；production 常量/re-export/Rejected/严格投影/mixed 优先及 recovery 全部保留，无生产行为变化。主 Agent 的四文件 rustfmt 与 diff 静态检查均退出 0。
+
+源码静态扫描（含 xtask，389 个现存 Rust 文件）测试属性/条件接线/模块引用及可执行 rustdoc fence 均为 0；既有 `text` 图示不是 doctest。此为静态清点，不冒充云端 0 发现/0 执行。独立删测差异审查与最终 head 完整门禁仍待取得。
+
 ## 待执行门禁
 
-1. v2 A8 先行测试、独立审查及有效 RED 已固定；原 13 项继续保持。
-2. 最小修正后同一原 13+A8 GREEN，与独立实现审查。
-3. 带全部同一测试 GREEN 和审查未通过前不删测。
-4. 在 PR 固定原测试可访问源码/patch、完整 SHA 及 RED/GREEN run/job。
-5. 独立删测提交、生产差异/独占支持清理审查、最终 head `no Rust tests` 完整门禁。
-6. 正式 PR 与合并；Issue 保持开放、In review 等用户 Native 手测。
+1. 独立删测提交与非 writer 的差异/生产残留审查。
+2. 最终 head 完整门禁须确认 `no Rust tests`（0 发现/0 执行），fmt/Clippy/Python 同时成功。
+3. 正式 PR 与合并；Issue 保持开放、In review 等用户 Native 手测。
 
 本地未运行 Vega、编译、构建、Clippy、任何测试或打包；不修改用户数据库、运行配置或 CI workflow。

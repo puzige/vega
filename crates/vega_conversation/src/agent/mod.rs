@@ -70,9 +70,3 @@ pub use replay_sessions::ReplaySessionRegistry;
 pub(crate) use replay_sessions::{ReplayCheckpointFence, ReplaySessionLease};
 pub(crate) use skills::validate_frozen_snapshot;
 pub use skills::{SkillAssistantStatus, SkillRunRecovery, recover_skill_run};
-
-#[cfg(test)]
-mod read_validation_tests;
-
-#[cfg(test)]
-mod read_mixed_validation_tests;
