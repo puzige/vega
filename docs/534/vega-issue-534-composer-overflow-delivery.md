@@ -96,3 +96,14 @@ Nextest 原始总结：13 executed，2 passed，11 failed，0 skipped；ignored 
 独立非实现者审查请求更改：`text_input/element.rs:225–253` 在完整剩余字符串中按下一字形位置选断点，然后独立排版前缀，却不检查最终前缀宽度。上下文字距会使独立前缀比先前位置更宽，存在 A5 未覆盖的裁切/进入滚动条槽风险。主 Agent 已复查实际 `closest_index_for_x` / `x_for_index` / `shape_line` 语义，确认责任层为生产折行逻辑而非 CI 或旧测试错误。
 
 这是遗漏边界，不把旧 GREEN 充作其证据，也不实现后补测。规格 v1.1 追加 A9，以 `6d42df0e8451a5307553f32a837d4c9d093ba265` 为新生产基线重新先测后修；先保留旧 13 个测试并写 A9 及必要阳性对照，再独立审查/云端有效 RED 后修生产。原轮 A1–A8 的 GREEN 结论保留，新轮全部回归仍须 GREEN；现阶段不删测、不转正式、不合并。
+
+## A9 新轮先行测试与有效 RED
+
+测试先行提交：`4869742344b80ba39ea870a17a3e76c9d61663e0`，生产基线仍为 `6d42df0e8451a5307553f32a837d4c9d093ba265`。
+
+- 独立非测试写入者在固定哈希上批准测试，随后才提交 Actions。新增 3 项：上下文字距目标、正常可容纳对照、极窄 UTF-8 单字符前进；旧 13 项字节不变。
+- [run 39775031361](https://github.com/puzige/vega/actions/runs/39775031361)，[Nextest job 119811689033](https://github.com/puzige/vega/actions/runs/39775031361/job/119811689033)。fmt/Clippy 成功；16 discovered/executed，15 passed，1 failed，0 skipped，ignored 未单独提取。
+- 唯一失败为目标行为：`wrapping_tests.rs:202`，独立排版前缀 `éA` 宽 16px，视口 14.5px。其余原 13 项及两个新阳性对照通过，故不是观察层或编译失败。
+- 冻结新测试 SHA-256 `6f3d3254aa66a7725137394dc25ae5c2d41604becd5c90d4364ebe75cc5fa222`、支持 `d712a4978abfae792d460f48d0a3819a7f2fbc746b04f558e352cda5043d20ee`、旧测试 `f992b3baeaef49e0d0b11b0dd389ff5afb0890736f7c7f41f82a1ec391100b6e`；[源码/证据](https://github.com/puzige/vega/pull/539#issuecomment-6340457978)均已固定。
+
+有效 RED 后才委派生产最小修复：仅最终前缀宽度复查，必要时在 UTF-8 字符边界退回并重新排版，保留单字符超宽前进。测试、支持、数据和断言继续冻结，后续独立审查增量并由 Actions 验证全部 16 项 GREEN。

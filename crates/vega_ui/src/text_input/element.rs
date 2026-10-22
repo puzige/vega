@@ -219,7 +219,7 @@ impl Element for TextElement {
                             &initial_runs,
                             None,
                         );
-                        let cut = if initial.width() <= width || remainder.is_empty() {
+                        let mut cut = if initial.width() <= width || remainder.is_empty() {
                             remainder.len()
                         } else {
                             let nearest = initial.closest_index_for_x(width);
@@ -240,7 +240,7 @@ impl Element for TextElement {
                                 fitting.min(remainder.len())
                             }
                         };
-                        let shaped = if cut == remainder.len() {
+                        let mut shaped = if cut == remainder.len() {
                             initial
                         } else {
                             let chunk = &remainder[..cut];
@@ -251,6 +251,22 @@ impl Element for TextElement {
                                 None,
                             )
                         };
+                        while shaped.width() > width {
+                            let Some((previous, _)) = remainder[..cut].char_indices().next_back()
+                            else {
+                                break;
+                            };
+                            if previous == 0 {
+                                break;
+                            }
+                            cut = previous;
+                            shaped = window.text_system().shape_line(
+                                SharedString::from(&remainder[..cut]),
+                                font_size,
+                                &make_runs(cut),
+                                None,
+                            );
+                        }
                         lines.push(LineLayout {
                             start: global_start,
                             len: cut,
