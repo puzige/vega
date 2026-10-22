@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit as gpui;
 use gpui_kit::{
     AppContext, Bounds, Element, ElementId, Focusable, Global, GlobalElementId, Hsla,
     InspectorElementId, LayoutId, ScaledPixels, SharedString, TestAppContext, TextLayout,

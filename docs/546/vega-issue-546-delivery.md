@@ -5,7 +5,7 @@
 - Issue：[#546](https://github.com/puzige/vega/issues/546)；规格：[v1.1](vega-issue-546-composer-capsules.md)。
 - 用户确认：只改 Compose 底栏模型选择与权限切换。其他文字按钮、图标按钮不随本卡变更。
 - 开始基线：`83fd51d79940516029cdc1eaf8e81566870c877b`。
-- 阶段：先行测试准备；尚未实现、尚未取得云端 RED/GREEN、尚未合并或原生手测。
+- 阶段：有效 RED 后最小实现；尚未取得同测 GREEN、尚未合并或原生手测。
 
 ## 同类样式盘点（静态事实，未改动）
 
@@ -60,4 +60,18 @@
 | `crates/vega_ui/src/conversation_stream/render.rs` | `d0c1fc7b8410c13793a562beadd07b427c633757460fdadbe7d12ca332ccc038` |
 | `crates/vega_ui/src/conversation_stream/thinking_slider.rs` | `ea6e522a50ddac9db10783a1ff713bca522bcd0e788a38cbf27956dc2d304d57` |
 
-主 Agent 复核上述身份，并独立执行 `cargo fmt --all -- --check` 与 `git diff --check`，均退出 0。这些是静态检查，未编译或执行任何测试。所有生产样式和 runtime 策略未改；thinking slider 仅临时 debug selector。该版独立审查发现一个测试观察器问题：GPUI `is_contained_within` 使用右/下开区间，贴齐裁剪边缘的正常文本会误报裁剪。主 Agent 核对 GPUI 原始实现后，由写入者仅将该断言改为四边含等号比较，保留正尺寸、mask∩viewport 和全部验收含义。修复后 UI 测试 SHA256 为 `7e891183c3274291716d18fd95c4e04038b0acc54497de57e4cc1916150a67d9`，其余四文件哈希不变；逆替换可精确还原前版。主 Agent 再次执行格式/差异检查，均退出 0。该问题属于 harness，不是产品 RED；尚未运行云端测试。
+主 Agent 复核上述身份，并独立执行 `cargo fmt --all -- --check` 与 `git diff --check`，均退出 0。这些是静态检查，未编译或执行任何测试。所有生产样式和 runtime 策略未改；thinking slider 仅临时 debug selector。该版独立审查发现一个测试观察器问题：GPUI `is_contained_within` 使用右/下开区间，贴齐裁剪边缘的正常文本会误报裁剪。主 Agent 核对 GPUI 原始实现后，由写入者仅将该断言改为四边含等号比较，保留正尺寸、mask∩viewport 和全部验收含义。修复后 UI 测试 SHA256 为 `7e891183c3274291716d18fd95c4e04038b0acc54497de57e4cc1916150a67d9`，其余四文件哈希不变；逆替换可精确还原前版。主 Agent 再次执行格式/差异检查，均退出 0。该问题属于 harness，不是产品 RED；此检查点尚未运行云端测试。
+
+### 云端有效 RED
+
+独立短复审通过后，先行测试提交为 [`fa26cfe33c143ca7d850b8544dd5668bb6c677ab`](https://github.com/puzige/vega/commit/fa26cfe33c143ca7d850b8544dd5668bb6c677ab)，生产基线已同步 `871f91f246e90753743a256cee1eec315e74effc`（新增 Markdown quote 修复，没有改变本卡五个源码内容身份）。[Draft PR #558](https://github.com/puzige/vega/pull/558)。
+
+- [Run 39816418068](https://github.com/puzige/vega/actions/runs/39816418068)，[Nextest job 119956009444](https://github.com/puzige/vega/actions/runs/39816418068/job/119956009444)。
+- 原始命令为现有 workflow 的 `cargo nextest list --workspace --message-format json`、`cargo nextest run --workspace`。
+- 原始结果：9 发现／9 执行，4 通过、5 失败、0 skipped；源码无 ignored。执行摘要 0.522s。
+- 4 个通过回归：busy 请求拒绝、完整模型鼠标/键盘/菜单/焦点、权限文案/请求 guard/回焦、FullAccess 普通批准与危险操作提示。
+- 4 个目标视觉失败（light/dark/disabled/narrow）在 `surface` 断言旧按钮静止填充缺失：`expected exactly one actual filled trigger quad ... got []`。
+- hover 目标失败在四角断言：actual `[8.0, 8.0, 8.0, 8.0]`，expected `[14.0, 14.0, 14.0, 14.0]`。
+- 独立 Clippy 失败为测试第 2 行未使用的 `gpui_kit as gpui` 导入；不是 RED 理由。只删除该导入，行为数据、fixture 和断言冻结不变，无 suppress/retry 求绿。
+
+生产外观在上述失败实际执行前未改；原始源码与 patch 可从提交及 PR 找回。主 Agent 阅读原始日志分类后，派专职写入者修改两个触发器及专属几何 token；仍需独立实现审查与同一冻结测试 GREEN。

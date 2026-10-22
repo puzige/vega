@@ -446,14 +446,24 @@ impl ConversationStream {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .px_2()
-                    .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                    .px(px(Layout::COMPOSER_TEXT_TRIGGER_PADDING_X))
+                    .h(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
+                    .min_w(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .rounded(px(Layout::DISCLOSURE_RADIUS))
+                    .rounded(px(Layout::COMPOSER_TEXT_TRIGGER_RADIUS))
                     .text_size(px(Typography::BODY))
                     .text_color(ink)
                     .cursor_pointer()
-                    .interactive(colors, true, self.permission_picker_open)
+                    .interaction_surface(
+                        if self.permission_picker_open {
+                            colors.bg_active
+                        } else {
+                            colors.bg_hover
+                        },
+                        colors.bg_active,
+                        colors.bg_active,
+                        true,
+                    )
                     .tooltip(move |_, cx| crate::icons::tooltip("切换权限模式", cx))
                     .on_mouse_up(
                         MouseButton::Left,
@@ -1194,13 +1204,13 @@ impl ConversationStream {
                     .on_action(cx.listener(Self::on_model_previous))
                     .on_action(cx.listener(Self::on_model_next))
                     .on_action(cx.listener(Self::on_model_close))
-                    .min_w_0()
+                    .min_w(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .flex_shrink_1()
                     .truncate()
-                    .px_2()
-                    .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                    .px(px(Layout::COMPOSER_TEXT_TRIGGER_PADDING_X))
+                    .h(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .rounded(px(Layout::DISCLOSURE_RADIUS))
+                    .rounded(px(Layout::COMPOSER_TEXT_TRIGGER_RADIUS))
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(if enabled {
                         colors.text_secondary
@@ -1208,7 +1218,16 @@ impl ConversationStream {
                         colors.text_tertiary
                     })
                     .when(enabled, |trigger| trigger.cursor_pointer())
-                    .interactive(colors, enabled, self.model_picker_level.is_open())
+                    .interaction_surface(
+                        if self.model_picker_level.is_open() {
+                            colors.bg_active
+                        } else {
+                            colors.bg_hover
+                        },
+                        colors.bg_active,
+                        colors.bg_active,
+                        enabled,
+                    )
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseUpEvent, window, cx| {
