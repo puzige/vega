@@ -315,7 +315,7 @@ impl RunFailureKind {
             Self::CredentialOutcomeUnknown => "Some action outcomes are unknown. Check the tool records before continuing.".into(),
             Self::CredentialContinuationUnavailable => "Recovery is unavailable because it was already used, the conversation changed, or an action outcome is unknown. Check tool records, then send a new message.".into(),
             Self::ContextOverLimit => {
-                "Context exceeds available capacity. The conversation is preserved. Adjust context capacity, narrow tool queries, or start a new conversation.".into()
+                "Context exceeds available capacity. The conversation is preserved. Reduce the current input or remove images, then retry. For long tasks, narrow tool queries or start a new conversation.".into()
             }
             Self::Compaction(failure) => failure.message().into(),
             Self::ReasoningLimit(_) => {
