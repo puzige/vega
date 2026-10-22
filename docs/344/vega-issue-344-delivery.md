@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-先行测试修订已停写并通过独立增量静态审查，准备提交 draft PR 取得有效 RED；生产行为未改，尚无本轮有效 RED、GREEN、合并或用户手测结果。
+先行测试已提交 draft PR [#562](https://github.com/puzige/vega/pull/562)。首轮云端在测试宿主编译阶段失败，不是有效 RED；正在做经独立准入的最小接线修正。生产行为未改，尚无本轮有效 RED、GREEN、合并或用户手测结果。
 
 ## 内容与先后顺序
 
@@ -33,8 +33,27 @@
 ## 独立审查与云端阶段
 
 - 独立测试增量 reviewer：`01M5JB0VZGJH448QXX457Z6KNC` / execution `01M5JB0VZG095BJPSQT53FFHJM`，只读完成上述精确版本并停写，结论静态可接受、无阻塞提交 draft PR 的测试接线或 fixture 缺陷。详见独立审查记录；B3 连续测量防护仍为后续生产静态审查义务。
-- RED：待 draft PR 现有 Actions。没有 run/job、原始失败或发现/执行计数，不宣称已取得。
+- RED：首轮 Actions 未到行为测试，具体见下文；目标行为有效 RED 仍待取得。
 - 实现：未开始；必须先确认目标行为导致的有效 RED。
 - 同一测试 GREEN：未取得。
 - 测试来源可恢复性、独立删测提交、最终 head 0 发现/0 执行完整门禁：待前述阶段完成。
 - Issue 保持开放、In progress；最新 head required check 与独立审查均通过后才可合并，合并后 In review 等用户手测，不以自动关闭关键字收尾。
+
+## PR 与可恢复来源
+
+- 先行测试提交：`47611acbc93011486d38897e57f731989318c634`；实际生产 parent 为 `9b901a34ee00611f73fbd58275c7087282af5e2c`。
+- 提交前同步 #547 的图片预算、初始输入压缩 guard 和错误文案。独立增量 execution `01M5JBM7B88WMA3S8QKKSVA3FA` 完整读取生产 delta，确认未改 UI/GPUI/API/依赖或本 fixture 路径，payload 与前审逐字节相同，前审结论可复用。
+- [原测试源码](https://github.com/puzige/vega/blob/47611acbc93011486d38897e57f731989318c634/crates/vega_ui/src/conversation_stream/message_anchor_tests.rs)远端 contents 读回 Git blob `a8bb855620c9475a0695e5a403205ba447000992`，与本地一致，29,611 bytes。
+- [完整测试 patch 留存](https://github.com/puzige/vega/pull/562#issuecomment-6347454344)已远端读回，SHA-256 `541f34e2af8fb933c5b93a97ba812ff0ce5812ad4c5d72a57d568fa9398caa03`、39,747 bytes，与本地一致。分支删除及 artifact 过期不影响该来源。
+
+## 首轮 CI 失败诊断：测试接线，不是有效 RED
+
+- head：`47611acbc93011486d38897e57f731989318c634`。
+- [run 39826148101](https://github.com/puzige/vega/actions/runs/39826148101)；[Clippy job 119989840115](https://github.com/puzige/vega/actions/runs/39826148101/job/119989840115)、[Nextest job 119989841133](https://github.com/puzige/vega/actions/runs/39826148101/job/119989841133)、[aggregate 119991992896](https://github.com/puzige/vega/actions/runs/39826148101/job/119991992896)均失败。
+- 原始诊断：测试文件第2行 `use gpui_kit as gpui;` unused import（Clippy `-D warnings` 变为 error）；第166行 `cx.observe(&stream, |_, _, cx| cx.notify())` E0282，宿主泛型尚不能从第170行 `host.requests` 推断。
+- `cargo nextest list --workspace --message-format json` 构建测试目标时，底层 `cargo test --no-run` 退出101。未完成发现，未执行断言，发现/执行/通过/失败/忽略/跳过计数均未取得；不是成功空集，也不是行为 RED。
+- 主 Agent 已读取两份原始日志并分类责任层。[PR 失败记录](https://github.com/puzige/vega/pull/562#issuecomment-6347603463)保留原错误与计划，不盲目重跑。
+- 独立 reviewer execution `01M5JC689XY6SD068P3N0X29BX` 复核真实 GPUI `add_window_view<F,V>` 签名及 observe/subscribe，准入严格两处测试接线修正：删除 unused alias；在原 build closure 显式 `cx: &mut Context<AnchorHost>` 固定 V。不改变 fixture/动作/通知/断言/验收；不是改预期，也不需重开验收周期。修订产物仍须停写增量复核，编译/行为结果仍交 Actions。
+- 同次同步 master `6615748f91273bfb8ee424011b3b5a09b3777d2b` 的 #546，以普通 merge `0c0b21cb3642bbd40cfc3b5d33c826c98f557877` 保留原测试来源。实际源码增量仅 theme 三个 Composer trigger token 与 render.rs 模型/权限 chip 样式；锚点挂载顺序未变，测试不渲染 Composer。独立 reviewer 确认可复用已有测试审批及 B2/B3 义务。
+- 原 writer 通过 follow-up `01M5JCD0RW16GHZMKYM561TAZ9` 仅接续上述两处修正；主 Agent 不并写测试代码。作者已 READY 停写，测试新 SHA-256 `c84c479c6f8f3b6d00290f7091abebd1537dcf7142cd4ab3f86e6ebdc2651565`，29,615 bytes、801行、11个属性。
+- 独立产物复核 execution `01M5JCG77F3NXPNZSGBKQDFZVV` 确认精确diff仅两处；内存反向还原后与前审输入逐字节一致，全部fixture/动作/notify/断言不变，无新阻塞。主 Agent 在此版本实际执行 `cargo fmt --all -- --check`、离线 locked/no-deps metadata、`git diff --check` 均0；无本地编译/行为执行。下一次 Actions 原始结果仍待取得。

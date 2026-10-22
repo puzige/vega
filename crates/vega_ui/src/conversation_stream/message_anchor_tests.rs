@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit as gpui;
 use gpui_kit::test::{ElementSnapshot, TestWindowExt};
 use gpui_kit::{
     Bounds, FollowMode, Hsla, ListOffset, Modifiers, Point, ScrollDelta, ScrollWheelEvent,
@@ -105,7 +104,7 @@ fn open_fixture(
             Theme::light()
         });
     });
-    let (host, cx) = cx.add_window_view(move |_, cx| {
+    let (host, cx) = cx.add_window_view(move |_, cx: &mut Context<AnchorHost>| {
         let stream = cx.new(|cx| {
             let mut stream = ConversationStream::new(
                 Thread {
