@@ -158,9 +158,17 @@ PR 转正式后，合并命令前再次 fetch 发现 master 新增 `48d958743cb6
 
 主 Agent 静态确认上游无本卡4生产文件/规则/workflow重叠，merge 新 master 得本地集成 `e59c17c196efce4c9b9b4119375facdac2313222`。因新迁移可能影响真实存储 fixture，委派从固定可信提交 `3e3d4d2428b0e4afb403a05934ea19230b3d27d2` 仅恢复同一5测试与4接线，17项源码/预期逐字节不变；不恢复历史集合或新增用例。新集成 head 必须重新带测试 GREEN，再独立删测、最新 head 空集门禁及删测审查；旧17项GREEN/空集结果不能代替。
 
+## 最新迁移基线同一测试再 GREEN
+
+精确恢复后的完整提交 `2af49ba0efa1c20aa576b7c607754fc4fdf179c9`，包含最新 master `48d958743cb66295ef3de9db31449f213263d417`。主 Agent 独立逐字节确认恢复的九个测试/接线文件完全等同原可信 GREEN 提交；生产和上游6文件/0032迁移完整保留，未改源码、数据或预期。
+
+[Actions 39781445222](https://github.com/puzige/vega/actions/runs/39781445222) / [Nextest 119833442701](https://github.com/puzige/vega/actions/runs/39781445222/job/119833442701) 原始日志确认 **17 discovered / 17 executed / 17 passed / 0 skipped**，fmt、全目标 Clippy、三组 Python 及 required check 全绿。主 Agent 按5分钟节奏读取结果、固定 [PR 评论](https://github.com/puzige/vega/pull/541#issuecomment-6341264890)，无重试、不用旧结果替代；真实 file-backed 存储链已在新增迁移基线重验。
+
+仅在该新 GREEN 证据固定后委派再次独立删测；删除对象、独占接线和生产保留条件与已审查首轮清理相同。
+
 ## 待执行门禁
 
-1. 最新 master 基线恢复同一17项测试，Actions 重新GREEN。
+1. 最新迁移基线同一17项 GREEN 已固定。
 2. 再次独立删测与非 writer 差异/生产残留审查，最新 head 空集完整门禁。
 3. 正式 PR 与合并；Issue 保持开放、In review 等用户 Native 手测。
 
