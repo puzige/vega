@@ -1,5 +1,62 @@
 use super::*;
 use crate::scroll_edge_fade::{ScrollFade, ScrollFadeMetrics};
+use gpui_kit::base::{Scrollbar, ScrollbarHandle, ScrollbarMode};
+use std::{cell::RefCell, rc::Rc};
+use vega_theme::Layout;
+
+#[derive(Clone, Default)]
+pub(super) struct TextScrollHandle(Rc<RefCell<TextScrollState>>);
+
+#[derive(Default)]
+struct TextScrollState {
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    rows: usize,
+    total_rows: usize,
+    first_row: usize,
+    selection: Range<usize>,
+    revision: u64,
+    pending: Option<(Range<usize>, u64, usize)>,
+}
+
+impl TextScrollHandle {
+    pub(super) fn reset(&self) {
+        let mut state = self.0.borrow_mut();
+        state.first_row = 0;
+        state.pending = None;
+    }
+}
+
+impl ScrollbarHandle for TextScrollHandle {
+    fn viewport_bounds(&self) -> Bounds<Pixels> {
+        self.0.borrow().bounds
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        let state = self.0.borrow();
+        point(px(0.), -state.line_height * state.first_row as f32)
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        let mut state = self.0.borrow_mut();
+        if state.line_height <= px(0.) {
+            return;
+        }
+        let first = (f32::from(-offset.y) / f32::from(state.line_height))
+            .round()
+            .max(0.) as usize;
+        state.first_row = first.min(state.total_rows.saturating_sub(state.rows));
+        state.pending = Some((state.selection.clone(), state.revision, state.first_row));
+    }
+
+    fn content_size(&self) -> gpui_kit::Size<Pixels> {
+        let state = self.0.borrow();
+        size(
+            state.bounds.size.width,
+            state.line_height * state.total_rows as f32,
+        )
+    }
+}
 
 /// The raw text element: shapes and paints the (possibly masked) line, the
 /// selection, and the cursor, and registers the platform input handler.
@@ -15,6 +72,7 @@ struct PrepaintState {
     visible_rows: usize,
     first_visible_row: usize,
     total_visual_rows: usize,
+    editor_scroll: Option<(Range<usize>, u64, usize)>,
     fade: ScrollFadeMetrics,
 }
 
@@ -100,147 +158,174 @@ impl Element for TextElement {
         // Per-visual-line layout. Multi-line content is shaped and split at
         // the available pixel width, so Latin and CJK drafts both drive the
         // 1..8 row viewport from actual glyph advances.
-        let mut lines: Vec<LineLayout> = Vec::new();
-        if input.multiline {
-            let mut start = 0;
-            for segment in display_text.split('\n') {
-                let len = segment.len();
-                let mut local_start = 0;
-                loop {
-                    let remainder = &segment[local_start..];
-                    let global_start = start + local_start;
-                    let make_runs = |chunk_len: usize| -> Vec<TextRun> {
-                        let runs = match input.marked_range.as_ref() {
-                            None => vec![TextRun {
-                                len: chunk_len,
-                                ..run.clone()
-                            }],
-                            Some(marked) => {
-                                let marked_start =
-                                    marked.start.saturating_sub(global_start).min(chunk_len);
-                                let marked_end =
-                                    marked.end.saturating_sub(global_start).min(chunk_len);
-                                [
-                                    TextRun {
-                                        len: marked_start,
-                                        ..run.clone()
-                                    },
-                                    TextRun {
-                                        len: marked_end.saturating_sub(marked_start),
-                                        underline: Some(UnderlineStyle {
-                                            color: Some(run.color),
-                                            thickness: px(1.0),
-                                            wavy: false,
-                                        }),
-                                        ..run.clone()
-                                    },
-                                    TextRun {
-                                        len: chunk_len.saturating_sub(marked_end),
-                                        ..run.clone()
-                                    },
-                                ]
-                                .into_iter()
-                                .filter(|run| run.len > 0)
-                                .collect()
+        let shape_lines = |width: Pixels| {
+            let mut lines: Vec<LineLayout> = Vec::new();
+            if input.multiline {
+                let mut start = 0;
+                for segment in display_text.split('\n') {
+                    let len = segment.len();
+                    let mut local_start = 0;
+                    loop {
+                        let remainder = &segment[local_start..];
+                        let global_start = start + local_start;
+                        let make_runs = |chunk_len: usize| -> Vec<TextRun> {
+                            let runs = match input.marked_range.as_ref() {
+                                None => vec![TextRun {
+                                    len: chunk_len,
+                                    ..run.clone()
+                                }],
+                                Some(marked) => {
+                                    let marked_start =
+                                        marked.start.saturating_sub(global_start).min(chunk_len);
+                                    let marked_end =
+                                        marked.end.saturating_sub(global_start).min(chunk_len);
+                                    [
+                                        TextRun {
+                                            len: marked_start,
+                                            ..run.clone()
+                                        },
+                                        TextRun {
+                                            len: marked_end.saturating_sub(marked_start),
+                                            underline: Some(UnderlineStyle {
+                                                color: Some(run.color),
+                                                thickness: px(1.0),
+                                                wavy: false,
+                                            }),
+                                            ..run.clone()
+                                        },
+                                        TextRun {
+                                            len: chunk_len.saturating_sub(marked_end),
+                                            ..run.clone()
+                                        },
+                                    ]
+                                    .into_iter()
+                                    .filter(|run| run.len > 0)
+                                    .collect()
+                                }
+                            };
+                            if runs.is_empty() {
+                                vec![TextRun {
+                                    len: 0,
+                                    ..run.clone()
+                                }]
+                            } else {
+                                runs
                             }
                         };
-                        if runs.is_empty() {
-                            vec![TextRun {
-                                len: 0,
-                                ..run.clone()
-                            }]
-                        } else {
-                            runs
-                        }
-                    };
-                    let initial_runs = make_runs(remainder.len());
-                    let initial = window.text_system().shape_line(
-                        SharedString::from(remainder),
-                        font_size,
-                        &initial_runs,
-                        None,
-                    );
-                    let cut = if initial.width() <= bounds.size.width || remainder.is_empty() {
-                        remainder.len()
-                    } else {
-                        let nearest = initial.closest_index_for_x(bounds.size.width);
-                        if nearest == 0 {
-                            remainder
-                                .char_indices()
-                                .nth(1)
-                                .map_or(remainder.len(), |(index, _)| index)
-                        } else {
-                            nearest.min(remainder.len())
-                        }
-                    };
-                    let shaped = if cut == remainder.len() {
-                        initial
-                    } else {
-                        let chunk = &remainder[..cut];
-                        window.text_system().shape_line(
-                            SharedString::from(chunk),
+                        let initial_runs = make_runs(remainder.len());
+                        let initial = window.text_system().shape_line(
+                            SharedString::from(remainder),
                             font_size,
-                            &make_runs(chunk.len()),
+                            &initial_runs,
                             None,
-                        )
-                    };
-                    lines.push(LineLayout {
-                        start: global_start,
-                        len: cut,
-                        line: shaped,
-                    });
-                    local_start += cut;
-                    if local_start >= len {
-                        break;
+                        );
+                        let cut = if initial.width() <= width || remainder.is_empty() {
+                            remainder.len()
+                        } else {
+                            let nearest = initial.closest_index_for_x(width);
+                            let fitting = if initial.x_for_index(nearest) > width {
+                                remainder[..nearest]
+                                    .char_indices()
+                                    .next_back()
+                                    .map_or(0, |(index, _)| index)
+                            } else {
+                                nearest
+                            };
+                            if fitting == 0 {
+                                remainder
+                                    .char_indices()
+                                    .nth(1)
+                                    .map_or(remainder.len(), |(index, _)| index)
+                            } else {
+                                fitting.min(remainder.len())
+                            }
+                        };
+                        let shaped = if cut == remainder.len() {
+                            initial
+                        } else {
+                            let chunk = &remainder[..cut];
+                            window.text_system().shape_line(
+                                SharedString::from(chunk),
+                                font_size,
+                                &make_runs(chunk.len()),
+                                None,
+                            )
+                        };
+                        lines.push(LineLayout {
+                            start: global_start,
+                            len: cut,
+                            line: shaped,
+                        });
+                        local_start += cut;
+                        if local_start >= len {
+                            break;
+                        }
                     }
+                    start += len + 1;
                 }
-                start += len + 1;
-            }
-        } else {
-            let runs = if let Some(marked_range) = input.marked_range.as_ref() {
-                let marked_start = input.display_offset_for_content_offset(marked_range.start);
-                let marked_end = input.display_offset_for_content_offset(marked_range.end);
-                vec![
-                    TextRun {
-                        len: marked_start,
-                        ..run.clone()
-                    },
-                    TextRun {
-                        len: marked_end - marked_start,
-                        underline: Some(UnderlineStyle {
-                            color: Some(run.color),
-                            thickness: px(1.0),
-                            wavy: false,
-                        }),
-                        ..run.clone()
-                    },
-                    TextRun {
-                        len: display_text.len() - marked_end,
-                        ..run
-                    },
-                ]
-                .into_iter()
-                .filter(|run| run.len > 0)
-                .collect()
             } else {
-                vec![run]
-            };
-            let shaped =
-                window
-                    .text_system()
-                    .shape_line(display_text.clone(), font_size, &runs, None);
-            lines.push(LineLayout {
-                start: 0,
-                len: display_text.len(),
-                line: shaped,
-            });
-        }
+                let runs = if let Some(marked_range) = input.marked_range.as_ref() {
+                    let marked_start = input.display_offset_for_content_offset(marked_range.start);
+                    let marked_end = input.display_offset_for_content_offset(marked_range.end);
+                    vec![
+                        TextRun {
+                            len: marked_start,
+                            ..run.clone()
+                        },
+                        TextRun {
+                            len: marked_end - marked_start,
+                            underline: Some(UnderlineStyle {
+                                color: Some(run.color),
+                                thickness: px(1.0),
+                                wavy: false,
+                            }),
+                            ..run.clone()
+                        },
+                        TextRun {
+                            len: display_text.len() - marked_end,
+                            ..run.clone()
+                        },
+                    ]
+                    .into_iter()
+                    .filter(|run| run.len > 0)
+                    .collect()
+                } else {
+                    vec![run.clone()]
+                };
+                let shaped =
+                    window
+                        .text_system()
+                        .shape_line(display_text.clone(), font_size, &runs, None);
+                lines.push(LineLayout {
+                    start: 0,
+                    len: display_text.len(),
+                    line: shaped,
+                });
+            }
 
+            lines
+        };
+        let mut lines = shape_lines(bounds.size.width);
         let ghost = input.prediction_text().is_some();
+        if input.multiline && !input.scrollable_editor && !ghost && lines.len() > input.max_rows {
+            lines = shape_lines(
+                (bounds.size.width - px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)).max(px(1.)),
+            );
+        }
         if ghost {
             lines.truncate(input.rows);
         }
         let total_visual_rows = lines.len().max(1);
+        let manual_scroll = input
+            .scroll_handle
+            .0
+            .borrow_mut()
+            .pending
+            .take()
+            .or_else(|| input.editor_scroll.clone())
+            .filter(|(selection, revision, _)| {
+                *selection == input.selected_range && *revision == input.content_revision
+            });
         let (visible_rows, first_visible_row) = if input.multiline {
             let total = lines.len().max(1);
             let visible = if input.scrollable_editor {
@@ -254,10 +339,7 @@ impl Element for TextElement {
                 .rposition(|layout| cursor >= layout.start)
                 .unwrap_or_default();
             let mut first = input.first_visible_row.min(total.saturating_sub(visible));
-            if let Some((selection, revision, start)) = &input.editor_scroll
-                && *selection == input.selected_range
-                && *revision == input.content_revision
-            {
+            if let Some((_, _, start)) = &manual_scroll {
                 first = (*start).min(total.saturating_sub(visible));
             } else if cursor_row < first {
                 first = cursor_row;
@@ -353,7 +435,20 @@ impl Element for TextElement {
             }
         }
 
+        {
+            let mut state = input.scroll_handle.0.borrow_mut();
+            state.bounds = bounds;
+            state.line_height = line_height;
+            state.rows = visible_rows;
+            state.total_rows = total_visual_rows;
+            state.first_row = first_visible_row;
+            state.selection = input.selected_range.clone();
+            state.revision = input.content_revision;
+        }
+
         PrepaintState {
+            editor_scroll: manual_scroll
+                .map(|(selection, revision, _)| (selection, revision, first_visible_row)),
             total_visual_rows,
             lines,
             line_height,
@@ -418,13 +513,16 @@ impl Element for TextElement {
 
         self.input.update(cx, |input, cx| {
             let layout_changed = input.rows != prepaint.visible_rows
-                || input.first_visible_row != prepaint.first_visible_row;
+                || input.first_visible_row != prepaint.first_visible_row
+                || (input.total_visual_rows > input.rows)
+                    != (prepaint.total_visual_rows > prepaint.visible_rows);
             input.last_lines = std::mem::take(&mut prepaint.lines);
             input.last_line_height = line_height;
             input.last_bounds = Some(bounds);
             input.rows = prepaint.visible_rows;
             input.first_visible_row = prepaint.first_visible_row;
             input.total_visual_rows = prepaint.total_visual_rows;
+            input.editor_scroll = prepaint.editor_scroll.take();
             if layout_changed {
                 cx.notify();
                 // Rows are learned from shaped visual lines during prepaint.
@@ -470,17 +568,28 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .when(self.scrollable_editor, |input| {
-                input.size_full().min_h_0().on_scroll_wheel(cx.listener(
-                    |this, event: &gpui_kit::ScrollWheelEvent, window, cx| {
-                        let delta = f32::from(event.delta.pixel_delta(window.line_height()).y);
-                        let rows = (delta.abs() / f32::from(window.line_height())).ceil() as usize;
-                        let first = if delta > 0. {
+            .when(self.scrollable_editor, |input| input.size_full().min_h_0())
+            .when(self.multiline, |input| {
+                input.relative().on_scroll_wheel(cx.listener(
+                    |this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
+                        if this.last_line_height <= px(0.) {
+                            return;
+                        }
+                        let delta = event.delta.pixel_delta(this.last_line_height);
+                        if delta.y == px(0.) || delta.x.abs() > delta.y.abs() {
+                            return;
+                        }
+                        let rows = (delta.y.abs() / this.last_line_height).ceil() as usize;
+                        let first = if delta.y > px(0.) {
                             this.first_visible_row.saturating_sub(rows)
                         } else {
                             this.first_visible_row.saturating_add(rows)
                         }
                         .min(this.total_visual_rows.saturating_sub(this.rows));
+                        if first == this.first_visible_row {
+                            return;
+                        }
+                        this.first_visible_row = first;
                         this.editor_scroll =
                             Some((this.selected_range.clone(), this.content_revision, first));
                         cx.stop_propagation();
@@ -499,8 +608,6 @@ impl Render for TextInput {
                     .py_1();
             }
         } else {
-            // Fixed-row viewport: content beyond `rows` lines is clipped
-            // (自适应滚动后置，任务卡注明).
             container = container.overflow_hidden();
         }
         // Typography per UI spec §3: body text 13px / 1.55 line height.
@@ -509,5 +616,20 @@ impl Render for TextInput {
             .line_height(relative(Typography::BODY_LINE_HEIGHT))
             .text_color(colors.text_primary)
             .child(TextElement { input: cx.entity() })
+            .when(
+                self.multiline
+                    && !self.scrollable_editor
+                    && self.prediction_text().is_none()
+                    && self.total_visual_rows > self.rows,
+                |input| {
+                    input.child(Scrollbar::vertical(&self.scroll_handle).mode(
+                        if cx.should_auto_hide_scrollbars() {
+                            ScrollbarMode::Hover
+                        } else {
+                            ScrollbarMode::Always
+                        },
+                    ))
+                },
+            )
     }
 }

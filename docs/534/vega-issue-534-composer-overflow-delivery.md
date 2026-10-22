@@ -68,3 +68,17 @@ Nextest 原始总结：13 executed，2 passed，11 failed，0 skipped；ignored 
 - **测试 resize 前提，待修观察层**：`TestWindow::resize` 仅改平台 bounds，不触发布局 callback；需通过公开 `Window::bounds_changed(cx)` 使 viewport 更新。不把未发生的缩窄当产品失败。
 
 主 Agent 已读取原始日志与锁定源码完成责任层诊断；下一轮先修观察层并独立核对，不改 A1–A8，不改行为断言、不重试换绿、不先实现或补测追认。图片是否为有效 RED 等正确观察点的云端证据。
+
+## 修正观察层后的有效 RED 与测试冻结
+
+修正提交：`438b442b22666b316571544cbf0dd18f0884b968`，生产行为仍与原基线一致。
+
+- [run 39765222873](https://github.com/puzige/vega/actions/runs/39765222873)，[Nextest job 119778877048](https://github.com/puzige/vega/actions/runs/39765222873/job/119778877048)。Clippy/fmt 成功，Nextest 如预期失败；没有自动重试。
+- 原始输出：13 tests across 15 binaries，13 executed，3 passed，10 failed，0 skipped。通过用例为单行、大编辑器和 IME；ignored 精确清点未单独取得。
+- 图片有效 RED：真实外层 thumbnail `(45,715;72×72)`，竖图实际可见绘制 `(45,715;72×144)`，确实越界；多图用例同样在图片不属于任何缩略图边界处失败。
+- 长文有效 RED：+3 行滚轮后仍为第 13–20 行而非 10–17；滚动条缺失；1–8 行几何与空/短文本前提已通过，实际溢出时才在缺 scrollbar 处失败。
+- 窄宽更新和观察点前提修复有效；软折行用例在窄输入后显示尾部 `LAST` 的断言失败，归本轮视口可见内容问题，不改变断言。
+
+冻结来源：[测试源码](https://github.com/puzige/vega/blob/438b442b22666b316571544cbf0dd18f0884b968/crates/vega_ui/src/conversation_stream/composer_overflow_tests.rs)，SHA-256 `f992b3baeaef49e0d0b11b0dd389ff5afb0890736f7c7f41f82a1ec391100b6e`；观察器 SHA-256 `66bc47a673bb9e0f2753374722b446efd2236ace62dd15dfec16a76101b80747`。主 Agent 已独立核对修正差异；验收、数据、容差未放宽。
+
+本轮从此冻结测试，不补测、不追改预期。专职生产写入者获得实施授权：固定真实 img 尺寸与裁剪，修 Composer 滚轮、滚动条和光标跟随协调；不更改预测、IME、发送数据或单行/大编辑器契约。本地仍仅静态检查，等待停写版本与同一测试云端 GREEN。

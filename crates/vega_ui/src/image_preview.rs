@@ -101,6 +101,8 @@ impl ImagePreview {
             |_, _, _, _| {},
         )
         .absolute()
+        .top_0()
+        .left_0()
         .size_full()
         .into_any_element()
     }
@@ -193,6 +195,8 @@ impl ImagePreview {
             .aria_label(format!("预览 {}", state.name))
             .relative()
             .size(px(size))
+            .flex_shrink_0()
+            .overflow_hidden()
             .cursor_pointer()
             .rounded_md()
             .hover(move |s| s.border_1().border_color(colors.text_secondary))
@@ -210,7 +214,7 @@ impl ImagePreview {
             .when_some(state.pixels.get().cloned(), |el, pixels| {
                 el.child(
                     img(pixels)
-                        .size_full()
+                        .size(px(size))
                         .object_fit(ObjectFit::Contain)
                         .rounded_md(),
                 )
