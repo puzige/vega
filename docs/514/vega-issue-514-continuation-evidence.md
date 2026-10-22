@@ -6,7 +6,7 @@
 - 本轮计时起点：2026-10-22T06:32:17Z。恢复并核对历史工作、现行规则、原始 CI 失败及实际接口；2026-10-22T06:53:15Z 已完成 v3 规格差异静态检查。后续阶段按真实结果追加，不把委派受理当作完成。
 - 公开旧 head：`ae1888267fd8b05db1c388c01ed80bfc40643a1b`。本地同步 head：`7ec15f2c44269d7e068e853ed797f651668dc019`，merge 主库 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`，保留已有测试/实现提交，无 force-push。
 - v3 规格 SHA256（先行测试前）：`cf733965f647607b95fec9f95177e20334a01de1894b6e59ac39a90fca50e159`。代码实现仍由专职子 Agent；独立审查默认只读、绑定停写版本。
-- 当前本轮委派：spawn 3（原测试/实现写入者、独立审查者、保留同补丁的恢复收尾写入者），followup 9（独立审查新停写测试补丁；有效 RED 后同一写入者实施最小 mdstream 0.3 补丁；独立审查固定 UI 生产差异；独立审查新停写 mdstream 补丁；按两项新发现编写 v4/v5 先行测试；独立方案审查真实围栏上下文与 pending 修复责任层；独立审查停写的7项新测试增量；有效v4/v5RED后按冻结31项修复；独立审查恢复后停写的完整实现增量）。不重复历史已完成工作。解析生产实现仅在下述本轮有效 RED 确认后授权。
+- 当前本轮委派：spawn 3（原测试/实现写入者、独立审查者、保留同补丁的恢复收尾写入者），followup 12（前10次记录不变；新增v6真实parser前提单测增量；独立审查完整v6停写测试）。不重复历史已完成工作。解析生产实现仅在下述本轮有效 RED 确认后授权。
 
 ## 阶段与委派记录
 
@@ -88,6 +88,28 @@
 - 父Agent10:57:57Z复算完整diff/reporthash一致，diff检查及测试/Cargo/workflow比较退出0。writer停止范围写入后将同一版本交既有独立reviewer，仅审新增15文件及受影响不变量，可与精确版本Actions并行；当前审查/云端GREEN仍待取得。
 - 恢复writer的一次源文件编码比较错误按原始证据改为字节模式后通过；命令层纠正，不是产品/测试RED，也未改验收。父Agent恢复及review分别记录，不将READY冒充已审查。
 
+## 完整31项开发 GREEN
+
+- 精确实现head `f07edec9b00ff17654da55eb9ae3ba74a5c2c5ee`，由停止后的同一diff原样提交/push；source测试与RED head `e7afdfbcf40263f13831766148cc0bd58de9dc67`逐字相同。
+- [Actions39767237956](https://github.com/puzige/vega/actions/runs/39767237956)，Nextest `119785628625`：明确日志31 discovered，Starting31/15binaries，31执行31通过0失败0跳过，0.886s。Clippy/fmt `119785629659` 成功，Python5+15+40=60项成功，required `119788304956` 成功。
+- 所有原引用/交互/marker和v3pending/v4祖先几何/v5围栏字面/真实空行及生命周期断言通过。云端GREEN不替代独立实现审查；当前review仍待结果，不进入删测或合并。
+- run10:59:46Z–11:06:11Z（6m25s）；Nextest10:59:51Z–11:06:03Z（6m12s）；Clippy10:59:50Z–11:03:51Z（4m01s）。查询11:05:53Z运行中、11:12:42Z完成，相隔6m49s；push10:59:42Z到读取完成的本轮等待墙钟13m00s，和审查并行。
+- GREEN及四份原始测试可访问源码固定 [PR comment](https://github.com/puzige/vega/pull/529#issuecomment-6339385329)，父Agent逐个GitHub读回blob与本地相同：parser `b06a05f1122b3d37bd912d253cce317747776ad1`；quote `e08e29dc6b6926c40a8fb0ed05d70e5d7f4a1c65`；marker `b54bda863c3e549932472e3b187a89ef28c554d0`；Thinking lifecycle文件 `ecf58aff425261abd6d0d5213f08bec70e31ec07`。不依赖短期artifact或本机临时文件。
+
+## GREEN 后独立审查新增边界（v6，先测后修）
+
+- 独立实施审查10:59:01Z–11:19:20Z（20m19s），精确 `f07edec9b00ff17654da55eb9ae3ba74a5c2c5ee` 与diff/manifest一致、31项未变；没有给PASS，新增两项静态产品发现：quote-first list首段重复inset/marker列位置；未闭合prose repair在换行后加~~再拼protected fence破坏其物理行。父Agent11:20:52Z读回实际marker/pending代码确认，尚非执行复现。
+- 先修v6 spec SHA256 `3199c04ffac1b446b9edccead5eef75103488ffea0b251a4c16790bd6a6264c7`，明确真实quote-first源/marker0rail24text38及depth1对应、三路径/复制/resize；pending prose synthetic closer须在prose行尾，原空行与code字节和final raw行为不变。31项GREEN保留，新两项独立先测/审查/云端各自RED，未删测或生产补丁。
+- 11:22:47Z fetch发现master新增 `6e50833202bb45f05c08f7bbc30a68be475609ff`（#538上下文分母），2个无重叠文件；11:23:31Z安全merge到任务HEAD `87f02938fd2c723f2bff5d34c55e16c9ced2325e`，保留所有结果/父docs，无冲突/force-push。原31项将与v6新用例在新基线重新执行，不拿旧GREEN替代新head。
+- 已向已停写恢复writer发送具体v6 TEST-ONLY followup，代码生产仍冻结，沿用真实API/观察；本次为两个遗漏产品边界的独立新周期，不是为了报告追加覆盖，禁止新实现先行。
+
+## v6 先行测试停写与独立审查
+
+- v6 writer11:25:13Z–11:38:37Z（13m24s）先追加6项；静态核对发现真实quote-first source被mdstream quote interrupt拆块，父Agent11:39:53Z独立读回确认。冻结前spec更新为 `fb32cc443c3e9e5179a35e8974f38d8cb977ecd1b75e53247090816b0d1c33f0`，先公开parser前提RED、parser-only修复、再同UI自身几何RED；不注入结构或把前提失败冒充几何RED。
+- 具体followup增量11:42:17Z–11:48:07Z（5m50s），只增加1项parser quotecontinuation测试，depth0/1与dedented独立quote控制，原37个定义字节前缀保留。合计31+7=38源码定义，不冒充发现/执行数。
+- 停写testdiffSHA256 `990101edac06cf79d337ca78e437ee2c9a4ec083638eb05a94245c32b534178c`，二文件manifest `61ceaf1555a615dfbdbf7c865afbc7b18be10583b5a03808e75383588af39d0a`，test evidence SHA256 `58c3a88e3edd8777aa8ea25a567a2158bf8c7a9a6e409e822ce71ab08ce0d4d9`；父Agent11:49:02Z复算一致、diffcheck0。
+- 独立测试审查11:49:54Z–11:58:23Z（8m29s），PASS无实质阻碍；两个原测试前缀与507受保护tracked路径逐字不变，认可真实parser前提、pending/final修复差异、geometry/copy观察与分层顺序。现可commit/push现有PR，首轮仅确认parser前提与prosefence有效RED，UI前提失败不计几何RED。未做生产改动。
+
 ## mdstream 0.3 来源核对（只读静态证据）
 
 - 锁定版本与用户裁决：`=0.3.0`，不迁移 0.4；现有技术规格 §5.0 已列 vendoring 预案，无新 crate。
@@ -98,6 +120,6 @@
 
 ## 本地与云端边界
 
-本地仅做差异、格式和静态元数据检查；未运行 Vega、编译、Clippy、Rust/Python 测试、build 或打包。新增解析测试已取得上述本轮有效 RED，GREEN 尚未取得；后续只使用现有 PR Check，启动后五分钟状态查询，保留首次失败原始证据。
+本地仅做差异、格式和静态元数据检查；未运行 Vega、编译、Clippy、Rust/Python 测试、build 或打包。完整冻结测试已取得上述本轮有效 RED 与开发 GREEN，独立实现审查/删测/最终门禁仍未完成；后续只使用现有 PR Check，启动后五分钟状态查询，保留首次失败原始证据。
 
 最终交付前仍需：同一冻结测试云端全部 GREEN → PR 固定原始源码/完整 SHA/run/job/准确计数 → 独立删测提交及审查 → 最新完整 head 的 fmt、全目标 Clippy、Python、Rust 0 发现/0 执行 `no Rust tests` 门禁 → 正式 PR、squash merge → Issue OPEN / In review 等用户手测。空集不称 Rust 测试通过。

@@ -1384,3 +1384,223 @@ mod container_order_tests {
         verify_ancestry(cx, Ancestry::QuoteListQuote);
     }
 }
+
+mod quote_first_item_tests {
+    use super::*;
+
+    const FIRST: &str =
+        "first 中文 mixed words stay in the quote content column across narrow and wide layouts";
+    const SECOND: &str =
+        "second 🙂 continuation words use the same content column when the window changes width";
+
+    fn paragraph(text: &str) -> RenderNode {
+        RenderNode::Paragraph {
+            spans: vec![Inline::Text(text.to_owned())],
+        }
+    }
+
+    fn list(children: Vec<RenderNode>) -> RenderNode {
+        RenderNode::List(ListBlock {
+            ordered: false,
+            start: 1,
+            items: vec![vega_markdown::ListItem {
+                checked: None,
+                children,
+            }],
+        })
+    }
+
+    fn fixture(depth: usize) -> (String, Vec<RenderNode>, String) {
+        let quote = RenderNode::BlockQuote {
+            children: vec![paragraph(FIRST), paragraph(SECOND)],
+        };
+        let (body, node, copied) = match depth {
+            0 => (
+                format!("- > {FIRST}\n  >\n  > {SECOND}\n\n"),
+                list(vec![quote]),
+                format!("• {FIRST}\n\n{SECOND}"),
+            ),
+            1 => (
+                format!("- parent\n  - > {FIRST}\n    >\n    > {SECOND}\n\n"),
+                list(vec![paragraph("parent"), list(vec![quote])]),
+                format!("• parent\n  • {FIRST}\n\n{SECOND}"),
+            ),
+            _ => panic!("unsupported fixture depth"),
+        };
+        (
+            format!("outside-before\n\n{body}outside-after\n"),
+            vec![
+                paragraph("outside-before"),
+                node,
+                paragraph("outside-after"),
+            ],
+            format!("outside-before\n\n{copied}\n\noutside-after"),
+        )
+    }
+
+    fn parsed_nodes(stream: &MarkdownStream) -> Vec<RenderNode> {
+        let snapshot = stream.snapshot();
+        snapshot
+            .blocks
+            .iter()
+            .flat_map(|block| block.nodes.iter())
+            .chain(
+                snapshot
+                    .pending
+                    .into_iter()
+                    .flat_map(|block| block.nodes.iter()),
+            )
+            .cloned()
+            .collect()
+    }
+
+    fn paragraph_bounds(painted: &Frame, expected: &str) -> Bounds<Pixels> {
+        let start = painted
+            .text
+            .iter()
+            .position(|run| !run.text.is_empty() && expected.starts_with(run.text.as_str()))
+            .expect("painted paragraph start");
+        let mut content = String::new();
+        let mut bounds: Option<Bounds<Pixels>> = None;
+        for run in &painted.text[start..] {
+            content.push_str(&run.text);
+            assert!(
+                expected.starts_with(&content),
+                "changed paragraph: {content:?}"
+            );
+            let next = run.layout.bounds();
+            bounds = Some(bounds.map_or(next, |bounds| bounds.union(&next)));
+            if content == expected {
+                return bounds.expect("painted paragraph bounds");
+            }
+        }
+        panic!("incomplete painted paragraph: {content:?}");
+    }
+
+    fn verify_geometry(painted: &Frame, depth: usize, width: f32, path: Path) -> f32 {
+        let before = text_bounds(painted, "outside-before");
+        let after = text_bounds(painted, "outside-after");
+        let first = paragraph_bounds(painted, FIRST);
+        let second = paragraph_bounds(painted, SECOND);
+        let origin = f32::from(before.left());
+        let marker_x = origin + depth as f32 * Layout::MARKDOWN_LIST_INDENT;
+        let rail_x = marker_x + Layout::MARKDOWN_LIST_INDENT;
+        let text_x = rail_x + 2. + Layout::MARKDOWN_CODE_PADDING;
+        let markers: Vec<_> = painted
+            .text
+            .iter()
+            .filter(|run| {
+                run.text == "• " && (f32::from(run.layout.bounds().top() - first.top())).abs() < 0.2
+            })
+            .collect();
+        assert_eq!(
+            markers.len(),
+            1,
+            "{path:?} depth={depth}: missing first-item marker"
+        );
+        let marker = markers[0].layout.bounds();
+        assert!(
+            (f32::from(marker.left()) - marker_x).abs() < 0.2,
+            "{path:?} depth={depth}: marker must start at {marker_x}, actual {marker:?}"
+        );
+        assert!(f32::from(marker.right()) <= rail_x + 0.2);
+        for bounds in [first, second] {
+            assert!(
+                (f32::from(bounds.left()) - text_x).abs() < 0.2,
+                "{path:?} depth={depth}: paragraph must start at {text_x}, actual {bounds:?}"
+            );
+        }
+        assert!(
+            (f32::from(second.top() - first.bottom()) - Layout::MARKDOWN_BLOCK_GAP).abs() < 0.2,
+            "{path:?} depth={depth}: quote paragraph gap changed"
+        );
+        covered(
+            painted,
+            rail_x,
+            f32::from(first.top()),
+            f32::from(second.bottom()),
+        );
+        for rail in &painted.rails {
+            assert!(
+                (rail.left - rail_x).abs() < 0.2,
+                "{path:?}: unrelated rail {rail:?}"
+            );
+            assert!((rail.right - rail.left - 2.).abs() < 0.2);
+            assert!(rail.top >= f32::from(first.top()) - 0.2);
+            assert!(rail.bottom <= f32::from(second.bottom()) + 0.2);
+        }
+        assert_eq!(before.left(), after.left());
+        for run in &painted.text {
+            let bounds = run.layout.bounds();
+            assert!(bounds.left() >= before.left() - px(0.2));
+            assert!(
+                bounds.right() <= px(width + 0.2),
+                "{path:?}: text overflows {bounds:?}"
+            );
+        }
+        f32::from(first.size.height + second.size.height)
+    }
+
+    fn verify_path(cx: &mut TestAppContext, path: Path) {
+        for depth in [0, 1] {
+            let (source, expected, copied) = fixture(depth);
+            let mut stream = MarkdownStream::new();
+            stream.append(&source);
+            assert_eq!(parsed_nodes(&stream), expected, "pending depth={depth}");
+            stream.finish();
+            assert_eq!(parsed_nodes(&stream), expected, "finished depth={depth}");
+            let handle = open(cx, path, &source, 240.);
+            let mut narrow = None;
+            let mut narrow_rails = None;
+            for width in [240., 760., 240.] {
+                cx.simulate_window_resize(handle.into(), size(px(width), px(12000.)));
+                handle
+                    .update(cx, |view, _, cx| {
+                        view.width = width;
+                        assert_eq!(view.source, source);
+                        assert!(view.nodes.is_none());
+                        cx.notify();
+                    })
+                    .unwrap();
+                let painted = frame(handle, cx);
+                if matches!(path, Path::Selectable | Path::Thinking) {
+                    copy_between(handle, cx, &painted, "outside-before", "outside-after");
+                    assert_eq!(
+                        cx.read_from_clipboard()
+                            .and_then(|item| item.text())
+                            .as_deref(),
+                        Some(copied.as_str()),
+                        "{path:?} depth={depth} width={width}: visible copy order changed"
+                    );
+                }
+                let height = verify_geometry(&painted, depth, width, path);
+                if let Some(narrow_height) = narrow {
+                    if width == 760. {
+                        assert!(height < narrow_height, "{path:?} depth={depth}: no reflow");
+                    } else {
+                        assert!((height - narrow_height).abs() < 0.2);
+                        assert_eq!(Some(&painted.rails), narrow_rails.as_ref());
+                    }
+                } else {
+                    narrow = Some(height);
+                    narrow_rails = Some(painted.rails.clone());
+                }
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn ordinary_quote_first_items_keep_markers_outside_the_quote(cx: &mut TestAppContext) {
+        verify_path(cx, Path::Ordinary);
+    }
+
+    #[gpui_kit::test]
+    fn selectable_quote_first_items_keep_marker_order_and_content_columns(cx: &mut TestAppContext) {
+        verify_path(cx, Path::Selectable);
+    }
+
+    #[gpui_kit::test]
+    fn thinking_quote_first_items_keep_marker_order_and_content_columns(cx: &mut TestAppContext) {
+        verify_path(cx, Path::Thinking);
+    }
+}

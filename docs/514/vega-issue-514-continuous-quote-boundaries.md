@@ -2,7 +2,7 @@
 
 ## 状态与基线
 
-- Issue：[#514](https://github.com/puzige/vega/issues/514)，复用 Draft [PR #529](https://github.com/puzige/vega/pull/529)。方案 v5（2026-10-22）：原引用边界与列表标记实现已存在；v3 针对解析边界补开 TEST-FIRST 并纠正无头字体观察，v4 记录列表内引用缩进边界，v5 记录较宽列表标记后的 dedented 顶层围栏；两项独立审查新发现均先测后修，不追认已完成实现。
+- Issue：[#514](https://github.com/puzige/vega/issues/514)，复用 Draft [PR #529](https://github.com/puzige/vega/pull/529)。方案 v6（2026-10-22）：原引用边界与列表标记实现已存在；v3 解析边界与字体观察、v4 列表/引用祖先顺序、v5 围栏归属已在完整31项取得开发GREEN。独立审查新增的 quote-first marker 与 prose/fence repair 拼接边界单开v6先测后修，保留既有GREEN与全部冻结断言，不追认已完成实现。
 - 初始基线：`e542175a726f3ab074d9e9fe63bd5f0383804b90`；分支 `feat/514-continuous-quotes`。本轮生产未改基线为 `7ec15f2c44269d7e068e853ed797f651668dc019`，保留公开 head `ae1888267fd8b05db1c388c01ed80bfc40643a1b`，并 merge 同步主库 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`，不重写历史。
 - 主 Agent 负责规格、协调、审查与集成；专职子 Agent 写测试及实现。遵守[执行总纲](../vega-exec-guide.md)、[测试生命周期](../vega-rust-test-delivery-lifecycle.md)和[设计守则](../vega-design-guidelines.md)。本地不运行 Vega、编译或测试。
 - 用户补充截图显示单段长引用自然换行、左侧竖线连续，作为单段回归参考，不作为多段落已通过的证据。
@@ -157,3 +157,26 @@ pending display消费同一活动围栏上下文，在trim/setext/inline repair�
 `27b88c2e9934a01aa912ed95fc26b6ec3fd3470a` 的 Actions `39746319972`：24 执行/23 通过/1 失败/0 跳过，Clippy 与 Python 通过；日志确认编译 vendor/mdstream。原完整输入及 UI 复制已通过，同一 `list_fence_snapshots_keep_unrelated_committed_nodes_frozen` 在 tilde/unquoted/首个未闭合快照多 `Paragraph("~~")`，原期望不变。这不是测试观察错误：List 路径进入 pending terminator，`is_inside_incomplete_multiline_code_block` 只认三反引号，`balance_strikethrough` 将 `~~~` 的一对 `~~` 误作未闭合行内标记，在正文后追加合成 `~~`。
 
 该行为已经属于 v3 先行冻结中间快照断言并获得有效 RED，可按原目标修 pending 围栏识别/repair 责任层，不另补测试追认，也不在 UI 删除合成字符或禁用所有 pending 显示。保留真实代码空行、原 strikethrough 配置、committed 缓存；具体最小状态识别需和 v5 围栏归属共同闭合，生产修改仍等 v4/v5 新先行用例独立审查及各自有效 RED 后组织。
+
+## 独立追加周期：首项引用 marker 与 prose/fence 拼接（v6）
+
+### 前序结果与新证据
+
+`f07edec9b00ff17654da55eb9ae3ba74a5c2c5ee` 的 Actions `39767237956` 已31发现/31执行/31通过/0失败/0跳过，fmt、Clippy、Python60项成功；原测试源码/冻结/有效RED和GREEN完整SHA已固定PR，不删或改这31项。独立实现审查（10:59:01Z–11:19:20Z）发现下述两个遗漏边界，父Agent已读回实际代码确认是产品回归，不是测试/CI故障；均尚无自身执行证据，先写新测试/独立审查/分别云端RED，阻断最终交付。
+
+1. `- > first\n  >\n  > second`：flatten_list将marker赋给引用首段并设ListItem，新wrapper已消费24px列表inset，但ListItem再加24px marker列。Ordinary/Selectable首段x62、续段x38，Thinking首段x38但marker在quote相对列内；真正期望marker在所属列表列、rail24、两段text38。
+2. `- before ~~unfinished\n\n  ```text\n  literal\n` 的pending：protected range保留围栏字节，但前面prose经balance_strikethrough在两个换行后追加~~，再与围栏拼成`~~  ```text`，破坏围栏行及代码结构。不能用“protected字节未改”代替完整pending树契约，也不能依靠restore_code补回已经丢失的CodeBlock。
+
+### 先行验收
+
+- Quote为列表项首子节点：实际公开解析树为List→Quote，无伪造fixture；普通/Selectable/Thinking首段与续段同列，marker位于rail外的所属列表marker列，rail保留连续16px内部段距与正确所属边界。depth0：marker原点0、rail24、text38；depth1：marker原点24、rail48、text62。计算仍为list indent24、quote gutter14，不能删marker、把首段降为普通无marker内容、改可见/复制顺序或缩短段距。使用必要窄宽resize与选择复制对照，不为覆盖率泛化所有Markdown首子类型。
+- 未闭合prose紧邻完整/未闭合围栏：pending修复可以沿用现有临时行内样式，但围栏仍从原物理行开始，正确ListItem中必须存在language=text、逐字代码`literal\n`（以及真实空行代表），不得出现合成字符段落、Heading或把代码当prose。可明确观察pending repaired prose为Text("before ")+Strikethrough("unfinished")，closer放在原段落行尾而非换行后；finish按raw正文回到字面`before ~~unfinished`，源文不变。
+- parser边界用公开MarkdownStream append/snapshot/finish，反引号/波浪、完整输入/字符/语法分块和有意义的open/close/final快照；正常闭合prose作对照。原31项以及缓存/真空行/顶层围栏不退回，不通过禁用全部pending repair或UItrim规避。
+- 两项新测试可同一提交/Actions，但各自观察自身目标RED，不用旧31项GREEN或其他失败替代。无关编译/观察/环境故障仍不是RED。
+- 冻结前真实解析前提核对（11:39:53Z）：`- > first` 后无物理空行的 `  >` 在当前mdstream List模式被普通quote interrupt拆块。该未覆盖的解析前提是产品依赖边界，不是UI观察故障；新增一项公开parser测试明确depth0/1应产出同一List→Quote的两段（pending与finish，chunk不变），并用dedented独立quote作对照。原31项不改。先云端确认此parser目标及prose/fence目标RED，再最小修其责任层；真实树通过后，原新UI用例才能给出几何/marker自身有效RED，随后才修UI。不因UI前提失败而注入结构或宣称几何已复现。
+
+### 最小修复计划（v6有效RED后）
+
+第一步依据当前已维护的容器prefix/真实marker缩进，确保首项quote的合法list continuation不触发新的顶层quote块；dedented独立quote仍按原边界分离，不泛化为所有缩进的quote都粘连。pending repair只纠正prose与protected段拼接处的synthetic closer插入位置，保留原换行和code字节，不把一段完整List当CodeFence、不额外全parse/不禁用所有repair。各自parser目标有效RED后先修这两项，再让完全相同新UI测试越过真实树前提并给出UI RED。
+
+第二步仅在UI自身有效RED后，纠正marker-bearing quote-first row对已消费owner inset的组合，marker仍在quote rail之前且只占一次列表列；同步普通/Selectable和Thinking，保留源映射/注册顺序/Heading/code既有行为。实现范围和源码diff与v4/v5分列，先独立审查测试后RED，再最小实现、同冻结全体GREEN、独立实现审查，最后才能删测与最终门禁。

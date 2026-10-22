@@ -444,3 +444,161 @@ mod list_fence_ownership_tests {
         }
     }
 }
+
+mod prose_fence_repair_tests {
+    use super::*;
+
+    fn expected(prose: &str, repaired: bool, code_text: &str) -> Vec<RenderNode> {
+        let prose = if repaired {
+            RenderNode::Paragraph {
+                spans: vec![
+                    Inline::Text("before ".to_owned()),
+                    Inline::Strikethrough(vec![Inline::Text("unfinished".to_owned())]),
+                ],
+            }
+        } else {
+            paragraph(prose)
+        };
+        vec![RenderNode::List(ListBlock {
+            ordered: false,
+            start: 1,
+            items: vec![ListItem {
+                checked: None,
+                children: vec![prose, code(code_text)],
+            }],
+        })]
+    }
+
+    fn assert_pending(stream: &MarkdownStream, expected: &[RenderNode], context: &str) {
+        let snapshot = stream.snapshot();
+        assert!(
+            snapshot.blocks.is_empty(),
+            "{context}: list committed before finish"
+        );
+        assert_eq!(
+            snapshot.pending.expect("pending list").nodes,
+            expected,
+            "{context}"
+        );
+    }
+
+    fn verify_fence(fence: &str, closed_prose: bool) {
+        let prose = if closed_prose {
+            "before ~~unfinished~~"
+        } else {
+            "before ~~unfinished"
+        };
+        let stages = [
+            (
+                format!("- {prose}\n\n  {fence}text\n  literal\n"),
+                "literal\n",
+            ),
+            ("  \n  尾🙂\n".to_owned(), "literal\n\n尾🙂\n"),
+            (format!("  {fence}\n"), "literal\n\n尾🙂\n"),
+        ];
+        let mut incremental = MarkdownStream::new();
+        let mut source = String::new();
+        for (stage, (delta, code_text)) in stages.iter().enumerate() {
+            source.push_str(delta);
+            incremental.append(delta);
+            let repaired = expected(prose, true, code_text);
+            let raw = expected(prose, closed_prose, code_text);
+            let context = format!("fence={fence} closed_prose={closed_prose} stage={stage}");
+            assert_pending(&incremental, &repaired, &context);
+            for (schedule, chunks) in chunk_schedules(&source) {
+                let mut stream = MarkdownStream::new();
+                for chunk in chunks {
+                    stream.append(chunk);
+                }
+                let context = format!("{context} schedule={schedule}");
+                assert_pending(&stream, &repaired, &context);
+                finish_with_expected(&mut stream, &raw, &context);
+            }
+        }
+        finish_with_expected(
+            &mut incremental,
+            &expected(prose, closed_prose, "literal\n\n尾🙂\n"),
+            &format!("fence={fence} closed_prose={closed_prose} incremental finish"),
+        );
+    }
+
+    #[test]
+    fn pending_prose_repair_keeps_backtick_fences_on_their_original_line() {
+        verify_fence("```", false);
+    }
+
+    #[test]
+    fn pending_prose_repair_keeps_tilde_fences_on_their_original_line() {
+        verify_fence("~~~", false);
+    }
+
+    #[test]
+    fn closed_strikethrough_before_list_fences_preserves_code_and_real_blank_lines() {
+        for fence in ["```", "~~~"] {
+            verify_fence(fence, true);
+        }
+    }
+}
+
+#[test]
+fn quote_first_list_continuations_preserve_owned_quote_paragraphs_across_chunks() {
+    let quote = |children| RenderNode::BlockQuote { children };
+    let cases = [
+        (
+            "dedented_independent_quote",
+            "- > first\n\n> outside\n",
+            vec![list(quote(vec![paragraph("first")]))],
+            vec![quote(vec![paragraph("outside")])],
+        ),
+        (
+            "depth_zero_continuation",
+            "- > first\n  >\n  > second\n",
+            vec![],
+            vec![list(quote(vec![paragraph("first"), paragraph("second")]))],
+        ),
+        (
+            "depth_one_continuation",
+            "- parent\n  - > first\n    >\n    > second\n",
+            vec![],
+            vec![RenderNode::List(ListBlock {
+                ordered: false,
+                start: 1,
+                items: vec![ListItem {
+                    checked: None,
+                    children: vec![
+                        paragraph("parent"),
+                        list(quote(vec![paragraph("first"), paragraph("second")])),
+                    ],
+                }],
+            })],
+        ),
+    ];
+    for (case, source, committed, pending) in cases {
+        let expected: Vec<_> = committed.iter().chain(&pending).cloned().collect();
+        for (schedule, chunks) in chunk_schedules(source) {
+            let mut stream = MarkdownStream::new();
+            for chunk in chunks {
+                stream.append(chunk);
+            }
+            let context = format!("{case} schedule={schedule}");
+            let snapshot = stream.snapshot();
+            assert_eq!(
+                snapshot
+                    .blocks
+                    .iter()
+                    .flat_map(|block| block.nodes.iter())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                committed,
+                "{context}: committed tree"
+            );
+            assert_eq!(
+                snapshot.pending.expect("pending quote or list").nodes,
+                pending,
+                "{context}: pending tree"
+            );
+            assert_eq!(visible_nodes(&stream), expected, "{context}");
+            finish_with_expected(&mut stream, &expected, &context);
+        }
+    }
+}
