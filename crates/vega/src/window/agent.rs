@@ -915,6 +915,7 @@ impl VegaWindow {
         if worker.is_err() {
             stream.update(cx, |stream, cx| stream.finish_composer_run(false, cx));
             self.poison_artifact_agent_generation(generation, &stream);
+            self.detach_finished_computer_use(generation, thread_id, &stream, cx);
             let failed_run = self.agent_controller.finish(generation, thread_id, &stream);
             // A spawn failure releases the run it just registered; the row
             // must not keep spinning for a worker that never started.
