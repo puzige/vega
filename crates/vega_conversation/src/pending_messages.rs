@@ -223,6 +223,26 @@ impl QueueSteeringSource {
 }
 
 impl RuntimeSteeringSource for QueueSteeringSource {
+    fn ready(&self) -> BoxFuture<'_, Result<Option<String>, VegaError>> {
+        let database = self.database.clone();
+        let thread = self.thread_id.clone();
+        let generation = self.generation.clone();
+        let cancel = self.cancel.clone();
+        async move {
+            if cancel.is_cancelled() {
+                return Ok(None);
+            }
+            tokio::task::spawn_blocking(move || {
+                let store = Store::open_read_only(database).map_err(|_| runtime_failure())?;
+                rows::next_steer_metadata(store.conn(), &thread, &generation)
+                    .map_err(|_| runtime_failure())
+            })
+            .await
+            .map_err(|_| runtime_failure())?
+        }
+        .boxed()
+    }
+
     fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>> {
         let database = self.database.clone();
         let workspace = self.workspace.clone();
