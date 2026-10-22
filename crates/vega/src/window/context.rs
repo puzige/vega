@@ -69,32 +69,59 @@ fn context_record(id: u64, status: ContextCompactionStatus) -> ContextCompaction
 }
 
 impl VegaWindow {
-    pub(crate) fn begin_context_primary_owner(&mut self, generation: u64, cx: &App) {
-        if let Some(run) = self
+    pub(crate) fn begin_context_primary_owner(&mut self, generation: u64, cx: &mut Context<Self>) {
+        let Some((thread_id, stream, model)) = self
             .agent_controller
             .active
             .values()
             .find(|run| run.generation == generation)
-        {
-            if self
-                .context_controller
-                .owner
-                .as_ref()
-                .is_some_and(|owner| owner.thread_id == run.thread_id && owner.stream == run.stream)
-            {
-                self.context_controller.load_sequence =
-                    self.context_controller.load_sequence.saturating_add(1);
-            }
-            self.context_controller.primary_owner.insert(
-                generation,
-                ContextOwner {
-                    epoch: generation,
-                    thread_id: run.thread_id.clone(),
-                    model: run.stream.read(cx).displayed_model().to_owned(),
-                    stream: run.stream.clone(),
-                },
-            );
+            .map(|run| {
+                (
+                    run.thread_id.clone(),
+                    run.stream.clone(),
+                    run.stream.read(cx).displayed_model().to_owned(),
+                )
+            })
+        else {
+            return;
+        };
+        let owner_matches = self
+            .context_controller
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.thread_id == thread_id && owner.stream == stream);
+        if owner_matches {
+            self.context_controller.load_sequence =
+                self.context_controller.load_sequence.saturating_add(1);
         }
+        self.context_controller.primary_owner.insert(
+            generation,
+            ContextOwner {
+                epoch: generation,
+                thread_id: thread_id.clone(),
+                model: model.clone(),
+                stream: stream.clone(),
+            },
+        );
+        // A run on the current route owns the context denominator from its
+        // first frame. Without this read a newly materialized task waits for
+        // the post-run refresh, because sync_context_route skips drafts and
+        // does not refresh while a run is active.
+        if !self.owns_stream_request(&stream, &thread_id, cx) {
+            return;
+        }
+        if !owner_matches {
+            self.context_controller.invalidate();
+            self.context_controller.owner = Some(ContextOwner {
+                epoch: self.context_controller.epoch,
+                thread_id,
+                model,
+                stream,
+            });
+        }
+        // One projection read per run start. `restore_status` stays false so a
+        // stale failure banner is not replayed mid-run.
+        self.refresh_context_projection(false, cx);
     }
 
     pub(crate) fn finish_context_primary_owner(&mut self, generation: u64) {
