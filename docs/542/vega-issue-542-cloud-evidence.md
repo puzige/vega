@@ -165,3 +165,30 @@ The parent confirmed the responsible paths: real reconciliation assigns `next_la
 This rename/reconcile boundary is absent from the frozen 22 tests. The original cycle is therefore paused under execution-guide §7.2: preserve all original assertions and source evidence, record an additive boundary-cycle specification against the existing implementation, author and independently review a focused observable regression while the deduplication implementation remains unchanged, obtain valid Actions RED, then make the minimal deduplication correction and require all original tests plus the new boundary test GREEN. No deduplication fix or retrospective proving test is authorized before that new RED. No product choice or safety contract is relaxed.
 
 The API/import repair is an independently reviewed prerequisite that lets the test environment compile far enough to evaluate the new boundary; it does not implement the deduplication fix. No GREEN, test deletion, ready PR, merge, installation, or manual acceptance is claimed.
+
+## Boundary test submission and macro-shadowing harness failure
+
+The additive test and cycle specification were independently reviewed and committed as `5bee216d8dbec305f98bbd4020e7551e88803465`, after prerequisite repair `f52a1e7f0b599dfc6f80611a43be7223df7ca929`. The test-only code-diff SHA-256 is `729407ff84576961bec29e2cd426a253c27f1650e9a1b7437091fdb5531f04e0`; removing just that addition restores the previous UI file byte-for-byte. Original 22 tests are retained; inventory is 23 static definitions, not runtime counts. The committed specification was read back remotely with matching Git blob `ee007b5ade96ed6c826af8f8ad7be68234cebfd2`.
+
+- Run: <https://github.com/puzige/vega/actions/runs/39842063120>, associated head `5bee216d8dbec305f98bbd4020e7551e88803465`, created `2026-10-22T19:39:54Z`, failed.
+- Actual Clippy checkout: `004fb2cef80c75cfd86c1c055d09fd7d20a83c88`, synthetic merge into master `6615748f91273bfb8ee424011b3b5a09b3777d2b`.
+- Nextest job: <https://github.com/puzige/vega/actions/runs/39842063120/job/120045425323>.
+- Clippy job: <https://github.com/puzige/vega/actions/runs/39842063120/job/120045425464>.
+- Required aggregator: <https://github.com/puzige/vega/actions/runs/39842063120/job/120047489162>.
+
+Both jobs stopped with the same harness compilation error:
+
+```text
+error: recursion limit reached while expanding `#[test]`
+    --> crates/vega/src/window/artifact.rs:1625:5
+1625 |     #[gpui_kit::test]
+     |     ^^^^^^^^^^^^^^^^^
+```
+
+The parent inspected both logs and actual locked macro source. The suggested compiler recursion-limit increase is not the appropriate correction: `window` imports `gpui_kit::*`, `artifact` imports its parent wildcard, and the controller test module imports that wildcard again. This brings the GPUI `test` macro into scope. Its generated unqualified `#[test]` resolves recursively to that same macro instead of Rust's built-in attribute. GPUI Kit 0.6.1 explicitly documents this hazard and advises explicit test imports. The UI test module uses a prelude/named imports that exclude the macro.
+
+Classification: **harness macro-name shadowing**, neither target boundary RED nor GREEN. No behavior assertion ran and runtime discovery/execution/pass/fail/ignore/skip counts were not obtained. Format and the existing Python step succeeded. An initially inconsistent Clippy job status delayed retrieval of that job's log; the already available Nextest failure was used for diagnosis without treating missing logs as success.
+
+A nonwriter reviewed and approved an exact controller test import-only replacement. The original writer applied it and stopped writes, preserving all six qualified GPUI attributes, test bodies, assertions, fixtures, production code, and runtime settings. Scoped binary-diff SHA-256: `f7514fb9a564379551caa0b10dd9295a526b9d994a0dd8029da3adb0e3c9c6b1`. Whole-file content outside the import block is unchanged; no recursion limit or test ignore was introduced.
+
+A required fetch found newer master `5fb9a3d0491c620a901e67a0e3f348ba05bd76c6` (bounded native delegation/context, #561). Parent inspected the nonoverlapping paths and merged it without conflicts as `2d638b37f93743837fc3f44a4403f400f12b90cb`, preserving the stopped import patch and all prior commits. Artifact implementation and test files were unchanged by that integration. The next existing Actions run must evaluate this current integrated baseline; no prior result substitutes for it. Deduplication repair remains withheld until valid boundary RED.

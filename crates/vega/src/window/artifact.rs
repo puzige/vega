@@ -1203,12 +1203,25 @@ impl VegaWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use gpui_kit::{Bounds, TestAppContext, WindowBounds, WindowHandle, WindowOptions, px, size};
+    use super::{
+        ActiveArtifactRoute, AgentBatch, AgentBatchIngress, ArtifactCard, ArtifactCardId,
+        ArtifactPreviewFence, ArtifactPreviewProjection, ArtifactRouteIdentity, ArtifactService,
+        ArtifactSource, ArtifactTerminalDispatch, ArtifactTerminalResult, ArtifactTerminalWork,
+        ConversationEvent, ConversationStopReason, ConversationStream, GitWorkspaceErrorCode,
+        GitWorkspaceService, OpenedThread, PermissionMode, SelectedProject, SettingsOpen,
+        SummaryCost, TaskBackend, TaskCostSummary, TaskSummaryOutcome, Thread, ThreadMode,
+        ThreadStatus, ToolCall, ToolCallStatus, ToolResult, VegaStore, VegaWindow,
+    };
+    use gpui_kit::{
+        App, AppContext, Bounds, Context, Entity, Global, IntoElement, ParentElement, Render,
+        Styled, TestAppContext, Window, WindowBounds, WindowHandle, WindowOptions, div, px, size,
+    };
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
+    use std::sync::Arc;
     use vega_conversation::types::ArtifactCard as ArtifactProjection;
+    use vega_theme::theme;
     use vega_ui::artifact_card::observation::{
         frame, group_painted, group_texts, items, ordered, painted, texts,
     };
