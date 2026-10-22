@@ -262,6 +262,9 @@ impl gpui_kit::Render for IconTooltip {
     ) -> impl IntoElement {
         let colors = vega_theme::theme(cx).colors;
         let shortcut = self.1.clone();
+        let label = self.0.clone();
+        #[cfg(any(test, feature = "artifact-test-observation"))]
+        let label = crate::artifact_card::observation::observe_tooltip(label);
         gpui_kit::div()
             .flex()
             .items_center()
@@ -274,7 +277,7 @@ impl gpui_kit::Render for IconTooltip {
             .border_color(colors.border_subtle)
             .text_size(px(vega_theme::Typography::METADATA))
             .text_color(colors.text_primary)
-            .child(self.0.clone())
+            .child(label)
             .children(shortcut.map(|shortcut| {
                 gpui_kit::div()
                     .px_1()

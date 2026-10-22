@@ -579,3 +579,98 @@ impl ArtifactService {
 mod helpers;
 
 pub(crate) use helpers::*;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ArtifactCardId, ArtifactEvidence, ArtifactRecord, ArtifactService, ArtifactSource,
+        GitWorkspaceService, TerminalFingerprint, card_seal,
+    };
+    use std::ffi::OsString;
+    use std::sync::Arc;
+
+    fn service_with_evidence(size: Option<u64>, bytes_written: u64) -> ArtifactService {
+        let service = ArtifactService::new(
+            Arc::new(GitWorkspaceService::for_test()),
+            "projection-project".into(),
+            "projection-thread".into(),
+            7,
+        )
+        .unwrap();
+        let evidence = size.map(|size| ArtifactEvidence {
+            dev: 1,
+            ino: 2,
+            size,
+            mtime_ns: 3,
+            digest: vec![4; 20],
+        });
+        let record = ArtifactRecord {
+            id: ArtifactCardId {
+                route_epoch: 7,
+                slot: 0,
+                seal: card_seal(service.instance_nonce, 7, 0),
+            },
+            fingerprint: TerminalFingerprint::Write {
+                path: "report.txt".into(),
+                input_fingerprint: "projection-input".into(),
+                bytes_written,
+            },
+            path: OsString::from("report.txt"),
+            label: "report.txt".into(),
+            source: if evidence.is_some() {
+                ArtifactSource::AgentArtifact
+            } else {
+                ArtifactSource::WorkspaceChange
+            },
+            evidence,
+            current_file_id: None,
+            stale_disabled: true,
+        };
+        {
+            let mut state = service.state.lock().unwrap();
+            state.by_call_id.insert("projection-call".into(), 0);
+            state.cards.push(record);
+        }
+        service
+    }
+
+    #[test]
+    fn artifact_size_is_projected_from_retained_evidence() {
+        let service = service_with_evidence(Some(12_345), 12_345);
+        let cards = service.cards();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].size_bytes, Some(12_345));
+    }
+
+    #[test]
+    fn terminal_byte_count_without_evidence_is_not_a_projected_size() {
+        let service = service_with_evidence(None, 12_345);
+        let cards = service.cards();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].size_bytes, None);
+    }
+
+    #[test]
+    fn empty_file_evidence_projects_a_known_zero_size() {
+        let service = service_with_evidence(Some(0), 0);
+        let cards = service.cards();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].size_bytes, Some(0));
+    }
+
+    #[test]
+    fn provenance_downgrade_removes_the_projected_size() {
+        let service = service_with_evidence(Some(12_345), 12_345);
+        let before = service.cards();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].size_bytes, Some(12_345));
+        service
+            .apply_reconcile(before[0].id, None, None, None, true)
+            .unwrap();
+        let after = service.cards();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, before[0].id);
+        assert_eq!(after[0].source, ArtifactSource::WorkspaceChange);
+        assert_eq!(after[0].size_bytes, None);
+    }
+}

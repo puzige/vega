@@ -186,6 +186,65 @@ pub(crate) struct VegaWindow {
 }
 
 impl VegaWindow {
+    #[cfg(test)]
+    fn for_artifact_tests(cx: &mut Context<Self>) -> Self {
+        Self {
+            composer_prediction_config_generation: 0,
+            composer_prediction: None,
+            updater: crate::updater::Updater::default(),
+            update_notice_dismissed: false,
+            navigation: navigation::Navigation::new(cx, None),
+            completion_attention: notifications::CompletionAttention::default(),
+            palette: crate::app_palette::AppPalette::default(),
+            sidebar: cx.new(Sidebar::new),
+            settings_view: None,
+            mcp_settings: None,
+            pricing_controller: PricingController::new(None),
+            stream_view: None,
+            thread_scroll_states: scroll_state::ThreadScrollStateLru::default(),
+            message_location_route_thread_id: None,
+            message_location_route_generation: 0,
+            message_location_request_generation: 0,
+            deferred_message_location: None,
+            draft: None,
+            agent_controller: AppAgentController::default(),
+            automation_controller: crate::automation_controller::AutomationController::default(),
+            context_controller: context::ContextController::default(),
+            file_index_controller: FileIndexController::default(),
+            diff_controller: DiffController::default(),
+            workspace: workspace::Workspace::default(),
+            subagent_panel: subagent_panel::SubagentPanel::new(cx),
+            automation_editors: Default::default(),
+            image_preview: image_preview::ImagePreviewController::new(cx),
+            environment_collapsed: true,
+            environment_overlay_open: false,
+            sidebar_resize_dragging: false,
+            appearance_subscription: None,
+            artifact_controller: ArtifactController::default(),
+            branch_controller: BranchController::default(),
+            commit_controller: CommitController::default(),
+            trusted_actions: TrustedActionCoordinator::default(),
+            window_alive: Arc::new(AtomicBool::new(true)),
+            configured_models: None,
+            model_capability_authority: None,
+            model_capability_projection: ModelCapabilitySettingsProjection::Loading,
+            model_capability_generation: 0,
+            model_capability_pending: None,
+            configured_reasoning: None,
+            configured_reasoning_error: None,
+            configured_reasoning_authority: None,
+            loaded_replay_config: None,
+            reasoning_save_pending: None,
+            composer_reasoning_operation: 0,
+            pending_composer_thinking: None,
+            model_catalog_refresh_pending: false,
+            reasoning_error_hold: None,
+            model_catalog_loading: false,
+            model_catalog_generation: 0,
+            deferred_model_refresh: None,
+        }
+    }
+
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         cx.on_release(|this, cx| {
             if cx

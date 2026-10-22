@@ -16,6 +16,18 @@ pub struct WorkspaceFileId {
     pub(crate) seal: u64,
 }
 
+#[cfg(feature = "test-support")]
+impl WorkspaceFileId {
+    #[doc(hidden)]
+    pub const fn for_test(generation: u64, slot: u32) -> Self {
+        Self {
+            generation,
+            slot,
+            seal: 0,
+        }
+    }
+}
+
 impl std::fmt::Debug for WorkspaceFileId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("WorkspaceFileId([opaque])")

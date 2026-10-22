@@ -263,6 +263,17 @@ impl std::fmt::Debug for GitWorkspaceService {
 }
 
 impl GitWorkspaceService {
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn for_test() -> Self {
+        Self {
+            root: PathBuf::from("vega-test-no-io"),
+            identity: RootIdentity { dev: 0, ino: 0 },
+            instance_nonce: SERVICE_NONCE.fetch_add(1, Ordering::Relaxed),
+            state: Arc::new(Mutex::new(ServiceState::default())),
+        }
+    }
+
     /// Creates a service fenced to one canonical repository root.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, GitWorkspaceError> {
         Self::new_inner(root.as_ref())

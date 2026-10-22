@@ -16,6 +16,28 @@ pub struct ArtifactCardId {
     pub(crate) seal: u64,
 }
 
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn artifact_test_error_event(message_id: Option<String>) -> ConversationEvent {
+    ConversationEvent::Error {
+        message_id,
+        error: Arc::new(std::io::Error::other("synthetic artifact turn failure").into()),
+        execution_duration_ms: Some(1),
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl ArtifactCardId {
+    #[doc(hidden)]
+    pub const fn for_test(route_epoch: u64, slot: u32) -> Self {
+        Self {
+            route_epoch,
+            slot,
+            seal: 0,
+        }
+    }
+}
+
 impl std::fmt::Debug for ArtifactCardId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ArtifactCardId([opaque])")
@@ -56,6 +78,16 @@ pub struct ArtifactPreviewProjection {
 }
 
 impl ArtifactPreviewProjection {
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn for_test(card_id: ArtifactCardId, file_id: WorkspaceFileId, text: String) -> Self {
+        Self {
+            card_id,
+            file_id,
+            text,
+        }
+    }
+
     pub const fn card_id(&self) -> ArtifactCardId {
         self.card_id
     }
