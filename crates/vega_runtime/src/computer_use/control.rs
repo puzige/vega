@@ -8,6 +8,13 @@ use tokio_util::sync::CancellationToken;
 
 static OWNER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
+pub(super) fn owner_busy() -> bool {
+    match OWNER.get_or_init(|| Mutex::new(None)).lock() {
+        Ok(owner) => owner.is_some(),
+        Err(_) => true,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlPhase {
     Disconnected,

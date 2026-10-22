@@ -7,8 +7,12 @@ pub fn retained_entry(
     error: &vega_conversation::types::ComputerUseError,
     dismissed: bool,
 ) -> Option<PrepareEntryKind> {
-    let _ = (error, dismissed);
-    None
+    if dismissed {
+        return None;
+    }
+    error
+        .needs_permissions()
+        .then_some(PrepareEntryKind::Permissions)
 }
 
 #[cfg(test)]

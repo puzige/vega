@@ -12,6 +12,7 @@ mod diagnostics;
 pub mod guide;
 mod media;
 mod prepare;
+mod probe;
 mod progress;
 
 pub use components::ManagedComponents;
@@ -22,6 +23,7 @@ pub use prepare::{
     ComponentState, DirectCapture, DirectCaptureReason, ExtensionState, PermissionState,
     Preparation, PromptMode, preparation_from_check_permissions, unknown_preparation,
 };
+pub use probe::PreparationProbe;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

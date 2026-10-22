@@ -45,8 +45,32 @@ pub const CARD_INSET: f64 = 18.0;
 pub const FOLLOW_EPSILON: f64 = 1.0;
 
 pub fn perch(settings: Option<Rect>, card: (f64, f64), visible: Rect) -> (f64, f64) {
-    let _ = (settings, card);
-    (visible.x, visible.y)
+    let origin = match settings {
+        Some(settings) => (
+            settings.max_x() - CARD_INSET + CARD_SHADOW_PADDING - card.0,
+            settings.max_y() - CARD_INSET + CARD_SHADOW_PADDING - card.1,
+        ),
+        None => (
+            visible.max_x() + CARD_SHADOW_PADDING - card.0 - 24.0,
+            visible.max_y() + CARD_SHADOW_PADDING - card.1 - 24.0,
+        ),
+    };
+    (
+        clamp(
+            origin.0,
+            visible.x - CARD_SHADOW_PADDING,
+            visible.max_x() + CARD_SHADOW_PADDING - card.0,
+        ),
+        clamp(
+            origin.1,
+            visible.y - CARD_SHADOW_PADDING,
+            visible.max_y() + CARD_SHADOW_PADDING - card.1,
+        ),
+    )
+}
+
+fn clamp(value: f64, low: f64, high: f64) -> f64 {
+    value.clamp(low, high.max(low))
 }
 
 pub fn follow_target(
@@ -56,13 +80,23 @@ pub fn follow_target(
     current: (f64, f64),
     frozen: bool,
 ) -> Option<(f64, f64)> {
-    let _ = (settings, card, visible, current, frozen);
-    None
+    if frozen {
+        return None;
+    }
+    let target = perch(settings?, card, visible);
+    if (target.0 - current.0).abs() <= FOLLOW_EPSILON
+        && (target.1 - current.1).abs() <= FOLLOW_EPSILON
+    {
+        return None;
+    }
+    Some(target)
 }
 
 pub fn screen_visible_for(screens: &[(Rect, Rect)], settings: Rect) -> Option<Rect> {
-    let _ = (screens, settings);
-    None
+    screens
+        .iter()
+        .find(|(frame, _)| frame.intersects(settings))
+        .map(|(_, visible)| *visible)
 }
 
 #[cfg(test)]
