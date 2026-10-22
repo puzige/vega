@@ -70,8 +70,11 @@ pub struct ConversationStream {
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     pub(crate) run_responses: HashMap<String, phase::RunResponses>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
-    /// Exact call id to its sole inline artifact card.
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
+    pub(crate) artifact_call_owners: HashMap<String, Option<String>>,
+    pub(crate) artifact_history_generation: u64,
+    pub(crate) artifact_groups: HashMap<String, Entity<ArtifactGroup>>,
+    pub(crate) finished_artifact_turns: HashSet<String>,
     /// Route-owned safe branch selector; Git authority remains in the app controller.
     pub(crate) branch_selector: Entity<BranchSelector>,
     /// IO-free canonical commit panel; repository authority stays in app/headless.
@@ -496,6 +499,10 @@ impl ConversationStream {
             run_responses: HashMap::new(),
             run_activity_groups: HashMap::new(),
             artifact_cards: HashMap::new(),
+            artifact_call_owners: HashMap::new(),
+            artifact_history_generation: 0,
+            artifact_groups: HashMap::new(),
+            finished_artifact_turns: HashSet::new(),
             branch_selector,
             commit_panel,
             permission_queue,

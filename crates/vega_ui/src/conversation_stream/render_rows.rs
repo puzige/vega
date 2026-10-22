@@ -213,13 +213,7 @@ fn render_entry_internal(
                 .child(ToolActivityGroup::render(group, window, cx))
                 .into_any_element()
         }
-        StreamEntry::Artifact { card } => {
-            let card = card.clone();
-            let row_count = card.read(cx).row_count();
-            card_rows_item(row_count, move |row| {
-                ArtifactCard::render_row(card.clone(), row, window, cx)
-            })
-        }
+        StreamEntry::ArtifactGroup { group } => ArtifactGroup::render(group.clone(), window, cx),
         StreamEntry::Permission { card } => {
             let card = card.clone();
             let row_count = card.read(cx).row_count();
