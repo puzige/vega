@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod project_removal_tests;
-
 use super::*;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 impl ThreadsBlock {
@@ -121,11 +118,6 @@ impl ThreadsBlock {
         };
         let menu = div()
             .id("organization-menu")
-            .map(|menu| {
-                #[cfg(test)]
-                let menu = gpui_kit::test::TestSupportExt::test_support(menu);
-                menu
-            })
             .track_focus(&org.menu_focus)
             .occlude()
             .w(px(Layout::TASK_MENU_WIDTH))
@@ -218,11 +210,6 @@ impl ThreadsBlock {
             .children(items.into_iter().enumerate().map(|(index, (label, _))| {
                 div()
                     .id(ElementId::Name(format!("organization-menu-{index}").into()))
-                    .map(|item| {
-                        #[cfg(test)]
-                        let item = gpui_kit::test::TestSupportExt::test_support(item);
-                        item
-                    })
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .flex_shrink_0()
                     .flex()
