@@ -10,7 +10,7 @@ use std::{
     future::{Future, pending},
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
 };
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -154,16 +154,10 @@ fn assert_released(authority: &Arc<OwnershipAuthority>) {
     run.finish_cleanup();
 }
 
-struct NoopWake;
-
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
-
 fn assert_pending<F: Future>(future: Pin<&mut F>) {
-    let waker = Waker::from(Arc::new(NoopWake));
+    let waker = Waker::noop();
     assert!(matches!(
-        future.poll(&mut Context::from_waker(&waker)),
+        future.poll(&mut Context::from_waker(waker)),
         Poll::Pending
     ));
 }
