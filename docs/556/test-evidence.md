@@ -99,3 +99,14 @@ Both remote inputs were fetched back and verified at 19:08:32 UTC, before produc
 [Actions 39837443986](https://github.com/puzige/vega/actions/runs/39837443986) at the frozen head compiled and executed all 28 cases: 25 passed, three failed, zero skipped; format/Clippy and 60 Python tests passed. The original native wait replay now passed with its unchanged behavioral assertions. The B4 persistence/release and W2 cancel/release cases failed at their target assertions. B1 failed earlier: its new question fixture used `late-choice`, but the existing `UserQuestionInput::validate` permits only lowercase ASCII, digits and underscores for question IDs. Its expiry assertion therefore was not reached; this is not valid B1 RED.
 
 The minimal correction changes only that fixture ID to `late_choice`. Production and every behavioral assertion remain unchanged. Independent correction review and a new existing Actions run are required before production repair. The unsuccessful run remains recorded: 19:08:12–19:11:50 UTC (218,000 ms), first observed complete at 19:13:22 (92,000 ms later).
+
+### Corrected v3.1 behavioral RED
+
+The independently approved single-string correction is `a326bcb0addd9936489120e0a95969640b0799e8`. [Actions 39838505410](https://github.com/puzige/vega/actions/runs/39838505410), Nextest job `120033015226`, executed 28 cases: **25 passed, three target failures, zero skipped**, in 4.090 seconds. The three failures now reach `late attention cannot forgive twenty elapsed active minutes`, `terminal persistence failure must wake wait before host release`, and `cancel receipt cannot advertise terminal state before release`. All original 25 cases pass. Format, Clippy and all 60 Python tests pass. Production repair is authorized only after this evidence; tests and expectations are frozen.
+
+The workflow ran 19:15:35–19:20:01 UTC (266,000 ms), first observed complete at 19:20:41 (40,000 ms later). Clippy ran 19:15:39–19:19:53 and Nextest 19:15:39–19:19:51; these overlap. No CI rerun or assertion weakening was used.
+
+- [Corrected full test source](https://github.com/puzige/vega/blob/a326bcb0addd9936489120e0a95969640b0799e8/crates/vega_conversation/src/agent/subagents/execution_bounds_tests.rs): 106,966 bytes, SHA256 `267f9e8adcaacbeca5640e678bbd8c96a82c078e997bfbf8473df48884628d39`.
+- [Corrected boundary delta and documentation](https://github.com/puzige/vega/compare/857de90459e21cd5908120688a5f522eee2a7bf0...a326bcb0addd9936489120e0a95969640b0799e8.diff): 25,834 bytes, SHA256 `7d92d41064cc2903315364b09495c4c5a9e000814be01ab3b36bfcac7cefd130`. Test-file-only patch: 10,994 bytes, SHA256 `d52aecf307760063f824469d14ade210aebaaa9c065afcd272c6eea67edd8950`.
+
+Both corrected remote inputs were fetched back at 19:16:06 UTC. Together with the original v3 support patch they preserve the complete frozen setup. Same-source GREEN and the remaining delivery gates are still pending.

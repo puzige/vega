@@ -72,11 +72,12 @@ impl StageActivity {
 
     pub fn expire(&self) -> bool {
         let expired = self.state.lock().is_ok_and(|mut state| {
-            if state.finished
-                || state.expired
-                || !state.pending.is_empty()
-                || state.active.saturating_add(state.since.elapsed()) < ACTIVE_LIMIT
-            {
+            let active = if state.pending.is_empty() {
+                state.active.saturating_add(state.since.elapsed())
+            } else {
+                state.active
+            };
+            if state.finished || state.expired || active < ACTIVE_LIMIT {
                 return false;
             }
             state.expired = true;

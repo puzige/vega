@@ -794,6 +794,12 @@ impl Supervisor {
                 launch.host.updated(snapshot.clone())?;
             }
         }
+        let snapshot = self
+            .registry
+            .snapshots(Some(std::slice::from_ref(target)))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| failure("unknown_agent"))?;
         Ok(serde_json::json!({"agent":snapshot}))
     }
 }
@@ -1218,13 +1224,15 @@ fn child_lifecycle_inner<'a>(
             snapshot.state = SubagentState::Failed;
             snapshot.result = "Subagent result could not be saved".into();
             snapshot.truncated = false;
+            registry.quarantine(snapshot.clone(), "Subagent terminal persistence failed; ownership remains occupied");
+        } else {
+            let _ = registry.update(snapshot.clone());
         }
-        let _ = registry.update(snapshot.clone());
         let release = host.finish_and_release(snapshot.clone(), complete && persisted);
         let released = release.await.is_ok();
-        if !persisted || !released {
+        if !released {
             registry.quarantine(snapshot, if !persisted { "Subagent terminal persistence failed; ownership remains occupied" } else { "Subagent host release failed; ownership remains occupied" });
-        } else {
+        } else if persisted {
             registry.finish(snapshot, boundary);
         }
     }

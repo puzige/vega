@@ -52,7 +52,7 @@ Report all pairs before aggregating. Three pairs are a small directional pilot, 
 | Claim | Required evidence | Current status |
 | --- | --- | --- |
 | No repeated explicit/default wait timeout loop | Native-path replay of explicit 60000-ms calls, shared positive/zero allowance, target identity and terminal-delivery checks | Candidate 857de904 passes repeated-wait call-count assertions; trailing runtime-notice observation error requires reviewed test correction; complete GREEN pending |
-| Stage stops at active allowance and drains safely | Controlled-time native lifecycle test with real queue transitions and release failure | Candidate review found three omitted boundary windows; v3.1 tests-first RED and repairs required |
+| Stage stops at active allowance and drains safely | Controlled-time native lifecycle test with real queue transitions and release failure | Candidate review found three omitted boundary windows; corrected v3.1 Actions 39838505410 establishes target RED, repairs and identical-source GREEN pending |
 | Repeated history reduced without dropped user constraints | Provider capture through native followup; large logs, images, authority/source checks, valid large input and configured token admission | v3 removes unvalidated 64/256KiB candidate caps; valid-large-input/token controls GREEN in corrected RED; projection and delegated policy RED |
 | Independent review and CI retained | This PR's test review, RED/GREEN, implementation review, source archive, deletion review and final head gate | Pending |
 | Actually faster native delivery | Installed build plus matched real-task observations under the contract | Not run; no speed percentage claimed |

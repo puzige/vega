@@ -712,10 +712,10 @@ where
         prepared.request.context_budget = actor_config.delegated_context_budget;
     }
     if actor_config.delegated {
-        prepared.request.context_budget = prepared.request.context_budget.map(|budget| {
-            vega_runtime::ContextBudget::new(budget.total_limit(), budget.output_reserve(), false)
-                .expect("existing validated context budget")
-        });
+        prepared.request.context_budget = prepared
+            .request
+            .context_budget
+            .map(vega_runtime::ContextBudget::without_automatic_compaction);
     }
     let subagent_mcp = mcp_servers.clone();
     prepared.request.tool_config = prepared
