@@ -322,12 +322,15 @@ impl ConversationStream {
 }
 
 fn thumbnail(image: &ImagePreview, cx: &App) -> AnyElement {
-    div()
-        .child(crate::image_preview::ImagePreview::thumbnail(
-            &image.view,
-            cx,
-        ))
-        .into_any_element()
+    let row = div();
+    #[cfg(test)]
+    let row =
+        gpui_kit::TestSupportExt::test_support(row.id(("user-image", image.view.entity_id())));
+    row.child(crate::image_preview::ImagePreview::thumbnail(
+        &image.view,
+        cx,
+    ))
+    .into_any_element()
 }
 
 pub(crate) fn render_user_images(images: &[ImagePreview], cx: &App) -> AnyElement {

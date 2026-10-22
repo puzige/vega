@@ -1297,6 +1297,8 @@ impl RunActivityGroup {
                 .absolute()
                 .inset_0(),
             );
+        #[cfg(test)]
+        let header = gpui_kit::test::TestSupportExt::test_support(header);
         let mut sections = vec![StickySection::plain(
             div()
                 .mt(px(Layout::CONVERSATION_DIVIDER_GAP))

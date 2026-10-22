@@ -1,0 +1,76 @@
+# #535 排队与插话的运行展示
+
+## 状态与基线
+
+先行测试方案 v2.1，生产行为尚未修改；现有 18 个测试定义已停止写入待完整独立审查，未执行、未取得有效 RED。
+初始基线：`83fd51d79940516029cdc1eaf8e81566870c877b`。
+当前基线：`6615748f91273bfb8ee424011b3b5a09b3777d2b`，已同步上游 Markdown 渲染修复、#554 文档、#547 图片预算/首次输入压缩修复及 #546 Composer 胶囊；#535 的 15 个测试/支持文件内容不因同步而改变，A1–A7 产品验收不变。
+Issue：https://github.com/puzige/vega/issues/535
+
+## 用户裁决
+
+- 排队消息发出后上方出现 Completed，用户消息气泡与下方 Working for 间距不一致。
+- 不使用 CUA；本地不运行、构建或测试 Vega，自动验证只交现有 Actions。
+- 同一次运行只保留一个计时。插话不是任务完成，不以 Completed / Worked for 表示插话边界；普通排队开始的独立运行仍各自计时。
+- 只修排队切换的不一致，保留普通消息的既有间距，不全局收紧。
+
+## 已确认事实
+
+`vega_conversation::agent::events::process_runtime_events` 在处理 `RuntimeEvent::SteeringAccepted` 时，依次发出旧消息 `MessageFinished(duration=None)`、用户投递、新消息开始及沿用原起点的 `RunStarted`。UI 的 `finish_run_activity` 将旧 group 置为 Completed，`RunActivityGroup::label` 因缺少 duration 显示 Completed。持久化也将旧助手消息结束且不写耗时；因此只替换字符串或补上旧段耗时不符合本次裁决。
+
+普通用户气泡和可选择气泡共用顶部 24、底部 48 的布局；复制按钮绝对定位在既有底部空间中。复制槽为 24 + 4 = 28，距行尾为 48 - 28 = 20。上述数值是现行结构，不是本轮像素测量，也不是已证实的间距根因。必须对实际列表的投递、原位转正与普通路径做行为比较。
+
+## 验收矩阵（先于实现）
+
+| 编号 | 场景 | 预期 |
+|---|---|---|
+| A1 | 同一次运行接受一条或多条插话 | 只显示一个当前运行计时，不出现虚假的分段 Completed / Worked for；起点不重置 |
+| A2 | 普通 queue 在前一运行真正完成后启动 | 前一运行真实终态保留，新运行独立计时，不合并不同运行 |
+| A3 | 插话前已有正文、思考、工具、图片或最终回复元数据 | 历史内容、过程展开、复制来源与归属完整；不因移除旧计时标题隐藏过程或串联回复 |
+| A4 | 插话后正常结束、失败、用户停止 | 当前运行真实终态正确，具体错误与恢复入口保留；重复或旧消息终态不污染新运行 |
+| A5 | 切换会话、历史重载及分页 | 显式运行/续接归属维持单计时；不靠相邻文本、缺时长或时间戳猜测同次运行，不将未知历史伪造为插话 |
+| A6 | 普通发送、排队直接投递、插话 echo 原位转正 | 相同内容和窗口下，用户气泡到后继运行行的真实布局一致；无重复消息、额外空行、重叠或无效占位 |
+| A7 | 长文换行、图片、窄窗口、复制 hover/focus、列表重新测量 | 维持各自普通路径的几何与交互；图片按同一普通附图基线比较，不把附图高度当成文字间距 |
+
+## 范围与非目标
+
+修正运行展示归属与排队布局一致性。保留队列消费时机、顺序、去重、持久化事务、安全与权限、输入内容、复制文本以及普通消息几何。不得用修改全局间距、隐藏全部旧过程或猜测同一运行替代修复。不新增依赖、真实外部 E2E 或 CUA 门禁。
+
+## 具体方案与先行测试包
+
+### 真实续接关系
+
+现有 `pending_messages` 的 delivered + steer 不能证明实际插话：`window/pending_messages.rs::continue_pending_queue` 在空闲时也会取该消息独立启动，`agent/pipeline.rs` 使用同一个 `mark_delivered`，保留旧 behavior/generation。generation 是独立 ULID，不是旧 assistant ID。因此不按这些字段或缺时长猜测关系。
+
+最小新增一个 nullable 字段 `pending_messages.accepted_after_assistant_id`，用递增 migration，不新建运行表。仅 `agent/events.rs::persist_runtime_event` 的真实 SteeringAccepted 事务写旧 assistant ID；普通独立投递保持空值。该事务已验证 user seq，并原子插入 successor assistant（user.seq + 1）。store 在同一快照中按准确 user ID、线程、role 和 successor seq 校验关系，不用上一相邻行推测 predecessor。保留 pending 删除与线程级联生命周期；异常关系不得合并。
+
+旧记录无法可靠回填，保持原有未知历史展示；修复后新接受的插话在 live 与 reload 中一致。测试必须覆盖“曾标为 steer，最终独立投递”不被误合并。
+
+### 事件与 UI
+
+在 `vega_conversation::types` 定义明确续接 payload / event，包含前后 assistant ID 和 user ID。`process_runtime_events` 用续接事件替代旧普通 MessageFinished，后续用户投递、MessageStarted、RunStarted 顺序与同一计时起点不变；两个 runtime 接受入口都沿用此转换。需核对 debug、meter 及其他事件消费者的穷举匹配，但不改变计费/队列调度。
+
+UI 收到续接时仅结束旧消息段的 parser/presentation，不标整个运行 Completed。仍为新 assistant 建独立 `RunActivityGroup`，避免 final 收起、隐藏正文和复制集合跨消息污染。旧组进入 continuation 前段模式，停止独立计时；有被收起内容时保留简短 Activity 展开入口，无内容时不留标题占位。新组位于最新插话（含图片）之后，显示唯一当前运行计时。旧正文/工具/复制/错误不移动、不丢失。重复事件幂等，旧终态不得重新唤醒旧计时。
+
+`MessagePage` 各分页读取路径应携带明确 continuation 关系，`history::project_rows` 投影到 UI；查询须涵盖页外 successor，补载旧页不生成第二计时。UI hydration 根据明确 predecessor 关系使用相同展示模式，不依赖当前页相邻关系。同步渲染高度、锚点估算、列表失效和键盘可达性；不改全局48px留白。
+
+### 文件边界
+
+- `vega_store/migrations/`、`vega_store/src/lib.rs`、`pending_messages.rs`、`messages/mod.rs`：字段、真实接受事务写入、页内外关系查询。
+- `vega_conversation/src/types/`、`agent/events.rs`、`history.rs`：typed 续接事件、事件转换、历史投影；必要调用点只做接线。
+- `vega_ui/src/conversation_stream/{content,run_activity,phase,core,message_anchors,pending_messages,render,render_rows}.rs`：段生命周期、单计时、历史、真实布局与失效；只改验收所需路径。
+- 开发测试及最小 cfg(test)/dev feature 接线；不扩大 production public API。
+
+### 测试与观测
+
+先写齐 A1–A7 的有效测试。store 使用内存/隔离临时数据库，验证真实事务结果、独立发送负对照与跨页投影；conversation 验证真实事件转换而不是测试镜像算法。GPUI 使用当前 `gpui-kit 0.6.1` 的 test-support、TestAppContext 和真实 ConversationStream，观测真实 header 的 label/bounds、气泡 painted quads、list bounds、展开行为和 clipboard。观测支持仅最小接线，不改生产决策；snapshot label 不冒充像素文字。
+
+几何加入普通发送阳性对照、直接投递、echo转正、echo后旧run继续输出、零高行及重新测量。相同内容/窗口下比较真实气泡到后继运行行的距离；若中间仍有合法旧内容，记录其实际顺序而非删除内容强行相等。当前尚无间距根因证据，测试若均一致，不得虚构间距修复或改token；报告未复现并保留回归。
+
+v2.1 明确测试边界：保留真实接受事务/事件转换、真实 store → history → UI、真实 controller 终态与队列门禁三组可组合的进程内测试，不为了单条全链路测试扩大生产 API 或构建含 Sidebar/定价等外部依赖的完整 VegaWindow。应用 ingress 的续接事件接线仍须逐项静态审查，不能把分层结果称为整窗 E2E。错误恢复观测实际 `ComposerSubmitted` payload，不仅检查 pending 私有字段；模型执行由用户手测。
+
+几何收尾须同时比较文字气泡底部与最后图片底部到后继 header 的距离，图片组保留独立的普通发送对照。真实可滚动夹具在滚动前后断言位移，再回到目标行比较尺寸与间距；短内容 resize 可以证明重测，但不冒充滚动证据。上述是既有 A4/A6/A7 的观测收尾，不改变用户行为预期。
+
+现有 `.github/workflows/pr-check.yml` 运行云端 fmt、Clippy、Nextest，无新workflow。先行测试可因本规格最小新接口缺失得到接口RED，但须明确行为断言未执行；无关接线错误不是RED。生产修改只能在独立审查并取得有效RED之后。
+
+按仓库规则：专职子 Agent 先写测试，独立审查后 draft PR 取得有效 RED，冻结同一测试，再实施并取得 GREEN；固定源码与云端证据后独立删测，最终空集门禁通过才正式交付。真实 UI 外观由用户手测，静态调查或进程内测试不冒充像素验收。

@@ -1484,9 +1484,33 @@ pub(super) fn message_with_copy(
     }
     let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
     let source = copy.clone();
-    div()
-        .id(("message-with-copy", id))
-        .group(group.clone())
+    let button = crate::icons::icon_button(
+        crate::icons::Icon::Copy,
+        if user {
+            "复制消息"
+        } else {
+            "复制最终回复"
+        },
+        colors,
+        move |_, _, cx| source.copy(cx),
+    )
+    .id(("message-copy", id))
+    .size(px(Layout::COPY_ACTION_SIZE))
+    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    .opacity(0.)
+    .group_hover(group.clone(), |style| style.opacity(1.))
+    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active));
+    #[cfg(test)]
+    let button =
+        gpui_kit::test::TestSupportExt::test_support(button).on_key_down(move |event, _, _| {
+            if event.keystroke.key == "f20" {
+                super::continuation_tests::record_focused_copy(id);
+            }
+        });
+    let row = div().id(("message-with-copy", id));
+    #[cfg(test)]
+    let row = gpui_kit::TestSupportExt::test_support(row);
+    row.group(group.clone())
         .w_full()
         .flex_shrink_0()
         .relative()
@@ -1504,24 +1528,7 @@ pub(super) fn message_with_copy(
                 })
                 .when(!user, |row| row.left_0().bottom_0())
                 .flex()
-                .child(
-                    crate::icons::icon_button(
-                        crate::icons::Icon::Copy,
-                        if user {
-                            "复制消息"
-                        } else {
-                            "复制最终回复"
-                        },
-                        colors,
-                        move |_, _, cx| source.copy(cx),
-                    )
-                    .id(("message-copy", id))
-                    .size(px(Layout::COPY_ACTION_SIZE))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .opacity(0.)
-                    .group_hover(group, |style| style.opacity(1.))
-                    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
-                ),
+                .child(button),
         )
         .into_any_element()
 }
