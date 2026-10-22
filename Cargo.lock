@@ -4040,8 +4040,6 @@ dependencies = [
 [[package]]
 name = "mdstream"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3327364edd79c4f66b36db667c0a28e078389351b0855e5f95ed4f22d778821"
 dependencies = [
  "pulldown-cmark",
 ]

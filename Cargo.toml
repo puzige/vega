@@ -15,7 +15,7 @@ members = [
     "crates/vega_acp",
     "xtask",
 ]
-exclude = ["vendor/block"]
+exclude = ["vendor/block", "vendor/mdstream"]
 
 [workspace.package]
 version = "0.1.0"
@@ -92,3 +92,4 @@ gpui_kit = { package = "gpui-kit", version = "=0.6.1", default-features = false,
 
 [patch.crates-io]
 block = { path = "vendor/block" }
+mdstream = { path = "vendor/mdstream" }

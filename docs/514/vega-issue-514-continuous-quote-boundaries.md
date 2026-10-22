@@ -2,7 +2,7 @@
 
 ## 状态与基线
 
-- Issue：[#514](https://github.com/puzige/vega/issues/514)，复用 Draft [PR #529](https://github.com/puzige/vega/pull/529)。方案 v3（2026-10-22）：原引用边界与列表标记实现已存在，本轮针对解析边界补开 TEST-FIRST 周期，并纠正无头字体观察，不追认已完成实现。
+- Issue：[#514](https://github.com/puzige/vega/issues/514)，复用 Draft [PR #529](https://github.com/puzige/vega/pull/529)。方案 v4（2026-10-22）：原引用边界与列表标记实现已存在；v3 针对解析边界补开 TEST-FIRST 并纠正无头字体观察，v4 记录独立审查新发现的列表内引用缩进边界，另开先测后修周期，不追认已完成实现。
 - 初始基线：`e542175a726f3ab074d9e9fe63bd5f0383804b90`；分支 `feat/514-continuous-quotes`。本轮生产未改基线为 `7ec15f2c44269d7e068e853ed797f651668dc019`，保留公开 head `ae1888267fd8b05db1c388c01ed80bfc40643a1b`，并 merge 同步主库 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`，不重写历史。
 - 主 Agent 负责规格、协调、审查与集成；专职子 Agent 写测试及实现。遵守[执行总纲](../vega-exec-guide.md)、[测试生命周期](../vega-rust-test-delivery-lifecycle.md)和[设计守则](../vega-design-guidelines.md)。本地不运行 Vega、编译或测试。
 - 用户补充截图显示单段长引用自然换行、左侧竖线连续，作为单段回归参考，不作为多段落已通过的证据。
@@ -105,4 +105,31 @@
 
 - 原 `heading_first_list_items_keep_visible_marker_and_heading_style` 在 marker 位置、H1 字号断言后，通过 shaped run 的 `font_id` 反查字体得到 None。实际 GPUI `NoopTextSystem::font_id` 返回 1，但 `layout_line` 忽略输入 font runs 并生成 ID 0；反查该 dummy ID 不是有效字重观察。
 - 在真实渲染/布局边界以 cfg(test) 观察实际送入 `StyledText / shape_text` 的有效 `TextRun.font`，与已有可见文本及布局记录绑定；覆盖普通、可选择、Thinking，不能仅调用样式 helper 或从期望 token 伪造记录。生产行为不变。
-- 保留 H1 字号与 `Typography::HEADING_PAGE_WEIGHT` 的原断言含义，观察修正不删除、跳过、默认化或弱化字重要求；用同一真实路径中的普通正文作区分度对照，证明观察不会恒为标题字重。该接线先经独立审查，云端结果仍待取得。
+- 保留 H1 字号与 `Typography::HEADING_PAGE_WEIGHT` 的原断言含义，观察修正不删除、跳过、默认化或弱化字重要求；用同一真实路径中的普通正文作区分度对照，证明观察不会恒为标题字重。该接线已独立审查，`ea64ee4dc3cb682d67c84bf2963cf83c79acd59d` 的 Actions `39741381663` 中该测试通过；本轮 parser 两项与原复制一项目标失败，24 执行/21 通过/3 失败/0 跳过，构成 v3 有效 RED。
+
+## 独立追加周期：引用与列表的祖先顺序（v4，生产未改）
+
+### 新证据与责任层
+
+独立实现审查于 2026-10-22T08:02:37Z 报告新边界：在 `- item\n\n  > quote one\n  >\n  > quote two` 中，引用位于列表项内部。当前模型只记录 quote identity 与行的 list depth，丢失两种容器的祖先顺序。`render_rows::markdown_blocks` 先把列表 inset 加在正文 body，`quote_blocks` 却在 body 外绘制 rail；Thinking 文字 inset 包含 list depth，而 rail x 仅依赖 quote depth。相对文本列，文字仍在 x=38px，rail 从旧路径的 x=24px 移到 x=0px。主 Agent 已读回固定 `ea64ee4dc3cb682d67c84bf2963cf83c79acd59d` 与 master 的相关分支，确认这是不同于 mdstream 围栏的产品 UI 回归；尚无本轮几何执行证据。
+
+该新边界暂停最终交付，不改 v3 冻结的 24 项，不在 mdstream 补丁中夹带 UI 修复。以 UI 生产等同 `ea64ee4dc3cb682d67c84bf2963cf83c79acd59d` 的实现前状态编写新测试，独立审查、云端有效 RED 后才修；待 v3 同一测试 GREEN 后分开记录 v4 周期。
+
+### 先行验收与算术
+
+现有 `MARKDOWN_LIST_INDENT=24`，rail 宽 2，`MARKDOWN_CODE_PADDING=12`，quote gutter=2+12=14；各 x 均为相对正文列原点的逻辑像素。禁止一律把 list inset 加给所有 quote rail，否则会移动包在列表外的引用。
+
+| 真实祖先顺序 | 必需 rail x | 正文位置/不变量 |
+| --- | --- | --- |
+| List(depth 0) → Quote | 24 | quote 文本 24+14=38；同一 rail 覆盖两段及 16px gap；列表外正文不带该 rail |
+| Quote → List(depth 0) | 0 | 外层 rail 不随列表增加24；列表内容在 rail 后14，再走既有列表布局；退出列表仍是同一外层 rail |
+| List(depth 1) → Quote | (1+1)×24=48 | 文本48+14=62；深层列表退出后不残留该缩进 |
+| Quote → List(depth 0) → Quote | 外层0，内层14+24=38 | 内层正文38+14=52；外层仍在0并覆盖其拥有的间距，内层不跨自己的边界 |
+
+测试用公开解析输出先确认真实 List/BlockQuote 祖先；用实际普通/Selectable/Thinking 渲染的已裁剪2px rail 和文本 layout 断言位置、覆盖与窄宽重排，不仅检查内部元数据。可用最少有区分度的表驱动用例覆盖上表，保留既有 list-in-quote 对照与所有24项；源码/复制/链接期望不因几何改变而改写。无需真实系统 E2E 或扩大 #485 拖选范围。
+
+### 最小实施计划（v4 有效 RED 后）
+
+1. 在投影保存每个 quote 容器创建时已有的列表祖先 inset/深度，身份、quote depth 与 list depth 保持独立；不能在渲染时用任意后代行的 list 状态反推 quote owner 的位置。
+2. 普通/可选择 quote container 以相对父 quote 的列表祖先增量定位 rail，正文只消费一次列表 inset，避免双重缩进；Thinking 以相同 owner 原点画 rail，宽度/锚点消费者保持一致。不重构所有 Markdown 容器、不全量 reparse。
+3. 新冻结几何测试与原24项同一云端 GREEN、独立实现审查后再进入证据固定/删测/最终门禁；新 cycle 源码/RED/实现/GREEN 与 v3 分列，不复用 v3 RED 冒充本边界证据。
