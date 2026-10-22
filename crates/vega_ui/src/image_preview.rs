@@ -92,6 +92,8 @@ impl ImagePreview {
         let view = view.clone();
         canvas(
             move |bounds, window, cx| {
+                #[cfg(test)]
+                crate::overflow_test_support::thumbnail_bounds(view.entity_id(), bounds, cx);
                 let visible = bounds.intersect(&window.content_mask().bounds);
                 view.update(cx, |view, _| {
                     view.thumbnail_visible =
