@@ -83,6 +83,12 @@ impl MdStream {
 
         if enter_single_block_footnotes {
             self.reset_for_single_block_footnotes(ctx);
+            self.observe_single_block_fences();
+            return;
+        }
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.semantics.footnotes_detected()
+        {
+            self.observe_single_block_fences();
             return;
         }
 
@@ -109,8 +115,26 @@ impl MdStream {
         self.pending_display.clear();
         self.boundaries.clear_active();
 
-        self.block_machine
-            .reset_for_single_block(self.input.line_count());
+        self.block_machine.reset_for_single_block(0);
+    }
+
+    fn observe_single_block_fences(&mut self) {
+        while self.block_machine.processed_line < self.input.line_count() {
+            let index = self.block_machine.processed_line;
+            let Some(line) = self.input.line(index) else {
+                break;
+            };
+            if !line.has_newline() {
+                break;
+            }
+            self.block_machine.fence_context.observe_line(
+                self.input.line_str(index),
+                line.start(),
+                line.end_with_newline(),
+                true,
+            );
+            self.block_machine.processed_line += 1;
+        }
     }
 
     pub fn finalize(&mut self) -> Update {
@@ -175,6 +199,8 @@ impl MdStream {
                 };
                 self.push_committed_block(block, &mut ctx);
                 self.block_machine.current_block_start_line = end_line + 1;
+                self.block_machine.fence_context = Default::default();
+                self.pending_display.clear();
             }
         }
         update.pending = None;

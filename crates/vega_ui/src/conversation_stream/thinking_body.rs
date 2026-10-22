@@ -399,7 +399,7 @@ impl PreparedBody {
                 previous.is_some_and(|line| line.in_list),
             ));
             let list_inset = if line.in_list && !line.starts_list_item() {
-                px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT)
+                px(line.list_content_inset())
             } else {
                 px(0.)
             };
@@ -502,15 +502,21 @@ impl PreparedBody {
                     .then(left.range.start.cmp(&right.range.start))
             });
             y += block.size.height;
-            for (depth, identity) in line.quotes.iter().enumerate() {
-                if let Some((_, rail)) = rails.iter_mut().find(|(owner, _)| owner == identity) {
+            for (depth, owner) in line.quotes.iter().enumerate() {
+                if let Some((_, rail)) = rails
+                    .iter_mut()
+                    .find(|(identity, _)| *identity == owner.identity)
+                {
                     rail.bounds.size.height = y - rail.bounds.top();
                 } else {
                     rails.push((
-                        *identity,
+                        owner.identity,
                         Decoration {
                             bounds: Bounds::new(
-                                point(gutter * depth as f32, block.origin.y),
+                                point(
+                                    px(owner.list_inset()) + gutter * depth as f32,
+                                    block.origin.y,
+                                ),
                                 size(px(2.), block.size.height),
                             ),
                             color: style.colors.border_subtle,

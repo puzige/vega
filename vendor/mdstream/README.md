@@ -13,7 +13,7 @@ model; it is not the incompatible mdstream 0.4 model.
 - Archive SHA256: `f3327364edd79c4f66b36db667c0a28e078389351b0855e5f95ed4f22d778821`, matching the original registry lockfile entry.
 - Upstream repository: <https://github.com/Latias94/mdstream>.
 - Release VCS commit: `950d0926f54667f04aed87fad6cc9921aa74ef5c`, subdirectory `mdstream`, from the archive's `.cargo_vcs_info.json`.
-- All 39 Rust files under `src/` originate from that exact archive, verified byte-for-byte against the cached release before transformation.
+- The original 39 Rust files under `src/` originate from that exact archive, verified byte-for-byte against the cached release before transformation. Vega additionally supplies the private `src/stream/fence_context.rs` module described below.
 
 ## Modification notice
 
@@ -23,15 +23,29 @@ Rust 1.98.0 formatting with Unix line endings. Two test-only tail modules
 are omitted before copying:
 `src/stream.rs::html_state_tests` and
 `src/adapters/pulldown.rs::tests` (the latter gated by `all(test, feature = "sync")`).
-All other production source tokens are preserved except the following
-boundary guard in `src/stream/boundary_detector.rs`.
+Production semantic changes are confined to fence ownership and pending
+repair, with lifecycle wiring in `src/stream.rs`, `src/stream/{block_machine,
+boundary_detector,machine,engine,compaction}.rs`, and
+`src/pending/{pipeline,repair,repair/context}.rs`.
 
-A fence-start line no longer interrupts a list block when the current mode
-or block-start mode is `List` and the existing `is_list_continuation` predicate
-recognizes that line. This retains an indented closing fence inside its
-list item instead of opening a second, spurious code block. An unindented
-top-level fence remains an interruption. The guard does not alter source
-text, blank lines, pending completion, adapters, caches or invalidation.
+The private `src/stream/fence_context.rs` module tracks actual list-marker
+content columns, ordered quote/list prefixes, and the active fence character
+and length. Owned fence lines are checked before ordinary block interrupts;
+an owned close ends only that fence, while a dedented fence can begin a
+top-level code block. This replaces Vega's earlier fixed-two-space guard.
+The existing complete-line cursor advances the context, incomplete tails
+preview without consuming it, and block transitions/reset/compaction keep
+its lifecycle and byte offsets aligned.
+
+Pending display shares protected fence ranges with that context, copying
+code bytes before trailing-space, setext or inline repair while continuing
+to repair eligible prose. Closed ranges remain protected in the pending
+container. The standalone terminator uses the same private scanner; the
+streaming path does not scan the whole buffer per append. The existing
+top-level code-fence incremental fast path and pending transformers remain.
+No source text, blank code lines, adapters, cache identity or reference
+invalidation contracts are changed. Finalization clears block-local context
+without changing the existing block-ID transition.
 
 ## Packaging and source hygiene
 

@@ -25,6 +25,7 @@ pub(super) struct BoundaryDetector<'a> {
     current_block_start_line: usize,
     curr_has_newline: bool,
     custom_boundary_starts: bool,
+    owned_fence_line: bool,
 }
 
 impl<'a> BoundaryDetector<'a> {
@@ -34,6 +35,7 @@ impl<'a> BoundaryDetector<'a> {
         current_block_start_line: usize,
         curr_has_newline: bool,
         custom_boundary_starts: bool,
+        owned_fence_line: bool,
     ) -> Self {
         Self {
             current_mode,
@@ -41,6 +43,7 @@ impl<'a> BoundaryDetector<'a> {
             current_block_start_line,
             curr_has_newline,
             custom_boundary_starts,
+            owned_fence_line,
         }
     }
 
@@ -53,7 +56,7 @@ impl<'a> BoundaryDetector<'a> {
         if let Some(decision) = self.footnote_definition_decision(curr) {
             return decision;
         }
-        if self.must_stay_in_current_block() {
+        if self.must_stay_in_current_block() || self.owned_fence_line {
             return BoundaryDecision::SameBlock;
         }
 
@@ -115,11 +118,7 @@ impl<'a> BoundaryDetector<'a> {
         if is_heading(curr) || (self.curr_has_newline && is_thematic_break(curr)) {
             return true;
         }
-        if fence_start(curr).is_some()
-            && !((matches!(self.current_mode, BlockMode::List)
-                || matches!(self.block_start_mode, BlockMode::List))
-                && is_list_continuation(curr))
-        {
+        if fence_start(curr).is_some() {
             return true;
         }
         if self.custom_boundary_starts {

@@ -4,10 +4,10 @@ mod inline;
 mod links;
 mod setext;
 
+use crate::stream::fence_context::FenceContext;
 use crate::syntax::facts::tail_window;
 
 use super::TerminatorOptions;
-use context::is_inside_incomplete_multiline_code_block;
 use emphasis::{
     handle_incomplete_bold, handle_incomplete_bold_italic,
     handle_incomplete_double_underscore_italic, handle_incomplete_single_asterisk_italic,
@@ -28,6 +28,34 @@ impl<'a> PendingRepair<'a> {
     }
 
     pub(crate) fn apply(&self, text: &str) -> String {
+        self.apply_with_fences(text, &FenceContext::for_text(text), 0)
+    }
+
+    pub(crate) fn apply_with_fences(
+        &self,
+        text: &str,
+        context: &FenceContext,
+        raw_start: usize,
+    ) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut cursor = 0;
+        for range in context.protected_ranges() {
+            let start = range.start.saturating_sub(raw_start).min(text.len());
+            let end = range.end.saturating_sub(raw_start).min(text.len());
+            if end <= cursor {
+                continue;
+            }
+            if start > cursor {
+                out.push_str(&self.apply_prose(&text[cursor..start]));
+            }
+            out.push_str(&text[start.max(cursor)..end]);
+            cursor = end;
+        }
+        out.push_str(&self.apply_prose(&text[cursor..]));
+        out
+    }
+
+    fn apply_prose(&self, text: &str) -> String {
         let opts = self.opts;
         if text.is_empty() {
             return String::new();
@@ -41,13 +69,6 @@ impl<'a> PendingRepair<'a> {
 
         if opts.setext_headings {
             tail = apply_setext_heading_protection(&tail);
-        }
-
-        if is_inside_incomplete_multiline_code_block(&tail) {
-            let mut out = String::with_capacity(prefix.len() + tail.len());
-            out.push_str(prefix);
-            out.push_str(&tail);
-            return out;
         }
 
         if opts.links || opts.images {

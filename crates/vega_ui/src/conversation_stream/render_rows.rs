@@ -637,7 +637,11 @@ fn markdown_blocks(
         }
         let body = div().w_full().min_w_0().flex_shrink_0().when(
             in_list && line.kind != LineKind::ListItem && marker.is_none(),
-            |body| body.pl(px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT)),
+            |body| {
+                body.pl(px(
+                    (line.list_content_inset() - line.quote_list_inset()).max(0.)
+                ))
+            },
         );
         let body = if line.kind == LineKind::Code {
             let ordinal = code_ordinal;
@@ -700,12 +704,12 @@ fn markdown_blocks(
     quote_blocks(&mut blocks.into_iter().peekable(), 0, None, colors)
 }
 
-type MarkdownBlock = (Vec<(u64, usize)>, f32, AnyElement);
+type MarkdownBlock = (Vec<model::QuoteOwner>, f32, AnyElement);
 
 fn quote_blocks(
     blocks: &mut std::iter::Peekable<impl Iterator<Item = MarkdownBlock>>,
     depth: usize,
-    owner: Option<(u64, usize)>,
+    owner: Option<model::QuoteOwner>,
     colors: &ThemeColors,
 ) -> Vec<AnyElement> {
     let mut result = Vec::new();
@@ -718,6 +722,8 @@ fn quote_blocks(
             if let Some((_, first_gap, _)) = blocks.peek_mut() {
                 *first_gap = 0.;
             }
+            let list_inset =
+                (identity.list_inset() - owner.map_or(0., |owner| owner.list_inset())).max(0.);
             let children = quote_blocks(blocks, depth + 1, Some(identity), colors);
             result.push(
                 div()
@@ -725,6 +731,7 @@ fn quote_blocks(
                     .min_w_0()
                     .flex_shrink_0()
                     .mt(px(gap))
+                    .pl(px(list_inset))
                     .flex()
                     .child(
                         div()
@@ -813,6 +820,9 @@ pub(crate) fn markdown_block_gap(
     {
         if current.kind == LineKind::ListItem {
             return Layout::MARKDOWN_LIST_ITEM_GAP;
+        }
+        if !current.quotes.is_empty() {
+            return Layout::MARKDOWN_BLOCK_GAP;
         }
         return Layout::MARKDOWN_LIST_PARAGRAPH_GAP;
     }

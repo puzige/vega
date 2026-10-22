@@ -1,3 +1,4 @@
+use super::fence_context::FenceContext;
 use super::mode::BlockMode;
 use crate::types::BlockId;
 
@@ -8,6 +9,7 @@ pub(super) struct BlockMachine {
     pub(super) current_block_id: BlockId,
     pub(super) next_block_id: u64,
     pub(super) current_mode: BlockMode,
+    pub(super) fence_context: FenceContext,
 }
 
 impl BlockMachine {
@@ -18,6 +20,7 @@ impl BlockMachine {
             current_block_id: BlockId(1),
             next_block_id: 2,
             current_mode: BlockMode::Unknown,
+            fence_context: FenceContext::default(),
         }
     }
 
@@ -35,6 +38,7 @@ impl BlockMachine {
         self.current_block_id = BlockId(self.next_block_id);
         self.next_block_id += 1;
         self.current_mode = BlockMode::Unknown;
+        self.fence_context = FenceContext::default();
     }
 }
 

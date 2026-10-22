@@ -3,6 +3,7 @@ mod boundary_detector;
 mod builder;
 mod compaction;
 mod engine;
+pub(crate) mod fence_context;
 mod footnotes;
 mod html;
 mod input;
@@ -12,6 +13,7 @@ mod mode;
 pub use self::builder::MdStreamBuilder;
 
 use self::block_machine::BlockMachine;
+use self::fence_context::FenceContext;
 use self::input::LineBuffer;
 use self::mode::BlockMode;
 
@@ -22,6 +24,7 @@ use crate::pending::{PendingDisplayPipeline, render_pending_display};
 use crate::semantics::DocumentSemantics;
 use crate::transform::PendingTransformer;
 use crate::types::{Block, BlockId, BlockKind, BlockStatus, PendingBlockRef};
+use std::borrow::Cow;
 
 pub struct MdStream {
     opts: Options,
@@ -185,10 +188,16 @@ impl MdStream {
         };
         let raw = &self.input.as_str()[info.raw_start..];
         let code_fence = self.current_code_fence_mode();
+        let fences = Self::pending_fences(
+            &self.block_machine.fence_context,
+            &self.input,
+            self.block_machine.processed_line,
+        );
         self.pending_display.ensure_for(
             info.kind,
             raw,
             code_fence,
+            (&fences, info.raw_start),
             &self.opts.terminator,
             self.pending_transformers.as_mut_slice(),
         );
@@ -203,6 +212,22 @@ impl MdStream {
             raw,
             display: self.pending_display.display(),
         })
+    }
+
+    fn pending_fences<'a>(
+        context: &'a FenceContext,
+        input: &LineBuffer,
+        index: usize,
+    ) -> Cow<'a, FenceContext> {
+        let Some(line) = input.line(index) else {
+            return Cow::Borrowed(context);
+        };
+        if line.has_newline() || line.start() == line.end() {
+            return Cow::Borrowed(context);
+        }
+        let mut preview = context.clone();
+        preview.observe_line(input.line_str(index), line.start(), line.end(), false);
+        Cow::Owned(preview)
     }
 
     fn current_code_fence_mode(&self) -> Option<(char, usize)> {
@@ -225,9 +250,15 @@ impl MdStream {
                 return None;
             }
             let kind = BlockKind::Unknown;
+            let fences = Self::pending_fences(
+                &self.block_machine.fence_context,
+                &self.input,
+                self.block_machine.processed_line,
+            );
             let display = render_pending_display(
                 kind,
                 &raw,
+                (&fences, 0),
                 &self.opts.terminator,
                 self.pending_transformers.as_mut_slice(),
             );
@@ -260,9 +291,15 @@ impl MdStream {
         } else {
             self.block_machine.current_mode.kind()
         };
+        let fences = Self::pending_fences(
+            &self.block_machine.fence_context,
+            &self.input,
+            self.block_machine.processed_line,
+        );
         let display = render_pending_display(
             kind,
             &raw,
+            (&fences, start_off),
             &self.opts.terminator,
             self.pending_transformers.as_mut_slice(),
         );

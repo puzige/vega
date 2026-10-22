@@ -6,7 +6,7 @@
 - 本轮计时起点：2026-10-22T06:32:17Z。恢复并核对历史工作、现行规则、原始 CI 失败及实际接口；2026-10-22T06:53:15Z 已完成 v3 规格差异静态检查。后续阶段按真实结果追加，不把委派受理当作完成。
 - 公开旧 head：`ae1888267fd8b05db1c388c01ed80bfc40643a1b`。本地同步 head：`7ec15f2c44269d7e068e853ed797f651668dc019`，merge 主库 `e4f18c656aa69d192d095a4338a2108e6c9a3c2c`，保留已有测试/实现提交，无 force-push。
 - v3 规格 SHA256（先行测试前）：`cf733965f647607b95fec9f95177e20334a01de1894b6e59ac39a90fca50e159`。代码实现仍由专职子 Agent；独立审查默认只读、绑定停写版本。
-- 当前本轮委派：spawn 2（一个测试/观察修正写入者，一个独立审查者），followup 7（独立审查新停写测试补丁；有效 RED 后同一写入者实施最小 mdstream 0.3 补丁；独立审查固定 UI 生产差异；独立审查新停写 mdstream 补丁；按两项新发现编写 v4/v5 先行测试；独立方案审查真实围栏上下文与 pending 修复责任层；独立审查停写的7项新测试增量）。不重复历史已完成工作。解析生产实现仅在下述本轮有效 RED 确认后授权。
+- 当前本轮委派：spawn 3（原测试/实现写入者、独立审查者、保留同补丁的恢复收尾写入者），followup 9（独立审查新停写测试补丁；有效 RED 后同一写入者实施最小 mdstream 0.3 补丁；独立审查固定 UI 生产差异；独立审查新停写 mdstream 补丁；按两项新发现编写 v4/v5 先行测试；独立方案审查真实围栏上下文与 pending 修复责任层；独立审查停写的7项新测试增量；有效v4/v5RED后按冻结31项修复；独立审查恢复后停写的完整实现增量）。不重复历史已完成工作。解析生产实现仅在下述本轮有效 RED 确认后授权。
 
 ## 阶段与委派记录
 
@@ -62,6 +62,31 @@
 - 审查补出一项冻结前实质边界：真实列表围栏 body 内的 `# literal`/空行也必须保护，不仅 dedented 顶层围栏。主 Agent 已在尚未冻结的新 v5 用例前补明确公开树与中间快照验收，后续 spec SHA256 `50fdca3643ed8c11c9655ee8a16680388d2f03589b3efafcda046d9426084aa8`；原24项不改。实现仍未进一步修改。
 - 同一writer 08:36:44Z–09:08:42Z，31m58s 主动 TEST-ONLY，已停写 READY；在原两个测试文件后只追加133/307行，原10801/35114字节前缀逐字不变。新7项定义（4UI+3parser），总31源码定义，不冒充发现或执行数。测试diffSHA256 `b5df8f9f475cb82e5821806613e93423d3eaa92861a735ffb4a1b695dbc8c3cf`。原24项、生产、全部47vendor文件、Cargo/workflows不变。期间补齐冻结前澄清，无生产改动。
 - 主 Agent 09:10:14Z 核对 HEAD/source/spec/evidence hashes一致、差异检查退出0；独立测试增量审查09:11:12Z–09:16:44Z，5m32s，PASS无实质阻碍，确认实际pending/final树/三路径几何/围栏literal观察与全部冻结断言。各自云端目标RED仍待取得，下一步提交/push精确版本。
+
+## v4/v5 有效 RED 与完整31项冻结
+
+- 测试提交 `e7afdfbcf40263f13831766148cc0bd58de9dc67`，基线 `27b88c2e9934a01aa912ed95fc26b6ec3fd3470a`；审查版本原样提交/push，GitHub parser test blob `b06a05f1122b3d37bd912d253cce317747776ad1` 与本地一致。
+- [Actions 39754408243](https://github.com/puzige/vega/actions/runs/39754408243)，Nextest `119742673340`：Starting31/15binaries，31执行/25通过/6失败/0跳过，0.790s。Clippy/fmt `119742672896` 与 Python60项成功，required `119745242082` 因目标失败阻断。
+- v4真实pending/final解析前提通过后，Ordinary实际rail ListQuote0（预期24）、NestedListQuote0（预期48）、QuoteListQuote内14（预期38、外0正确）。QuoteList外rail不跟随列表的控制通过。是几何产品RED，非fixture或观察故障；其余路径/resize/16gap全部原断言保留待GREEN。
+- v5dedent2/backtick/whole实际list10后空code+Headingliteral+吞aftercode，预期字面code+after段落；真正列表围栏追加#literal实际拆出Heading，预期同一code字面内容。4/5列真延续/空行控制通过，构成v5独立有效RED。原v3tilde未闭合多~~同一根因继续失败；本次生产未改，仅新增测试，不作为盲重试。
+- run09:18:34Z–09:24:33Z（5m59s）；Clippy09:18:36Z–09:23:26Z（4m50s）；Nextest09:18:37Z–09:24:27Z（5m50s）。查询09:24:14Z、09:29:31Z相隔5m17s。push09:18:29Z到完成读取09:29:31Z本轮CI等待墙钟11m02s。
+- 主 Agent 读回上述原始错误与controls，确认责任层；09:30:49Z fetch master未变，随后向同一writer发送具体冻结31项生产修复followup，UI祖先原点与mdstream实际marker/fence/pending上下文分清作用层。无删测/放宽/新依赖/0.4。证据固定 [PR comment](https://github.com/puzige/vega/pull/529#issuecomment-6337487253)。
+
+## 当前实现诊断检查点
+
+- 09:51:35Z 已到当前修复主动工作约20分钟，父会话检查工作树仍只有本文件、无新代码产物；触发诊断，不以重复wait当作实现进展，也不自动取消/替换writer。
+- 已复查原始v3/v4/v5失败与现有实际状态：BlockMachine仅有processed_line/start_line/id/mode，无活动容器围栏或当前item缩进；process_line与incomplete-tail各自有独立入口，pending ensure_for仅区分CodeFence。因此责任层需要已审查计划中的私有上下文，而非重复宽松两空格guard。不是CI/权限阻碍，暂无产品取舍未知项。
+- 下一具体检查：writer产物是否把上下文接入完整行/半行预览/reset，并在pending repair前使用；同一31项冻结仍须字节不变。尚未READY或GREEN，不把未提交/未执行结果当作通过。若出现新边界须先上报，不能暗改断言。
+- 09:56Z UI四文件、10:02Z fence_context、10:07Z pending接线陆续产生，继续保留原writer；约10:22Z后无新代码/静态回报，10:41Z父Agent读回现有差异及真实接线，10:43Z确认取消执行已interrupted。未按诊断阈值自动替换，而是在检查实物与长时间无READY后停止不可观察执行。其09:31Z–10:43Z约72分钟执行墙钟未被writer终态确认，不能精确称纯主动实现时间。
+- 所有代码保留，source diff SHA256 `08681f4d54c01be4e8ae7de3bfc6a7520f885d700a15549605b9b7dcd1ba1d81`；父Agent格式/差异退出0，31测试/Cargo/workflows不变。恢复记录见 `vega-issue-514-implementation-recovery.md`，不重新启动任务或重做已有测试。
+- 10:45:14Z fetch确认master未漂移，随后spawn专职恢复writer：输入同一补丁/原始RED/实际API/检查点，仅完成静态接线与必要最小修正并停写READY；parent仍Gitowner，同一范围只有一位活动writer。此为一次委派恢复返工，不伪称产品CI失败或替换后能力提速。
+
+## 完整实现恢复 READY
+
+- 恢复writer 10:46:20Z–10:56:57Z，10m37s 主动静态收尾，无外部等待；实现逐字等于检查点，未做源码修改，只写实施证据文档。source diff仍 `08681f4d54c01be4e8ae7de3bfc6a7520f885d700a15549605b9b7dcd1ba1d81`，15文件manifest `ec42fcf156458682f089416fe48f9e973a53c6991030ebd77c7b1b950b104dfb`。
+- 新证据 `vega-issue-514-boundary-round-implementation-evidence.md` SHA256 `c8879038392125c696a3c1fb961a0e936d5886b276b03bfbc2b25d444846a805`，说明继承39个发行源文件与新增private fence_context的区分、实际逐行/半行预览/pending/reset/compaction接线、UI owner inset及31项freeze。静态命令均退出0，未编译/Clippy/测试，无GREEN声明。
+- 父Agent10:57:57Z复算完整diff/reporthash一致，diff检查及测试/Cargo/workflow比较退出0。writer停止范围写入后将同一版本交既有独立reviewer，仅审新增15文件及受影响不变量，可与精确版本Actions并行；当前审查/云端GREEN仍待取得。
+- 恢复writer的一次源文件编码比较错误按原始证据改为字节模式后通过；命令层纠正，不是产品/测试RED，也未改验收。父Agent恢复及review分别记录，不将READY冒充已审查。
 
 ## mdstream 0.3 来源核对（只读静态证据）
 

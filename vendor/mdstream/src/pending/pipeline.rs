@@ -1,8 +1,10 @@
+use crate::stream::fence_context::FenceContext;
 use crate::syntax::facts::code_fence_suffix;
 use crate::transform::{PendingTransformInput, PendingTransformer};
 use crate::types::BlockKind;
 
-use super::{TerminatorOptions, terminate_markdown};
+use super::TerminatorOptions;
+use super::repair::PendingRepair;
 
 #[derive(Default)]
 pub(crate) struct PendingDisplayPipeline {
@@ -47,6 +49,7 @@ impl PendingDisplayPipeline {
         kind: BlockKind,
         raw: &str,
         code_fence: Option<(char, usize)>,
+        fence_context: (&FenceContext, usize),
         terminator: &TerminatorOptions,
         transformers: &mut [Box<dyn PendingTransformer>],
     ) {
@@ -68,7 +71,8 @@ impl PendingDisplayPipeline {
         if self.cache.is_some() {
             return;
         }
-        let display = terminate_markdown(raw, terminator);
+        let display =
+            PendingRepair::new(terminator).apply_with_fences(raw, fence_context.0, fence_context.1);
         let display = transform_pending_display(kind, raw, display, transformers);
         self.cache = Some(display);
         self.code_fence_suffix = None;
@@ -112,10 +116,12 @@ impl PendingDisplayPipeline {
 pub(crate) fn render_pending_display(
     kind: BlockKind,
     raw: &str,
+    fence_context: (&FenceContext, usize),
     terminator: &TerminatorOptions,
     transformers: &mut [Box<dyn PendingTransformer>],
 ) -> String {
-    let display = terminate_markdown(raw, terminator);
+    let display =
+        PendingRepair::new(terminator).apply_with_fences(raw, fence_context.0, fence_context.1);
     transform_pending_display(kind, raw, display, transformers)
 }
 

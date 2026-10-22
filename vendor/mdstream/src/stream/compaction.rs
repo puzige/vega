@@ -38,6 +38,7 @@ impl MdStream {
             return;
         }
 
+        self.block_machine.fence_context.rebase(compacted_from);
         self.block_machine.current_block_start_line = 0;
         self.block_machine.processed_line = old_processed_line.saturating_sub(old_block_start_line);
         if self.block_machine.processed_line > self.input.line_count() {

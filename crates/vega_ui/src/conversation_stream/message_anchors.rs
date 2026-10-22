@@ -766,8 +766,8 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
                 return Typography::CODE * Typography::CODE_LINE_HEIGHT;
             }
             if let Some(table) = &line.table {
-                let inset = if line.in_list && line.kind != LineKind::ListItem {
-                    (line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+                let inset = if line.kind != LineKind::ListItem {
+                    line.list_content_inset()
                 } else {
                     0.0
                 };
@@ -804,11 +804,7 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
                 .map(|span| display_width(&span.text))
                 .sum::<usize>();
             let quote_inset = line.quotes.len() as f32 * (2. + Layout::MARKDOWN_CODE_PADDING);
-            let list_inset = if line.in_list {
-                (line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
-            } else {
-                0.
-            };
+            let list_inset = line.list_content_inset();
             let minimum_capacity = if line.quotes.is_empty() { 12. } else { 1. };
             let chars_per_line = ((width - quote_inset - list_inset)
                 / (Typography::CONVERSATION * 0.56))

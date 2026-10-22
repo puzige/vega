@@ -204,6 +204,10 @@ impl MdStream {
             self.block_machine.current_block_start_line,
             self.input.line_has_newline(curr_line_index),
             self.boundaries.matches_start(curr),
+            matches!(
+                self.block_machine.current_mode,
+                BlockMode::List | BlockMode::BlockQuote
+            ) && self.block_machine.fence_context.protects_line(curr),
         );
         detector
             .detect(prev, curr, curr_line_index)
@@ -211,6 +215,9 @@ impl MdStream {
     }
 
     fn update_mode_with_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {
+        if line_index < self.block_machine.current_block_start_line {
+            return;
+        }
         let (start, end) = {
             let Some(line) = self.input.line(line_index) else {
                 return;
@@ -218,6 +225,14 @@ impl MdStream {
             (line.start(), line.end())
         };
         let line = &self.input.as_str()[start..end];
+        if matches!(
+            self.block_machine.current_mode,
+            BlockMode::List | BlockMode::BlockQuote | BlockMode::CodeFence { .. }
+        ) {
+            self.block_machine
+                .fence_context
+                .observe_line(line, start, end + 1, true);
+        }
         match &mut self.block_machine.current_mode {
             BlockMode::Unknown => {
                 self.block_machine.current_mode = self.start_mode_for_line(line);

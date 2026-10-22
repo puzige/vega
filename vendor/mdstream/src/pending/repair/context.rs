@@ -1,7 +1,3 @@
-pub(super) fn is_inside_incomplete_multiline_code_block(text: &str) -> bool {
-    text.contains('\n') && text.match_indices("```").count() % 2 == 1
-}
-
 pub(super) fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c.is_alphanumeric()
 }

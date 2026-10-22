@@ -173,10 +173,24 @@ pub(crate) struct StreamLine {
     /// Nesting depth for list rows (2-space indent per level).
     pub depth: usize,
     pub(crate) in_list: bool,
-    pub(crate) quotes: Vec<(u64, usize)>,
+    pub(crate) quotes: Vec<QuoteOwner>,
     pub spans: Vec<StreamSpan>,
     pub table: Option<Arc<StreamTable>>,
     pub(crate) code_block: Option<Arc<StreamCodeBlock>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuoteOwner {
+    pub(crate) identity: (u64, usize),
+    pub(crate) list_depth: Option<usize>,
+}
+
+impl QuoteOwner {
+    pub(crate) fn list_inset(self) -> f32 {
+        self.list_depth.map_or(0., |depth| {
+            (depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +255,18 @@ impl StreamLine {
 
     pub(crate) fn starts_list_item(&self) -> bool {
         !self.marker.is_empty()
+    }
+
+    pub(crate) fn quote_list_inset(&self) -> f32 {
+        self.quotes.last().map_or(0., |owner| owner.list_inset())
+    }
+
+    pub(crate) fn list_content_inset(&self) -> f32 {
+        if self.in_list {
+            (self.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+        } else {
+            0.
+        }
     }
 
     pub(crate) fn continues_code_block(&self, previous: &Self) -> bool {
@@ -355,7 +381,7 @@ pub(crate) fn flatten_nodes(
     let mut lines = Vec::new();
     let mut identity = 0;
     for node in nodes {
-        flatten_node(block_id, node, 0, origin, &mut lines, &mut identity);
+        flatten_node(block_id, node, None, origin, &mut lines, &mut identity);
     }
     lines
 }
@@ -363,13 +389,14 @@ pub(crate) fn flatten_nodes(
 pub(crate) fn flatten_node(
     block_id: u64,
     node: &RenderNode,
-    depth: usize,
+    list_depth: Option<usize>,
     origin: BlockOrigin,
     out: &mut Vec<StreamLine>,
     identity: &mut usize,
 ) {
     let node_identity = *identity;
     *identity += 1;
+    let depth = list_depth.unwrap_or_default();
     match node {
         RenderNode::Paragraph { spans } => {
             let mut inline = Vec::new();
@@ -427,14 +454,25 @@ pub(crate) fn flatten_node(
                 offset = line_end + 1; // skip the '\n'
             }
         }
-        RenderNode::List(list) => flatten_list(block_id, list, depth, origin, out, identity),
+        RenderNode::List(list) => flatten_list(
+            block_id,
+            list,
+            list_depth.map_or(0, |depth| depth + 1),
+            origin,
+            out,
+            identity,
+        ),
         RenderNode::BlockQuote { children } => {
+            let owner = QuoteOwner {
+                identity: (block_id, node_identity),
+                list_depth,
+            };
             let start = out.len();
             for child in children {
-                flatten_node(block_id, child, depth, origin, out, identity);
+                flatten_node(block_id, child, list_depth, origin, out, identity);
             }
             for line in &mut out[start..] {
-                line.quotes.insert(0, (block_id, node_identity));
+                line.quotes.insert(0, owner);
             }
         }
         RenderNode::Table(table) => flatten_table(block_id, table, out),
@@ -515,7 +553,7 @@ pub(crate) fn flatten_list(
                 RenderNode::List(nested) => {
                     flatten_list(block_id, nested, depth + 1, origin, out, identity)
                 }
-                other => flatten_node(block_id, other, depth, origin, out, identity),
+                other => flatten_node(block_id, other, Some(depth), origin, out, identity),
             }
         }
         for line in &mut out[start..] {
