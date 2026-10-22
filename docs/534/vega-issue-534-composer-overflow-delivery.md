@@ -119,3 +119,13 @@ Nextest 原始总结：13 executed，2 passed，11 failed，0 skipped；ignored 
 - [PR 固定记录](https://github.com/puzige/vega/pull/539#issuecomment-6340723952)包含可恢复原始测试、完整 SHA、原始 patch 和 RED/GREEN run/job；API 读回源码可达后，才授权独立删测。
 
 后续专职写入者仅删除 16 个 Rust 测试、独占观察/模块/dev 接线及 vega_ui lock 中的 image 引用，保留所有生产图片/输入行为及其他 crate 的 image、Python/CI/benchmark。不夹带新行为；删测后再独立审查并验证最终 head 空集完整门禁。空集不替代本节带测试 GREEN，用户原生手测仍待合并后。
+
+## 首次删测与严格分支同步
+
+独立删测提交 `e315cb25dc127443aa5749331c2ce8868498e1be`，清理差异 SHA-256 `5b39e78187185384f60880ccfdd97074bee73cd876616f72fa2b3d5aeeb057ce`（不含文档）。独立非写入者审查确认仅删除测试专用内容，生产完整保留；静态 fmt/diff 与清点通过。
+
+[run 39779909688](https://github.com/puzige/vega/actions/runs/39779909688)，[Nextest 119828202487](https://github.com/puzige/vega/actions/runs/39779909688/job/119828202487)，[Clippy 119828202675](https://github.com/puzige/vega/actions/runs/39779909688/job/119828202675)，[required 119829886051](https://github.com/puzige/vega/actions/runs/39779909688/job/119829886051) 全部成功；Rust 明确 0 discovered/0 executed `no Rust tests`，Python 5+15+40 OK。
+
+合并前主 Agent 确认 master 已到 `48d958743cb66295ef3de9db31449f213263d417`，新增 #538 用量分母与 #540 Codex 项目历史，未修改本卡四个生产文件。首次空集 CI 的 checkout 已验证合成提交 `5b2bc2e53261c2c1c97ae6dc5e958d088ba0a8f7`，父为任务 head 与该 master；但仓库 `required_status_checks.strict = true`，PR 为 BEHIND。不得用 admin 绕过。
+
+因此正常同步最新 master（clean merge），从 `aa5a4825bf77cb413690d1d6cf23b9927462a7fe` 恢复完全相同的 16 测试和支持，在集成基线上重新 GREEN 后再次独立删测/最终门禁。该恢复不新增或修改验收，也不整目录恢复历史测试；只恢复本轮已留档的三个源文件及专用接线，保护 master 新增路径。旧证据保留，新 head 仍须验证。

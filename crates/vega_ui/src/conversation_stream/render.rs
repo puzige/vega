@@ -382,10 +382,27 @@ impl ConversationStream {
                                                 } else {
                                                     colors.text_tertiary
                                                 },
-                                            )),
+                                            ))
+                                            .map(|element| {
+                                                #[cfg(test)]
+                                                let element =
+                                                    crate::overflow_test_support::observe_bounds(
+                                                        element,
+                                                        "composer-send",
+                                                    );
+                                                element
+                                            }),
                                     )
                                 },
-                            ),
+                            )
+                            .map(|element| {
+                                #[cfg(test)]
+                                let element = crate::overflow_test_support::observe_bounds(
+                                    element,
+                                    "composer-footer",
+                                );
+                                element
+                            }),
                     ),
             )
             .child(self.render_active_skills(cx))
@@ -1205,7 +1222,13 @@ impl ConversationStream {
                                 crate::icons::Icon::ChevronDown,
                                 colors.text_tertiary,
                             )),
-                    ),
+                    )
+                    .map(|element| {
+                        #[cfg(test)]
+                        let element =
+                            crate::overflow_test_support::observe_bounds(element, "composer-model");
+                        element
+                    }),
             )
             .child(self.render_model_picker_layers(cx))
             .into_any_element()

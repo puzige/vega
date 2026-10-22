@@ -316,3 +316,6 @@ pub struct CredentialContinuationRequested {
 
 mod automation;
 pub use automation::{AutomationEditorRequested, AutomationRequested, AutomationTiming};
+
+#[cfg(test)]
+mod composer_overflow_tests;
