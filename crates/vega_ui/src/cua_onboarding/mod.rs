@@ -1,8 +1,13 @@
 pub mod bundle;
+mod card;
 pub mod controller;
 pub mod lifecycle;
+mod native;
 pub mod placement;
 pub mod retention;
+mod session;
+
+pub use card::{GuidanceCard, OpenError, open};
 
 #[derive(Clone, Debug)]
 pub struct PreparationRequested {
