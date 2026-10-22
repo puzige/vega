@@ -51,8 +51,14 @@ Report all pairs before aggregating. Three pairs are a small directional pilot, 
 
 | Claim | Required evidence | Current status |
 | --- | --- | --- |
-| No repeated explicit/default wait timeout loop | Native-path replay of explicit 60000-ms calls, shared positive/zero allowance, target identity and terminal-delivery checks | Corrected v3 native cases RED in Actions 39832128801; same-test GREEN pending |
-| Stage stops at active allowance and drains safely | Controlled-time native lifecycle test with real queue transitions and release failure | Corrected v3 target-contract RED; same-test GREEN pending |
+| No repeated explicit/default wait timeout loop | Native-path replay of explicit 60000-ms calls, shared positive/zero allowance, target identity and terminal-delivery checks | Candidate 857de904 passes repeated-wait call-count assertions; trailing runtime-notice observation error requires reviewed test correction; complete GREEN pending |
+| Stage stops at active allowance and drains safely | Controlled-time native lifecycle test with real queue transitions and release failure | Candidate review found three omitted boundary windows; v3.1 tests-first RED and repairs required |
 | Repeated history reduced without dropped user constraints | Provider capture through native followup; large logs, images, authority/source checks, valid large input and configured token admission | v3 removes unvalidated 64/256KiB candidate caps; valid-large-input/token controls GREEN in corrected RED; projection and delegated policy RED |
 | Independent review and CI retained | This PR's test review, RED/GREEN, implementation review, source archive, deletion review and final head gate | Pending |
 | Actually faster native delivery | Installed build plus matched real-task observations under the contract | Not run; no speed percentage claimed |
+
+## Development rework in this change
+
+The first production candidate's Actions run lasted 474,000 ms from creation to workflow terminal. Nextest executed 25 cases with 24 passing and one test observation failure; Clippy and 60 Python cases passed. The observation failure was diagnosed against the existing progress-notice projection, without changing the wait mechanism. Independent review found three distinct lifecycle defects and one forbidden panic call. These are retained as review value and implementation rework; this change is not yet accepted or measured faster.
+
+The three missed windows are consolidated into one explicit v3.1 tests-first round on the preserved candidate. The original implementer and reviewer are reused. There is no repeated review request for unchanged content, no CI retry-to-green, and no hidden reset of the original work clock. Added tests must first demonstrate the new failures; later removal is permitted only after the complete frozen set is GREEN.

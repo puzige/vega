@@ -1,6 +1,6 @@
 # Native execution bounds after #514
 
-Status: acceptance v3, revised before resumed production implementation. Related: #556, #514 / #529, #525 / #532, #522.
+Status: acceptance v3.1, three omitted lifecycle boundaries found during independent implementation review; production is frozen pending a new tests-first round. Related: #556, #514 / #529, #525 / #532, #522.
 Observation/v1 baseline: `871f91f246e90753743a256cee1eec315e74effc`. V3 production baseline: `6615748f91273bfb8ee424011b3b5a09b3777d2b`, including the existing #557 image-budget and initial-input compaction correction. User authorization: 2026-10-22, implement execution mechanisms, retain independent review and CI.
 
 ## Evidence and limits
@@ -34,6 +34,18 @@ Runtime findings: `wait_agent` returns every 30 seconds by default, at most 60 s
 | I1 | Tests exercise the native Supervisor/Hook and child entry/pipeline with a scripted provider, not only helper functions. At least one integration case proves native wiring; provider/clock are isolated external dependencies. |
 | G1 | No runtime outcome certifies independent review, test GREEN or final CI. Existing review and CI gates remain mandatory on the exact deliverable version. |
 
+### v3.1 independent-review boundary round
+
+Independent review of production candidate `857de90459e21cd5908120688a5f522eee2a7bf0` found three lifecycle windows absent from the frozen 25 cases. Preserve that production version as the new failure baseline and preserve the original 25 test targets and expectations. Add these three deterministic failure targets before repairing production; independent test review and existing Actions must establish their RED first. This is an explicit omitted-boundary round, not retrospective tests for an already fixed implementation.
+
+| Boundary | Required observation before repair |
+| --- | --- |
+| B1 late attention | Once cumulative active time has reached 20 minutes, a newly pending real permission/question request cannot forgive that elapsed time. Register attention at the exhausted boundary using controlled time, then observe expiry. Human waiting pauses only subsequent time. |
+| B4 persistence failure before host release | After terminal persistence fails, immediately notify waiters with failure and reject new admission, while retaining occupancy and continuing to await the same host release future. Hold the release gate closed to verify failure/admission behavior before opening it and draining. |
+| W2 cancel receipt before host release | A completed persisted message whose host release is pending remains nonterminal in `cancel_agent` receipts, consistently with list/wait. Do not retrospectively cancel completed work. Only the release acknowledgement permits a completed receipt. |
+
+The same review found a forbidden production `expect` in delegated budget reconstruction. Remove that panic via the existing safe API or explicit error propagation while preserving capacity, output reserve and `None` behavior; this static-rule repair needs no fabricated behavioral test. Candidate Actions separately reported 24/25 cases passing and one timeout-receipt observation failure. Independent diagnosis confirmed that the existing runtime notice follows JSON in the actual projected tool message; the whole-content JSON parser was the incorrect observation. Correct only the exact-call lookup and parse the first complete value, retaining the timeout fields and all call-count/cancellation assertions. The reviewed correction and the three new cases remain tests-only until Actions establishes RED for the new boundaries.
+
 ## Implementation contract
 
 ### Event waiting
@@ -48,7 +60,7 @@ Successful wait receipts retain `agents` and `timed_out`, and add `wake_reason` 
 
 The 20-minute value is a conservative initial stage boundary, derived from the prior diagnostic threshold, not a measured optimal duration or promised completion time. The mechanism bounds an unattended stage; it does not guarantee a useful patch. Tasks should produce the smallest reviewable stage before that boundary. A long legitimate task must be explicitly re-scoped after the bounded incomplete report, with original elapsed time retained.
 
-Track monotonic active duration from stage execution/preparation through completion. Observe actual pending transitions rather than testing a boolean once at the deadline. Preserve UI's existing queue receiver; do not steal permission/question notifications. Cancellation, terminal persistence and host release are distinct phases. Hold occupancy until release is acknowledged. Persistence/release failure wakes the parent and blocks every new admission in its registry; there is no role/replaces field capable of identifying a replacement writer more narrowly. Do not loosen followup admission for arbitrary interrupted work.
+Track monotonic active duration from stage execution/preparation through completion. Observe actual pending transitions rather than testing a boolean once at the deadline. Already exhausted active time still expires if attention becomes pending at the same boundary; only subsequent human waiting is excluded. Preserve UI's existing queue receiver; do not steal permission/question notifications. Cancellation, terminal persistence and host release are distinct phases. Hold occupancy until release is acknowledged, including in cancel receipts. Persistence failure immediately wakes the parent and blocks every new admission, without waiting for host release; the original release future must still drain. Release failure has the same fail-closed outcome. There is no role/replaces field capable of identifying a replacement writer more narrowly. Do not loosen followup admission for arbitrary interrupted work.
 
 Expose only factual receipts: budget cause, completion state, known elapsed accounting, actual retained output and execution references. A reviewer named in a task does not gain enforced read-only authority: this change does not claim to add write-path leases or a reviewer permission sandbox.
 

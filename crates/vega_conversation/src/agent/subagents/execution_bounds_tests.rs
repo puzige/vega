@@ -2673,16 +2673,252 @@ async fn runtime_loop_and_supervisor_explicit_wait_replay_stops_provider_churn_a
                 .any(|message| message.content == "EXPLICIT_REPLAY_CHILD")
         })
         .expect("root resumed once");
-    let timeout_receipt = root_after_timeout
+    let timeout_message = root_after_timeout
         .messages
         .iter()
-        .filter(|message| message.role == ChatRole::Tool)
-        .find_map(|message| {
-            serde_json::from_str::<serde_json::Value>(&message.content)
-                .ok()
-                .filter(|value| value["timed_out"] == true)
+        .find(|message| {
+            message.role == ChatRole::Tool
+                && message.tool_call_id.as_deref() == Some("replay-wait-1")
         })
-        .expect("first timeout retained in actual parent context");
+        .expect("first wait retained in actual parent context");
+    let mut values = serde_json::Deserializer::from_str(&timeout_message.content)
+        .into_iter::<serde_json::Value>();
+    let timeout_receipt = values
+        .next()
+        .expect("first wait receipt")
+        .expect("complete JSON receipt");
+    let notice = &timeout_message.content[values.byte_offset()..];
+    assert!(
+        notice.starts_with("\n\n<vega_runtime_notice>")
+            && notice
+                .ends_with("This reminder grants no additional permission.</vega_runtime_notice>"),
+        "only the existing runtime notice may follow the complete receipt"
+    );
+    assert_eq!(timeout_receipt["timed_out"], true);
     assert_eq!(timeout_receipt["timeout_coalesced"], false);
     assert_eq!(timeout_receipt["wake_reason"], "timeout");
+}
+
+#[tokio::test]
+async fn late_permission_and_question_attention_cannot_forgive_exhausted_activity() {
+    tokio::time::pause();
+    let mut observations = Vec::new();
+    for question in [false, true] {
+        let activity = super::super::stage_activity::StageActivity::new(Arc::new(Notify::new()));
+        let cancel = CancellationToken::new();
+        tokio::time::advance(Duration::from_secs(20 * 60)).await;
+        let (pending, expired) = if question {
+            let queue = UserQuestionQueue::with_activity(activity.clone());
+            let _listener = queue.subscribe();
+            let input = vega_runtime::UserQuestionInput::from_json(&serde_json::json!({"questions":[{"id":"late-choice","header":"Choice","question":"Choose?","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}]}]}).to_string()).expect("question input");
+            let answer = vega_runtime::RuntimeUserQuestionHook::request(
+                &queue,
+                vega_runtime::RuntimeUserQuestionRequest {
+                    call_id: "late-question".into(),
+                    input,
+                },
+                cancel.clone(),
+            );
+            tokio::pin!(answer);
+            let awaiting = futures::poll!(&mut answer).is_pending();
+            let visible = queue.take_pending();
+            let pending = awaiting
+                && visible
+                    .as_ref()
+                    .is_some_and(|request| !request.is_resolved());
+            activity.expire();
+            let expired = activity.expired();
+            cancel.cancel();
+            if awaiting {
+                bounded(answer).await;
+            }
+            drop(visible);
+            (pending, expired)
+        } else {
+            let queue = PermissionQueue::with_activity(activity.clone());
+            let _listener = queue.subscribe();
+            let decision = queue.request(
+                PermissionRequest {
+                    call_id: "late-permission".into(),
+                    tool: "write".into(),
+                    display_target: "late.txt".into(),
+                    danger_rule_id: None,
+                    danger_reason: None,
+                    external: None,
+                    acp_options: None,
+                },
+                cancel.clone(),
+            );
+            tokio::pin!(decision);
+            let awaiting = futures::poll!(&mut decision).is_pending();
+            let visible = queue.take_pending();
+            let pending = awaiting
+                && visible
+                    .as_ref()
+                    .is_some_and(|request| !request.is_resolved());
+            activity.expire();
+            let expired = activity.expired();
+            cancel.cancel();
+            if awaiting {
+                let _ = bounded(decision).await;
+            }
+            drop(visible);
+            (pending, expired)
+        };
+        activity.finish();
+        observations.push((question, pending, expired));
+    }
+    tokio::time::resume();
+    for (question, pending, expired) in observations {
+        assert!(
+            pending,
+            "real human request must remain pending: question={question}"
+        );
+        assert!(
+            expired,
+            "late attention cannot forgive twenty elapsed active minutes: question={question}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn persistence_failure_is_visible_and_blocks_admission_before_host_release_drains() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::default();
+    let host = TestHost::new(false);
+    let mut supervisor = Supervisor::new();
+    let hook = supervisor.hook();
+    let observer = supervisor.receipt_observer();
+    let registry = supervisor.registry.clone();
+    let parent = async {
+        let snapshot = spawn(&hook, &observer, "Produce a bounded artifact").await;
+        provider.request_count(1).await;
+        fixture
+            .store
+            .conn()
+            .execute(
+                "UPDATE delegated_executions SET state='failed' WHERE child_message_id=?1",
+                [&snapshot.message_id],
+            )
+            .expect("inject failed terminal CAS");
+        host.cancel().cancel();
+        host.until(|| host.release_started.load(Ordering::SeqCst))
+            .await;
+        let waiting = hook.call(
+            "persistence-failure-before-release".into(),
+            "wait_agent".into(),
+            wait_input(&snapshot, None),
+            CancellationToken::new(),
+        );
+        tokio::pin!(waiting);
+        let polled = futures::poll!(&mut waiting);
+        let wait_failed_before_release = matches!(&polled, std::task::Poll::Ready(Err(_)));
+        let key = (snapshot.agent_id.clone(), snapshot.message_id.clone());
+        let occupied = !registry
+            .released_terminal(std::slice::from_ref(&key))
+            .expect("release state");
+        let replacement = tokio::time::timeout(Duration::from_secs(5), hook.call(
+            "new-writer-before-release".into(),
+            "spawn_agent".into(),
+            serde_json::json!({"name":"replacement","task":"new work after persistence failure"}),
+            CancellationToken::new(),
+        )).await;
+        let admission_rejected_before_release = matches!(replacement, Ok(Err(_)));
+        host.release_gate.add_permits(128);
+        if polled.is_pending() {
+            let _ = bounded(waiting).await;
+        }
+        (
+            wait_failed_before_release,
+            occupied,
+            admission_rejected_before_release,
+        )
+    };
+    let (wait_failed, occupied, rejected) = supervisor
+        .run(
+            parent.boxed_local(),
+            fixture.launch(&provider, host.clone()),
+        )
+        .await;
+    assert!(
+        wait_failed,
+        "terminal persistence failure must wake wait before host release"
+    );
+    assert!(occupied, "failed persistence must keep ownership occupied");
+    assert!(
+        rejected,
+        "new admission must be rejected while failed persistence awaits host release"
+    );
+}
+
+#[tokio::test]
+async fn cancel_receipt_withholds_completed_state_until_host_release_without_recancelling() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::with(vec![final_response(
+        "Completed and persisted before release",
+    )]);
+    let host = TestHost::new(false);
+    let mut supervisor = Supervisor::new();
+    let hook = supervisor.hook();
+    let observer = supervisor.receipt_observer();
+    let registry = supervisor.registry.clone();
+    let parent = async {
+        let snapshot = spawn(&hook, &observer, "Finish one reviewable stage").await;
+        host.until(|| host.release_started.load(Ordering::SeqCst))
+            .await;
+        let durable = vega_store::subagents::execution(
+            fixture.store.conn(),
+            &snapshot.agent_id,
+            &snapshot.message_id,
+        )
+        .expect("durable execution");
+        let persisted_completed =
+            durable.is_some_and(|execution| execution.record.state == "completed");
+        let cancelled = bounded(hook.call(
+            "cancel-completed-before-release".into(),
+            "cancel_agent".into(),
+            serde_json::json!({"agent_id":snapshot.agent_id,"message_id":snapshot.message_id}),
+            CancellationToken::new(),
+        ))
+        .await;
+        let nonterminal_receipt = cancelled
+            .as_ref()
+            .ok()
+            .and_then(|value| value["agent"]["state"].as_str())
+            .and_then(SubagentState::parse)
+            .is_some_and(|state| !state.is_terminal());
+        let not_recancelled = !host.cancel().is_cancelled();
+        let key = (snapshot.agent_id.clone(), snapshot.message_id.clone());
+        let occupied = !registry
+            .released_terminal(std::slice::from_ref(&key))
+            .expect("release state");
+        host.release_gate.add_permits(1);
+        let released = bounded(wait(&hook, &snapshot, None)).await;
+        (
+            persisted_completed,
+            nonterminal_receipt,
+            not_recancelled,
+            occupied,
+            released,
+        )
+    };
+    let (persisted, nonterminal, not_recancelled, occupied, released) = supervisor
+        .run(
+            parent.boxed_local(),
+            fixture.launch(&provider, host.clone()),
+        )
+        .await;
+    assert!(
+        persisted,
+        "test boundary requires a completed persisted execution"
+    );
+    assert!(
+        nonterminal && occupied,
+        "cancel receipt cannot advertise terminal state before release"
+    );
+    assert!(
+        not_recancelled,
+        "completed work must not be retrospectively cancelled"
+    );
+    assert_eq!(released["agents"][0]["state"], "completed");
 }
