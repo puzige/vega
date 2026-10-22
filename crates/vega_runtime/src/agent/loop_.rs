@@ -23,6 +23,16 @@ fn request_output_cap(
     max_tokens.map(|cap| budget.map_or(cap, |budget| cap.min(budget.output_reserve() as u32)))
 }
 
+fn is_initial_user_input(messages: &[ChatMessage]) -> bool {
+    matches!(messages, [system, user]
+        if system.role == ChatRole::System
+            && user.role == ChatRole::User
+            && system.tool_calls.is_empty()
+            && system.tool_call_id.is_none()
+            && user.tool_calls.is_empty()
+            && user.tool_call_id.is_none())
+}
+
 fn replay_user_boundary_follows_complete_tool_groups(
     messages: &[ChatMessage],
     boundary: usize,
@@ -1389,12 +1399,25 @@ where
                 sink,
                 accounting_event(decision, budget, ContextAccountingStage::PrimaryPreflight)?
             );
+            if cancel.is_cancelled() {
+                emit!(events, sink, RuntimeEvent::Interrupted);
+                return Ok(outcome(
+                    events,
+                    messages,
+                    final_text,
+                    tool_call_count,
+                    executed_tool_call_count,
+                    true,
+                    false,
+                ));
+            }
             let check = budget
                 .check(estimate)
                 .map_err(|error| VegaError::Context(error.into()))?;
-            let should_compact = (force_provider_compaction
-                || matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit))
-                && budget.automatic_compaction();
+            let should_compact = budget.automatic_compaction()
+                && (force_provider_compaction
+                    || (matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit)
+                        && !is_initial_user_input(&messages)));
             if should_compact {
                 let source_version = context_source_version.unwrap_or_default();
                 let source_fingerprint = context_source_fingerprint.clone();
@@ -1418,18 +1441,6 @@ where
                 let Some(hook) = hook else {
                     return Err(VegaError::Context(ContextRuntimeError::MissingHook));
                 };
-                if cancel.is_cancelled() {
-                    emit!(events, sink, RuntimeEvent::Interrupted);
-                    return Ok(outcome(
-                        events,
-                        messages,
-                        final_text,
-                        tool_call_count,
-                        executed_tool_call_count,
-                        true,
-                        false,
-                    ));
-                }
                 let target_tokens = budget
                     .target_tokens()
                     .map_err(|error| VegaError::Context(error.into()))?;
@@ -1932,6 +1943,7 @@ where
                 );
                 if !provider_overflow_recovered
                     && error.context_input_overflow().is_some()
+                    && !is_initial_user_input(&messages)
                     && context_budget.is_some_and(|budget| budget.automatic_compaction())
                     && external_context_hook
                         .or(request_context_hook.as_deref())
@@ -2442,6 +2454,7 @@ where
                     );
                     if !provider_overflow_recovered
                         && error.context_input_overflow().is_some()
+                        && !is_initial_user_input(&messages)
                         && context_budget.is_some_and(|budget| budget.automatic_compaction())
                         && external_context_hook
                             .or(request_context_hook.as_deref())
