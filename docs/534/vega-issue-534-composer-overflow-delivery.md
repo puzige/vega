@@ -107,3 +107,15 @@ Nextest 原始总结：13 executed，2 passed，11 failed，0 skipped；ignored 
 - 冻结新测试 SHA-256 `6f3d3254aa66a7725137394dc25ae5c2d41604becd5c90d4364ebe75cc5fa222`、支持 `d712a4978abfae792d460f48d0a3819a7f2fbc746b04f558e352cda5043d20ee`、旧测试 `f992b3baeaef49e0d0b11b0dd389ff5afb0890736f7c7f41f82a1ec391100b6e`；[源码/证据](https://github.com/puzige/vega/pull/539#issuecomment-6340457978)均已固定。
 
 有效 RED 后才委派生产最小修复：仅最终前缀宽度复查，必要时在 UTF-8 字符边界退回并重新排版，保留单字符超宽前进。测试、支持、数据和断言继续冻结，后续独立审查增量并由 Actions 验证全部 16 项 GREEN。
+
+## 最终生产版本：全部 16 项 GREEN、独立审查通过
+
+最终带测试生产提交：`aa5a4825bf77cb413690d1d6cf23b9927462a7fe`。A9 生产最小差异 SHA-256 `a93c3091d96a2193fe45eafb4436c64420a33be986678e243ad86a537eed3ee8`，最终 element 文件 SHA-256 `3a83202d064f7ceb2083a2ab5bb11efc75e7e95648e09738bcfc2fde251f0180`。
+
+- [run 39776945747](https://github.com/puzige/vega/actions/runs/39776945747)，[Nextest 119818180507](https://github.com/puzige/vega/actions/runs/39776945747/job/119818180507)，[Clippy 119818180653](https://github.com/puzige/vega/actions/runs/39776945747/job/119818180653)，[required check 119822109598](https://github.com/puzige/vega/actions/runs/39776945747/job/119822109598)：全部 success。
+- 原始输出：16 discovered，16 executed，16 passed，0 failed，0 skipped；15 binaries。Python 5+15+40 全部 OK。ignored 精确清点未单独提取，不猜测。
+- 主 Agent 核对 A9 RED 到最终生产的三个测试/支持文件 diff 为空；同一冻结测试通过，不是删除失败、补改断言、ignore 或自动重试。
+- 独立非实现者审查批准最终增量：最终前缀宽度复查、UTF-8 退回、单字符前进、同一 cut 用于 runs/len/consumed bytes；A1–A8 的未变结论复用。
+- [PR 固定记录](https://github.com/puzige/vega/pull/539#issuecomment-6340723952)包含可恢复原始测试、完整 SHA、原始 patch 和 RED/GREEN run/job；API 读回源码可达后，才授权独立删测。
+
+后续专职写入者仅删除 16 个 Rust 测试、独占观察/模块/dev 接线及 vega_ui lock 中的 image 引用，保留所有生产图片/输入行为及其他 crate 的 image、Python/CI/benchmark。不夹带新行为；删测后再独立审查并验证最终 head 空集完整门禁。空集不替代本节带测试 GREEN，用户原生手测仍待合并后。
