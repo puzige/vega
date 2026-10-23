@@ -17,3 +17,11 @@
 父取得 #535 的当前开发快照 `5ecf37ddde54115f059a7d965eb179a0102a4768`，观察到 `RunContinued { previous_assistant_id, user_message_id, next_assistant_id }` 以及 active owner 的 predecessor terminal-event 过滤；之后远端 head 又更新为 `ba9c155f6392d3df280fda69aad3d3f4681708ac`，仍不能将任一快照称最终接口。#544 的 claim/receipt 不得结束或重复消费这些 continuation owner；生产集成前仍须重新固定实际最终版本并串行协调。
 
 C1–C6 未决保留，下一步定点关闭 app-global owner 寿命、数据库身份、sealed proof/cleanup/drain 和冲突 writer 的准入，而不是再做宽泛审计或只实现 happy path。本文档可发布以供审查；无测试/CI/产品时延结论，不授权源码实现。
+
+## #535 已合入后的精确兼容基线
+
+父已取得并正常 merge master `988e1e37271c666f05ff8eae46d662324e91afd6`（#535 / PR #563），本卡集成 HEAD `759450219a627ffe59b40824124923b7d37becec`。这取代上节“尚无最终接口”的依赖事实，但不自动关闭 owner/围栏接线。
+
+已静态复核最终接口：`ConversationEvent::RunContinued { previous_assistant_id, user_message_id, next_assistant_id }`；同一 `ActiveAgentRun` 的 generation/thread/stream 不变；`observe_terminal_message` 只接受合法链中的 predecessor，并过滤该 predecessor 迟到的 MessageFinished/Interrupted/Error，新的 MessageStarted 才登记后继 assistant。conversation 原子记录 run-continuation 关系，历史和 UI 以同 run 投影；不恢复已清理的开发测试。
+
+因此 C4 的“取得实际最终签名”部分已满足；**ordinary claim/receipt 如何与既有 active run 的 continuation 授权写入和终态移交共存仍未闭合**。#544 不把 RunContinued 当普通 durable receipt，不释放后继尚能写入的 owner，不复用 pending_id 形成普通 echo；原 queue/steer/Codex/approved-plan/credential 路由仍排除。C1–C3 与 C5–C6 不因 #535 合并解除。下一具体步骤为在此精确合并版上固定 claim、sealed facts 和 mutator 的准入/移交签名，之后才可组织生产实现；不是继续等待他卡或宣称已实现。
