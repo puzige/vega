@@ -119,11 +119,33 @@ impl ConversationStream {
 
     pub(crate) fn finish_artifact_turn(&mut self, message_id: &str, cx: &mut Context<Self>) {
         self.finished_artifact_turns.insert(message_id.to_owned());
-        self.flush_artifact_group(message_id, cx);
+        let mut finished_messages = self
+            .finished_artifact_turns
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        finished_messages.sort_unstable();
+        for message_id in finished_messages {
+            self.flush_artifact_group(&message_id, cx);
+        }
+    }
+
+    fn artifact_turn_display_eligible(&self, message_id: &str) -> bool {
+        let mut current = message_id;
+        for _ in 0..=self.run_continuations.len() {
+            if !self.finished_artifact_turns.contains(current) {
+                return false;
+            }
+            let Some(relation) = self.run_continuations.get(current) else {
+                return true;
+            };
+            current = &relation.next_assistant_id;
+        }
+        false
     }
 
     fn flush_artifact_group(&mut self, message_id: &str, cx: &mut Context<Self>) {
-        if !self.finished_artifact_turns.contains(message_id) {
+        if !self.artifact_turn_display_eligible(message_id) {
             return;
         }
         let Some(group) = self.artifact_groups.get(message_id).cloned() else {

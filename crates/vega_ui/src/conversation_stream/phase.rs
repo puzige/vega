@@ -616,6 +616,9 @@ impl ConversationStream {
         if self.compaction_failure_resolved(index) {
             return true;
         }
+        if let Some(StreamEntry::RunActivity { group }) = self.entries.get(index) {
+            return group.read(cx).header_hidden();
+        }
         if matches!(self.entries.get(index), Some(StreamEntry::ContextCompaction { record, .. })
             if matches!(record.status, vega_conversation::types::ContextCompactionStatus::Succeeded | vega_conversation::types::ContextCompactionStatus::Cancelled))
         {

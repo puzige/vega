@@ -74,6 +74,7 @@ pub struct ConversationStream {
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     pub(crate) run_responses: HashMap<String, phase::RunResponses>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
+    pub(crate) run_continuations: HashMap<String, vega_conversation::types::RunContinuation>,
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
     pub(crate) artifact_call_owners: HashMap<String, Option<String>>,
     pub(crate) artifact_history_generation: u64,
@@ -508,6 +509,7 @@ impl ConversationStream {
             tool_cards: HashMap::new(),
             run_responses: HashMap::new(),
             run_activity_groups: HashMap::new(),
+            run_continuations: HashMap::new(),
             artifact_cards: HashMap::new(),
             artifact_call_owners: HashMap::new(),
             artifact_history_generation: 0,
@@ -1692,6 +1694,7 @@ impl ConversationStream {
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::PendingMessageDelivered { .. }
             | ConversationEvent::RunStarted { .. }
+            | ConversationEvent::RunContinued { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
             | ConversationEvent::ReasoningCompleted { .. }
