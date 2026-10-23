@@ -1,5 +1,7 @@
 # #344 production implementation evidence
 
+The first READY record below is retained as history for the patch based on `a367f21376e00ad8030589d73d3443945269b61a`. The review-repair record at the end supersedes its snapshot-to-height-cache import description and records the current delta and validation. Earlier checks and cloud results do not validate the repaired version.
+
 ## READY identity
 
 - Worktree: `vega-344-message-anchor-bottom`（任务隔离工作树；省略本机绝对路径）。
@@ -93,3 +95,49 @@ This final production patch has not been compiled or behavior-tested locally, as
 Rust development tests and their exclusive support must be removed in the later parent-owned delivery stage, not in this implementation stage. Final test-free HEAD still requires complete required CI and independent review; user manual testing remains necessary for real integration, themes, resizing/composer changes and keyboard behavior. READY does not mean CI-passed, merged, or user-accepted.
 
 Implementation writing is stopped at READY; any further edits require a follow-up assignment.
+
+## Review repair READY — current delta
+
+### Baseline and concrete finding
+
+- Starting and handoff HEAD: `606aa8a726e4ee2799079651931f3e417e0c3dc6`, initially clean on `feat/344-message-anchor-bottom`.
+- Parent supplied the already-updated baseline and owns the next remote check, Git/index/commit, PR, CI and delivery-document integration. This writer performed no Git mutations, fetch, push, CI operations, build, compilation, application execution or tests.
+- Independent review found a production cache defect: `capture_visible_entry_heights` replayed prior snapshot `(index, height)` samples against current identities. `apply_history_page` prepends both entries and identities, so old indices can assign heights to newly prepended identities and persist outside subsequent samples. Workspace-width/reading-preview invalidation clears the cache and remeasures the list, but replaying old snapshot heights repopulated invalid measurements before new layout.
+- Parent reports Actions run <https://github.com/puzige/vega/actions/runs/39892038751> succeeded for the unrepaired `606aa8a726e4ee2799079651931f3e417e0c3dc6`. This writer did not fetch or poll that run; raw test discovery/execution counts are not obtained here. That earlier success neither resolves the finding nor validates this delta.
+
+### Minimal repair and invariant
+
+Only `capture_visible_entry_heights` changed in production. It again reads the current `ListState::logical_scroll_top()` and `bounds_for_item(index)` during render, pairing each accepted live height with `entry_identities[index]` in that same render. The function is byte-for-byte identical to the preexisting `a367f21376e00ad8030589d73d3443945269b61a` function after removing its old comments; no comments were copied or added.
+
+The importer no longer accesses `message_anchor_layout` or its indexed samples. Snapshot `measured_heights` remains only an input to snapshot equality/change detection and refresh. The unchanged post-list observer can notify another render after new layout, and that render captures current bounds rather than replaying old samples. Existing history prepend/splice identity alignment and cache-clear/remeasure invalidation remain authoritative. The 256-entry scan, positive-width/positive-height filtering, stop-on-unknown behavior, 512-entry retention region and estimation fallback retain baseline semantics.
+
+No generation/identity API, observer, true-tail continuity, zero-height tail handling, input-mode gate, location request, pagination/fencing or tail-follow change was needed. `core.rs`, `render.rs`, `content.rs`, tests, fixtures, observation wrappers, expected results, module wiring and Cargo files remain unchanged against the repair baseline. This evidence file is this writer's only other changed path. The parent-owned `docs/344/vega-issue-344-delivery.md` became modified concurrently during final verification; its diff was inspected and left untouched, and it is excluded from this repair's patch identities. No spec or acceptance change, new dependency, product text, comment, or non-test `unwrap()`/`expect()` was introduced.
+
+### Exact production identity against the repair baseline
+
+```sh
+git diff --binary --full-index 606aa8a726e4ee2799079651931f3e417e0c3dc6 -- crates/vega_ui/src/conversation_stream/message_anchors.rs
+```
+
+- Production repair patch SHA-256: `b1b5868d44347fe591f0b4d81323ea99a1747f2b73860b981005c7b1cfe18245`.
+- Patch size: 1,493 bytes; one file, 15 insertions and 2 deletions.
+- Repaired `message_anchors.rs` SHA-256: `b8a248633df501ca357b51e024cf56d41ed86a5c02d4c38199f4198edb23dd48`.
+- Unchanged `core.rs` SHA-256: `c62672089fc7fe42dee9d15ffaca8e8a5034197521fa41e31200273f33aaef61`.
+- Frozen tests remain SHA-256 `c84c479c6f8f3b6d00290f7091abebd1537dcf7142cd4ab3f86e6ebdc2651565`; exact v2 spec remains SHA-256 `3d2cbd53f810042e9fc5330a670a8ee7ef9678c7c5d1fd898152be06ff10fec4`.
+
+### Current-cycle static checks actually executed
+
+Executed in the assigned worktree; final assigned-scope checks passed. The concurrent parent-document observation is retained below rather than reported as an all-tree pass:
+
+1. `cargo fmt --all -- --check` — exit 0; formatting check only.
+2. `git diff --check` — exit 0; no whitespace errors.
+3. `git diff --exit-code 606aa8a726e4ee2799079651931f3e417e0c3dc6 -- . ':(exclude)crates/vega_ui/src/conversation_stream/message_anchors.rs' ':(exclude)docs/344/vega-issue-344-implementation-evidence.md'` — initially exit 0, later exit 1 when the concurrent parent-owned delivery-document edit appeared. The returned diff showed only that document; no production/protected-file defect. After inspecting the evidence and current status, the same check with an additional `':(exclude)docs/344/vega-issue-344-delivery.md'` completed with exit 0; all remaining paths unchanged.
+4. Inline `python3` source-only comparison/hash check using read-only `git show` — exit 0: importer equals the baseline with comment lines removed; no importer snapshot reference; production content outside the importer equals `606aa8a`; supplied spec/test hashes match. No Vega code was executed.
+5. Added-line scan of `git diff --unified=0 606aa8a726e4ee2799079651931f3e417e0c3dc6 -- crates/vega_ui/src/conversation_stream/message_anchors.rs` for comments and `unwrap`/`expect` calls — no matches.
+6. `shasum -a 256`, `git diff --binary --full-index`, `wc -c`, `git diff --numstat`, read-only status and HEAD checks — exact identities and scope recorded above.
+
+### Remaining verification and stop boundary
+
+No repaired-version compilation, behavior execution, cloud result or independent delta-review result is claimed. Parent next steps are independent review of this stopped delta and the same unchanged suite through existing cloud PR checks on the final repaired head. Do not weaken assertions or treat the prior green run as repaired-head evidence. No static scope/acceptance blocker is known. Rust development tests and their exclusive support remain untouched for the later parent-owned cleanup stage; final test-free HEAD still requires complete required CI, and real integration remains subject to user manual testing.
+
+Repair implementation writing is stopped at READY. The first-patch history above is retained; this repair requires final-version revalidation.

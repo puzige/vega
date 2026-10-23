@@ -181,11 +181,24 @@ impl ConversationStream {
 
     pub(crate) fn capture_visible_entry_heights(&mut self) {
         self.ensure_entry_identities();
-        let start = self.message_anchor_layout.top_index.min(self.entries.len());
+        let start = self.list.logical_scroll_top().item_ix;
         let end = start
             .saturating_add(MESSAGE_ANCHOR_MEASUREMENT_SCAN_LIMIT)
             .min(self.entries.len());
-        for &(index, height) in &self.message_anchor_layout.measured_heights {
+        for index in start..end {
+            let Some(bounds) = self.list.bounds_for_item(index) else {
+                if index > start {
+                    break;
+                }
+                continue;
+            };
+            if bounds.size.width <= px(0.) {
+                continue;
+            }
+            let height = f32::from(bounds.size.height);
+            if height <= 0.0 {
+                continue;
+            }
             if let Some(identity) = self.entry_identities.get(index) {
                 self.measured_entry_heights
                     .insert(identity.key.clone(), height);

@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-Draft PR [#562](https://github.com/puzige/vega/pull/562) 已取得实际行为 RED（11 执行、4 通过、7 失败、0 跳过），最小生产修复进行中。尚无修复后的 GREEN、合并或用户手测结果。最新仓库政策已取消强制 TDD；本卡复用现成回归验证，不重做前置流程，合并前仍清理开发 Rust 测试及独占支持，并验证最终空集门禁。
+Draft PR [#562](https://github.com/puzige/vega/pull/562) 首版生产修复已取得 11/11 云端回归通过；独立审查另发现旧快照行高污染缓存，原作者正在最小修正，尚未获该最终修正版本的验证、合并或用户手测结果。最新仓库政策已取消强制 TDD；本卡复用现成回归验证，不重做前置流程，合并前仍清理开发 Rust 测试及独占支持，并验证最终空集门禁。
 
 ## 内容与先后顺序
 
@@ -35,7 +35,7 @@ Draft PR [#562](https://github.com/puzige/vega/pull/562) 已取得实际行为 R
 - 独立测试增量 reviewer：`01M5JB0VZGJH448QXX457Z6KNC` / execution `01M5JB0VZG095BJPSQT53FFHJM`，只读完成上述精确版本并停写，结论静态可接受、无阻塞提交 draft PR 的测试接线或 fixture 缺陷。详见独立审查记录；B3 连续测量防护仍为后续生产静态审查义务。
 - RED：首轮为测试接线编译失败；修正后的 `9bda1ecb54cec85d4e217760408f2aafd03ad3a3` 已在 run `39828341844` 执行行为断言，11 执行、4 通过、7 失败、0 跳过，具体见下文。
 - 实现：由单一专职作者进行；原验收及现有测试保持不变。
-- 同一测试 GREEN：未取得。
+- 同一测试 GREEN：首版实现 `606aa8a726e4ee2799079651931f3e417e0c3dc6` 已取得，11/11；独立审查修正后的最终生产版本仍须重验。
 - 测试来源可恢复性、独立删测提交、最终 head 0 发现/0 执行完整门禁：待前述阶段完成。
 - Issue 保持开放、In progress；最新 head required check 与独立审查均通过后才可合并，合并后 In review 等用户手测，不以自动关闭关键字收尾。
 
@@ -69,3 +69,12 @@ Draft PR [#562](https://github.com/puzige/vega/pull/562) 已取得实际行为 R
 - 接续前 fetch 后普通 merge 最新 master `9f9fa092a3ca391a65f08419c9206f32979119e6`，保留全部原提交来源；本地实现起点 `a367f21376e00ad8030589d73d3443945269b61a`。继承 CUA 生命周期/准备入口、上下文读锁、Composer 样式和交付政策等增量；锚点算法、锁定依赖与本卡测试字节未改。后续云端检查在当前最终实现上重新执行，旧 RED 不冒充新基线验证。
 - 新政策以当前 `AGENTS.md` / 验证与快速交付政策为准：取消强制 TDD，不取消最小实现、代码委派、独立实现审查、云端门禁、开发测试留痕与合并前清理。历史方案流程文字仅记录当时顺序，不覆盖新政策；A1–A7 行为验收未变。
 - 实现作者 `01M5K9ZVVSASCNGBZJ3FBJ8VYD` / execution `01M5K9ZVVSGMC1GE862E6YMRT6` 负责 `message_anchors.rs` 与 `core.rs` 最小生产修复；主 Agent 不并写代码。返回 rail 自带的布局后观察器复用现有生产/测试挂载顺序，不为验证追加宿主接线；当前测试及断言保持不变。
+
+## 首版实现的 GREEN 与独立修正
+
+- 首版提交：`606aa8a726e4ee2799079651931f3e417e0c3dc6`，生产 patch SHA-256 `4b83f3c0dbd1bacaecb8443ed5ff2bdd1c317acc3feff66566e8c232c5979ad2`，仅 `core.rs` 与 `message_anchors.rs`。
+- [Actions 39892038751](https://github.com/puzige/vega/actions/runs/39892038751)全部成功：[Clippy 120213808943](https://github.com/puzige/vega/actions/runs/39892038751/job/120213808943)、[Nextest 120213809136](https://github.com/puzige/vega/actions/runs/39892038751/job/120213809136)、[required 120215006727](https://github.com/puzige/vega/actions/runs/39892038751/job/120215006727)。
+- 原始输出：发现11；`Summary [0.463s] 11 tests run: 11 passed, 0 skipped`。执行11、通过11、失败0、跳过0；Python 三组5+15+40均成功。测试字节与已记录修正后来源一致。
+- 同版独立 reviewer `01M5KATB36YH44JTQPZYGTCDEC` / execution `01M5KATB36EX532CZZWHRYA7ZQ` 只读确认 observer 的列表后顺序/隐藏常驻/无命中与布局影响、同帧 padding、changed-only 通知、实际尾条连续测量/合法零高、键盘资格均符合方案；但提出一个生产阻塞：`capture_visible_entry_heights` 把旧快照 `(index,height)` 写入当前 identity。`content.rs::apply_history_page` 前插偏移索引；`core.rs::set_workspace_width` 清缓存/remeasure 后旧快照仍可回填错误宽度测量。
+- 主 Agent 已读取这些原始调用链并确认责任层是生产缓存导入，不是测试/runner。GREEN 不取消该发现；[PR 记录](https://github.com/puzige/vega/pull/562#issuecomment-6356422381)保留成功与未解决项。
+- 原作者 follow-up `01M5KBM5ZJD2E1NWTG7FG5JEWA` 仅修缓存采样：恢复直接从当前 ListState bounds 导入测量，快照样本只用于 changed-only 触发，不再按旧索引回放。尾部/输入判定及现有断言保持不变；停写后增量审查并在修正 head 重新跑云端回归。
