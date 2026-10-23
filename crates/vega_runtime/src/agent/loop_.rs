@@ -1087,7 +1087,8 @@ where
     .with_skills(!skill_catalog.is_empty(), skill_config.is_some())?
     .with_computer_use(tool_config.computer_use.as_ref())
     .with_automation(tool_config.automation.as_ref())
-    .with_subagents(tool_config.subagents.is_some());
+    .with_subagents(tool_config.subagents.is_some())
+    .with_stage(tool_config.stage.is_some());
     let mut exact_rules: HashSet<RuntimeExactRule> =
         tool_config.exact_rules.iter().cloned().collect();
     let mut events = Vec::new();
@@ -2729,8 +2730,19 @@ where
             ));
         }
 
-        let mixed_question_batch =
-            calls.len() != 1 && calls.iter().any(|call| call.name == USER_QUESTION_TOOL);
+        let mixed_stage_batch = calls.len() != 1
+            && calls.iter().any(|call| {
+                call.name == "checkpoint_stage"
+                    && serde_json::from_str::<Value>(&call.input_json)
+                        .is_ok_and(|input| input["ready_for_review"] == true)
+            });
+        let mixed_question_batch = calls.len() != 1
+            && calls.iter().any(|call| {
+                call.name == USER_QUESTION_TOOL
+                    || (call.name == "checkpoint_stage"
+                        && serde_json::from_str::<Value>(&call.input_json)
+                            .is_ok_and(|input| input["ready_for_review"] == true))
+            });
         let batch_policy = classify_tool_batch(
             &calls
                 .iter()
@@ -2944,7 +2956,12 @@ where
                     emit!(events, sink, RuntimeEvent::ToolCallProposed(call.clone()));
                     let result = terminal_result(
                         &call,
-                        USER_QUESTION_BATCH_REJECTED.into(),
+                        if mixed_stage_batch {
+                            STAGE_BATCH_REJECTED
+                        } else {
+                            USER_QUESTION_BATCH_REJECTED
+                        }
+                        .into(),
                         RuntimeToolStatus::Rejected,
                         Some(validation_audit()),
                     );
@@ -3099,6 +3116,7 @@ where
                 )
                 .await?
             };
+            let mut read_identity = None;
             let (mut result, cancelled_while_running) = match authorization {
                 Authorization::Terminal(result) => (result, false),
                 Authorization::Approved {
@@ -3171,6 +3189,15 @@ where
                     } else {
                         executed_tool_call_count += 1;
                         let (mut result, cancelled) = match prepared {
+                            PreparedRuntimeCall::PinnedRead { execution, .. }
+                            | PreparedRuntimeCall::ExternalRead {
+                                call: execution, ..
+                            } if tool_config.stage.is_some() => {
+                                let (result, cancelled, identity) =
+                                    execute_read_identity_waiting(tools, &execution, &cancel).await;
+                                read_identity = identity;
+                                (result, cancelled)
+                            }
                             PreparedRuntimeCall::Skill { action, .. } => {
                                 let config =
                                     skill_config.as_ref().ok_or_else(skill_runtime_error)?;
@@ -3298,6 +3325,12 @@ where
                     run.discard_pending_screenshot(&call.id);
                 }
             }
+            let read_output_unchanged = read_identity
+                .as_ref()
+                .is_some_and(|identity| identity.complete)
+                && tool_config
+                    .redact_tool_output(&result.output)
+                    .is_ok_and(|output| output == result.output);
             redact_runtime_tool_result(&tool_config, &mut result);
             user_questions::validate_redacted_result(&call, &mut result);
             subagents::validate_redacted_subagent_result(&call, &mut result);
@@ -3333,7 +3366,49 @@ where
                     chunk: result.output.clone(),
                 }
             );
-            emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
+            if read_output_unchanged
+                && result.status == RuntimeToolStatus::Success
+                && result.truncated == Some(false)
+                && !cancelled_while_running
+                && !cancel.is_cancelled()
+                && let Some(identity) = read_identity
+            {
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::ToolReadFinished {
+                        result: result.clone(),
+                        identity
+                    }
+                );
+            } else {
+                emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
+            }
+            if call.name == "checkpoint_stage"
+                && result.status == RuntimeToolStatus::Success
+                && !result.reused
+                && !cancel.is_cancelled()
+                && let Ok(value) = serde_json::from_str::<Value>(&result.output)
+                && value["checkpoint"]["manifest"]["ready_for_review"] == true
+                && let Some(checkpoint_id) = value["checkpoint"]["id"].as_str()
+            {
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::StageHandoff {
+                        checkpoint_id: checkpoint_id.into()
+                    }
+                );
+                return Ok(outcome(
+                    events,
+                    messages,
+                    final_text,
+                    tool_call_count,
+                    executed_tool_call_count,
+                    false,
+                    false,
+                ));
+            }
             if let Some(target) = &result.remember_rule {
                 exact_rules.insert(RuntimeExactRule {
                     tool: target.tool,
