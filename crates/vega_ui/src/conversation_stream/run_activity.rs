@@ -17,7 +17,6 @@ pub(crate) enum RunActivityChild {
     Thinking(Entity<ThinkingBlock>),
     Tool(Entity<ToolCard>),
     ToolGroup(Entity<ToolActivityGroup>),
-    Artifact(Entity<ArtifactCard>),
 }
 
 struct RunActivitySegment {
@@ -436,12 +435,10 @@ impl RunActivityGroup {
 
     pub(crate) fn header_hidden(&self) -> bool {
         let has_details = !self.process_copies.is_empty()
-            || self.segments.iter().any(|segment| {
-                segment
-                    .children
-                    .iter()
-                    .any(|child| !matches!(child, RunActivityChild::Artifact(_)))
-            });
+            || self
+                .segments
+                .iter()
+                .any(|segment| !segment.children.is_empty());
         self.continued && !(self.process_in_details() && has_details)
     }
 
@@ -487,10 +484,7 @@ impl RunActivityGroup {
         let mut focused = focus_process_selection || self.focus.contains_focused(window, cx);
         let mut copies = Vec::new();
         for segment in &self.segments {
-            let artifact_focused = segment.children.iter().any(|child| {
-                matches!(child, RunActivityChild::Artifact(card) if card.read(cx).contains_focus(window, cx))
-            });
-            focused |= !artifact_focused && segment.focus.contains_focused(window, cx)
+            focused |= segment.focus.contains_focused(window, cx)
                 || segment.header_focus.is_focused(window);
             for child in &segment.children {
                 if let RunActivityChild::Thinking(card) = child {
@@ -560,7 +554,7 @@ impl RunActivityGroup {
         self.segment_children(segment)
             .into_iter()
             .filter(|child| {
-                (!self.process_in_details() || matches!(child, RunActivityChild::Artifact(_)))
+                !self.process_in_details()
                     && !matches!(child, RunActivityChild::Thinking(card) if outer_summary.as_ref() == Some(card))
                     && (!has_tools
                         || !matches!(child, RunActivityChild::Thinking(card) if !card.read(cx).has_meaningful_source_text()))
@@ -651,7 +645,7 @@ impl RunActivityGroup {
             .flat_map(|child| match child {
                 RunActivityChild::Tool(card) => vec![card],
                 RunActivityChild::ToolGroup(group) => group.read(cx).children(),
-                RunActivityChild::Thinking(_) | RunActivityChild::Artifact(_) => Vec::new(),
+                RunActivityChild::Thinking(_) => Vec::new(),
             })
             .collect()
     }
@@ -875,7 +869,6 @@ impl RunActivityGroup {
                 RunActivityChild::ToolGroup(group) => {
                     current.extend(group.read(cx).children());
                 }
-                RunActivityChild::Artifact(_) => runs.push(std::mem::take(&mut current)),
                 RunActivityChild::Thinking(_) => {}
             }
         }
@@ -899,49 +892,6 @@ impl RunActivityGroup {
         cx.observe(group, |_, _, cx| cx.notify()).detach();
     }
 
-    pub(crate) fn insert_after_tool(
-        &mut self,
-        tool: &Entity<ToolCard>,
-        artifact: Entity<ArtifactCard>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some((segment_index, index)) =
-            self.segments
-                .iter()
-                .enumerate()
-                .find_map(|(segment_index, segment)| {
-                    segment
-                        .children
-                        .iter()
-                        .position(|child| match child {
-                            RunActivityChild::Tool(card) => card == tool,
-                            RunActivityChild::ToolGroup(group) => group.read(cx).contains(tool),
-                            RunActivityChild::Thinking(_) | RunActivityChild::Artifact(_) => false,
-                        })
-                        .map(|index| (segment_index, index))
-                })
-        else {
-            return false;
-        };
-        if matches!(
-            self.segments[segment_index].children.get(index + 1),
-            Some(RunActivityChild::Artifact(_))
-        ) {
-            return false;
-        }
-        cx.observe(&artifact, |_, _, cx| cx.notify()).detach();
-        self.segments[segment_index]
-            .children
-            .insert(index + 1, RunActivityChild::Artifact(artifact));
-        self.segments[segment_index]
-            .scrolls
-            .push(ScrollHandle::new());
-        self.refresh_compact_tool_groups(segment_index, cx);
-        self.sync_thinking_visibility(cx);
-        cx.notify();
-        true
-    }
-
     pub(crate) fn contains_tool(&self, card: &Entity<ToolCard>, cx: &App) -> bool {
         self.segments
             .iter()
@@ -949,7 +899,7 @@ impl RunActivityGroup {
             .any(|child| match child {
                 RunActivityChild::Tool(owned) => owned == card,
                 RunActivityChild::ToolGroup(group) => group.read(cx).contains(card),
-                RunActivityChild::Thinking(_) | RunActivityChild::Artifact(_) => false,
+                RunActivityChild::Thinking(_) => false,
             })
     }
 
@@ -958,13 +908,6 @@ impl RunActivityGroup {
             .iter()
             .flat_map(|segment| segment.children.iter())
             .any(|child| matches!(child, RunActivityChild::ToolGroup(owned) if owned == group))
-    }
-
-    pub(crate) fn contains_artifact(&self, card: &Entity<ArtifactCard>) -> bool {
-        self.segments
-            .iter()
-            .flat_map(|segment| segment.children.iter())
-            .any(|child| matches!(child, RunActivityChild::Artifact(owned) if owned == card))
     }
 
     pub(crate) fn segment_row_count(&self, segment: usize, cx: &App) -> usize {
@@ -980,12 +923,7 @@ impl RunActivityGroup {
             let card = self.stage_thinking(segment);
             return 1
                 + usize::from(expanded)
-                + usize::from(card.is_some_and(|card| card.read(cx).truncated))
-                + children
-                    .iter()
-                    .filter(|child| matches!(child, RunActivityChild::Artifact(_)))
-                    .map(|child| Self::child_row_count(child, cx))
-                    .sum::<usize>();
+                + usize::from(card.is_some_and(|card| card.read(cx).truncated));
         }
         let children = if expanded {
             Self::compact_children(children, cx)
@@ -995,9 +933,7 @@ impl RunActivityGroup {
         usize::from(aggregate)
             + children
                 .iter()
-                .filter(|child| {
-                    !aggregate || expanded || matches!(child, RunActivityChild::Artifact(_))
-                })
+                .filter(|_| !aggregate || expanded)
                 .map(|child| Self::child_row_count(child, cx))
                 .sum::<usize>()
     }
@@ -1025,22 +961,11 @@ impl RunActivityGroup {
     }
 
     fn split_sections(children: Vec<RunActivityChild>) -> Vec<Vec<RunActivityChild>> {
-        let mut sections = Vec::new();
-        let mut operations = Vec::new();
-        for child in children {
-            if matches!(child, RunActivityChild::Artifact(_)) {
-                if !operations.is_empty() {
-                    sections.push(std::mem::take(&mut operations));
-                }
-                sections.push(vec![child]);
-            } else {
-                operations.push(child);
-            }
+        if children.is_empty() {
+            Vec::new()
+        } else {
+            vec![children]
         }
-        if !operations.is_empty() {
-            sections.push(operations);
-        }
-        sections
     }
 
     pub(crate) fn estimated_segment_height(&self, segment: usize, width: f32, cx: &App) -> f32 {
@@ -1065,12 +990,7 @@ impl RunActivityGroup {
             let details_height = sections
                 .iter()
                 .map(|section| {
-                    if matches!(section.first(), Some(RunActivityChild::Artifact(_))) {
-                        section
-                            .iter()
-                            .map(|child| Self::estimated_child_height(child, width, cx))
-                            .sum::<f32>()
-                    } else if expanded {
+                    if expanded {
                         section
                             .iter()
                             .map(|child| Self::estimated_child_height(child, width, cx))
@@ -1101,17 +1021,7 @@ impl RunActivityGroup {
             } else {
                 0.
             };
-            let artifact_height = self
-                .visible_segment_children(segment, cx)
-                .iter()
-                .filter(|child| matches!(child, RunActivityChild::Artifact(_)))
-                .map(|child| Self::estimated_child_height(child, width, cx))
-                .sum::<f32>();
-            return top
-                + Layout::CONVERSATION_TOOL_HEIGHT
-                + source_height
-                + truncated_height
-                + artifact_height;
+            return top + Layout::CONVERSATION_TOOL_HEIGHT + source_height + truncated_height;
         }
         let children = self.visible_segment_children(segment, cx);
         let tool_leads = matches!(
@@ -1130,7 +1040,6 @@ impl RunActivityGroup {
             RunActivityChild::Thinking(card) => card.read(cx).estimated_height(width),
             RunActivityChild::Tool(card) => card.read(cx).estimated_height(),
             RunActivityChild::ToolGroup(group) => group.read(cx).estimated_height(cx),
-            RunActivityChild::Artifact(card) => card.read(cx).row_count() as f32 * ROW_HEIGHT,
         }
     }
 
@@ -1148,7 +1057,6 @@ impl RunActivityGroup {
             RunActivityChild::Thinking(card) => card.read(cx).row_count(),
             RunActivityChild::Tool(card) => card.read(cx).row_count(),
             RunActivityChild::ToolGroup(group) => group.read(cx).row_count(cx),
-            RunActivityChild::Artifact(card) => card.read(cx).row_count(),
         }
     }
 
@@ -1232,7 +1140,6 @@ impl RunActivityGroup {
                 .read(cx)
                 .children()
                 .into_iter()
-                .filter(|child| !matches!(child, RunActivityChild::Artifact(_)))
                 .map(|child| Self::render_child(child, window, cx))
                 .collect()
         } else {
@@ -1295,8 +1202,15 @@ impl RunActivityGroup {
             .flex()
             .items_center()
             .gap(px(Layout::CONVERSATION_INLINE_GAP))
-            .on_key_down(move |event, _, cx| {
-                if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+            .on_key_down(move |event, window, cx| {
+                if can_expand && event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                } else if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                     keyboard_toggle.update(cx, RunActivityGroup::toggle_expanded);
                     cx.stop_propagation();
                 }
@@ -1417,16 +1331,6 @@ impl RunActivityGroup {
             }
             RunActivityChild::Tool(card) => ToolCard::render(card, false, window, cx),
             RunActivityChild::ToolGroup(group) => ToolActivityGroup::render(group, window, cx),
-            RunActivityChild::Artifact(card) => {
-                let count = card.read(cx).row_count();
-                div()
-                    .w_full()
-                    .children(
-                        (0..count)
-                            .map(|row| ArtifactCard::render_row(card.clone(), row, window, cx)),
-                    )
-                    .into_any_element()
-            }
         }
     }
 
@@ -1733,8 +1637,17 @@ impl RunActivityGroup {
                             },
                         )
                     })
-                    .on_key_down(move |event, _, cx| {
-                        if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    .on_key_down(move |event, window, cx| {
+                        if can_expand && event.keystroke.key == "tab" {
+                            if event.keystroke.modifiers.shift {
+                                window.focus_prev(cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
+                            cx.stop_propagation();
+                        } else if can_expand
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        {
                             keyboard
                                 .update(cx, |group, cx| group.toggle_segment(segment_index, cx));
                             cx.stop_propagation();
@@ -1806,13 +1719,11 @@ impl RunActivityGroup {
             }
         }
         for section in sections {
-            if !aggregate || matches!(section.first(), Some(RunActivityChild::Artifact(_))) {
+            if !aggregate {
                 rows.extend(
                     section
                         .into_iter()
-                        .filter(|child| {
-                            !single_thinking || matches!(child, RunActivityChild::Artifact(_))
-                        })
+                        .filter(|_| !single_thinking)
                         .map(|child| {
                             let element = match child {
                                 RunActivityChild::Tool(card) if !aggregate && shimmering => {

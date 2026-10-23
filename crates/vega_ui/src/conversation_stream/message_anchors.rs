@@ -155,7 +155,9 @@ impl ConversationStream {
                 ),
                 StreamEntry::Tool { .. }
                 | StreamEntry::ToolGroup { .. }
-                | StreamEntry::Artifact { .. } => (MessageAnchorKind::Tool, "工具活动".to_string()),
+                | StreamEntry::ArtifactGroup { .. } => {
+                    (MessageAnchorKind::Tool, "工具活动".to_string())
+                }
                 StreamEntry::Plan { .. } => (MessageAnchorKind::Plan, "计划消息".to_string()),
                 StreamEntry::Summary { .. } => (MessageAnchorKind::Summary, "任务结果".to_string()),
                 StreamEntry::Subagents { .. }

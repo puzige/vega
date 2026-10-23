@@ -1129,9 +1129,8 @@ pub(crate) enum StreamEntry {
     ToolGroup {
         group: Entity<ToolActivityGroup>,
     },
-    /// One route-owned artifact, placed immediately after its exact tool.
-    Artifact {
-        card: Entity<ArtifactCard>,
+    ArtifactGroup {
+        group: Entity<ArtifactGroup>,
     },
     /// Sole active permission request/response handoff card.
     Permission {
@@ -1165,7 +1164,7 @@ impl StreamEntry {
             }
             StreamEntry::Tool { card } => card.read(cx).row_count(),
             StreamEntry::ToolGroup { group } => group.read(cx).row_count(cx),
-            StreamEntry::Artifact { card } => card.read(cx).row_count(),
+            StreamEntry::ArtifactGroup { group } => group.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),
             StreamEntry::Plan { card } => card.read(cx).row_count(),
             StreamEntry::Summary { card } => usize::from(

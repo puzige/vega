@@ -38,7 +38,7 @@ use vega_markdown::{
 };
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
-use crate::artifact_card::ArtifactCard;
+use crate::artifact_card::{ArtifactCard, ArtifactGroup};
 use crate::branch_selector::{BranchListRequested, BranchSelector};
 use crate::commit_panel::CommitPanel;
 use crate::file_selector::{
