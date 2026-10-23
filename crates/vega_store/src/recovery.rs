@@ -29,8 +29,15 @@ pub fn recover_thread(
     thread_id: &str,
     now_ms: i64,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let owner = crate::delegated_ownership::acquire_for_thread(conn, thread_id)?;
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let counts = recover_thread_with_owner(&tx, thread_id, now_ms, owner.as_deref())?;
     tx.commit()?;
     Ok(counts)
@@ -97,6 +104,10 @@ pub fn recover_stopped_with_owner(
     now_ms: i64,
     owner: Option<&crate::delegated_ownership::DelegatedOwnership>,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        tx,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     if crate::threads::find(tx, thread_id)?.is_some_and(|row| row.parent_thread_id.is_some())
         && !owner.is_some_and(|owner| {
             crate::delegated_ownership::database_path(tx)

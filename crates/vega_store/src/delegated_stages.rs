@@ -32,6 +32,10 @@ pub fn register(
     resume: Option<&str>,
     reconciliations: &Value,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     conn.execute("INSERT INTO delegated_execution_recovery(child_thread_id,child_message_id,release_state,authority,resume_checkpoint_id,reconciliations) VALUES(?1,?2,'held',?3,?4,?5)", params![child,message,authority(conn,child)?,resume,reconciliations.to_string()])?;
     conn.execute("INSERT INTO delegated_execution_messages(message_id,child_thread_id,execution_message_id) VALUES(?1,?2,?1)",params![message,child])?;
     Ok(())
@@ -51,6 +55,10 @@ pub fn inherit_execution(
     previous: &str,
     message: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     if let Some(execution) = execution_message(conn, child, previous)? {
         conn.execute("INSERT INTO delegated_execution_messages(message_id,child_thread_id,execution_message_id) VALUES(?1,?2,?3)",params![message,child,execution])?;
     }
@@ -82,6 +90,10 @@ pub fn set_release(
     message: &str,
     state: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     if conn.execute("UPDATE delegated_execution_recovery SET release_state=?3 WHERE child_thread_id=?1 AND child_message_id=?2 AND (release_state='held' OR ?3='quarantined')",params![child,message,state])? != 1 { return Err(invalid()); }
     Ok(())
 }
@@ -117,6 +129,10 @@ pub fn append(
     effects: Value,
     now: i64,
 ) -> rusqlite::Result<Value> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let source = crate::context_compaction::load_source_version_in_transaction(conn, child)?;
     let id = ulid::Ulid::generate().to_string();
     let previous = latest(conn, child, message)?.map(|value| value["id"].clone());
@@ -154,6 +170,10 @@ pub fn mark_handoff(
     message: &str,
     id: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let message = execution_message(conn, child, message)?.ok_or_else(invalid)?;
     let value = checkpoint(conn, id)?;
     if value["agent_id"] != child
@@ -174,6 +194,10 @@ pub fn record_read(
     path: &str,
     hash: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let valid: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM tool_calls WHERE id=?1 AND thread_id=?2 AND message_id=?3 AND lower(tool)='read' AND status='success')",params![call,child,message],|row|row.get(0))?;
     if !valid {
         return Err(invalid());
@@ -235,6 +259,10 @@ pub fn redact_payloads<F>(conn: &Connection, child: &str, mut redact: F) -> rusq
 where
     F: FnMut(&str) -> String,
 {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     fn visit<F: FnMut(&str) -> String>(value: &mut Value, redact: &mut F) {
         match value {
             Value::String(text) => *text = redact(text),

@@ -24,6 +24,10 @@ pub fn insert(
     ordinal: usize,
     bytes: &[u8],
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Attachments,
+    )?;
     let changed = conn.execute(
         "INSERT INTO image_attachments (message_id, ordinal, encoded) SELECT id, ?2, ?3 FROM messages WHERE id = ?1 AND role = 'user' AND kind = 'text'",
         params![message_id, ordinal as i64, bytes],

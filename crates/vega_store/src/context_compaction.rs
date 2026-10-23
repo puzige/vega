@@ -191,6 +191,10 @@ pub fn save_model_policy(
     conn: &Connection,
     policy: &ModelContextPolicy,
 ) -> Result<(), ContextSettingsError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ContextCompaction,
+    )?;
     policy.validate()?;
     conn.execute(
         "INSERT INTO model_context_policies \
@@ -302,6 +306,10 @@ pub fn insert_status(
     conn: &Connection,
     status: NewContextCompactionStatus<'_>,
 ) -> Result<i64, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ContextCompaction,
+    )?;
     if status.thread_id.trim().is_empty()
         || status.model.trim().is_empty()
         || status.operation_key.trim().is_empty()
@@ -742,6 +750,10 @@ pub fn save_settings(
     conn: &Connection,
     settings: &ContextSettings,
 ) -> Result<(), ContextSettingsError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ContextCompaction,
+    )?;
     settings.validate()?;
     conn.execute(
         "INSERT INTO context_settings \
@@ -816,6 +828,10 @@ pub fn redact_legacy_thread_content<F>(
 where
     F: FnMut(&str, &[usize]) -> (String, Vec<usize>),
 {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ContextCompaction,
+    )?;
     let tool_rows = {
         let mut statement = conn.prepare(
             "SELECT id, output_text FROM tool_calls WHERE thread_id = ?1 AND output_text IS NOT NULL",
@@ -1070,7 +1086,19 @@ where
     F: Fn() -> bool,
 {
     checkpoint.validate()?;
-    let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let transaction = crate::write_coordination::WriteTransaction::new_with_cancel(
+        conn,
+        crate::write_coordination::WriteCategory::ContextCompaction,
+        &should_cancel,
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::SqliteFailure(ref failure, _)
+            if failure.extended_code == rusqlite::ffi::SQLITE_INTERRUPT =>
+        {
+            ContextCheckpointError::Cancelled
+        }
+        error => ContextCheckpointError::Store(error),
+    })?;
     if should_cancel() {
         transaction.rollback()?;
         return Err(ContextCheckpointError::Cancelled);
