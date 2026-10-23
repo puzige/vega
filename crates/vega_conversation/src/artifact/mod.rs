@@ -577,5 +577,7 @@ impl ArtifactService {
 }
 
 mod helpers;
+#[cfg(feature = "test-support")]
+mod test_support;
 
 pub(crate) use helpers::*;

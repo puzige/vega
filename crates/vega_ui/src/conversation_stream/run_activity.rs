@@ -1236,6 +1236,14 @@ impl RunActivityGroup {
         let header = div()
             .id(("run-activity-toggle", group.entity_id()))
             .group(disclosure_group.clone())
+            .map(|row| {
+                #[cfg(test)]
+                let row = {
+                    use gpui_kit::base::TestSupportExt as _;
+                    row.test_support()
+                };
+                row
+            })
             .track_focus(&header_focus)
             .tab_stop(can_expand)
             .aria_expanded(expanded)
@@ -1650,6 +1658,14 @@ impl RunActivityGroup {
                 div()
                     .id(("run-stage-toggle", segment_index))
                     .group(disclosure_group.clone())
+                    .map(|row| {
+                        #[cfg(test)]
+                        let row = {
+                            use gpui_kit::base::TestSupportExt as _;
+                            row.test_support()
+                        };
+                        row
+                    })
                     .track_focus(&header_focus)
                     .tab_stop(can_expand)
                     .when(can_expand, |row| row.aria_expanded(expanded))

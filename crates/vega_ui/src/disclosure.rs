@@ -17,6 +17,9 @@ pub(crate) fn chevron(
     colors: ThemeColors,
     window: &Window,
 ) -> AnyElement {
+    #[cfg(test)]
+    let _paint_scope =
+        crate::disclosure_paint_probe::scope(group.clone(), expanded, enabled, focus);
     let glyph = div().relative().child(icon(
         if expanded {
             Icon::ChevronDown
@@ -47,7 +50,12 @@ pub(crate) fn chevron(
                 .when(enabled, |glyph| {
                     glyph.group_hover(group, |style| style.opacity(1.))
                 })
-                .child(glyph),
+                .child(glyph)
+                .map(|glyph| {
+                    #[cfg(test)]
+                    let glyph = crate::disclosure_paint_probe::observe_visibility(glyph);
+                    glyph
+                }),
         )
         .into_any_element()
 }
@@ -60,6 +68,9 @@ pub(crate) fn inline_chevron(
     colors: ThemeColors,
     window: &Window,
 ) -> AnyElement {
+    #[cfg(test)]
+    let _paint_scope =
+        crate::disclosure_paint_probe::scope(group.clone(), expanded, enabled, focus);
     let glyph = div().relative().child(crate::icons::sized_icon(
         if expanded {
             Icon::ChevronDown
@@ -87,7 +98,12 @@ pub(crate) fn inline_chevron(
                 .when(enabled, |glyph| {
                     glyph.group_hover(group, |style| style.opacity(1.))
                 })
-                .child(glyph),
+                .child(glyph)
+                .map(|glyph| {
+                    #[cfg(test)]
+                    let glyph = crate::disclosure_paint_probe::observe_visibility(glyph);
+                    glyph
+                }),
         )
         .into_any_element()
 }

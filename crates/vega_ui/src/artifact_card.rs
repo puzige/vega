@@ -323,6 +323,15 @@ impl ArtifactCard {
             .px_3()
             .bg(colors.bg_elevated)
             .border_color(colors.border_subtle);
+        #[cfg(test)]
+        let base = {
+            use gpui_kit::base::TestSupportExt as _;
+            base.id(gpui_kit::SharedString::from(format!(
+                "artifact-row-{}-{row}",
+                card.entity_id()
+            )))
+            .test_support()
+        };
         if row == 0 {
             return base
                 .border_t_1()

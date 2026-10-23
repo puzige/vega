@@ -692,6 +692,11 @@ impl ToolCard {
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
             .group(disclosure_group.clone());
+        #[cfg(test)]
+        let row = {
+            use gpui_kit::base::TestSupportExt as _;
+            row.test_support()
+        };
         let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)

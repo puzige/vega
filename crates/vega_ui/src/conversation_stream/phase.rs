@@ -502,6 +502,8 @@ impl ConversationStream {
             && !group.read(cx).process_in_details()
             && group.update(cx, |group, cx| group.reveal_segment(*segment, cx))
         {
+            #[cfg(test)]
+            crate::disclosure_layout_probe::record(crate::disclosure_layout_probe::Observation::Remeasure(Some(index)));
             self.list.remeasure_items(index..index + 1);
             self.list.scroll_to(gpui_kit::ListOffset {
                 item_ix: index,

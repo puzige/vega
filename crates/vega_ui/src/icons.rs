@@ -194,6 +194,32 @@ fn kit_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
         .text_color(color)
         .flex_shrink_0()
         .into_any_element()
+        .map(|glyph| {
+            #[cfg(test)]
+            let glyph = crate::disclosure_paint_probe::observe_untransformed_icon(
+                kind,
+                gpui_kit::component::IconNamed::path(icon_name(kind)),
+                glyph,
+            );
+            glyph
+        })
+}
+
+#[cfg(test)]
+pub(crate) fn configured_chevron_paint_control(color: Rgba, size: f32, radians: f32) -> AnyElement {
+    let kind = Icon::ChevronRight;
+    let glyph = KitIcon::new(icon_name(kind))
+        .with_size(px(size))
+        .text_color(color)
+        .flex_shrink_0()
+        .rotate(radians)
+        .into_any_element();
+    crate::disclosure_paint_probe::observe_configured_icon(
+        kind,
+        gpui_kit::component::IconNamed::path(icon_name(kind)),
+        radians,
+        glyph,
+    )
 }
 
 fn inline_icon(data: &'static [u8], color: Rgba, size: f32) -> AnyElement {
