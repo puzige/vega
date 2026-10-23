@@ -325,9 +325,7 @@ impl ConversationStream {
                         group.read(cx).segment_children(*segment),
                         cx,
                     ) {
-                        if !matches!(child, RunActivityChild::Artifact(_)) {
-                            details.push((index, RunDetail::Operation(child)));
-                        }
+                        details.push((index, RunDetail::Operation(child)));
                     }
                 }
                 StreamEntry::Assistant { copy, .. } if group.read(cx).hides_copy(copy.id) => {
@@ -508,15 +506,6 @@ impl ConversationStream {
                 offset_in_item: px(anchor.offset_in_item_px),
             });
             return true;
-        }
-        if let StreamEntry::RunActivitySegment { group, segment } = &self.entries[index]
-            && group
-                .read(cx)
-                .segment_children(*segment)
-                .iter()
-                .any(|child| matches!(child, RunActivityChild::Artifact(_)))
-        {
-            return false;
         }
         let Some(group) = self.entry_identities[index]
             .message_id
