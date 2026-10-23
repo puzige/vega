@@ -79,9 +79,7 @@ impl SettingsView {
                             if cx.try_global::<SettingsOpen>().is_some_and(|open| open.0) {
                                 this.acquire_preparation(cx);
                             }
-                            cx.emit(DesktopPreparationRequested {
-                                pane: crate::cua_onboarding::PermissionPane::Accessibility,
-                            });
+                            cx.emit(DesktopPreparationRequested { pane: None });
                         }
                     }
                     Err(error) => this.error = Some(error.into()),
