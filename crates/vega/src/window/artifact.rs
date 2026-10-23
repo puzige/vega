@@ -331,6 +331,16 @@ impl VegaWindow {
                 }
                 continue;
             }
+            if let ConversationEvent::UsageUpdated {
+                message_id, usage, ..
+            } = &event
+                && self.owns_primary_context_event(generation, stream, cx)
+            {
+                stream.update(cx, |stream, cx| {
+                    let model = stream.displayed_model().to_string();
+                    stream.apply_context_usage(thread_id, &model, message_id, *usage, cx);
+                });
+            }
             self.observe_artifact_event(generation, stream, &event, cx);
             if let ConversationEvent::PendingMessageDelivered { pending_id, .. } = &event {
                 self.agent_controller
