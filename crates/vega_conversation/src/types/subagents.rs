@@ -47,6 +47,12 @@ pub struct SubagentSnapshot {
     pub state: SubagentState,
     pub result: String,
     pub truncated: bool,
+    #[serde(default)]
+    pub checkpoint: Option<serde_json::Value>,
+    #[serde(default)]
+    pub release_state: String,
+    #[serde(default)]
+    pub ready_for_review: bool,
 }
 
 impl std::fmt::Debug for SubagentSnapshot {
@@ -68,11 +74,29 @@ pub struct SubagentAdmission {
     pub queue_generation: String,
 }
 
+pub enum SubagentAdmissionOutcome {
+    Accepted,
+    Rejected(vega_runtime::VegaError),
+    Unknown(vega_runtime::VegaError),
+}
+
 pub trait SubagentHost: Send + Sync {
     fn admit(
         &self,
         admission: SubagentAdmission,
     ) -> BoxFuture<'static, Result<(), vega_runtime::VegaError>>;
+    fn admit_with_ownership(
+        &self,
+        admission: SubagentAdmission,
+    ) -> BoxFuture<'static, SubagentAdmissionOutcome> {
+        let pending = self.admit(admission);
+        Box::pin(async move {
+            match pending.await {
+                Ok(()) => SubagentAdmissionOutcome::Accepted,
+                Err(error) => SubagentAdmissionOutcome::Unknown(error),
+            }
+        })
+    }
     fn event(
         &self,
         thread_id: &str,

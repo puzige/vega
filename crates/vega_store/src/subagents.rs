@@ -143,6 +143,35 @@ pub fn append(
     insert_execution(conn, record, ordinal, Some(previous), instruction)
 }
 
+pub fn append_resume(
+    conn: &Connection,
+    record: &DelegationRow,
+    previous: &str,
+    instruction: &str,
+) -> rusqlite::Result<()> {
+    let old =
+        execution(conn, &record.child_thread_id, previous)?.ok_or(rusqlite::Error::InvalidQuery)?;
+    let latest = find(conn, &record.child_thread_id)?.ok_or(rusqlite::Error::InvalidQuery)?;
+    let message = crate::messages::find(conn, instruction)?.ok_or(rusqlite::Error::InvalidQuery)?;
+    if latest.child_message_id != previous
+        || old.record.state != "interrupted"
+        || old.record.parent_thread_id != record.parent_thread_id
+        || old.instruction_message_id.is_none()
+        || message.thread_id != record.child_thread_id
+        || message.role != "user"
+        || message.kind != "text"
+        || message.status != "done"
+        || message.content != record.task
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let ordinal = old
+        .ordinal
+        .checked_add(1)
+        .ok_or(rusqlite::Error::InvalidQuery)?;
+    insert_execution(conn, record, ordinal, Some(previous), instruction)
+}
+
 pub fn request_cancel(conn: &Connection, child: &str, run: &str) -> rusqlite::Result<bool> {
     let changed = conn.execute("UPDATE delegated_executions SET state='cancelling' WHERE child_thread_id=?1 AND child_message_id=?2 AND state='running'", params![child,run])? == 1;
     if changed {
