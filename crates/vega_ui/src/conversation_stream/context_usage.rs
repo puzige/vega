@@ -1,13 +1,24 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextUsageSource {
+    EstimatedInput,
+    LastCallTotal,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ContextUsageDisplay {
     pub(crate) estimated_tokens: Option<u64>,
     pub(crate) model_input_limit: Option<u64>,
     pub(crate) percent_used: Option<u128>,
     pub(crate) fill_fraction: f32,
+    source: ContextUsageSource,
 }
 
 impl ContextUsageDisplay {
-    pub(crate) fn new(estimated_tokens: Option<u64>, model_input_limit: Option<u64>) -> Self {
+    pub(crate) fn new(
+        estimated_tokens: Option<u64>,
+        model_input_limit: Option<u64>,
+        source: ContextUsageSource,
+    ) -> Self {
         let model_input_limit = model_input_limit.filter(|limit| *limit > 0);
         let known = estimated_tokens.zip(model_input_limit);
         let percent_used = known.map(|(estimate, limit)| {
@@ -21,12 +32,22 @@ impl ContextUsageDisplay {
             model_input_limit,
             percent_used,
             fill_fraction,
+            source,
         }
     }
 
     pub(crate) fn percentage_label(&self) -> Option<String> {
-        self.percentage_value()
-            .map(|percent| format!("估算使用量：{percent}"))
+        self.percentage_value().map(|percent| match self.source {
+            ContextUsageSource::EstimatedInput => format!("估算使用量：{percent}"),
+            ContextUsageSource::LastCallTotal => format!("最近调用使用量：{percent}"),
+        })
+    }
+
+    pub(crate) fn usage_label(&self) -> &'static str {
+        match self.source {
+            ContextUsageSource::EstimatedInput => "估算已用 / 配置输入上限",
+            ContextUsageSource::LastCallTotal => "最近调用总量 / 配置输入上限",
+        }
     }
 
     pub(crate) fn compact_usage_label(&self) -> String {
@@ -47,10 +68,16 @@ impl ContextUsageDisplay {
         let Some(estimate) = self.estimated_tokens else {
             return "估算输入：尚无数据".into();
         };
-        format!(
-            "估算输入：{} tokens（含系统提示和实际工具定义）",
-            grouped_token_count(estimate)
-        )
+        match self.source {
+            ContextUsageSource::EstimatedInput => format!(
+                "估算输入：{} tokens（含系统提示和实际工具定义）",
+                grouped_token_count(estimate)
+            ),
+            ContextUsageSource::LastCallTotal => format!(
+                "最近调用总量：{} tokens（输入＋输出）",
+                grouped_token_count(estimate)
+            ),
+        }
     }
 
     pub(crate) fn percentage_value(&self) -> Option<String> {
