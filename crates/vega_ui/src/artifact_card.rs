@@ -881,11 +881,40 @@ impl ArtifactGroup {
                         cx.notify();
                     })
                 })
-                .on_key_down(move |event, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                .on_key_down(move |event, window, cx| {
+                    if event.keystroke.key == "tab" {
+                        if event.keystroke.modifiers.shift {
+                            window.focus_prev(cx);
+                        } else {
+                            window.focus_next(cx);
+                        }
+                        cx.stop_propagation();
+                    } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
                         key_group.update(cx, |group, cx| {
+                            let visible = group.visible_files();
+                            let focus = group
+                                .files
+                                .iter()
+                                .skip(visible)
+                                .chain(group.files.iter().take(visible))
+                                .find_map(|file| {
+                                    let card = file.card.read(cx);
+                                    (!card.reading_preview
+                                        && card.opening.is_none()
+                                        && card.projection.current_file_id.is_some())
+                                    .then(|| {
+                                        card.compact_focus
+                                            [usize::from(!card.projection.preview_available)]
+                                        .clone()
+                                    })
+                                });
                             group.expanded = true;
+                            if let Some(focus) = focus {
+                                focus.focus(window, cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
                             cx.notify();
                         });
                     }
@@ -2302,5 +2331,170 @@ pub(crate) mod tests {
             }
             assert!(harness.opens.borrow().is_empty());
         });
+    }
+
+    #[gpui_kit::test]
+    fn artifact_overflow_keyboard_traverses_and_expands_to_an_available_file_action(
+        cx: &mut TestAppContext,
+    ) {
+        fn focused_action(window: &Window, filename: &str, label: &str) -> Option<ElementSnapshot> {
+            let filename = painted()
+                .into_iter()
+                .find(|text| text.text == filename)
+                .expect("painted filename");
+            gpui_kit::base::test_support::snapshots(window)
+                .into_iter()
+                .find(|snapshot| {
+                    snapshot.label() == Some(label)
+                        && snapshot.focused() == Some(true)
+                        && snapshot.visible()
+                        && snapshot.bounds().top() <= filename.bounds.center().y
+                        && snapshot.bounds().bottom() >= filename.bounds.center().y
+                })
+        }
+
+        for activation in ["enter", "space"] {
+            let handle = setup(cx, false);
+            let mut composer_focus = None;
+            in_window(cx, handle, |harness, window, cx| {
+                start(&harness.stream, "overflow-keyboard", cx);
+                for slot in 1..=7 {
+                    capture(
+                        harness,
+                        &format!("write-{slot}"),
+                        projection(slot, 1, None),
+                        cx,
+                    );
+                }
+                finish_with_summary(&harness.stream, "overflow-keyboard", cx);
+                frame(window, cx);
+                window.hover("outside", cx);
+                no_controls(window);
+                harness
+                    .stream
+                    .update(cx, |stream, cx| stream.focus_composer(window, cx));
+                composer_focus = Some(window.focused(cx).expect("composer focus"));
+            });
+            in_window(cx, handle, |_, window, cx| window.press("tab", cx));
+            let mut composer_control = None;
+            in_window(cx, handle, |_, window, cx| {
+                frame(window, cx);
+                composer_control = Some(window.focused(cx).expect("real composer control"));
+                assert_ne!(composer_control, composer_focus);
+                no_controls(window);
+            });
+            let mut preceding_focus = None;
+            for _ in 0..32 {
+                in_window(cx, handle, |_, window, cx| window.press("tab", cx));
+                in_window(cx, handle, |_, window, cx| {
+                    frame(window, cx);
+                    if let Some(action) = focused_action(window, "file-6.txt", "Open file in") {
+                        assert_ne!(action.disabled(), Some(true));
+                        preceding_focus = Some(window.focused(cx).expect("sixth file action"));
+                    }
+                });
+                if preceding_focus.is_some() {
+                    break;
+                }
+            }
+            assert!(
+                preceding_focus.is_some(),
+                "Tab must reach the sixth file action"
+            );
+            in_window(cx, handle, |_, window, cx| window.press("tab", cx));
+            let mut overflow_focus = None;
+            in_window(cx, handle, |_, window, cx| {
+                frame(window, cx);
+                let rendered = group_texts("overflow-keyboard", 7);
+                for slot in 1..=6 {
+                    assert!(rendered.contains(&format!("file-{slot}.txt")));
+                }
+                assert!(!rendered.contains(&"file-7.txt".into()));
+                assert!(control(window, "Show 1 more").visible());
+                no_controls(window);
+                overflow_focus = Some(window.focused(cx).expect("overflow focus after real Tab"));
+                assert_ne!(overflow_focus, preceding_focus);
+                assert_ne!(overflow_focus, composer_control);
+                assert_ne!(overflow_focus, composer_focus);
+            });
+            in_window(cx, handle, |_, window, cx| window.press("shift-tab", cx));
+            in_window(cx, handle, |_, window, cx| {
+                frame(window, cx);
+                let action = focused_action(window, "file-6.txt", "Open file in")
+                    .expect("Shift-Tab returns to the preceding visible file action");
+                assert_ne!(action.disabled(), Some(true));
+                assert_eq!(window.focused(cx), preceding_focus);
+            });
+            in_window(cx, handle, |_, window, cx| window.press("tab", cx));
+            in_window(cx, handle, |_, window, cx| {
+                frame(window, cx);
+                assert_eq!(window.focused(cx), overflow_focus);
+                no_controls(window);
+            });
+            in_window(cx, handle, |_, window, cx| window.press("tab", cx));
+            in_window(cx, handle, |_, window, cx| {
+                frame(window, cx);
+                assert_eq!(window.focused(cx), composer_control);
+                assert_ne!(window.focused(cx), overflow_focus);
+                assert!(control(window, "Show 1 more").visible());
+            });
+            let mut returned = false;
+            for _ in 0..32 {
+                in_window(cx, handle, |_, window, cx| window.press("tab", cx));
+                in_window(cx, handle, |_, window, cx| {
+                    frame(window, cx);
+                    returned = window.focused(cx) == overflow_focus;
+                });
+                if returned {
+                    break;
+                }
+            }
+            assert!(
+                returned,
+                "Tab must return to the still-collapsed overflow control"
+            );
+            in_window(cx, handle, |_, window, cx| window.press(activation, cx));
+            in_window(cx, handle, |harness, window, cx| {
+                frame(window, cx);
+                let rendered = group_texts("overflow-keyboard", 7);
+                for slot in 1..=7 {
+                    assert!(
+                        rendered.contains(&format!("file-{slot}.txt")),
+                        "{activation}"
+                    );
+                }
+                assert!(!rendered.contains(&"Show 1 more".into()));
+                assert!(
+                    gpui_kit::base::test_support::snapshots(window)
+                        .iter()
+                        .all(|snapshot| snapshot.label() != Some("Show 1 more"))
+                );
+                let action = focused_action(window, "file-7.txt", "Preview file")
+                    .expect("keyboard expansion focuses the newly exposed available file action");
+                assert_ne!(action.disabled(), Some(true));
+                assert!(harness.previews.borrow().is_empty());
+                assert!(harness.opens.borrow().is_empty());
+            });
+            in_window(cx, handle, |_, window, cx| window.press("enter", cx));
+            in_window(cx, handle, |harness, _, _| {
+                assert_eq!(
+                    harness.previews.borrow().as_slice(),
+                    &[ArtifactPreviewRequested {
+                        thread_id: "thread".into(),
+                        project_id: "project".into(),
+                        card_id: ArtifactCardId::for_test(1, 7),
+                        file_id: WorkspaceFileId::for_test(1, 7),
+                    }]
+                );
+                assert!(harness.opens.borrow().is_empty());
+            });
+            in_window(cx, handle, |_, window, cx| window.press("tab", cx));
+            in_window(cx, handle, |_, window, cx| {
+                frame(window, cx);
+                let action = focused_action(window, "file-7.txt", "Open file in")
+                    .expect("Tab continues to the seventh file's other available action");
+                assert_ne!(action.disabled(), Some(true));
+            });
+        }
     }
 }
