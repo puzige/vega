@@ -75,6 +75,7 @@ impl EventEmitter<PricingReloadRequested> for SettingsView {}
 impl EventEmitter<PricingRetryRequested> for SettingsView {}
 impl EventEmitter<PricingDiscardRequested> for SettingsView {}
 impl EventEmitter<SettingsSaved> for SettingsView {}
+impl EventEmitter<DesktopPreparationRequested> for SettingsView {}
 impl EventEmitter<ModelContextLoadRequested> for SettingsView {}
 impl EventEmitter<ModelContextSaveRequested> for SettingsView {}
 impl EventEmitter<ReasoningProfileSaveRequested> for SettingsView {}

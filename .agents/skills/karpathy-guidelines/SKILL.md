@@ -8,7 +8,7 @@ license: MIT
 
 Behavioral guidelines to reduce common LLM coding mistakes, derived from [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls.
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+**Tradeoff:** Use the smallest change and risk-appropriate verification; avoid process overhead that does not help delivery.
 
 ## 1. Think Before Coding
 
@@ -53,9 +53,9 @@ The test: Every changed line should trace directly to the user's request.
 **Define success criteria. Loop until verified.**
 
 Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
+- "Add validation" → "Implement validation and verify relevant invalid-input boundaries"
+- "Fix the bug" → "Make the smallest fix and choose necessary regression checks"
+- "Refactor X" → "Preserve behavior and verify affected invariants according to risk"
 
 For multi-step tasks, state a brief plan:
 ```
@@ -78,34 +78,27 @@ Vega 规则为准。具体边界：
    的红线（依赖白名单、fail-closed、验收协议 §6/§7）优先级高于本技能；
    "Simplicity First" 不得作为省略 fail-closed 校验、验收证据或门禁的理由。
 3. **Surgical Changes 对应本仓纪律**：不顺手重构、不改无关行——与
-   exec-guide 的冻结测试目标/预期与 API 边界纪律一致；孤儿清理仅限自己的
+   exec-guide 的验收与 API 边界纪律一致；孤儿清理仅限自己的
    变更引入的死代码，或当前用户明确授权的 Rust 测试清零范围。
-4. **Goal-Driven Execution 对应当前 TEST-FIRST**：遵守
-   [Rust 测试开发/交付生命周期](../../../docs/vega-rust-test-delivery-lifecycle.md) 和
-   [exec-guide §7.2](../../../docs/vega-exec-guide.md#72-test-first-与有效测试当前规则)。
-   有行为变化时，先冻结验收并在生产未改时写齐测试，交 Actions 确认目标行为缺失的
-   有效 RED，再冻结测试目标/预期并写最小实现，验证同一测试 GREEN。开发阶段可保留测试；
-   PR 固定原始测试源码/补丁、完整 SHA 与 RED/GREEN 云端证据后，以独立提交删除 Rust
-   测试与独占支持，最终空集 head 完整门禁通过才转正式 PR；最终交付树不含 Rust 测试。
-   无关编译、依赖或 runner 故障不是 RED；最小接口缺失只标接口缺失 RED，不能称行为断言已执行。
-   实现阶段及完成后禁止补测、按实现输出反推断言、放宽/改期望、ignore 或重试换绿；
-   新需求/遗漏边界/新 Bug 先停止本轮、记录验收变化并重新先测后修。测试错误/接线修正
-   先留证审查，不得改变验收含义。测试须验证稳定边界的行为/业务/安全结果，不能只查源码、
-   mock 调用、镜像算法或内部字段覆盖率；调用次数仅在本身属于契约且结合结果/终态时有效。
-   mock 不替代被测业务/安全决策；新测试用行为命名，issue/task 编号只留文档。
-   纯文档/格式不强加测试，纯重构的验证测试也只在开发阶段保留到 GREEN；维护删测不造 RED。
-   保留 Python 发布/组件准备/delta 测试及 fixture、生产/benchmark/通用 CI，历史报告不是当前验证。
-   旧分支先同步最新 master，不从旧 ref 整目录/整仓恢复已清除的历史集合；新增测试也不能留在最终树。
-   逐项核对新增测试和必要支持的来源；历史测试改名/改写不自动算新增，确需新回归独立先测后修。
-   合并前复核删除结果和最终差异，见 [合并纠偏规格](../../../docs/vega-rust-reset-reconciliation.md)。
-   成功判据还须附 RED 基线/测试源码/失败原因、冻结目标、后续实现顺序、带同一测试 GREEN、
-   独立删测提交与最终空集 head 门禁。PR 保留可访问的源码/补丁和完整 SHA，squash/删分支后
-   仍能找回原测试，不依赖本机临时文件或会过期的 artifact，不丢弃唯一来源。不得先删失败或
-   未执行测试再用空集冒充 GREEN；最终绿色 CI 或提交顺序不自动强制或证明 TDD。
-   本地只做低 CPU 静态/格式检查，不运行 Vega、不编译/构建/打包/测试；RED/GREEN、Clippy
-   和完整门禁只交 Actions，打包仅云端发布，不因旧任务授权扩大本地权限。实际 PR gate 保留
-   fmt / 全目标 Clippy / 三组 Python 检查 / Nextest，未运行写待 CI，缺失计数写未取得；
-   日志/摘要中的 `no Rust tests` 表示 0 发现/0 执行，不是 Rust 测试通过。
+4. **Goal-Driven Execution 对应快速交付**：遵守
+   [验证与交付政策](../../../docs/vega-rust-test-delivery-lifecycle.md) 和
+   [exec-guide §7.2](../../../docs/vega-exec-guide.md#72-快速交付与按风险验证当前规则)。
+   明确验收后用最小改动解决问题，按风险选择必要验证，可直接修复或先实现后补测。
+   不强制测试先行、独立测试前置审查、有效 RED、冻结后禁止补测或 TDD 时序证据链；
+   不为流程造临时测试或先红后绿。纯文档/格式不强加测试。取消 TDD 不取消 Rust 测试禁入 master。
+   需要测试时验证稳定边界的行为及业务/安全结果，mock 不替代被测决策；不以源码字符串、
+   mock 调用或覆盖率充数。新测试用行为命名，issue/task 编号只留文档。
+   不为过关放宽断言、删除失败测试、ignore 或盲目重试换绿；修测试/接线错误须说明依据，
+   不按实现输出反推预期。验收变化先更新 spec，不要求重开 TDD 周期。
+   不从旧 ref 批量恢复已清除的历史 Rust 测试及支持。Rust 测试/可执行 doctest 只供开发辅助，
+   原始源码/patch、完整 SHA 和实际验证在 PR 留痕；合并前移除测试及独占模块/fixture/mock/helper/
+   feature/dev dependency/接线，静态清点与完整 required CI 确认最终 Rust 0 发现/0 执行。
+   不以条件编译、ignore 或挪目录规避；保留现存 Python 测试及 fixture、生产/安全断言/benchmark/
+   通用 CI。开发测试验证与最终空集门禁分别记录，历史报告不是当前验证。
+   本地只做低 CPU 静态/格式检查，不运行 Vega、不编译/构建/打包/测试；自动测试与完整门禁
+   只交 Actions，打包仅云端发布。实际 PR gate 保留 fmt / 全目标 Clippy / 三组 Python 检查 /
+   Nextest，最新 head required CI 通过才能合并。记录精确版本、已执行检查和真实结果；
+   未运行写待 CI，缺失计数写未取得，`no Rust tests` 表示 0 发现/0 执行，不是测试通过。
 5. **遇阻即停**：本技能 "ask when unclear" 在 Vega 落地为 exec-guide §6 的
    `[BLOCKED]` 上报格式，不自创方案绕过。
 6. **代码禁止任何注释**（2026-09-23 用户裁决，exec-guide §3/§4）：`///`、`//!`、

@@ -13,6 +13,8 @@ impl SettingsView {
         };
         let base = self.config.clone();
         let theme_changed = base.ui.theme != candidate.ui.theme;
+        let desktop_enable_requested =
+            !base.agent.desktop_use_enabled && candidate.agent.desktop_use_enabled;
         let replay_identity_changed = base.providers != candidate.providers
             || base.agent != candidate.agent
             || base.defaults.permission_mode != candidate.defaults.permission_mode;
@@ -48,6 +50,8 @@ impl SettingsView {
                 this.provider_management.saving = false;
                 match result {
                     Ok(config) => {
+                        let desktop_enabled =
+                            desktop_enable_requested && config.agent.desktop_use_enabled;
                         crate::conversation_stream::set_composer_predictions_enabled(
                             config.agent.composer_predictions_enabled,
                             cx,
@@ -71,6 +75,9 @@ impl SettingsView {
                         cx.emit(SettingsSaved {
                             replay_identity_changed,
                         });
+                        if desktop_enabled {
+                            cx.emit(DesktopPreparationRequested);
+                        }
                     }
                     Err(error) => this.error = Some(error.into()),
                 }
