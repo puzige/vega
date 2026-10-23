@@ -49,8 +49,15 @@ fn thinking_code_routes_wheel_and_keeps_viewport_capture(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn thinking_horizontal_gesture_releases_for_vertical_input(cx: &mut TestAppContext) {
+    Fixture::new(cx, thinking, long_code()).verify_gesture_release_and_timeout();
+}
+
+#[gpui_kit::test]
 fn thinking_scrollbar_drags_without_selecting_and_text_still_copies(cx: &mut TestAppContext) {
-    Fixture::new(cx, thinking, long_code()).verify_scrollbar_and_selection();
+    Fixture::new(cx, thinking, long_code()).verify_scrollbar_and_selection(px(
+        Layout::MARKDOWN_CODE_PADDING + Typography::CODE * Typography::CODE_LINE_HEIGHT / 2.,
+    ));
 }
 
 #[gpui_kit::test]

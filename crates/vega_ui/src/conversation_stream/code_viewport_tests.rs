@@ -11,6 +11,7 @@ use gpui_kit::{
 
 use super::super::{MessageCopy, StreamCounters, StreamModel, render_rows};
 use vega_markdown::MarkdownStream;
+use vega_theme::Typography;
 
 #[derive(Default)]
 struct Observations(HashMap<WindowId, HashMap<ElementId, ScrollHandle>>);
@@ -46,17 +47,21 @@ impl Render for ScrollScene {
         let copy = self.copy.clone();
         let focus = self.focus.clone();
         let renderer = self.renderer;
-        div().w(px(320.)).h(px(400.)).child(
-            list(self.list.clone(), move |index, window, cx| {
-                if index == 0 {
-                    renderer(&source.borrow(), &copy, &focus, window, cx)
-                } else {
-                    div().w_full().h(px(80.)).into_any_element()
-                }
-            })
-            .w_full()
-            .h_full(),
-        )
+        div()
+            .w(px(320.))
+            .h(px(400.))
+            .child(gpui_kit::base::TextSelectionLayer)
+            .child(
+                list(self.list.clone(), move |index, window, cx| {
+                    if index == 0 {
+                        renderer(&source.borrow(), &copy, &focus, window, cx)
+                    } else {
+                        div().w_full().h(px(80.)).into_any_element()
+                    }
+                })
+                .w_full()
+                .h_full(),
+            )
     }
 }
 
@@ -174,6 +179,32 @@ impl Fixture {
         );
     }
 
+    fn verify_contained_pixels(
+        &mut self,
+        scroll: &ScrollHandle,
+        events: &[(f32, f32, TouchPhase, Pixels)],
+    ) {
+        let list = self.list.clone();
+        let position = scroll.bounds().center();
+        self.cx.update(|window, cx| {
+            for &(x, y, phase, expected_x) in events {
+                window.dispatch_event(
+                    ScrollWheelEvent {
+                        position,
+                        delta: ScrollDelta::Pixels(point(px(x), px(y))),
+                        touch_phase: phase,
+                        modifiers: Default::default(),
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                assert_eq!(scroll.offset().x, expected_x);
+                assert_eq!(list.scroll_px_offset_for_scrollbar().y, px(0.));
+            }
+            window.render_frame(cx);
+        });
+    }
+
     fn drag(&mut self, from: Point<Pixels>, to: Point<Pixels>) {
         self.cx.update(|window, cx| {
             window.dispatch_event(
@@ -233,14 +264,13 @@ impl Fixture {
             assert!(self.outer_y() < px(0.));
             self.reset_outer();
         }
-        self.pixels(scroll.bounds().center(), -40., -10.);
-        assert_eq!(scroll.offset().x, px(-40.));
-        assert_eq!(self.outer_y(), px(0.));
-        self.wheel(
-            scroll.bounds().center(),
-            ScrollDelta::Pixels(point(px(-10.), px(-15.))),
-            TouchPhase::Moved,
-            false,
+        self.verify_contained_pixels(
+            &scroll,
+            &[
+                (-40., -10., TouchPhase::Started, px(-40.)),
+                (0., -1., TouchPhase::Moved, px(-40.)),
+                (-10., -15., TouchPhase::Moved, px(-50.)),
+            ],
         );
         assert_eq!(scroll.offset().x, px(-50.));
         assert_eq!(self.outer_y(), px(0.));
@@ -272,13 +302,101 @@ impl Fixture {
             self.pixels(edge, delta, -10.);
             assert_eq!(scroll.offset().x, offset);
             assert_eq!(self.outer_y(), px(0.));
+            self.verify_contained_pixels(
+                &scroll,
+                &[
+                    (delta, -10., TouchPhase::Started, offset),
+                    (0., -1., TouchPhase::Moved, offset),
+                ],
+            );
         }
     }
 
-    pub fn verify_scrollbar_and_selection(&mut self) {
+    pub fn verify_gesture_release_and_timeout(&mut self) {
+        let scroll = self.handles().remove(0);
+        for phase in [TouchPhase::Ended, TouchPhase::Cancelled] {
+            scroll.set_offset(point(px(0.), px(0.)));
+            self.draw();
+            self.verify_contained_pixels(
+                &scroll,
+                &[
+                    (-40., -10., TouchPhase::Started, px(-40.)),
+                    (0., -1., TouchPhase::Moved, px(-40.)),
+                    (0., -1., phase, px(-40.)),
+                ],
+            );
+            self.wheel(
+                scroll.bounds().center(),
+                ScrollDelta::Pixels(point(px(0.), px(-1.))),
+                TouchPhase::Moved,
+                false,
+            );
+            assert_eq!(scroll.offset().x, px(-40.));
+            assert!(self.outer_y() < px(0.));
+            self.reset_outer();
+            self.pixels(scroll.bounds().center(), 0., -30.);
+            assert_eq!(scroll.offset().x, px(-40.));
+            assert!(self.outer_y() < px(0.));
+            self.reset_outer();
+        }
+        let expected_x = scroll.offset().x - px(40.);
+        let list = self.list.clone();
+        let position = scroll.bounds().center();
+        self.cx.update(|window, cx| {
+            let mut previous_y = px(0.);
+            for (delta, phase, changes_y) in [
+                (
+                    ScrollDelta::Pixels(point(px(-40.), px(-10.))),
+                    TouchPhase::Started,
+                    false,
+                ),
+                (ScrollDelta::Lines(point(0., -2.)), TouchPhase::Moved, true),
+                (
+                    ScrollDelta::Pixels(point(px(0.), px(-1.))),
+                    TouchPhase::Moved,
+                    true,
+                ),
+            ] {
+                window.dispatch_event(
+                    ScrollWheelEvent {
+                        position,
+                        delta,
+                        touch_phase: phase,
+                        modifiers: Default::default(),
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                assert_eq!(scroll.offset().x, expected_x);
+                let y = list.scroll_px_offset_for_scrollbar().y;
+                if changes_y {
+                    assert!(y < px(0.));
+                    assert_ne!(y, previous_y);
+                } else {
+                    assert_eq!(y, px(0.));
+                }
+                previous_y = y;
+            }
+            window.render_frame(cx);
+        });
+        self.reset_outer();
+        self.pixels(scroll.bounds().center(), -40., -10.);
+        let before = scroll.offset().x;
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        self.wheel(
+            scroll.bounds().center(),
+            ScrollDelta::Pixels(point(px(0.), px(-1.))),
+            TouchPhase::Moved,
+            false,
+        );
+        assert_eq!(scroll.offset().x, before);
+        assert!(self.outer_y() < px(0.));
+    }
+
+    pub fn verify_scrollbar_and_selection(&mut self, text_y_inset: Pixels) {
         let scroll = self.handles().remove(0);
         let bounds = scroll.bounds();
-        let from = point(bounds.left() + px(8.), bounds.bottom() - px(4.));
+        let from = point(bounds.left() + px(8.), bounds.bottom() - px(8.));
         let to = point(bounds.center().x, from.y);
         self.drag(from, to);
         assert!(scroll.offset().x < px(-100.));
@@ -292,7 +410,9 @@ impl Fixture {
         assert!(!self.copy.has_selected_text());
         scroll.set_offset(point(px(0.), px(0.)));
         self.draw();
-        let start = point(bounds.left() + px(18.), bounds.top() + px(18.));
+        let start = point(bounds.left() + px(18.), bounds.top() + text_y_inset);
+        assert!(bounds.contains(&start));
+        assert!(start.y < bounds.bottom() - px(16.));
         self.drag(start, start + point(px(90.), px(0.)));
         assert!(self.copy.has_selected_text());
         self.cx.update(|_, cx| {
@@ -329,6 +449,13 @@ impl Fixture {
         self.pixels(scroll.bounds().center(), -40., -10.);
         assert_eq!(scroll.offset().x, px(0.));
         assert_eq!(self.outer_y(), px(0.));
+        self.verify_contained_pixels(
+            &scroll,
+            &[
+                (-40., -10., TouchPhase::Started, px(0.)),
+                (0., -1., TouchPhase::Moved, px(0.)),
+            ],
+        );
         let bounds = scroll.bounds();
         self.drag(
             point(bounds.left() + px(8.), bounds.bottom() - px(4.)),
@@ -365,8 +492,14 @@ fn markdown_code_routes_wheel_and_keeps_viewport_capture(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn markdown_horizontal_gesture_releases_for_vertical_input(cx: &mut TestAppContext) {
+    Fixture::new(cx, markdown, long_code()).verify_gesture_release_and_timeout();
+}
+
+#[gpui_kit::test]
 fn markdown_scrollbar_drags_without_selecting_and_text_still_copies(cx: &mut TestAppContext) {
-    Fixture::new(cx, markdown, long_code()).verify_scrollbar_and_selection();
+    Fixture::new(cx, markdown, long_code())
+        .verify_scrollbar_and_selection(px(Typography::CODE * Typography::CODE_LINE_HEIGHT / 2.));
 }
 
 #[gpui_kit::test]

@@ -5,6 +5,7 @@ use super::super::{
     selection::SelectionDocumentBuilder,
 };
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::{
     AvailableSpace, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId,
     Pixels, Point, Size, TextAlign, TextStyleRefinement, WindowTextSystem, point, size,
