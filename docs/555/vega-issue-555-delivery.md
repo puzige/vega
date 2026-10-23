@@ -2,7 +2,7 @@
 
 ## 版本与范围
 
-- 规格 [v1.2](vega-issue-555-storage-contention.md)。用户本次明确要求主 Agent 直接执行，不再委派子 Agent；主 Agent 已接手并直接复核，不声称有完整独立审查结论。
+- 规格 [v1.3](vega-issue-555-storage-contention.md)。#570 原实现阶段按当时用户要求由主 Agent 直接执行、不再委派子 Agent；该阶段只有直接复核，不声称有完整独立审查结论。本次 v1.3 删测纠偏与原实现阶段分别记录。
 - 初始基线 `4c0d225daf47e66e559752ee78ba067520bea080`；测试基线 `a39badd7cb79dd535157c886a485fbbcad22ca6d`。实现前同步政策基线 `d649b490ebdf831c13fb4d8a770eb2b77f1f4239`，集成提交 `492c031834b5b777628332e0518939f4ff58008d`；这轮同步仅改文档/技能，没有改变生产或测试。
 - 生产只改 `crates/vega_conversation/src/agent/compaction.rs`：用量投影、手动准备、自动源捕获及失败源校验使用 deferred transaction；手动 source/checkpoint 捕获后立即结束读事务，再作凭据检查和历史投影。
 - 真实写事务、checkpoint 安装 CAS、source/model/fingerprint/predecessor 校验、凭据 fail-closed、2 秒 timeout、审计、schema、依赖与 CI 不变。没有修改运行时数据库、安装或重启应用。
@@ -27,4 +27,10 @@
 
 ## 最终云端验证与交付
 
-待同一 10 个回归及完整 required check 验证。按最新仓库政策保留必要新测试，不删除测试或制造空集门禁。通过后主 Agent 复核最终 SHA 和 CI，再 squash merge；Issue 保持开放、In review，等待用户新版多任务与长会话/压缩手测。未取得结果不标通过。
+[PR #570](https://github.com/puzige/vega/pull/570) 已合并为 `d4a65a381d95b6bb8e4ff8d2858a11a1042ffa3a`。带测试 head `2068f26a8b93e8b399deb5458a83922a9442e0af` 的 [Actions 39880510836](https://github.com/puzige/vega/actions/runs/39880510836) 成功，10 个 Rust 回归发现/执行/通过，0 失败/跳过；60 个 Python 测试、fmt、全目标 Clippy 及汇总 required check 通过。测试保留决定来自 #569 的错误政策扩展，现被用户明确撤销；开发时序与 master 是否含测试是独立约束。
+
+## v1.3 仅删测纠偏
+
+- 删除 `storage_contention_tests.rs` 全部 914 行（10 个测试及其独占支持）和 `compaction.rs` 末尾独占模块接线；不改变 #570 生产修复、依赖、Python 测试或 CI。测试不复制进 master 的其他路径；原始源码/patch、内容哈希和云端结果继续由上方固定历史提交与 PR 提供。
+- 最终 head 的静态清点、生产等价性和完整云端 required CI 需另行核对；Rust 必须 0 发现/0 执行，空集不等于重跑了上述 10 个测试。最终 SHA、run/job/实际结果在纠偏 PR 记录；尚未取得不标通过。
+- 本次清理不是恢复强制 TDD，也不是删除失败测试换绿。Issue 保持开放、In review，仍等用户新版多任务与长会话/压缩手测；无安装或重启操作。
