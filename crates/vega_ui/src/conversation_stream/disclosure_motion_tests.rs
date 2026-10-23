@@ -5,7 +5,7 @@ use crate::disclosure_paint_probe::{self as probe, GlyphPaint};
 use crate::icons::Icon;
 use gpui_kit::{
     AppContext, Bounds, HeadlessAppContext, InputEvent, Keystroke, Modifiers, MouseMoveEvent,
-    NoopTextSystem, Pixels, Point, WindowHandle, point, size,
+    NoopTextSystem, Pixels, Point, WindowHandle, gpui, point, size,
 };
 use vega_conversation::types::{
     AssistantResponseKind, AssistantResponseMetadata, PermissionMode, TaskBackend, ThreadMode,
@@ -2685,7 +2685,7 @@ fn pending_permission_remains_visible_and_usable_after_trusted_final_collapses_p
     let waker = Waker::from(Arc::new(NoopWake));
     let mut task = TaskContext::from_waker(&waker);
     match Future::poll(Pin::as_mut(&mut decision), &mut task) {
-        Poll::Ready(Ok(PermissionDecision::AllowOnce)) => {}
+        Poll::Ready(Ok(PermissionDecision::Once)) => {}
         _ => panic!(
             "actual visible permission action must resolve the real queue lease as AllowOnce"
         ),

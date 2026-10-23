@@ -1,7 +1,4 @@
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+use std::cell::RefCell;
 
 use gpui_kit::{
     AnyElement, App, Bounds, Element, ElementId, FocusHandle, GlobalElementId, InspectorElementId,
@@ -16,7 +13,6 @@ pub(crate) struct Scope {
     pub(crate) expanded: bool,
     pub(crate) enabled: bool,
     pub(crate) focus: FocusHandle,
-    opacity: Rc<Cell<f32>>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,13 +50,28 @@ pub(crate) fn scope(
             expanded,
             enabled,
             focus: focus.clone(),
-            opacity: Rc::new(Cell::new(0.)),
         }))
     }))
 }
 
+pub(crate) fn current_scope() -> Option<Scope> {
+    OWNER.with(|owner| owner.borrow().clone())
+}
+
 pub(crate) fn take() -> Vec<GlyphPaint> {
     PAINTS.with(|paints| std::mem::take(&mut *paints.borrow_mut()))
+}
+
+pub(crate) fn record_paint(paint: GlyphPaint, cx: &App) {
+    let bytes = cx
+        .asset_source()
+        .load(paint.asset_path.as_ref())
+        .expect("WIRING: actual Kit SVG asset failed to load")
+        .expect("WIRING: actual Kit SVG asset is absent");
+    cx.svg_renderer()
+        .render_single_frame(&bytes, 1.)
+        .expect("WIRING: actual Kit SVG must be renderable");
+    PAINTS.with(|paints| paints.borrow_mut().push(paint));
 }
 
 pub(crate) fn observe_untransformed_icon(
@@ -88,91 +99,6 @@ pub(crate) fn observe_configured_icon(
         }
         .into_any_element(),
         _ => inner,
-    }
-}
-
-pub(crate) fn observe_visibility(inner: gpui_kit::Div) -> impl IntoElement {
-    Visibility {
-        inner,
-        scope: OWNER
-            .with(|owner| owner.borrow().clone())
-            .expect("disclosure scope"),
-    }
-}
-
-struct Visibility {
-    inner: gpui_kit::Div,
-    scope: Scope,
-}
-
-impl IntoElement for Visibility {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for Visibility {
-    type RequestLayoutState = gpui_kit::DivFrameState;
-    type PrepaintState = Option<gpui_kit::Hitbox>;
-
-    fn id(&self) -> Option<ElementId> {
-        self.inner.id()
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        self.inner.source_location()
-    }
-
-    fn request_layout(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        Element::request_layout(&mut self.inner, id, inspector, window, cx)
-    }
-
-    fn prepaint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        Element::prepaint(&mut self.inner, id, inspector, bounds, layout, window, cx)
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        inspector: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        layout: &mut Self::RequestLayoutState,
-        hitbox: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        use gpui_kit::InteractiveElement as _;
-        let style = self
-            .inner
-            .interactivity()
-            .compute_style(id, hitbox.as_ref(), window, cx);
-        self.scope.opacity.set(style.opacity.unwrap_or(1.));
-        Element::paint(
-            &mut self.inner,
-            id,
-            inspector,
-            bounds,
-            layout,
-            hitbox,
-            window,
-            cx,
-        );
     }
 }
 
@@ -236,24 +162,17 @@ impl Element for PaintedIcon {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let bytes = cx
-            .asset_source()
-            .load(self.asset_path.as_ref())
-            .expect("WIRING: actual Kit SVG asset failed to load")
-            .expect("WIRING: actual Kit SVG asset is absent");
-        cx.svg_renderer()
-            .render_single_frame(&bytes, 1.)
-            .expect("WIRING: actual Kit SVG must be renderable");
         self.inner.paint(window, cx);
-        PAINTS.with(|paints| {
-            paints.borrow_mut().push(GlyphPaint {
+        record_paint(
+            GlyphPaint {
                 scope: self.scope.clone(),
                 asset: self.asset,
                 asset_path: self.asset_path.clone(),
                 rotation: self.rotation,
                 bounds,
-                opacity: self.scope.opacity.get(),
-            });
-        });
+                opacity: 1.,
+            },
+            cx,
+        );
     }
 }

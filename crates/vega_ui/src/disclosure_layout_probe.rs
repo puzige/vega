@@ -26,7 +26,12 @@ pub(crate) fn take() -> Vec<Observation> {
 }
 
 pub(crate) fn observe(owner: EntityId, index: usize, inner: AnyElement) -> AnyElement {
-    Item { owner, index, inner }.into_any_element()
+    Item {
+        owner,
+        index,
+        inner,
+    }
+    .into_any_element()
 }
 
 struct Item {
