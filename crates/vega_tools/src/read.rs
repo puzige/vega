@@ -1,8 +1,16 @@
 use std::path::Path;
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct ReadIdentity {
+    pub canonical_path: String,
+    pub sha256: String,
+    pub complete: bool,
+}
+
 use crate::Tools;
 use crate::error::ToolError;
 use crate::output::{LINE_TRUNCATION_MARKER, MAX_LINE_CHARS, ToolOutput};
+use crate::sha256::{Sha256, hex};
 use crate::text_file::TextFile;
 
 /// Bytes probed from the file head for the NUL-byte binary check
@@ -28,6 +36,16 @@ impl Tools {
         offset: Option<usize>,
         limit: Option<usize>,
     ) -> Result<ToolOutput, ToolError> {
+        self.read_with_identity(path, offset, limit)
+            .map(|(output, _)| output)
+    }
+
+    pub fn read_with_identity(
+        &self,
+        path: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<(ToolOutput, ReadIdentity), ToolError> {
         if let Some(0) = offset {
             return Err(ToolError::InvalidInput(
                 "offset is 1-based and must be >= 1".to_string(),
@@ -40,7 +58,15 @@ impl Tools {
         let bytes = read_text_head_probed(&canonical, path, self.credential_policy.is_some())?;
         let text = TextFile::decode(&bytes)?;
         self.reads.record(&canonical, &bytes)?;
-        Ok(render_numbered(&text.content, offset.unwrap_or(1), limit))
+        let output = render_numbered(&text.content, offset.unwrap_or(1), limit);
+        let mut hash = Sha256::new();
+        hash.update(&bytes);
+        let identity = ReadIdentity {
+            canonical_path: canonical.to_string_lossy().into_owned(),
+            sha256: hex(&hash.finalize()),
+            complete: offset.is_none() && limit.is_none() && !output.truncated,
+        };
+        Ok((output, identity))
     }
 }
 

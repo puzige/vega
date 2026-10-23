@@ -29,17 +29,84 @@ pub fn recover_thread(
     thread_id: &str,
     now_ms: i64,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
+    let owner = crate::delegated_ownership::acquire_for_thread(conn, thread_id)?;
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-    let counts = recover_thread_in_transaction(&tx, thread_id, now_ms)?;
+    let counts = recover_thread_with_owner(&tx, thread_id, now_ms, owner.as_deref())?;
     tx.commit()?;
     Ok(counts)
 }
 
-pub fn recover_thread_in_transaction(
+pub fn recover_thread_with_owner(
     tx: &rusqlite::Transaction<'_>,
     thread_id: &str,
     now_ms: i64,
+    owner: Option<&crate::delegated_ownership::DelegatedOwnership>,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
+    let delegated = crate::subagents::find(tx, thread_id)?;
+    if let Some(row) = &delegated
+        && crate::delegated_stages::release_state(tx, thread_id, &row.child_message_id)?
+            == "quarantined"
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "delegated release remains unconfirmed".into(),
+        ));
+    }
+    let abandoned = delegated.as_ref().filter(|row| {
+        matches!(row.state.as_str(), "running" | "cancelling")
+            || (row.state == "interrupted"
+                && crate::delegated_stages::release_state(tx, thread_id, &row.child_message_id)
+                    .is_ok_and(|state| state == "unknown"))
+    });
+    let effects = abandoned
+        .map(|row| crate::delegated_stages::unknown_effects(tx, thread_id, &row.child_message_id))
+        .transpose()?;
+    let counts = recover_stopped_with_owner(tx, thread_id, now_ms, owner)?;
+    if let Some(row) = abandoned {
+        if crate::delegated_stages::release_state(tx, thread_id, &row.child_message_id)?
+            == "unknown"
+        {
+            crate::delegated_stages::register(
+                tx,
+                thread_id,
+                &row.child_message_id,
+                None,
+                &serde_json::json!([]),
+            )?;
+        }
+        crate::delegated_stages::final_checkpoint(
+            tx,
+            thread_id,
+            &row.child_message_id,
+            true,
+            effects.unwrap_or(serde_json::json!([])),
+            now_ms,
+        )?;
+        crate::delegated_stages::set_release(
+            tx,
+            thread_id,
+            &row.child_message_id,
+            "recovered_abandoned",
+        )?;
+    }
+    Ok(counts)
+}
+
+pub fn recover_stopped_with_owner(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    now_ms: i64,
+    owner: Option<&crate::delegated_ownership::DelegatedOwnership>,
+) -> Result<RecoveryCounts, rusqlite::Error> {
+    if crate::threads::find(tx, thread_id)?.is_some_and(|row| row.parent_thread_id.is_some())
+        && !owner.is_some_and(|owner| {
+            crate::delegated_ownership::database_path(tx)
+                .is_ok_and(|path| owner.verifies(&path, thread_id))
+        })
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "delegated writer proof required".into(),
+        ));
+    }
     let continuations = {
         let mut query = tx.prepare("SELECT c.continuation_message_id, c.reason, c.source_version, c.source_fingerprint, c.user_message_id, c.raw_user_fingerprint FROM credential_continuations c JOIN messages m ON m.id = c.continuation_message_id WHERE c.thread_id = ?1 AND c.state = 'claimed' AND m.status = 'streaming' AND c.user_message_id = (SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' ORDER BY seq DESC LIMIT 1)")?;
         query
