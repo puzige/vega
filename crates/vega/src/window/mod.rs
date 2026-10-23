@@ -218,6 +218,7 @@ impl VegaWindow {
             subagent_panel: subagent_panel::SubagentPanel::new(cx),
             automation_editors: Default::default(),
             image_preview: image_preview::ImagePreviewController::new(cx),
+            onboarding: cua_onboarding::OnboardingHost::default(),
             environment_collapsed: true,
             environment_overlay_open: false,
             sidebar_resize_dragging: false,

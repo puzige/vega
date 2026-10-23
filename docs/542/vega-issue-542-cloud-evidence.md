@@ -207,3 +207,51 @@ Macro recursion is no longer reported. Both jobs instead fail on five controller
 The prior import-list reviewer independently diagnosed the omissions: its inventory missed the extension trait and omitted a known identifier when assembling the final list. The reviewer acknowledged the responsible harness layer and approved exactly two missing named imports, preserving the existing methods, bodies, assertions, fixtures, and execution settings. Do not replace `update_global`, restore wildcards, raise recursion limits, or suppress these errors. The same writer received only this two-import repair scope; no deduplication repair is authorized.
 
 The whole-run status initially remained queued even though Nextest had finished; later its completed job log was retrievable through the existing GitHub job-log API while Clippy was running. CLI refusal to supply logs was treated as an observation limitation, never success or target RED. Clippy's eventual raw log confirmed the same five missing-import errors.
+
+## First executed development suite — four failures
+
+- Head: `091191bf26634981414a4b4f9b9618107ab58735`.
+- Run: <https://github.com/puzige/vega/actions/runs/39846822695>.
+- Actual checkout in both jobs: synthetic merge `6d4498846e6ddb4e4c39164e5e9f81d40c0e316d`, merging that head into `5fb9a3d0491c620a901e67a0e3f348ba05bd76c6`.
+- Clippy: <https://github.com/puzige/vega/actions/runs/39846822695/job/120062185157>, success, including fmt and all-target warnings-denied compilation.
+- Nextest: <https://github.com/puzige/vega/actions/runs/39846822695/job/120062185310>, failure during actual test execution, not compilation or discovery.
+- Required aggregator: <https://github.com/puzige/vega/actions/runs/39846822695/job/120064659541>, consequential failure.
+
+The parent re-read the original failed-step and full-run logs. Nextest reports `Starting 23 tests across 15 binaries` and `23 tests run: 19 passed, 4 failed, 0 skipped`. All six controller tests and all four evidence-projection tests passed. Nine UI tests passed and four failed. These are actual execution results, not the earlier static inventory; there is no combined GREEN.
+
+| Failed test | Original failure | Classification / next verification |
+|---|---|---|
+| `artifact_group_merges_capture_after_reconciled_rename` | `observation.rs:294`, group rows `Some(2)` instead of `Some(1)` | The previously reviewed cached-label deduplication defect is now observed behavior RED. Repair current presentation identity while keeping latest sealed capability authority. |
+| `artifact_actions_are_keyboard_reachable` | `artifact_card.rs:2188`, `Tab must reach preview without pointer hover` | Actual focus/reveal path needs repair; retain the existing keyboard assertion and typed event checks. |
+| `artifact_group_keeps_failures_visible_after_the_turn_ends` | `observation.rs:294`, group rows `Some(8)` instead of `Some(9)` | Determine notification scheduling versus product error synchronization before editing the responsible layer. Preserve hidden-file error visibility and exact arithmetic. |
+| `artifact_group_omits_source_labels_and_editor_row` | `artifact_card.rs:1665`, combined background/border/radius quad predicate | Check the locked GPUI drawing contract; do not change product styling merely to satisfy an invalid observation assumption, or weaken required styling checks. |
+
+## Continued repair baseline and current policy
+
+On continuation, the old child directory contained no active executions and the task tree was clean. The parent fetched and merged latest master `9f9fa092a3ca391a65f08419c9206f32979119e6` without conflicts as `894bb5e7db5ce9629f7c40e843ad4a7dedef7d7a`. The artifact UI and observation files were unchanged by this integration. Upstream changes in shared stream/controller paths were retained; the final current version still requires fresh Actions validation.
+
+The integrated repository policy removes mandatory TDD sequencing, while retaining independent implementation review, no local execution/build/tests, truthful risk-based verification, Rust test/support removal before master, and the final complete zero-test required gate. Earlier records remain historical evidence, not fabricated current gates. For this already exercised change, all 23 development tests remain required regression checks; no failing test is deleted or weakened. Product acceptance and the explicit no-CUA boundary are unchanged.
+
+One code writer owned production repairs in `artifact_card.rs`; a separate read-only diagnosis checked the remaining observation/scheduling failures. The parent owns evidence and Git integration. No local Vega execution, compilation, tests, Python tests, or CUA was performed.
+
+### Source-backed responsibility classification
+
+Independent read-only diagnosis and parent inspection of locked GPUI source confirmed that the hidden-error test observes within the same outer `TestAppContext::update_window` as its mutations. GPUI `App::finish_update` flushes notifications only after the outer update completes; the test's `frame()` calls refresh/draw and clears the element arena, not notification effects. The existing card → group → stream notification route is present. Correct sequencing returns from setup, mutates through an outer test context, then observes in a new window update. Keep the exact `8 → 9 → 9 → 8` counts, both themes, hidden seventh-file error text, danger color, and independent error persistence; no direct observer invocation or sleeps.
+
+The style test's single-quad conjunction contradicts `gpui-pre 0.3.4/src/style.rs:713–755`: background and border paint as separate quads, respectively with a transparent border and a transparent background. Require both same-container quads independently, retaining exact theme tokens, all positive border widths, and the exact 12-logical-pixel scaled radius. Do not change the predicate to an OR, drop a required style property, or alter production drawing just for the test.
+
+The production writer reached its execution budget after producing a partial patch and stopped; no READY result was claimed. Parent preserved its scoped binary diff SHA-256 `f22c985b49c62756a17f863749241db4e2300c5c214635496def6b9b1b36abc7` and confirmed tests unchanged. The patch makes compact cards render as their own GPUI entities and coalesces live labels while owning superseded subscriptions. A replacement sole writer received that exact patch plus the diagnosed harness corrections; completed test authoring and prior evidence were not restarted.
+
+Keyboard diagnosis is qualified: GPUI Kit Root supplies generic Tab routing, but Vega's actual `main.rs` creates `VegaWindow` directly, not that Root. Vega focuses the stream using its public `focus_composer` API. The test should start from that actual focus route and let each key update complete before observing focus-driven repaint. Do not add a test-only global focus fallback or directly focus artifact controls. The card's real local Tab path and notification-driven repaint remain product obligations.
+
+A post-merge static audit also found that upstream added `VegaWindow.onboarding` while the temporary `for_artifact_tests` constructor lacks its default initializer. This is a test-fixture integration omission, not a request to execute CUA or change onboarding behavior. It must be reconciled with the same default used by the production constructor before the next cloud build.
+
+### Stopped repair content
+
+The closure writer completed and stopped all writes. Its scoped `git diff HEAD --binary -- crates/vega_ui/src/artifact_card.rs` against `894bb5e7db5ce9629f7c40e843ad4a7dedef7d7a` has SHA-256 `10ac08978ebbc1ba6b29c7292dbdaca978c5499ae2cdc190dca48058db50e0e2`, reproduced by the parent. Live-label coalescing is linear per synchronization, retains first distinct-file position and latest capture authority, and owns subscriptions so superseded card errors do not reappear. Compact rows render as card entities with a real local Tab/Shift-Tab route. No capture, Git, provenance, permission, route/history fence, cancellation or allowlist code changed.
+
+Only the three diagnosed UI harness sites changed: split outer updates for error and focus notifications; initialize keyboard focus through public `focus_composer`; require separate same-bounds background and border quads with all four exact radii and positive border widths. All 23 test definitions remain. No tests were added, removed or ignored; no expected text, row count, capability, timing limit or product requirement was lowered. The actual nonempty UI test module is 88,150 bytes with SHA-256 `6b9f5ea0e1e4861c07193e0145ebe8e53c0216c8e6d727d52ba437026335a777` as reported by the stopped writer.
+
+The separate fixture writer added exactly `onboarding: cua_onboarding::OnboardingHost::default()` inside `for_artifact_tests` and stopped. Scoped diff SHA-256 is `3e976dfd64cf48aa0107f26d59db537547c8005a26ea8a0e6b3bbd7a421480e2`; no production initializer or behavior changed.
+
+Parent verification: `cargo fmt --all -- --check` and whole-worktree `git diff --check` exited 0. These are static checks, not compilation, execution, test success, or GREEN. No local Vega/test/Python/CUA execution occurred. Next: independent review and existing Actions on this same committed repair version, preserving all 23 development regressions.

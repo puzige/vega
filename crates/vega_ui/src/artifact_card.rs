@@ -5,6 +5,7 @@ use gpui_kit::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton,
     Subscription, Window, actions, div, px,
 };
+use std::collections::{HashMap, HashSet};
 use vega_conversation::types::{
     ArtifactCard as ArtifactProjection, ArtifactCardId, ArtifactPreviewProjection,
     GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget, WorkspaceFileId,
@@ -88,6 +89,12 @@ impl EventEmitter<ArtifactCleared> for ArtifactCard {}
 impl Focusable for ArtifactCard {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus[0].clone()
+    }
+}
+
+impl Render for ArtifactCard {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_compact(window, cx)
     }
 }
 
@@ -353,19 +360,19 @@ impl ArtifactCard {
         }
     }
 
-    fn render_compact(card: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
-        card.update(cx, |card, cx| card.observe_compact_focus(window, cx));
-        let state = card.read(cx);
+    fn render_compact(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.observe_compact_focus(window, cx);
+        let card = cx.entity();
         let colors = theme(cx).colors;
-        let projection = state.projection.clone();
-        let focus = state.compact_focus.clone();
-        let show_actions = state.hovered
-            || state.menu_open
+        let projection = self.projection.clone();
+        let focus = self.compact_focus.clone();
+        let show_actions = self.hovered
+            || self.menu_open
             || focus.iter().any(|focus| focus.contains_focused(window, cx));
-        let reading = state.reading_preview;
-        let opening = state.opening.is_some();
+        let reading = self.reading_preview;
+        let opening = self.opening.is_some();
         let menu_open =
-            state.menu_open && !reading && !opening && projection.current_file_id.is_some();
+            self.menu_open && !reading && !opening && projection.current_file_id.is_some();
         let preview_enabled =
             projection.current_file_id.is_some() && projection.preview_available && !opening;
         let open_enabled = projection.current_file_id.is_some() && !opening;
@@ -379,7 +386,11 @@ impl ArtifactCard {
         let mut row = div()
             .id(("artifact-file", card.entity_id()))
             .when(!reading && !show_actions, |row| {
-                row.track_focus(&focus[0].clone().tab_stop(preview_enabled || open_enabled))
+                row.track_focus(
+                    &focus[usize::from(!preview_enabled)]
+                        .clone()
+                        .tab_stop(preview_enabled || open_enabled),
+                )
             })
             .relative()
             .h(px(ROW_HEIGHT))
@@ -398,7 +409,14 @@ impl ArtifactCard {
                 });
             })
             .on_key_down(move |event, window, cx| {
-                if event.keystroke.key == "escape" {
+                if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" {
                     key_card.update(cx, |card, cx| {
                         card.close_menu(cx);
                         card.compact_focus[1].focus(window, cx);
@@ -502,7 +520,7 @@ impl ArtifactCard {
             for (index, (target, label)) in OPEN_TARGETS.into_iter().enumerate() {
                 let open_card = card.clone();
                 let key_card = card.clone();
-                let item_focus = card.read(cx).focus[index + 1].clone();
+                let item_focus = self.focus[index + 1].clone();
                 let item = crate::menu_list::row_container(
                     ("artifact-open-target", index),
                     false,
@@ -676,9 +694,16 @@ impl ArtifactCard {
 
 const MAX_VISIBLE_ARTIFACTS: usize = 6;
 
+struct ArtifactGroupFile {
+    card: Entity<ArtifactCard>,
+    capture_order: u64,
+    _subscription: Subscription,
+}
+
 pub struct ArtifactGroup {
     message_id: String,
-    files: Vec<(String, Entity<ArtifactCard>)>,
+    files: Vec<ArtifactGroupFile>,
+    capture_order: u64,
     expanded: bool,
     capture_errors: Vec<(String, GitWorkspaceErrorCode)>,
     file_errors: Vec<(Entity<ArtifactCard>, GitWorkspaceErrorCode)>,
@@ -689,6 +714,7 @@ impl ArtifactGroup {
         Self {
             message_id,
             files: Vec::new(),
+            capture_order: 0,
             expanded: false,
             capture_errors: Vec::new(),
             file_errors: Vec::new(),
@@ -715,7 +741,32 @@ impl ArtifactGroup {
             + self.file_errors.len()
     }
 
-    fn sync_file_error(&mut self, card: Entity<ArtifactCard>, cx: &mut Context<Self>) {
+    fn sync_file(&mut self, card: Entity<ArtifactCard>, cx: &mut Context<Self>) {
+        let mut indices = HashMap::<String, usize>::with_capacity(self.files.len());
+        let mut files = Vec::<ArtifactGroupFile>::with_capacity(self.files.len());
+        for file in self.files.drain(..) {
+            let label = file.card.read(cx).projection.label.clone();
+            if let Some(&index) = indices.get(&label) {
+                if file.capture_order > files[index].capture_order {
+                    files[index] = file;
+                }
+            } else {
+                indices.insert(label, files.len());
+                files.push(file);
+            }
+        }
+        self.files = files;
+        let live = self
+            .files
+            .iter()
+            .map(|file| file.card.entity_id())
+            .collect::<HashSet<_>>();
+        self.file_errors
+            .retain(|(card, _)| live.contains(&card.entity_id()));
+        if !live.contains(&card.entity_id()) {
+            cx.notify();
+            return;
+        }
         let error = card.read(cx).inline_error;
         if let Some(index) = self
             .file_errors
@@ -739,16 +790,15 @@ impl ArtifactGroup {
         card: Entity<ArtifactCard>,
         cx: &mut Context<Self>,
     ) {
-        let label = card.read(cx).projection.label.clone();
-        if let Some((_, owned)) = self.files.iter_mut().find(|(name, _)| name == &label) {
-            *owned = card.clone();
-        } else {
-            self.files.push((label, card.clone()));
-        }
+        self.capture_order += 1;
+        let subscription = cx.observe(&card, |this, card, cx| this.sync_file(card, cx));
+        self.files.push(ArtifactGroupFile {
+            card: card.clone(),
+            capture_order: self.capture_order,
+            _subscription: subscription,
+        });
         self.capture_errors.retain(|(owner, _)| owner != call_id);
-        cx.observe(&card, |this, card, cx| this.sync_file_error(card, cx))
-            .detach();
-        self.sync_file_error(card, cx);
+        self.sync_file(card, cx);
     }
 
     pub(crate) fn resolve_capture_error(&mut self, call_id: &str, cx: &mut Context<Self>) {
@@ -777,7 +827,7 @@ impl ArtifactGroup {
         cx.notify();
     }
 
-    pub(crate) fn render(group: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
+    pub(crate) fn render(group: Entity<Self>, _window: &mut Window, cx: &mut App) -> AnyElement {
         let state = group.read(cx);
         let visible = state.visible_files();
         let overflow = state.files.len() - visible;
@@ -785,7 +835,7 @@ impl ArtifactGroup {
             .files
             .iter()
             .take(visible)
-            .map(|(_, card)| card.clone())
+            .map(|file| file.card.clone())
             .collect::<Vec<_>>();
         let errors = state
             .capture_errors
@@ -804,7 +854,7 @@ impl ArtifactGroup {
             .border_color(colors.border_subtle)
             .rounded(px(Layout::TOOL_DETAIL_RADIUS));
         for card in files {
-            container = container.child(ArtifactCard::render_compact(card, window, cx));
+            container = container.child(card);
         }
         if overflow > 0 {
             let label = format!("Show {overflow} more");
@@ -1661,12 +1711,39 @@ pub(crate) mod tests {
                 no_controls(window);
                 let quads = window.painted_quads();
                 let scale = window.scale_factor();
-                let artifact_bounds = group_item.bounds.scale(scale);
+                assert!(group_item.bounds.size.width >= px(24.));
+                assert!(group_item.bounds.size.height >= px(24.));
+                let artifact_bounds = Bounds::from_corners(
+                    gpui_kit::point(
+                        window.pixel_snap(group_item.bounds.left()),
+                        window.pixel_snap(group_item.bounds.top()),
+                    ),
+                    gpui_kit::point(
+                        window.pixel_snap(group_item.bounds.right()),
+                        window.pixel_snap(group_item.bounds.bottom()),
+                    ),
+                )
+                .scale(scale);
+                let radius = px(Layout::TOOL_DETAIL_RADIUS).scale(scale);
+                let has_container_geometry = |quad: &gpui_kit::Quad| {
+                    quad.bounds == artifact_bounds
+                        && quad.corner_radii.top_left == radius
+                        && quad.corner_radii.top_right == radius
+                        && quad.corner_radii.bottom_left == radius
+                        && quad.corner_radii.bottom_right == radius
+                };
                 assert!(quads.iter().any(|quad| {
-                    quad.bounds.contains(&artifact_bounds.center())
+                    has_container_geometry(quad)
                         && quad.background.as_solid() == Some(Hsla::from(colors.bg_elevated))
+                }));
+                let zero = px(0.).scale(scale);
+                assert!(quads.iter().any(|quad| {
+                    has_container_geometry(quad)
                         && quad.border_color == Hsla::from(colors.border_subtle)
-                        && quad.corner_radii.top_left == px(Layout::TOOL_DETAIL_RADIUS).scale(scale)
+                        && quad.border_widths.top > zero
+                        && quad.border_widths.right > zero
+                        && quad.border_widths.bottom > zero
+                        && quad.border_widths.left > zero
                 }));
                 hover_file(window, "file-1.txt", cx);
                 assert!(control(window, "Preview file").visible());
@@ -1711,6 +1788,8 @@ pub(crate) mod tests {
     fn artifact_group_keeps_failures_visible_after_the_turn_ends(cx: &mut TestAppContext) {
         for dark in [false, true] {
             let handle = setup(cx, dark);
+            let expected = Hsla::from(if dark { DARK.danger } else { LIGHT.danger });
+            let mut cards = Vec::new();
             in_window(cx, handle, |harness, window, cx| {
                 start(&harness.stream, "failure-only", cx);
                 propose(&harness.stream, "failed-capture", cx);
@@ -1725,7 +1804,6 @@ pub(crate) mod tests {
                 assert!(items("artifact-group").is_empty());
                 finish_with_summary(&harness.stream, "failure-only", cx);
                 frame(window, cx);
-                let expected = Hsla::from(if dark { DARK.danger } else { LIGHT.danger });
                 assert_eq!(
                     group_texts("failure-only", 1),
                     vec!["Git 2.40+ was not found. Install Homebrew Git and retry."]
@@ -1740,7 +1818,6 @@ pub(crate) mod tests {
                 );
                 no_controls(window);
                 start(&harness.stream, "failures", cx);
-                let mut cards = Vec::new();
                 for slot in 1..=7 {
                     cards.push(capture(
                         harness,
@@ -1768,6 +1845,8 @@ pub(crate) mod tests {
                     == "Git 2.40+ was not found. Install Homebrew Git and retry."
                     && text.style.as_ref().unwrap().color == expected));
                 assert!(!group_texts("failures", 8).contains(&"file-7.txt".into()));
+            });
+            cx.update(|cx| {
                 cards[6].update(cx, |card, cx| {
                     assert!(card.apply_preview_error(
                         ArtifactCardId::for_test(1, 7),
@@ -1776,12 +1855,16 @@ pub(crate) mod tests {
                         cx
                     ));
                 });
+            });
+            in_window(cx, handle, |_, window, cx| {
                 frame(window, cx);
                 group("failures", 9);
                 assert!(!group_texts("failures", 9).contains(&"file-7.txt".into()));
                 assert!(group_painted("failures", 9).iter().any(|text| text.text
                     == "Artifact unavailable (changed_during_read)"
                     && text.style.as_ref().unwrap().color == expected));
+            });
+            cx.update(|cx| {
                 cards[6].update(cx, |card, cx| {
                     card.set_opening(Some(OpenInTarget::Zed), cx);
                     assert!(card.apply_open_error(
@@ -1791,6 +1874,8 @@ pub(crate) mod tests {
                         cx
                     ));
                 });
+            });
+            in_window(cx, handle, |_, window, cx| {
                 frame(window, cx);
                 group("failures", 9);
                 assert!(!group_texts("failures", 9).contains(&"file-7.txt".into()));
@@ -1800,6 +1885,8 @@ pub(crate) mod tests {
                         .any(|text| text.text == "Artifact unavailable (spawn_failed)"
                             && text.style.as_ref().unwrap().color == expected)
                 );
+            });
+            cx.update(|cx| {
                 cards[6].update(cx, |card, cx| {
                     card.set_opening(Some(OpenInTarget::Zed), cx);
                     assert!(card.apply_open_outcome(
@@ -1810,6 +1897,8 @@ pub(crate) mod tests {
                         cx
                     ));
                 });
+            });
+            in_window(cx, handle, |_, window, cx| {
                 frame(window, cx);
                 group("failures", 8);
                 click_control(window, "Show 1 more", cx);
@@ -2172,20 +2261,27 @@ pub(crate) mod tests {
             frame(window, cx);
             window.hover("outside", cx);
             no_controls(window);
-            let mut reached = false;
-            for _ in 0..24 {
-                window.press("tab", cx);
-                if gpui_kit::base::test_support::snapshots(window)
+            harness
+                .stream
+                .update(cx, |stream, cx| stream.focus_composer(window, cx));
+        });
+        let mut reached = false;
+        for _ in 0..24 {
+            in_window(cx, handle, |_, window, cx| window.press("tab", cx));
+            in_window(cx, handle, |_, window, cx| {
+                frame(window, cx);
+                reached = gpui_kit::base::test_support::snapshots(window)
                     .iter()
                     .any(|snapshot| {
                         snapshot.label() == Some("Preview file") && snapshot.focused() == Some(true)
-                    })
-                {
-                    reached = true;
-                    break;
-                }
+                    });
+            });
+            if reached {
+                break;
             }
-            assert!(reached, "Tab must reach preview without pointer hover");
+        }
+        assert!(reached, "Tab must reach preview without pointer hover");
+        in_window(cx, handle, |_, window, cx| {
             assert!(control(window, "Preview file").visible());
             assert!(control(window, "Open file in").visible());
             window.press("enter", cx);
@@ -2193,8 +2289,13 @@ pub(crate) mod tests {
         in_window(cx, handle, |harness, window, cx| {
             assert_eq!(harness.previews.borrow().len(), 1);
             window.press("tab", cx);
+        });
+        in_window(cx, handle, |_, window, cx| {
+            frame(window, cx);
             assert_eq!(control(window, "Open file in").focused(), Some(true));
             window.press("enter", cx);
+        });
+        in_window(cx, handle, |harness, window, cx| {
             frame(window, cx);
             for (_, target) in TARGETS {
                 assert!(texts().contains(&target.into()));
