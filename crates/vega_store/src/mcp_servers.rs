@@ -254,6 +254,10 @@ const SELECT: &str = "SELECT id, display_name, transport, local_executable, loca
 
 /// Insert a disabled server. Merely saving a draft never launches a process.
 pub fn create(conn: &Connection, draft: &McpServerDraft) -> Result<McpServerRow, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     validate(draft)?;
     let id = ulid::Ulid::generate().to_string();
     let credential_ref =
@@ -305,6 +309,10 @@ pub fn replace(
     expected_revision: u64,
     draft: &McpServerDraft,
 ) -> Result<McpServerRow, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     validate(draft)?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
     let next_revision = expected_revision
@@ -317,7 +325,10 @@ pub fn replace(
             None
         };
     let environment_slots = local_slots(id, next_revision, draft)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision || old.deleting {
         return Err(McpStoreError::Conflict);
@@ -360,6 +371,10 @@ pub fn replace(
 }
 
 fn enqueue_cleanup(conn: &Connection, id: &str, reference: &str) -> Result<(), McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     conn.execute(
         "INSERT OR IGNORE INTO mcp_secret_cleanup (credential_ref, server_id, created_at) \
          VALUES (?1, ?2, ?3)",
@@ -376,8 +391,15 @@ pub fn set_enabled(
     expected_revision: u64,
     enabled: bool,
 ) -> Result<McpServerRow, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let current = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if current.config_revision != expected_revision {
         return Err(McpStoreError::Conflict);
@@ -425,6 +447,10 @@ pub fn begin_oauth_install(
     issuer: &str,
     client_id: &str,
 ) -> Result<(McpServerRow, String), McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
     if issuer.is_empty()
         || issuer.len() > 4096
@@ -439,7 +465,10 @@ pub fn begin_oauth_install(
         .checked_add(1)
         .ok_or(McpStoreError::Invalid)?;
     let reference = format!("mcp-{id}-r{next_revision}-oauth");
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision
         || old.deleting
@@ -470,8 +499,15 @@ pub fn begin_oauth_disconnect(
     id: &str,
     expected_revision: u64,
 ) -> Result<McpServerRow, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision
         || old.deleting
@@ -503,7 +539,14 @@ pub fn begin_local_secret_rotation(
     expected_revision: u64,
     variable: &str,
 ) -> Result<(McpServerRow, String), McpStoreError> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision || old.deleting || old.transport != "local" {
         return Err(McpStoreError::Conflict);
@@ -555,6 +598,10 @@ pub fn set_last_error(
     revision: u64,
     code: Option<&str>,
 ) -> Result<(), McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     if code.is_some_and(|code| {
         code.is_empty()
             || code.len() > 64
@@ -582,7 +629,14 @@ pub fn begin_remove(
     id: &str,
     expected_revision: u64,
 ) -> Result<McpServerRow, McpStoreError> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let row = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if row.deleting {
         return Ok(row);
@@ -648,6 +702,10 @@ pub fn acknowledge_cleanup(
     conn: &Connection,
     entry: &McpSecretCleanup,
 ) -> Result<(), McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     conn.execute(
         "DELETE FROM mcp_secret_cleanup WHERE server_id = ?1 AND credential_ref = ?2",
         params![entry.server_id, entry.credential_ref],
@@ -658,6 +716,10 @@ pub fn acknowledge_cleanup(
 /// Erase a tombstone only after every queued secret has been removed. No
 /// history or tool-call audit row is touched.
 pub fn finish_remove(conn: &Connection, id: &str) -> Result<bool, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let count = conn.execute(
         "DELETE FROM mcp_servers WHERE id = ?1 AND deleting = 1 \
          AND NOT EXISTS (SELECT 1 FROM mcp_secret_cleanup WHERE server_id = ?1)",

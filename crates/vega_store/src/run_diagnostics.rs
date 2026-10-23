@@ -181,6 +181,7 @@ pub struct DiagnosticExport {
     pub schema_version: u32,
     pub events: Vec<DiagnosticEvent>,
     pub incomplete_attempt_ids: Vec<String>,
+    pub recent_process_storage: Vec<crate::write_coordination::StorageObservation>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -196,6 +197,10 @@ pub enum DiagnosticError {
 }
 
 pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, DiagnosticError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Diagnostics,
+    )?;
     validate(event)?;
     if event.state == DiagnosticState::Started {
         let duplicate: bool = conn.query_row(
@@ -382,9 +387,10 @@ pub fn export_run(
     }
     let incomplete_attempt_ids = incomplete_attempt_ids(&events);
     Ok(serde_json::to_string(&DiagnosticExport {
-        schema_version: 1,
+        schema_version: 2,
         events,
         incomplete_attempt_ids,
+        recent_process_storage: crate::write_coordination::recent_observations(conn),
     })?)
 }
 

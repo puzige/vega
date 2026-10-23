@@ -162,6 +162,10 @@ pub fn count_by_message(
 
 /// Inserts a proposed tool call.
 pub fn insert(conn: &Connection, call: NewToolCall<'_>) -> Result<(), rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let inserted = conn.execute(
         "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at, text_offset_bytes) \
          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, length(CAST(content AS BLOB)) \
@@ -189,6 +193,10 @@ pub fn insert_validation_rejected(
     conn: &Connection,
     rejected: ValidationRejectedToolCall<'_>,
 ) -> Result<(), ToolCallTransitionError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let inserted = conn.execute(
         "INSERT INTO tool_calls \
          (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) \
@@ -222,7 +230,14 @@ pub fn approve(
     remember: Option<RememberExactRule<'_>>,
     now: i64,
 ) -> Result<(), ToolCallTransitionError> {
-    let transaction = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let updated = transaction.execute(
         "UPDATE tool_calls SET status = 'approved', approval = ?1 \
          WHERE id = ?2 AND status = 'pending_approval'",
@@ -253,7 +268,14 @@ pub fn reject(
     finished_at: i64,
     remember: Option<RememberExactRule<'_>>,
 ) -> Result<(), ToolCallTransitionError> {
-    let transaction = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let updated = transaction.execute(
         "UPDATE tool_calls SET status = 'rejected', approval = ?1, output_text = ?2, finished_at = ?3 \
          WHERE id = ?4 AND status = 'pending_approval'",
@@ -277,6 +299,10 @@ pub fn reject(
 
 /// Transitions approved→running.
 pub fn mark_running(conn: &Connection, id: &str) -> Result<(), ToolCallTransitionError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let updated = conn.execute(
         "UPDATE tool_calls SET status = 'running' WHERE id = ?1 AND status = 'approved'",
         [id],
@@ -290,6 +316,10 @@ pub fn finish(
     conn: &Connection,
     finished: FinishToolCall<'_>,
 ) -> Result<(), ToolCallTransitionError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     if !matches!(finished.status, "success" | "failed" | "cancelled") {
         return Err(ToolCallTransitionError::InvalidTerminalStatus);
     }
@@ -392,6 +422,10 @@ pub fn update(
     output_text: Option<&str>,
     finished_at: Option<i64>,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     conn.execute(
         "UPDATE tool_calls SET status = ?1, approval = COALESCE(?2, approval), \
          output_text = COALESCE(?3, output_text), finished_at = COALESCE(?4, finished_at) \
