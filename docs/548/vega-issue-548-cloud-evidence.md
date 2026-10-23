@@ -132,3 +132,28 @@ Continuation fetched upstream `a439483cf2c377fe59f1dfb9b487bfb2200d5c64` (#577) 
 Local `cargo fmt --all -- --check` and `git diff --check` exited 0. No Vega execution, compilation, tests, Clippy or packaging ran locally. Because this baseline changes the actual persistence path, the integrated 28-case suite must run in existing Actions before cleanup. Independent review of the overlap is required. The successful `d2cb0d2d` evidence is preserved, not falsely reassigned to this new content.
 
 After integrated functional success: separately remove Rust tests/exclusive support per spec §5, verify production equivalence and protected files, then run complete latest-head required CI with explicit `no Rust tests` (0 discovered / 0 executed). That empty suite is not a second functional success claim. PR remains draft / issue In progress until the final gate; OS banners/focus/denied permissions and user acceptance remain manual. No install or restart has occurred.
+
+## Integrated functional success and exact Actions checkout
+
+The parent obtained the completed original result of [Actions 39934121113](https://github.com/puzige/vega/actions/runs/39934121113), associated with PR head `16f8426ec15ea294f9135047c8239d0590e7e528`:
+
+- [Nextest 120349341380](https://github.com/puzige/vega/actions/runs/39934121113/job/120349341380): success, completed 2026-10-23T09:46:35Z. Actual output: `Starting 28 tests across 16 binaries`, `28 tests run: 28 passed, 0 skipped` (0.813 seconds), and nonempty-suite summary reporting 28 discovered. Thus **28 discovered / 28 executed / 28 passed / 0 failed / 0 skipped**. All original regressions and the continuation addition remain present and executed.
+- [Clippy 120349341137](https://github.com/puzige/vega/actions/runs/39934121113/job/120349341137): format and all-target deny-warnings Clippy success, completed 2026-10-23T09:49:26Z.
+- [Required aggregate 120351117148](https://github.com/puzige/vega/actions/runs/39934121113/job/120351117148): success, completed 2026-10-23T09:49:32Z.
+- Python output reports **5 + 15 + 40 = 60 executed and passed**, separately from Rust counts.
+- Original full-log SHA-256: `208044613e1f0845630cf845400521f18ca3168705078c7562b3f099f5e2cc39`. The workflow's printed conditional text includes an empty-suite branch, but the actual branch was **nonempty**; it does not establish `no Rust tests`.
+
+Both job checkout logs identify actual tested commit `ca098929a2de32fb30cd0e032735d3bb2bea9e0f`, GitHub's synthetic PR merge, with parents `80eaba474df5a23c3a7849e11b39a0864b7e0ad6` and `16f8426ec15ea294f9135047c8239d0590e7e528`. Parent fetched that exact ref, verified its full parents and tree `9b77db31e61d126d8eceaf78dba9a5701bc46603`, and distinguished the Actions head metadata from its tested content.
+
+After fetching/updating the clean task branch, parent merged current master `80eaba474df5a23c3a7849e11b39a0864b7e0ad6` (artifact-turn aggregation, #564) without conflicts as `6b861adac664fe1434a073aeb4fb338dcd8aa6b5`. `git merge-tree`, staged `git write-tree`, and committed tree all equal the tested tree above. This establishes byte-identical integrated functional content; it is **not** a new-head required check, independent review, or user acceptance. No Rust tests/support were removed. Source hashes remain `ef10249c290c5f041378661e836dcb8efa642ea550f173ee572cea601c22cbbb` (conversation) and `5f1cf7cbc398d2b9bbaa309d382b25418890bac069847e3232fa73c96ce8ea89` (GPUI); GitHub readback at `16f8426e` again returned blobs `cf068342484052a4c2f0b26f1c38b65eb3ca9f08` and `867a42ebbb2320e23b079edd9b943841f1da52f7`.
+
+## Agent scheduling blocker and precise recovery boundary
+
+Historical completed/failed child histories remain restored as `running`, `release_state: unknown`, without checkpoints. Cancellation requests on the stopped reviewer and integration writer returned unchanged running states, not terminal confirmation. A new read-only independent review of the stopped integrated version returned `capacity_exceeded`; the previous related-review continuation returned `agent_busy`. This is an external execution/scheduling failure, not a product failure or a reason to retry tests. No new child was admitted, no code writer is assigned, and no test cleanup has begun.
+
+The task remains draft / In progress. Do not bypass dedicated implementation or non-writer review, treat cancellation request success as cessation, or delete tests to manufacture a final gate. Required next steps after scheduling recovery:
+
+1. Obtain independent delta review of `d2cb0d2df142b97562f3880eb9f271c5a5323798` to stopped code `6b861adac664fe1434a073aeb4fb338dcd8aa6b5`: SQLite actor/busy-transaction diagnostics versus active timing, artifact-turn ingress/presentation versus question/continued/stale-terminal ownership. Existing 28-case success is available; do not reopen resolved harness failures.
+2. Confirm old writers terminal/released, appoint one cleanup writer, remove only spec §5's tests/exclusive support and lock edges, and preserve production equivalence plus protected upstream/Python/workflow/migration/resource/benchmark paths.
+3. Review the exact stopped final cleanup content independently, and obtain the complete latest-head required check with explicit `no Rust tests` (0 discovered / 0 executed). The functional success above remains distinct from this empty-suite delivery gate.
+4. Only then ready/squash merge and keep Issue open / In review for user manual native acceptance. No app installation or restart is included.

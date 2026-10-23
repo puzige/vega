@@ -2,8 +2,8 @@
 
 Issue: [#548](https://github.com/puzige/vega/issues/548)
 
-Version: 1.4 (2026-10-23; product acceptance unchanged from v1.2). Original analysis baseline: `83fd51d79940516029cdc1eaf8e81566870c877b`. Original test-only base: `6615748f91273bfb8ee424011b3b5a09b3777d2b`. Functional validated head: `d2cb0d2df142b97562f3880eb9f271c5a5323798`, including queued steering continuation and the earlier stage, context and Composer integrations. Current integration checkpoint: `db44460fabd0faadcbc07aeb5a5e2569eb9428f9`, incorporating upstream SQLite write coordination `a439483cf2c377fe59f1dfb9b487bfb2200d5c64` without conflict; the 28 development tests are unchanged.
-Branch: `feat/548-question-wait`. Stage: preserving functional evidence and validating the storage integration before separate Rust test/support cleanup. Actions `39931154185` on `d2cb0d2d` discovered/executed/passed 28, skipped 0; fmt, Clippy, Python and required aggregate succeeded. The new storage integration needs its own actual cloud validation. Final cleanup/head gate, merge, installation and user acceptance remain pending. See [cloud evidence](vega-issue-548-cloud-evidence.md).
+Version: 1.4 (2026-10-23; product acceptance unchanged from v1.2). Original analysis baseline: `83fd51d79940516029cdc1eaf8e81566870c877b`. Original test-only base: `6615748f91273bfb8ee424011b3b5a09b3777d2b`. Earlier functional head: `d2cb0d2df142b97562f3880eb9f271c5a5323798`. Current stopped code checkpoint: `6b861adac664fe1434a073aeb4fb338dcd8aa6b5`, incorporating upstream SQLite write coordination `a439483cf2c377fe59f1dfb9b487bfb2200d5c64` and artifact-turn aggregation `80eaba474df5a23c3a7849e11b39a0864b7e0ad6` without conflict; the 28 development tests are unchanged. Its tree `9b77db31e61d126d8eceaf78dba9a5701bc46603` exactly matches the actual Actions checkout `ca098929a2de32fb30cd0e032735d3bb2bea9e0f`.
+Branch: `feat/548-question-wait`. Stage: integrated functional validation complete; independent delta review and separate Rust test/support cleanup are blocked by Agent scheduling. Actions `39934121113`, associated with PR head `16f8426ec15ea294f9135047c8239d0590e7e528` and testing the merge tree above, discovered/executed/passed 28, failed/skipped 0; fmt, Clippy, 60 Python tests and required aggregate succeeded. This is verified content equivalence, not a current-final-head check or independent review. Final cleanup/head gate, merge, installation and user acceptance remain pending. See [cloud evidence](vega-issue-548-cloud-evidence.md).
 
 ## 1. Goal and evidence
 
@@ -93,7 +93,9 @@ Delivery cleanup is behavior-preserving: remove the two developmental test files
 
 Manual acceptance: trigger a Native question, switch to another task/app, check a single needs-answer notification and click navigation; wait then answer/skip and verify working time did not count the wait. Repeat Stop, back-to-back questions and notifications disabled. Check normal completion notifications still work. Do not install/restart the user's active application as part of this fix.
 
-Rollback: revert the task PR; no schema migration or user-data transformation.
+Rollback: revert the task PR; no schema migration or user-data transformation introduced by this card. Preserve upstream continuation migration and storage changes.
+
+Current recovery boundary: cancellation receipts still report historical ended child executions as `running` / `unknown`, without a terminal acknowledgment. A new independent review admission returned `capacity_exceeded`; the existing reviewer continuation previously returned `agent_busy`. Do not infer cessation from cancellation receipt success, bypass the dedicated implementation/non-writer-review requirements, or remove the tests before ownership and review are available. Resume with independent review of `d2cb0d2df142b97562f3880eb9f271c5a5323798` to stopped `6b861adac664fe1434a073aeb4fb338dcd8aa6b5` (SQLite persistence and artifact/UI overlap), then a sole cleanup writer under the inventory above. Preserve the successful 28-case evidence; do not repeat the resolved seven-failure investigation.
 
 ## 6. Interrupted-draft recovery
 
