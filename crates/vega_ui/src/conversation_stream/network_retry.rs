@@ -26,6 +26,7 @@ impl ConversationStream {
             return;
         }
         self.close_active_segment_at_response(text_start_bytes);
+        self.begin_context_response(response_id);
         self.active_response_id = Some(response_id.into());
         self.response_reasoning_completed = false;
         self.active_thinking = None;

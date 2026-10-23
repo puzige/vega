@@ -1,7 +1,8 @@
+use super::context_usage::ContextUsageSource;
 use super::*;
 use vega_conversation::types::{
-    ContextAccountingRecord, ContextCompactionFailureCode as Failure,
-    ContextCompactionStatus as Status, ContextCompactionStatusRecord, ContextSettings,
+    ContextAccountingRecord, ContextAccountingStage, ContextCompactionFailureCode as Failure,
+    ContextCompactionStatus as Status, ContextCompactionStatusRecord, ContextSettings, TokenUsage,
 };
 
 const LOAD_ERROR: &str = "上下文信息读取失败，请稍后重试";
@@ -21,6 +22,11 @@ impl ContextUsageProjection {
     }
 }
 
+struct PrimaryContextCall {
+    response_id: String,
+    total: Option<u64>,
+}
+
 pub(crate) struct ContextControl {
     pub open: bool,
     limit: Entity<TextInput>,
@@ -29,6 +35,9 @@ pub(crate) struct ContextControl {
     settings: Option<ContextSettings>,
     model_input_limit: Option<u64>,
     estimate: Option<u64>,
+    usage_source: ContextUsageSource,
+    latest_call_total: Option<u64>,
+    live_call: Option<PrimaryContextCall>,
     live_accounting: Option<(String, ContextAccountingRecord)>,
     compactable: bool,
     next_request: u64,
@@ -51,6 +60,9 @@ impl ContextControl {
             settings: None,
             model_input_limit: None,
             estimate: None,
+            usage_source: ContextUsageSource::EstimatedInput,
+            latest_call_total: None,
+            live_call: None,
             live_accounting: None,
             compactable: false,
             next_request: 0,
@@ -79,6 +91,11 @@ impl ConversationStream {
             self.context_control.estimate,
             self.context_control.model_input_limit,
         )
+    }
+
+    pub(crate) fn context_usage_display(&self) -> context_usage::ContextUsageDisplay {
+        let (tokens, limit) = self.context_usage_source();
+        context_usage::ContextUsageDisplay::new(tokens, limit, self.context_control.usage_source)
     }
 
     pub(crate) fn reset_context_control(&mut self, cx: &mut Context<Self>) {
@@ -160,7 +177,9 @@ impl ConversationStream {
             && self.context_control.reserve.read(cx).text().is_empty();
         self.context_control.settings = settings;
         self.context_control.model_input_limit = usage.model_input_limit;
-        if self.context_control.live_accounting.is_none() {
+        if self.context_control.live_accounting.is_none()
+            && self.context_control.usage_source == ContextUsageSource::EstimatedInput
+        {
             self.context_control.estimate = usage.estimated_tokens;
         }
         self.context_control.compactable = compactable;
@@ -261,7 +280,9 @@ impl ConversationStream {
         {
             cx.notify();
         }
-        if self.context_control.live_accounting.is_none() {
+        if self.context_control.live_accounting.is_none()
+            && self.context_control.usage_source == ContextUsageSource::EstimatedInput
+        {
             self.context_control.estimate =
                 record.estimated_tokens.or(self.context_control.estimate);
         }
@@ -346,11 +367,35 @@ impl ConversationStream {
                 .context_control
                 .live_accounting
                 .as_ref()
-                .is_some_and(|(old_id, old)| old_id != message_id || record.revision < old.revision)
+                .is_some_and(|(old_id, old)| {
+                    old_id != message_id
+                        || record.revision < old.revision
+                        || (record.revision == old.revision
+                            && old.stage == ContextAccountingStage::PostSummaryTarget
+                            && record.stage != ContextAccountingStage::PostSummaryTarget)
+                })
         {
             return false;
         }
-        self.context_control.estimate = Some(record.predicted_input);
+        let new_boundary = self
+            .context_control
+            .live_accounting
+            .as_ref()
+            .is_none_or(|(_, old)| {
+                record.revision > old.revision
+                    || (record.stage == ContextAccountingStage::PostSummaryTarget
+                        && old.stage != ContextAccountingStage::PostSummaryTarget)
+            });
+        if new_boundary {
+            self.context_control.live_call = None;
+            if record.stage == ContextAccountingStage::PostSummaryTarget {
+                self.context_control.latest_call_total = None;
+            }
+        }
+        if new_boundary || self.context_control.usage_source == ContextUsageSource::EstimatedInput {
+            self.context_control.estimate = Some(record.predicted_input);
+            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
+        }
         // The record carries the runtime's own per-run input budget, so the
         // ring has a real denominator during the run instead of only after the
         // post-run projection refresh.
@@ -360,9 +405,79 @@ impl ConversationStream {
         true
     }
 
-    pub(crate) fn clear_live_context_accounting(&mut self) {
-        if self.context_control.live_accounting.take().is_some() {
+    pub(crate) fn begin_context_response(&mut self, response_id: &str) {
+        if self.thread.backend != TaskBackend::Native || !self.actions.running {
+            return;
+        }
+        if self
+            .context_control
+            .live_call
+            .as_ref()
+            .is_none_or(|call| call.response_id != response_id)
+        {
+            self.context_control.live_call = Some(PrimaryContextCall {
+                response_id: response_id.to_owned(),
+                total: None,
+            });
+        }
+    }
+
+    pub fn apply_context_usage(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        message_id: &str,
+        usage: TokenUsage,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if thread_id != self.thread.id
+            || model != self.thread.model
+            || self.thread.backend != TaskBackend::Native
+            || !self.actions.running
+            || !self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active, _)| active == message_id)
+            || usage.input == 0
+        {
+            return false;
+        }
+        let Some(total) = usage.input.checked_add(usage.output) else {
+            return false;
+        };
+        let Some(call) = self.context_control.live_call.as_mut() else {
+            return false;
+        };
+        if self.active_response_id.as_deref() != Some(call.response_id.as_str()) {
+            return false;
+        }
+        let total = call.total.map_or(total, |old| old.max(total));
+        call.total = Some(total);
+        self.context_control.latest_call_total = Some(total);
+        self.context_control.estimate = Some(total);
+        self.context_control.usage_source = ContextUsageSource::LastCallTotal;
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn reset_live_context_usage(&mut self) {
+        let had_usage = self.context_control.latest_call_total.take().is_some();
+        self.clear_live_context_accounting();
+        if had_usage {
             self.context_control.estimate = None;
+            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
+        }
+    }
+
+    pub(crate) fn clear_live_context_accounting(&mut self) {
+        self.context_control.live_call = None;
+        let had_accounting = self.context_control.live_accounting.take().is_some();
+        if let Some(total) = self.context_control.latest_call_total {
+            self.context_control.estimate = Some(total);
+            self.context_control.usage_source = ContextUsageSource::LastCallTotal;
+        } else if had_accounting {
+            self.context_control.estimate = None;
+            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
             self.context_usage_trigger_hovered = false;
             self.context_usage_tooltip_hovered = false;
         }
