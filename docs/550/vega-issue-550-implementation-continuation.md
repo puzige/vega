@@ -169,14 +169,15 @@ head `76fd200952154dc5be8c6cda1f6cd513badff106` 的 [Actions 39927968952](https:
 
 ### 固定实现与独立审查
 
-- 实现及本轮实际行为验证 SHA：**`4f633e469113fe25c50ffc006dadc4ed0cd1d05c`**；修复 delta base `725d63281f891189e81ed0b66665130001e196e6`，包含实施前正常集成的 master `73977c89eba718da4b2573227c44beb8bcff6911`。原 `ed14a21a1c6db5b09a8a4631df5d7e3eeb49c252` 四项修复保留。上述实现已正常推送，PR/远端 head 与源码 blob `bf5ce272fd3456886e10cd53bf9f73dcbc9052f5` 已读回一致。
+- 本轮实现及 Actions 关联 PR head SHA：**`4f633e469113fe25c50ffc006dadc4ed0cd1d05c`**；修复 delta base `725d63281f891189e81ed0b66665130001e196e6`，包含实施前正常集成的 master `73977c89eba718da4b2573227c44beb8bcff6911`。原 `ed14a21a1c6db5b09a8a4631df5d7e3eeb49c252` 四项修复保留。上述实现已正常推送，PR/远端 head 与源码 blob `bf5ce272fd3456886e10cd53bf9f73dcbc9052f5` 已读回一致。
+- 实际执行环境：Nextest 与 Clippy 的 Checkout 原始日志均打印 **`c07c27dcc4a62bedad5750851527254abcf3efa8`**（`refs/pull/579/merge`），父节点依次为 base **`b2248996cc68497ef050539fd69f05cc723e4c0a`** 与 PR head **`4f633e469113fe25c50ffc006dadc4ed0cd1d05c`**，tree **`6fb13cad9af9349796e6e1e5c536ce888d71f09e`**。这是 Actions 的临时合成 merge，不是合并 PR；#550 仍未合并。下列行为结果来自这个合成 tree，不能称纯 PR head tree 已直接执行。
 - 非写入者 `artifact_review` 对完整固定 SHA 的独立静态审查完成：未发现可证的新增 P0–P3 问题或新增阻断；确认合法聚合前置、四行实际渲染/完整数据/几何、真实 Preview 焦点及两次精确请求保持验收强度，没有恢复旧同阶段结构或扩大普通生产 API。28 名称/顺序、其他 27 个测试体、四项旧修复和五类原断言均保留；订阅/borrow/drop/API 和普通构建源文核对无新增问题。该结论是静态审查，与下文实际行为结果分开记录。
 - 本地实际执行的 `cargo fmt --all -- --check`、`git diff --check`、词法范围/测试体保全、唯一 accessor 与受保护路径字节检查均 exit 0；独审另执行 scope、fixed delta diff-check 与独立 blob/字节/哈希核对，均 exit 0。未本地运行 Vega、编译/build/package、cargo check/Clippy/test/nextest/bench/profile/CUA/OS 自动化。
 - 可恢复[固定源码](https://github.com/puzige/vega/blob/4f633e469113fe25c50ffc006dadc4ed0cd1d05c/crates/vega_ui/src/conversation_stream/disclosure_motion_tests.rs) / [本轮原始 patch](https://github.com/puzige/vega/commit/4f633e469113fe25c50ffc006dadc4ed0cd1d05c.patch)。源码 SHA-256 **`b5d4ca9a458b600d34ba6cac3dfc2bd19da085572f32493f6e440415cec39157`**；ArtifactCard **`0877d19ebd5db4149dc6a3a8a1f05de5add202f839a41179ebae43f3718d150e`**；源码 binary delta **`19db48afcea186637557382f0139b520ca821d06a0558e499b5c1f563537ce45`**。
 
 ### 新版本实际 Actions
 
-[Actions 39999223526](https://github.com/puzige/vega/actions/runs/39999223526) 的 head 为 **`4f633e469113fe25c50ffc006dadc4ed0cd1d05c`**，使用原 `pr-check`，没有改 workflow/配置或重跑换绿。2026-10-24 01:56:41（Asia/Shanghai）启动，02:01:46 完成；首次读取在 01:56:54，下一次读取在 02:02:15，遵守五分钟间隔。
+[Actions 39999223526](https://github.com/puzige/vega/actions/runs/39999223526) 关联的 PR head 为 **`4f633e469113fe25c50ffc006dadc4ed0cd1d05c`**，两个执行 job 实际 checkout 上述 **`c07c27dcc4a62bedad5750851527254abcf3efa8`**，使用原 `pr-check`，没有改 workflow/配置或重跑换绿。2026-10-24 01:56:41（Asia/Shanghai）启动，02:01:46 完成；首次读取在 01:56:54，下一次读取在 02:02:15，遵守五分钟间隔。
 
 | Job / 步骤 | 实际结果 |
 |---|---|
@@ -199,7 +200,7 @@ head `76fd200952154dc5be8c6cda1f6cd513badff106` 的 [Actions 39927968952](https:
 | `thinking_shimmer_keeps_its_own_active_visible_reduced_and_finished_frame_gates` | PASS（0.064s） |
 | `invalid_or_missing_final_and_failed_or_cancelled_turns_keep_unknown_body_visible` | PASS（1.320s），含合法 Failed metadata/真实输出观察 |
 
-这些结果验证本轮固定实现中保留的四项旧修复，不倒填为旧 head 的行为结果；四行渲染和数组正文观察也不冒充独立像素回读、真实文件/Git/权限/外部应用或用户观感验收。
+这些结果验证本轮实现及其四项旧修复在上述合成 merge 环境中的行为，不倒填为旧 head 或单独 PR head tree 的行为结果；四行渲染和数组正文观察也不冒充独立像素回读、真实文件/Git/权限/外部应用或用户观感验收。
 
 ### 五项失败的首个根断言与范围
 
@@ -217,6 +218,14 @@ head `76fd200952154dc5be8c6cda1f6cd513badff106` 的 [Actions 39927968952](https:
 
 ### 结果回写与后续条件
 
-本节作为独立文档记录提交/推送时会形成新的 PR head，**上述云端结果只绑定 `4f633e469113fe25c50ffc006dadc4ed0cd1d05c`，不绑定后续文档 head**。收尾 fetch 已安全确认任务远端无后来写入；当时 origin/master 已推进到 `b2248996cc68497ef050539fd69f05cc723e4c0a`（#583），本次结果回写仅修改文档，不再扩集成已停写、已验证的实现范围。文档新 head 与其 own Actions 状态由 Issue/PR 最终回执记录，不冒充最新 head 已通过；本轮不合并。
+本节作为独立文档记录提交/推送时会形成新的 PR head，**上述 run 与 PR head `4f633e469113fe25c50ffc006dadc4ed0cd1d05c` 关联，行为实际绑定合成 merge `c07c27dcc4a62bedad5750851527254abcf3efa8`，不绑定单独 PR head tree 或后续文档 head**。收尾 fetch 已安全确认任务远端无后来写入；当时 origin/master 已推进到 `b2248996cc68497ef050539fd69f05cc723e4c0a`（#583），本次结果回写仅修改文档，不再扩集成已停写、已验证的实现范围。文档新 head 与其 own Actions 状态由 Issue/PR 最终回执记录，不冒充最新 head 已通过；本轮不合并。
 
 artifact 兼容范围没有剩余修复或执行环境阻碍，唯一 writer 与独立 reviewer 均已停止。若要处理五类范围外未决，需要另行明确修复范围；涉及 Final 子状态验收需先明确产品/可观察契约，无 inactive draw 需合法 harness 观察路线。后续测试清理、合并及用户手测均是独立阶段，本轮没有这类授权，不因 23/28 或静态审查擅自继续。
+
+### 独审补充：云端 checkout 版本归属纠正
+
+非写入者审查文档 head `09c007fe0cf7d5715852ad70552069e9a28dabed` 时，确认其相对 `4f633e469113fe25c50ffc006dadc4ed0cd1d05c` 只有本记录 +58 行、源码相同、数字/五项 PASS/五根失败与日志一致，同时指出 P2 记录问题：先前“实际行为验证 SHA”没有区分 PR head 与 Actions 合成 merge。父重新读取两个 job 的原始 Checkout 与 `git log -1 %H`，并通过 GitHub commit API 核对实际执行 commit、父节点和 tree，已在本节纠正。原始日志、测试结果及源码均未改变。
+
+[实际合成 merge](https://github.com/puzige/vega/commit/c07c27dcc4a62bedad5750851527254abcf3efa8) / [其 base](https://github.com/puzige/vega/commit/b2248996cc68497ef050539fd69f05cc723e4c0a) 与前述固定 PR head 共同提供恢复条件。合成 tree 中测试源码 blob `bf5ce272fd3456886e10cd53bf9f73dcbc9052f5`、ArtifactCard blob `9458f5cd04056110799e82d5ad3b4a37ed99305c` 已分别远端读回，与固定 PR head 两文件完全一致；五个根失败的源行号也相同。#583 实际已在 CI 的合成 base 中，本地任务实现 commit 并未另行合入它。独立 list JSON 总数和 ignored 独立计数仍未取得。
+
+本次仅纠正文档版本归属，源码未变；修正后文档 head 及其自身 Actions 状态由最终 Issue/PR 回执明确记录，不能把先前合成 tree 的结果充作新 head 的完整 required check。没有新增代码修复、测试重跑或合并授权。
