@@ -84,14 +84,17 @@ Vega 规则为准。具体边界：
    [验证与交付政策](../../../docs/vega-rust-test-delivery-lifecycle.md) 和
    [exec-guide §7.2](../../../docs/vega-exec-guide.md#72-快速交付与按风险验证当前规则)。
    明确验收后用最小改动解决问题，按风险选择必要验证，可直接修复或先实现后补测。
-   不强制测试先行、独立测试前置审查、有效 RED、冻结后禁止补测、GREEN 后删测及证据链；
-   不为流程造临时测试、先红后绿或删测提交。纯文档/格式不强加测试。
+   不强制测试先行、独立测试前置审查、有效 RED、冻结后禁止补测或 TDD 时序证据链；
+   不为流程造临时测试或先红后绿。纯文档/格式不强加测试。取消 TDD 不取消 Rust 测试禁入 master。
    需要测试时验证稳定边界的行为及业务/安全结果，mock 不替代被测决策；不以源码字符串、
    mock 调用或覆盖率充数。新测试用行为命名，issue/task 编号只留文档。
    不为过关放宽断言、删除失败测试、ignore 或盲目重试换绿；修测试/接线错误须说明依据，
    不按实现输出反推预期。验收变化先更新 spec，不要求重开 TDD 周期。
-   不从旧 ref 批量恢复已清除的历史 Rust 测试及支持，不强制新增测试验证后删除；
-   保留现存 Python 测试及 fixture、生产/benchmark/通用 CI，历史报告不是当前验证。
+   不从旧 ref 批量恢复已清除的历史 Rust 测试及支持。Rust 测试/可执行 doctest 只供开发辅助，
+   原始源码/patch、完整 SHA 和实际验证在 PR 留痕；合并前移除测试及独占模块/fixture/mock/helper/
+   feature/dev dependency/接线，静态清点与完整 required CI 确认最终 Rust 0 发现/0 执行。
+   不以条件编译、ignore 或挪目录规避；保留现存 Python 测试及 fixture、生产/安全断言/benchmark/
+   通用 CI。开发测试验证与最终空集门禁分别记录，历史报告不是当前验证。
    本地只做低 CPU 静态/格式检查，不运行 Vega、不编译/构建/打包/测试；自动测试与完整门禁
    只交 Actions，打包仅云端发布。实际 PR gate 保留 fmt / 全目标 Clippy / 三组 Python 检查 /
    Nextest，最新 head required CI 通过才能合并。记录精确版本、已执行检查和真实结果；
