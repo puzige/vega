@@ -1,5 +1,5 @@
 //! Bounded read-only file pane. Filesystem access remains in conversation/app.
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use vega_conversation::types::PaletteFilePreview;
@@ -45,6 +45,11 @@ impl FilePreview {
     pub fn title(&self) -> &str {
         &self.preview.relative_path
     }
+
+    #[cfg(feature = "test-support")]
+    pub fn observed_scroll(&self) -> Point<Pixels> {
+        self.scroll.offset()
+    }
 }
 impl Focusable for FilePreview {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -80,7 +85,17 @@ impl Render for FilePreview {
                                         .text_color(colors.text_tertiary)
                                         .child((index + 1).to_string()),
                                 )
-                                .child(line.to_string())
+                                .child({
+                                    #[cfg(feature = "test-support")]
+                                    {
+                                        crate::test_support::text(line.to_string(), cx.entity_id())
+                                            .into_any_element()
+                                    }
+                                    #[cfg(not(feature = "test-support"))]
+                                    {
+                                        line.to_string().into_any_element()
+                                    }
+                                })
                         }),
                 )
                 .into_any_element()
@@ -141,7 +156,11 @@ impl Render for FilePreview {
                         .track_scroll(self.scroll.clone())
                         .child(body),
                     )
-                    .scroll_edge_fade(colors.bg_base, ScrollFade::reading()),
+                    .tracked_scroll_edge_fade(
+                        self.scroll.clone(),
+                        colors.bg_base,
+                        ScrollFade::reading(),
+                    ),
             )
     }
 }

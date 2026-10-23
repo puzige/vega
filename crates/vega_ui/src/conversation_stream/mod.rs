@@ -286,6 +286,10 @@ use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod autolinks;
 mod inline_code;
 pub(crate) mod links;
+#[cfg(not(feature = "test-support"))]
+mod selection;
+#[cfg(feature = "test-support")]
+#[path = "selection_observer.rs"]
 mod selection;
 mod selection_menu;
 mod thinking;
