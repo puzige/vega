@@ -45,6 +45,7 @@ mod diagnostics;
 mod entry;
 mod events;
 mod permission_queue;
+mod stage_activity;
 mod subagents;
 mod user_question_queue;
 pub use user_question_queue::*;

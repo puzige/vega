@@ -1,4 +1,5 @@
 use super::*;
+use crate::cua_onboarding::lifecycle::{EntryLifecycle, TaskContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelPickerLevel {
@@ -33,6 +34,8 @@ pub struct ConversationStream {
     pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
+    pub(crate) computer_use_entry: EntryLifecycle,
+    pub(crate) computer_use_task: TaskContext,
     pub(crate) computer_use_diagnostic: Option<(u64, String)>,
     pub(crate) computer_use_notice_generation: u64,
     pub(crate) computer_use_diagnostic_focus: FocusHandle,
@@ -203,6 +206,7 @@ pub struct ConversationStream {
     pub(crate) _permission_listener_task: gpui_kit::Task<()>,
 }
 
+impl EventEmitter<crate::cua_onboarding::PreparationRequested> for ConversationStream {}
 impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
@@ -448,6 +452,8 @@ impl ConversationStream {
             },
         )
         .detach();
+        let mut computer_use_entry = EntryLifecycle::default();
+        let computer_use_task = computer_use_entry.begin_task(&thread.id);
         Self {
             prediction_waiting_for_queue: false,
             prediction_owner: None,
@@ -460,6 +466,8 @@ impl ConversationStream {
             delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
             computer_use_control: None,
+            computer_use_entry,
+            computer_use_task,
             computer_use_diagnostic: None,
             computer_use_notice_generation: 0,
             computer_use_diagnostic_focus: cx.focus_handle(),
@@ -971,6 +979,7 @@ impl ConversationStream {
             panel.rebind_draft_project(&thread.project_id, cx);
         });
         self.invalidate_file_index(cx);
+        self.begin_computer_use_task(cx);
         self.thread = thread;
         self.project_label = label;
         cx.notify();

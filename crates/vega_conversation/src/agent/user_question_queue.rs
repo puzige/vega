@@ -13,6 +13,7 @@ use crate::types::UserQuestionAnswers;
 type Response = RuntimeUserQuestionResponse;
 
 struct QuestionResponseState {
+    activity: Option<super::stage_activity::PendingActivity>,
     request: RuntimeUserQuestionRequest,
     sender: Mutex<Option<oneshot::Sender<Response>>>,
     cancel: CancellationToken,
@@ -26,6 +27,9 @@ impl QuestionResponseState {
         let Some(sender) = sender.take() else {
             return false;
         };
+        if let Some(activity) = &self.activity {
+            activity.finish();
+        }
         let cancelled = self.cancel.is_cancelled();
         sender
             .send(if cancelled {
@@ -84,10 +88,18 @@ struct QueueState {
 
 #[derive(Clone, Default)]
 pub struct UserQuestionQueue {
+    activity: Option<super::stage_activity::StageActivity>,
     state: Arc<Mutex<QueueState>>,
 }
 
 impl UserQuestionQueue {
+    pub(super) fn with_activity(activity: super::stage_activity::StageActivity) -> Self {
+        Self {
+            activity: Some(activity),
+            ..Self::default()
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -204,6 +216,7 @@ impl RuntimeUserQuestionHook for UserQuestionQueue {
         }
         let (sender, receiver) = oneshot::channel();
         let response = Arc::new(QuestionResponseState {
+            activity: self.activity.as_ref().map(|activity| activity.pending()),
             request,
             sender: Mutex::new(Some(sender)),
             cancel: cancel.clone(),

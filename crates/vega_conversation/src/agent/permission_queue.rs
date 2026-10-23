@@ -103,6 +103,7 @@ impl fmt::Debug for PendingPermission {
 }
 
 pub(crate) struct PermissionResponseState {
+    activity: Option<super::stage_activity::PendingActivity>,
     pub(crate) sender: Mutex<Option<oneshot::Sender<PermissionDecision>>>,
 }
 
@@ -131,6 +132,9 @@ impl PermissionResponder {
         let Some(sender) = sender.take() else {
             return false;
         };
+        if let Some(activity) = &self.state.activity {
+            activity.finish();
+        }
         let _ = sender.send(decision);
         true
     }
@@ -250,10 +254,18 @@ pub(crate) struct PermissionQueueState {
 /// human decision and resolves every disappearance as Timeout.
 #[derive(Clone, Default)]
 pub struct PermissionQueue {
+    activity: Option<super::stage_activity::StageActivity>,
     pub(crate) state: Arc<Mutex<PermissionQueueState>>,
 }
 
 impl PermissionQueue {
+    pub(super) fn with_activity(activity: super::stage_activity::StageActivity) -> Self {
+        Self {
+            activity: Some(activity),
+            ..Self::default()
+        }
+    }
+
     /// Creates an empty queue.
     pub fn new() -> Self {
         Self::default()
@@ -367,6 +379,7 @@ impl PermissionHook for PermissionQueue {
         let (sender, receiver) = oneshot::channel();
         let responder = PermissionResponder {
             state: Arc::new(PermissionResponseState {
+                activity: self.activity.as_ref().map(|activity| activity.pending()),
                 sender: Mutex::new(Some(sender)),
             }),
         };

@@ -369,6 +369,13 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         let view = view.clone();
+        cx.subscribe(
+            &view,
+            |this, stream, request: &vega_ui::cua_onboarding::PreparationRequested, cx| {
+                this.request_task_preparation(stream, request, cx);
+            },
+        )
+        .detach();
         cx.subscribe_in(
             &view,
             window,

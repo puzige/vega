@@ -56,6 +56,14 @@ pub fn next_steer(
     conn.query_row("SELECT id, thread_id, ordinal, behavior, generation, payload, created_at FROM pending_messages WHERE thread_id = ?1 AND generation = ?2 AND behavior = 'steer' AND state = 'pending' ORDER BY ordinal LIMIT 1", params![thread_id, generation], read_row).optional()
 }
 
+pub fn next_steer_metadata(
+    conn: &Connection,
+    thread_id: &str,
+    generation: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT id FROM pending_messages WHERE thread_id=?1 AND generation=?2 AND behavior='steer' AND state='pending' ORDER BY ordinal LIMIT 1", params![thread_id,generation], |row| row.get(0)).optional()
+}
+
 pub fn promote(
     conn: &Connection,
     thread_id: &str,

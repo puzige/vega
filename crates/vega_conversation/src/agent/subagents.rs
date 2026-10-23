@@ -32,6 +32,10 @@ struct AgentRecord {
     admitted: bool,
     committed: bool,
     boundary: Option<ContinuationBoundary>,
+    activity: super::stage_activity::StageActivity,
+    delivered_attention: u64,
+    bounded_observed: bool,
+    terminal_delivered: bool,
 }
 
 struct AdmissionCall {
@@ -47,6 +51,9 @@ struct RegistryState {
     latest: BTreeMap<String, String>,
     calls: BTreeMap<String, AdmissionCall>,
     ended: bool,
+    admission_failure: Option<String>,
+    steering: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
+    delivered_steering: Option<String>,
 }
 
 #[derive(Clone)]
@@ -81,16 +88,65 @@ struct Registry {
 
 impl Registry {
     fn active(&self) -> Result<(), VegaError> {
-        if self
+        let state = self
             .state
             .lock()
-            .map_err(|_| failure("state unavailable"))?
-            .ended
-        {
+            .map_err(|_| failure("state unavailable"))?;
+        if state.ended {
             Err(failure("parent_run_ended"))
         } else {
             Ok(())
         }
+    }
+
+    fn waitable(&self) -> Result<(), VegaError> {
+        self.active()?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| failure("state unavailable"))?;
+        match &state.admission_failure {
+            Some(error) => Err(failure(error)),
+            None => Ok(()),
+        }
+    }
+
+    fn attention(&self, targets: &[ExecutionKey]) -> Result<bool, VegaError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| failure("state unavailable"))?;
+        if let Some(error) = &state.admission_failure {
+            return Err(failure(error));
+        }
+        let mut changed = false;
+        for key in targets {
+            if let Some(record) = state.executions.get_mut(key)
+                && let Some(generation) = record.activity.attention()
+                && generation != record.delivered_attention
+            {
+                record.delivered_attention = generation;
+                changed = true;
+            }
+        }
+        Ok(changed)
+    }
+
+    fn quarantine(&self, mut snapshot: SubagentSnapshot, message: &str) {
+        snapshot.state = SubagentState::Failed;
+        snapshot.result = message.into();
+        snapshot.truncated = false;
+        if let Ok(mut state) = self.state.lock() {
+            state.admission_failure = Some(message.into());
+            if let Some(record) = state
+                .executions
+                .get_mut(&(snapshot.agent_id.clone(), snapshot.message_id.clone()))
+            {
+                record.snapshot = snapshot;
+                record.boundary = None;
+            }
+        }
+        self.changed.notify_waiters();
     }
 
     fn begin_call(
@@ -222,17 +278,65 @@ impl Registry {
         }
     }
 
-    fn released_terminal(&self, targets: &[ExecutionKey]) -> Result<bool, VegaError> {
-        let state = self
+    fn claim_observation(&self, targets: &[ExecutionKey]) -> Result<bool, VegaError> {
+        let mut state = self
             .state
             .lock()
             .map_err(|_| failure("state unavailable"))?;
-        Ok(targets.iter().any(|key| {
+        for key in targets {
+            if !state.executions.contains_key(key) {
+                return Err(failure("unknown_agent"));
+            }
+        }
+        let fresh = targets.iter().any(|key| {
+            let record = &state.executions[key];
+            record.occupied && !record.bounded_observed
+        });
+        for key in targets {
+            if let Some(record) = state.executions.get_mut(key)
+                && record.occupied
+            {
+                record.bounded_observed = true;
+            }
+        }
+        Ok(fresh)
+    }
+
+    fn released_terminal(&self, targets: &[ExecutionKey]) -> Result<bool, VegaError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| failure("state unavailable"))?;
+        let all = targets.iter().all(|key| {
             state
                 .executions
                 .get(key)
                 .is_some_and(|record| record.snapshot.state.is_terminal() && !record.occupied)
-        }))
+        });
+        let mut fresh = false;
+        for key in targets {
+            if let Some(record) = state.executions.get_mut(key)
+                && record.snapshot.state.is_terminal()
+                && !record.occupied
+                && !record.terminal_delivered
+            {
+                record.terminal_delivered = true;
+                fresh = true;
+            }
+        }
+        Ok(all || fresh)
+    }
+
+    fn steering_ready(&self, id: String) -> Result<bool, VegaError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| failure("state unavailable"))?;
+        if state.delivered_steering.as_ref() == Some(&id) {
+            return Ok(false);
+        }
+        state.delivered_steering = Some(id);
+        Ok(true)
     }
 
     fn update(&self, snapshot: SubagentSnapshot) -> Result<(), VegaError> {
@@ -276,8 +380,12 @@ impl Registry {
 impl AgentRecord {
     fn snapshot(&self) -> SubagentSnapshot {
         let mut snapshot = self.snapshot.clone();
-        if self.cancel.is_cancelled() && !snapshot.state.is_terminal() {
-            snapshot.state = SubagentState::Cancelling;
+        if self.occupied {
+            if self.cancel.is_cancelled() {
+                snapshot.state = SubagentState::Cancelling;
+            } else if snapshot.state.is_terminal() {
+                snapshot.state = SubagentState::Running;
+            }
         }
         snapshot
     }
@@ -309,7 +417,14 @@ fn receipt(mut agents: Vec<SubagentSnapshot>, timed_out: bool) -> serde_json::Va
         agents.pop();
         truncated = true;
     }
-    serde_json::json!({"agents":agents,"timed_out":timed_out,"truncated":truncated})
+    let mut value =
+        serde_json::json!({"agents":agents,"timed_out":timed_out,"truncated":truncated});
+    if let Some(agents) = value["agents"].as_array_mut() {
+        for agent in agents {
+            agent["ready"] = false.into();
+        }
+    }
+    value
 }
 
 impl vega_runtime::RuntimeSubagentHook for Hook {
@@ -334,14 +449,31 @@ impl vega_runtime::RuntimeSubagentHook for Hook {
                     } else {
                         input["agent_ids"].as_array().ok_or_else(|| failure("invalid input"))?.iter().map(|id| registry.target(id.as_str().ok_or_else(|| failure("invalid input"))?, None)).collect::<Result<Vec<_>, _>>()?
                     };
-                    let deadline = tokio::time::Instant::now() + Duration::from_millis(input.get("timeout_ms").and_then(serde_json::Value::as_u64).unwrap_or(30_000));
+                    let explicit = input.get("timeout_ms").and_then(serde_json::Value::as_u64);
+                    let fresh = if explicit.is_some() { registry.claim_observation(&targets)? } else { false };
+                    let coalesced = explicit.is_some() && !fresh;
+                    let deadline = explicit.filter(|_| fresh).map(|millis| tokio::time::Instant::now() + Duration::from_millis(millis));
+                    let answer = |reason: &str| -> Result<serde_json::Value, VegaError> {
+                        let mut value = receipt(registry.snapshots(Some(&targets))?, reason == "timeout");
+                        value["timeout_coalesced"] = coalesced.into();
+                        value["wake_reason"] = reason.into();
+                        Ok(value)
+                    };
                     loop {
                         let changed = registry.changed.notified(); tokio::pin!(changed); changed.as_mut().enable();
-                        registry.active()?;
-                        let snapshots = registry.snapshots(Some(&targets))?;
-                        if registry.released_terminal(&targets)? { return Ok(receipt(snapshots, false)); }
-                        if tokio::time::Instant::now() >= deadline { return Ok(receipt(snapshots, true)); }
-                        tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), _ = &mut changed => {}, _ = tokio::time::sleep_until(deadline) => return Ok(receipt(registry.snapshots(Some(&targets))?,true)) }
+                        registry.waitable()?;
+                        if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
+                        if registry.released_terminal(&targets)? { return answer("terminal"); }
+                        if registry.attention(&targets)? { return answer("attention"); }
+                        let steering = registry.state.lock().map_err(|_| failure("state unavailable"))?.steering.clone();
+                        if let Some(source) = &steering {
+                            let ready = tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), ready = source.ready() => ready? };
+                            if let Some(id) = ready && registry.steering_ready(id)? { return answer("steering"); }
+                        }
+                        if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) { return answer("timeout"); }
+                        let timeout = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => futures::future::pending().await } };
+                        let readiness = async { if steering.is_some() { tokio::time::sleep(Duration::from_millis(250)).await } else { futures::future::pending().await } };
+                        tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), _ = &mut changed => {}, _ = timeout => {}, _ = readiness => {} }
                     }
                 }
                 _ => {
@@ -371,6 +503,7 @@ pub(super) struct ChildSettings {
     pub automation_hook: Option<Arc<dyn vega_runtime::RuntimeAutomationHook>>,
     pub owner_credential_reader: Option<vega_runtime::CredentialReader>,
     pub turn_limit: u32,
+    pub steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
 }
 
 impl ChildSettings {
@@ -390,6 +523,7 @@ impl ChildSettings {
             automation_hook: config.automation_hook.clone(),
             owner_credential_reader: config.owner_credential_reader.clone(),
             turn_limit: config.turn_limit,
+            steering_source: config.steering_source.clone(),
         }
     }
 }
@@ -418,6 +552,7 @@ struct ReservedExecution {
     call_id: String,
     cancel: CancellationToken,
     previous: Option<ContinuationBoundary>,
+    activity: super::stage_activity::StageActivity,
 }
 
 impl Supervisor {
@@ -446,6 +581,9 @@ impl Supervisor {
         mut parent: LocalBoxFuture<'a, T>,
         launch: ChildLaunch<'a>,
     ) -> T {
+        if let Ok(mut state) = self.registry.state.lock() {
+            state.steering = launch.settings.steering_source.clone();
+        }
         let mut children: FuturesUnordered<LocalBoxFuture<'a, ()>> = FuturesUnordered::new();
         let result = loop {
             tokio::select! {
@@ -490,6 +628,9 @@ impl Supervisor {
             .map_err(|_| failure("state unavailable"))?;
         if state.ended {
             return Err(failure("parent_run_ended"));
+        }
+        if let Some(error) = &state.admission_failure {
+            return Err(failure(error));
         }
         let task = input["task"]
             .as_str()
@@ -564,6 +705,7 @@ impl Supervisor {
             truncated: false,
         };
         let cancel = launch.cancel.child_token();
+        let activity = super::stage_activity::StageActivity::new(self.registry.changed.clone());
         state.latest.insert(id.clone(), snapshot.message_id.clone());
         state.executions.insert(
             (id, snapshot.message_id.clone()),
@@ -576,6 +718,10 @@ impl Supervisor {
                 admitted: false,
                 committed: false,
                 boundary: None,
+                activity: activity.clone(),
+                delivered_attention: 0,
+                bounded_observed: false,
+                terminal_delivered: false,
             },
         );
         Ok(ReservedExecution {
@@ -584,6 +730,7 @@ impl Supervisor {
             call_id: call_id.into(),
             cancel,
             previous,
+            activity,
         })
     }
 
@@ -643,6 +790,12 @@ impl Supervisor {
                 launch.host.updated(snapshot.clone())?;
             }
         }
+        let snapshot = self
+            .registry
+            .snapshots(Some(std::slice::from_ref(target)))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| failure("unknown_agent"))?;
         Ok(serde_json::json!({"agent":snapshot}))
     }
 }
@@ -768,12 +921,64 @@ fn child_lifecycle<'a>(
     reserved: ReservedExecution,
     registry: Registry,
 ) -> LocalBoxFuture<'a, ()> {
+    let activity = reserved.activity.clone();
+    let cancel = reserved.cancel.clone();
+    let child = child_lifecycle_inner(launch, reserved, registry);
+    async move {
+        tokio::pin!(child);
+        loop {
+            let changed = activity.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if cancel.is_cancelled() {
+                child.await;
+                return;
+            }
+            if activity.expire() {
+                cancel.cancel();
+                child.await;
+                return;
+            }
+            let remaining = activity.remaining();
+            let deadline = async {
+                match remaining {
+                    Some(remaining) => tokio::time::sleep(remaining).await,
+                    None => futures::future::pending().await,
+                }
+            };
+            tokio::select! {
+                biased;
+                () = &mut child => return,
+                _ = cancel.cancelled() => {
+                    child.await;
+                    return;
+                },
+                _ = &mut changed => {},
+                _ = deadline => {
+                    if activity.expire() {
+                        cancel.cancel();
+                        child.await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    .boxed_local()
+}
+
+fn child_lifecycle_inner<'a>(
+    launch: &ChildLaunch<'a>,
+    reserved: ReservedExecution,
+    registry: Registry,
+) -> LocalBoxFuture<'a, ()> {
     let ReservedExecution {
         mut snapshot,
         task,
         call_id,
         cancel,
         previous,
+        activity,
     } = reserved;
     let provider = launch.provider;
     let tools = launch.tools.isolated();
@@ -828,6 +1033,9 @@ fn child_lifecycle<'a>(
             Ok(created) => created,
             Err(error) => {
                 registry.discard(&snapshot, previous.as_ref());
+                let error = if activity.expired() {
+                    failure(&format!("Stage active budget exhausted before admission; incomplete. Execution {}/{}; no artifact confirmed.", snapshot.agent_id, snapshot.message_id))
+                } else { error };
                 registry.resolve_call(&call_id, Err(error));
                 return;
             }
@@ -839,8 +1047,8 @@ fn child_lifecycle<'a>(
         {
             record.committed = true;
         }
-        let permissions = PermissionQueue::new();
-        let questions = UserQuestionQueue::new();
+        let permissions = PermissionQueue::with_activity(activity.clone());
+        let questions = UserQuestionQueue::with_activity(activity.clone());
         let queue_generation = ulid::Ulid::generate().to_string();
         let admission = host.admit(SubagentAdmission {
             thread,
@@ -851,11 +1059,7 @@ fn child_lifecycle<'a>(
             task: task.clone(),
             queue_generation: queue_generation.clone(),
         });
-        let admitted = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => Err(VegaError::Cancelled),
-            result = admission => result,
-        };
+        let admitted = admission.await;
         let admitted = admitted.and_then(|()| {
             if cancel.is_cancelled() {
                 Err(VegaError::Cancelled)
@@ -959,6 +1163,7 @@ fn child_lifecycle<'a>(
                 }
             }
         };
+        activity.finish();
         questions.cancel_active();
         permissions.timeout_active();
         snapshot.state = match &result {
@@ -979,15 +1184,34 @@ fn child_lifecycle<'a>(
             Err(_) if cancel.is_cancelled() => SubagentState::Interrupted,
             Err(_) => SubagentState::Failed,
         };
-        let text = match &result {
-            Ok(run) if snapshot.state == SubagentState::Completed => run.content.as_str(),
-            Ok(run) if snapshot.state == SubagentState::Failed && !run.content.is_empty() => {
-                &run.content
+        let retained = match &result {
+            Ok(_) if snapshot.state == SubagentState::Completed => {
+                let final_text = Store::open(&database).ok().and_then(|store| {
+                    let source = vega_store::context_compaction::load_source(store.conn(), &snapshot.agent_id).ok()?;
+                    super::pipeline::completed_stage_text(store.conn(), &source, &snapshot.message_id).ok()
+                });
+                match final_text {
+                    Some(text) => text,
+                    None => {
+                        snapshot.state = SubagentState::Failed;
+                        "Completed response could not be safely identified; inspect the original conversation.".into()
+                    }
+                }
             }
-            _ if snapshot.state == SubagentState::Interrupted => "Interrupted before completion",
-            _ => "Subagent failed. Open the conversation for details.",
+            Ok(run) if !run.content.is_empty() => run.content.clone(),
+            _ if snapshot.state == SubagentState::Interrupted => Store::open_read_only(&database)
+                .ok()
+                .and_then(|store| messages::find(store.conn(), &snapshot.message_id).ok().flatten())
+                .map(|message| message.content)
+                .filter(|content| !content.is_empty())
+                .unwrap_or_else(|| "Interrupted before completion".into()),
+            _ => "Subagent failed. Open the conversation for details.".into(),
         };
-        (snapshot.result, snapshot.truncated) = bounded_result(text);
+        let retained = if activity.expired() {
+            snapshot.state = SubagentState::Interrupted;
+            format!("Stage active budget exhausted after 20 minutes; incomplete. Execution {}/{}. Retained partial output: {}", snapshot.agent_id, snapshot.message_id, retained)
+        } else { retained };
+        (snapshot.result, snapshot.truncated) = bounded_result(&retained);
         let complete = usage_observer.complete();
         let terminal = persist_child_terminal(database, snapshot.clone(), complete).await;
         let persisted = terminal.is_ok();
@@ -996,16 +1220,17 @@ fn child_lifecycle<'a>(
             snapshot.state = SubagentState::Failed;
             snapshot.result = "Subagent result could not be saved".into();
             snapshot.truncated = false;
+            registry.quarantine(snapshot.clone(), "Subagent terminal persistence failed; ownership remains occupied");
+        } else {
+            let _ = registry.update(snapshot.clone());
         }
-        let _ = registry.update(snapshot.clone());
         let release = host.finish_and_release(snapshot.clone(), complete && persisted);
-        let released = tokio::select! {
-            biased;
-            result = release => result.is_ok(),
-            _ = cancel.cancelled() => false,
-        };
-        let boundary = if released { boundary } else { None };
-        registry.finish(snapshot, boundary);
+        let released = release.await.is_ok();
+        if !released {
+            registry.quarantine(snapshot, if !persisted { "Subagent terminal persistence failed; ownership remains occupied" } else { "Subagent host release failed; ownership remains occupied" });
+        } else if persisted {
+            registry.finish(snapshot, boundary);
+        }
     }
     .boxed_local()
 }
