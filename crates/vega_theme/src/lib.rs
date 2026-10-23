@@ -543,9 +543,14 @@ impl Layout {
     pub const SETTINGS_SWITCH_WIDTH: f32 = 32.0;
     /// Height of a Settings boolean switch.
     pub const SETTINGS_SWITCH_HEIGHT: f32 = 20.0;
-    pub const PREPARATION_CARD_WIDTH: f32 = 480.0;
-    pub const PREPARATION_CARD_HEIGHT: f32 = 420.0;
+    pub const PREPARATION_CARD_WIDTH: f32 = 400.0;
+    pub const PREPARATION_CARD_HEIGHT: f32 = 140.0;
     pub const PREPARATION_CARD_SHADOW_PADDING: f32 = 24.0;
+    pub const PREPARATION_APP_ICON_SIZE: f32 = 56.0;
+    pub const PREPARATION_APP_TARGET_WIDTH: f32 = 88.0;
+    pub const PREPARATION_APP_TARGET_HEIGHT: f32 = 72.0;
+    pub const PREPARATION_APP_LABEL_HEIGHT: f32 = 16.0;
+    pub const PREPARATION_CLOSE_SIZE: f32 = 24.0;
     /// Maximum width of a multi-section floating menu.
     pub const MENU_MAX_WIDTH: f32 = 350.0;
     /// Preferred width of the global command/search palette.
