@@ -1,6 +1,6 @@
 # Native execution bounds after #514
 
-Status: acceptance v3.1 implemented, independently reviewed and verified by the same frozen 28 tests in Actions. Separate test cleanup and the final exact-head gate remain required; immutable completion evidence is recorded in PR #561. Related: #556, #514 / #529, #525 / #532, #522.
+Status: historical acceptance v3.1 delivered in PR #561. Its automatic 20-minute cancellation and rejection of interrupted recovery are superseded by [stage handoff and recovery](stage-handoff-recovery.md). The original 28-test result proves the former specified behavior, not a justified threshold or actual delivery-speed improvement. Related: #556, #514 / #529, #525 / #532, #522.
 Observation/v1 baseline: `871f91f246e90753743a256cee1eec315e74effc`. V3 production baseline: `6615748f91273bfb8ee424011b3b5a09b3777d2b`, including the existing #557 image-budget and initial-input compaction correction. User authorization: 2026-10-22, implement execution mechanisms, retain independent review and CI.
 
 ## Evidence and limits

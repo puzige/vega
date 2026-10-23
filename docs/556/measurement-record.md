@@ -1,5 +1,11 @@
 # Execution efficiency evidence ledger
 
+## Corrective continuation: stage handoff and recovery
+
+The user's 2026-10-23 continuation requires removing the default 20-minute hard cancellation, implementing durable stage handoff and explicit interrupted recovery, then reconciling the existing #522 experiment before completing its comparison. The new [acceptance contract](stage-handoff-recovery.md) supersedes the timer-based claim below. The old timer tests remain historical proof of that implementation; they are not evidence that a useful artifact appeared earlier or that recovery worked.
+
+At the acceptance freeze, production remains unchanged from `4c0d225d`. One original implementation agent and one original independent reviewer are reused. No new #522 namespace, model trial or installed application has been started for this continuation. Record implementation/review/CI intervals and subsequent research receipts as they occur; unknown start times or durations remain unknown. The original #514 clock and failed/cancelled experiment costs remain included in their respective records.
+
 ## Observed case: #514
 
 This is the actual completed observation, not a treatment/control experiment. Native start: 2026-10-22 06:31:57.103 UTC; merge: 14:59:55 UTC; final native terminal: 15:01:33.615 UTC. Both cancellations and all recovery gaps remain included. The observer's later closeout is excluded.
