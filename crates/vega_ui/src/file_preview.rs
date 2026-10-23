@@ -1,5 +1,5 @@
 //! Bounded read-only file pane. Filesystem access remains in conversation/app.
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use vega_conversation::types::PaletteFilePreview;
@@ -156,7 +156,11 @@ impl Render for FilePreview {
                         .track_scroll(self.scroll.clone())
                         .child(body),
                     )
-                    .scroll_edge_fade(colors.bg_base, ScrollFade::reading()),
+                    .tracked_scroll_edge_fade(
+                        self.scroll.clone(),
+                        colors.bg_base,
+                        ScrollFade::reading(),
+                    ),
             )
     }
 }

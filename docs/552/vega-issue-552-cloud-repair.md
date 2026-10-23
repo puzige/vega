@@ -70,3 +70,22 @@ W1–W12、120ms 默认 cubic、即时导航/语义/焦点、背景唯一插值�
 - 恢复跟尾：新增仅 `test-support` feature 下的只读 `observed_resume_tail_focus`，只 clone 现有按钮 focus handle。fixture 正常 frame 后确认尚未 following tail，focus 真实按钮并确认焦点，再 dispatch 原 `ResumeTail`；新增 action 后即时 following-tail 断言以区分路由失败与后续 paint 失败。精确完整正文恰好一次实际 paint、最终 following tail、阅读 anchor、Composer 草稿、Terminal 输入与同 entity 断言均保留，未直调私有方法或写 follow mode。
 - 静态保留核对 exit 0：HEAD 与工作树测试名称/顺序相同，仍为原 22 项；无删除 assertion 行、无 ignore；`inactivity_without_a_draw_then_quick_restore_adopts_latest_target` 函数与 HEAD 逐字节一致。代码双文件 `git diff --binary -- <上述两条源码路径>` SHA-256：`edb55518b47396bb06c388dd05cf9265d687e721c22482855ba0dc5ec96d42ec`。
 - 本轮未本地编译/运行 Vega、check、Clippy、测试、bench 或 CUA。上述三项是否修复实际失败仍待父 Agent 独立审查与新 Actions；没有新执行/通过计数。no-draw 的 RenderCount 14 vs 12 仍是已知 API BLOCKER，严格测试保留，未再调查框架，仍阻塞删测/合并。
+
+## 20/22 后的重复故障重新诊断
+
+head `6112ca53661d898fb00e5dc3c2efd0bccd8fc21d` 的 [Actions 39925464439](https://github.com/puzige/vega/actions/runs/39925464439)：Clippy `120320633457` success，Nextest `120320633172` 实际 `22 tests run: 20 passed, 2 failed, 0 skipped`，required `120323982190` failure；failed-log SHA-256 `cee95cdc6231de7a36296ae6a1de77d4baf0d01af619ec088c1b255486fba118`。Focus ring、live ResumeTail 完整正文已通过。独立增量审查无新增 actionable 问题；no-draw 原断言仍 14 vs 12，是不变框架限制。
+
+file scroll 阳性对照连续两轮未通过，父重新检查责任层，**不再把它只归于 mouse move**：`FilePreview` 的真实 scroll div 先 `.track_scroll(&self.scroll)`，阅读作用域也保存这个句柄，但随后 `.scroll_edge_fade(...)` 进入 `ScrollableFadeExt` 的自动句柄路径。`scroll_edge_fade.rs:354–361,452–457` 在 request_layout 创建另一个 keyed handle 并再次调用 track_scroll，替换了原句柄。实际滚动可能发生在新句柄，而 FilePreview 保存/阅读作用域/observed_scroll 仍读旧句柄；之前的事件修复无法修复此断链。
+
+该问题属于 W7 已要求的真实文件阅读/滚动生命周期接线缺陷，而非接受新的产品行为。最小实现计划：仅在 `file_preview.rs` 复用已有 `ScrollEdgeFadeExt::tracked_scroll_edge_fade(self.scroll.clone(), colors.bg_base, ScrollFade::reading())`，维持同一个 self.scroll 给 div、reading scope 与边缘绘制，去掉此文件不再用的自动 `ScrollableFadeExt` import。不修改共享 fade、正文布局/文字、导航或滚动方向，不扩大成全仓 scroll 重构。既有负 offset、真实可见文本/reading 恢复、同 entity、Diff/terminal 输入与闭合回归全部保留。可在默认关闭支持里增加只读真实 bounds/max_offset 阳性对照，但不得另造滚动状态或放宽 offset。
+
+下一步由单一 writer 实施此已明确的两处接线修正，固定版本后独立审增量并交同 PR Actions。若仍失败，读取真实句柄 bounds/max_offset/内容 extent 和命中日志再分层诊断，不猜测或删除回归。无中间 draw 限制仍单独阻止合并。
+
+## FilePreview 同句柄接线修复保存（待新 Actions）
+
+- 本轮基于 HEAD `6112ca53661d898fb00e5dc3c2efd0bccd8fc21d`，先读上节父诊断；只修改 `crates/vega_ui/src/file_preview.rs` 并追加本节，原有父文档内容保持不变。
+- 源码仅两处逻辑替换：导入 `ScrollEdgeFadeExt` 替代 `ScrollableFadeExt`；末尾调用改为 `.tracked_scroll_edge_fade(self.scroll.clone(), colors.bg_base, ScrollFade::reading())`。现有 div 的 `.track_scroll(&self.scroll)` 和 reading scope 的 `.track_scroll(self.scroll.clone())` 原样保留，使真实滚动、阅读作用域和 fade 观察复用同一句柄；不再进入会替换 div 句柄的自动 prepare 路径。
+- 未修改 shared fade、正文布局/文字、事件、导航、其他卡、依赖或 CI；未增加 observer/precondition，未直接设置 offset。整个 `motion_tests.rs` 与 HEAD 逐字节一致，原 22 项及全部断言保留，包括真实 wheel 负 offset、可见文本/阅读恢复、同 entity、Diff/Terminal 隔离与 no-draw 严格断言。
+- 已执行快速静态检查：首次 `cargo fmt --all -- --check` exit 1，仅要求调用换行；按输出手工调整后该命令 exit 0。`git diff --check` exit 0；源码精确双替换、允许路径、22 项及整文件保留、父诊断未改和 index 未改的静态核对 exit 0。源码单文件 `git diff --binary -- crates/vega_ui/src/file_preview.rs` SHA-256：`ab57b130fb2ceaa49ef67124d1ada62dffde80726d79201bb0dcbcb7fdd12f59`。
+- 未本地运行 Vega、编译、构建、cargo check、Clippy、测试、bench 或 CUA；未执行 Git/index mutation、fetch、commit、push、PR 或 CI 操作。实际 file scroll 修复结果尚未执行，需父 Agent 独立审查增量并在同 PR 启动新 Actions；不能把旧 run 的 20/22 算成本次通过。
+- no-draw RenderCount 14 vs 12 仍为已知 BLOCKER，测试未改、未重新调查框架，仍阻止合并；本次静态成功不解除该阻塞。
