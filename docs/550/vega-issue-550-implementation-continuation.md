@@ -79,3 +79,51 @@ D05 缺口与实际 27 项失败均解决前，不清理测试或合并；已知
 - 最终本地只执行快速格式/静态检查：单文件 rustfmt、`cargo fmt --all -- --check`、`git diff --check` 均退出 0。精确授权替换再交 rustfmt 的静态比对退出 0，实际源码字节完全匹配：五项 fixture/lint 替换、55 处 root-independent API wrapper 与最小 render-counter 接线/新增严格前提；全部 28 定义/名称、原断言/期望及 D01–D11 保留，无 ignore/allow。最初自写静态归一化脚本未处理 rustfmt 的闭包括号变化而退出 1；改为直接以 rustfmt stdout 比对完整预期源码后退出 0，属于静态观察脚本修正，不是修改产品/断言来过检。
 - 仅修改现有 `disclosure_motion_tests.rs` 和本续接文档；不运行 Vega、本地编译/构建/check/Clippy/test/nextest/bench/CUA，不调用 Git/index 修改或 fetch/push/PR/CI。新提交、Actions 和独立审查由父负责且均待执行；本轮修复没有运行结果。父须按新 head 的实际失败证据分类处理，不能重复旧 cloud run 冒充本轮验证；D05 和原失败真正解决前不清理测试或合并。
 
+## 20/28 后的责任层收敛与尚未授权的冲突
+
+head `76fd200952154dc5be8c6cda1f6cd513badff106` 的 [Actions 39927968952](https://github.com/puzige/vega/actions/runs/39927968952)：Nextest `120328923841` 实际 `28 tests run: 20 passed, 8 failed, 0 skipped`；Clippy `120328924012` success，required `120331512074` failure；failed-log SHA-256 `16dc786ac7f373cd2d128d91032de81a9d715e24c158cf1edb794afdd9b423f8`。此前 16 项 metadata、10 项 root reborrow、1 项泄漏不再作为本轮全部失败的归因；独立静态增量审查确认这轮修复责任层正确。父另 fetch/正常 merge master `a439483cf2c377fe59f1dfb9b487bfb2200d5c64`（#577 / coordinated storage），当前任务 HEAD `1f706e4b7053be5da6625196d8d661bfa8896163`；保留该存储协调，不借 SQLite writer 序列化冒充 ordinary launch owner 锁。
+
+父读取全部八个根断言并复核实际源码；只读诊断执行虽异常结束，但具体源码结论已由父定点确认，不能称完整审查通过：
+
+| 失败/缺口 | 已核责任层 | 当前处理边界 |
+|---|---|---|
+| independent owner `ProductionHeader already updated` | fixture 在 typed second_window.update 内再 second.read，同 root 重借用 | 改为非 typed query 或 App read，保留两个 owner、角度和真值断言 |
+| long Thinking 原 card 文本没追加 | fixture.begin 已发 TextDelta Commentary，真实 content 会 finish_live_thinking 并清 active_thinking；后续 ThinkingDelta 创建新 card，旧 card 不该继续增长 | 真实纯 Thinking 活跃前置，维持同一个 card 的交错输入/旋转；最后再按真实顺序送 Commentary→Final。保留每步完整文本、草稿和几何断言，不按旧 card 输出改期望 |
+| shimmer `progress_finished` 未结束 | fixture 用 Completed group；set_thinking 因 terminal 被拒，finish_thinking 没有 current card | 用 Running group 真实挂载同 card、登记 current_thinking 后执行原 finish；不得手动设 finished 伪造通过 |
+| no inactive draw 12 vs 11 | 新真实 counter 已证自动 inactive root render，公开 API 限制 | 严格前提/原角度续帧断言保留；BLOCKED，不再重复相同云端重跑 |
+| Final 子 `thinking.expanded` 仍 true | #416 契约要求外层过程关闭、隐藏选区/焦点处理；当前 settle_final 只改 outer expanded/body_in_details/ancestor_visible，内部展开位不清 | 属于验收假设与既有产品范围冲突；本轮不删除该断言或改 Final 算法。需先明确 spec/可观察隐藏与重开语义后再处理 |
+| disabled Tab skip | GPUI track_focus 使用句柄自身 tab-stop=true，row.tab_stop(false) 不改显式 handle；既有 master 同样存在 | 可能是既存无内容焦点缺陷，与本卡“焦点顺序不改”范围冲突；本轮不改生产 focus 或降低 skip 断言 |
+| fold invalidates 3 vs 1 | group observe 会失效 RunActivity、segment 和 owned process-copy 多条；不能从总数直接推断 decoration 重复 | 需要真实 owner/index/事件来源和操作边界；本轮保留 one-fold 严格断言，不直接改成 3 或 <=3 |
+| drag selection empty | fixture 用 glyph bounds 猜正文坐标，未证明实际可选 body 已完成准备/绘制 | 需真实正文 bounds/准备阳性对照，不能直接设置 selection 缓存替代真实拖选 |
+
+另有独审 P2 的合法 failed-tool 路径假阳性：Failed 的 exit_code/duration_ms/truncated 必须全 None；旧 fixture 给 Some 值进入 Corrupt fallback，而 activity_state 仍是 Failed。只授权纠正该 fixture metadata 并补真实 failure 输出仍在 card/render 的观察，保留原状态/正文/选择断言，不改变生产严格 projection。
+
+本轮下一 writer 仅修上述三项确定 fixture 错误及合法 failed-tool 数据证据；余下四类验收/观察冲突与 D05 限制保持明确未决，不扩大产品范围或静默放宽原断言。失败未解前不清理测试/不合并。
+
+## 2026-10-23 恢复核对与执行环境阻塞
+
+2026-10-23T10:04:07Z 核对：本地 HEAD `5da24db0ba4ce9a9f369dffa2807cbc7fc3128c2` 已包含当前 fetch 得到的 master `80eaba474df5a23c3a7849e11b39a0864b7e0ad6`（#542 产物聚合）；PR #579 远端仍为 `76fd200952154dc5be8c6cda1f6cd513badff106`。测试文件在本地 HEAD 与该远端版本的 Git blob 均为 `73474821b5493d6ff8f7b9f9b8fae5a744e6634a`，本次恢复没有新增源码修复。
+
+原修复执行已确认为 interrupted / recovered_abandoned，无新源码交付。重新安排专职 writer 时，执行工具返回 `capacity_exceeded`；对旧执行请求取消后，查询仍返回 running / release_state unknown，不能声称已释放容量或新 writer 已接手。完整目录查询另返回 receipt too large，现有接口没有可传入的筛选参数；不反复调用同一个失败查询。此为执行环境/委派阻塞，不是产品或测试的新结果，也不绕过仓库的专职实现与独立审查要求。
+
+本次重读原始日志及严格计数边界：#550 在重新激活之前的断言已得到 12 vs 11，不能将该失败解释为只统计了恢复后的绘制。#552 的 14 vs 12 检查在恢复后，不能仅凭该总数细分两次绘制的时点；两卡均未取得符合原验收的无 inactive draw 证据。原断言不变，不修改 framework / registry / CI，不盲重跑。
+
+下一步仍是已列明的三项 fixture 修复与合法 failed-tool 输出证据；恢复条件为专职 writer 能获实际执行名额并确认单一写入权。停写后固定精确内容，非写入者增量审查，再交现有 Actions 验证新 SHA。其余验收/观察冲突与 D05 均保持未决；当前无新 CI、无测试清理、无合并。
+
+## 2026-10-23 有限测试修复接手
+
+- 本轮重新核对任务 HEAD `5da24db0ba4ce9a9f369dffa2807cbc7fc3128c2`、测试 blob `73474821b5493d6ff8f7b9f9b8fae5a744e6634a` 和上轮 31 行未提交检查点；接手时完整 binary diff SHA-256 仍为 `6ba98cc001b34663acbf9514ebe387c4cf2f6b443c81fddb6711a874575e5777`。原检查点完整保留，没有后来源码改动。fetch 后远端 master 仍为 `80eaba474df5a23c3a7849e11b39a0864b7e0ad6`，安全更新返回 Already up to date；#542、#535、#344、#577 集成保持不变，不触碰主工作区脏文件。
+- 本会话执行目录为空，公开交接无后续占用记录；已成功派发唯一代码 writer，本轮恢复了实际执行名额，不将旧异常执行当作新工作。父负责 Git/index、文档、提交、推送和 PR/Actions；writer 只修改指定测试，必要时在 `tool_card.rs` 增加极小 `cfg(test)` 只读观察，不扩大生产 public API。停写后由非写入者审查固定版本。
+- 验收仅为四项已定位的测试责任层修复：非 typed root 查询避免重借用；纯活跃 Thinking 前置并在全部增量后依序 Commentary → Final；仅 shimmer 用例建立 Running group 并登记同一 card，由真实 finish 完成；Failed metadata 三项改为 None，并证明原失败输出保留在真实 card/detail/render 路径。
+- `ToolCard` 的 `output_rows`、`detail` 私有且无现有输出 getter。优先真实 header 展开/渲染与已有观察；如需 test-only 接点，只观察真实数据，不另造 projection/selection 缓存或改业务决定。28 项原测试和断言全部保留，其他 begin/fixture 语义不变；本轮不修 no-inactive-draw、Final 子 expanded、disabled Tab、measurement 3 vs 1 或真实拖选空的问题。
+- 原始失败日志哈希再次一致，远端 Actions `39927968952` 的 head/job 结果也已读回；这些仅验证旧 `76fd200952154dc5be8c6cda1f6cd513badff106`，不验证当前集成或本轮修复。新结果待停写、提交后交原 PR #579 的现有 Actions，按 5 分钟间隔查询；不改 workflow、不盲重跑换绿。
+- 本轮不清理测试、不合并 #550、#552 或相关 PR，保持 Issue OPEN / In progress。禁止本地运行 Vega、编译/build/package、check/Clippy/test/nextest/bench/profile、CUA/OS 自动化；仅快速静态和格式检查。完成实施、独审和新 head 云端结果分别记录，不能以全部 28 项全绿为由扩大授权。
+
+### 限定修复停写产物
+
+- writer 已 READY 并释放写入权，父读回确认：相对 `5da24db0ba4ce9a9f369dffa2807cbc7fc3128c2` 仅两源码共 133 行新增、11 行删除，源码 binary diff SHA-256 `48306ba9399384a3595db3e1f7c59f4a15929352e9ee1e19b7de5b5edb1f38bb`。测试源码 SHA-256 `be049269cbde74cababc2fc79631626da8fff6aa9a694fb096832c4a19c09936`；`tool_card.rs` 为 `2d820e0f3255c95118f8af7c0f4c7cb2dc010fcf63fd9006de3ded0b619e8e07`。
+- independent-owner 末尾改 App update 查询，不再在 typed root update 内重借；long Thinking 提取原阶段展开 helper，其余 begin 流不变，本用例保持同一 active card 接收所有增量，再发送 Commentary/Final，额外严格检查活跃身份与未结束状态；shimmer 仅本例新建 Running group，挂载并登记同一卡片，终态仍由原 finish_thinking 完成。
+- Failed metadata 的三项改为 None；经真实工具 header paint、focus/Enter 展开、draw、真实 header snapshot 验证可见/展开/焦点，随后精确断言失败正文。唯一新增接点为 `#[cfg(test)] pub(crate) test_detail_output()`，直接返回既有 `detail().output`，不新增投影决定；Corrupt 清空 input/output 后无法通过该正文断言。证据为真实展开/渲染与生产 detail 数据观察，不宣称独立像素文本回读。普通构建的 ToolCard 业务代码逐字节不变。
+- writer 报告单文件 rustfmt、全仓 fmt check、diff check 均退出 0；父独立执行 `cargo fmt --all -- --check`、`git diff --check` 与静态范围检查均退出 0，确认 28 个测试名称保留、仅四个授权测试体变化、其余 24 个逐字节不变，以及 ToolCard 唯一差异为上述 test-only accessor。原断言未放宽或删除；writer 静态清点为原 204 个断言全部保留、新增 14 个，不作为执行计数。
+- 首次 writer 格式检查仅两处换行，修正后通过；其静态检查脚本首次误把 helper 计入相邻测试，修正函数边界后通过，未改变测试断言。未运行本地编译、程序或测试。固定提交后的独立审查与现有 Actions 尚待取得；五项范围外失败仍未决，不据此清理测试或合并。
+

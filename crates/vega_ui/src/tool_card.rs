@@ -1204,6 +1204,11 @@ impl ToolCard {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_detail_output(&self) -> Option<Vec<String>> {
+        self.detail().map(|detail| detail.output)
+    }
+
     fn detail(&self) -> Option<ToolDetail> {
         match &self.input {
             Some(ToolCardInputProjection::Bash { command }) => Some(ToolDetail {

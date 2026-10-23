@@ -907,6 +907,13 @@ impl StreamFixture {
 
     fn begin(&mut self, id: &str) -> (Entity<RunActivityGroup>, Entity<ThinkingBlock>) {
         self.cx.update(|cx| begin_process(&self.stream, id, cx));
+        self.expand_thinking_stage(id)
+    }
+
+    fn expand_thinking_stage(
+        &mut self,
+        id: &str,
+    ) -> (Entity<RunActivityGroup>, Entity<ThinkingBlock>) {
         let (group, thinking) = self.cx.update(|cx| {
             let stream = self.stream.read(cx);
             let group = stream.run_activity_groups[id].clone();
@@ -1248,9 +1255,9 @@ fn invalid_or_missing_final_and_failed_or_cancelled_turns_keep_unknown_body_visi
                                 status: ToolCallStatus::Failed,
                                 output: "disclosure failure remains visible".into(),
                                 reused: true,
-                                exit_code: Some(1),
-                                duration_ms: Some(500),
-                                truncated: Some(false),
+                                exit_code: None,
+                                duration_ms: None,
+                                truncated: None,
                                 invalid: None,
                             },
                         },
@@ -1276,6 +1283,51 @@ fn invalid_or_missing_final_and_failed_or_cancelled_turns_keep_unknown_body_visi
                 );
             }
         });
+        if terminal == 2 {
+            let failed = fixture
+                .cx
+                .update(|cx| fixture.stream.read(cx).tool_cards["failed-tool"].clone());
+            let glyph = fixture
+                .draw()
+                .into_iter()
+                .find(|paint| {
+                    paint.scope.owner.as_ref() == format!("tool-disclosure-{}", failed.entity_id())
+                })
+                .expect("WIRING: failed tool header reached real paint");
+            assert!(glyph.scope.enabled);
+            assert!(!glyph.scope.expanded);
+            fixture
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| {
+                    glyph.scope.focus.focus(window, cx);
+                    assert!(glyph.scope.focus.is_focused(window));
+                    window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+                    assert!(failed.read(cx).is_expanded());
+                })
+                .unwrap();
+            fixture.draw();
+            fixture
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| {
+                    let id = ("tool-activity-toggle", failed.entity_id()).into();
+                    let mut headers = gpui_kit::base::test_support::snapshots(window)
+                        .into_iter()
+                        .filter(|snapshot| snapshot.path().last() == Some(&id));
+                    let header = headers
+                        .next()
+                        .expect("WIRING: expanded failed tool header is rendered");
+                    assert!(headers.next().is_none());
+                    assert!(header.visible());
+                    assert!(header.bounds().size.height > px(0.));
+                    assert_eq!(header.expanded(), Some(true));
+                    assert_eq!(header.focused(), Some(true));
+                    assert_eq!(
+                        failed.read(cx).test_detail_output(),
+                        Some(vec!["disclosure failure remains visible".to_string()])
+                    );
+                })
+                .unwrap();
+        }
     }
 }
 
@@ -1564,11 +1616,9 @@ fn independent_disclosure_owners_never_share_the_transition_channel(
     fixture.key("space");
     fixture.tick(TURN);
     assert!(!fixture.expanded());
-    second_window
-        .update(&mut fixture.cx, |_, _, cx| {
-            assert!(second.read(cx).expanded(cx))
-        })
-        .unwrap();
+    fixture
+        .cx
+        .update(|cx| assert!(second.read(cx).expanded(cx)));
 }
 
 #[gpui_kit::test]
@@ -2300,10 +2350,16 @@ fn thinking_shimmer_keeps_its_own_active_visible_reduced_and_finished_frame_gate
         .window
         .update(&mut fixture.cx, |view, _, cx| {
             let card = view.thinking.clone();
-            view.run
-                .update(cx, |group, cx| group.set_thinking(card.clone(), true, cx));
+            view.run = cx.new(|cx| {
+                let mut group = RunActivityGroup::new(RunActivityStatus::Running, None, false, cx);
+                let segment = group.start_segment(cx);
+                group.append_thinking(segment, card.clone(), cx);
+                group.set_thinking(card.clone(), true, cx);
+                group
+            });
             card.update(cx, |card, cx| {
                 card.progress_finished = false;
+                card.set_ancestor_visible(view.mounted && !view.hidden);
                 card.shimmer_epoch = Some(Instant::now());
                 cx.notify();
             });
@@ -2740,7 +2796,40 @@ fn long_thinking_stream_interleaves_reversals_and_real_composer_character_input(
                 .stream
                 .update(cx, |stream, cx| stream.set_workspace_width(width, cx));
         });
-        let (group, thinking) = fixture.begin("current");
+        fixture.cx.update(|cx| {
+            fixture.stream.update(cx, |stream, cx| {
+                stream.apply_event(
+                    ConversationEvent::MessageStarted {
+                        message_id: "current".into(),
+                        seq: 1,
+                    },
+                    cx,
+                );
+                stream.apply_event(
+                    ConversationEvent::AssistantResponseStarted {
+                        message_id: "current".into(),
+                        response_id: "commentary".into(),
+                        text_start_bytes: 0,
+                    },
+                    cx,
+                );
+                stream.apply_event(
+                    ConversationEvent::ThinkingDelta {
+                        message_id: "current".into(),
+                        delta: SOURCE.repeat(12),
+                    },
+                    cx,
+                );
+            });
+        });
+        let (group, thinking) = fixture.expand_thinking_stage("current");
+        fixture.cx.update(|cx| {
+            assert_eq!(
+                fixture.stream.read(cx).active_thinking.as_ref(),
+                Some(&thinking)
+            );
+            assert!(!thinking.read(cx).progress_finished);
+        });
         let mut expected_source = SOURCE.repeat(12);
         let mut typed = String::new();
         let input = fixture
@@ -2812,8 +2901,36 @@ fn long_thinking_stream_interleaves_reversals_and_real_composer_character_input(
             fixture.cx.update(|cx| {
                 assert_eq!(thinking.read(cx).text, expected_source);
                 assert_eq!(input.read(cx).text(), typed);
+                assert_eq!(
+                    fixture.stream.read(cx).active_thinking.as_ref(),
+                    Some(&thinking)
+                );
+                assert!(!thinking.read(cx).progress_finished);
             });
         }
+        fixture.cx.update(|cx| {
+            fixture.stream.update(cx, |stream, cx| {
+                stream.apply_event(
+                    ConversationEvent::TextDelta {
+                        message_id: "current".into(),
+                        delta: COMMENTARY.into(),
+                    },
+                    cx,
+                );
+                stream.apply_event(
+                    ConversationEvent::AssistantResponseCompleted {
+                        message_id: "current".into(),
+                        response: response(
+                            "commentary",
+                            AssistantResponseKind::Commentary,
+                            0,
+                            COMMENTARY.len(),
+                        ),
+                    },
+                    cx,
+                );
+            });
+        });
         fixture.final_event("current", COMMENTARY.len() + FINAL_TEXT.len());
         fixture
             .cx
