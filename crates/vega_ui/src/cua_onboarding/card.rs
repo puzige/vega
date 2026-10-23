@@ -50,7 +50,6 @@ impl std::error::Error for OpenError {}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PanelFault {
     Geometry,
-    Configuration,
     Movement,
 }
 
@@ -58,7 +57,6 @@ impl PanelFault {
     fn message(self) -> &'static str {
         match self {
             Self::Geometry => "无法定位系统设置。请重新打开引导；挡住操作时可关闭。",
-            Self::Configuration => "悬浮保护不可用。请关闭引导，在系统设置中手动授权。",
             Self::Movement => "无法跟随系统设置。请重新打开引导；挡住操作时可关闭。",
         }
     }
@@ -107,49 +105,59 @@ pub fn open(
     let placement = initial_placement(cx)?;
     let lifetime = Arc::new(());
     let marker = format!("Vega preparation {:p}", Arc::as_ptr(&lifetime));
-    cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(placement.bounds)),
-            display_id: Some(placement.display),
-            titlebar: Some(TitlebarOptions {
-                title: Some(marker.clone().into()),
-                appears_transparent: true,
-                traffic_light_position: Some(point(
-                    px(-Layout::PREPARATION_CARD_WIDTH),
-                    px(-Layout::PREPARATION_CARD_HEIGHT),
-                )),
-            }),
-            focus: false,
-            kind: WindowKind::Floating,
-            is_movable: false,
-            is_resizable: false,
-            is_minimizable: false,
-            window_background: WindowBackgroundAppearance::Transparent,
-            ..Default::default()
-        },
-        |window, cx| {
-            cx.new(|cx| {
-                let mut card = GuidanceCard::new(
-                    task,
-                    &executable,
-                    return_handler,
-                    marker,
-                    lifetime,
-                    placement,
-                    cx,
-                );
-                window.set_window_title(&card.marker);
-                if let Err(error) = native::configure_panel(&card.marker) {
-                    tracing::warn!(?error, "preparation panel configuration failed");
-                    card.panel_fault = Some(PanelFault::Configuration);
-                    card.tracking = Tracking::Disabled;
-                }
-                card.start(window, cx);
-                card
-            })
-        },
-    )
-    .map_err(|error| OpenError::Window(error.to_string()))
+    let handle = cx
+        .open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(placement.bounds)),
+                display_id: Some(placement.display),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(marker.clone().into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(
+                        px(-Layout::PREPARATION_CARD_WIDTH),
+                        px(-Layout::PREPARATION_CARD_HEIGHT),
+                    )),
+                }),
+                focus: false,
+                show: false,
+                kind: WindowKind::PopUp,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |window, cx| {
+                cx.new(|cx| {
+                    let mut card = GuidanceCard::new(
+                        task,
+                        &executable,
+                        return_handler,
+                        marker,
+                        lifetime,
+                        placement,
+                        cx,
+                    );
+                    window.set_window_title(&card.marker);
+                    card.start(window, cx);
+                    card
+                })
+            },
+        )
+        .map_err(|error| OpenError::Window(error.to_string()))?;
+    handle
+        .update(cx, |card, window, cx| {
+            if let Err(error) = native::show_panel(&card.marker) {
+                tracing::warn!(?error, "preparation panel presentation failed");
+                card.close(window, cx);
+                return Err(OpenError::Window(
+                    "无法安全显示浮层。请重新打开引导，或在系统设置中手动授权。".into(),
+                ));
+            }
+            Ok(())
+        })
+        .map_err(|error| OpenError::Window(error.to_string()))??;
+    Ok(handle)
 }
 
 impl GuidanceCard {
@@ -204,14 +212,18 @@ impl GuidanceCard {
         });
         window.focus(&self.focus, cx);
         let cancel = self.cancel.clone();
-        cx.spawn_in(window, async move |weak, cx| {
+        cx.spawn(async move |weak, cx| {
             while !cancel.is_cancelled() {
                 cx.background_executor().timer(FOLLOW_INTERVAL).await;
                 if cancel.is_cancelled() {
                     break;
                 }
                 if weak
-                    .update_in(cx, |card, window, cx| card.tick(window, cx))
+                    .update(cx, |card, cx| {
+                        if !cancel.is_cancelled() {
+                            card.tick(cx);
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -291,7 +303,7 @@ impl GuidanceCard {
         }
     }
 
-    fn tick(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    fn tick(&mut self, cx: &mut Context<Self>) {
         if self.controller.view().open {
             self.follow(cx);
         }
