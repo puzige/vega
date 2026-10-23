@@ -336,11 +336,14 @@ pub(crate) fn prepare_runtime_call(
         });
     }
     if is_subagent_tool(&raw_call.name) {
-        if let Some(hook) = config.subagents.clone()
-            && capabilities
-                .definitions()
-                .iter()
-                .any(|definition| definition.name == raw_call.name)
+        if let Some(hook) = if raw_call.name == "checkpoint_stage" {
+            config.stage.clone()
+        } else {
+            config.subagents.clone()
+        } && capabilities
+            .definitions()
+            .iter()
+            .any(|definition| definition.name == raw_call.name)
             && valid_subagent_input(&raw_call.name, &raw_call.input_json)
             && config.redact_tool_output(&raw_call.input_json)? == raw_call.input_json
             && let Ok(arguments) = serde_json::from_str::<Value>(&raw_call.input_json)
@@ -423,43 +426,7 @@ pub(crate) fn prepare_runtime_call(
         }));
     }
     match raw_call.name.as_str() {
-        "Read" | "read" => {
-            // Resolve before approval and replace aliases with the exact target.
-            // A failed resolution remains a normal failed Read, never a bypass.
-            if let Ok(mut input) = parse_input(&raw_call.name, &raw_call.input_json)
-                && validate_read_input(&input).is_ok()
-                && let Ok(path) = file_input_path(&input)
-                && let Ok(resolved) = base_tools.file_path(path)
-            {
-                let external = !resolved.starts_with(base_tools.root());
-                let target_path = resolved.to_string_lossy().into_owned();
-                if let Some(object) = input.as_object_mut() {
-                    object.remove("path");
-                    object.insert("file_path".into(), Value::String(target_path.clone()));
-                }
-                let call = RuntimeToolCall {
-                    input_json: input.to_string(),
-                    ..raw_call.clone()
-                };
-                if external {
-                    let target = RuntimePermissionTarget {
-                        call_id: call.id.clone(),
-                        tool: RuntimeMutatingTool::Read,
-                        exact_pattern: target_path.clone(),
-                        display_target: target_path,
-                    };
-                    return Ok(PreparedRuntimeCall::ExternalRead { call, target });
-                }
-                return Ok(PreparedRuntimeCall::PinnedRead {
-                    call: raw_call,
-                    execution: call,
-                });
-            }
-            Ok(PreparedRuntimeCall::InvalidRead(RuntimeToolCall {
-                input_json: "{}".into(),
-                ..raw_call
-            }))
-        }
+        "Read" | "read" => prepare_read_call(base_tools, raw_call),
         "glob" => Ok(PreparedRuntimeCall::Readonly(raw_call)),
         "grep" => Ok(prepare_grep_call(base_tools, raw_call)),
         "Write" | "Edit" | "write" | "edit" => {
@@ -2321,4 +2288,132 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
         ]);
     }
     definitions
+}
+
+fn prepare_read_call(
+    base_tools: &vega_tools::Tools,
+    raw_call: RuntimeToolCall,
+) -> Result<PreparedRuntimeCall, VegaError> {
+    if let Ok(mut input) = parse_input(&raw_call.name, &raw_call.input_json)
+        && validate_read_input(&input).is_ok()
+        && let Ok(path) = file_input_path(&input)
+        && let Ok(resolved) = base_tools.file_path(path)
+    {
+        let external = !resolved.starts_with(base_tools.root());
+        let target_path = resolved.to_string_lossy().into_owned();
+        if let Some(object) = input.as_object_mut() {
+            object.remove("path");
+            object.insert("file_path".into(), Value::String(target_path.clone()));
+        }
+        let call = RuntimeToolCall {
+            input_json: input.to_string(),
+            ..raw_call.clone()
+        };
+        if external {
+            let target = RuntimePermissionTarget {
+                call_id: call.id.clone(),
+                tool: RuntimeMutatingTool::Read,
+                exact_pattern: target_path.clone(),
+                display_target: target_path,
+            };
+            return Ok(PreparedRuntimeCall::ExternalRead { call, target });
+        }
+        return Ok(PreparedRuntimeCall::PinnedRead {
+            call: raw_call,
+            execution: call,
+        });
+    }
+    Ok(PreparedRuntimeCall::InvalidRead(RuntimeToolCall {
+        input_json: "{}".into(),
+        ..raw_call
+    }))
+}
+
+pub async fn read_identity_with_permission(
+    tools: &vega_tools::Tools,
+    config: &RuntimeToolConfig,
+    path: &str,
+    hook: &dyn RuntimePermissionHook,
+    cancel: &CancellationToken,
+) -> Result<vega_tools::ReadIdentity, VegaError> {
+    let call = RuntimeToolCall {
+        id: ulid::Ulid::generate().to_string(),
+        name: "Read".into(),
+        input_json: serde_json::json!({"file_path":path}).to_string(),
+    };
+    let prepared = prepare_read_call(tools, call)?;
+    let rules = config.exact_rules.iter().cloned().collect();
+    match authorize_call(&prepared, config, &rules, hook, cancel).await? {
+        Authorization::Approved { .. } => {}
+        _ => return Err(safe_permission_error()),
+    }
+    let execution = match prepared {
+        PreparedRuntimeCall::PinnedRead { execution, .. } => execution,
+        PreparedRuntimeCall::ExternalRead { call, .. } => call,
+        _ => return Err(safe_permission_error()),
+    };
+    let (result, cancelled, identity) =
+        execute_read_identity_waiting(tools, &execution, cancel).await;
+    if cancelled
+        || cancel.is_cancelled()
+        || result.status != RuntimeToolStatus::Success
+        || result.truncated != Some(false)
+        || config.redact_tool_output(&result.output)? != result.output
+    {
+        return Err(safe_permission_error());
+    }
+    identity
+        .filter(|identity| identity.complete)
+        .ok_or_else(safe_permission_error)
+}
+
+pub(crate) async fn execute_read_identity_waiting(
+    tools: &vega_tools::Tools,
+    call: &RuntimeToolCall,
+    cancel: &CancellationToken,
+) -> (RuntimeToolResult, bool, Option<vega_tools::ReadIdentity>) {
+    let tools = tools.clone();
+    let worker_call = call.clone();
+    let worker_cancel = cancel.child_token();
+    let mut task = tokio::task::spawn_blocking(move || {
+        let result = (|| {
+            if worker_cancel.is_cancelled() {
+                return Err("Read cancelled".into());
+            }
+            let input = parse_input(&worker_call.name, &worker_call.input_json)?;
+            validate_read_input(&input)?;
+            let path = file_input_path(&input)?;
+            if tools
+                .file_path(path)
+                .map_err(|_| "Read target unavailable")?
+                != std::path::Path::new(path)
+            {
+                return Err("Read target changed after approval".into());
+            }
+            tools
+                .read_with_identity(
+                    path,
+                    optional_usize(&input, "offset")?,
+                    optional_usize(&input, "limit")?,
+                )
+                .map_err(|error| error.to_string())
+        })();
+        match result {
+            Ok((output, identity)) => (readonly_result(&worker_call, Ok(output)), Some(identity)),
+            Err(error) => (readonly_result(&worker_call, Err(error)), None),
+        }
+    });
+    let (result, cancelled) = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => (task.await, true),
+        result = &mut task => (result, false),
+    };
+    match result {
+        Ok((result, identity)) => (result, cancelled, identity),
+        Err(error) => (
+            failed_tool_result(call, format!("tool worker failed: {error}")),
+            cancelled,
+            None,
+        ),
+    }
 }

@@ -48,19 +48,19 @@ struct SafePermissionPrompt {
     command_rows: Vec<String>,
     danger_rule_id: Option<String>,
     danger_reason: Option<String>,
-    external: bool,
+    allow_persistent: bool,
     acp_options: Option<Vec<PermissionOptionChoice>>,
 }
 
 impl SafePermissionPrompt {
-    fn from_request(request: &PermissionRequest) -> Self {
+    fn from_request(request: &PermissionRequest, allow_persistent: bool) -> Self {
         Self {
             tool: request.tool.clone(),
             display_target: request.display_target.clone(),
             command_rows: wrap_command_rows(&request.display_target),
             danger_rule_id: request.danger_rule_id.clone(),
             danger_reason: request.danger_reason.clone(),
-            external: request.external.is_some(),
+            allow_persistent: allow_persistent && request.external.is_none(),
             acp_options: request.acp_options.clone(),
         }
     }
@@ -111,6 +111,7 @@ impl PermissionCard {
     pub(crate) fn new(
         request: &PermissionRequest,
         lease: PermissionLease,
+        allow_persistent: bool,
         cx: &mut gpui_kit::Context<Self>,
     ) -> Self {
         let note = cx.new(|cx| TextInput::new(cx, "Reason for rejection (optional)", false));
@@ -136,7 +137,7 @@ impl PermissionCard {
             });
         });
         Self {
-            prompt: SafePermissionPrompt::from_request(request),
+            prompt: SafePermissionPrompt::from_request(request, allow_persistent),
             lease: Some(lease),
             note,
             once_focus: cx.focus_handle().tab_index(1).tab_stop(true),
@@ -186,7 +187,9 @@ impl PermissionCard {
     }
 
     fn resolve(&mut self, decision: PermissionDecision, cx: &mut gpui_kit::Context<Self>) {
-        if self.resolved {
+        if self.resolved
+            || (!self.prompt.allow_persistent && matches!(decision, PermissionDecision::Always))
+        {
             return;
         }
         if let Some(lease) = self.lease.as_mut() {
@@ -277,7 +280,7 @@ impl PermissionCard {
         if self.note.read(cx).focus_handle(cx).is_focused(window) {
             self.logical_focus = PermissionFocus::Note;
         }
-        if self.prompt.external {
+        if !self.prompt.allow_persistent {
             let next = match (self.logical_focus, reverse) {
                 (PermissionFocus::AllowOnce, false) => PermissionFocus::Reject,
                 (PermissionFocus::Reject, false) => PermissionFocus::Note,
@@ -338,7 +341,7 @@ impl PermissionCard {
             self.resolve(PermissionDecision::Once, cx);
             true
         } else if self.always_focus.is_focused(window) {
-            if !self.prompt.external {
+            if self.prompt.allow_persistent {
                 self.resolve(PermissionDecision::Always, cx);
             }
             true
@@ -393,7 +396,7 @@ impl PermissionCard {
         let action_card = card.clone();
         container = container.on_action(move |_: &PermissionAlways, _, cx| {
             action_card.update(cx, |card, cx| {
-                if !card.prompt.external {
+                if card.prompt.allow_persistent {
                     card.resolve(PermissionDecision::Always, cx);
                 }
             });
@@ -541,7 +544,7 @@ impl PermissionCard {
                 once_card.update(cx, |card, cx| card.resolve(PermissionDecision::Once, cx));
             },
         ));
-        if !card.read(cx).prompt.external {
+        if card.read(cx).prompt.allow_persistent {
             container = container.child(permission_button(
                 format!("permission-always-{}", card.entity_id()),
                 "Always allow".to_string(),

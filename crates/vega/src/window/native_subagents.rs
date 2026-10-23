@@ -173,7 +173,8 @@ impl VegaWindow {
                 usage_complete,
                 reply,
             } => {
-                if snapshot.parent_thread_id != parent_id
+                if !snapshot.state.is_terminal()
+                    || snapshot.parent_thread_id != parent_id
                     || !self.subagent_update_current(&snapshot, cx)
                 {
                     let _ = reply.send(Err(vega_runtime::VegaError::Cancelled));
@@ -203,7 +204,8 @@ impl VegaWindow {
                 snapshot,
                 usage_complete,
             } => {
-                if snapshot.parent_thread_id != parent_id
+                if !snapshot.state.is_terminal()
+                    || snapshot.parent_thread_id != parent_id
                     || !self.subagent_update_current(&snapshot, cx)
                 {
                     return;

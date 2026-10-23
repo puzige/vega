@@ -1,9 +1,18 @@
 use super::*;
-use crate::types::{SubagentAdmission, SubagentHost, SubagentSnapshot, SubagentState, TaskBackend};
+use crate::types::{
+    SubagentAdmission, SubagentAdmissionOutcome, SubagentHost, SubagentSnapshot, SubagentState,
+    TaskBackend,
+};
 use futures::future::LocalBoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
 use tokio::sync::Notify;
+#[path = "subagents/lifecycle_ownership.rs"]
+mod lifecycle_ownership;
+#[path = "subagents/stage_recovery.rs"]
+mod stage_recovery;
+use lifecycle_ownership::LifecycleOwnership;
+use vega_store::delegated_ownership::DelegatedOwnership;
 
 fn failure(message: &str) -> VegaError {
     VegaError::Tool {
@@ -381,6 +390,7 @@ impl AgentRecord {
     fn snapshot(&self) -> SubagentSnapshot {
         let mut snapshot = self.snapshot.clone();
         if self.occupied {
+            snapshot.ready_for_review = false;
             if self.cancel.is_cancelled() {
                 snapshot.state = SubagentState::Cancelling;
             } else if snapshot.state.is_terminal() {
@@ -409,14 +419,13 @@ struct Hook {
     registry: Registry,
 }
 
-fn receipt(mut agents: Vec<SubagentSnapshot>, timed_out: bool) -> serde_json::Value {
-    let mut truncated = false;
-    while serde_json::to_vec(&agents).map_or(true, |bytes| bytes.len() > 96 * 1024)
-        && !agents.is_empty()
-    {
-        agents.pop();
-        truncated = true;
+fn receipt(agents: Vec<SubagentSnapshot>, timed_out: bool) -> Result<serde_json::Value, VegaError> {
+    if serde_json::to_vec(&agents).map_or(true, |bytes| bytes.len() > 96 * 1024) {
+        return Err(failure(
+            "subagent receipt too large; narrow the requested agents",
+        ));
     }
+    let truncated = false;
     let mut value =
         serde_json::json!({"agents":agents,"timed_out":timed_out,"truncated":truncated});
     if let Some(agents) = value["agents"].as_array_mut() {
@@ -424,7 +433,7 @@ fn receipt(mut agents: Vec<SubagentSnapshot>, timed_out: bool) -> serde_json::Va
             agent["ready"] = false.into();
         }
     }
-    value
+    Ok(value)
 }
 
 impl vega_runtime::RuntimeSubagentHook for Hook {
@@ -442,7 +451,7 @@ impl vega_runtime::RuntimeSubagentHook for Hook {
             if !vega_runtime::valid_subagent_input(&tool, &input.to_string()) { return Err(failure("invalid input")); }
             if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
             match tool.as_str() {
-                "list_agents" => Ok(receipt(registry.snapshots(None)?, false)),
+                "list_agents" => receipt(registry.snapshots(None)?, false),
                 "wait_agent" => {
                     let targets = if let Some(targets) = input["targets"].as_array() {
                         targets.iter().map(|target| registry.target(target["agent_id"].as_str().ok_or_else(|| failure("invalid input"))?, target["message_id"].as_str())).collect::<Result<Vec<_>, _>>()?
@@ -454,7 +463,7 @@ impl vega_runtime::RuntimeSubagentHook for Hook {
                     let coalesced = explicit.is_some() && !fresh;
                     let deadline = explicit.filter(|_| fresh).map(|millis| tokio::time::Instant::now() + Duration::from_millis(millis));
                     let answer = |reason: &str| -> Result<serde_json::Value, VegaError> {
-                        let mut value = receipt(registry.snapshots(Some(&targets))?, reason == "timeout");
+                        let mut value = receipt(registry.snapshots(Some(&targets))?, reason == "timeout")?;
                         value["timeout_coalesced"] = coalesced.into();
                         value["wake_reason"] = reason.into();
                         Ok(value)
@@ -553,6 +562,8 @@ struct ReservedExecution {
     cancel: CancellationToken,
     previous: Option<ContinuationBoundary>,
     activity: super::stage_activity::StageActivity,
+    owner: Arc<DelegatedOwnership>,
+    resume: Option<serde_json::Value>,
 }
 
 impl Supervisor {
@@ -583,6 +594,12 @@ impl Supervisor {
     ) -> T {
         if let Ok(mut state) = self.registry.state.lock() {
             state.steering = launch.settings.steering_source.clone();
+        }
+        if let Err(error) =
+            stage_recovery::load(&self.registry, &launch.database, &launch.parent_thread)
+            && let Ok(mut state) = self.registry.state.lock()
+        {
+            state.admission_failure = Some(error.to_string());
         }
         let mut children: FuturesUnordered<LocalBoxFuture<'a, ()>> = FuturesUnordered::new();
         let result = loop {
@@ -636,7 +653,7 @@ impl Supervisor {
             .as_str()
             .ok_or_else(|| failure("invalid input"))?
             .to_owned();
-        let (id, name, previous) = if tool == "followup_agent" {
+        let (id, name, previous) = if matches!(tool, "followup_agent" | "resume_agent") {
             let id = input["agent_id"]
                 .as_str()
                 .ok_or_else(|| failure("invalid input"))?;
@@ -662,8 +679,12 @@ impl Supervisor {
             {
                 return Err(failure("agent_busy"));
             }
-            if old.snapshot.state != SubagentState::Completed {
-                return Err(failure("agent_not_completed"));
+            if (tool == "followup_agent"
+                && (old.snapshot.state != SubagentState::Completed
+                    || old.snapshot.parent_message_id != launch.parent_message))
+                || (tool == "resume_agent" && old.snapshot.state != SubagentState::Interrupted)
+            {
+                return Err(failure("agent state does not permit this continuation"));
             }
             let previous = old
                 .boundary
@@ -676,11 +697,10 @@ impl Supervisor {
                 .ok_or_else(|| failure("invalid input"))?
                 .trim()
                 .to_owned();
-            if state
-                .executions
-                .values()
-                .any(|record| record.snapshot.name == name)
-            {
+            if state.executions.values().any(|record| {
+                record.snapshot.parent_message_id == launch.parent_message
+                    && record.snapshot.name == name
+            }) {
                 return Err(failure("name already used in this run"));
             }
             (ulid::Ulid::generate().to_string(), name, None)
@@ -703,7 +723,17 @@ impl Supervisor {
             state: SubagentState::Running,
             result: String::new(),
             truncated: false,
+            checkpoint: None,
+            release_state: "held".into(),
+            ready_for_review: false,
         };
+        let owner = DelegatedOwnership::acquire(&launch.database, &snapshot.agent_id)
+            .map_err(|_| failure("native writer ownership unavailable"))?;
+        let resume = (tool == "resume_agent").then(|| input.clone());
+        if let (Some(input), Some(previous)) = (&resume, &previous) {
+            let store = Store::open(&launch.database)?;
+            stage_recovery::verify_resume(&store, &snapshot, previous, input)?;
+        }
         let cancel = launch.cancel.child_token();
         let activity = super::stage_activity::StageActivity::new(self.registry.changed.clone());
         state.latest.insert(id.clone(), snapshot.message_id.clone());
@@ -731,6 +761,8 @@ impl Supervisor {
             cancel,
             previous,
             activity,
+            owner,
+            resume,
         })
     }
 
@@ -921,50 +953,7 @@ fn child_lifecycle<'a>(
     reserved: ReservedExecution,
     registry: Registry,
 ) -> LocalBoxFuture<'a, ()> {
-    let activity = reserved.activity.clone();
-    let cancel = reserved.cancel.clone();
-    let child = child_lifecycle_inner(launch, reserved, registry);
-    async move {
-        tokio::pin!(child);
-        loop {
-            let changed = activity.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if cancel.is_cancelled() {
-                child.await;
-                return;
-            }
-            if activity.expire() {
-                cancel.cancel();
-                child.await;
-                return;
-            }
-            let remaining = activity.remaining();
-            let deadline = async {
-                match remaining {
-                    Some(remaining) => tokio::time::sleep(remaining).await,
-                    None => futures::future::pending().await,
-                }
-            };
-            tokio::select! {
-                biased;
-                () = &mut child => return,
-                _ = cancel.cancelled() => {
-                    child.await;
-                    return;
-                },
-                _ = &mut changed => {},
-                _ = deadline => {
-                    if activity.expire() {
-                        cancel.cancel();
-                        child.await;
-                        return;
-                    }
-                }
-            }
-        }
-    }
-    .boxed_local()
+    child_lifecycle_inner(launch, reserved, registry)
 }
 
 fn child_lifecycle_inner<'a>(
@@ -979,6 +968,8 @@ fn child_lifecycle_inner<'a>(
         cancel,
         previous,
         activity,
+        owner,
+        resume,
     } = reserved;
     let provider = launch.provider;
     let tools = launch.tools.isolated();
@@ -1009,6 +1000,10 @@ fn child_lifecycle_inner<'a>(
                         &known,
                         None,
                     ) == snapshot.name
+                    && resume.as_ref().is_none_or(|input| {
+                        let input_text = input.to_string();
+                        vega_runtime::redact_sensitive_credential_text_with_policy(&input_text,&known,None) == input_text
+                    })
             });
             if !safe {
                 registry.discard(&snapshot, previous.as_ref());
@@ -1019,6 +1014,41 @@ fn child_lifecycle_inner<'a>(
                 return;
             }
         }
+        let permissions = PermissionQueue::with_activity(activity.clone());
+        let questions = UserQuestionQueue::with_activity(activity.clone());
+        let queue_generation = ulid::Ulid::generate().to_string();
+        let mut ownership = LifecycleOwnership::new(database.clone(), snapshot.clone(), previous.as_ref().map(|previous| previous.message_id.clone()), owner.clone(), registry.clone(), cancel.clone());
+        let mut resumed_admission = false;
+        if let (Some(input), Some(previous)) = (&resume,&previous) {
+            let validation = async {
+                let store = Store::open(&database)?;
+                let checkpoint = stage_recovery::verify_resume(&store,&snapshot,previous,input)?;
+                let row = vega_store::threads::find(store.conn(),&snapshot.agent_id)?.ok_or_else(|| failure("unknown_agent"))?;
+                let config = stage_recovery::tool_config(&database,&snapshot,&settings,row.project_id.clone());
+                let thread = crate::threads::thread_from_row(&row).map_err(|_| failure("child identity unavailable"))?;
+                ownership.arm();
+                resumed_admission = true;
+                match host.admit_with_ownership(SubagentAdmission { thread,snapshot:snapshot.clone(),cancel:cancel.clone(),permission_queue:permissions.clone(),user_questions:questions.clone(),task:task.clone(),queue_generation:queue_generation.clone() }).await {
+                    SubagentAdmissionOutcome::Accepted => {},
+                    SubagentAdmissionOutcome::Rejected(error) => { resumed_admission=false; return Err(error); },
+                    SubagentAdmissionOutcome::Unknown(error) => return Err(error),
+                }
+                if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
+                stage_recovery::validate_artifacts(&tools,&config,&permissions,&checkpoint,&cancel).await?;
+                stage_recovery::verify_resume(&store,&snapshot,previous,input)?;
+                if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
+                Ok::<(),VegaError>(())
+            }.await;
+            if let Err(error) = validation {
+                questions.cancel_active(); permissions.timeout_active();
+                if resumed_admission && host.finish_and_release(lifecycle_ownership::unstarted_terminal(&snapshot,&cancel),false).await.is_err() {
+                    ownership.quarantine("Recovery validation host release failed; ownership remains occupied");
+                } else if ownership.disarm_unstarted() { registry.discard(&snapshot,Some(previous)); }
+                registry.resolve_call(&call_id,Err(error));
+                return;
+            }
+        }
+        ownership.arm();
         let created = create_child(
             database.clone(),
             snapshot.clone(),
@@ -1027,15 +1057,16 @@ fn child_lifecycle_inner<'a>(
             settings.clone(),
             cancel.clone(),
             previous.clone(),
+            resume.clone(),
+            owner.clone(),
         )
         .await;
         let (thread, user_id) = match created {
             Ok(created) => created,
             Err(error) => {
-                registry.discard(&snapshot, previous.as_ref());
-                let error = if activity.expired() {
-                    failure(&format!("Stage active budget exhausted before admission; incomplete. Execution {}/{}; no artifact confirmed.", snapshot.agent_id, snapshot.message_id))
-                } else { error };
+                if resumed_admission && host.finish_and_release(lifecycle_ownership::unstarted_terminal(&snapshot,&cancel),false).await.is_err() {
+                    ownership.quarantine("Recovery admission host release failed; ownership remains occupied");
+                } else if ownership.disarm_unstarted() { registry.discard(&snapshot,previous.as_ref()); }
                 registry.resolve_call(&call_id, Err(error));
                 return;
             }
@@ -1047,10 +1078,11 @@ fn child_lifecycle_inner<'a>(
         {
             record.committed = true;
         }
-        let permissions = PermissionQueue::with_activity(activity.clone());
-        let questions = UserQuestionQueue::with_activity(activity.clone());
-        let queue_generation = ulid::Ulid::generate().to_string();
-        let admission = host.admit(SubagentAdmission {
+        let stage_config = stage_recovery::tool_config(&database,&snapshot,&settings,thread.project_id.clone());
+        let mut host_may_own = resumed_admission;
+        let admitted = if resumed_admission { Ok(()) } else {
+            host_may_own = true;
+            match host.admit_with_ownership(SubagentAdmission {
             thread,
             snapshot: snapshot.clone(),
             cancel: cancel.clone(),
@@ -1058,8 +1090,11 @@ fn child_lifecycle_inner<'a>(
             user_questions: questions.clone(),
             task: task.clone(),
             queue_generation: queue_generation.clone(),
-        });
-        let admitted = admission.await;
+        }).await {
+            SubagentAdmissionOutcome::Accepted => Ok(()),
+            SubagentAdmissionOutcome::Rejected(error) => { host_may_own=false; Err(error) },
+            SubagentAdmissionOutcome::Unknown(error) => Err(error),
+        }};
         let admitted = admitted.and_then(|()| {
             if cancel.is_cancelled() {
                 Err(VegaError::Cancelled)
@@ -1105,6 +1140,8 @@ fn child_lifecycle_inner<'a>(
                 } else {
                     let mut config = PersistenceActorConfig {
                         delegated: true,
+                        delegated_owner: Some(owner.clone()),
+                        stage_hook: Some(Arc::new(stage_recovery::StageHook { database:database.clone(),snapshot:snapshot.clone(),owner:owner.clone(),tools:tools.clone(),config:stage_config.clone(),permissions:permissions.clone(),registry:registry.clone() })),
                         delegated_parent: Some((
                             snapshot.parent_thread_id.clone(),
                             snapshot.parent_message_id.clone(),
@@ -1166,7 +1203,9 @@ fn child_lifecycle_inner<'a>(
         activity.finish();
         questions.cancel_active();
         permissions.timeout_active();
+        let handoff = Store::open(&database).and_then(|store| vega_store::delegated_stages::handoff(store.conn(),&snapshot.agent_id,&snapshot.message_id)).ok().flatten().is_some();
         snapshot.state = match &result {
+            Ok(_) if handoff => SubagentState::Completed,
             Ok(run) if run.interrupted => SubagentState::Interrupted,
             Ok(run) if run.failed => SubagentState::Failed,
             Ok(run)
@@ -1207,15 +1246,12 @@ fn child_lifecycle_inner<'a>(
                 .unwrap_or_else(|| "Interrupted before completion".into()),
             _ => "Subagent failed. Open the conversation for details.".into(),
         };
-        let retained = if activity.expired() {
-            snapshot.state = SubagentState::Interrupted;
-            format!("Stage active budget exhausted after 20 minutes; incomplete. Execution {}/{}. Retained partial output: {}", snapshot.agent_id, snapshot.message_id, retained)
-        } else { retained };
         (snapshot.result, snapshot.truncated) = bounded_result(&retained);
         let complete = usage_observer.complete();
-        let terminal = persist_child_terminal(database, snapshot.clone(), complete).await;
-        let persisted = terminal.is_ok();
+        let terminal = persist_child_terminal(database.clone(), snapshot.clone(), complete, owner.clone()).await;
+        let mut persisted = terminal.is_ok();
         let boundary = terminal.ok().flatten();
+        if persisted { persisted = match Store::open(&database) { Ok(store) => stage_recovery::refresh(&store,&mut snapshot).is_ok(), Err(_) => false }; }
         if !persisted {
             snapshot.state = SubagentState::Failed;
             snapshot.result = "Subagent result could not be saved".into();
@@ -1224,12 +1260,16 @@ fn child_lifecycle_inner<'a>(
         } else {
             let _ = registry.update(snapshot.clone());
         }
-        let release = host.finish_and_release(snapshot.clone(), complete && persisted);
-        let released = release.await.is_ok();
-        if !released {
-            registry.quarantine(snapshot, if !persisted { "Subagent terminal persistence failed; ownership remains occupied" } else { "Subagent host release failed; ownership remains occupied" });
-        } else if persisted {
-            registry.finish(snapshot, boundary);
+        let released = !host_may_own || host.finish_and_release(snapshot.clone(),complete && persisted).await.is_ok();
+        let release_recorded = if released && persisted {
+            Store::open(&database).and_then(|store| vega_store::delegated_stages::set_release(store.conn(),&snapshot.agent_id,&snapshot.message_id,"released")).is_ok()
+        } else { false };
+        if !release_recorded {
+            ownership.quarantine(if !persisted { "Subagent terminal persistence failed; ownership remains occupied" } else { "Subagent host release failed; ownership remains occupied" });
+        } else {
+            let refreshed = match Store::open(&database) { Ok(store) => stage_recovery::refresh(&store,&mut snapshot).is_ok(), Err(_) => false };
+            if refreshed { registry.finish(snapshot,boundary); ownership.disarm(); }
+            else { ownership.quarantine("Subagent release receipt unavailable; ownership remains occupied"); }
         }
     }
     .boxed_local()
@@ -1250,6 +1290,7 @@ fn same_context(
         && left.status == right.status
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_child(
     database: PathBuf,
     snapshot: SubagentSnapshot,
@@ -1258,10 +1299,15 @@ async fn create_child(
     settings: ChildSettings,
     cancel: CancellationToken,
     previous: Option<ContinuationBoundary>,
+    resume: Option<serde_json::Value>,
+    owner: Arc<DelegatedOwnership>,
 ) -> Result<(crate::types::Thread, String), VegaError> {
     tokio::task::spawn_blocking(move || {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
+        }
+        if !owner.verifies(&database, &snapshot.agent_id) {
+            return Err(failure("native writer identity changed"));
         }
         let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
         let tx = store
@@ -1314,8 +1360,17 @@ async fn create_child(
             if latest.child_message_id != previous.message_id {
                 return Err(failure("stale_execution"));
             }
-            if latest.state != "completed" {
-                return Err(failure("agent_not_completed"));
+            if let Some(input) = &resume {
+                stage_recovery::verify_resume_in_transaction(&tx, &snapshot, previous, input)?;
+            }
+            if latest.state
+                != if resume.is_some() {
+                    "interrupted"
+                } else {
+                    "completed"
+                }
+            {
+                return Err(failure("agent state changed"));
             }
         } else {
             let mut draft = crate::threads::draft_thread(
@@ -1367,11 +1422,27 @@ async fn create_child(
             created_at: now_ms(),
         };
         if let Some(previous) = previous {
-            vega_store::subagents::append(&tx, &record, &previous.message_id, &user_id)
-                .map_err(|_| failure("admission_failed"))?;
+            if resume.is_some() {
+                vega_store::subagents::append_resume(&tx, &record, &previous.message_id, &user_id)
+            } else {
+                vega_store::subagents::append(&tx, &record, &previous.message_id, &user_id)
+            }
+            .map_err(|_| failure("admission_failed"))?;
         } else {
             vega_store::subagents::insert(&tx, &record).map_err(|_| failure("admission_failed"))?;
         }
+        vega_store::delegated_stages::register(
+            &tx,
+            &record.child_thread_id,
+            &record.child_message_id,
+            resume
+                .as_ref()
+                .and_then(|input| input["checkpoint_id"].as_str()),
+            &resume
+                .as_ref()
+                .map(|input| input["reconciliations"].clone())
+                .unwrap_or_else(|| serde_json::json!([])),
+        )?;
         let row = vega_store::threads::find(&tx, &snapshot.agent_id)
             .map_err(|_| failure("admission_failed"))?
             .ok_or_else(|| failure("admission_failed"))?;
@@ -1391,12 +1462,21 @@ async fn persist_child_terminal(
     database: PathBuf,
     snapshot: SubagentSnapshot,
     usage_complete: bool,
+    owner: Arc<DelegatedOwnership>,
 ) -> Result<Option<ContinuationBoundary>, VegaError> {
     tokio::task::spawn_blocking(move || {
+        if !owner.verifies(&database, &snapshot.agent_id) {
+            return Err(failure("native writer identity changed"));
+        }
         let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
         let tx = store
             .immediate_transaction()
             .map_err(|_| failure("storage unavailable"))?;
+        let effects = vega_store::delegated_stages::unknown_effects(
+            &tx,
+            &snapshot.agent_id,
+            &snapshot.message_id,
+        )?;
         if !vega_store::subagents::finish(
             &tx,
             &snapshot.agent_id,
@@ -1417,13 +1497,33 @@ async fn persist_child_terminal(
         )
         .map_err(|_| failure("storage unavailable"))?;
         if snapshot.state != SubagentState::Completed {
-            vega_store::recovery::recover_thread_in_transaction(&tx, &snapshot.agent_id, now_ms())
-                .map_err(|_| failure("storage unavailable"))?;
+            vega_store::recovery::recover_stopped_with_owner(
+                &tx,
+                &snapshot.agent_id,
+                now_ms(),
+                Some(&owner),
+            )
+            .map_err(|_| failure("storage unavailable"))?;
         }
-        let boundary = if snapshot.state == SubagentState::Completed
-            && vega_store::pending_messages::count(&tx, &snapshot.agent_id)
-                .map_err(|_| failure("storage unavailable"))?
-                == 0
+        if snapshot.state != SubagentState::Completed
+            || vega_store::delegated_stages::latest(&tx, &snapshot.agent_id, &snapshot.message_id)?
+                .is_some()
+        {
+            vega_store::delegated_stages::final_checkpoint(
+                &tx,
+                &snapshot.agent_id,
+                &snapshot.message_id,
+                snapshot.state != SubagentState::Completed,
+                effects,
+                now_ms(),
+            )?;
+        }
+        let boundary = if matches!(
+            snapshot.state,
+            SubagentState::Completed | SubagentState::Interrupted
+        ) && vega_store::pending_messages::count(&tx, &snapshot.agent_id)
+            .map_err(|_| failure("storage unavailable"))?
+            == 0
         {
             let thread = vega_store::threads::find(&tx, &snapshot.agent_id)
                 .map_err(|_| failure("storage unavailable"))?

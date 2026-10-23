@@ -723,7 +723,8 @@ where
         .tool_config
         .with_mcp_servers(mcp_servers)
         .with_computer_use(actor_config.computer_use.clone())
-        .with_user_questions(actor_config.user_questions.clone());
+        .with_user_questions(actor_config.user_questions.clone())
+        .with_stage(actor_config.stage_hook.clone());
     let skill_launch = super::skills::prepare_skill_run(
         store,
         &prepared.project_id,
