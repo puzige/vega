@@ -2,8 +2,8 @@
 
 Issue: [#548](https://github.com/puzige/vega/issues/548)
 
-Version: 1.2 (pre-freeze test review: preserve acknowledged submission and complete existing W1/W4 coverage). Original analysis baseline: `83fd51d79940516029cdc1eaf8e81566870c877b`. Recovered test-first baseline: `871f91f246e90753743a256cee1eec315e74effc`; current test-first base: `6615748f91273bfb8ee424011b3b5a09b3777d2b` (includes upstream #546 Composer capsules and #547 image-budget fixes; acceptance unchanged).
-Branch: `feat/548-question-wait`. Stage: specification / test-first; no implementation or runtime validation yet.
+Version: 1.3 (2026-10-23 recovery and current validation policy; product acceptance unchanged from v1.2). Original analysis baseline: `83fd51d79940516029cdc1eaf8e81566870c877b`. Original test-only base: `6615748f91273bfb8ee424011b3b5a09b3777d2b`. Current integration checkpoint: `aa547c4edc5a38bf18cc990902665e1e816d169b`, including upstream `6e490aefc18fd0e8a263cbcd6b67570bcbf9348e` and preserving stage handoff/recovery, Native stage-activity accounting, context-read locking, compact Computer Use preparation and Composer fixes. The recovered production draft is not yet a completed implementation.
+Branch: `feat/548-question-wait`. Stage: completing the recovered production draft; independent implementation review and functional cloud validation remain pending. Existing developmental tests at `c1b0297de22a58f3b8ab962a4f0820a0cf8a8c2d` have only interface-missing RED evidence so far, not executed behavioral assertions. See [cloud evidence](vega-issue-548-cloud-evidence.md).
 
 ## 1. Goal and evidence
 
@@ -18,9 +18,9 @@ Static baseline evidence:
 
 The change joins question waiting, visible state, attention and work-time accounting. It must not confuse suspended with completed/failed. Other independent runs remain unaffected.
 
-## 2. Frozen acceptance matrix (before implementation)
+## 2. Acceptance matrix
 
-All automated checks run in existing GitHub Actions. Local execution/build/test is prohibited. New Rust tests are retained through GREEN, preserved in PR evidence, then removed in a separate delivery commit.
+All automated checks run in existing GitHub Actions. Local execution/build/test is prohibited. Current repository policy removes mandatory TDD and frozen-test gates; this matrix retains the original product acceptance, not an obsolete process requirement. The existing 26 developmental regressions are retained for functional validation of the timing, cancellation and notification risks, with genuine harness faults corrected at their source rather than weakening expectations. Preserve their source and actual cloud results in the PR, then remove Rust tests and exclusive support in a separate delivery commit before the final required gate.
 
 | ID | Setup / action | Observable result and required evidence |
 |---|---|---|
@@ -48,13 +48,13 @@ Notification delivery and native focus/OS permissions require user manual accept
 
 ## 4. Implementation plan / ownership
 
-Only the dedicated implementation agent writes production/tests. Parent owns spec, Git/index/commits, PR/CI, review and integration. First phase writes tests only; production changes wait for independently reviewed, valid cloud RED. Minimal missing production API is permitted as interface-missing RED, explicitly not a behavioral assertion failure; do not implement it in the test phase.
+Only the dedicated implementation agent writes production/tests. Parent owns spec, Git/index/commits, PR/CI, review and integration. The historical test-first phase and interface-missing RED are retained as evidence, not current prerequisites. Continue the recovered minimal implementation under the current risk-based policy; an independent non-writer reviews the exact stopped implementation version.
 
 1. Conversation timing: introduce a per-run shared active-work clock in `vega_conversation::types` (or equivalent existing production timing boundary), wrap the configured question hook for scoped pause/resume, and pass the same clock to live UI and all terminal duration/fallback persistence paths. Keep timing independent of panel paint/navigation. Cancellation, unavailable hooks and dropped futures release scoped waiting safely. Retain wall-time diagnostic paths intentionally.
 2. Live projection: update `types/events.rs` / `agent/entry.rs` / `agent/events.rs` and necessary exhaustive consumers to carry the shared work-time source with RunStarted; `conversation_stream/content.rs` / `run_activity.rs` use it rather than a separate wall elapsed clock. Existing non-Native callers keep compatible defaults.
 3. Question state: `user_question_queue.rs` must notify resolution as well as enqueue if needed for prompt cleanup. `conversation_stream/user_questions.rs` / `core.rs` emit an exact question lifecycle signal, distinguish question vs permission waiting and retain panel/Stop semantics. Include call/request identity so stale updates are ignored.
 4. Attention: install an idempotent non-render-dependent subscription at stream run ownership/admission, including never-displayed child streams in `window/native_subagents.rs::apply_subagent_update`; window-dependent bindings may remain in `bind_conversation_stream`. Handle in `window/notifications.rs`, reuse foreground test and click navigation, add separately tagged needs-answer notifications in `app_notifications.rs`. Deduplicate by stable run owner/request instance and dismiss only matching resolution/terminal cleanup. Do not suppress legitimate delegated task questions just because completion notifications are suppressed for children.
-5. Keep documentation and temporary tests scoped; do not refactor unrelated navigation, automation, panel layout or runtime tools. Any actual API conflict or acceptance gap must be reported before changing the frozen contract.
+5. Keep documentation and temporary tests scoped; do not refactor unrelated navigation, automation, panel layout or runtime tools. Report actual API conflicts or acceptance gaps to the parent before changing scope. Preserve upstream `StageActivity` question waiting, which controls the Native stage budget independently of the displayed/persisted work clock.
 
 ### Lifecycle clarifications from independent baseline review
 
@@ -81,9 +81,9 @@ These clarify existing W/U/N cases before test freeze; no production changes exi
 
 Local allowed: focused static source inspection, `git diff --check`, `cargo fmt --all -- --check`, lightweight manifest/lock inspection. No local Vega execution, compilation, tests, Clippy or packaging.
 
-Cloud: existing draft PR `pr-check` (fmt, workspace all-target Clippy, Python checks and Nextest); poll at most once every five minutes unless notified. Freeze tests after valid RED; do not weaken assertions, add post-hoc tests, ignore failures, or retry to green. Original source, full SHAs, patch and RED/GREEN run/job evidence must remain accessible from PR after squash.
+Cloud: existing draft PR `pr-check` (fmt, workspace all-target Clippy, Python checks and Nextest); poll at most once every five minutes unless notified. Use the existing developmental regressions for functional validation. Do not weaken assertions, ignore failures, delete failing tests to bypass defects, or blindly retry. Genuine test/observation faults require evidence and a correction at the responsible layer. Original source, full SHAs, patch and actual run/job results remain accessible from the PR after squash; no new TDD ordering evidence is required.
 
-Independent reviewer must review tests before implementation and exact stopped implementation/final versions. After same-tests GREEN: preserve evidence, separate Rust test/support removal commit, verify final latest-head full gate and explicit `no Rust tests` (0 discovered/0 executed). Then ready PR and squash merge, move #548 to In review and leave open for user.
+An independent non-writer reviews the exact stopped implementation and final versions. After actual functional validation, preserve the evidence, make a separate Rust test/support removal commit, then verify final latest-head full required CI and explicit `no Rust tests` (0 discovered/0 executed). The empty suite is not functional test success. Then ready PR and squash merge, move #548 to In review and leave open for user.
 
 Manual acceptance: trigger a Native question, switch to another task/app, check a single needs-answer notification and click navigation; wait then answer/skip and verify working time did not count the wait. Repeat Stop, back-to-back questions and notifications disabled. Check normal completion notifications still work. Do not install/restart the user's active application as part of this fix.
 
@@ -98,4 +98,18 @@ The upstream change is the Markdown quote repair and its vendored dependency; qu
 - `crates/vega_conversation/tests/question_wait_lifecycle.rs`: SHA-256 `0813ea70602d94964adc16415f535c433fc273ccceb429c8f1c8eef59d47b35b`.
 - `crates/vega/src/window/question_wait_tests.rs`: SHA-256 `44dc6c545c351a68421569b252a59ebb579b3b4fffa61a9f333f509da011db2f`.
 
-These identify an unfinished draft, not frozen or passed tests. Required next steps remain test readiness/review, existing Actions RED, implementation and same-tests GREEN, evidence preservation, independent test deletion, final empty-suite gate and merge.
+These identify the earlier unfinished test draft, not passed tests. Its subsequent review and RED history is recorded in the linked evidence; it does not impose a current TDD gate.
+
+### Production-draft recovery, 2026-10-23
+
+No child executions remained at continuation, so the interrupted writer could not still write this scope. The production draft was preserved as stash `d5ec0b2fe5312f2c933d6186fc096bdbe562fa9c`, upstream `9f9fa092a3ca391a65f08419c9206f32979119e6` was merged as `a9e22b1018dbd5be42889fbd1af6dc6e67f7c9b5`, and the draft was reapplied without conflicts. The initial fresh fetch had no further upstream delta. The existing tests remain byte-identical to `c1b0297de22a58f3b8ab962a4f0820a0cf8a8c2d` (hashes in cloud evidence).
+
+Completed draft scope at recovery: shared work clock and runtime/persistence wiring, queue resolution identity/wakeups, and initial UI question-wait projection. Remaining: application notification lifecycle and run ownership binding, coherent cleanup/submitted-panel state, static completion checks, stopped-version independent review and actual cloud functional validation. A sole replacement writer continues those files; parent retains documentation/Git/PR/CI ownership. No implementation READY, functional pass, merge, installation or user acceptance is claimed.
+
+Upstream #569/#573 supersedes this card's historical mandatory test-first/freeze process, but not its product acceptance or the final prohibition on Rust tests in master. This recovery keeps the existing useful regressions rather than discarding unexecuted assertions. Pending delivery remains implementation, independent review, functional validation, durable evidence, separate test/support cleanup, latest-head empty-suite required CI and merge.
+
+During the replacement writer's active stage, fetched upstream advanced to `5a1ec8ad26fa53fd6210a8e58b6ad85e739dd8bb` (stage handoffs/interrupted delegation recovery). That child then failed terminal without code changes or READY; the failure receipt did not expose a root cause, so this is an execution-environment failure, not a product-test failure. Parent rechecked the draft/tests and saved stash `b54811975743179fe0e15d48e2b6e51f15a25e00`, then integrated upstream as `a0db3e838dd60a7488b493bf28e72bbd1e286eaf` only after the writer stopped. Reapplying the draft produced one `entry.rs` tool-config chain conflict. A new sole writer owns resolution and completion; preserve both the upstream stage hook and the later wrapped question hook, plus `StageHandoff` terminal active duration handling. Review overlapping `entry/events/persistence`, Native child admission and UI event paths.
+
+The upstream `SubagentSnapshot` gains `checkpoint`, `release_state` and `ready_for_review`; the existing GPUI admission fixture now supplies `None`, empty string and `false` without changing assertions. This is baseline/API compatibility, not a new question feature or permission to weaken regressions. Its new SHA-256 is `10ac9087f54970f859f6ea4dc42b792d69e27d5eadeedbe7c8efec52400baa56`; the conversation test hash is unchanged.
+
+The replacement stage was interrupted by its 20-minute active budget after adding application attention. Parent confirmed cessation, no remaining conflict markers, early normal/child lifecycle subscriptions, run-scoped request deduplication, separate question tags, foreground suppression and matching terminal/resolution dismissal. These are inspected draft artifacts, not READY or behavioral success. Recovery code diff (`git diff HEAD -- crates`) SHA-256 `b48c802ea36e5cfecd861e5afdb18e013e3267ffc1540e64fbb86ed4d42c513b`; untracked `work_clock.rs` SHA-256 `60d70cb8b620da9d2121ff7c83f9ab1329a298debfa25aed3a99a528d41688ec`. That finalizer also stopped on interruption, leaving formatting changes but no READY. On continuation the parent confirmed no live child, marked the already conflict-free entry file resolved, saved stash `0ac69c7f2614a7f69e12c6e3f3aac01e5bd8438b`, merged upstream compact-guide commit `6e490aefc18fd0e8a263cbcd6b67570bcbf9348e` as `aa547c4edc5a38bf18cc990902665e1e816d169b`, and reapplied the complete draft without conflicts. Test hashes remain those above. A sole finalizer now owns only the remaining correctness/static completion pass, not a new design or test cycle. No additional cloud run or behavioral result has yet been obtained.

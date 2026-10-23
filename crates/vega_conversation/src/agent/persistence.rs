@@ -18,6 +18,7 @@ pub struct PersistenceActorConfig {
     pub(crate) delegated_authority: Option<DelegatedAuthority>,
     pub(crate) delegated_context_budget: Option<vega_runtime::ContextBudget>,
     pub(crate) user_questions: Option<Arc<dyn vega_runtime::RuntimeUserQuestionHook>>,
+    pub(crate) work_time_source: Option<crate::types::WorkTimeSource>,
     pub(crate) automation_claim: Option<crate::types::AutomationRunClaim>,
     pub(crate) automation_hook: Option<Arc<dyn vega_runtime::RuntimeAutomationHook>>,
     pub(crate) credential_continuation_id: Option<String>,
@@ -44,6 +45,11 @@ impl PersistenceActorConfig {
         hook: Arc<dyn vega_runtime::RuntimeUserQuestionHook>,
     ) -> Self {
         self.user_questions = Some(hook);
+        self
+    }
+
+    pub fn with_work_time_source(mut self, source: crate::types::WorkTimeSource) -> Self {
+        self.work_time_source = Some(source);
         self
     }
 

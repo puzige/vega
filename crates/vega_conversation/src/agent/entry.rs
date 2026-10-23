@@ -1,5 +1,27 @@
 use super::*;
 
+struct WorkingUserQuestionHook {
+    inner: Arc<dyn vega_runtime::RuntimeUserQuestionHook>,
+    clock: crate::types::WorkClock,
+}
+
+impl vega_runtime::RuntimeUserQuestionHook for WorkingUserQuestionHook {
+    fn request(
+        &self,
+        request: vega_runtime::RuntimeUserQuestionRequest,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, vega_runtime::RuntimeUserQuestionResponse> {
+        let pause = self.clock.pause();
+        let response = self.inner.request(request, cancel);
+        async move {
+            let response = response.await;
+            drop(pause);
+            response
+        }
+        .boxed()
+    }
+}
+
 /// Persisted task result and the sole event stream exposed to UI/store
 pub struct ConversationRun {
     /// User message id.
@@ -723,7 +745,6 @@ where
         .tool_config
         .with_mcp_servers(mcp_servers)
         .with_computer_use(actor_config.computer_use.clone())
-        .with_user_questions(actor_config.user_questions.clone())
         .with_stage(actor_config.stage_hook.clone());
     let skill_launch = super::skills::prepare_skill_run(
         store,
@@ -847,6 +868,17 @@ where
     };
 
     let runtime_started_at = std::time::Instant::now();
+    let work_clock = crate::types::WorkClock::new(actor_config.work_time_source.clone());
+    prepared.request.tool_config =
+        prepared
+            .request
+            .tool_config
+            .with_user_questions(actor_config.user_questions.clone().map(|inner| {
+                Arc::new(WorkingUserQuestionHook {
+                    inner,
+                    clock: work_clock.clone(),
+                }) as Arc<dyn vega_runtime::RuntimeUserQuestionHook>
+            }));
     let started = ConversationEvent::MessageStarted {
         message_id: prepared.assistant_message_id.clone(),
         seq: prepared.assistant_seq as u64,
@@ -867,21 +899,23 @@ where
     let clock = ConversationEvent::RunStarted {
         message_id: prepared.assistant_message_id.clone(),
         started_at: runtime_started_at,
+        work_clock: Some(work_clock.clone()),
     };
     if let Err(error) = event_sink(&clock) {
         let error = Arc::new(error);
-        let duration = i64::try_from(runtime_started_at.elapsed().as_millis()).unwrap_or(i64::MAX);
+        let duration = u64::try_from(work_clock.finish().as_millis()).unwrap_or(u64::MAX);
         let _ = actor
             .event(
                 RuntimeEvent::Error(error.clone()),
                 String::new(),
-                Some(duration),
+                Some(i64::try_from(duration).unwrap_or(i64::MAX)),
             )
             .await;
-        forward_pipeline_error(
+        forward_pipeline_error_with_duration(
             &mut event_sink,
             Some(prepared.assistant_message_id.clone()),
             error.clone(),
+            Some(duration),
         );
         let _ = actor.close().await;
         return Err(ConversationError::Runtime(error));
@@ -980,6 +1014,7 @@ where
             event_sink: &mut event_sink,
             cancel: processor_cancel,
             run_started_at: runtime_started_at,
+            work_clock: &work_clock,
             diagnostics: &diagnostics,
             thread_id,
             run_id: &prepared.assistant_message_id,
@@ -1078,10 +1113,12 @@ where
             diagnostics.close().await;
             if let Err(error) = actor.close().await {
                 let error = Arc::new(error);
-                forward_pipeline_error(
+                let duration = u64::try_from(work_clock.finish().as_millis()).unwrap_or(u64::MAX);
+                forward_pipeline_error_with_duration(
                     &mut event_sink,
                     Some(final_assistant_message_id.clone()),
                     error.clone(),
+                    Some(duration),
                 );
                 return Err(ConversationError::Runtime(error));
             }
@@ -1097,7 +1134,7 @@ where
             let error = Arc::new(error);
             let failure_event = pipeline_terminal_event(error.clone());
             let execution_duration_ms =
-                u64::try_from(runtime_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                u64::try_from(work_clock.finish().as_millis()).unwrap_or(u64::MAX);
             let persistence_result = actor
                 .event(
                     failure_event,

@@ -28,6 +28,7 @@ mod thread;
 mod tool_calls;
 mod usage;
 mod usage_dashboard;
+mod work_clock;
 mod workspace;
 
 pub use artifact::*;
@@ -46,6 +47,7 @@ pub use thread::*;
 pub use tool_calls::*;
 pub use usage::*;
 pub use usage_dashboard::*;
+pub use work_clock::*;
 pub use workspace::*;
 
 mod palette;

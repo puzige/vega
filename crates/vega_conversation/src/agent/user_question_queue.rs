@@ -8,41 +8,67 @@ use vega_runtime::{
     RuntimeUserQuestionHook, RuntimeUserQuestionRequest, RuntimeUserQuestionResponse,
 };
 
-use crate::types::UserQuestionAnswers;
+use crate::types::{UserQuestionAnswers, UserQuestionId, UserQuestionResolution};
 
 type Response = RuntimeUserQuestionResponse;
 
 struct QuestionResponseState {
     activity: Option<super::stage_activity::PendingActivity>,
     request: RuntimeUserQuestionRequest,
-    sender: Mutex<Option<oneshot::Sender<Response>>>,
+    id: UserQuestionId,
+    delivery: Mutex<QuestionDelivery>,
+    signal: Mutex<Option<watch::Sender<u64>>>,
     cancel: CancellationToken,
+}
+
+struct QuestionDelivery {
+    sender: Option<oneshot::Sender<Response>>,
+    resolution: UserQuestionResolution,
 }
 
 impl QuestionResponseState {
     fn resolve(&self, response: Response) -> bool {
-        let Ok(mut sender) = self.sender.lock() else {
+        let Ok(mut delivery) = self.delivery.lock() else {
             return false;
         };
-        let Some(sender) = sender.take() else {
+        let Some(sender) = delivery.sender.take() else {
             return false;
         };
         if let Some(activity) = &self.activity {
             activity.finish();
         }
         let cancelled = self.cancel.is_cancelled();
-        sender
-            .send(if cancelled {
-                Response::Cancelled
-            } else {
-                response
+        let response = if cancelled {
+            Response::Cancelled
+        } else {
+            response
+        };
+        let answered = matches!(&response, Response::Answered(_));
+        let sent = sender.send(response).is_ok();
+        delivery.resolution = if sent && answered {
+            UserQuestionResolution::Answered
+        } else {
+            UserQuestionResolution::Cancelled
+        };
+        drop(delivery);
+        if let Ok(signal) = self.signal.lock()
+            && let Some(signal) = signal.as_ref()
+        {
+            signal.send_modify(|version| *version = version.wrapping_add(1));
+        }
+        sent && !cancelled
+    }
+
+    fn resolution(&self) -> UserQuestionResolution {
+        self.delivery
+            .lock()
+            .map_or(UserQuestionResolution::Cancelled, |delivery| {
+                delivery.resolution
             })
-            .is_ok()
-            && !cancelled
     }
 
     fn resolved(&self) -> bool {
-        self.sender.lock().map_or(true, |sender| sender.is_none())
+        self.resolution() != UserQuestionResolution::Pending
     }
 }
 
@@ -56,6 +82,12 @@ impl PendingUserQuestion {
     }
     pub fn is_resolved(&self) -> bool {
         self.state.resolved()
+    }
+    pub fn id(&self) -> UserQuestionId {
+        self.state.id.clone()
+    }
+    pub fn resolution(&self) -> UserQuestionResolution {
+        self.state.resolution()
     }
     pub fn respond(&self, answers: UserQuestionAnswers) -> Result<bool, &'static str> {
         answers.validate(&self.state.request.input)?;
@@ -83,7 +115,6 @@ struct QueueState {
     pending: Option<Arc<QuestionResponseState>>,
     listener: Option<(u64, watch::Sender<u64>)>,
     generation: u64,
-    version: u64,
 }
 
 #[derive(Clone, Default)]
@@ -218,19 +249,29 @@ impl RuntimeUserQuestionHook for UserQuestionQueue {
         let response = Arc::new(QuestionResponseState {
             activity: self.activity.as_ref().map(|activity| activity.pending()),
             request,
-            sender: Mutex::new(Some(sender)),
+            id: UserQuestionId(ulid::Ulid::generate().to_string()),
+            delivery: Mutex::new(QuestionDelivery {
+                sender: Some(sender),
+                resolution: UserQuestionResolution::Pending,
+            }),
+            signal: Mutex::new(None),
             cancel: cancel.clone(),
         });
         let notified = if let Ok(mut state) = self.state.lock() {
+            if let Ok(mut signal) = response.signal.lock() {
+                *signal = state.listener.as_ref().map(|(_, sender)| sender.clone());
+            }
             if let Some(active) = state.active.replace(response.clone()) {
                 active.resolve(Response::Cancelled);
             }
             state.pending = Some(response.clone());
-            state.version = state.version.wrapping_add(1);
-            state
-                .listener
-                .as_ref()
-                .is_some_and(|(_, listener)| listener.send(state.version).is_ok())
+            state.listener.as_ref().is_some_and(|(_, listener)| {
+                if listener.is_closed() {
+                    return false;
+                }
+                listener.send_modify(|version| *version = version.wrapping_add(1));
+                true
+            })
         } else {
             false
         };
