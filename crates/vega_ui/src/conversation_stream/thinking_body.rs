@@ -1,10 +1,10 @@
 use super::super::{
+    code_viewport::CodeViewport,
     inline_code,
     links::{LinkRange, fragment_link_ranges, link_ranges},
     selection::SelectionDocumentBuilder,
 };
 use super::*;
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::{
     AvailableSpace, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId,
     Pixels, Point, Size, TextAlign, TextStyleRefinement, WindowTextSystem, point, size,
@@ -17,6 +17,10 @@ use std::{
 
 const HORIZONTAL_FRAGMENT_BYTES: usize = 1024;
 const VIEWPORT_OVERSCAN: f32 = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+
+#[cfg(test)]
+#[path = "thinking_code_viewport_tests.rs"]
+mod code_viewport_tests;
 
 #[derive(Clone)]
 struct PreparationStyle {
@@ -1056,25 +1060,24 @@ impl Element for BodyElement {
                     .or_default()
                     .clone();
                 div()
-                    .id(("thinking-horizontal", index))
                     .w(self.prepared.width - block.origin.x)
                     .h(block.size.height)
-                    .track_scroll(&scroll)
-                    .overflow_x_scroll()
-                    .overflow_y_hidden()
                     .when(block.code, |row| {
                         row.bg(self.prepared.colors.code_bg)
                             .rounded(px(Layout::TOOL_DETAIL_RADIUS))
                     })
-                    .child(content)
-                    .tracked_scroll_edge_fade(
-                        scroll,
-                        if block.code {
-                            self.prepared.colors.code_bg
-                        } else {
-                            self.prepared.colors.bg_base
-                        },
-                        ScrollFade::compact(),
+                    .child(
+                        CodeViewport::new(
+                            ("thinking-horizontal", index),
+                            content,
+                            if block.code {
+                                self.prepared.colors.code_bg
+                            } else {
+                                self.prepared.colors.bg_base
+                            },
+                        )
+                        .scroll(scroll)
+                        .height(block.size.height),
                     )
                     .into_any_element()
             } else {
