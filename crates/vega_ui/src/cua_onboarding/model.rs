@@ -19,7 +19,7 @@ pub(crate) struct PreparationSnapshot {
     pub view: CardView,
     pub retained: bool,
     pub feedback: Vec<PreparationFeedback>,
-    pub guide_fault: Option<&'static str>,
+    pub guide_warning: Option<&'static str>,
 }
 
 pub(crate) struct PreparationFeedback {
@@ -128,10 +128,8 @@ impl PreparationModel {
         if close_guide || self.owners.is_empty() {
             self.cancel_inspection();
         }
-        if self.owners.is_empty() {
-            self.stop();
-        }
         self.service_status = session::service_status();
+        self.stop_if_unowned();
         cx.notify();
     }
 
@@ -194,6 +192,12 @@ impl PreparationModel {
         }
     }
 
+    fn stop_if_unowned(&mut self) {
+        if self.owners.is_empty() && self.service_status.cleanup != CleanupStatus::Reclaiming {
+            self.stop();
+        }
+    }
+
     fn tick(&mut self, cx: &mut Context<Self>) {
         for _ in 0..16 {
             let Some(client) = self.client.as_ref() else {
@@ -231,22 +235,23 @@ impl PreparationModel {
             self.service_status = status;
             cx.notify();
         }
+        self.stop_if_unowned();
     }
 
     pub(crate) fn snapshot(&self) -> PreparationSnapshot {
         let view = self.controller.view();
-        let guide_fault = if matches!(self.service_status.cleanup, CleanupStatus::Failed(_)) {
-            Some("准备资源回收失败，请前往权限与检测重试")
+        let guide_warning = if matches!(self.service_status.cleanup, CleanupStatus::Failed(_)) {
+            Some("回收失败，请在权限与检测中重试")
         } else if self.service_status.failure.is_some() || self.adapter_error.is_some() {
-            Some("权限检测不可用，请前往权限与检测处理")
+            Some("检测不可用，请在权限与检测中处理")
         } else if self.service_status.last_close_error.is_some()
             && self.service_status.cleanup != CleanupStatus::Clear
         {
-            Some("准备资源回收未确认，请前往权限与检测处理")
+            Some("回收未确认，请在权限与检测中处理")
         } else if matches!(view.check_state, CheckState::Busy | CheckState::Failed(_))
             || self.service_status.last_inspection_error.is_some()
         {
-            Some("权限检测未完成，请前往权限与检测处理")
+            Some("检测未完成，请在权限与检测中处理")
         } else {
             None
         };
@@ -319,7 +324,7 @@ impl PreparationModel {
             view,
             retained: self.retained,
             feedback,
-            guide_fault,
+            guide_warning,
         }
     }
 }

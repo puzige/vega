@@ -81,7 +81,36 @@ impl GuidanceCard {
             .into_any_element()
     }
 
-    fn app_region(&self, view: &CardView, cx: &mut Context<Self>) -> AnyElement {
+    fn diagnostics_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        div()
+            .id("preparation-diagnostics")
+            .role(gpui_kit::Role::Button)
+            .aria_label("权限与检测")
+            .focusable()
+            .tab_stop(true)
+            .flex_shrink_0()
+            .px(px(Layout::IMAGE_PREVIEW_GAP))
+            .py(px(Layout::TITLEBAR_CONTROL_GAP))
+            .cursor_pointer()
+            .rounded(px(Layout::PANEL_RADIUS))
+            .text_color(colors.text_secondary)
+            .interaction_surface(colors.bg_elevated, colors.bg_hover, colors.bg_active, true)
+            .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.set_global(crate::settings::NativePreparationSettingsRequested(true));
+                cx.set_global(crate::settings::SettingsOpen(true));
+            }))
+            .child("权限与检测")
+            .into_any_element()
+    }
+
+    fn app_region(
+        &self,
+        view: &CardView,
+        show_diagnostics: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         if !view.can_drag {
             return div()
@@ -91,12 +120,21 @@ impl GuidanceCard {
                 .gap(px(Layout::IMAGE_PREVIEW_GAP))
                 .text_color(colors.text_secondary)
                 .child("当前是开发可执行文件，不能拖入权限列表。")
-                .child(self.action_button(
-                    "preparation-finder",
-                    "在 Finder 中显示",
-                    CardAction::RevealInFinder,
-                    cx,
-                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(Layout::IMAGE_PREVIEW_GAP))
+                        .child(self.action_button(
+                            "preparation-finder",
+                            "在 Finder 中显示",
+                            CardAction::RevealInFinder,
+                            cx,
+                        ))
+                        .when(show_diagnostics, |row| {
+                            row.child(self.diagnostics_button(cx))
+                        }),
+                )
                 .into_any_element();
         }
         let drag = AppDrag {
@@ -181,6 +219,9 @@ impl GuidanceCard {
             .justify_center()
             .gap(px(Layout::IMAGE_PREVIEW_GAP))
             .child(app)
+            .when(show_diagnostics, |row| {
+                row.child(self.diagnostics_button(cx))
+            })
             .when(self.has_task, |row| {
                 row.child(self.action_button(
                     "preparation-return",
@@ -199,12 +240,12 @@ impl Render for GuidanceCard {
         let view = self.controller.view();
         let waiting = matches!(self.tracking, Tracking::Waiting);
         let preparation = self.preparation.read(cx).snapshot();
-        let fault = self
+        let blocking_fault = self
             .path_error
             .as_deref()
             .or_else(|| self.panel_fault.map(|fault| fault.message()))
-            .or(waiting.then_some("未找到系统设置窗口。请打开对应权限设置。"))
-            .or(preparation.guide_fault);
+            .or(waiting.then_some("未找到系统设置窗口。请打开对应权限设置。"));
+        let warning = blocking_fault.or(preparation.guide_warning);
         let heading = div()
             .flex()
             .flex_shrink_0()
@@ -214,13 +255,13 @@ impl Render for GuidanceCard {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_color(if fault.is_some() {
+                    .text_color(if warning.is_some() {
                         colors.warning
                     } else {
                         colors.text_primary
                     })
                     .child(
-                        fault
+                        warning
                             .unwrap_or(if view.can_drag {
                                 "将 Vega 拖入上方列表，然后打开开关"
                             } else {
@@ -269,8 +310,10 @@ impl Render for GuidanceCard {
                     .flex_col()
                     .gap(px(Layout::IMAGE_PREVIEW_GAP))
                     .child(heading)
-                    .when(fault.is_none(), |card| card.child(self.app_region(&view, cx)))
-                    .when(fault.is_some(), |card| {
+                    .when(blocking_fault.is_none(), |card| {
+                        card.child(self.app_region(&view, preparation.guide_warning.is_some(), cx))
+                    })
+                    .when(blocking_fault.is_some(), |card| {
                         card.child(
                             div().flex().flex_shrink_0().items_center().gap(px(Layout::IMAGE_PREVIEW_GAP))
                             .when(waiting, |row| {
@@ -287,20 +330,7 @@ impl Render for GuidanceCard {
                             .when(!view.can_drag, |row| {
                                 row.child(self.action_button("preparation-finder", "在 Finder 中显示", CardAction::RevealInFinder, cx))
                             })
-                            .child(div()
-                                .id("preparation-diagnostics")
-                                .role(gpui_kit::Role::Button)
-                                .aria_label("权限与检测")
-                                .focusable()
-                                .tab_stop(true)
-                                .cursor_pointer()
-                                .rounded(px(Layout::PANEL_RADIUS))
-                                .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
-                                .on_click(cx.listener(|_, _, _, cx| {
-                                    cx.set_global(crate::settings::NativePreparationSettingsRequested(true));
-                                    cx.set_global(crate::settings::SettingsOpen(true));
-                                }))
-                                .child("权限与检测")),
+                            .child(self.diagnostics_button(cx)),
                         )
                     }),
             )
