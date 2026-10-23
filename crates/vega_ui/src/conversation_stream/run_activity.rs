@@ -1162,8 +1162,15 @@ impl RunActivityGroup {
             .flex()
             .items_center()
             .gap(px(Layout::CONVERSATION_INLINE_GAP))
-            .on_key_down(move |event, _, cx| {
-                if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+            .on_key_down(move |event, window, cx| {
+                if can_expand && event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                } else if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                     keyboard_toggle.update(cx, RunActivityGroup::toggle_expanded);
                     cx.stop_propagation();
                 }
@@ -1582,8 +1589,17 @@ impl RunActivityGroup {
                             },
                         )
                     })
-                    .on_key_down(move |event, _, cx| {
-                        if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    .on_key_down(move |event, window, cx| {
+                        if can_expand && event.keystroke.key == "tab" {
+                            if event.keystroke.modifiers.shift {
+                                window.focus_prev(cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
+                            cx.stop_propagation();
+                        } else if can_expand
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        {
                             keyboard
                                 .update(cx, |group, cx| group.toggle_segment(segment_index, cx));
                             cx.stop_propagation();

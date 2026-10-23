@@ -884,7 +884,24 @@ impl ArtifactGroup {
                 .on_key_down(move |event, window, cx| {
                     if event.keystroke.key == "tab" {
                         if event.keystroke.modifiers.shift {
-                            window.focus_prev(cx);
+                            let group = key_group.read(cx);
+                            let focus = group
+                                .files
+                                .iter()
+                                .take(group.visible_files())
+                                .rev()
+                                .find_map(|file| {
+                                    let card = file.card.read(cx);
+                                    (!card.reading_preview
+                                        && card.opening.is_none()
+                                        && card.projection.current_file_id.is_some())
+                                    .then(|| card.compact_focus[1].clone())
+                                });
+                            if let Some(focus) = focus {
+                                focus.focus(window, cx);
+                            } else {
+                                window.focus_prev(cx);
+                            }
                         } else {
                             window.focus_next(cx);
                         }
