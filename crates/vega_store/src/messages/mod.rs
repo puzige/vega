@@ -362,6 +362,7 @@ pub struct MessagePage {
     pub rows: Vec<MessageRow>,
     pub execution_durations_ms: std::collections::HashMap<String, i64>,
     pub assistant_responses: Vec<AssistantResponseRow>,
+    pub continuations: Vec<RunContinuation>,
     /// `Some(oldest_seq)` when older rows may exist — pass
     /// [`PageCursor::Before`] to continue. `None` marks the oldest end of the
     /// thread, so another request cannot produce new rows.
@@ -369,6 +370,13 @@ pub struct MessagePage {
     pub newer_cursor: Option<i64>,
     /// Tool-call audit rows for this page's messages, ascending call seq.
     pub tool_calls: Vec<PageToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunContinuation {
+    pub previous_assistant_id: String,
+    pub user_message_id: String,
+    pub next_assistant_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,6 +438,7 @@ pub fn page_before(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
@@ -440,6 +449,7 @@ pub fn page_before(
         older_cursor,
         newer_cursor,
         tool_calls,
+        continuations,
     })
 }
 
@@ -524,6 +534,7 @@ pub fn page_containing_message(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let continuations = page_continuations(&tx, thread_id, &rows)?;
     tx.commit()?;
     Ok(Some(MessagePage {
         images,
@@ -533,6 +544,7 @@ pub fn page_containing_message(
         older_cursor,
         newer_cursor,
         tool_calls,
+        continuations,
     }))
 }
 
@@ -574,6 +586,7 @@ pub fn page_after(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
@@ -584,7 +597,43 @@ pub fn page_after(
         older_cursor,
         newer_cursor,
         tool_calls,
+        continuations,
     })
+}
+
+fn page_continuations(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    rows: &[MessageRow],
+) -> rusqlite::Result<Vec<RunContinuation>> {
+    let (Some(oldest), Some(newest)) = (rows.first(), rows.last()) else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = tx.prepare(
+        "WITH page AS (SELECT id, seq FROM messages WHERE thread_id = ?1 \
+         AND seq >= ?2 AND seq <= ?3 AND status != 'streaming'), \
+         candidates AS ( \
+         SELECT p.id FROM page m JOIN pending_messages p \
+         ON p.thread_id = ?1 AND p.accepted_after_assistant_id = m.id \
+         UNION SELECT p.id FROM page m JOIN pending_messages p ON p.id = m.id \
+         UNION SELECT p.id FROM page m JOIN messages u \
+         ON u.thread_id = ?1 AND u.seq = m.seq - 1 JOIN pending_messages p ON p.id = u.id) \
+         SELECT previous.id, u.id, successor.id FROM candidates c \
+         JOIN pending_messages p ON p.id = c.id AND p.thread_id = ?1 AND p.state = 'delivered' \
+         JOIN messages u ON u.id = p.id AND u.thread_id = ?1 AND u.role = 'user' AND u.status = 'done' \
+         JOIN messages previous ON previous.id = p.accepted_after_assistant_id \
+         AND previous.thread_id = ?1 AND previous.role = 'assistant' AND previous.seq < u.seq \
+         JOIN messages successor ON successor.thread_id = ?1 AND successor.seq = u.seq + 1 \
+         AND successor.role = 'assistant' ORDER BY u.seq",
+    )?;
+    stmt.query_map(params![thread_id, oldest.seq, newest.seq], |row| {
+        Ok(RunContinuation {
+            previous_assistant_id: row.get(0)?,
+            user_message_id: row.get(1)?,
+            next_assistant_id: row.get(2)?,
+        })
+    })?
+    .collect()
 }
 
 /// Batch-reads the tool-call audit rows owned by `rows` in ONE query scoped to
