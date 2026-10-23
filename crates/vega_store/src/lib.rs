@@ -22,6 +22,8 @@ pub mod run_diagnostics;
 pub mod sidebar_organization;
 pub mod skills;
 
+pub mod delegated_ownership;
+pub mod delegated_stages;
 pub mod subagents;
 pub mod threads;
 pub mod token_usage;
@@ -29,8 +31,8 @@ pub mod tool_calls;
 
 use std::path::{Path, PathBuf};
 
-pub use rusqlite::Connection;
-use rusqlite::{Transaction, TransactionBehavior};
+use rusqlite::TransactionBehavior;
+pub use rusqlite::{Connection, Transaction};
 
 /// Ordered, compile-time-embedded schema migrations.
 ///
@@ -69,7 +71,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0030_delegated_executions.sql"),
     include_str!("../migrations/0031_sidebar_project_order.sql"),
     include_str!("../migrations/0032_codex_project_history.sql"),
-    include_str!("../migrations/0033_run_continuations.sql"),
+    include_str!("../migrations/0033_delegated_stage_recovery.sql"),
+    include_str!("../migrations/0034_run_continuations.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

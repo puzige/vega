@@ -76,7 +76,12 @@ impl SettingsView {
                             replay_identity_changed,
                         });
                         if desktop_enabled {
-                            cx.emit(DesktopPreparationRequested);
+                            if cx.try_global::<SettingsOpen>().is_some_and(|open| open.0) {
+                                this.acquire_preparation(cx);
+                            }
+                            cx.emit(DesktopPreparationRequested {
+                                pane: crate::cua_onboarding::PermissionPane::Accessibility,
+                            });
                         }
                     }
                     Err(error) => this.error = Some(error.into()),

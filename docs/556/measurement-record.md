@@ -1,5 +1,19 @@
 # Execution efficiency evidence ledger
 
+## Corrective continuation: stage handoff and recovery
+
+The user's 2026-10-23 continuation requires removing the default 20-minute hard cancellation, implementing durable stage handoff and explicit interrupted recovery, then reconciling the existing #522 experiment before completing its comparison. The new [acceptance contract](stage-handoff-recovery.md) supersedes the timer-based claim below. The old timer tests remain historical proof of that implementation; they are not evidence that a useful artifact appeared earlier or that recovery worked.
+
+The first tests/spec publication was `928cf828`, with production unchanged from original baseline `4c0d225d`. One original implementation agent and one original independent reviewer are reused. No new #522 namespace, model trial or installed application has been started for this continuation. Record implementation/review/CI intervals and subsequent research receipts as they occur; unknown start times or durations remain unknown. The original #514 clock and failed/cancelled experiment costs remain included in their respective records.
+
+The first cloud baseline [39883065565](https://github.com/puzige/vega/actions/runs/39883065565) took 168 seconds from creation to workflow completion, with parallel fmt/Clippy and Nextest jobs. It executed 27 Rust cases (11 passed, 16 failed, none skipped) and passed all 60 Python cases; the timer failure was directly observed, while most deeper recovery assertions stopped at missing prerequisites. See the [full provenance](recovery-test-evidence.md#first-cloud-baseline-and-current-policy). The branch subsequently integrated master `f3eab982` as `03c1296a`, retaining the first timer-removal patch and store drafts without conflict. The first production [Actions 39888493764](https://github.com/puzige/vega/actions/runs/39888493764) then took 157 seconds and failed compilation before Rust discovery/execution; 60 Python checks and formatting passed. Independent review overlapped that run and required future-drop/admission-cancellation repairs, which remain recorded as implementation rework.
+
+The combined repair integrated current master `9f9fa092` (#573) as `37b0291f`. That policy corrects #569: no mandatory TDD/freeze, but development Rust tests/support must be archived and removed before master, followed by the final complete empty-suite gate. The 10 #570 development cases were removed upstream; its production read fix remains. This task still verifies its own cases before cleanup. Extra validation/cleanup time and every failed attempt remain part of development wall time; neither a changed policy nor an empty-suite gate demonstrates delivery acceleration.
+
+The stopped repaired head `7873ffb8` passed independent static implementation review. Its [Actions 39891169248](https://github.com/puzige/vega/actions/runs/39891169248) lasted 375 seconds (02:43:56Z → 02:50:11Z); 24 Rust cases actually ran, 23 passed and 1 failed, with 0 skipped, while format and all 60 Python checks passed. Two Clippy comparison warnings and a cross-parent-run name-reservation regression still blocked delivery. The original writer repairs them without changing the 24 test cases or starting another research trial. Review and CI overlapped; neither their durations nor the later status-observation delay are added as separate serial phases. Failed execution and repair time stay in the total.
+
+The unchanged 24 cases then all passed on independently reviewed head `e5c2fbc25f00d19adc5a5692b2206fd66e2b7281`: [Actions 39892557171](https://github.com/puzige/vega/actions/runs/39892557171), 02:59:26Z → 03:02:58Z, 212 seconds wall; actual Rust execution summary 2.728 seconds. Format, Clippy, all 60 Python cases and the complete required gate passed. Development sources and their exact hashes are retained in the [validation ledger](recovery-test-evidence.md#development-green-and-recoverable-source). Policy-required cleanup and the final empty-suite CI remain additional delivery work, not speed gains. There has been no paid native delivery-speed trial for this runtime change.
+
 ## Observed case: #514
 
 This is the actual completed observation, not a treatment/control experiment. Native start: 2026-10-22 06:31:57.103 UTC; merge: 14:59:55 UTC; final native terminal: 15:01:33.615 UTC. Both cancellations and all recovery gaps remain included. The observer's later closeout is excluded.
@@ -39,7 +53,7 @@ No real model trials have been run for #556. Populate one row for every attempte
 | Original start / resumptions / terminal | UTC events; original clock never resets |
 | First reviewable artifact | Version/content identity, scope, known gaps and confirmed stopped writer; not a timeout receipt |
 | Independent review | Reviewer identity separate from implementer, reviewed version and actionable findings |
-| RED / same-test GREEN / final CI / merge | Exact heads, run/job evidence and separate timestamps |
+| Necessary regression checks / final CI / merge | Exact heads, run/job evidence and separate timestamps; retain unsuccessful attempts without requiring a RED/deletion ritual |
 | Wall time / active / human pending | Wall time is primary; activity is a separately defined diagnostic |
 | Model / context / summary | Request count, actual input usage when available, known limits and de-duplicated intervals |
 | Delegation / no-change wakes / rework | Every spawn/followup, repeated unchanged result, changed acceptance and repair cause |
@@ -47,7 +61,7 @@ No real model trials have been run for #556. Populate one row for every attempte
 
 Report all pairs before aggregating. Three pairs are a small directional pilot, not statistical proof. Report median time to reviewable artifact and median total delivery time only alongside each pair's completion/quality outcome. Budget/context failures count against the treatment until recovery actually delivers. Parallel review/model/CI intervals must be shown as overlapping phases or interval unions.
 
-## Mechanism evidence versus speed evidence
+## Historical #561 mechanism evidence versus speed evidence
 
 | Claim | Required evidence | Current status |
 | --- | --- | --- |

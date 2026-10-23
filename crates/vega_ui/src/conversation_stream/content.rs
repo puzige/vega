@@ -909,25 +909,31 @@ impl ConversationStream {
             return;
         };
         let call_id = request.call_id.clone();
-        let Some(card) = self.tool_cards.get(&call_id).cloned() else {
-            self.deferred_permission = Some(pending);
-            return;
-        };
-        let identity_matches = card
-            .read(cx)
-            .permission_identity()
-            .is_some_and(|(tool, target)| tool == request.tool && target == request.display_target);
-        if !identity_matches {
-            drop(pending);
-            card.update(cx, ToolCard::fail_corrupt);
-            self.invalidate_tool_card(&card, cx);
-            return;
+        let card = self.tool_cards.get(&call_id).cloned();
+        let identity = card
+            .as_ref()
+            .and_then(|card| card.read(cx).permission_identity());
+        match pending.presentation(identity) {
+            vega_conversation::types::PermissionPresentation::WaitingForTool => {
+                self.deferred_permission = Some(pending);
+                return;
+            }
+            vega_conversation::types::PermissionPresentation::Mismatch => {
+                drop(pending);
+                if let Some(card) = card {
+                    card.update(cx, ToolCard::fail_corrupt);
+                    self.invalidate_tool_card(&card, cx);
+                }
+                return;
+            }
+            vega_conversation::types::PermissionPresentation::Ready => {}
         }
+        let allow_persistent = pending.allows_persistent_permission();
         self.remove_active_permission(cx);
         let Some((request, lease)) = pending.into_parts() else {
             return;
         };
-        let card = cx.new(|cx| PermissionCard::new(&request, lease, cx));
+        let card = cx.new(|cx| PermissionCard::new(&request, lease, allow_persistent, cx));
         cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
             if this
                 .active_permission
