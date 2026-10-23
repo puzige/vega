@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context as TaskContext, Poll, Wake, Waker};
+use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use gpui_kit::test::TestWindowExt;
@@ -39,16 +39,8 @@ pub(super) struct QuestionTestShell(pub std::path::PathBuf);
 
 impl Global for QuestionTestShell {}
 
-struct NoopWake;
-
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
-
 fn poll_once<T>(future: Pin<&mut (dyn Future<Output = T> + Send)>) -> Poll<T> {
-    future.poll(&mut TaskContext::from_waker(&Waker::from(Arc::new(
-        NoopWake,
-    ))))
+    future.poll(&mut TaskContext::from_waker(Waker::noop()))
 }
 
 fn question_input() -> UserQuestionInput {
@@ -488,6 +480,7 @@ fn background_question_notifies_once_and_click_routes_to_its_live_task(cx: &mut 
         tag: notification.tag.clone(),
         action_id: None,
     });
+    cx.update(|_| {});
     cx.run_until_parked();
     fixture.frame(cx);
     assert_eq!(
@@ -633,6 +626,7 @@ fn sequential_notifications_ignore_old_cleanup_and_preserve_completion(cx: &mut 
         tag: completion.tag.clone(),
         action_id: None,
     });
+    cx.update(|_| {});
     cx.run_until_parked();
     assert_eq!(
         cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone()),
@@ -789,6 +783,7 @@ fn sequential_notifications_ignore_old_cleanup_and_preserve_completion(cx: &mut 
         tag: first_tag,
         action_id: None,
     });
+    cx.update(|_| {});
     cx.run_until_parked();
     assert_eq!(
         cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone()),
@@ -910,6 +905,7 @@ fn cancellation_clears_question_and_stale_click_cannot_navigate(cx: &mut TestApp
         tag,
         action_id: None,
     });
+    cx.update(|_| {});
     cx.run_until_parked();
     assert_eq!(
         cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone()),
@@ -1005,6 +1001,7 @@ fn delegated_question_uses_child_identity_without_completion_suppression(cx: &mu
         tag: notification.tag.clone(),
         action_id: None,
     });
+    cx.update(|_| {});
     cx.run_until_parked();
     assert_eq!(
         cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone()),

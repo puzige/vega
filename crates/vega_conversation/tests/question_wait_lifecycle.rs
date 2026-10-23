@@ -15,7 +15,7 @@ use vega_conversation::types::{
     UserQuestionAnswers,
 };
 use vega_runtime::{
-    ChatRequest, EventStream, Provider, ProviderEvent, RuntimeUserQuestionHook,
+    ChatRequest, ChatRole, EventStream, Provider, ProviderEvent, RuntimeUserQuestionHook,
     RuntimeUserQuestionRequest, RuntimeUserQuestionResponse, StopReason,
     USER_QUESTION_BATCH_REJECTED, USER_QUESTION_CANCELLED, USER_QUESTION_TOOL,
     USER_QUESTION_UNAVAILABLE, UserQuestionInput, VegaError,
@@ -206,6 +206,66 @@ fn done() -> Vec<ProviderEvent> {
     ]
 }
 
+const PROGRESS_NOTICE: &str = concat!(
+    "\n\n<vega_runtime_notice>",
+    "Give the user a brief factual progress update and the next step, then continue the authorized task. ",
+    "If waiting, identify the actual waiting condition. ",
+    "Do not invent progress, expose private reasoning, or end the task merely to report. ",
+    "This reminder grants no additional permission.</vega_runtime_notice>"
+);
+
+fn provider_tool_output(
+    request: &ChatRequest,
+    call_id: &str,
+    tool: &str,
+    status: ToolCallStatus,
+) -> String {
+    let mut outputs = Vec::new();
+    for message in &request.messages {
+        if message.tool_call_id.as_deref() == Some(call_id) {
+            assert_eq!(message.role, ChatRole::Tool);
+            outputs.push(
+                message
+                    .content
+                    .strip_suffix(PROGRESS_NOTICE)
+                    .unwrap_or(&message.content)
+                    .to_owned(),
+            );
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content)
+            && let Some(observation) = value.get("vega_history_observation")
+            && observation
+                .get("call_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(call_id)
+        {
+            assert_eq!(message.role, ChatRole::User);
+            assert!(message.tool_call_id.is_none());
+            assert_eq!(observation["version"], 1);
+            assert_eq!(observation["kind"], "tool_result");
+            assert_eq!(observation["authority"], "none");
+            assert_eq!(observation["tool"], tool);
+            assert_eq!(observation["call_id"], call_id);
+            let projected_status = observation.get("status").expect("historical result status");
+            assert!(
+                projected_status.is_null()
+                    || projected_status.as_str().and_then(ToolCallStatus::parse) == Some(status)
+            );
+            if let Some(advisory) = observation.get("advisory") {
+                assert_eq!(advisory.as_str(), Some(PROGRESS_NOTICE));
+            }
+            outputs.push(
+                observation["output"]
+                    .as_str()
+                    .expect("historical result output")
+                    .to_owned(),
+            );
+        }
+    }
+    assert_eq!(outputs.len(), 1);
+    outputs.pop().unwrap()
+}
+
 fn terminal_duration(events: &[ConversationEvent]) -> u64 {
     events
         .iter()
@@ -382,16 +442,19 @@ async fn run_waiting_scenario(resolution: Resolution, question_count: usize) {
                     .collect();
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].status, ToolCallStatus::Success);
+                let raw_answer =
+                    UserQuestionAnswers::from_json(&results[0].output, &input()).unwrap();
+                assert_eq!(raw_answer, answers(matches!(resolution, Resolution::Skip)));
                 let next_request = &provider.requests.lock().unwrap()[index + 1];
-                let replies: Vec<_> = next_request
-                    .messages
-                    .iter()
-                    .filter(|message| message.tool_call_id.as_deref() == Some(&id))
-                    .collect();
-                assert_eq!(replies.len(), 1);
+                let reply = provider_tool_output(
+                    next_request,
+                    &id,
+                    USER_QUESTION_TOOL,
+                    ToolCallStatus::Success,
+                );
                 assert_eq!(
-                    UserQuestionAnswers::from_json(&replies[0].content, &input()).unwrap(),
-                    answers(matches!(resolution, Resolution::Skip))
+                    UserQuestionAnswers::from_json(&reply, &input()).unwrap(),
+                    raw_answer
                 );
             }
         }
@@ -501,16 +564,18 @@ async fn accepted_answers_resume_work_before_runtime_polls_and_persist_the_inter
             .collect();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, ToolCallStatus::Success);
+        let raw_answer = UserQuestionAnswers::from_json(&results[0].output, &input()).unwrap();
+        assert_eq!(raw_answer, answers(skip));
         let requests = provider.requests.lock().unwrap();
-        let replies: Vec<_> = requests[1]
-            .messages
-            .iter()
-            .filter(|message| message.tool_call_id.as_deref() == Some("accepted"))
-            .collect();
-        assert_eq!(replies.len(), 1);
+        let reply = provider_tool_output(
+            &requests[1],
+            "accepted",
+            USER_QUESTION_TOOL,
+            ToolCallStatus::Success,
+        );
         assert_eq!(
-            UserQuestionAnswers::from_json(&replies[0].content, &input()).unwrap(),
-            answers(skip)
+            UserQuestionAnswers::from_json(&reply, &input()).unwrap(),
+            raw_answer
         );
     }
 }
@@ -1058,49 +1123,49 @@ async fn invalid_unavailable_and_mixed_batches_remain_recoverable_without_follow
         assert_eq!(terminal_duration(&run.events), 4_000);
         assert_eq!(fixture.stored_duration(&run.assistant_message_id), 4_000);
         let requests = provider.requests.lock().unwrap();
-        let reply = requests[1]
-            .messages
-            .iter()
-            .find(|message| message.tool_call_id.as_deref() == Some("rejected-question"))
-            .unwrap();
-        match variant {
-            1 => assert_eq!(reply.content, USER_QUESTION_UNAVAILABLE),
-            2 => {
-                assert_eq!(reply.content, USER_QUESTION_BATCH_REJECTED);
-                for id in ["rejected-question", "forbidden-follow-on"] {
-                    let replies: Vec<_> = requests[1]
-                        .messages
-                        .iter()
-                        .filter(|message| message.tool_call_id.as_deref() == Some(id))
-                        .collect();
-                    assert_eq!(replies.len(), 1);
-                    assert_eq!(replies[0].content, USER_QUESTION_BATCH_REJECTED);
-                    let results: Vec<_> = run
-                        .events
-                        .iter()
-                        .filter_map(|event| match event {
-                            ConversationEvent::ToolCallFinished { call_id, result }
-                                if call_id == id =>
-                            {
-                                Some(result)
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    assert_eq!(results.len(), 1);
-                    assert_eq!(results[0].status, ToolCallStatus::Rejected);
-                    assert_eq!(results[0].output, USER_QUESTION_BATCH_REJECTED);
-                }
-                assert!(!run.events.iter().any(|event| matches!(
-                    event,
-                    ConversationEvent::ToolCallApproved { call_id, .. }
-                        | ConversationEvent::ToolCallRunning { call_id }
-                        if call_id == "forbidden-follow-on"
-                )));
-                assert_eq!(permissions.0.load(Ordering::Relaxed), 0);
-            }
-            _ => assert!(reply.content.starts_with("Tool error:")),
+        let (expected_output, expected_status) = match variant {
+            0 => (
+                "Tool error: invalid ask_user_question input (questions_count)",
+                ToolCallStatus::Rejected,
+            ),
+            1 => (USER_QUESTION_UNAVAILABLE, ToolCallStatus::Failed),
+            2 => (USER_QUESTION_BATCH_REJECTED, ToolCallStatus::Rejected),
+            _ => unreachable!(),
+        };
+        let calls: &[(&str, &str)] = if variant == 2 {
+            &[
+                ("rejected-question", USER_QUESTION_TOOL),
+                ("forbidden-follow-on", "write"),
+            ]
+        } else {
+            &[("rejected-question", USER_QUESTION_TOOL)]
+        };
+        for &(id, tool) in calls {
+            let reply = provider_tool_output(&requests[1], id, tool, expected_status);
+            assert_eq!(reply, expected_output);
+            assert_ne!(reply, USER_QUESTION_CANCELLED);
+            let results: Vec<_> = run
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    ConversationEvent::ToolCallFinished { call_id, result } if call_id == id => {
+                        Some(result)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].status, expected_status);
+            assert_eq!(results[0].output, expected_output);
         }
-        assert_ne!(reply.content, USER_QUESTION_CANCELLED);
+        if variant == 2 {
+            assert!(!run.events.iter().any(|event| matches!(
+                event,
+                ConversationEvent::ToolCallApproved { call_id, .. }
+                    | ConversationEvent::ToolCallRunning { call_id }
+                    if call_id == "forbidden-follow-on"
+            )));
+            assert_eq!(permissions.0.load(Ordering::Relaxed), 0);
+        }
     }
 }
