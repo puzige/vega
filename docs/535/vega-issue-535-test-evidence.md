@@ -199,3 +199,25 @@ writer 实际执行 fmt/diff/offline locked no-deps metadata 均退出 0；主 A
 唯一失败仍在 repeated_continuations，但本次在任何续接之前的前置观测失败：UI 测试第 1157 行工具 category 为 Other，而期望 Read。主 Agent 读取原始失败及真实投影：fixture 的 ToolResult 为 Success / reused=false / truncated=None；`types/tool_calls.rs:887–896` 调用 `success_truncation_valid`（1231–1236），非复用成功必须带 Some(truncated)，缺失即 Corrupt，`ToolCard::apply_finished` 清空输入并变为异常卡片。真实 runtime 的 `read_result`（tools_exec.rs:2094–2106）写 Some(output.truncated || line_truncated)。该短输出应为 Some(false)，不改变任何输出或终态预期。
 
 这是已确认的测试数据契约遗漏，不是已证实的续接产品错误；两次同一用例未通过后父会话已复查原始证据、输入投影和完整成功结果校验，不盲重试。限定专职 writer 只将该 fixture 的 truncated 改为 Some(false)，所有实体/类别/Success/目标/真实展开输出、复制、计时与停止断言保留，生产严格投影不改。下一验证为此单行增量独立审查及新提交完整 Actions；清理测试不能消解该失败。
+
+## 开发验证全部通过并固定来源（2026-10-23）
+
+单行夹具修正固定为 `ba9c155f6392d3df280fda69aad3d3f4681708ac`，生产文件与全部断言不变；非写入者独立审查到该完整 head 无可操作发现，前后核对 production14 包仍为 `4f22e3dddc3fbc6f4e257c36c81ccb98e72348f412410ebaeb7e3d3bad7cc81a`。当前 UI 源 SHA-256 `02d4d1a8658ccf97d1799ca1e4f80525f04ee44d3589abd7a7e8ee2db8e438fc`，app 与 conversation 源仍为上述 `9206160d…` / `f3b36ee6…`。三份源码及完整 patch 均固定在 PR563，UI 修正版已再次通过 GitHub contents exact-SHA 读回确认。
+
+[Actions 39918356968](https://github.com/puzige/vega/actions/runs/39918356968) 在精确 head `ba9c155f6392d3df280fda69aad3d3f4681708ac` 全部成功：Clippy job `120297262852`、Nextest job `120297263282`、required `120299417680`。Format、Clippy、保留的三组 Python 命令成功；Nextest 日志明确 20 discovered，Starting 20 tests across 15 binaries，20 tests run / 20 passed / 0 skipped，10.749 秒。先前唯一 UI 用例也已完整通过后续真实展开输出、剪贴板、原始时钟、多次续接与停止断言，不删除或跳过。完整日志 SHA-256 `00800048b83934eb9b569b170eeca4074c7ea1d56636e24b55dc7cb5ca5d6fa1`；这是真实开发行为验证，不是最终空集 CI。
+
+可恢复来源：[app](https://github.com/puzige/vega/blob/ba9c155f6392d3df280fda69aad3d3f4681708ac/crates/vega/src/app_agent/continuation_tests.rs)、[conversation](https://github.com/puzige/vega/blob/ba9c155f6392d3df280fda69aad3d3f4681708ac/crates/vega_conversation/src/agent/events/continuation_tests.rs)、[UI](https://github.com/puzige/vega/blob/ba9c155f6392d3df280fda69aad3d3f4681708ac/crates/vega_ui/src/conversation_stream/continuation_tests.rs)、[完整 patch](https://github.com/puzige/vega/commit/ba9c155f6392d3df280fda69aad3d3f4681708ac.patch)。先行原稿与各轮真实失败继续保留，不因最终通过改写历史。PR 回执及下一阶段记录：https://github.com/puzige/vega/pull/563#issuecomment-6359994685 。
+
+按当前仓库政策，随后才委派清理 20 个开发 Rust 测试及独占模块/观测/dev 依赖和锁文件边；保护生产行为、严格工具校验、迁移、benchmark、Python/fixture 与通用 CI。当前任务仍 In progress、PR draft；清理后完整 head 静态清点、独立增量审查与 required CI 的 0 发现/0 执行尚待取得，不能复用本轮 20 通过冒充最终 gate。真实 UI/模型/系统集成仍由用户合并后手测。
+
+## 开发测试清理 READY 与最终基线（2026-10-23）
+
+清理 writer 已停止：移除 3 份源码中的 20 个 Rust 定义（app3/conversation9/UI8）、3 处模块接线、全部 TestSupport/F20/专用 ID 观测与 3 个 dev dependency section。四个仅测试支撑 UI 文件及 Cargo.lock/Cargo.toml 回到精确上游字节；app_agent/events/run_activity 三个混合文件仅去掉模块/observer，父会话独立逐字节生产投影比较相同，控制器过滤、续接事件/落库及 continued header/render 全保留。锁文件 924→914，仅去掉 10 个测试支持包，保留包版本/source/checksum 不变，无新增生产依赖。Python 测试/fixture、workflows、benchmark、packaging、vendor 和 Nextest 配置均未变。
+
+清理内容 15 个代码/依赖路径，39 插入 / 2352 删除；相对 `ba9c155f6392d3df280fda69aad3d3f4681708ac` 的 binary/full-index patch 100204 字节，SHA-256 `2b1c550120651800517b3178364377751bc2074737fffeec3b784bf390e83ac5`。这是代码范围的清理差异，不包括父会话文档或后续上游整合；最终版本以完整提交及下述静态证据为准。
+
+期间上游新增 `b032d0d2ab9ee057137f3e5ad2c0e517011ea1ae` 实时上下文用量修复，不改清理路径/政策。父会话先读取 ingress UsageUpdated 与 MessageStarted/reset、finish/clear context 的实际差异，完整保存清理检查点 `c9008965f1779f06bbaf4235dc720a9bb337be7b` 后无冲突合入，集成提交 `0ab2e5b5092b7a0a0a8977a9eeb769088c3b8454`；清理稿原样恢复。该基线变化必须包含在最终独立增量审查及 required CI，历史 20 通过不直接证明新增基线通过。
+
+writer 的 fmt/diff/offline locked no-deps/full metadata 全退出 0。父会话整合后再次执行 fmt/diff/full offline locked metadata 退出 0；914 packages /13 workspace members。独立扫描当前全路径 451 个 Rust 文件（含 vendor/非 workspace）未发现测试属性、cfg(test)、continuation_tests/TestSupport/F20 残留，Cargo 无 dev section/test-support/显式 test target；writer 的 workspace-only 410 文件清点和无可执行 doctest 静态检查也为零，两个文件计数口径不同不混用。最终对当前 master 仅剩 14 个生产路径和两份 docs/535 文档差异，测试专用布局/复制代码全部回到上游。
+
+整合后的 production14 原始内容包 SHA-256 `b19a42b99c1d8be15ab015942915e98210591229a89c721370126d051899e435`（同此前排序路径+NUL+u64BE长度+内容编码）。不是开发版原始包 `4f22e3dd…`，二者包含的 cfg/test wiring 和上游 content.rs 不同；不以原始哈希相同冒充生产等价。下一步固定清理提交，非写入者审查清理与上下文基线交互，并在完整最新 head 跑 required CI 确认 no Rust tests /0发现0执行。

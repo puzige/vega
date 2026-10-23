@@ -100,14 +100,7 @@ impl RunNotice {
             | RunNoticeKind::ContextFailure
             | RunNoticeKind::CompactionFailure(_) => colors.danger,
         };
-        let notice = gpui_kit::div();
-        #[cfg(test)]
-        let notice = gpui_kit::TestSupportExt::test_support(
-            notice
-                .id(format!("run-error-{}", self.message_id))
-                .aria_label(self.text()),
-        );
-        notice
+        gpui_kit::div()
             .w_full()
             .min_w_0()
             .py_1()

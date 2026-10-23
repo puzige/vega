@@ -692,8 +692,6 @@ impl ToolCard {
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
             .group(disclosure_group.clone());
-        #[cfg(test)]
-        let row = gpui_kit::TestSupportExt::test_support(row);
         let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)
@@ -1519,11 +1517,8 @@ fn detail_row(
     color: gpui_kit::Rgba,
     code: bool,
 ) -> AnyElement {
-    let id = id.into();
-    let row = div();
-    #[cfg(test)]
-    let row = gpui_kit::TestSupportExt::test_support(row.id(id.clone()).aria_label(text.clone()));
-    row.w_full()
+    div()
+        .w_full()
         .min_w_0()
         .min_h(px(ROW_HEIGHT))
         .flex_shrink_0()
