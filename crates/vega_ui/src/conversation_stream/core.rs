@@ -259,6 +259,11 @@ impl ConversationStream {
         self.list.viewport_bounds()
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn observed_resume_tail_focus(&self) -> FocusHandle {
+        self.resume_tail_focus.clone()
+    }
+
     pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
         if self.reading_preview == reading {
             return;

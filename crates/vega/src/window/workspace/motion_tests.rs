@@ -684,11 +684,15 @@ impl Harness {
                 .iter()
                 .find(|record| record.entity == entity && !record.text.trim().is_empty())
                 .expect("visible content required before scrolling");
-            record.bounds.intersect(&record.clip).center()
+            let visible = record.bounds.intersect(&record.clip);
+            assert!(visible.size.width > px(0.) && visible.size.height > px(0.));
+            visible.center()
         })
     }
 
     fn scroll_at(&mut self, position: Point<Pixels>, delta: f32) {
+        self.visual
+            .simulate_mouse_move(position, None, Modifiers::none());
         self.visual.simulate_event(ScrollWheelEvent {
             position,
             delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
@@ -802,7 +806,9 @@ impl Harness {
         key: &TabKey,
     ) -> Vec<(Bounds<ScaledPixels>, Hsla, Edges<ScaledPixels>)> {
         let bounds = self.tab(key).bounds();
-        self.visual.update(|window, cx| {
+        self.update(|owner, window, cx| {
+            assert!(window.last_input_was_keyboard());
+            assert!(owner.workspace.tab_focuses[key].contains_focused(window, cx));
             let accent = Hsla::from(theme(cx).colors.accent);
             let scaled = bounds.scale(window.scale_factor());
             let quads: Vec<_> = window
@@ -1409,6 +1415,7 @@ fn repeated_terminal_diff_file_switches_preserve_reading_entities_and_isolate_in
     let (terminal_key, terminal, mut driver) = h.add_terminal();
     let diff = h.populated_diff();
     let file = h.files[0].clone();
+    h.assert_selected_file(0, 0);
     let file_position = h.body_position(file.entity_id());
     h.scroll_at(file_position, -240.);
     let file_scroll = h.visual.read(|cx| file.read(cx).observed_scroll());
@@ -1620,7 +1627,7 @@ fn text_close_and_focus_geometry_are_immediate_while_only_fill_interpolates(
             window.focus(&owner.workspace.tab_focuses[&TabKey::File(3)], cx)
         });
         h.visual.simulate_keystrokes("shift-tab shift-tab");
-        h.pointer_out();
+        h.frame();
         let ring = h.focus_ring(&TabKey::File(2));
         for millis in [0, 30, 30, 60] {
             if millis > 0 {
@@ -1632,6 +1639,7 @@ fn text_close_and_focus_geometry_are_immediate_while_only_fill_interpolates(
             assert_eq!(old_now.bounds, old_text.bounds);
             assert_eq!(new_now.bounds, new_text.bounds);
             assert_eq!(close_now.bounds, close.bounds);
+            assert_eq!(close_now.color, close.color);
             h.visual.read(|cx| {
                 assert_eq!(new_now.color, Hsla::from(theme(cx).colors.text_primary));
                 assert_eq!(old_now.color, Hsla::from(theme(cx).colors.text_secondary));
@@ -1639,11 +1647,12 @@ fn text_close_and_focus_geometry_are_immediate_while_only_fill_interpolates(
             assert_eq!(h.tab(&TabKey::File(2)).bounds(), bounds);
             assert_eq!(h.focus_ring(&TabKey::File(2)), ring);
         }
+        h.pointer_out();
         h.update(|owner, window, cx| {
             window.focus(&owner.workspace.tab_focuses[&TabKey::File(3)], cx)
         });
         h.visual.simulate_keystrokes("shift-tab shift-tab");
-        h.pointer_out();
+        h.frame();
         let focus_bounds = h.tab(&TabKey::File(2)).bounds();
         h.update(|owner, window, cx| {
             assert!(owner.workspace.tab_focuses[&TabKey::File(2)].contains_focused(window, cx));
@@ -1944,8 +1953,17 @@ fn live_workspace_terminal_and_stream_keep_input_reading_and_business_updates_wh
             );
             assert_eq!(composer.read(cx).text(), "draft preserved resumed");
         });
+        h.frame();
+        h.visual.update(|window, cx| {
+            assert!(!stream.read(cx).scroll_anchor_snapshot().following_tail);
+            let focus = stream.read(cx).observed_resume_tail_focus();
+            window.focus(&focus, cx);
+            assert!(focus.contains_focused(window, cx));
+        });
         h.visual
             .dispatch_action(vega_ui::conversation_stream::ResumeTail);
+        h.visual
+            .read(|cx| assert!(stream.read(cx).scroll_anchor_snapshot().following_tail));
         h.visual
             .update(|_, cx| stream.update(cx, |_, cx| cx.notify()));
         h.frame();

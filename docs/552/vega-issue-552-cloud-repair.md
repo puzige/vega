@@ -46,3 +46,27 @@ W1–W12、120ms 默认 cubic、即时导航/语义/焦点、背景唯一插值�
 `inactivity_without_a_draw_then_quick_restore_adopts_latest_target` 的 render-count 严格断言保留。锁定 GPUI `app/test_context.rs:932–937` 的 deactivate 会 run_until_parked；`window.rs:1862–1878` active callback 更新 active、通知 observer 并 refresh；`app.rs:1710–1723` 测试 effect flush 自动画 dirty windows。因此当前 helper 很可能在断言前已有真实 draw，不能把它当产品恢复失败或将断言删除换绿。
 
 父定点检查 public API：`TestAppContext::skip_drawing`（:151–154）仅支持整个测试永久跳过 root，无公开恢复开关；不能代替“前后同一 sampler、中间不画”的完整回归。下一步固定此保存版本，取得独立静态审查和新一轮同 PR Actions，分别确认其余故障是否修复及该前提的真实结果。若仍受此 API 限制，需可保持原 sampler 身份的公开 fixture/框架能力；不改 registry、升级依赖、模拟证明、删回归或声称通过。该问题解决前不进入删测/合并。
+
+## 修复版本的实际云端结果与下一范围
+
+`0b8acd725c09c6f82c1afb78be1ebd25913afee2` 的 [Actions 39920395850](https://github.com/puzige/vega/actions/runs/39920395850) 完成 failure：Clippy `120303963083` success；Nextest `120303962810` 实际 `22 tests run: 18 passed, 4 failed, 0 skipped`；required `120305101923` failure。failed-log SHA-256 `df27404089d9f041db01b3f9dc318431218afd0e122434d604fd5a765660638b`。本轮 Terminal 输入/释放、单帧 paint、120ms 中间采样等已真实执行通过，不再沿用旧 18 败归因。
+
+非写入者对该精确 head/base `3277ebb5fd710d7d33080f91b6c5235e1558e0d3` 的静态审查未发现新增 actionable 产品/支持/repair 问题；仍明确指出 no-draw 验证阻塞，不是运行通过许可。父随后正常 merge master `b032d0d2ab9ee057137f3e5ad2c0e517011ea1ae`，当前任务 HEAD `acb20d09902bf0aa408565e1364eceeff195b995`，保留 #575。
+
+| 剩余根断言 | 实际结果与源码依据 | 下一最小动作 |
+|---|---|---|
+| no inactive draw | RenderCount 14 vs 12；公开 activation 自动 draw，与上述静态链一致 | 原断言保留；阻塞不靠删测消解，本轮不改框架/共享源 |
+| file scroll positive control | `:1415` offset 未负；`scroll_at` 未先移动真实 cursor，GPUI Div scroll handler 依据 hitbox.should_handle_scroll 而非只凭 event.position | 真实 mouse move 到 body 的已观测可见 clip 内，再发原 wheel，保留 offset/阅读/隔离断言 |
+| keyboard focus border | `:814` 无 accent border；测试在 keyboard shift-tab 后调用 pointer_out，MouseMove 改回 mouse modality，而 focus_visible 要求 last_input_was_keyboard | 将 pointer-out 安排在键盘操作前；之后只 frame 并断言真实 keyboard modality/focus，保留原 ring 与几何断言 |
+| live stream restore paint | full text 实际 paint 0 vs 1；测试把 ResumeTail 发给仍 focused 的 Composer，但真实 action handler 仅在 scroll-to-bottom 按钮 scope | 用真实已挂载 resume-tail 控件的 focus/鼠标入口触发原 handler；可加默认关闭只读 focus/bounds 观察，不直调私有 resume_tail 或删除精确 text paint/anchor 断言 |
+
+只授权上述三类 fixture/event 接线最小修复及记录，所有 22 项原行为断言保留，no-draw 限制仍阻塞清理/合并。若真实输入前提建立后仍失败，单独报告产品或观测故障，不改无关导航/流式/list 算法。
+
+## 三项事件夹具修复保存（待云端验证）
+
+- 基于 HEAD `acb20d09902bf0aa408565e1364eceeff195b995`，本 writer 仅修改 `crates/vega/src/window/workspace/motion_tests.rs`、`crates/vega_ui/src/conversation_stream/core.rs` 并追加本节；上节父诊断保留。未修改 Git/index、依赖、共享 motion 或生产业务逻辑，未启动 PR/CI。
+- 滚轮：`scroll_at` 在原 wheel 前真实 mouse move 到同一位置；`body_position` 要求实际 paint bounds 与 clip 交集宽高为正。文件阳性对照先断言真实 selected、focus 和唯一已绘制 body；原 120 行长内容、负 offset、阅读内容恢复及多实体输入隔离断言均保留，没有直接设置 scroll offset。
+- 焦点环：两处 pointer-out 均在键盘导航前，Shift-Tab 后仅 frame；每次读取 ring 都断言真实 keyboard modality 和目标 tab focus。原非空 accent quads、各帧 ring/几何/文字颜色断言不变，另核对关闭按钮颜色在 0/30/60/120ms 不变；不改生产 focus-visible。
+- 恢复跟尾：新增仅 `test-support` feature 下的只读 `observed_resume_tail_focus`，只 clone 现有按钮 focus handle。fixture 正常 frame 后确认尚未 following tail，focus 真实按钮并确认焦点，再 dispatch 原 `ResumeTail`；新增 action 后即时 following-tail 断言以区分路由失败与后续 paint 失败。精确完整正文恰好一次实际 paint、最终 following tail、阅读 anchor、Composer 草稿、Terminal 输入与同 entity 断言均保留，未直调私有方法或写 follow mode。
+- 静态保留核对 exit 0：HEAD 与工作树测试名称/顺序相同，仍为原 22 项；无删除 assertion 行、无 ignore；`inactivity_without_a_draw_then_quick_restore_adopts_latest_target` 函数与 HEAD 逐字节一致。代码双文件 `git diff --binary -- <上述两条源码路径>` SHA-256：`edb55518b47396bb06c388dd05cf9265d687e721c22482855ba0dc5ec96d42ec`。
+- 本轮未本地编译/运行 Vega、check、Clippy、测试、bench 或 CUA。上述三项是否修复实际失败仍待父 Agent 独立审查与新 Actions；没有新执行/通过计数。no-draw 的 RenderCount 14 vs 12 仍是已知 API BLOCKER，严格测试保留，未再调查框架，仍阻塞删测/合并。
