@@ -1116,6 +1116,7 @@ impl ConversationStream {
                     self.apply_controller_error(cx);
                     return;
                 }
+                self.reset_live_context_usage();
                 self.last_finished_agent_message = None;
                 self.begin_computer_use_task(cx);
                 self.active_thinking = None;
@@ -1521,6 +1522,7 @@ impl ConversationStream {
         {
             group.update(cx, |group, cx| group.release_presentation(cx));
         }
+        self.clear_live_context_accounting();
         self.response_checkpoint = None;
         self.network_retry = None;
         self.active_thinking = None;

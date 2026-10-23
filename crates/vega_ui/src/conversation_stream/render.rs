@@ -792,8 +792,7 @@ impl ConversationStream {
 
     fn render_model_controls(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let has_content = !self.entries.is_empty();
-        let (estimated_tokens, context_limit) = self.context_usage_source();
-        let display = ContextUsageDisplay::new(estimated_tokens, context_limit);
+        let display = self.context_usage_display();
         let colors = theme(cx).colors;
         let focused = self.context_usage_focus.contains_focused(window, cx);
         let hovered = self.context_usage_trigger_hovered || self.context_usage_tooltip_hovered;
@@ -1060,7 +1059,7 @@ impl ConversationStream {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(div().child("估算已用 / 配置输入上限"))
+                            .child(div().child(display.usage_label()))
                             .child(
                                 div()
                                     .text_color(colors.text_primary)
