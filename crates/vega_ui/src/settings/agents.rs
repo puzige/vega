@@ -183,6 +183,7 @@ enum NativeAgentAction {
     Desktop,
     Browser,
     Check,
+    Prepare,
     Accessibility,
     ScreenRecording,
     Extension,
@@ -201,6 +202,7 @@ impl SettingsView {
                 }
                 self.save_preferences(config, cx);
             }
+            NativeAgentAction::Prepare => cx.emit(DesktopPreparationRequested),
             NativeAgentAction::Check => {
                 if self.computer_use_check_pending {
                     return;
@@ -245,6 +247,11 @@ impl SettingsView {
         let colors = theme(cx).colors;
         settings_action_chrome(colors)
             .id(id)
+            .when(matches!(action, NativeAgentAction::Prepare), |button| {
+                button
+                    .role(gpui_kit::Role::Button)
+                    .aria_label(label.to_string())
+            })
             .interaction_surface(
                 colors.bg_elevated,
                 colors.bg_hover,
@@ -290,6 +297,7 @@ impl SettingsView {
             .child(settings_field("浏览器操控", Some("使用已登录的 Chrome 标签页".into()),
                 self.native_agent_button("settings-browser-use-toggle", if self.config.agent.browser_use_enabled { "已开启" } else { "已关闭" }, NativeAgentAction::Browser, self.provider_management.saving, cx), colors))
             .child(div().mt_3().flex().flex_wrap().gap_2()
+                .child(self.native_agent_button("settings-desktop-use-prepare", "电脑操控准备", NativeAgentAction::Prepare, false, cx))
                 .child(self.native_agent_button("settings-computer-use-check", if self.computer_use_check_pending { "检测中…" } else { "检测随包组件" }, NativeAgentAction::Check, self.computer_use_check_pending, cx))
                 .child(self.native_agent_button("settings-computer-use-accessibility", "辅助功能设置", NativeAgentAction::Accessibility, false, cx))
                 .child(self.native_agent_button("settings-computer-use-screen-recording", "屏幕录制设置", NativeAgentAction::ScreenRecording, false, cx))

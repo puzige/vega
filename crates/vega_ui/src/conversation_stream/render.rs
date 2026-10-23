@@ -432,16 +432,7 @@ impl ConversationStream {
                     .text_size(px(Typography::BODY))
                     .text_color(ink)
                     .cursor_pointer()
-                    .interaction_surface(
-                        if self.permission_picker_open {
-                            colors.bg_active
-                        } else {
-                            colors.bg_hover
-                        },
-                        colors.bg_active,
-                        colors.bg_active,
-                        true,
-                    )
+                    .interactive(colors, true, self.permission_picker_open)
                     .tooltip(move |_, cx| crate::icons::tooltip("切换权限模式", cx))
                     .on_mouse_up(
                         MouseButton::Left,
@@ -1189,16 +1180,7 @@ impl ConversationStream {
                         colors.text_tertiary
                     })
                     .when(enabled, |trigger| trigger.cursor_pointer())
-                    .interaction_surface(
-                        if self.model_picker_level.is_open() {
-                            colors.bg_active
-                        } else {
-                            colors.bg_hover
-                        },
-                        colors.bg_active,
-                        colors.bg_active,
-                        enabled,
-                    )
+                    .interactive(colors, enabled, self.model_picker_level.is_open())
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseUpEvent, window, cx| {
