@@ -37,6 +37,7 @@ const ENTRIES: [Entry; 5] = [
 #[derive(Default)]
 struct Geometry {
     surface: Option<Bounds<Pixels>>,
+    root_renders: usize,
 }
 
 struct ProductionHeader {
@@ -65,7 +66,7 @@ fn tool(call_id: &str, cx: &mut App) -> Entity<ToolCard> {
         reused: true,
         exit_code: Some(0),
         duration_ms: Some(30),
-        truncated: Some(false),
+        truncated: None,
         invalid: None,
     }));
     cx.new(|_| card)
@@ -147,6 +148,7 @@ impl ProductionHeader {
 
 impl Render for ProductionHeader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.geometry.borrow_mut().root_renders += 1;
         let geometry = self.geometry.clone();
         let content = if !self.mounted {
             div().into_any_element()
@@ -301,6 +303,14 @@ impl Fixture {
             .unwrap()
     }
 
+    fn root_renders(&mut self) -> usize {
+        self.window
+            .update(&mut self.cx, |view, _, _| {
+                view.geometry.borrow().root_renders
+            })
+            .unwrap()
+    }
+
     fn geometry(&mut self) -> Bounds<Pixels> {
         self.window
             .update(&mut self.cx, |view, _, _| {
@@ -314,8 +324,8 @@ impl Fixture {
 
     fn key(&mut self, key: &str) {
         let focus = self.draw().scope.focus;
-        self.window
-            .update(&mut self.cx, |_, window, cx| {
+        self.cx
+            .update_window(self.window.into(), |_, window, cx| {
                 focus.focus(window, cx);
                 assert!(
                     focus.is_focused(window),
@@ -327,8 +337,8 @@ impl Fixture {
     }
 
     fn hover(&mut self, position: Point<Pixels>) {
-        self.window
-            .update(&mut self.cx, |_, window, cx| {
+        self.cx
+            .update_window(self.window.into(), |_, window, cx| {
                 window.dispatch_event(
                     MouseMoveEvent {
                         position,
@@ -343,8 +353,8 @@ impl Fixture {
     }
 
     fn click(&mut self, paint: &GlyphPaint) {
-        self.window
-            .update(&mut self.cx, |_, window, cx| {
+        self.cx
+            .update_window(self.window.into(), |_, window, cx| {
                 let position = paint.bounds.center();
                 window.dispatch_event(
                     gpui_kit::MouseDownEvent {
@@ -373,8 +383,8 @@ impl Fixture {
 
     fn tick(&mut self, elapsed: Duration) -> GlyphPaint {
         self.cx.advance_clock(elapsed);
-        self.window
-            .update(&mut self.cx, |_, window, cx| {
+        self.cx
+            .update_window(self.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx);
             })
             .unwrap();
@@ -513,14 +523,14 @@ fn disclosure_retargets_from_the_painted_angle_without_queuing_or_resetting(
         let settled = fixture.tick(TURN);
         assert_angle(displayed_angle(&settled), FRAC_PI_2);
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx);
             })
             .unwrap();
         let pending = fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx)
             })
             .unwrap();
@@ -572,8 +582,8 @@ fn initial_mount_remount_and_unrelated_stream_redraw_adopt_current_direction(
             assert_angle(displayed_angle(&remount), displayed_angle(&initial));
             assert_eq!(fixture.geometry(), geometry);
             let pending = fixture
-                .window
-                .update(&mut fixture.cx, |_, window, cx| {
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| {
                     window.simulate_next_frame(cx)
                 })
                 .unwrap();
@@ -599,8 +609,8 @@ fn reduced_motion_and_offscreen_disclosures_settle_without_replay(
         assert_angle(displayed_angle(&reduced), FRAC_PI_2);
         assert_eq!(
             fixture
-                .window
-                .update(&mut fixture.cx, |_, window, cx| window
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| window
                     .simulate_next_frame(cx))
                 .unwrap(),
             0
@@ -710,8 +720,8 @@ fn collapsed_arrows_remain_hover_and_keyboard_discoverable_without_extra_focus_t
         fixture.hover(point(px(600.), px(650.)));
         assert_eq!(fixture.draw().opacity, 0.);
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 initial.scope.focus.focus(window, cx);
                 window.dispatch_keystroke(Keystroke::parse("shift").unwrap(), cx);
             })
@@ -855,9 +865,9 @@ impl Render for StreamSurface {
 }
 
 struct StreamFixture {
-    cx: HeadlessAppContext,
-    window: WindowHandle<StreamSurface>,
     stream: Entity<ConversationStream>,
+    window: WindowHandle<StreamSurface>,
+    cx: HeadlessAppContext,
 }
 
 impl StreamFixture {
@@ -878,8 +888,7 @@ impl StreamFixture {
                 })
             })
             .unwrap();
-        window
-            .update(&mut cx, |_, window, _| window.activate_window())
+        cx.update_window(window.into(), |_, window, _| window.activate_window())
             .unwrap();
         cx.run_until_parked();
         Self { cx, window, stream }
@@ -920,8 +929,8 @@ impl StreamFixture {
                 paint.scope.owner.as_ref() == format!("run-stage-{}-0", group.entity_id())
             })
             .expect("WIRING: actual process stage header is visible");
-        self.window
-            .update(&mut self.cx, |_, window, cx| {
+        self.cx
+            .update_window(self.window.into(), |_, window, cx| {
                 paint.scope.focus.focus(window, cx);
                 window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
             })
@@ -944,8 +953,8 @@ impl StreamFixture {
     }
 
     fn drag(&mut self, start: Point<Pixels>, end: Point<Pixels>) {
-        self.window
-            .update(&mut self.cx, |_, window, cx| {
+        self.cx
+            .update_window(self.window.into(), |_, window, cx| {
                 window.dispatch_event(
                     gpui_kit::MouseDownEvent {
                         button: MouseButton::Left,
@@ -982,8 +991,8 @@ impl StreamFixture {
     }
 
     fn selected_text(&mut self) -> String {
-        self.window
-            .update(&mut self.cx, |_, window, cx| {
+        self.cx
+            .update_window(self.window.into(), |_, window, cx| {
                 gpui_kit::base::TextSelection::selected_text(window, cx)
             })
             .unwrap()
@@ -1032,8 +1041,8 @@ fn first_trusted_final_collapses_reading_selection_and_focus_then_enter_reopens(
         "WIRING: real mouse drag must select visible source before Final"
     );
     fixture
-        .window
-        .update(&mut fixture.cx, |_, window, cx| {
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
             assert!(
                 thinking.read(cx).contains_focus(window, cx),
                 "WIRING: selection owns real process focus"
@@ -1067,8 +1076,8 @@ fn first_trusted_final_collapses_reading_selection_and_focus_then_enter_reopens(
         .find(|paint| paint.scope.owner.as_ref() == format!("run-disclosure-{}", group.entity_id()))
         .expect("visible run header after collapse");
     fixture
-        .window
-        .update(&mut fixture.cx, |_, window, cx| {
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
             assert!(
                 header.scope.focus.is_focused(window),
                 "focus must return to visible production run header"
@@ -1155,8 +1164,8 @@ fn final_does_not_steal_composer_or_other_turn_focus_and_selection(
             })
             .expect("WIRING: previous visible run header");
         let before = fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 if composer {
                     fixture
                         .stream
@@ -1171,8 +1180,8 @@ fn final_does_not_steal_composer_or_other_turn_focus_and_selection(
             .unwrap();
         fixture.final_event("current", COMMENTARY.len() + FINAL_TEXT.len());
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 assert!(!group.read(cx).expanded());
                 assert_eq!(
                     window.focused(cx),
@@ -1389,8 +1398,8 @@ fn settled_arrow_frames_do_not_rematerialize_messages_or_change_the_reading_anch
         .find(|paint| paint.scope.owner.as_ref() == format!("run-disclosure-{}", group.entity_id()))
         .unwrap();
     fixture
-        .window
-        .update(&mut fixture.cx, |_, window, cx| {
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
             fixture.stream.update(cx, |stream, _| {
                 stream.list.set_follow_mode(gpui_kit::FollowMode::Normal)
             });
@@ -1422,8 +1431,8 @@ fn settled_arrow_frames_do_not_rematerialize_messages_or_change_the_reading_anch
     for _ in 0..8 {
         fixture.cx.advance_clock(Duration::from_millis(15));
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx);
             })
             .unwrap();
@@ -1476,8 +1485,8 @@ fn visible_final_and_other_turn_selections_survive_first_collapse(
         });
         let selected = fixture.select_entry(index);
         let focus = fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window
                     .focused(cx)
                     .expect("selection focus on visible Final")
@@ -1502,8 +1511,8 @@ fn visible_final_and_other_turn_selections_survive_first_collapse(
         fixture.draw();
         assert_eq!(fixture.selected_text(), selected);
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 assert!(!current.read(cx).expanded());
                 assert_eq!(window.focused(cx), Some(focus));
                 assert_eq!(
@@ -1578,13 +1587,14 @@ fn inactive_disclosure_adopts_truth_and_does_not_replay_when_reactivated(
                 cx.new(|_| gpui_kit::Empty)
             })
             .unwrap();
-        blocker
-            .update(&mut fixture.cx, |_, window, _| window.activate_window())
+        fixture
+            .cx
+            .update_window(blocker.into(), |_, window, _| window.activate_window())
             .unwrap();
         fixture.cx.run_until_parked();
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, _| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, _| {
                 assert!(
                     !window.is_window_active(),
                     "WIRING: real deactivation delivered"
@@ -1593,22 +1603,24 @@ fn inactive_disclosure_adopts_truth_and_does_not_replay_when_reactivated(
             .unwrap();
         assert_angle(displayed_angle(&fixture.draw()), FRAC_PI_2);
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx);
             })
             .unwrap();
         assert_eq!(
             fixture
-                .window
-                .update(&mut fixture.cx, |_, window, cx| window
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| window
                     .simulate_next_frame(cx))
                 .unwrap(),
             0
         );
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, _| window.activate_window())
+            .cx
+            .update_window(fixture.window.into(), |_, window, _| {
+                window.activate_window()
+            })
             .unwrap();
         fixture.cx.run_until_parked();
         assert_angle(displayed_angle(&fixture.draw()), FRAC_PI_2);
@@ -1784,8 +1796,8 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
     fixture.draw();
     let painted_rows = |fixture: &mut StreamFixture| {
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 let count = artifact.read(cx).row_count();
                 assert_eq!(count, 4);
                 let snapshots = gpui_kit::base::test_support::snapshots(window);
@@ -1812,8 +1824,8 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
     };
     let before_rows = painted_rows(&mut fixture);
     let focus = fixture
-        .window
-        .update(&mut fixture.cx, |_, window, cx| {
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
             let focus = artifact.read(cx).focus_handle(cx);
             focus.focus(window, cx);
             assert!(artifact.read(cx).contains_focus(window, cx));
@@ -1824,8 +1836,8 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
     fixture.cx.run_until_parked();
     fixture.draw();
     fixture
-        .window
-        .update(&mut fixture.cx, |_, window, cx| {
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
             assert!(!group.read(cx).expanded());
             assert!(focus.is_focused(window));
             assert!(artifact.read(cx).contains_focus(window, cx));
@@ -1890,8 +1902,8 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
         .unwrap();
     layout::take();
     fixture
-        .window
-        .update(&mut fixture.cx, |_, window, cx| {
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
             header.scope.focus.focus(window, cx);
             window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
         })
@@ -1924,8 +1936,8 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
         layout::take();
         fixture.cx.advance_clock(Duration::from_millis(15));
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx);
             })
             .unwrap();
@@ -1958,8 +1970,8 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
         layout::take();
         fixture.cx.advance_clock(Duration::from_millis(15));
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx);
             })
             .unwrap();
@@ -2068,69 +2080,66 @@ fn tab_and_shift_tab_visit_only_enabled_real_headers_and_not_the_decorative_glyp
             let surface = surface.read(cx);
             (surface.before.clone(), surface.after.clone())
         });
-        window
-            .update(&mut cx, |_, window, cx| {
-                before.focus(window, cx);
-                window.dispatch_keystroke(Keystroke::parse("tab").unwrap(), cx);
-                if disabled {
-                    assert!(
-                        after.is_focused(window),
-                        "no-content header must be skipped by Tab"
-                    );
-                } else {
-                    assert!(
-                        glyph.scope.focus.is_focused(window),
-                        "Tab reaches real header, not glyph"
-                    );
-                    window.dispatch_keystroke(Keystroke::parse("space").unwrap(), cx);
-                    assert!(header.read(cx).expanded(cx));
-                    window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
-                    assert!(!header.read(cx).expanded(cx));
-                }
-            })
-            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            before.focus(window, cx);
+            window.dispatch_keystroke(Keystroke::parse("tab").unwrap(), cx);
+            if disabled {
+                assert!(
+                    after.is_focused(window),
+                    "no-content header must be skipped by Tab"
+                );
+            } else {
+                assert!(
+                    glyph.scope.focus.is_focused(window),
+                    "Tab reaches real header, not glyph"
+                );
+                window.dispatch_keystroke(Keystroke::parse("space").unwrap(), cx);
+                assert!(header.read(cx).expanded(cx));
+                window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+                assert!(!header.read(cx).expanded(cx));
+            }
+        })
+        .unwrap();
         cx.update_window(window.into(), |_, window, cx| {
             window.refresh();
             window.draw(cx).clear(cx);
         })
         .unwrap();
-        window
-            .update(&mut cx, |_, window, cx| {
-                if !disabled {
-                    window.dispatch_keystroke(Keystroke::parse("tab").unwrap(), cx);
-                    assert!(after.is_focused(window), "no extra arrow Tab stop");
-                }
+        cx.update_window(window.into(), |_, window, cx| {
+            if !disabled {
+                window.dispatch_keystroke(Keystroke::parse("tab").unwrap(), cx);
+                assert!(after.is_focused(window), "no extra arrow Tab stop");
+            }
+            window.dispatch_keystroke(Keystroke::parse("shift-tab").unwrap(), cx);
+            if disabled {
+                assert!(before.is_focused(window));
+                glyph.scope.focus.focus(window, cx);
+                window.dispatch_keystroke(Keystroke::parse("space").unwrap(), cx);
+                window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+                assert!(!header.read(cx).expanded(cx));
+            } else {
+                assert!(glyph.scope.focus.is_focused(window));
                 window.dispatch_keystroke(Keystroke::parse("shift-tab").unwrap(), cx);
-                if disabled {
-                    assert!(before.is_focused(window));
-                    glyph.scope.focus.focus(window, cx);
-                    window.dispatch_keystroke(Keystroke::parse("space").unwrap(), cx);
-                    window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
-                    assert!(!header.read(cx).expanded(cx));
-                } else {
-                    assert!(glyph.scope.focus.is_focused(window));
-                    window.dispatch_keystroke(Keystroke::parse("shift-tab").unwrap(), cx);
-                    assert!(before.is_focused(window));
-                }
-            })
-            .unwrap();
+                assert!(before.is_focused(window));
+            }
+        })
+        .unwrap();
         if disabled {
             let position = glyph.bounds.center();
-            window
-                .update(&mut cx, |_, window, cx| {
-                    window.dispatch_event(
-                        MouseUpEvent {
-                            button: MouseButton::Left,
-                            position,
-                            modifiers: Modifiers::default(),
-                            click_count: 1,
-                        }
-                        .to_platform_input(),
-                        cx,
-                    );
-                    assert!(!header.read(cx).expanded(cx));
-                })
-                .unwrap();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(
+                    MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                assert!(!header.read(cx).expanded(cx));
+            })
+            .unwrap();
         }
     }
 }
@@ -2141,7 +2150,12 @@ fn rapid_reactivation_without_an_inactive_draw_does_not_replay_missed_motion(
 ) {
     for entry in ENTRIES {
         let mut fixture = Fixture::open(entry, false, false);
+        let before_draw = fixture.root_renders();
         fixture.draw();
+        assert!(
+            fixture.root_renders() > before_draw,
+            "WIRING: real root refresh/draw must advance the render counter"
+        );
         fixture.key("enter");
         fixture.draw();
         let moving = fixture.tick(Duration::from_millis(25));
@@ -2152,37 +2166,51 @@ fn rapid_reactivation_without_an_inactive_draw_does_not_replay_missed_motion(
                 cx.new(|_| gpui_kit::Empty)
             })
             .unwrap();
-        blocker
-            .update(&mut fixture.cx, |_, window, _| window.activate_window())
+        let before_deactivation = fixture.root_renders();
+        fixture
+            .cx
+            .update_window(blocker.into(), |_, window, _| window.activate_window())
             .unwrap();
         fixture.cx.run_until_parked();
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, _| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, _| {
                 assert!(!window.is_window_active())
             })
             .unwrap();
         fixture.cx.advance_clock(Duration::from_millis(1));
+        assert_eq!(
+            fixture.root_renders(),
+            before_deactivation,
+            "WIRING: automatic inactive root render invalidates the no-inactive-draw precondition"
+        );
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, _| window.activate_window())
+            .cx
+            .update_window(fixture.window.into(), |_, window, _| {
+                window.activate_window()
+            })
             .unwrap();
         fixture.cx.run_until_parked();
+        assert_eq!(
+            fixture.root_renders(),
+            before_deactivation,
+            "WIRING: root must not render between deactivation and the explicit reactivation draw"
+        );
         assert_angle(displayed_angle(&fixture.draw()), FRAC_PI_2);
         assert_angle(
             displayed_angle(&fixture.tick(Duration::from_millis(1))),
             FRAC_PI_2,
         );
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx);
             })
             .unwrap();
         assert_eq!(
             fixture
-                .window
-                .update(&mut fixture.cx, |_, window, cx| window
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| window
                     .simulate_next_frame(cx))
                 .unwrap(),
             0
@@ -2225,8 +2253,8 @@ fn mounted_but_clipped_or_hidden_arrows_stop_frames_and_resume_at_truth(
         fixture.draw_without_glyph();
         assert_eq!(
             fixture
-                .window
-                .update(&mut fixture.cx, |_, window, cx| window
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| window
                     .simulate_next_frame(cx))
                 .unwrap(),
             0
@@ -2284,8 +2312,8 @@ fn thinking_shimmer_keeps_its_own_active_visible_reduced_and_finished_frame_gate
     fixture.draw();
     let frame_count = |fixture: &mut Fixture| {
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 window.simulate_next_frame(cx)
             })
             .unwrap()
@@ -2331,8 +2359,9 @@ fn thinking_shimmer_keeps_its_own_active_visible_reduced_and_finished_frame_gate
             cx.new(|_| gpui_kit::Empty)
         })
         .unwrap();
-    blocker
-        .update(&mut fixture.cx, |_, window, _| window.activate_window())
+    fixture
+        .cx
+        .update_window(blocker.into(), |_, window, _| window.activate_window())
         .unwrap();
     fixture.cx.run_until_parked();
     fixture.draw();
@@ -2340,8 +2369,10 @@ fn thinking_shimmer_keeps_its_own_active_visible_reduced_and_finished_frame_gate
     fixture.draw();
     assert_eq!(frame_count(&mut fixture), 0);
     fixture
-        .window
-        .update(&mut fixture.cx, |_, window, _| window.activate_window())
+        .cx
+        .update_window(fixture.window.into(), |_, window, _| {
+            window.activate_window()
+        })
         .unwrap();
     fixture.cx.run_until_parked();
     fixture.draw();
@@ -2385,15 +2416,15 @@ fn losing_source_mid_turn_disables_click_keyboard_and_decorative_frames(
     assert!(!fixture.expanded());
     fixture.draw();
     fixture
-        .window
-        .update(&mut fixture.cx, |_, window, cx| {
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
             window.simulate_next_frame(cx);
         })
         .unwrap();
     assert_eq!(
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| window
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| window
                 .simulate_next_frame(cx))
             .unwrap(),
         0
@@ -2431,8 +2462,8 @@ impl StreamFixture {
     }
 
     fn scroll_up(&mut self, pixels: f32) {
-        self.window
-            .update(&mut self.cx, |_, window, cx| {
+        self.cx
+            .update_window(self.window.into(), |_, window, cx| {
                 window.dispatch_event(
                     gpui_kit::ScrollWheelEvent {
                         position: point(px(320.), px(240.)),
@@ -2474,8 +2505,8 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             })
             .expect("WIRING: actual expanded current stage");
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 if reading == "focus" {
                     stage.scope.focus.focus(window, cx);
                     assert!(stage.scope.focus.is_focused(window));
@@ -2512,8 +2543,10 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             .cx
             .update(|cx| fixture.stream.read(cx).scroll_anchor_snapshot());
         let before_focus = fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| window.focused(cx).unwrap())
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
+                window.focused(cx).unwrap()
+            })
             .unwrap();
         fixture.final_event("current", COMMENTARY.len() + FINAL_TEXT.len());
         fixture.cx.update(|cx| {
@@ -2532,8 +2565,8 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             })
             .expect("WIRING: current run header stays visible after first Final");
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 if reading == "focus" {
                     assert!(
                         header.scope.focus.is_focused(window),
@@ -2586,16 +2619,12 @@ fn pending_permission_remains_visible_and_usable_after_trusted_final_collapses_p
     use std::{
         future::Future,
         pin::Pin,
-        task::{Context as TaskContext, Poll, Wake, Waker},
+        task::{Context as TaskContext, Poll, Waker},
     };
     use vega_conversation::{
         agent::PermissionHook as _,
         types::{PermissionDecision, PermissionRequest},
     };
-    struct NoopWake;
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
     let mut fixture = StreamFixture::open();
     let (group, _) = fixture.begin("current");
     let queue = fixture
@@ -2662,8 +2691,8 @@ fn pending_permission_remains_visible_and_usable_after_trusted_final_collapses_p
     fixture.cx.run_until_parked();
     fixture.draw();
     fixture
-        .window
-        .update(&mut fixture.cx, |_, window, cx| {
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
             let stream = fixture.stream.read(cx);
             assert!(!group.read(cx).expanded());
             assert_eq!(stream.active_permission.as_ref(), Some(&permission));
@@ -2682,8 +2711,7 @@ fn pending_permission_remains_visible_and_usable_after_trusted_final_collapses_p
         .unwrap();
     fixture.cx.run_until_parked();
     fixture.draw();
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut task = TaskContext::from_waker(&waker);
+    let mut task = TaskContext::from_waker(Waker::noop());
     match Future::poll(Pin::as_mut(&mut decision), &mut task) {
         Poll::Ready(Ok(PermissionDecision::Once)) => {}
         _ => panic!(
@@ -2730,8 +2758,8 @@ fn long_thinking_stream_interleaves_reversals_and_real_composer_character_input(
                 })
                 .unwrap();
             fixture
-                .window
-                .update(&mut fixture.cx, |_, window, cx| {
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| {
                     glyph.scope.focus.focus(window, cx);
                     window.dispatch_keystroke(Keystroke::parse("space").unwrap(), cx);
                     fixture
@@ -2755,8 +2783,8 @@ fn long_thinking_stream_interleaves_reversals_and_real_composer_character_input(
             });
             fixture.draw();
             fixture
-                .window
-                .update(&mut fixture.cx, |_, window, cx| {
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| {
                     use gpui_kit::Focusable as _;
                     assert!(input.read(cx).focus_handle(cx).is_focused(window));
                     window.dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
@@ -2770,8 +2798,8 @@ fn long_thinking_stream_interleaves_reversals_and_real_composer_character_input(
                 .unwrap();
             fixture.cx.advance_clock(Duration::from_millis(15));
             fixture
-                .window
-                .update(&mut fixture.cx, |_, window, cx| {
+                .cx
+                .update_window(fixture.window.into(), |_, window, cx| {
                     window.simulate_next_frame(cx);
                 })
                 .unwrap();
@@ -2788,8 +2816,8 @@ fn long_thinking_stream_interleaves_reversals_and_real_composer_character_input(
         }
         fixture.final_event("current", COMMENTARY.len() + FINAL_TEXT.len());
         fixture
-            .window
-            .update(&mut fixture.cx, |_, window, cx| {
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
                 use gpui_kit::Focusable as _;
                 assert!(!group.read(cx).expanded());
                 assert!(input.read(cx).focus_handle(cx).is_focused(window));
