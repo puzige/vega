@@ -6,7 +6,7 @@ use std::{
 };
 use tokio::sync::oneshot;
 use vega_conversation::types::{
-    ConversationEvent, SubagentAdmission, SubagentHost, SubagentSnapshot,
+    ConversationEvent, SubagentAdmission, SubagentAdmissionOutcome, SubagentHost, SubagentSnapshot,
 };
 use vega_runtime::VegaError;
 
@@ -59,15 +59,33 @@ impl SubagentHost for NativeSubagentHost {
         &self,
         admission: SubagentAdmission,
     ) -> Pin<Box<dyn Future<Output = Result<(), VegaError>> + Send + 'static>> {
+        let pending = self.admit_with_ownership(admission);
+        Box::pin(async move {
+            match pending.await {
+                SubagentAdmissionOutcome::Accepted => Ok(()),
+                SubagentAdmissionOutcome::Rejected(error)
+                | SubagentAdmissionOutcome::Unknown(error) => Err(error),
+            }
+        })
+    }
+    fn admit_with_ownership(
+        &self,
+        admission: SubagentAdmission,
+    ) -> Pin<Box<dyn Future<Output = SubagentAdmissionOutcome> + Send + 'static>> {
         let (reply, receiver) = oneshot::channel();
-        let cancel = admission.cancel.clone();
         let sent = self.send(NativeSubagentUpdate::Admit {
             admission: Box::new(admission),
             reply,
         });
         Box::pin(async move {
-            sent?;
-            tokio::select! {biased; _ = cancel.cancelled() => Err(VegaError::Cancelled), result = receiver => result.map_err(|_| unavailable())?}
+            if let Err(error) = sent {
+                return SubagentAdmissionOutcome::Rejected(error);
+            }
+            match receiver.await {
+                Ok(Ok(())) => SubagentAdmissionOutcome::Accepted,
+                Ok(Err(error)) => SubagentAdmissionOutcome::Rejected(error),
+                Err(_) => SubagentAdmissionOutcome::Unknown(unavailable()),
+            }
         })
     }
     fn event(
@@ -90,6 +108,9 @@ impl SubagentHost for NativeSubagentHost {
         snapshot: SubagentSnapshot,
         usage_complete: bool,
     ) -> Pin<Box<dyn Future<Output = Result<(), VegaError>> + Send + 'static>> {
+        if !snapshot.state.is_terminal() {
+            return Box::pin(async { Err(unavailable()) });
+        }
         let (reply, receiver) = oneshot::channel();
         let sent = self.send(NativeSubagentUpdate::FinishedAndRelease {
             snapshot,
@@ -102,9 +123,16 @@ impl SubagentHost for NativeSubagentHost {
         })
     }
     fn finished(&self, snapshot: SubagentSnapshot, usage_complete: bool) -> Result<(), VegaError> {
+        if !snapshot.state.is_terminal() {
+            return Err(unavailable());
+        }
         self.send(NativeSubagentUpdate::Finished {
             snapshot,
             usage_complete,
         })
     }
 }
+
+#[cfg(test)]
+#[path = "native_subagent_tests.rs"]
+mod tests;

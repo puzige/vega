@@ -1,11 +1,17 @@
 use super::*;
-use crate::types::{SubagentAdmission, SubagentHost, SubagentSnapshot, SubagentState, TaskBackend};
+use crate::types::{
+    SubagentAdmission, SubagentAdmissionOutcome, SubagentHost, SubagentSnapshot, SubagentState,
+    TaskBackend,
+};
 use futures::future::LocalBoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
 use tokio::sync::Notify;
+#[path = "subagents/lifecycle_ownership.rs"]
+mod lifecycle_ownership;
 #[path = "subagents/stage_recovery.rs"]
 mod stage_recovery;
+use lifecycle_ownership::LifecycleOwnership;
 use vega_store::delegated_ownership::DelegatedOwnership;
 
 #[cfg(test)]
@@ -1013,6 +1019,7 @@ fn child_lifecycle_inner<'a>(
         let permissions = PermissionQueue::with_activity(activity.clone());
         let questions = UserQuestionQueue::with_activity(activity.clone());
         let queue_generation = ulid::Ulid::generate().to_string();
+        let mut ownership = LifecycleOwnership::new(database.clone(), snapshot.clone(), previous.as_ref().map(|previous| previous.message_id.clone()), owner.clone(), registry.clone(), cancel.clone());
         let mut resumed_admission = false;
         if let (Some(input), Some(previous)) = (&resume,&previous) {
             let validation = async {
@@ -1021,8 +1028,14 @@ fn child_lifecycle_inner<'a>(
                 let row = vega_store::threads::find(store.conn(),&snapshot.agent_id)?.ok_or_else(|| failure("unknown_agent"))?;
                 let config = stage_recovery::tool_config(&database,&snapshot,&settings,row.project_id.clone());
                 let thread = crate::threads::thread_from_row(&row).map_err(|_| failure("child identity unavailable"))?;
-                host.admit(SubagentAdmission { thread,snapshot:snapshot.clone(),cancel:cancel.clone(),permission_queue:permissions.clone(),user_questions:questions.clone(),task:task.clone(),queue_generation:queue_generation.clone() }).await?;
+                ownership.arm();
                 resumed_admission = true;
+                match host.admit_with_ownership(SubagentAdmission { thread,snapshot:snapshot.clone(),cancel:cancel.clone(),permission_queue:permissions.clone(),user_questions:questions.clone(),task:task.clone(),queue_generation:queue_generation.clone() }).await {
+                    SubagentAdmissionOutcome::Accepted => {},
+                    SubagentAdmissionOutcome::Rejected(error) => { resumed_admission=false; return Err(error); },
+                    SubagentAdmissionOutcome::Unknown(error) => return Err(error),
+                }
+                if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
                 stage_recovery::validate_artifacts(&tools,&config,&permissions,&checkpoint,&cancel).await?;
                 stage_recovery::verify_resume(&store,&snapshot,previous,input)?;
                 if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
@@ -1030,12 +1043,14 @@ fn child_lifecycle_inner<'a>(
             }.await;
             if let Err(error) = validation {
                 questions.cancel_active(); permissions.timeout_active();
-                if resumed_admission && host.finish_and_release(snapshot.clone(),false).await.is_err() { owner.clone().quarantine(); registry.quarantine(snapshot.clone(),"Recovery validation host release failed; ownership remains occupied"); }
-                else { registry.discard(&snapshot,Some(previous)); }
+                if resumed_admission && host.finish_and_release(lifecycle_ownership::unstarted_terminal(&snapshot,&cancel),false).await.is_err() {
+                    ownership.quarantine("Recovery validation host release failed; ownership remains occupied");
+                } else if ownership.disarm_unstarted() { registry.discard(&snapshot,Some(previous)); }
                 registry.resolve_call(&call_id,Err(error));
                 return;
             }
         }
+        ownership.arm();
         let created = create_child(
             database.clone(),
             snapshot.clone(),
@@ -1051,8 +1066,9 @@ fn child_lifecycle_inner<'a>(
         let (thread, user_id) = match created {
             Ok(created) => created,
             Err(error) => {
-                if resumed_admission && host.finish_and_release(snapshot.clone(),false).await.is_err() { owner.clone().quarantine(); registry.quarantine(snapshot.clone(),"Recovery admission host release failed; ownership remains occupied"); }
-                else { registry.discard(&snapshot, previous.as_ref()); }
+                if resumed_admission && host.finish_and_release(lifecycle_ownership::unstarted_terminal(&snapshot,&cancel),false).await.is_err() {
+                    ownership.quarantine("Recovery admission host release failed; ownership remains occupied");
+                } else if ownership.disarm_unstarted() { registry.discard(&snapshot,previous.as_ref()); }
                 registry.resolve_call(&call_id, Err(error));
                 return;
             }
@@ -1065,7 +1081,10 @@ fn child_lifecycle_inner<'a>(
             record.committed = true;
         }
         let stage_config = stage_recovery::tool_config(&database,&snapshot,&settings,thread.project_id.clone());
-        let admitted = if resumed_admission { Ok(()) } else { host.admit(SubagentAdmission {
+        let mut host_may_own = resumed_admission;
+        let admitted = if resumed_admission { Ok(()) } else {
+            host_may_own = true;
+            match host.admit_with_ownership(SubagentAdmission {
             thread,
             snapshot: snapshot.clone(),
             cancel: cancel.clone(),
@@ -1073,7 +1092,11 @@ fn child_lifecycle_inner<'a>(
             user_questions: questions.clone(),
             task: task.clone(),
             queue_generation: queue_generation.clone(),
-        }).await };
+        }).await {
+            SubagentAdmissionOutcome::Accepted => Ok(()),
+            SubagentAdmissionOutcome::Rejected(error) => { host_may_own=false; Err(error) },
+            SubagentAdmissionOutcome::Unknown(error) => Err(error),
+        }};
         let admitted = admitted.and_then(|()| {
             if cancel.is_cancelled() {
                 Err(VegaError::Cancelled)
@@ -1239,22 +1262,16 @@ fn child_lifecycle_inner<'a>(
         } else {
             let _ = registry.update(snapshot.clone());
         }
-        let release = host.finish_and_release(snapshot.clone(), complete && persisted);
-        let released = release.await.is_ok();
+        let released = !host_may_own || host.finish_and_release(snapshot.clone(),complete && persisted).await.is_ok();
         let release_recorded = if released && persisted {
             Store::open(&database).and_then(|store| vega_store::delegated_stages::set_release(store.conn(),&snapshot.agent_id,&snapshot.message_id,"released")).is_ok()
         } else { false };
         if !release_recorded {
-            if let Ok(store) = Store::open(&database) { let _ = vega_store::delegated_stages::set_release(store.conn(),&snapshot.agent_id,&snapshot.message_id,"quarantined"); }
-            owner.quarantine();
-            registry.quarantine(snapshot, if !persisted { "Subagent terminal persistence failed; ownership remains occupied" } else { "Subagent host release failed; ownership remains occupied" });
+            ownership.quarantine(if !persisted { "Subagent terminal persistence failed; ownership remains occupied" } else { "Subagent host release failed; ownership remains occupied" });
         } else {
             let refreshed = match Store::open(&database) { Ok(store) => stage_recovery::refresh(&store,&mut snapshot).is_ok(), Err(_) => false };
-            if refreshed { registry.finish(snapshot,boundary); }
-            else {
-                if let Ok(store) = Store::open(&database) { let _ = vega_store::delegated_stages::set_release(store.conn(),&snapshot.agent_id,&snapshot.message_id,"quarantined"); }
-                owner.quarantine(); registry.quarantine(snapshot,"Subagent release receipt unavailable; ownership remains occupied");
-            }
+            if refreshed { registry.finish(snapshot,boundary); ownership.disarm(); }
+            else { ownership.quarantine("Subagent release receipt unavailable; ownership remains occupied"); }
         }
     }
     .boxed_local()

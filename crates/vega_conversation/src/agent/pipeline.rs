@@ -657,17 +657,22 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     };
     if let Some(row) =
         vega_store::subagents::find(store.conn(), &thread_id).map_err(runtime_store_error)?
-        && vega_store::delegated_stages::release_state(
+    {
+        let release = vega_store::delegated_stages::release_state(
             store.conn(),
             &thread_id,
             &row.child_message_id,
         )
-        .map_err(runtime_store_error)?
-            == "quarantined"
-    {
-        return Err(ConversationError::CorruptRow(
-            "delegated release remains unconfirmed".into(),
-        ));
+        .map_err(runtime_store_error)?;
+        if release == "quarantined"
+            || (config.delegated_owner.is_none()
+                && release == "held"
+                && !matches!(row.state.as_str(), "running" | "cancelling"))
+        {
+            return Err(ConversationError::CorruptRow(
+                "delegated release remains unconfirmed".into(),
+            ));
+        }
     }
     if !uses_existing_user && config.credential_continuation_id.is_none() && !config.delegated {
         let tx = store.immediate_transaction().map_err(runtime_store_error)?;

@@ -2399,3 +2399,6 @@ async fn unsafe_ownership_paths_fail_closed_without_changing_source_or_dispatchi
 
 #[path = "stage_steering_tests.rs"]
 mod stage_steering_tests;
+
+#[path = "lifecycle_ownership_tests.rs"]
+mod lifecycle_ownership_tests;
