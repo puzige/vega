@@ -88,6 +88,10 @@ pub fn active_count(conn: &Connection, parent: &str, run: &str) -> rusqlite::Res
 }
 
 pub fn insert(conn: &Connection, record: &DelegationRow) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let instruction: String = conn.query_row(
         "SELECT id FROM messages WHERE thread_id=?1 AND role='user' ORDER BY seq LIMIT 1",
         [&record.child_thread_id],
@@ -109,6 +113,10 @@ fn insert_execution(
     previous: Option<&str>,
     instruction: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     conn.execute("INSERT INTO delegated_executions(child_thread_id,parent_thread_id,parent_message_id,request_call_id,child_message_id,name,task,state,result,truncated,created_at,ordinal,previous_child_message_id,kind,instruction_message_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", params![record.child_thread_id,record.parent_thread_id,record.parent_message_id,record.spawn_call_id,record.child_message_id,record.name,record.task,record.state,record.result,record.truncated,record.created_at,ordinal,previous,if previous.is_some() { "followup" } else { "spawn" },instruction])?;
     Ok(())
 }
@@ -173,6 +181,10 @@ pub fn append_resume(
 }
 
 pub fn request_cancel(conn: &Connection, child: &str, run: &str) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let changed = conn.execute("UPDATE delegated_executions SET state='cancelling' WHERE child_thread_id=?1 AND child_message_id=?2 AND state='running'", params![child,run])? == 1;
     if changed {
         conn.execute("UPDATE delegated_runs SET state='cancelling' WHERE child_thread_id=?1 AND child_message_id=?2 AND state='running'", params![child,run])?;
@@ -188,6 +200,10 @@ pub fn finish(
     result: &str,
     truncated: bool,
 ) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let changed = conn.execute("UPDATE delegated_executions SET state=?3,result=?4,truncated=?5 WHERE child_thread_id=?1 AND child_message_id=?2 AND state IN ('running','cancelling')", params![child,run,state,result,truncated])? == 1;
     if changed {
         conn.execute("UPDATE delegated_runs SET state=?3,result=?4,truncated=?5 WHERE child_thread_id=?1 AND child_message_id=?2 AND state IN ('running','cancelling')", params![child,run,state,result,truncated])?;
@@ -196,6 +212,10 @@ pub fn finish(
 }
 
 pub fn recover(conn: &Connection, child: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     conn.execute("UPDATE delegated_executions SET state='interrupted',result='Interrupted before completion',truncated=0 WHERE child_thread_id=?1 AND state IN ('running','cancelling')", [child])?;
     conn.execute("UPDATE delegated_runs SET state='interrupted',result='Interrupted before completion',truncated=0 WHERE child_thread_id=?1 AND state IN ('running','cancelling')", [child])?;
     Ok(())
@@ -209,6 +229,10 @@ pub fn attribute_usage(
     run: &str,
     cache_known: bool,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     conn.execute("UPDATE token_usage SET delegated_parent_thread_id=?3,delegated_parent_message_id=?4,delegated_cache_known=?5 WHERE id=?1 AND thread_id=?2 AND delegated_parent_thread_id IS NULL",params![id,child,parent,run,cache_known])?;
     Ok(())
 }
@@ -219,6 +243,10 @@ pub fn mark_usage_complete(
     run: &str,
     complete: bool,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     conn.execute("UPDATE delegated_executions SET usage_complete=?3 WHERE child_thread_id=?1 AND child_message_id=?2",params![child,run,complete])?;
     conn.execute("UPDATE delegated_runs SET usage_complete=?3 WHERE child_thread_id=?1 AND child_message_id=?2",params![child,run,complete])?;
     Ok(())

@@ -8,6 +8,10 @@ pub fn activate_builtin(
     version: u32,
     digest: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ComputerDelivery,
+    )?;
     if name != "vega-cua"
         || version == 0
         || digest.len() != 64
@@ -32,10 +36,17 @@ pub fn insert_screenshot(
     call_id: &str,
     bytes: &[u8],
 ) -> rusqlite::Result<usize> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ComputerDelivery,
+    )?;
     if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
         return Err(rusqlite::Error::InvalidQuery);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ComputerDelivery,
+    )?;
     let prior: Option<(String,i64,Vec<u8>)> = tx.query_row("SELECT s.message_id,s.ordinal,a.encoded FROM computer_screenshot_artifacts s JOIN image_attachments a ON a.message_id=s.message_id AND a.ordinal=s.ordinal JOIN messages m ON m.id=s.message_id WHERE s.call_id=?1 AND m.thread_id=?2",params![call_id,thread_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
     if let Some((owner, ordinal, encoded)) = prior {
         if owner != message_id || encoded != bytes {

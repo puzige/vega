@@ -28,11 +28,12 @@ pub mod subagents;
 pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
+pub mod write_coordination;
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::TransactionBehavior;
 pub use rusqlite::{Connection, Transaction};
+use write_coordination::{WriteCategory, WriteTransaction};
 
 /// Ordered, compile-time-embedded schema migrations.
 ///
@@ -99,6 +100,13 @@ impl Store {
     /// the standard Vega pragmas: `journal_mode=WAL`, `synchronous=NORMAL`,
     /// `foreign_keys=ON`.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+        Self::open_with_busy_timeout(path, std::time::Duration::from_secs(2))
+    }
+
+    pub fn open_with_busy_timeout(
+        path: impl AsRef<Path>,
+        busy_timeout: std::time::Duration,
+    ) -> Result<Self, rusqlite::Error> {
         let path = path.as_ref();
         let database_path = if path == Path::new(":memory:") || path.as_os_str().is_empty() {
             None
@@ -106,10 +114,14 @@ impl Store {
             Some(path.to_path_buf())
         };
         let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.busy_timeout(busy_timeout)?;
+        let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            let _permit = write_coordination::acquire(&conn, WriteCategory::Initialization)?;
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+        }
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.busy_timeout(std::time::Duration::from_secs(2))?;
         Ok(Self {
             conn,
             database_path,
@@ -126,6 +138,13 @@ impl Store {
         let current: u32 = self
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if current as usize >= MIGRATIONS.len() {
+            return Ok(());
+        }
+        let _permit = write_coordination::acquire(&self.conn, WriteCategory::Migration)?;
+        let current: u32 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
         for (index, sql) in MIGRATIONS.iter().enumerate() {
             let target = (index + 1) as u32;
             if current >= target {
@@ -137,7 +156,7 @@ impl Store {
                 self.conn.pragma_update(None, "foreign_keys", false)?;
             }
             let result = (|| -> Result<(), rusqlite::Error> {
-                let tx = self.conn.unchecked_transaction()?;
+                let tx = WriteTransaction::new(&self.conn, WriteCategory::Migration)?;
                 tx.execute_batch(sql)?;
                 tx.pragma_update(None, "user_version", target)?;
                 tx.commit()
@@ -163,8 +182,8 @@ impl Store {
     /// Opens an unchecked `BEGIN IMMEDIATE` transaction through the shared
     /// connection reference. Conversation orchestration uses this to claim
     /// persisted one-shot work before any provider activity.
-    pub fn immediate_transaction(&self) -> Result<Transaction<'_>, rusqlite::Error> {
-        Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
+    pub fn immediate_transaction(&self) -> Result<WriteTransaction<'_>, rusqlite::Error> {
+        WriteTransaction::new(&self.conn, WriteCategory::RuntimeEvent)
     }
 
     /// Returns the file backing this store, or `None` for SQLite in-memory or

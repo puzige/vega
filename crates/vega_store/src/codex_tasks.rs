@@ -64,7 +64,14 @@ pub fn bind_to_materialized_thread(
     snapshot: &NewCodexTaskSnapshot,
     created_at: i64,
 ) -> Result<bool, rusqlite::Error> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
     let existing: Option<(String, Option<String>)> = tx
         .query_row(
             "SELECT backend, project_id FROM threads WHERE id = ?1",
@@ -97,12 +104,19 @@ pub fn materialize_codex_thread(
     snapshot: &NewCodexTaskSnapshot,
     created_at: i64,
 ) -> Result<bool, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
     if project_id != snapshot.selected_project_id.as_deref()
         || thread.project_id != project_id.unwrap_or_default()
     {
         return Ok(false);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
     tx.execute(
         "INSERT INTO threads (id, project_id, title, mode, permission_mode, model, backend, \
          status, pinned, unread, created_at, updated_at) \
@@ -166,6 +180,10 @@ pub fn begin_session_creation(
     intent_id: &str,
     updated_at: i64,
 ) -> Result<bool, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
     Ok(conn.execute(
         "UPDATE codex_session_creations SET state = 'intent', intent_id = ?1, updated_at = ?2 \
          WHERE thread_id = ?3 AND state = 'absent'",
@@ -180,6 +198,10 @@ pub fn confirm_session_creation(
     session_id: &str,
     updated_at: i64,
 ) -> Result<bool, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
     Ok(conn.execute(
         "UPDATE codex_session_creations SET state = 'confirmed', session_id = ?1, updated_at = ?2 \
          WHERE thread_id = ?3 AND state = 'intent' AND intent_id = ?4",
@@ -194,6 +216,10 @@ pub fn mark_session_uncertain(
     code: &str,
     updated_at: i64,
 ) -> Result<bool, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
     Ok(conn.execute(
         "UPDATE codex_session_creations SET state = 'uncertain', uncertainty_code = ?1, updated_at = ?2 \
          WHERE thread_id = ?3 AND state = 'intent' AND intent_id = ?4",
@@ -208,6 +234,10 @@ pub fn mark_session_definitively_failed(
     code: &str,
     updated_at: i64,
 ) -> Result<bool, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
     Ok(conn.execute(
         "UPDATE codex_session_creations SET state = 'definitively_failed', failure_code = ?1, updated_at = ?2 \
          WHERE thread_id = ?3 AND state = 'intent' AND intent_id = ?4",
@@ -257,6 +287,10 @@ fn insert_snapshot(
     snapshot: &NewCodexTaskSnapshot,
     created_at: i64,
 ) -> Result<(), rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::CodexTasks,
+    )?;
     let arguments_json = serde_json::to_string(&snapshot.arguments)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     let additional_directories_json = serde_json::to_string(&snapshot.additional_directories)
