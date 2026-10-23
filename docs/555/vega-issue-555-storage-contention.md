@@ -2,15 +2,16 @@
 
 ## 版本与证据
 
-- 规格 v1.1，2026-10-23；初始生产基线 `4c0d225daf47e66e559752ee78ba067520bea080`，先行测试提交前 fast-forward 到 `a39badd7cb79dd535157c886a485fbbcad22ca6d`；上游仅改 Composer UI/文档，本卡生产文件与初始基线相同。
+- 规格 v1.2，2026-10-23；初始生产基线 `4c0d225daf47e66e559752ee78ba067520bea080`，先行测试提交前 fast-forward 到 `a39badd7cb79dd535157c886a485fbbcad22ca6d`；上游仅改 Composer UI/文档，本卡生产文件与初始基线相同。
 - v1.1 仅更新执行方式：用户明确要求不再使用子 Agent，后续测试复核、实现、审查与集成均由主 Agent 直接完成。没有取得已中断独立审查的完整结论，不将自查标作独立审查；验收及断言不变。
+- v1.2 同步 `d649b490ebdf831c13fb4d8a770eb2b77f1f4239` 的当前验证政策：本卡保留已取得有效 RED 的 10 个必要回归，不再安排删除测试或空集门禁；验收、测试数据和断言不变。集成提交 `492c031834b5b777628332e0518939f4ff58008d` 仅同步上游文档，生产与测试文件内容未变。
 - Issue 仅包含 `Conversation storage is busy. Wait for other tasks to finish, then retry.` 截图，无复现步骤。
 - 只读查询本机 `run_diagnostic_events`：24 条 SQLite primary/extended `5/5` 记录，分布为 snapshot 13、event_pipeline 5、tool_proposal 2、tool_terminal 4；没有 `SQLITE_BUSY_SNAPSHOT` / `SQLITE_LOCKED` 证据。只报告分类与数量，不公开会话内容、身份或路径。
 - `Store::open` 的 busy timeout 为 2 秒。每个运行的 PersistenceActor 使用独立连接；因此另一连接持有写锁时，正文/工具生命周期保存会在超时后 fail closed。
 - 已确认的代码缺陷：`read_context_projection_with_provider`、手动压缩准备、自动压缩 source/checkpoint 捕获、失败后的 source guard 检查，均只读却调用 `Store::immediate_transaction`。SQLite WAL 的 `BEGIN IMMEDIATE` 预占全库单一写锁，历史读取/投影/估算不必要地阻止别的会话写入。手动压缩还在此写锁内调用凭据读取/检查。
 - 窗口 `refresh_context_projection` 在后台调用上述 projection，正常查看/刷新用量即可进入这条路径。历史每次事故的具体持锁者未记录，不能声称已逐条追溯；云端确定性回归将验证本轮缺陷的因果链。
 
-## 验收矩阵（先测后修）
+## 验收矩阵
 
 1. **读取与已持有写锁并行**：文件 SQLite/WAL，连接 A 已开始写事务并有未提交更改，连接 B 经真实 `read_context_projection_with_provider` 返回正确的已提交 source/model/policy/diagnostic/usage 投影。读不到 A 的未提交内容；A 提交后下次读取能看到新状态。不得把错误降为默认或空结果。
 2. **只读数据库可投影**：经 `Store::open_read_only` 调用同一 projection 成功，结果与同一已提交源一致，不发生写入。
@@ -32,7 +33,7 @@
 1. 原测试写入者只写开发 Rust 测试/必要测试接线，生产行为不改。用户要求停用子 Agent 后，主 Agent 接手固定产物并直接复核，不再委派。
 2. 主 Agent 提交测试/spec 并建立 draft PR，使用现有 `pr-check` Actions 获取目标行为失败的有效 RED；无关编译/接线/runner 故障不算 RED。
 3. 冻结测试源码与预期；主 Agent 最小修改生产代码，测试不得追改。主 Agent 核对改动，再由同一 Actions 验证 GREEN。
-4. PR 留存完整 SHA、原始测试源码/patch、RED/GREEN 日志与发现/执行计数。GREEN 后独立提交删除 Rust 测试及独占接线，审查生产差异并验证最终 head 完整门禁与 Rust 0 发现/0 执行。
+4. PR 保留已取得的完整 SHA、原始测试源码/patch 与云端实际计数；本卡涉及数据持久化和凭据检查，保留 10 个必要回归及测试接线，不恢复历史测试集合。直接验证带测试最终 head 的完整 required CI，不再制造删测提交。
 5. 最新 required check 成功且主 Agent 完成最终内容复核后转正式 PR、squash merge；Issue 保持开放、看板 In review，等待用户新版真实会话手测。未安装或重启应用不称已安装。
 
 本地只做快速差异/格式/静态检查；不运行 Vega、编译或执行测试。CI 启动后每 5 分钟查询，不 watch/短轮询。原生用户验收：多任务运行时切换/刷新长会话上下文用量及手动压缩，确认其他会话正文与工具继续保存；持续真实存储冲突仍应给出可恢复失败。

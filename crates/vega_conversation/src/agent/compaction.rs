@@ -231,7 +231,8 @@ pub fn read_context_projection_with_provider(
     system_prompt: &str,
 ) -> Result<crate::types::ContextProjection, crate::types::ConversationError> {
     let transaction = store
-        .immediate_transaction()
+        .conn()
+        .unchecked_transaction()
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
     let thread = vega_store::threads::find(&transaction, thread_id)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
@@ -548,7 +549,10 @@ pub async fn compact_thread_manually_with_credential_reader(
         let database_path = database_path.clone();
         move || {
             let store = Store::open(database_path).map_err(VegaError::Store)?;
-            let transaction = store.immediate_transaction().map_err(VegaError::Store)?;
+            let transaction = store
+                .conn()
+                .unchecked_transaction()
+                .map_err(VegaError::Store)?;
             let exists: bool = transaction
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1)",
@@ -574,6 +578,7 @@ pub async fn compact_thread_manually_with_credential_reader(
             let checkpoint =
                 latest_checkpoint_in_transaction(&transaction, &preparation_thread_id, &model)
                     .map_err(VegaError::Store)?;
+            transaction.commit().map_err(VegaError::Store)?;
             reject_unprojected_shell_credentials(
                 &source,
                 checkpoint.as_ref(),
@@ -588,7 +593,6 @@ pub async fn compact_thread_manually_with_credential_reader(
                     "__manual_context_compaction__",
                 )
                 .map_err(|_| context_error(ContextRuntimeError::InvalidProjection))?;
-            transaction.commit().map_err(VegaError::Store)?;
             Ok::<_, VegaError>((model, source, history))
         }
     })
@@ -1206,7 +1210,10 @@ impl ConversationCompactionHook<'_> {
         let model = self.model.clone();
         tokio::task::spawn_blocking(move || {
             let store = Store::open(path).map_err(VegaError::Store)?;
-            let transaction = store.immediate_transaction().map_err(VegaError::Store)?;
+            let transaction = store
+                .conn()
+                .unchecked_transaction()
+                .map_err(VegaError::Store)?;
             let source = vega_store::context_compaction::load_source_version_in_transaction(
                 &transaction,
                 &thread_id,
@@ -1399,7 +1406,10 @@ impl ConversationCompactionHook<'_> {
             // pair of independent reads could otherwise summarize one
             // revision while installing against another revision that shares
             // the same maximum sequence number.
-            let transaction = store.immediate_transaction().map_err(VegaError::Store)?;
+            let transaction = store
+                .conn()
+                .unchecked_transaction()
+                .map_err(VegaError::Store)?;
             let model_matches: bool = transaction
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 AND model = ?2)",
