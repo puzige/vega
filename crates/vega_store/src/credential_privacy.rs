@@ -15,6 +15,10 @@ pub fn allow(
     rule: &str,
     fingerprint: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     conn.execute("INSERT OR IGNORE INTO credential_privacy_exceptions(thread_id,rule_id,fingerprint) VALUES (?1,?2,?3)", params![thread,rule,fingerprint])?;
     Ok(())
 }
@@ -25,6 +29,10 @@ pub fn revoke(
     rule: &str,
     fingerprint: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     conn.execute("DELETE FROM credential_privacy_exceptions WHERE thread_id=?1 AND rule_id=?2 AND fingerprint=?3", params![thread,rule,fingerprint])?;
     Ok(())
 }
@@ -37,7 +45,14 @@ pub fn set_exception_checked(
     fingerprint: &str,
     allowed: bool,
 ) -> rusqlite::Result<()> {
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     let current = source_fingerprint_in_transaction(&tx, thread)?;
     if current != source_fingerprint {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -141,6 +156,10 @@ fn clean_delegations<F>(conn: &Connection, thread: &str, redact: &mut F) -> rusq
 where
     F: FnMut(&str, &[usize]) -> (String, Vec<usize>),
 {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     for row in crate::subagents::privacy_scope(conn, thread)? {
         let name = cleaned_delegation_name(conn, &row, &redact(&row.name, &[]).0)?;
         let (mut task, _) = bounded_delegation_text(&redact(&row.task, &[]).0, 32 * 1024);
@@ -175,7 +194,14 @@ pub fn clean<F>(
 where
     F: FnMut(&str, &[usize]) -> (String, Vec<usize>),
 {
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     let source = source_fingerprint_in_transaction(&tx, thread)?;
     let running: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id=?1 AND status='streaming') OR EXISTS(SELECT 1 FROM delegated_executions WHERE (parent_thread_id=?1 OR child_thread_id=?1) AND state IN ('running','cancelling'))",
@@ -344,6 +370,10 @@ pub fn source_message_id(
 }
 
 pub fn refresh_epoch(conn: &Connection, digest: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     fn current(conn: &Connection) -> rusqlite::Result<Option<String>> {
         conn.query_row(
             "SELECT digest FROM credential_privacy_epoch WHERE singleton=1",
@@ -355,7 +385,10 @@ pub fn refresh_epoch(conn: &Connection, digest: &str) -> rusqlite::Result<()> {
     if current(conn)?.as_deref() == Some(digest) {
         return Ok(());
     }
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     let prior = current(&tx)?;
     if prior.as_deref() != Some(digest) {
         tx.execute("DELETE FROM credential_privacy_exceptions", [])?;

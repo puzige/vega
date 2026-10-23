@@ -98,6 +98,10 @@ pub fn insert_exact(
     conn: &Connection,
     input: InsertExactRule<'_>,
 ) -> Result<InsertExactResult, PermissionsError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Permissions,
+    )?;
     validate(input.project_id, input.tool, input.pattern)?;
     let inserted = conn.execute(
         "INSERT INTO permissions (project_id, tool, pattern, created_at) \

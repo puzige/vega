@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// The `SELECT` column list shared by the row-loading queries.
 const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, backend, \
@@ -81,6 +81,10 @@ fn insert(
     project_id: Option<&str>,
     thread: NewThread<'_>,
 ) -> Result<(), rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     conn.execute(
         "INSERT INTO threads (id, project_id, title, mode, permission_mode, model, \
          status, pinned, unread, created_at, updated_at) \
@@ -157,6 +161,10 @@ pub fn rename(
     title: &str,
     now: i64,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     conn.execute(
         "UPDATE threads SET title = ?1, updated_at = ?2, auto_title_state = 'manual' WHERE id = ?3",
         params![title, now, id],
@@ -164,6 +172,10 @@ pub fn rename(
 }
 
 pub fn set_status(conn: &Connection, id: &str, status: &str) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     conn.execute(
         "UPDATE threads SET status = ?1 WHERE id = ?2",
         params![status, id],
@@ -171,6 +183,10 @@ pub fn set_status(conn: &Connection, id: &str, status: &str) -> Result<usize, ru
 }
 
 pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     conn.execute(
         "UPDATE threads SET pinned = ?1 WHERE id = ?2",
         params![pinned, id],
@@ -186,13 +202,20 @@ pub fn set_mode(
     mode: &str,
     now: i64,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     match mode {
         "ask" | "plan" => conn.execute(
             "UPDATE threads SET mode = ?1, updated_at = ?2 WHERE id = ?3",
             params![mode, now, id],
         ),
         "execute" => {
-            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            let tx = crate::write_coordination::WriteTransaction::new(
+                conn,
+                crate::write_coordination::WriteCategory::Threads,
+            )?;
             let plans = crate::messages::plans_for_thread(&tx, id)?;
             if plans
                 .iter()
@@ -219,6 +242,10 @@ pub fn set_permission_mode(
     mode: &str,
     now: i64,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     if !matches!(mode, "readonly" | "confirm" | "auto" | "full_access") {
         return Ok(0);
     }
@@ -234,6 +261,10 @@ pub fn set_model(
     model: &str,
     now: i64,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     if model.is_empty() {
         return Ok(0);
     }
@@ -244,7 +275,14 @@ pub fn set_model(
 }
 
 pub fn delete_thread(conn: &Connection, id: &str) -> Result<usize, rusqlite::Error> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     tx.execute("DELETE FROM messages WHERE thread_id = ?1", [id])?;
     tx.execute("DELETE FROM tool_calls WHERE thread_id = ?1", [id])?;
     let deleted = tx.execute("DELETE FROM threads WHERE id = ?1", [id])?;
@@ -276,6 +314,10 @@ pub fn update(
     pinned: Option<bool>,
     unread: Option<bool>,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     let mut clauses: Vec<&'static str> = Vec::new();
     let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     if let Some(value) = title {
@@ -312,6 +354,10 @@ pub fn claim_auto_title(
     message_id: &str,
     fallback: &str,
 ) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     Ok(conn.execute("UPDATE threads SET title = ?3, auto_title_state = 'claimed', auto_title_claim = ?2 WHERE id = ?1 AND title = '' AND auto_title_state = 'eligible' AND EXISTS (SELECT 1 FROM messages WHERE id = ?2 AND thread_id = ?1 AND role = 'user') AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1 AND id != ?2)", params![id, message_id, fallback])? == 1)
 }
 
@@ -322,6 +368,10 @@ pub fn finish_auto_title(
     message_id: &str,
     title: &str,
 ) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     Ok(conn.execute("UPDATE threads SET title = ?3, auto_title_state = 'generated' WHERE id = ?1 AND auto_title_state = 'claimed' AND auto_title_claim = ?2", params![id, message_id, title])? == 1)
 }
 
@@ -330,7 +380,10 @@ pub fn open_thread(
     id: &str,
     now: i64,
 ) -> Result<Option<ThreadRow>, rusqlite::Error> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     let thread = open_thread_in_transaction(&tx, id, now)?;
     tx.commit()?;
     Ok(thread)
@@ -341,6 +394,8 @@ pub fn open_thread_in_transaction(
     id: &str,
     now: i64,
 ) -> Result<Option<ThreadRow>, rusqlite::Error> {
+    let _permit =
+        crate::write_coordination::acquire(tx, crate::write_coordination::WriteCategory::Threads)?;
     let updated = tx.execute(
         "UPDATE threads SET updated_at = ?1 WHERE id = ?2",
         params![now, id],
@@ -362,7 +417,14 @@ pub fn visit_thread(
     id: &str,
     now: i64,
 ) -> Result<Option<ThreadRow>, rusqlite::Error> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
     if tx.execute(
         "UPDATE threads SET updated_at = ?1, unread = 0 WHERE id = ?2",
         params![now, id],

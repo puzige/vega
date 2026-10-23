@@ -122,7 +122,12 @@ pub fn set_global_settings(
     global_enabled: bool,
     automatic_enabled: bool,
 ) -> Result<SkillSettings, SkillStoreError> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let previous = read_settings(&tx)?;
     if previous.global_enabled != global_enabled || previous.automatic_enabled != automatic_enabled
@@ -172,10 +177,15 @@ pub fn set_project_settings(
     enabled: bool,
     automatic: bool,
 ) -> Result<ProjectSkillSettings, SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(project_id) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let previous = read_project_settings(&tx, project_id)?;
     if previous.enabled != enabled || previous.automatic != automatic {
@@ -201,8 +211,13 @@ pub fn link_source(
     expected_consent_generation: u64,
     input: NewSkillSource<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     validate_source(&input)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     tx.execute(
         "INSERT INTO skill_sources \
@@ -272,10 +287,15 @@ pub fn set_source_preferences(
     enabled: bool,
     automatic: bool,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(source_id) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let previous: Option<(i64, i64)> = tx
         .query_row(
@@ -305,10 +325,15 @@ pub fn unlink_source(
     expected_consent_generation: u64,
     source_id: &str,
 ) -> Result<bool, SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(source_id) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let deleted = tx.execute("DELETE FROM skill_sources WHERE id = ?1", [source_id])? > 0;
     // `skill_source_delete_revokes` also catches FK cascades from project
@@ -324,6 +349,8 @@ pub fn approve_skill(
     expected_consent_generation: u64,
     input: NewSkillApproval<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.source_id)
         || !valid_name(input.name)
         || !valid_name(input.source_label)
@@ -331,7 +358,10 @@ pub fn approve_skill(
     {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let old: Option<(String, i64, i64, String)> = tx
         .query_row(
@@ -389,10 +419,15 @@ pub fn set_approval_preferences(
     enabled: bool,
     automatic: bool,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(source_id) || !valid_name(name) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let old: Option<(i64, i64)> = tx
         .query_row(
@@ -433,6 +468,8 @@ pub fn list_approved_skills(
 }
 
 fn bump_generations(conn: &Connection, revokes: bool) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     let updated = conn.execute(
         "UPDATE skill_settings SET consent_generation = consent_generation + 1, \
          revocation_generation = revocation_generation + ?1 \
@@ -594,6 +631,8 @@ pub fn save_snapshot(
     conn: &Connection,
     input: NewSkillSnapshot<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.run_id)
         || !valid_id(input.thread_id)
         || !valid_hash(input.catalog_sha256)
@@ -612,7 +651,10 @@ pub fn save_snapshot(
         i64::try_from(input.consent_generation).map_err(|_| SkillStoreError::InvalidInput)?;
     let revoked =
         i64::try_from(input.revocation_generation).map_err(|_| SkillStoreError::InvalidInput)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     let settings = read_settings(&tx)?;
     if settings.consent_generation != input.consent_generation
         || settings.revocation_generation != input.revocation_generation
@@ -759,6 +801,8 @@ pub fn save_thread_pin(
     expected_consent_generation: u64,
     pin: NewThreadSkillPin<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(pin.thread_id)
         || !matches!(pin.scope, "project" | "vega_global" | "imported")
         || !valid_path(pin.canonical_root)
@@ -770,7 +814,10 @@ pub fn save_thread_pin(
     {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let approved: Option<i64> = tx
         .query_row(
@@ -834,10 +881,15 @@ pub fn clear_thread_pin(
     thread_id: &str,
     name: &str,
 ) -> Result<bool, SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(thread_id) || !valid_name(name) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let deleted = tx.execute(
         "DELETE FROM thread_skill_pins WHERE thread_id = ?1 AND name = ?2",
@@ -914,6 +966,8 @@ pub fn append_activation_audit(
     conn: &Connection,
     input: NewSkillActivationAudit<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.run_id)
         || !valid_id(input.thread_id)
         || !valid_name(input.name)
@@ -960,6 +1014,8 @@ pub fn append_revocation_audit_once(
     conn: &Connection,
     input: NewSkillRevocationAudit<'_>,
 ) -> Result<bool, SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.run_id)
         || !valid_id(input.thread_id)
         || !valid_name(input.name)
