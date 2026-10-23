@@ -96,6 +96,20 @@ pub fn mark_delivered(conn: &Connection, thread_id: &str, id: &str) -> rusqlite:
     Ok(conn.execute("UPDATE pending_messages SET state = 'delivered', payload = '' WHERE thread_id = ?1 AND id = ?2 AND state != 'delivered'", params![thread_id, id])? == 1)
 }
 
+pub fn mark_accepted(
+    conn: &Connection,
+    thread_id: &str,
+    id: &str,
+    previous_assistant_id: &str,
+) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE pending_messages SET state = 'delivered', payload = '', accepted_after_assistant_id = ?3 \
+         WHERE thread_id = ?1 AND id = ?2 AND state != 'delivered' \
+         AND EXISTS(SELECT 1 FROM messages WHERE id = ?3 AND thread_id = ?1 AND role = 'assistant' AND status = 'streaming')",
+        params![thread_id, id, previous_assistant_id],
+    )? == 1)
+}
+
 pub fn remove(conn: &Connection, thread_id: &str, id: &str) -> rusqlite::Result<bool> {
     Ok(conn.execute(
         "DELETE FROM pending_messages WHERE thread_id = ?1 AND id = ?2 AND state = 'pending'",

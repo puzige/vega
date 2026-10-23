@@ -73,6 +73,7 @@ pub struct ConversationStream {
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     pub(crate) run_responses: HashMap<String, phase::RunResponses>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
+    pub(crate) run_continuations: HashMap<String, vega_conversation::types::RunContinuation>,
     /// Exact call id to its sole inline artifact card.
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
     /// Route-owned safe branch selector; Git authority remains in the app controller.
@@ -503,6 +504,7 @@ impl ConversationStream {
             tool_cards: HashMap::new(),
             run_responses: HashMap::new(),
             run_activity_groups: HashMap::new(),
+            run_continuations: HashMap::new(),
             artifact_cards: HashMap::new(),
             branch_selector,
             commit_panel,
@@ -1683,6 +1685,7 @@ impl ConversationStream {
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::PendingMessageDelivered { .. }
             | ConversationEvent::RunStarted { .. }
+            | ConversationEvent::RunContinued { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
             | ConversationEvent::ReasoningCompleted { .. }

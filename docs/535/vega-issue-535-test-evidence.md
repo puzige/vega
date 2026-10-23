@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-先行测试收尾。尚未修改本轮生产行为、未取得有效 RED、未实施修复。18 个现存测试定义不是云端发现或执行计数；所有编译与自动测试待 Actions。
+最小生产实现恢复/收尾。18 个现存开发测试定义不是云端发现或执行计数，尚未取得行为执行结果。已完成的接口缺失 RED 与历史审查见下文；当前按最新按风险验证政策推进，最终交付树不保留 Rust 测试及独占支持。
 
 任务分支：`feat/535-queue-ui`。验收：同目录 `vega-issue-535-queue-ui.md` v2.1 的 A1–A7。
 
@@ -106,10 +106,40 @@ writer 在 `9b901a34ee00611f73fbd58275c7087282af5e2c` 交付 READY（仅 test-fi
 - UI 源 51,393 字节，SHA-256：`de91195caef46ae787344ce0da6c6b3024a82edb0c933dc6ac4b873e6044856d`。
 - app/conversation 哈希、其余 14 个文件内容未变，仍为 18 测试定义。
 - 主 Agent 逐字节核对：除顶端导入行外，UI 从 `use vega_conversation` 起与 `afb5ee6c04ad8d044350d9ca917599ce1a8396a5` 完全一致。
-- writer 已停止写入，fmt/diff 静态检查退出 0；独立 reviewer 正在增量核对该导入修订，之后需新一轮 Actions 确认有效 RED，当前未取得。
+- writer 停止写入后，独立 reviewer 核对原始 unused-import 错误、宏命名空间与逐字节差异，返回增量 READY；复用完整包审查。主 Agent 当前 fmt/diff/offline locked metadata 静态检查退出 0。
+- 修订提交：`731c887b4588b27c05582b45f9fe7fea69a8eec2`，原始测试源码与 patch 已固定在 PR，首轮 run 未 rerun 或覆盖。
+
+## 有效接口缺失 RED 与冻结
+
+第二轮 [Actions 39830669812](https://github.com/puzige/vega/actions/runs/39830669812)，head `731c887b4588b27c05582b45f9fe7fea69a8eec2`：
+
+- [Nextest 120005637079](https://github.com/puzige/vega/actions/runs/39830669812/job/120005637079) 和 [Clippy 120005637305](https://github.com/puzige/vega/actions/runs/39830669812/job/120005637305) 各报告 7 个根诊断，仅 `MessagePage.continuations` E0609、`ConversationEvent::RunContinued` 与 `HistoryEntry::RunContinuation` E0599；多余导入错误不再出现。
+- Nextest 的 `cargo test --no-run ... --workspace exited with code 101` 为上述测试目标构建失败的包装，不是独立 runner 故障或行为断言失败。
+- [required 120007496104](https://github.com/puzige/vega/actions/runs/39830669812/job/120007496104) 失败。原始 failed-job 日志 784 行，SHA-256 `5438ba3b2eab91431580d896e1339be6206559a94d012df18d3fbf226c804fb8`。
+- 主 Agent 已读取原始失败签名及包装上下文，确认有效 **接口缺失 RED**。行为断言尚未执行，测试发现/执行/通过/失败/忽略/跳过数量未取得；SQL 列断言尚未运行。
+
+冻结版本为上述测试提交：app `bc039063d254d6273e4f24cdab6c67e5adcd212bf6b366928b4f4490de16328b`、conversation `cb3e67e50303858e8d3d95bb57f016ff5ad8a2b85ba8ea1ba56884111ab480b6`、UI `de91195caef46ae787344ce0da6c6b3024a82edb0c933dc6ac4b873e6044856d`，18 定义及所有数据/断言不再修改。后续新验收须重开先测后修；确定 harness 错误须先记录与独立审查，不能暗改或放宽。
+
+主 Agent 再次 fetch，确认上游 master 仍为 `6615748f91273bfb8ee424011b3b5a09b3777d2b`；同一专职 writer 已获派最小生产实现，范围按规格 v2.1。保留全部冻结 Rust 测试与支持到同测云端 GREEN，随后才可独立删测与验证最终空集 head。
 
 ## 未执行阶段
 
 - 本地 Vega 运行/编译/构建/测试/CUA：未执行。
-- 有效云端 RED、带测试 GREEN、发现/执行/通过/失败/忽略/跳过数量：未取得。
-- 生产实现、独立删测及最终空集门禁：尚未进行。
+- 带测试 GREEN、动态发现/执行/通过/失败/忽略/跳过数量：未取得。
+- 生产实现正在进行；独立实现审查、独立删测及最终空集门禁尚未进行。
+
+## 2026-10-23 实现恢复检查点
+
+当前会话无可续用的旧子任务，`list_agents` 返回空集；未收到旧 writer READY，不能把恢复稿视为已完成。主 Agent 检查全部未提交与未跟踪文件后保存恢复检查点：原 HEAD `731c887b4588b27c05582b45f9fe7fea69a8eec2`，14 个 dirty 文件包 SHA-256 `72674730623698a00beb12d2fe7720a4156231f49da0de59f046e6ba9234b841`（含证据文档）。
+
+fetch 后保护全部改动，合入最新 master `9f9fa092a3ca391a65f08419c9206f32979119e6`，集成 HEAD `0ea2910ce3d59824dd379af10490c009cddf89fd`；恢复实现无冲突。保留原远端测试提交，不 rebase/force-push 丢弃来源。三份测试源 SHA-256 仍与上文相同。新基线包含 #569/#573 验证政策，规格 v2.2 只同步流程/基线，不改 A1–A7 产品验收。
+
+恢复的 13 个非 docs 生产文件内容包 SHA-256 为 `9e9e0878532959de8c99f32d5d326503a5c2debc02ae147f9b73323ce4c15417`。已存在：0033 递增迁移、真实接受事务记录、页内/页外明确关系查询、RunContinued/历史投影、UI 单计时和旧段隐藏状态；未决为完成静态自检、独立实现审查及 Actions 行为结果。当前 `cargo fmt --all -- --check`、`cargo metadata --offline --locked --format-version 1`、`git diff --check` 均退出 0，仅静态检查。本地未编译、运行 Vega、Clippy、测试或 CUA。
+
+原 writer 已无活跃执行，后续只由一个恢复 writer 接续该精确稿，不重做已完成工作。现有开发测试保留用于必要回归；取消强制 TDD 不作为放宽断言、删除失败测试或伪造 GREEN 的理由。
+
+## 恢复实现 READY（待独立审查与 Actions）
+
+恢复 writer 已停止写入，13 个生产文件内容包 SHA-256 `0719c917f44fb5b1daf862e6b93faf78200b42d1646743a91dc44ba36b8d88f0`。相对恢复稿只补 `content.rs`：明确的 continuation successor 不执行上游 `begin_computer_use_task`，独立运行仍正常执行，避免把同次运行的消息切换当成新任务。其余已有最小实现保留，普通间距 token 未改。
+
+writer 实际执行 fmt/diff/offline locked no-deps metadata 均退出 0；主 Agent 再次独立复算生产包与三份测试源哈希一致，fmt/diff 退出 0。未执行本地编译、测试、Clippy 或 CUA。下一步固定提交，非写入者审查实现，现有 Actions 在同一版本执行 18 个开发测试；尚无行为通过结论。

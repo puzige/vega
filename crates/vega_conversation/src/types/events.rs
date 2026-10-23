@@ -396,6 +396,11 @@ pub enum ConversationEvent {
         message_id: MessageId,
         started_at: std::time::Instant,
     },
+    RunContinued {
+        previous_assistant_id: MessageId,
+        user_message_id: MessageId,
+        next_assistant_id: MessageId,
+    },
     AssistantResponseCompleted {
         message_id: MessageId,
         response: AssistantResponseMetadata,
@@ -553,6 +558,7 @@ impl std::fmt::Debug for ConversationEvent {
                 .debug_struct("ScreenshotDelivered")
                 .field("image_bytes", &image.bytes().len())
                 .finish_non_exhaustive(),
+            Self::RunContinued { .. } => formatter.write_str("RunContinued"),
             Self::RunStarted { message_id, .. } => formatter
                 .debug_struct("RunStarted")
                 .field("message_id_bytes", &message_id.len())
