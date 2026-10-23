@@ -1,6 +1,6 @@
 # #544 原生普通发送：即时待提交气泡
 
-版本：spec v3，2026-10-22；主 Agent 已根据 v2 独立审查修正普通提交恢复边界。状态仍为规格/测试设计；启动证明、载荷冻结的具体接口和 #535 共享前提未完成，尚不能冻结先行测试包或实现。未编写/执行测试。
+版本：spec v4；保留 v3（2026-10-22）的 A1–A12。当前接口见[候选 v2](vega-issue-544-ordinary-interface-proposal-v2.md)及[精确未决调用点图](vega-issue-544-ordinary-unresolved-callsite-map.md)；app-global claim、密封证明、历史围栏与 #535 最终接口仍有 P1/P2 未决，状态为 READY-doc / NOT code-ready。按当前政策按风险验证，不强制 TDD/有效 RED；本轮仅文档，未编写/执行测试。
 
 ## 1. 验收矩阵（先于实现方案）
 
@@ -28,7 +28,7 @@
 - 已读两 worktree 相同的根 AGENTS，沿路径没有嵌套 AGENTS；必读 [执行指南](../vega-exec-guide.md)、[Issue 工作流](../vega-issue-workflow.md)、[设计守则](../vega-design-guidelines.md)、[交付 skill](../../.agents/skills/vega-kanban-delivery/SKILL.md)、[Rust 测试生命周期](../vega-rust-test-delivery-lifecycle.md)。本地禁止 Vega、构建/check/Clippy、测试、bench/profile、CUA；仅静态检查。
 - 当前基线包含 #529 Markdown 引用修复、vendored mdstream，以及 model/render_rows/message_anchors/thinking_body 更新；不从旧 `83fd` 或其他历史 ref 恢复文件/旧测试。
 
-以下行号均绑定本轮 HEAD，后续以符号定位而非机械套行号：
+以下为 v3 历史基线的静态定位；当前父提供 HEAD 与本轮已核调用点见[调用点图](vega-issue-544-ordinary-unresolved-callsite-map.md)，后续以符号定位而非机械套行号：
 
 | 只读证据 | 事实与含义 |
 |---|---|
@@ -72,7 +72,7 @@
 
 - **不能比较文本相等清草稿。** 清空只发生于原子捕获时仍归属该 revision 的 Native 普通提交；确认/失败/取消不再清当前输入。附件按提交 ID/附件 ID 精确转移所有权，保留引用/字节至终态；纯图片不能生成一条无意义空文字气泡。
 - pending 期间继续编辑，但尚未转运行的同一提交不允许再次普通启动；后续真正进入 running 后仍按既有队列能力处理新草稿，不把本卡 guard 扩大成全程禁发。
-- `MessageStarted` 保持“运行已开始”的既有契约，不前移以假装 durable。建议增加真实事务完成 receipt（携 user ID、assistant ID/seq、普通 submission/attempt 归属），在 `prepare_run_with_images_and_reasoning` 返回且 commit 成功后、后续 skill/actor 准备前发布；失败结果携带明确的提交状态。receipt 丢失后由冻结身份核实。当前只含 assistant ID 的 Started 不足以解决 actor-start-failure 边界。
+- `MessageStarted` 保持既有运行事件契约，不前移以假装 durable，也不代替 primary 首次驱动事实。普通 receipt（含 user ID/seq、assistant ID/seq、submission/attempt 及 accepted payload 归属）须在 `pipeline.rs:1130` 实际 commit 成功后立即单调写入共享 handle，早于 `:1131–1138` title launch、`PreparedRun` 返回和后续 skill/actor 准备；UI 通知可迟到，事实不能迟记。失败/丢失/锁毒按真实已提交或 Unknown 核实，不伪报 NotCommitted；title 与 primary provider 计数分域。
 - 普通提交的 user ID 必须在尝试前稳定分配并传入 conversation 写入链；重试不能每次生成无关联的新用户 ID。复用现有主键/事务及已存在用户校验能力，不默认新增 schema/outbox；“相同 ID 已存在”须核对 thread、角色、payload/附件，不直接当成功。具体接线经主 Agent 审核后才冻结，不能临时复用 `pending_message_id` 冒充 #535 队列语义。
 - 不确定提交结果是恢复状态，不是可随意重试的普通错误。已提交的用户消息在取消与启动失败后仍属真实历史；失败提示不得吞掉权限请求或原有恢复入口。
 
@@ -83,15 +83,15 @@
 - 当前 `agent/entry.rs:637–642` 的 ID 选择依次是 credential continuation、persisted instruction、pending queue、最后新建 ID。普通提交必须有独立的可选 typed owner，不挤入 `pending_message_id` 或 approved-plan `persisted_user_message_id`；无普通 owner 的旧调用保持原路由。
 - `pipeline.rs:730–765` 的 `uses_existing_user` 实际要求计划批准固定正文、Execute、有效 approval 及未消费的相邻 seq；它**不是任意用户消息的通用重试接口**。普通重试需单独的 conversation 层校验入口，原计划/委派/凭据检查逐字保全，不能放宽该分支来复用普通消息。
 - 普通逻辑提交在 UI 捕获时稳定分配 user ID；attempt 在真正开始每次准备时更新。真实事务回执至少关联 user ID、该次 assistant ID/seq 和 attempt。重复回执仅归并本地状态；重复 prepare 先查对应身份及真实事务终态，匹配 thread/role/payload/图片后方可恢复，不能只因 ID 存在就接受。图片比对在 conversation/store 边界执行，不为此将正文或图片放进日志。
-- 初次事务仍原子写 user、图片与 assistant 占位；`pipeline.rs:944` commit 后返回 `PreparedRun`，`entry.rs` 在 skill 准备/actor 启动前发布普通提交的 typed durable receipt。`MessageStarted` 不前移、不替代 receipt。skill/actor 后续失败必须携已提交归属，不能再走未提交重发。
-- 未提交失败可原位重试旧快照；已提交但未启动时，恢复先核实持久状态。只有原 assistant 为匹配的启动前失败、没有后续模型/工具副作用且该线程没有新运行/新历史时，才可用同一 user 的显式恢复接口启动新 attempt，不能再插 user/图片。不能证明上述条件时提供核实/现有运行恢复动作并拒绝盲重发，不把拒绝伪装成“重试成功”。该恢复校验及相反样例必须在 T4/T5 首轮写齐。
-- 取消不回滚已提交历史；提交结果未知时核实先于重投。单一普通 owner 在控制器中保持到已提交或可恢复状态被明确处理，流视图释放不能丢未提交快照。保存位置与释放动作由下一先行测试包的具体 owner 接线冻结，不扩展磁盘 outbox。
+- 初次事务仍原子写 user、图片与 assistant 占位；当前 `pipeline.rs:1130` commit 后先单调记录普通 typed durable receipt，再允许 `:1131–1138` title launch，最后才返回 `PreparedRun`。不能等 entry 收到返回才记录。`MessageStarted` 不前移、不替代 receipt；primary Started 须在首次驱动 future 前写入。skill/actor 后续失败必须携已提交归属，不能再走未提交重发。
+- 未提交失败可原位重试旧快照；已提交但未启动时，恢复先核实持久状态。只有原 assistant 为匹配的启动前失败、没有后续模型/工具副作用且该线程没有新运行/新历史时，才可用同一 user 的显式恢复接口启动新 attempt，不能再插 user/图片。不能证明上述条件时提供核实/现有运行恢复动作并拒绝盲重发，不把拒绝伪装成“重试成功”。该恢复校验及相反样例必须由 T4/T5 对应的风险验证覆盖，不要求先行 RED。
+- 取消不回滚已提交历史；提交结果未知时核实先于重投。单一普通 owner 在控制器中保持到已提交或可恢复状态被明确处理，流视图释放不能丢未提交快照。保存位置与条件释放须按候选 v2 的 app-global claim、worker quiescence 和密封事实闭合；窗口释放不是证明，不扩展磁盘 outbox。
 
-本审查确认需要独立普通 receipt/recovery 契约，但未声称其 API 已存在或安全性已验证。#535 接口未冻结时仍不得并写 `app_agent`、事件 ingress 或列表状态；下一步先取得可访问接口/集成点，再由专职 writer 写齐 T1–T6 与身份冲突、已消费用户、图片不匹配、线程有后续历史等必要负例，独立审查/Actions 有效 RED 后才实现。
+本审查确认需要独立普通 receipt/recovery 契约，但未声称其 API 已存在或安全性已验证。#535 实际最终接口未取得时仍不得抢写共享符号；父先关闭候选 v2 的 P1 接口/集成缺口，再决定实现授权。后续按风险覆盖 T1–T6、身份冲突、已消费用户、图片不匹配及后续历史等必要对照，保留实现独审与云端验证，不以测试先行或有效 RED 为前置。
 
 ### 3.5 v2 独立审查修订：恢复资格、载荷与历史
 
-审查绑定 v2 文件 SHA256 `af78eab2fd74691b9c909ead59531cf56211830fcea374a07d3be96446b210c7`；主 Agent 已定点复读原始证据。下列是测试冻结前的必要澄清，不是已实现机制。当前树已保留 #547 合并基线 `9b901a34ee00611f73fbd58275c7087282af5e2c`，图片预算/首次输入取消逻辑不回退。
+审查绑定 v2 文件 SHA256 `af78eab2fd74691b9c909ead59531cf56211830fcea374a07d3be96446b210c7`；主 Agent 已定点复读原始证据。下列是接口闭合所需的必要澄清，不是已实现机制或测试先行门禁。当前树已保留 #547 合并基线 `9b901a34ee00611f73fbd58275c7087282af5e2c`，图片预算/首次输入取消逻辑不回退。
 
 1. **空 failed 不能证明主运行未启动。** `finish_prepared_failure` 只写空 failed 且调用方可能未成功清理；运行后错误也写 failed，`recover_thread` 还可能将 streaming 改成 interrupted。恢复资格必须依赖存活普通 owner 中的 attempt→assistant 准备/主运行启动事实，而非从空正文、无工具或 failed 反推。丢失证明、结果未知或清理失败时保持已提交/待核实，禁盲恢复；不暗加跨进程恢复承诺。
 2. **资格核实与占用不能有并发窗口。** 同一普通 owner 下先取得互斥恢复 attempt，再在 conversation/store 原子边界核对 thread、user/图片、旧 assistant、尾序及无后续历史，并登记新 attempt 对应 assistant；重复/迟到恢复请求只观察原结果，不重复插入。检查后允许别的写入再无条件启动不合格。具体 owner 类型、事务接线与取消返回的 typed 终态仍须先冻结，不能以纯 mutex 或一次查询冒充完整事务不变量。
@@ -99,7 +99,7 @@
 4. **副作用范围明确为主运行。** commit 后、`PreparedRun` 返回前可能启动自动标题辅助请求，其 token 与主运行分开。“主运行尚未启动”不表示所有模型请求为零。保留自动标题唯一归属与既有计费，不重复触发 title；恢复准入检查的是主运行/工具副作用，不靠标题完成与否推断。typed 结果分别表达提交、主运行启动、取消/未知；receipt 投递失败或准备 join 丢失都不能改写成未提交。
 5. **旧助手占位不静默删除。** 启动前失败的旧 assistant 保留准确失败终态和原 seq；若最终冻结方案允许显式恢复，新 attempt 使用新 assistant ID/后续 seq，但不新增 user/图片。测试同时核对旧/新 assistant、刷新 UI 历史和实际请求历史，不能只断 user 数量或在 fixture 中隐藏旧失败项。是否需排除启动前空失败占位进入后续模型历史，必须先按现有 history/context 契约冻结；当前无该产品改动授权，不在实现时顺带过滤。
 
-T4/T5 首轮还须区分：启动前失败、主运行已启动但空输出、清理失败、准备/receipt 丢失、重复并发恢复、引用文件变化、脱敏展示碰撞、图片不匹配、后续历史变更，以及旧/新 assistant 完整顺序。原 A1–A12 不削弱。上述具体 owner/事务/历史决策尚未齐备，因此当前仍为接口分析阶段；不得只写即时气泡 happy path 或先实现后补这些边界。
+T4/T5 对应风险验证还须区分：启动前失败、主运行已启动但空输出、清理失败、准备/receipt 丢失、重复并发恢复、引用文件变化、脱敏展示碰撞、图片不匹配、后续历史变更，以及旧/新 assistant 完整顺序。原 A1–A12 不削弱。上述具体 owner/事务/历史决策尚未齐备，未决见候选 v2/调用点图；不得只实现即时气泡 happy path 而遗漏这些边界。验证顺序按当前政策，不强制先写测试。
 
 ## 4. 下一阶段实现动作（当前不执行）
 
@@ -121,51 +121,51 @@ T4/T5 首轮还须区分：启动前失败、主运行已启动但空输出、�
 - workspace 实际使用 `gpui-kit = 0.6.1`，解析到 `gpui-pre = 0.3.4`；旧设计文档提及的 0.6.0 不作当前 API 依据。`gpui-kit/Cargo.toml:56–60` 的 `test-support` 传递到 gpui、platform、base、component；facade 导出 `#[gpui_kit::test]`。
 - registry 只读核实：`gpui-pre/src/app/test_context.rs` 的 `TestAppContext::update:207`、`add_window:220`、`add_window_view:288`、`VisualTestContext::from_window:756`、`simulate_keystrokes:794`、`simulate_click:850`、`debug_bounds:888`、`draw:893`、`simulate_event:925`；真实 `Window::painted_quads:2618` 在 test-support 下可读。`draw` 执行 element layout/prepaint/paint，不等于 OS present。
 - GPUI `ListState::{logical_scroll_top,bounds_for_item,viewport_bounds,is_following_tail}` 以及生产 `scroll_anchor_snapshot` 可读实际列表状态；MessageCopy/生产选择路径可读复制文本，测试平台可读 clipboard。quads 只有形状，不证明文字内容；需同时断言真实行内容/状态、bounds、clip intersection。quad 坐标为 scaled pixels，bounds 为逻辑像素，按 `window.scale_factor()` 换算，不做截图推断焦点。
-- 当前 `vega_ui` / `vega` manifest 没有测试接线；静态清点 workspace `crates` 与 `xtask` 未发现 Rust 测试属性，不能引用历史测试名当作可运行回归。新的开发期测试必须独立重建，不整目录恢复旧集合。
+- 当前 `vega_ui` / `vega` manifest 没有测试接线；静态清点 workspace `crates` 与 `xtask` 未发现 Rust 测试属性，不能引用历史测试名当作可运行回归。如风险验证需要新开发期测试，只建必要接线，不整目录恢复旧集合；合并前按当前政策留痕并清理测试及独占支持。
 
-### 5.2 必要且只在下一阶段添加的支持
+### 5.2 后续按风险选择的开发期支持（当前不添加）
 
-1. 在有测试的 `vega_ui`、`vega` manifest 增加 dev-only `gpui_kit = { workspace = true, features = ["test-support"] }`，锁文件只处理必要测试依赖，不升级生产依赖；conversation 存储夹具只用已批准的 tempfile/现有依赖。是否需要额外依赖由父审批准，不自行引入 mock 框架。
+1. 如需开发期 UI 测试，在有测试的 `vega_ui`、`vega` manifest 增加 dev-only `gpui_kit = { workspace = true, features = ["test-support"] }`，锁文件只处理必要测试依赖，不升级生产依赖；conversation 存储夹具只用已批准的 tempfile/现有依赖。是否需要额外依赖由父审批准，不自行引入 mock 框架。
 2. crate 内 `cfg(test)` 模块能调用 pub(crate) 生产路径；初始化真实主题、组件、键位和必要 globals，创建合成 Thread、真实 ConversationStream，必要时真实 VegaWindow/controller。不启动桌面 app、不运行外部模型/进程、不接真实凭据。
 3. 对 provider preflight、worker 启动、存储 fault 边界增加最小 dev-only latch/fault seam；它们只能延迟/故障外部边界，不能替代路由、owner/权限判断、UI 插入与事务决定。测试要调用生产 controller + event ingress，不是手写一个 fake controller 然后在里面调用 accept。
 4. 原始 ID 不自动是 debug selector。新增可删除的 test-only selector/只读 paint observer，把 pending/user/image 行、按钮与真实 row bounds 关联；不得靠源码 regex 判“已显示”。同一 UI 实体的录制计数必须 per-instance，避免 Nextest 默认并发污染。
-5. 先以**已有正式历史用户行**作阳性对照：真实视图能找到内容与非零 clipped bounds；在相同 harness 中操作发送入口能收到真实 `ComposerSubmitted`，异步 latch 确实没有释放。阳性对照失败是接线故障，不是本卡 RED。
+5. 先以**已有正式历史用户行**作阳性对照：真实视图能找到内容与非零 clipped bounds；在相同 harness 中操作发送入口能收到真实 `ComposerSubmitted`，异步 latch 确实没有释放。阳性对照失败是接线故障，不证明本卡产品缺陷。
 
-可行性限制：静态 API 证明测试平台有进程内调度、布局/绘制与列表状态的观察口，但尚未证明仓库 globals/renderer 接线可云端启动。真实窗口焦点、IME、OS 屏幕呈现、外部 provider/文件导入与实际阻塞时长只能用户手测；无 renderer 的 `capture_screenshot` 不能作为必要断言。当前没有“普通提交 durable receipt”及 request/attempt API，这是目标产品缺口；允许最小接口缺失 RED，但必须写明其行为断言尚未运行。若阳性对照无法工作，先修接线/取得 Actions 原始日志，不降验收到 toy helper。
+可行性限制：静态 API 证明测试平台有进程内调度、布局/绘制与列表状态的观察口，但尚未证明仓库 globals/renderer 接线可云端启动。真实窗口焦点、IME、OS 屏幕呈现、外部 provider/文件导入与实际阻塞时长只能用户手测；无 renderer 的 `capture_screenshot` 不能作为必要断言。当前没有“普通提交 durable receipt”及 request/attempt API，这是目标产品缺口；静态接口缺失或编译接线失败不代表行为验证通过，未运行断言明确标未运行。若阳性对照无法工作，先修接线/取得 Actions 原始日志，不降验收到 toy helper。
 
-## 6. 最小先行测试包与有效 RED
+## 6. 必要风险验证组（未来云端，不强制 TDD）
 
-**“最小包”是以下完整行为组，包含全部必需回归，不是仅 T1 通过就可以实现。** 在修改生产实现前一次写齐并独立审查。单个组可用表驱动减少重复，但不得删掉失败边界。测试名使用行为，不带 ticket 编号。
+以下 T1–T6 保留全部必要行为与失败边界，按影响和风险选择验证接线，不以仅 T1 的 happy path 代替验收。按[当前政策](../vega-rust-test-delivery-lifecycle.md)可先实现后补必要测试，不强制一次写齐、测试冻结、前置测试独审或有效 RED；实现独审、安全断言及必要回归不取消。若写开发测试，使用行为命名，合并前留痕并清理独占支持。
 
-| 包 | 真实被测入口与夹具 | 冻结断言 / RED 目标 |
+| 组 | 真实被测入口与夹具 | 必要可观察结果 / 不变量 |
 |---|---|---|
-| T1 延迟下的原生本地显示与 guard | 真实 ConversationStream 的按钮和发送动作；预检/准备回执 latch；普通 Native 与纯图片变体 | 第一可绘制周期存在唯一 pending 内容行、可编辑新草稿；回执未释放；快速重复输入不会多启动。现基线缺气泡是首选行为 RED，不是依靠虚构 API 编译失败 |
-| T2 控制器到持久化确认 | 真实 `submit_composer` → 预检完成 → worker 边界 → `apply_agent_batch_ingress`；生产事务/受控 provider | pending 在任何 I/O 完成前可绘制；I/O 不在 UI 同步执行；真实提交 receipt 才转正式；同 ID 重放仍一份。新增最小 receipt/owner 接口缺失可单列接口 RED，不能冒充执行了全部断言 |
+| T1 延迟下的原生本地显示与 guard | 真实 ConversationStream 的按钮和发送动作；预检/准备回执 latch；普通 Native 与纯图片变体 | 第一可绘制周期存在唯一 pending 内容行、可编辑新草稿；回执未释放；快速重复输入不会多启动。现基线缺气泡是待验证的行为缺口，不以虚构 API 编译失败代证 |
+| T2 控制器到持久化确认 | 真实 `submit_composer` → 预检完成 → worker 边界 → `apply_agent_batch_ingress`；生产事务/受控 provider | pending 在任何 I/O 完成前可绘制；I/O 不在 UI 同步执行；真实提交 receipt 才转正式；同 ID 重放仍一份。receipt/owner 接口及其断言未运行时如实记录，不能以静态接口缺失冒充执行了全部断言 |
 | T3 revision/附件/稳定位置 | 等待时编辑不同文字及同文新 revision、新附件；确认与重复确认；已有长历史/选区 | 当前输入/附件不变，原快照内容与图片准确；key、MessageCopy、相邻顺序和选区不变；列表只在初始 pending 插入，确认不再 splice |
 | T4 失败与存储真实性 | 每独立阶段一个注入：preflight、启动、事务、actor-start-after-commit；实际临时 file-backed Store | 未提交零消息/零 provider 请求；提交后失败仍一条用户+图片；typed 恢复状态正确；busy 释放；重试复用原气泡/快照且最多一份 durable user。storage seam 不绕过真实事务 |
 | T5 取消、迟到、切换与核实 | cancel-before-commit / commit-before-cancel 两种受控顺序；通道丢失；A→B→A；新 attempt 与旧事件交错 | 旧事件不能修改 B/新 attempt；取消不谎称撤销已提交；未知结果不重复写；恢复后仍唯一消息，原图片不丢；stop token 与 controller 终态正确 |
-| T6 路由与安全回归 | Native running Queue/Send-now/SteeringAccepted/continuation、Codex、自动任务/批准计划/凭据续跑；model/permission gates | 不套普通 pending 逻辑，不双 echo，不抢运行 owner；权限/模型校验仍执行，拒绝不调用 provider；与 #535 冻结契约兼容；使用实际合法事件序列，不以 Proposed→Success 或缺 Started 的伪序列造 RED |
+| T6 路由与安全回归 | Native running Queue/Send-now/SteeringAccepted/continuation、Codex、自动任务/批准计划/凭据续跑；model/permission gates | 不套普通 pending 逻辑，不双 echo，不抢运行 owner；权限/模型校验仍执行，拒绝不调用 provider；与 #535 冻结契约兼容；使用实际合法事件序列，不以 Proposed→Success 或缺 Started 的伪序列制造结论 |
 
 断言时序：先 draw 真实视图建立输入命中；发真实操作；保留外部 latch；只推进由该操作安排的下一次有效 draw，检查 pending；随后 release latch、按生产事件收敛。不能为了得到气泡随意反复 refresh，不能用 sleep 等自然网络；UI 阻塞测试用 bounded observer/watchdog 防止主线程自锁，I/O context 与 UI 响应两项都检查。
 
 云端仅复用 `.github/workflows/pr-check.yml`：`cargo fmt --all -- --check`；`cargo clippy --workspace --all-targets -- -D warnings`；三组既有 Python 检查；`cargo nextest list --workspace --message-format json`；开发非空集执行 `cargo nextest run --workspace`。macos-latest，required check 为 `check (fmt, clippy, test)`。这些是**未来 Actions 命令，本轮未执行**，不新增 workflow/强制 E2E 阶段。
 
-每轮固定生产基线、测试补丁 SHA256/提交、独立审查、阳性对照和原始 RED run/job。只有目标行为缺失或经说明的最小目标接口缺失算 RED；编译接线、依赖、网络/runner 故障不算。RED 后冻结同一测试，最小实现 → 同一测试 GREEN → 固定可访问测试源码/完整 SHA/原始日志与计数 → 独立删测提交 → 最新 head 完整空集门禁（0 发现/0 执行，`no Rust tests`，不是测试通过）→ 正式 PR。验收变化停轮重开；不得事后补测、改断言、ignore、自动重试换绿。
+按风险记录实际基线、实现独审、必要验证及云端 run/job；使用开发 Rust 测试时固定可恢复源码/patch、完整 SHA、原始结果与计数，合并前清理测试及独占支持。最终无 Rust 测试的 head 仍须完整 required CI，空集记 0 发现/0 执行、`no Rust tests`，不是行为测试通过。不要求 RED/GREEN 时序或冻结后禁止补测；不得按实现反推预期、放宽断言、ignore 或盲目重试换绿。产品、接线、验收变化及外部环境失败分层诊断；验收变化先更新 spec。本轮不触发 CI 或改 workflow。
 
 ## 7. 共享写入冲突、顺序与未决项
 
-- **#535 活跃，不领取、不写其 worktree/源码。** 已读 [最新测试评论](https://github.com/puzige/vega/issues/535#issuecomment-6345089275)：其正在修测试接线，未 READY/未 RED。其范围是 `pending_messages.rs` echo/delivery、SteeringAccepted、continuation 及对应 conversation 持久化。普通发送使用独立 submission owner，不能借 `pending_id` 混入队列。
+- **#535 活跃，不领取、不写其 worktree/源码。** 既有[历史评论](https://github.com/puzige/vega/issues/535#issuecomment-6345089275)不是本轮最新接口证据；父检查点确认独立工作仍活跃，实际最终签名/集成点未取得。其范围是 `pending_messages.rs` echo/delivery、SteeringAccepted、continuation 及对应 conversation 持久化。普通发送使用独立 submission owner，不能借 `pending_id` 混入队列。
 - 符号接口隔离：本卡主改普通 `submit_composer` 分支、普通 accept/reject 和 `UserSubmission`；`enqueue_composer`、queue_delivery、pending echo reconciling、SteeringAccepted 消费归 #535。`app_agent.rs`、`window/artifact.rs`、`content.rs`/`model.rs`/`core.rs` 为共享文件，父明确一位写入者和逐符号接入顺序；不因文件不同分支就并行改同一接口。
-- **执行顺序建议**：主 Agent 先审本规格及 receipt/恢复接口 → 等 #535 接口冻结或集成，刷新基线和回归集 → 本 writer 获 followup 才写完整先行测试 → 独立审查/Actions 有效 RED → 同 writer 实现。若 #535 先合并，保留其生产增量并恢复其可访问冻结回归进行集成验证，不用旧 ref 覆盖文件。
-- #545 会消费稳定 entry key/revision；本卡确认必须保持 key 并使 display/durable-owner revision 正确失效。两卡 `core/model/render` 的代码阶段串行集成，先确认该接口再冻结 #545 测试；当前仅各自 docs，不混写。
+- **当前接入前提**：父审候选 v2 的 claim/receipt/恢复围栏及调用点图，协调 #535 实际最终接口与共享符号顺序后决定下一实现授权。后续最小实现、必要风险验证与实现独审按当前政策，不强制先行测试/有效 RED。若 #535 先合并，保留其生产增量并针对实际最终接口验证兼容，不用旧 ref 覆盖文件或恢复历史测试集合。
+- #545 会消费稳定 entry key/revision；本卡确认必须保持 key 并使 display/durable-owner revision 正确失效。两卡 `core/model/render` 的代码阶段串行集成，先确认该接口再组织 #545 验证；当前仅各自 docs，不混写。
 - #549 的 Motion/lifecycle 归另一层，本卡无需新增动画/token，不复制公共机制。
 
 | 未决事项 | 已有证据 / 需要的下一步 | 是否降低验收 |
 |---|---|---|
-| receipt、用户 ID 和已提交重试的最小接线 | 当前 `UserSubmission` 只有 payload，entry 在后台生成 ID，事务早于 actor；主 Agent 审核跨层最小 typed receipt 与既有用户复用校验，T4/T5 先写齐 | 否；解决前不得先实现 happy path |
+| receipt、用户 ID 和已提交重试的最小接线 | 当前 `UserSubmission` 只有 payload，entry 在后台生成 ID，事务早于 actor；父审核候选 v2 的跨层 typed receipt、sealed proof 与恢复围栏，按 T4/T5 风险覆盖 | 否；解决前不得先实现 happy path |
 | globals/云端进程内 UI 与 I/O seam | registry 有真实 API，仓库无现成测试接线；下一阶段以 T1 阳性对照和同轮 Actions 证明 | 否；接线故障独立诊断 |
 | #535 共享写入和新基线 | 他卡仍活跃；需要父的符号级接口冻结/集成通知 | 否；当前规格可审，代码不得抢写 |
-| 未提交内容跨正常切换/视图释放的 owner 寿命 | 当前 stream/controller 生命周期需在测试阶段具体冻结保存位置；要求保留内容，不新增磁盘 outbox | 否；T5 不能只测两个始终存活的 view |
+| 未提交内容跨正常切换/视图释放的 owner 寿命 | 候选 v2 的存活 owner/claim 保存位置与条件释放仍须闭合；要求保留内容，不新增磁盘 outbox | 否；T5 不能只测两个始终存活的 view |
 | 真实 UI 延迟/安装版本 | 尚未观测；合并后用户核对版本，慢准备/长会话/图片/IME/切线程手测并分阶段记录 | 否；不以云端进程内 draw 宣称真实流畅度 |
 
 ## 8. 错误、安全、回滚与阶段交付
@@ -176,4 +176,4 @@ T4/T5 首轮还须区分：启动前失败、主运行已启动但空输出、�
 
 回滚由主 Agent 在云端验证后按本卡生产提交回退；先固定测试证据。优先无 schema 方案，不删历史消息/图片、不回滚或覆盖 #535/#529。已落库数据继续由原 conversation history 读取，运行停止仍用 CancellationToken。若发现需要 schema/新恢复产品决策，先报告与修订规格，不能在实现中暗增范围。
 
-本轮交付只含此 spec：未测试、未 CI、未运行/编译/打包/bench/profile/CUA。静态核对和最终内容 SHA256 随 READY 返回；READY 仅表示文档可审，不表示前置问题全部解决或可以跳过测试。主 Agent 审规格后 followup 同一 writer；本轮 READY 后停止 `docs/544/` 全部写入。
+本轮交付含主规格最小修正、候选 v2 及调用点图；v1 字节不变。未测试、未 CI、未运行/编译/打包/bench/profile/CUA，无源码/Git/外部操作。静态核对、文件 SHA256 和无 Git 的文档 diff SHA256 随 READY-doc 返回；只表示文档可审，不表示 P1/P2 已闭合或授权生产。父拥有独审/集成/下一决定；本轮 READY-doc 后停止全部写入。
