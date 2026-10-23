@@ -8,6 +8,7 @@ pub use vega_runtime::computer_use::{
     ManagedComponents, Observation, PermissionState, Preparation, PreparationProbe, PromptMode,
     SUPERSEDED_CONTROL_OUTPUT, Target, preparation_from_check_permissions, unknown_preparation,
 };
+pub use vega_store::messages::RunContinuation;
 
 use serde::{Deserialize, Deserializer, Serialize};
 

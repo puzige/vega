@@ -204,10 +204,10 @@ where
                             }
                             if let RuntimeEvent::SteeringAccepted(input) = &event {
                                 let transitioned = [
-                                    ConversationEvent::MessageFinished {
-                                        message_id: message_id.clone(),
-                                        stop_reason: crate::types::ConversationStopReason::End,
-                                        execution_duration_ms: None,
+                                    ConversationEvent::RunContinued {
+                                        previous_assistant_id: message_id.clone(),
+                                        user_message_id: input.id.clone(),
+                                        next_assistant_id: input.assistant_message_id.clone(),
                                     },
                                     ConversationEvent::PendingMessageDelivered {
                                         pending_id: input.id.clone(),
@@ -556,7 +556,8 @@ pub(crate) fn persist_runtime_event(
         RuntimeEvent::ReasoningCompleted { .. } => {}
         RuntimeEvent::SteeringAccepted(input) => {
             let tx = store.immediate_transaction()?;
-            if !vega_store::pending_messages::mark_delivered(&tx, thread_id, &input.id)? {
+            if !vega_store::pending_messages::mark_accepted(&tx, thread_id, &input.id, message_id)?
+            {
                 return Err(runtime_state_error());
             }
             ensure_message_updated(

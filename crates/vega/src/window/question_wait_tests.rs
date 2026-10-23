@@ -527,6 +527,170 @@ fn background_question_notifies_once_and_click_routes_to_its_live_task(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn continued_run_keeps_successor_question_and_attention_after_stale_predecessor_cleanup(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(cx, true);
+    fixture.start_message(cx);
+    fixture.navigate(true, cx);
+    let mut first = fixture.ask("before-steering", cx);
+    let notices = cx.shown_system_notifications();
+    assert_eq!(notices.len(), 1);
+    let first_notice = notices[0].clone();
+    assert_eq!(first_notice.title.as_ref(), "Choose release color");
+    assert_eq!(first_notice.body.as_ref(), "Waiting for your answer");
+    assert_eq!(fixture.label(cx), "Waiting for your answer");
+    assert!(matches!(poll_once(first.as_mut()), Poll::Pending));
+    fixture.answer(false, cx);
+    assert_eq!(
+        poll_once(first.as_mut()),
+        Poll::Ready(RuntimeUserQuestionResponse::Answered(expected_answer(
+            false
+        )))
+    );
+    fixture.assert_submitted(false, cx);
+    assert!(cx.delivered_system_notifications().is_empty());
+    assert!(
+        cx.dismissed_system_notifications()
+            .contains(&first_notice.tag)
+    );
+    fixture.finish_tool("before-steering", false, cx);
+    assert!(!fixture.panel_present(cx));
+
+    let generation = fixture
+        .window
+        .update(cx, |owner, _, _| {
+            owner.agent_controller.active[&fixture.thread.id].generation
+        })
+        .unwrap();
+    let apply_events = |events, cx: &mut TestAppContext| {
+        fixture
+            .window
+            .update(cx, |owner, _, cx| {
+                assert!(matches!(
+                    owner.apply_agent_batch_ingress(
+                        generation,
+                        &fixture.thread.id,
+                        &fixture.stream,
+                        crate::app_agent::AgentBatch {
+                            composer_prediction: None,
+                            subagents: Vec::new(),
+                            events,
+                            codex_mode_confirmed: false,
+                            computer_use_ready: None,
+                            mcp_unavailable: Vec::new(),
+                            reference_failure: None,
+                            credential_failure: false,
+                            finished: None,
+                        },
+                        cx,
+                    ),
+                    crate::app_agent::AgentBatchIngress::Running
+                ));
+                let run = &owner.agent_controller.active[&fixture.thread.id];
+                assert_eq!(run.generation, generation);
+                assert_eq!(run.root_message_id.as_deref(), Some("run"));
+                assert_eq!(run.message_ids, ["run", "next-run"]);
+                assert!(run.terminal_message_id.is_none());
+                assert!(run.completion_outcome.is_none());
+                assert!(!run.queue_ready);
+            })
+            .unwrap();
+        cx.run_until_parked();
+    };
+    apply_events(
+        vec![
+            ConversationEvent::RunContinued {
+                previous_assistant_id: "run".into(),
+                user_message_id: "steering-user".into(),
+                next_assistant_id: "next-run".into(),
+            },
+            ConversationEvent::PendingMessageDelivered {
+                pending_id: "steering-user".into(),
+                message_id: "steering-user".into(),
+                seq: 2,
+                content: "Ask again".into(),
+                images: Vec::new(),
+            },
+            ConversationEvent::MessageStarted {
+                message_id: "next-run".into(),
+                seq: 3,
+            },
+        ],
+        cx,
+    );
+    assert_eq!(
+        cx.update(|cx| fixture.stream.read(cx).question_test_run_label("run", cx)),
+        Some("Activity".into())
+    );
+    let mut next = fixture.ask("after-steering", cx);
+    let notices = cx.shown_system_notifications();
+    assert_eq!(notices.len(), 2);
+    let next_notice = notices[1].clone();
+    assert_ne!(first_notice.tag, next_notice.tag);
+    assert_eq!(next_notice.title.as_ref(), "Choose release color");
+    assert_eq!(next_notice.body.as_ref(), "Waiting for your answer");
+    assert_eq!(fixture.label(cx), "Waiting for your answer");
+    assert_eq!(
+        cx.update(|cx| fixture
+            .stream
+            .read(cx)
+            .question_test_run_label("next-run", cx)),
+        Some("Waiting for your answer".into())
+    );
+    apply_events(
+        vec![ConversationEvent::MessageFinished {
+            message_id: "run".into(),
+            stop_reason: ConversationStopReason::End,
+            execution_duration_ms: Some(1_000),
+        }],
+        cx,
+    );
+    fixture.finish_tool("before-steering", false, cx);
+    assert!(!fixture.cancel.is_cancelled());
+    assert!(fixture.queue.has_pending());
+    assert!(matches!(poll_once(next.as_mut()), Poll::Pending));
+    assert!(fixture.panel_present(cx));
+    assert_eq!(fixture.label(cx), "Waiting for your answer");
+    assert_eq!(
+        cx.update(|cx| fixture.stream.read(cx).question_test_run_label("run", cx)),
+        Some("Activity".into())
+    );
+    assert_eq!(
+        cx.update(|cx| fixture
+            .stream
+            .read(cx)
+            .question_test_run_label("next-run", cx)),
+        Some("Waiting for your answer".into())
+    );
+    let delivered = cx.delivered_system_notifications();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].tag, next_notice.tag);
+    assert!(
+        !cx.dismissed_system_notifications()
+            .contains(&next_notice.tag)
+    );
+    assert_eq!(cx.shown_system_notifications().len(), 2);
+
+    fixture.answer(false, cx);
+    assert_eq!(
+        poll_once(next.as_mut()),
+        Poll::Ready(RuntimeUserQuestionResponse::Answered(expected_answer(
+            false
+        )))
+    );
+    fixture.assert_submitted(false, cx);
+    assert!(cx.delivered_system_notifications().is_empty());
+    assert!(
+        cx.dismissed_system_notifications()
+            .contains(&next_notice.tag)
+    );
+    fixture.finish_tool("after-steering", false, cx);
+    assert!(!fixture.panel_present(cx));
+    assert_eq!(cx.shown_system_notifications().len(), 2);
+}
+
+#[gpui_kit::test]
 fn inactive_application_and_settings_each_receive_one_needs_answer_notification(
     cx: &mut TestAppContext,
 ) {

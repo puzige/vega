@@ -129,6 +129,7 @@ pub(crate) struct RunActivityGroup {
     activity_order: u64,
     tool_starts: Vec<(Entity<ToolCard>, u64)>,
     presentation_released: bool,
+    continued: bool,
     process_copies: HashSet<u64>,
     final_confirmed: bool,
     body_in_details: bool,
@@ -447,6 +448,26 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn continue_run(&mut self, cx: &mut Context<Self>) {
+        if self.continued {
+            return;
+        }
+        self.continued = true;
+        self.release_presentation(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn header_hidden(&self) -> bool {
+        let has_details = !self.process_copies.is_empty()
+            || self.segments.iter().any(|segment| {
+                segment
+                    .children
+                    .iter()
+                    .any(|child| !matches!(child, RunActivityChild::Artifact(_)))
+            });
+        self.continued && !(self.process_in_details() && has_details)
+    }
+
     pub(crate) fn confirm_final(
         &mut self,
         copies: HashSet<u64>,
@@ -612,6 +633,7 @@ impl RunActivityGroup {
             activity_order: 0,
             tool_starts: Vec::new(),
             presentation_released: false,
+            continued: false,
             process_copies: HashSet::new(),
             final_confirmed: false,
             body_in_details: false,
@@ -1138,6 +1160,9 @@ impl RunActivityGroup {
     }
 
     pub(crate) fn estimated_header_height(&self) -> f32 {
+        if self.header_hidden() {
+            return 0.;
+        }
         Layout::CONVERSATION_CLOCK_HEIGHT
             + Layout::CONVERSATION_DIVIDER_GAP
             + Layout::CONVERSATION_DIVIDER_HEIGHT
@@ -1158,6 +1183,9 @@ impl RunActivityGroup {
         execution_duration_ms: Option<u64>,
         cx: &mut Context<Self>,
     ) {
+        if self.continued {
+            return;
+        }
         if self.terminal {
             if status == RunActivityStatus::Failed && self.status == RunActivityStatus::Interrupted
             {
@@ -1200,6 +1228,9 @@ impl RunActivityGroup {
     }
 
     fn label(&self) -> String {
+        if self.continued {
+            return "Activity".into();
+        }
         if self.status == RunActivityStatus::Running && self.waiting_for_answer {
             return "Waiting for your answer".into();
         }
@@ -1257,6 +1288,9 @@ impl RunActivityGroup {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let group_ref = group.read(cx);
+        if group_ref.header_hidden() {
+            return div().h_0().into_any_element();
+        }
         let expanded = group_ref.expanded;
         let sticky = group_ref.sticky.clone();
         let label = group_ref.label();
