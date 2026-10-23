@@ -699,6 +699,10 @@ impl ConversationStream {
         self.run_continuations.clear();
         self.run_responses.clear();
         self.artifact_cards.clear();
+        self.artifact_call_owners.clear();
+        self.artifact_history_generation = self.artifact_history_generation.wrapping_add(1);
+        self.artifact_groups.clear();
+        self.finished_artifact_turns.clear();
         self.plan_cards.clear();
         self.summary_cards.clear();
         self.active_agent_message = None;
@@ -1232,6 +1236,9 @@ impl ConversationStream {
                 self.append_pending_user(&pending_id, &message_id, seq, &content, images, cx);
             }
             ConversationEvent::MessageStarted { message_id, seq } => {
+                if self.finished_artifact_turns.contains(&message_id) {
+                    return;
+                }
                 if self.active_agent_message.is_some() {
                     self.apply_controller_error(cx);
                     return;
@@ -1439,6 +1446,7 @@ impl ConversationStream {
             | ConversationEvent::ContextCompactionStatus { .. }
             | ConversationEvent::ContextAccounting { .. } => {}
             ConversationEvent::ToolCallProposed { call } => {
+                self.register_artifact_call(&call.id);
                 if let Some(existing) = self.tool_cards.get(&call.id) {
                     existing.update(cx, |card, cx| {
                         if !card.matches_call(&call) {
@@ -1687,6 +1695,7 @@ impl ConversationStream {
         {
             self.active_run_activity = None;
         }
+        self.finish_artifact_turn(message_id, cx);
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
         cx.notify();
