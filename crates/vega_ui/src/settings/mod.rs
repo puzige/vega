@@ -59,7 +59,13 @@ pub struct SettingsSaved {
     pub replay_identity_changed: bool,
 }
 
-pub struct DesktopPreparationRequested;
+pub struct DesktopPreparationRequested {
+    pub pane: crate::cua_onboarding::PermissionPane,
+}
+
+pub struct NativePreparationSettingsRequested(pub bool);
+
+impl Global for NativePreparationSettingsRequested {}
 
 /// Settings never opens SQLite itself. The app worker resolves this exact
 /// provider/model policy and sends it back to the active editor.
