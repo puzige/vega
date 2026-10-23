@@ -19,6 +19,7 @@ struct QuestionResponseState {
     delivery: Mutex<QuestionDelivery>,
     signal: Mutex<Option<watch::Sender<u64>>>,
     cancel: CancellationToken,
+    on_resolved: Arc<dyn Fn() + Send + Sync>,
 }
 
 struct QuestionDelivery {
@@ -44,6 +45,7 @@ impl QuestionResponseState {
             response
         };
         let answered = matches!(&response, Response::Answered(_));
+        (self.on_resolved)();
         let sent = sender.send(response).is_ok();
         delivery.resolution = if sent && answered {
             UserQuestionResolution::Answered
@@ -242,7 +244,17 @@ impl RuntimeUserQuestionHook for UserQuestionQueue {
         request: RuntimeUserQuestionRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Response> {
+        self.request_with_resolution(request, cancel, Arc::new(|| {}))
+    }
+
+    fn request_with_resolution(
+        &self,
+        request: RuntimeUserQuestionRequest,
+        cancel: CancellationToken,
+        on_resolved: Arc<dyn Fn() + Send + Sync>,
+    ) -> BoxFuture<'static, Response> {
         if request.call_id.is_empty() || request.input.validate().is_err() {
+            on_resolved();
             return async { Response::Unavailable }.boxed();
         }
         let (sender, receiver) = oneshot::channel();
@@ -256,6 +268,7 @@ impl RuntimeUserQuestionHook for UserQuestionQueue {
             }),
             signal: Mutex::new(None),
             cancel: cancel.clone(),
+            on_resolved,
         });
         let notified = if let Ok(mut state) = self.state.lock() {
             if let Ok(mut signal) = response.signal.lock() {

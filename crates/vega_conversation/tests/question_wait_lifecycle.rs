@@ -418,6 +418,104 @@ async fn run_waiting_scenario(resolution: Resolution, question_count: usize) {
 }
 
 #[tokio::test(start_paused = true)]
+async fn accepted_answers_resume_work_before_runtime_polls_and_persist_the_interval() {
+    for skip in [false, true] {
+        let fixture = Fixture::new();
+        let time = TimeSource::new();
+        let queue = UserQuestionQueue::new();
+        let mut listener = queue.subscribe();
+        let provider = ScriptedProvider::new(time.clone(), vec![question("accepted"), done()]);
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = observed.clone();
+        let run = run_thread_task_with_images_reasoning_and_mcp(
+            &fixture.store,
+            &provider,
+            &fixture.tools,
+            &fixture.thread.id,
+            "Ask before continuing",
+            "Follow user answers",
+            CancellationToken::new(),
+            &RejectPermissionHook,
+            move |event| {
+                sink_events.lock().unwrap().push(event.clone());
+                Ok(())
+            },
+            time.config(queue.clone()),
+            None,
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        tokio::pin!(run);
+        let pending = loop {
+            tokio::select! {
+                result = &mut run => panic!("run completed before question: {result:?}"),
+                changed = listener.changed() => assert!(changed),
+            }
+            if let Some(pending) = queue.take_pending() {
+                break pending;
+            }
+        };
+        let clock = observed
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|event| match event {
+                ConversationEvent::RunStarted { work_clock, .. } => work_clock.clone(),
+                _ => None,
+            })
+            .expect("the run must expose its production work clock");
+        assert_eq!(clock.elapsed(), Duration::from_secs(2));
+        time.advance(600);
+        assert!(pending.respond(UserQuestionAnswers::default()).is_err());
+        assert!(queue.has_pending());
+        assert_eq!(clock.elapsed(), Duration::from_secs(2));
+        assert!(pending.respond(answers(skip)).unwrap());
+        assert!(pending.is_resolved());
+        assert!(!queue.has_pending());
+        time.advance(7);
+        assert_eq!(provider.request_count(), 1);
+        assert_eq!(clock.elapsed(), Duration::from_secs(9));
+        let result = run.await.unwrap();
+        assert!(!result.failed && !result.interrupted);
+        assert_eq!(provider.request_count(), 2);
+        assert_eq!(terminal_duration(&result.events), 11_000);
+        assert_eq!(terminal_duration(&observed.lock().unwrap()), 11_000);
+        assert_eq!(
+            fixture.stored_duration(&result.assistant_message_id),
+            11_000
+        );
+        assert_eq!(clock.elapsed(), Duration::from_secs(11));
+        let results: Vec<_> = result
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ConversationEvent::ToolCallFinished { call_id, result }
+                    if call_id == "accepted" =>
+                {
+                    Some(result)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, ToolCallStatus::Success);
+        let requests = provider.requests.lock().unwrap();
+        let replies: Vec<_> = requests[1]
+            .messages
+            .iter()
+            .filter(|message| message.tool_call_id.as_deref() == Some("accepted"))
+            .collect();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(
+            UserQuestionAnswers::from_json(&replies[0].content, &input()).unwrap(),
+            answers(skip)
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn answers_resume_real_runs_and_save_only_work_time() {
     run_waiting_scenario(Resolution::Answer, 1).await;
 }

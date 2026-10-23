@@ -80,8 +80,8 @@ pub(crate) struct WorkPause {
     id: u64,
 }
 
-impl Drop for WorkPause {
-    fn drop(&mut self) {
+impl WorkPause {
+    pub(crate) fn finish(&self) {
         let mut state = self
             .clock
             .state
@@ -90,5 +90,11 @@ impl Drop for WorkPause {
         if state.pauses.remove(&self.id) && state.pauses.is_empty() {
             state.active_since = (self.clock.source)();
         }
+    }
+}
+
+impl Drop for WorkPause {
+    fn drop(&mut self) {
+        self.finish();
     }
 }

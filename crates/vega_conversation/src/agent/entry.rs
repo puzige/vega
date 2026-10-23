@@ -11,8 +11,17 @@ impl vega_runtime::RuntimeUserQuestionHook for WorkingUserQuestionHook {
         request: vega_runtime::RuntimeUserQuestionRequest,
         cancel: CancellationToken,
     ) -> futures::future::BoxFuture<'static, vega_runtime::RuntimeUserQuestionResponse> {
-        let pause = self.clock.pause();
-        let response = self.inner.request(request, cancel);
+        let pause = Arc::new(self.clock.pause());
+        let resolution_pause = Arc::downgrade(&pause);
+        let response = self.inner.request_with_resolution(
+            request,
+            cancel,
+            Arc::new(move || {
+                if let Some(pause) = resolution_pause.upgrade() {
+                    pause.finish();
+                }
+            }),
+        );
         async move {
             let response = response.await;
             drop(pause);
@@ -838,6 +847,8 @@ where
             .with_subagents(Some(supervisor.hook()));
     }
 
+    let work_time_source = actor_config.work_time_source.clone();
+    let user_questions = actor_config.user_questions.clone();
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
         project_id: prepared.project_id.clone(),
@@ -868,12 +879,12 @@ where
     };
 
     let runtime_started_at = std::time::Instant::now();
-    let work_clock = crate::types::WorkClock::new(actor_config.work_time_source.clone());
+    let work_clock = crate::types::WorkClock::new(work_time_source);
     prepared.request.tool_config =
         prepared
             .request
             .tool_config
-            .with_user_questions(actor_config.user_questions.clone().map(|inner| {
+            .with_user_questions(user_questions.map(|inner| {
                 Arc::new(WorkingUserQuestionHook {
                     inner,
                     clock: work_clock.clone(),
