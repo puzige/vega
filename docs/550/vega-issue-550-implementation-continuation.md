@@ -162,3 +162,61 @@ head `76fd200952154dc5be8c6cda1f6cd513badff106` 的 [Actions 39927968952](https:
 - 测试源码 SHA-256 `b5d4ca9a458b600d34ba6cac3dfc2bd19da085572f32493f6e440415cec39157`；ArtifactCard 源码 `0877d19ebd5db4149dc6a3a8a1f05de5add202f839a41179ebae43f3718d150e`；两源码 binary diff `19db48afcea186637557382f0139b520ca821d06a0558e499b5c1f563537ce45`。父读回全部匹配 writer 停写内容。
 - 父实际 `cargo fmt --all -- --check`、`git diff --check`、词法边界静态范围检查以及唯一 accessor/字节保全检查均退出 0。28 个名称/顺序保留，其他 27 个测试体逐字节不变；四项旧修复、五类已知未决原断言、tool_card、workflow、Nextest 配置与依赖保持。静态 assert 宏计数 218→237，不是发现或运行计数；旧结构断言依据上述契约作当前身份/聚合观察等价替换，不放宽业务目标。
 - 未本地运行 Vega、编译/构建/check/Clippy/test/nextest/bench/profile/CUA；新 head 编译、发现与行为结果及非写入者审查仍待安排，不宣称通过。规格偏离无；证据仍是实际渲染加渲染数据观察，不是像素正文或真实文件/权限/外部应用验收。
+
+## 2026-10-24 artifact 修复独立审查与实际云端结果
+
+本轮授权目标已完成：artifact 兼容修复、非写入者独立审查、固定新版本的实际云端结果均已取得。整体 #550 仍有五类范围外未决，保持 OPEN / In progress；PR #579 保持 Draft、不自动合并。没有合并 #550/#552 或相关 PR、修改 #552、清理测试/分支/worktree，未宣称用户手测通过。
+
+### 固定实现与独立审查
+
+- 实现及本轮实际行为验证 SHA：**`4f633e469113fe25c50ffc006dadc4ed0cd1d05c`**；修复 delta base `725d63281f891189e81ed0b66665130001e196e6`，包含实施前正常集成的 master `73977c89eba718da4b2573227c44beb8bcff6911`。原 `ed14a21a1c6db5b09a8a4631df5d7e3eeb49c252` 四项修复保留。上述实现已正常推送，PR/远端 head 与源码 blob `bf5ce272fd3456886e10cd53bf9f73dcbc9052f5` 已读回一致。
+- 非写入者 `artifact_review` 对完整固定 SHA 的独立静态审查完成：未发现可证的新增 P0–P3 问题或新增阻断；确认合法聚合前置、四行实际渲染/完整数据/几何、真实 Preview 焦点及两次精确请求保持验收强度，没有恢复旧同阶段结构或扩大普通生产 API。28 名称/顺序、其他 27 个测试体、四项旧修复和五类原断言均保留；订阅/borrow/drop/API 和普通构建源文核对无新增问题。该结论是静态审查，与下文实际行为结果分开记录。
+- 本地实际执行的 `cargo fmt --all -- --check`、`git diff --check`、词法范围/测试体保全、唯一 accessor 与受保护路径字节检查均 exit 0；独审另执行 scope、fixed delta diff-check 与独立 blob/字节/哈希核对，均 exit 0。未本地运行 Vega、编译/build/package、cargo check/Clippy/test/nextest/bench/profile/CUA/OS 自动化。
+- 可恢复[固定源码](https://github.com/puzige/vega/blob/4f633e469113fe25c50ffc006dadc4ed0cd1d05c/crates/vega_ui/src/conversation_stream/disclosure_motion_tests.rs) / [本轮原始 patch](https://github.com/puzige/vega/commit/4f633e469113fe25c50ffc006dadc4ed0cd1d05c.patch)。源码 SHA-256 **`b5d4ca9a458b600d34ba6cac3dfc2bd19da085572f32493f6e440415cec39157`**；ArtifactCard **`0877d19ebd5db4149dc6a3a8a1f05de5add202f839a41179ebae43f3718d150e`**；源码 binary delta **`19db48afcea186637557382f0139b520ca821d06a0558e499b5c1f563537ce45`**。
+
+### 新版本实际 Actions
+
+[Actions 39999223526](https://github.com/puzige/vega/actions/runs/39999223526) 的 head 为 **`4f633e469113fe25c50ffc006dadc4ed0cd1d05c`**，使用原 `pr-check`，没有改 workflow/配置或重跑换绿。2026-10-24 01:56:41（Asia/Shanghai）启动，02:01:46 完成；首次读取在 01:56:54，下一次读取在 02:02:15，遵守五分钟间隔。
+
+| Job / 步骤 | 实际结果 |
+|---|---|
+| [Nextest 120570652816](https://github.com/puzige/vega/actions/runs/39999223526/job/120570652816) | failure；编译与发现流程完成，行为实际执行，workspace step exit 100 |
+| [Clippy 120570653262](https://github.com/puzige/vega/actions/runs/39999223526/job/120570653262) | success；Format 与全目标 `cargo clippy --workspace --all-targets -- -D warnings` success |
+| [required 120573011042](https://github.com/puzige/vega/actions/runs/39999223526/job/120573011042) | failure；Nextest 的五个真实失败使汇总失败 |
+| Python 三组 | 5 + 15 + 40 = 60 项实际执行，三组均 OK；不是旧报告的 Python 计数 |
+
+云端先成功执行 `cargo nextest list --workspace --message-format json`，JSON 被原 workflow 重定向至 runner 临时文件，未在失败日志中打印独立 `test-count`，因此该 JSON 总数**未取得**。Nextest 原始 banner 是 **`Starting 28 tests across 15 binaries`**；实际 footer 是 **`28 tests run: 23 passed, 5 failed, 0 skipped`**。分别记录为：发现/启动 banner 28，执行 28，通过 23，失败 5，跳过 0；ignored 的独立计数**未取得**，不由静态无 ignore 或跳过数推算。不是 no Rust tests，原日志中出现的该字符串只是 workflow 脚本 echo，不是本轮空集结果。
+
+### artifact 与四项旧修复的实际执行
+
+所有下列用例的完整模块前缀均为 `conversation_stream::thinking::disclosure_motion_tests::`，原始 Nextest PASS 行均已读取：
+
+| 用例完整函数名 | 本轮实际结果 |
+|---|---|
+| `visible_artifact_preview_and_real_control_focus_survive_first_final_collapse` | PASS（0.425s），本轮合法 artifact 兼容路线已执行 |
+| `independent_disclosure_owners_never_share_the_transition_channel` | PASS（0.078s） |
+| `long_thinking_stream_interleaves_reversals_and_real_composer_character_input` | PASS（6.052s） |
+| `thinking_shimmer_keeps_its_own_active_visible_reduced_and_finished_frame_gates` | PASS（0.064s） |
+| `invalid_or_missing_final_and_failed_or_cancelled_turns_keep_unknown_body_visible` | PASS（1.320s），含合法 Failed metadata/真实输出观察 |
+
+这些结果验证本轮固定实现中保留的四项旧修复，不倒填为旧 head 的行为结果；四行渲染和数组正文观察也不冒充独立像素回读、真实文件/Git/权限/外部应用或用户观感验收。
+
+### 五项失败的首个根断言与范围
+
+下面五个完整函数名也均位于上述模块；本轮全部与交接列明的五类已知未决匹配，没有新增失败类型。源行号均指本次实际验证的固定 SHA。
+
+| 完整函数名 | 首个失败与固定源位置 | 分类 / 本轮处理 |
+|---|---|---|
+| `rapid_reactivation_without_an_inactive_draw_does_not_replay_missed_motion` | `:2363`：`fixture.root_renders() == before_deactivation`，12 vs 11；automatic inactive root render，发生在重新激活之前 | 已知 no-inactive-draw 前提失败；保留严格断言，不改框架/registry/CI |
+| `first_final_overrides_independent_manual_focus_and_real_scrolled_reading_states_once` | `:2742`：`!thinking.read(cx).expanded` | 已知子 Thinking 展开位与 Final 展示范围未决；不改 Final 算法或删除断言 |
+| `tab_and_shift_tab_visit_only_enabled_real_headers_and_not_the_decorative_glyph` | `:2268`：disabled 分支 `after.is_focused(window)`；`no-content header must be skipped by Tab` | 已知 disabled Tab / 显式 FocusHandle tab-stop 问题；不改生产 focus 或降低 skip 断言 |
+| `decorative_frames_do_no_more_message_measurement_than_identical_settled_redraws` | `:2099`：`fold.invalidates.len() == 1`，3 vs 1；`one real fold, not decorative invalidation` | 已知单次 fold 观察/归因问题；不把期望改为 3、不去重或删记录 |
+| `first_trusted_final_collapses_reading_selection_and_focus_then_enter_reopens` | `:1064`：`!fixture.selected_text().is_empty()`；真实 source 拖选前置未建立 | 已知真实选择接线前提失败；不伪造 selection 缓存、不删非空断言 |
+
+原始全文日志以 `gh run view 39999223526 --repo puzige/vega --log` 保存，SHA-256 **`52ce7546e181f8f49e823df4c8be1be3d4fdc22add97a6a234e3464948cdb93d`**；原文件完整保留，ANSI 清理仅产生单独分析副本。首次日志提取脚本有分组索引错误，修正观察脚本后严格核对 28 条执行结果、五条目标 PASS、五个根失败及 footer 均通过，原始日志与源码未更改。前轮原始 E0599 日志及其哈希保持不变，没有用最终成功项覆盖首次失败证据。
+
+### 结果回写与后续条件
+
+本节作为独立文档记录提交/推送时会形成新的 PR head，**上述云端结果只绑定 `4f633e469113fe25c50ffc006dadc4ed0cd1d05c`，不绑定后续文档 head**。收尾 fetch 已安全确认任务远端无后来写入；当时 origin/master 已推进到 `b2248996cc68497ef050539fd69f05cc723e4c0a`（#583），本次结果回写仅修改文档，不再扩集成已停写、已验证的实现范围。文档新 head 与其 own Actions 状态由 Issue/PR 最终回执记录，不冒充最新 head 已通过；本轮不合并。
+
+artifact 兼容范围没有剩余修复或执行环境阻碍，唯一 writer 与独立 reviewer 均已停止。若要处理五类范围外未决，需要另行明确修复范围；涉及 Final 子状态验收需先明确产品/可观察契约，无 inactive draw 需合法 harness 观察路线。后续测试清理、合并及用户手测均是独立阶段，本轮没有这类授权，不因 23/28 或静态审查擅自继续。
