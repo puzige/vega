@@ -1281,11 +1281,14 @@ impl ConversationStream {
             ConversationEvent::RunStarted {
                 message_id,
                 started_at,
+                work_clock,
             } => {
                 if let Some((active_id, group)) = &self.active_run_activity
                     && active_id == &message_id
                 {
-                    group.update(cx, |group, cx| group.start_clock(started_at, cx));
+                    group.update(cx, |group, cx| {
+                        group.start_clock(started_at, work_clock, cx)
+                    });
                 }
             }
             ConversationEvent::AssistantResponseCompleted {

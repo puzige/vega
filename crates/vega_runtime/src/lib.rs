@@ -1,4 +1,8 @@
 mod agent;
+#[cfg(feature = "question-test-support")]
+pub fn question_test_event_stream(events: Vec<ProviderEvent>) -> EventStream {
+    Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
+}
 mod chat_compat;
 mod chat_reasoning;
 pub use chat_reasoning::{ChatRawState, ChatReasoningSource};

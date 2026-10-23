@@ -6,6 +6,14 @@ impl Render for VegaWindow {
         self.sync_navigation(cx);
         self.sync_preparation(cx);
         self.sync_completion_attention(window, cx);
+        #[cfg(test)]
+        if cx
+            .try_global::<super::question_wait_tests::QuestionTestShell>()
+            .is_some()
+            && cx.global::<SettingsOpen>().0
+        {
+            return div();
+        }
         if self.appearance_subscription.is_none() {
             self.appearance_subscription =
                 Some(cx.observe_window_appearance(window, |_, _, cx| {

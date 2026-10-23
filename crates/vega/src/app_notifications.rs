@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::*;
-use vega_conversation::types::NavigationRoute;
+use vega_conversation::types::{NavigationRoute, UserQuestionId};
 
 use crate::app_agent::RunCompletionOutcome;
 use crate::window::VegaWindow;
@@ -14,7 +14,17 @@ struct NotificationTargets {
 
 impl Global for NotificationTargets {}
 
+#[cfg(test)]
+pub(crate) struct QuestionNotificationUnavailable;
+
+#[cfg(test)]
+impl Global for QuestionNotificationUnavailable {}
+
 pub(crate) fn init(cx: &mut App) {
+    #[cfg(test)]
+    if cx.try_global::<QuestionNotificationUnavailable>().is_some() {
+        return;
+    }
     if cx
         .try_global::<NotificationTargets>()
         .is_some_and(|state| state.identity_initialized)
@@ -55,6 +65,41 @@ pub(crate) fn dismiss(tag: &str, cx: &mut App) {
         cx.global_mut::<NotificationTargets>().routes.remove(tag);
     }
     cx.dismiss_system_notification(tag);
+}
+
+pub(crate) fn show_question(
+    route: NavigationRoute,
+    title: &str,
+    generation: u64,
+    queue_generation: &str,
+    request_id: &UserQuestionId,
+    cx: &mut App,
+) -> Option<SharedString> {
+    init(cx);
+    if !cx
+        .try_global::<NotificationTargets>()
+        .is_some_and(|targets| targets.identity_initialized)
+    {
+        return None;
+    }
+    let NavigationRoute::Task { task, .. } = &route else {
+        return None;
+    };
+    let tag: SharedString =
+        format!("vega-question-{task}-{generation}-{queue_generation}-{request_id}").into();
+    cx.global_mut::<NotificationTargets>()
+        .routes
+        .insert(tag.clone(), route);
+    let title = title.trim();
+    cx.show_system_notification(SystemNotification {
+        tag: tag.clone(),
+        title: if title.is_empty() { "新任务" } else { title }
+            .to_owned()
+            .into(),
+        body: "Waiting for your answer".into(),
+        actions: Vec::new(),
+    });
+    Some(tag)
 }
 
 pub(crate) fn show(

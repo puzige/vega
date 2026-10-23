@@ -53,6 +53,10 @@ pub(crate) struct UserQuestionPanel {
 }
 
 impl UserQuestionPanel {
+    pub(crate) fn resolution(&self) -> vega_conversation::types::UserQuestionResolution {
+        self.pending.resolution()
+    }
+
     pub(crate) fn new(
         pending: PendingUserQuestion,
         composer_focus: FocusHandle,
@@ -93,6 +97,34 @@ impl UserQuestionPanel {
             controls: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             composer_focus,
             scroll: ScrollHandle::new(),
+        }
+    }
+
+    #[cfg(feature = "question-test-support")]
+    pub(crate) fn question_test_submission(
+        &self,
+        cx: &App,
+    ) -> (bool, Vec<Option<UserQuestionAnswer>>) {
+        (
+            self.submitted,
+            (0..self.drafts.len())
+                .map(|page| self.answer(page, cx))
+                .collect(),
+        )
+    }
+
+    #[cfg(feature = "question-test-support")]
+    pub(crate) fn question_test_answer(
+        &mut self,
+        skip: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if skip {
+            self.act(PanelAction::Skip, window, cx);
+        } else {
+            self.select(0, cx);
+            self.act(PanelAction::Advance, window, cx);
         }
     }
 
