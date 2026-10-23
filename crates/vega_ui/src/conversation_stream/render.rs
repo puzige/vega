@@ -402,6 +402,14 @@ impl ConversationStream {
 
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let surface = if self.permission_picker_open {
+            colors.bg_active
+        } else {
+            Rgba {
+                a: 0.,
+                ..colors.bg_hover
+            }
+        };
         let mode = self.thread.permission_mode;
         let label = permission_label(mode);
 
@@ -432,16 +440,7 @@ impl ConversationStream {
                     .text_size(px(Typography::BODY))
                     .text_color(ink)
                     .cursor_pointer()
-                    .interaction_surface(
-                        if self.permission_picker_open {
-                            colors.bg_active
-                        } else {
-                            colors.bg_hover
-                        },
-                        colors.bg_active,
-                        colors.bg_active,
-                        true,
-                    )
+                    .interaction_surface(surface, surface, colors.bg_active, true)
                     .tooltip(move |_, cx| crate::icons::tooltip("切换权限模式", cx))
                     .on_mouse_up(
                         MouseButton::Left,
@@ -1123,6 +1122,14 @@ impl ConversationStream {
 
     fn render_model_selector(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let surface = if self.model_picker_level.is_open() {
+            colors.bg_active
+        } else {
+            Rgba {
+                a: 0.,
+                ..colors.bg_hover
+            }
+        };
         let enabled = !self.trusted_action_busy
             && !self.model_selection_save_busy()
             && self.model_selection_pending.is_none();
@@ -1189,16 +1196,7 @@ impl ConversationStream {
                         colors.text_tertiary
                     })
                     .when(enabled, |trigger| trigger.cursor_pointer())
-                    .interaction_surface(
-                        if self.model_picker_level.is_open() {
-                            colors.bg_active
-                        } else {
-                            colors.bg_hover
-                        },
-                        colors.bg_active,
-                        colors.bg_active,
-                        enabled,
-                    )
+                    .interaction_surface(surface, surface, colors.bg_active, enabled)
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseUpEvent, window, cx| {

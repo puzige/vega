@@ -1,5 +1,7 @@
 # Composer 模型与权限胶囊按钮
 
+> 本文保留上一轮 v1.1 历史契约。用户手测指出常驻底色错误，当前默认／hover／disabled 及交付要求改按 [v2.0 状态纠正规格](vega-issue-546-capsule-state-correction.md)；旧 GREEN 不代表新验收通过。
+
 ## 版本与授权
 
 - 任务：[#546](https://github.com/puzige/vega/issues/546)。规格 v1.1，用户选择「模型选择 + 权限切换」。

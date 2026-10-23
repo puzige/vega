@@ -124,7 +124,7 @@ hover 不是唯一操作路径；focus、菜单打开和上下文菜单提供等
 - **#294/#295：底栏不出现分支图标、名称、入口、焦点目标或占位。** 新任务上方 utility bar 保留项目入口和有效 Git 项目的分支入口；已有消息的会话不渲染 utility bar。见 [#294](294/vega-issue-294-composer-footer-no-branch.md) 与 [A8-01](vega-a8-composer-project-entry.md)。
 - utility bar 的 37 高、19 内缩、零重叠关系，以及项目/分支切换的权限、焦点、pending 语义不变；见 [utility chip states](vega-utility-chip-states.md)。
 - 保留只读、确认、自动、完全访问四种权限及危险确认；外观不改变 sandbox 与授权语义，见 [#58](58/vega-issue-58-full-access.md)。
-- [#546 胶囊按钮规格](546/vega-issue-546-composer-capsules.md)限定底栏模型选择与权限切换：28 高、14 半径、左右内距 12，低强调常驻底色；保留警示色、禁用、焦点与菜单行为，不全局改动其他按钮。
+- [#546 胶囊状态规格 v2.0](546/vega-issue-546-capsule-state-correction.md)限定底栏模型选择与权限切换：28 高、14 半径、左右内距 12；默认和仅悬停透明，按下或菜单展开时显示强调背景，关闭后清除。保留警示色、禁用、焦点与菜单行为，不全局改动其他按钮。
 - 上下文环进入模型选择器前的紧凑槽位；点击展示模型配置输入上限的使用比例，不等于本轮runtime预算、账单或已验证模型总容量。真实数据、估算标记与降级见 v3 §6。
 
 ## 10. App Shell
