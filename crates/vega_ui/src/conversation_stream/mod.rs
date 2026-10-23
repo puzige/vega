@@ -272,8 +272,6 @@ pub use vega_conversation::types::{
 };
 mod core;
 mod file_reference;
-#[cfg(test)]
-mod message_anchor_tests;
 mod message_anchors;
 mod model;
 mod phase;

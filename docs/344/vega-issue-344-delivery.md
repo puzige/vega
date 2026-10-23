@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-Draft PR [#562](https://github.com/puzige/vega/pull/562) 首版生产修复已取得 11/11 云端回归通过；独立审查另发现旧快照行高污染缓存，原作者正在最小修正，尚未获该最终修正版本的验证、合并或用户手测结果。最新仓库政策已取消强制 TDD；本卡复用现成回归验证，不重做前置流程，合并前仍清理开发 Rust 测试及独占支持，并验证最终空集门禁。
+Draft PR [#562](https://github.com/puzige/vega/pull/562) 的生产修复与缓存审查修正已获独立批准，最新 master 合并后的完整 head 云端 11/11 回归通过。开发 Rust 测试及专用支持已单独清理，生产投影等价；最终清理版本的独立全差异审查与 required CI 待完成，尚未合并或用户手测。空集门禁不称为功能测试通过。
 
 ## 内容与先后顺序
 
@@ -35,7 +35,7 @@ Draft PR [#562](https://github.com/puzige/vega/pull/562) 首版生产修复已�
 - 独立测试增量 reviewer：`01M5JB0VZGJH448QXX457Z6KNC` / execution `01M5JB0VZG095BJPSQT53FFHJM`，只读完成上述精确版本并停写，结论静态可接受、无阻塞提交 draft PR 的测试接线或 fixture 缺陷。详见独立审查记录；B3 连续测量防护仍为后续生产静态审查义务。
 - RED：首轮为测试接线编译失败；修正后的 `9bda1ecb54cec85d4e217760408f2aafd03ad3a3` 已在 run `39828341844` 执行行为断言，11 执行、4 通过、7 失败、0 跳过，具体见下文。
 - 实现：由单一专职作者进行；原验收及现有测试保持不变。
-- 同一测试 GREEN：首版实现 `606aa8a726e4ee2799079651931f3e417e0c3dc6` 已取得，11/11；独立审查修正后的最终生产版本仍须重验。
+- 同一测试 GREEN：首版、审查修正及最新 master 合并后的 `3c8f21b67a7a6d95dc1ab69ae51e44005c88e9a1` 均 11/11；最终交付将清理 Rust 测试，不将空集门禁称为功能测试通过。
 - 测试来源可恢复性、独立删测提交、最终 head 0 发现/0 执行完整门禁：待前述阶段完成。
 - Issue 保持开放、In progress；最新 head required check 与独立审查均通过后才可合并，合并后 In review 等用户手测，不以自动关闭关键字收尾。
 
@@ -77,4 +77,21 @@ Draft PR [#562](https://github.com/puzige/vega/pull/562) 首版生产修复已�
 - 原始输出：发现11；`Summary [0.463s] 11 tests run: 11 passed, 0 skipped`。执行11、通过11、失败0、跳过0；Python 三组5+15+40均成功。测试字节与已记录修正后来源一致。
 - 同版独立 reviewer `01M5KATB36YH44JTQPZYGTCDEC` / execution `01M5KATB36EX532CZZWHRYA7ZQ` 只读确认 observer 的列表后顺序/隐藏常驻/无命中与布局影响、同帧 padding、changed-only 通知、实际尾条连续测量/合法零高、键盘资格均符合方案；但提出一个生产阻塞：`capture_visible_entry_heights` 把旧快照 `(index,height)` 写入当前 identity。`content.rs::apply_history_page` 前插偏移索引；`core.rs::set_workspace_width` 清缓存/remeasure 后旧快照仍可回填错误宽度测量。
 - 主 Agent 已读取这些原始调用链并确认责任层是生产缓存导入，不是测试/runner。GREEN 不取消该发现；[PR 记录](https://github.com/puzige/vega/pull/562#issuecomment-6356422381)保留成功与未解决项。
-- 原作者 follow-up `01M5KBM5ZJD2E1NWTG7FG5JEWA` 仅修缓存采样：恢复直接从当前 ListState bounds 导入测量，快照样本只用于 changed-only 触发，不再按旧索引回放。尾部/输入判定及现有断言保持不变；停写后增量审查并在修正 head 重新跑云端回归。
+- 原作者 follow-up `01M5KBM5ZJD2E1NWTG7FG5JEWA` 仅修缓存采样：恢复直接从当前 ListState bounds 导入测量，快照样本只用于 changed-only 触发，不再按旧索引回放。尾部/输入判定及现有断言保持不变。
+
+## 最终生产修正的验证
+
+- 修正提交：`994a5ca12007f4d457d2f2413b3a61dab81e73d9`。相对首版生产 delta SHA-256 `b1b5868d44347fe591f0b4d81323ea99a1747f2b73860b981005c7b1cfe18245`（1,493 bytes、15增2删）；`message_anchors.rs` SHA-256 `b8a248633df501ca357b51e024cf56d41ed86a5c02d4c38199f4198edb23dd48`；core 与测试未变。
+- 独立 reviewer follow-up `01M5KC4320XTDGRMJ0F6XJKH4V` 已批准，原缓存阻塞关闭。真实 ListState splice 随前插移动测量与索引；remeasure 将行设为 Unmeasured，bounds getter 只接受 Measured，所以实时读取不会重建旧快照污染。importer 等于原基线函数去掉旧注释；复用未变的 observer/连续尾部/键鼠结论。
+- [Actions 39894110023](https://github.com/puzige/vega/actions/runs/39894110023)成功：[Clippy 120220411668](https://github.com/puzige/vega/actions/runs/39894110023/job/120220411668)、[Nextest 120220411382](https://github.com/puzige/vega/actions/runs/39894110023/job/120220411382)、[required 120221085755](https://github.com/puzige/vega/actions/runs/39894110023/job/120221085755)。原始日志11发现；`Summary [0.265s] 11 tests run: 11 passed, 0 skipped`；Python5+15+40成功。
+- [修正后完整开发测试补丁](https://github.com/puzige/vega/pull/562#issuecomment-6356532937)已固定并远端读回逐字节一致：SHA-256 `d69be17930e6dcffb5d362333eb47b7d8afc0ac0315cd73e4cf6fa4069dff1a1`，39,750 bytes。相对 `6615748f91273bfb8ee424011b3b5a09b3777d2b` 到测试提交 `9bda1ecb54cec85d4e217760408f2aafd03ad3a3` 的五文件 test/support payload，不包含后续生产修复；原源码和接线修正历史仍可恢复。
+- 清理前 fetch 发现 master 新增委派阶段交接/恢复修复 `5a1ec8ad26fa53fd6210a8e58b6ad85e739dd8bb`，普通 merge 为 `3c8f21b67a7a6d95dc1ab69ae51e44005c88e9a1`，未改本卡 core/anchors/tests/Cargo。UI 相关 `content.rs` 仅权限卡 presentation/allow_persistent，与测试的历史加载、已加载定位和锚点通知路径无交叉。
+- merge head [Actions 39894736114](https://github.com/puzige/vega/actions/runs/39894736114)成功：[Clippy 120222421814](https://github.com/puzige/vega/actions/runs/39894736114/job/120222421814)、[Nextest 120222422081](https://github.com/puzige/vega/actions/runs/39894736114/job/120222422081)、[required 120223348446](https://github.com/puzige/vega/actions/runs/39894736114/job/120223348446)。11发现；`Summary [0.248s] 11 tests run: 11 passed, 0 skipped`；Python5+15+40成功。这是清理前当前完整生产/测试版本的实际验证，不仅复用旧GREEN。
+- 作者 cleanup follow-up `01M5KCWVGBAHNAAZF6MVHGFM43` 已 READY 停写，只移除本轮11个开发测试及独占模块/透明wrapper/dev-feature/lock闭包；生产修改不再追加。
+
+## 开发测试清理与最终门禁
+
+- [清理证据](vega-issue-344-test-cleanup-evidence.md)：测试文件801行/11个属性、模块2行、3个透明wrapper共30行、dev-feature3行；移除10个独占锁包和2条 gpui-pre 测试支持边，924→914包，既有生产包身份/来源/checksum不变。生产源码不新增行为，真实ID/焦点/事件/观察器全部保留。
+- 清理 payload SHA-256 `08297e4fc64c9d164531a06fc423258dcc0c37b65cbd48aaa15504dc76ecc6c9`，39,750 bytes，相对 `3c8f21b67a7a6d95dc1ab69ae51e44005c88e9a1` 的五文件diff。清理后 `message_anchors.rs` SHA-256 `2c6c369cdd661fc81738588388605c41e655e84634e23da550aef4d8272e079f`；core不变。去除原透明wrapper后与带测试GREEN生产字节一致；Cargo.lock/UI manifest与master `5a1ec8ad26fa53fd6210a8e58b6ad85e739dd8bb`字节一致。
+- 作者及主 Agent 在停写清理版本分别实际执行格式、diff及离线locked/no-deps metadata均0；静态源码清点无Rust测试/独占支持。静态清点不是云端发现数，未本地编译或执行测试。
+- 原独立 reviewer follow-up `01M5KDKD7WMXEC7JEW71F7EZRN` 检查清理投影等价、完整最终生产diff和基线兼容性；该精确head的完整required CI须另确认0发现/0执行、`no Rust tests`。在结果取得前不宣称最终门禁通过。
