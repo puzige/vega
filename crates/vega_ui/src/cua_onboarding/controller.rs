@@ -117,7 +117,7 @@ impl CardController {
             open: self.open,
             following: self.following,
             can_drag: self.open && self.bundle.is_some(),
-            can_recheck: self.open,
+            can_recheck: self.open && self.pending.is_none(),
             can_return_to_task: self.open,
             desktop_ready: false,
         }
@@ -128,6 +128,7 @@ impl CardController {
             return Vec::new();
         }
         match action {
+            CardAction::Recheck if self.pending.is_some() => Vec::new(),
             CardAction::Recheck => {
                 let ticket = CheckTicket {
                     task: self.task.clone(),
@@ -143,12 +144,10 @@ impl CardController {
                 }]
             }
             CardAction::AccessibilitySettings => vec![CardEffect::OpenUrl(
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-                    .into(),
+                super::PermissionPane::Accessibility.url().into(),
             )],
             CardAction::ScreenRecordingSettings => vec![CardEffect::OpenUrl(
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-                    .into(),
+                super::PermissionPane::ScreenRecording.url().into(),
             )],
             CardAction::RevealInFinder => vec![CardEffect::RevealInFinder(
                 self.bundle.as_ref().unwrap_or(&self.executable).clone(),
@@ -192,6 +191,13 @@ impl CardController {
             }
         }
         Vec::new()
+    }
+
+    pub(crate) fn cancel_inspection(&mut self) {
+        self.pending = None;
+        if self.check_state == CheckState::Checking {
+            self.check_state = CheckState::Idle;
+        }
     }
 
     pub fn begin_drag(&mut self) -> Option<PathBuf> {
