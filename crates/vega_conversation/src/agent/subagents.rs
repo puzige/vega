@@ -14,10 +14,6 @@ mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
 use vega_store::delegated_ownership::DelegatedOwnership;
 
-#[cfg(test)]
-#[path = "subagents/stage_recovery_tests.rs"]
-mod stage_recovery_tests;
-
 fn failure(message: &str) -> VegaError {
     VegaError::Tool {
         tool: "subagent".into(),

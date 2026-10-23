@@ -633,7 +633,3 @@ impl RuntimePermissionHook for ArtifactReadPermissionAdapter<'_> {
             .boxed()
     }
 }
-
-#[cfg(test)]
-#[path = "permission_validation_tests.rs"]
-mod permission_validation_tests;

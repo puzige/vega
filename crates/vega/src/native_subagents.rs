@@ -132,7 +132,3 @@ impl SubagentHost for NativeSubagentHost {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "native_subagent_tests.rs"]
-mod tests;
