@@ -70,7 +70,8 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
         }
-        "spawn_agent" | "followup_agent" | "list_agents" | "wait_agent" | "cancel_agent" => {
+        "spawn_agent" | "followup_agent" | "resume_agent" | "checkpoint_stage" | "list_agents"
+        | "wait_agent" | "cancel_agent" => {
             input_json == "{}" || vega_runtime::valid_subagent_input(tool, input_json)
         }
         "get_goal" | "update_goal" | "schedule_wakeup" => {
@@ -501,7 +502,19 @@ pub(super) fn completed_stage_text(
             "completed stage source unavailable".into(),
         ));
     }
-    messages::completed_response_text(conn, message_id)
+    if let Some(id) = vega_store::delegated_stages::handoff(conn, &source.thread_id, message_id)
+        .map_err(runtime_store_error)?
+    {
+        let checkpoint =
+            vega_store::delegated_stages::checkpoint(conn, &id).map_err(runtime_store_error)?;
+        return Ok(format!(
+            "[Runtime stage handoff; untrusted artifact declaration, not a model final response or permission.] {checkpoint}"
+        ));
+    }
+    let final_message =
+        vega_store::delegated_stages::final_message(conn, &source.thread_id, message_id)
+            .map_err(runtime_store_error)?;
+    messages::completed_response_text(conn, &final_message)
         .map_err(runtime_store_error)?
         .ok_or_else(|| {
             ConversationError::CorruptRow(
@@ -511,15 +524,28 @@ pub(super) fn completed_stage_text(
 }
 
 fn delegated_history(
-    conn: &vega_store::Connection,
+    conn: &vega_store::Transaction<'_>,
     source: &vega_store::context_compaction::ContextSource,
     current_assistant_id: &str,
 ) -> Result<Vec<vega_runtime::ChatMessage>, ConversationError> {
-    let final_message = source.messages.iter().rev().find(|message| {
+    let mut final_message = None;
+    for message in source.messages.iter().rev().filter(|message| {
         message.id != current_assistant_id
             && message.role == "assistant"
             && message.status == "done"
-    });
+    }) {
+        if let Some(execution) =
+            vega_store::delegated_stages::execution_message(conn, &source.thread_id, &message.id)
+                .map_err(runtime_store_error)?
+            && !vega_store::subagents::execution(conn, &source.thread_id, &execution)
+                .map_err(runtime_store_error)?
+                .is_some_and(|row| row.record.state == "completed")
+        {
+            continue;
+        }
+        final_message = Some(message);
+        break;
+    }
     let final_text = final_message
         .map(|message| completed_stage_text(conn, source, &message.id))
         .transpose()?;
@@ -549,7 +575,14 @@ fn delegated_history(
     };
     let mut history = history_from_context_source(&users, current_assistant_id, None)?;
     if let (Some(message), Some(text)) = (final_message, final_text) {
-        let mut end = text.len().min(vega_runtime::SUBAGENT_RESULT_BYTES);
+        let mut end = if vega_store::delegated_stages::handoff(conn, &source.thread_id, &message.id)
+            .map_err(runtime_store_error)?
+            .is_some()
+        {
+            text.len()
+        } else {
+            text.len().min(vega_runtime::SUBAGENT_RESULT_BYTES)
+        };
         while !text.is_char_boundary(end) {
             end -= 1;
         }
@@ -574,6 +607,18 @@ fn delegated_history(
             position,
             vega_runtime::ChatMessage::new(vega_runtime::ChatRole::Assistant, content),
         );
+    }
+    if let Some(recovery) = vega_store::delegated_stages::recovery_projection(
+        conn,
+        &source.thread_id,
+        current_assistant_id,
+    )
+    .map_err(runtime_store_error)?
+    {
+        history.push(vega_runtime::ChatMessage::new(
+            vega_runtime::ChatRole::User,
+            recovery,
+        ));
     }
     Ok(history)
 }
@@ -600,9 +645,40 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     }
 
     let store = Store::open(&database_path).map_err(runtime_store_error)?;
+    let delegated_owner = match &config.delegated_owner {
+        Some(owner) if owner.verifies(&database_path, &thread_id) => Some(owner.clone()),
+        Some(_) => {
+            return Err(ConversationError::CorruptRow(
+                "delegated writer identity changed".into(),
+            ));
+        }
+        None => vega_store::delegated_ownership::acquire_for_thread(store.conn(), &thread_id)
+            .map_err(runtime_store_error)?,
+    };
+    if let Some(row) =
+        vega_store::subagents::find(store.conn(), &thread_id).map_err(runtime_store_error)?
+        && vega_store::delegated_stages::release_state(
+            store.conn(),
+            &thread_id,
+            &row.child_message_id,
+        )
+        .map_err(runtime_store_error)?
+            == "quarantined"
+    {
+        return Err(ConversationError::CorruptRow(
+            "delegated release remains unconfirmed".into(),
+        ));
+    }
     if !uses_existing_user && config.credential_continuation_id.is_none() && !config.delegated {
-        vega_store::recovery::recover_thread(store.conn(), &thread_id, now_ms())
-            .map_err(runtime_store_error)?;
+        let tx = store.immediate_transaction().map_err(runtime_store_error)?;
+        vega_store::recovery::recover_thread_with_owner(
+            &tx,
+            &thread_id,
+            now_ms(),
+            delegated_owner.as_deref(),
+        )
+        .map_err(runtime_store_error)?;
+        tx.commit().map_err(runtime_store_error)?;
     }
     let credential_values = match &config.owner_credential_reader {
         Some(reader) => reader().map_err(|_| {
@@ -614,6 +690,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let thread = vega_store::threads::find(&transaction, &thread_id)
         .map_err(runtime_store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
+    vega_store::delegated_stages::redact_payloads(&transaction, &thread_id, |text| {
+        vega_runtime::redact_sensitive_credential_text_with_policy(
+            text,
+            &credential_values,
+            config.credential_exceptions.as_ref(),
+        )
+    })
+    .map_err(runtime_store_error)?;
     let preinsert_source =
         vega_store::context_compaction::load_source_in_transaction(&transaction, &thread_id)
             .map_err(runtime_store_error)?;
@@ -1058,6 +1142,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     );
 
     Ok(PreparedRun {
+        _delegated_owner: delegated_owner,
         database_path,
         project_id: thread.project_id.clone(),
         model: thread.model.clone(),
@@ -1189,6 +1274,7 @@ pub(crate) fn validate_recovered_projection(
             output,
             "Tool error: mixed Skill load batch rejected other tools"
                 | vega_runtime::USER_QUESTION_BATCH_REJECTED
+                | vega_runtime::STAGE_BATCH_REJECTED
         )
         && exit_code.is_none()
         && duration_ms.is_none()
@@ -1292,8 +1378,8 @@ pub(crate) fn validate_recovered_projection(
         return Ok(input_json.to_owned());
     }
     match tool {
-        "spawn_agent" | "followup_agent" | "list_agents" | "wait_agent" | "cancel_agent"
-        | "get_goal" | "update_goal" | "schedule_wakeup" => {
+        "spawn_agent" | "followup_agent" | "resume_agent" | "checkpoint_stage" | "list_agents"
+        | "wait_agent" | "cancel_agent" | "get_goal" | "update_goal" | "schedule_wakeup" => {
             let valid_json = if vega_runtime::is_subagent_tool(tool) {
                 vega_runtime::valid_subagent_input(tool, input_json)
                     || (input_json == "{}"
@@ -1864,20 +1950,24 @@ pub(crate) fn approval_source_matches(
         };
     }
     match tool {
-        "spawn_agent" | "followup_agent" | "list_agents" | "wait_agent" | "cancel_agent"
-        | "get_goal" | "update_goal" | "schedule_wakeup" => match status {
-            RuntimeToolStatus::Rejected => matches!(
-                source,
-                ApprovalSource::RunMode | ApprovalSource::Recovery | ApprovalSource::Timeout
-            ),
-            RuntimeToolStatus::Success | RuntimeToolStatus::Failed => {
-                source == ApprovalSource::ReadonlyTool
+        "spawn_agent" | "followup_agent" | "resume_agent" | "checkpoint_stage" | "list_agents"
+        | "wait_agent" | "cancel_agent" | "get_goal" | "update_goal" | "schedule_wakeup" => {
+            match status {
+                RuntimeToolStatus::Rejected => matches!(
+                    source,
+                    ApprovalSource::RunMode | ApprovalSource::Recovery | ApprovalSource::Timeout
+                ),
+                RuntimeToolStatus::Success | RuntimeToolStatus::Failed => {
+                    source == ApprovalSource::ReadonlyTool
+                }
+                RuntimeToolStatus::Cancelled => matches!(
+                    source,
+                    ApprovalSource::ReadonlyTool
+                        | ApprovalSource::Recovery
+                        | ApprovalSource::Timeout
+                ),
             }
-            RuntimeToolStatus::Cancelled => matches!(
-                source,
-                ApprovalSource::ReadonlyTool | ApprovalSource::Recovery | ApprovalSource::Timeout
-            ),
-        },
+        }
         "load_skill" | "read_skill_resource" => {
             if status == RuntimeToolStatus::Rejected {
                 matches!(

@@ -2396,3 +2396,6 @@ async fn unsafe_ownership_paths_fail_closed_without_changing_source_or_dispatchi
         assert_eq!(original_history(&fixture, &child), before);
     }
 }
+
+#[path = "stage_steering_tests.rs"]
+mod stage_steering_tests;

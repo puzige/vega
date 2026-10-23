@@ -139,7 +139,12 @@ impl Recorder {
                 self.trace
                     .push(json!({"event": "tool_running", "call_id": call_id}));
             }
-            RuntimeEvent::ToolCallFinished(result) => self.tool_finished(&result),
+            RuntimeEvent::ToolCallFinished(result)
+            | RuntimeEvent::ToolReadFinished { result, .. } => self.tool_finished(&result),
+            RuntimeEvent::StageHandoff { checkpoint_id } => {
+                self.terminal = Some("stage_handoff");
+                self.trace.push(json!({"event":"stage_handoff","origin":"runtime","checkpoint_id":checkpoint_id}));
+            }
             RuntimeEvent::ToolCallApproved { call_id, audit, .. } => {
                 self.trace.push(json!({
                     "event": "tool_approved", "call_id": call_id,

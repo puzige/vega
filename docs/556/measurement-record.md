@@ -4,7 +4,9 @@
 
 The user's 2026-10-23 continuation requires removing the default 20-minute hard cancellation, implementing durable stage handoff and explicit interrupted recovery, then reconciling the existing #522 experiment before completing its comparison. The new [acceptance contract](stage-handoff-recovery.md) supersedes the timer-based claim below. The old timer tests remain historical proof of that implementation; they are not evidence that a useful artifact appeared earlier or that recovery worked.
 
-At the acceptance freeze, production remains unchanged from `4c0d225d`. One original implementation agent and one original independent reviewer are reused. No new #522 namespace, model trial or installed application has been started for this continuation. Record implementation/review/CI intervals and subsequent research receipts as they occur; unknown start times or durations remain unknown. The original #514 clock and failed/cancelled experiment costs remain included in their respective records.
+The first tests/spec publication was `928cf828`, with production unchanged from original baseline `4c0d225d`. One original implementation agent and one original independent reviewer are reused. No new #522 namespace, model trial or installed application has been started for this continuation. Record implementation/review/CI intervals and subsequent research receipts as they occur; unknown start times or durations remain unknown. The original #514 clock and failed/cancelled experiment costs remain included in their respective records.
+
+The first cloud baseline [39883065565](https://github.com/puzige/vega/actions/runs/39883065565) took 168 seconds from creation to workflow completion, with parallel fmt/Clippy and Nextest jobs. It executed 27 Rust cases (11 passed, 16 failed, none skipped) and passed all 60 Python cases; the timer failure was directly observed, while most deeper recovery assertions stopped at missing prerequisites. See the [full provenance](recovery-test-evidence.md#first-cloud-baseline-and-current-policy). The branch subsequently integrated master `f3eab982` as `03c1296a`, retaining the first timer-removal patch and store drafts without conflict. #569's new policy removes artificial test freeze/deletion cycles; useful tests, independent implementation review and final CI stay in place. This change in development process is not measured delivery acceleration.
 
 ## Observed case: #514
 
@@ -45,7 +47,7 @@ No real model trials have been run for #556. Populate one row for every attempte
 | Original start / resumptions / terminal | UTC events; original clock never resets |
 | First reviewable artifact | Version/content identity, scope, known gaps and confirmed stopped writer; not a timeout receipt |
 | Independent review | Reviewer identity separate from implementer, reviewed version and actionable findings |
-| RED / same-test GREEN / final CI / merge | Exact heads, run/job evidence and separate timestamps |
+| Necessary regression checks / final CI / merge | Exact heads, run/job evidence and separate timestamps; retain unsuccessful attempts without requiring a RED/deletion ritual |
 | Wall time / active / human pending | Wall time is primary; activity is a separately defined diagnostic |
 | Model / context / summary | Request count, actual input usage when available, known limits and de-duplicated intervals |
 | Delegation / no-change wakes / rework | Every spawn/followup, repeated unchanged result, changed acceptance and repair cause |
@@ -53,7 +55,7 @@ No real model trials have been run for #556. Populate one row for every attempte
 
 Report all pairs before aggregating. Three pairs are a small directional pilot, not statistical proof. Report median time to reviewable artifact and median total delivery time only alongside each pair's completion/quality outcome. Budget/context failures count against the treatment until recovery actually delivers. Parallel review/model/CI intervals must be shown as overlapping phases or interval unions.
 
-## Mechanism evidence versus speed evidence
+## Historical #561 mechanism evidence versus speed evidence
 
 | Claim | Required evidence | Current status |
 | --- | --- | --- |

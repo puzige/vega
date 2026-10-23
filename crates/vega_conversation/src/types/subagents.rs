@@ -47,6 +47,12 @@ pub struct SubagentSnapshot {
     pub state: SubagentState,
     pub result: String,
     pub truncated: bool,
+    #[serde(default)]
+    pub checkpoint: Option<serde_json::Value>,
+    #[serde(default)]
+    pub release_state: String,
+    #[serde(default)]
+    pub ready_for_review: bool,
 }
 
 impl std::fmt::Debug for SubagentSnapshot {
