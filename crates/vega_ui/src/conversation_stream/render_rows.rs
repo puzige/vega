@@ -1,3 +1,4 @@
+use super::code_viewport::CodeViewport;
 use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
@@ -682,28 +683,21 @@ fn markdown_blocks(
                         body.gap(px(Layout::COPY_ACTION_GAP))
                     })
                     .children(header)
-                    .child(
+                    .child(CodeViewport::new(
+                        gpui_kit::SharedString::from(format!(
+                            "markdown-code-scroll-{}-{block_id}-{start}",
+                            code_owner.unwrap_or_default(),
+                        )),
                         div()
-                            .id(gpui_kit::SharedString::from(format!(
-                                "markdown-code-scroll-{}-{block_id}-{start}",
-                                code_owner.unwrap_or_default(),
-                            )))
-                            .w_full()
-                            .min_w_0()
+                            .min_w_full()
+                            .flex_shrink_0()
                             .pb(px(Layout::MARKDOWN_CODE_PADDING))
-                            .overflow_x_scroll()
                             .flex()
-                            .child(
-                                div()
-                                    .min_w_full()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .flex_col()
-                                    .items_start()
-                                    .children(content),
-                            )
-                            .scroll_edge_fade(colors.code_bg, ScrollFade::compact()),
-                    ),
+                            .flex_col()
+                            .items_start()
+                            .children(content),
+                        colors.code_bg,
+                    )),
             )
         } else {
             body.children(content)

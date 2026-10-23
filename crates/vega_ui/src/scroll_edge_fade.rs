@@ -58,6 +58,7 @@ pub struct ScrollFade {
     horizontal_gutter: Pixels,
     radius: Pixels,
     inset: Pixels,
+    intrinsic_horizontal: bool,
     intrinsic_vertical: bool,
     parent_rounding: Option<(gpui_kit::AbsoluteLength, gpui_kit::AbsoluteLength)>,
     bottom_extension: Pixels,
@@ -76,6 +77,7 @@ impl ScrollFade {
             horizontal_gutter: px(0.),
             radius: px(0.),
             inset: px(0.),
+            intrinsic_horizontal: false,
             intrinsic_vertical: false,
             parent_rounding: None,
             bottom_extension: px(0.),
@@ -124,6 +126,15 @@ impl ScrollFade {
             intrinsic_vertical: true,
             left: false,
             right: false,
+            ..self
+        }
+    }
+
+    pub(crate) fn horizontal_viewport(self) -> Self {
+        Self {
+            intrinsic_horizontal: true,
+            top: false,
+            bottom: false,
             ..self
         }
     }
@@ -520,8 +531,8 @@ impl<E: Element> Element for ScrollEdgeFade<E> {
 fn read_chrome<E: Styled>(base: &mut E, window: &Window, style: &mut ScrollFade) {
     let mut element_style = Style::default();
     element_style.refine(base.style());
-    let horizontal =
-        !style.intrinsic_vertical && element_style.overflow.x == gpui_kit::Overflow::Scroll;
+    let horizontal = !style.intrinsic_vertical
+        && (style.intrinsic_horizontal || element_style.overflow.x == gpui_kit::Overflow::Scroll);
     let vertical =
         style.intrinsic_vertical || element_style.overflow.y == gpui_kit::Overflow::Scroll;
     style.left &= horizontal;

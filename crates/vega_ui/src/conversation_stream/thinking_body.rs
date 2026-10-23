@@ -1,4 +1,5 @@
 use super::super::{
+    code_viewport::CodeViewport,
     inline_code,
     links::{LinkRange, fragment_link_ranges, link_ranges},
     selection::SelectionDocumentBuilder,
@@ -1056,25 +1057,24 @@ impl Element for BodyElement {
                     .or_default()
                     .clone();
                 div()
-                    .id(("thinking-horizontal", index))
                     .w(self.prepared.width - block.origin.x)
                     .h(block.size.height)
-                    .track_scroll(&scroll)
-                    .overflow_x_scroll()
-                    .overflow_y_hidden()
                     .when(block.code, |row| {
                         row.bg(self.prepared.colors.code_bg)
                             .rounded(px(Layout::TOOL_DETAIL_RADIUS))
                     })
-                    .child(content)
-                    .tracked_scroll_edge_fade(
-                        scroll,
-                        if block.code {
-                            self.prepared.colors.code_bg
-                        } else {
-                            self.prepared.colors.bg_base
-                        },
-                        ScrollFade::compact(),
+                    .child(
+                        CodeViewport::new(
+                            ("thinking-horizontal", index),
+                            content,
+                            if block.code {
+                                self.prepared.colors.code_bg
+                            } else {
+                                self.prepared.colors.bg_base
+                            },
+                        )
+                        .scroll(scroll)
+                        .height(block.size.height),
                     )
                     .into_any_element()
             } else {

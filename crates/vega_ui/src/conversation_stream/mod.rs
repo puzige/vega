@@ -262,6 +262,7 @@ pub(crate) use composer_predictions::ComposerPredictionsEnabled;
 pub use composer_predictions::set_composer_predictions_enabled;
 mod composer_actions;
 use composer_actions::ComposerActions;
+mod code_viewport;
 mod content;
 mod context_control;
 pub use context_control::ContextUsageProjection;
