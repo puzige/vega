@@ -190,6 +190,15 @@ fn committed_read_snapshots_do_not_wait_for_a_coordinated_writer() {
     let reader = Store::open_read_only(&database.path).unwrap();
     let transaction = writer.immediate_transaction().unwrap();
     threads::rename(&transaction, "thread", "uncommitted", 2).unwrap();
+    let opened_during_write = database.open();
+    opened_during_write.migrate().unwrap();
+    assert_eq!(
+        threads::find(opened_during_write.conn(), "thread")
+            .unwrap()
+            .unwrap()
+            .title,
+        "original"
+    );
     assert_eq!(
         context_compaction::load_source(reader.conn(), "thread")
             .unwrap()

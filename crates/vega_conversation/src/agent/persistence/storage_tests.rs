@@ -308,23 +308,36 @@ async fn actor_reports_continuous_lock_and_can_save_after_an_explicit_retry() {
     let actor = database.actor(0).await;
     let external = vega_store::Connection::open(&database.path).unwrap();
     external.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let started = Instant::now();
-    let error = tokio::time::timeout(Duration::from_secs(8), actor.snapshot("not saved".into()))
-        .await
-        .unwrap()
-        .unwrap_err();
-    assert!(started.elapsed() >= Duration::from_secs(4));
-    let metrics = error.diagnostic_metrics();
-    assert_eq!(metrics.runtime_stage, Some("snapshot"));
-    assert_eq!(metrics.sqlite_code, Some(5));
-    assert_eq!(metrics.sqlite_extended_code, Some(5));
-    assert_eq!(
-        messages::find(&external, "message-0")
-            .unwrap()
-            .unwrap()
-            .content,
-        ""
-    );
+    for _ in 0..2 {
+        let started = Instant::now();
+        let result =
+            tokio::time::timeout(Duration::from_secs(8), actor.snapshot("not saved".into())).await;
+        let error = match result {
+            Ok(result) => result.unwrap_err(),
+            Err(error) => {
+                let elapsed_ms = started.elapsed().as_millis();
+                let before_release = vega_store::write_coordination::recent_observations(&external);
+                external.execute_batch("ROLLBACK").unwrap();
+                actor.close().await.unwrap();
+                let after_release = vega_store::write_coordination::recent_observations(&external);
+                panic!(
+                    "snapshot deadline failed: {error}; elapsed_ms={elapsed_ms}; before_release={before_release:?}; after_release={after_release:?}"
+                );
+            }
+        };
+        assert!(started.elapsed() >= Duration::from_secs(4));
+        let metrics = error.diagnostic_metrics();
+        assert_eq!(metrics.runtime_stage, Some("snapshot"));
+        assert_eq!(metrics.sqlite_code, Some(5));
+        assert_eq!(metrics.sqlite_extended_code, Some(5));
+        assert_eq!(
+            messages::find(&external, "message-0")
+                .unwrap()
+                .unwrap()
+                .content,
+            ""
+        );
+    }
     external.execute_batch("ROLLBACK").unwrap();
     actor.snapshot("explicit retry saved".into()).await.unwrap();
     actor.close().await.unwrap();

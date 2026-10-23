@@ -115,12 +115,13 @@ impl Store {
         };
         let conn = Connection::open(path)?;
         conn.busy_timeout(busy_timeout)?;
-        {
+        let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        if !mode.eq_ignore_ascii_case("wal") {
             let _permit = write_coordination::acquire(&conn, WriteCategory::Initialization)?;
             conn.pragma_update(None, "journal_mode", "WAL")?;
-            conn.pragma_update(None, "synchronous", "NORMAL")?;
-            conn.pragma_update(None, "foreign_keys", "ON")?;
         }
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Self {
             conn,
             database_path,
@@ -134,6 +135,12 @@ impl Store {
     /// on failure the transaction is rolled back (drop) and the error is
     /// returned.
     pub fn migrate(&self) -> Result<(), rusqlite::Error> {
+        let current: u32 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if current as usize >= MIGRATIONS.len() {
+            return Ok(());
+        }
         let _permit = write_coordination::acquire(&self.conn, WriteCategory::Migration)?;
         let current: u32 = self
             .conn

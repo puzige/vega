@@ -14,7 +14,7 @@ const CANCEL_INTERVAL: Duration = Duration::from_millis(25);
 
 type WriterQueues = HashMap<DatabaseIdentity, Weak<WriterQueue>>;
 
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteCategory {
     Initialization,
@@ -69,9 +69,10 @@ pub struct WritePermit<'a> {
     _connection: PhantomData<&'a Connection>,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageOperation {
+    PermitAcquired,
     PermitReleased,
     QueueFull,
     QueueTimeout,
@@ -83,7 +84,7 @@ pub enum StorageOperation {
     Persistence,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistenceCategory {
     Snapshot,
@@ -144,7 +145,7 @@ pub fn record_persistence(
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct StorageObservation {
     persistence: Option<PersistenceCategory>,
     category: WriteCategory,
@@ -366,12 +367,26 @@ where
         }
     }
     drop(state);
+    let queue_wait = started.elapsed();
+    record(
+        database,
+        StorageObservation {
+            persistence: None,
+            category,
+            operation: StorageOperation::PermitAcquired,
+            elapsed_ms: queue_wait.as_millis() as u64,
+            queue_wait_ms: Some(queue_wait.as_millis() as u64),
+            succeeded: true,
+            sqlite_primary_code: None,
+            sqlite_extended_code: None,
+        },
+    );
     Ok(WritePermit {
         queue,
         connection,
         category,
         acquired: Instant::now(),
-        queue_wait: started.elapsed(),
+        queue_wait,
         database,
         _connection: PhantomData,
     })

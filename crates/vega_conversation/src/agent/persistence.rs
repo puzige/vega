@@ -2,6 +2,30 @@ use super::*;
 use vega_store::write_coordination::PersistenceCategory;
 
 const PERSISTENCE_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PERSISTENCE_BUSY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+
+thread_local! {
+    static PERSISTENCE_BUSY_STARTED: std::cell::Cell<Option<std::time::Instant>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+fn persistence_busy_handler(count: i32) -> bool {
+    PERSISTENCE_BUSY_STARTED.with(|clock| {
+        if count == 0 || clock.get().is_none() {
+            clock.set(Some(std::time::Instant::now()));
+        }
+        let Some(started) = clock.get() else {
+            return false;
+        };
+        let remaining = PERSISTENCE_BUSY_TIMEOUT.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(remaining.min(PERSISTENCE_BUSY_INTERVAL));
+        started.elapsed() < PERSISTENCE_BUSY_TIMEOUT
+    })
+}
 
 #[derive(Clone)]
 pub(crate) struct DelegatedAuthority {
@@ -166,7 +190,10 @@ impl PersistenceActor {
         let (ready, opened) = oneshot::channel();
         let task = tokio::task::spawn_blocking(move || {
             let store = match Store::open_with_busy_timeout(database_path, PERSISTENCE_BUSY_TIMEOUT)
-            {
+                .and_then(|store| {
+                    store.conn().busy_handler(Some(persistence_busy_handler))?;
+                    Ok(store)
+                }) {
                 Ok(store) => store,
                 Err(error) => {
                     let _ = ready.send(Err(()));

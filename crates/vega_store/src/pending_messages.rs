@@ -122,6 +122,10 @@ pub fn mark_accepted(
     id: &str,
     previous_assistant_id: &str,
 ) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     Ok(conn.execute(
         "UPDATE pending_messages SET state = 'delivered', payload = '', accepted_after_assistant_id = ?3 \
          WHERE thread_id = ?1 AND id = ?2 AND state != 'delivered' \
