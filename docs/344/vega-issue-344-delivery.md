@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-先行测试已提交 draft PR [#562](https://github.com/puzige/vega/pull/562)。首轮云端在测试宿主编译阶段失败，不是有效 RED；正在做经独立准入的最小接线修正。生产行为未改，尚无本轮有效 RED、GREEN、合并或用户手测结果。
+Draft PR [#562](https://github.com/puzige/vega/pull/562) 已取得实际行为 RED（11 执行、4 通过、7 失败、0 跳过），最小生产修复进行中。尚无修复后的 GREEN、合并或用户手测结果。最新仓库政策已取消强制 TDD；本卡复用现成回归验证，不重做前置流程，合并前仍清理开发 Rust 测试及独占支持，并验证最终空集门禁。
 
 ## 内容与先后顺序
 
@@ -33,8 +33,8 @@
 ## 独立审查与云端阶段
 
 - 独立测试增量 reviewer：`01M5JB0VZGJH448QXX457Z6KNC` / execution `01M5JB0VZG095BJPSQT53FFHJM`，只读完成上述精确版本并停写，结论静态可接受、无阻塞提交 draft PR 的测试接线或 fixture 缺陷。详见独立审查记录；B3 连续测量防护仍为后续生产静态审查义务。
-- RED：首轮 Actions 未到行为测试，具体见下文；目标行为有效 RED 仍待取得。
-- 实现：未开始；必须先确认目标行为导致的有效 RED。
+- RED：首轮为测试接线编译失败；修正后的 `9bda1ecb54cec85d4e217760408f2aafd03ad3a3` 已在 run `39828341844` 执行行为断言，11 执行、4 通过、7 失败、0 跳过，具体见下文。
+- 实现：由单一专职作者进行；原验收及现有测试保持不变。
 - 同一测试 GREEN：未取得。
 - 测试来源可恢复性、独立删测提交、最终 head 0 发现/0 执行完整门禁：待前述阶段完成。
 - Issue 保持开放、In progress；最新 head required check 与独立审查均通过后才可合并，合并后 In review 等用户手测，不以自动关闭关键字收尾。
@@ -56,4 +56,16 @@
 - 独立 reviewer execution `01M5JC689XY6SD068P3N0X29BX` 复核真实 GPUI `add_window_view<F,V>` 签名及 observe/subscribe，准入严格两处测试接线修正：删除 unused alias；在原 build closure 显式 `cx: &mut Context<AnchorHost>` 固定 V。不改变 fixture/动作/通知/断言/验收；不是改预期，也不需重开验收周期。修订产物仍须停写增量复核，编译/行为结果仍交 Actions。
 - 同次同步 master `6615748f91273bfb8ee424011b3b5a09b3777d2b` 的 #546，以普通 merge `0c0b21cb3642bbd40cfc3b5d33c826c98f557877` 保留原测试来源。实际源码增量仅 theme 三个 Composer trigger token 与 render.rs 模型/权限 chip 样式；锚点挂载顺序未变，测试不渲染 Composer。独立 reviewer 确认可复用已有测试审批及 B2/B3 义务。
 - 原 writer 通过 follow-up `01M5JCD0RW16GHZMKYM561TAZ9` 仅接续上述两处修正；主 Agent 不并写测试代码。作者已 READY 停写，测试新 SHA-256 `c84c479c6f8f3b6d00290f7091abebd1537dcf7142cd4ab3f86e6ebdc2651565`，29,615 bytes、801行、11个属性。
-- 独立产物复核 execution `01M5JCG77F3NXPNZSGBKQDFZVV` 确认精确diff仅两处；内存反向还原后与前审输入逐字节一致，全部fixture/动作/notify/断言不变，无新阻塞。主 Agent 在此版本实际执行 `cargo fmt --all -- --check`、离线 locked/no-deps metadata、`git diff --check` 均0；无本地编译/行为执行。下一次 Actions 原始结果仍待取得。
+- 独立产物复核 execution `01M5JCG77F3NXPNZSGBKQDFZVV` 确认精确diff仅两处；内存反向还原后与前审输入逐字节一致，全部fixture/动作/notify/断言不变，无新阻塞。主 Agent 在此版本实际执行 `cargo fmt --all -- --check`、离线 locked/no-deps metadata、`git diff --check` 均0；无本地编译/行为执行。修正提交为 `9bda1ecb54cec85d4e217760408f2aafd03ad3a3`，后续实际结果如下。
+
+## 实际行为 RED 与实现接续
+
+- [run 39828341844](https://github.com/puzige/vega/actions/runs/39828341844)，head `9bda1ecb54cec85d4e217760408f2aafd03ad3a3`。主 Agent 已重新读取原始日志，非仅沿用历史状态。
+- [Clippy 119997501677](https://github.com/puzige/vega/actions/runs/39828341844/job/119997501677)成功；[Nextest 119997501291](https://github.com/puzige/vega/actions/runs/39828341844/job/119997501291)完成编译、发现和执行；[aggregate 120001723953](https://github.com/puzige/vega/actions/runs/39828341844/job/120001723953)因行为失败而失败。
+- 原始输出：`Starting 11 tests across 15 binaries`；`Summary [0.312s] 11 tests run: 4 passed, 7 failed, 0 skipped`。发现11、执行11、通过4、失败7、跳过0；忽略数没有独立日志字段，不额外猜测。
+- 失败分为：A7 初始到底的 `marker 2 must project current message 3`；A2 的 `marker 125 must project current message 127`；A1/A4/A5/长轨道的 `preview must be removed, not merely unfocused`；A6 的无有效列表几何仍存在 `message-anchor-rail`。全部为本轮目标行为断言，不是类型、依赖或 runner 故障。组合用例失败后的断言未执行，不算已经验证。
+- 四个阳性/边界对照通过：空/单/短会话隐藏、cached tail + unknown middle、真实 hover/稳定 ID 定位、非锚点尾部/合法零高尾行。B3 连续测量防护仍须独立静态审查，不能仅凭此负例通过宣称证明完整防护。
+- 保留测试来源：[修正后源码](https://github.com/puzige/vega/blob/9bda1ecb54cec85d4e217760408f2aafd03ad3a3/crates/vega_ui/src/conversation_stream/message_anchor_tests.rs)，SHA-256 `c84c479c6f8f3b6d00290f7091abebd1537dcf7142cd4ab3f86e6ebdc2651565`。原源码/patch 及两处接线修正均在 PR 留痕。
+- 接续前 fetch 后普通 merge 最新 master `9f9fa092a3ca391a65f08419c9206f32979119e6`，保留全部原提交来源；本地实现起点 `a367f21376e00ad8030589d73d3443945269b61a`。继承 CUA 生命周期/准备入口、上下文读锁、Composer 样式和交付政策等增量；锚点算法、锁定依赖与本卡测试字节未改。后续云端检查在当前最终实现上重新执行，旧 RED 不冒充新基线验证。
+- 新政策以当前 `AGENTS.md` / 验证与快速交付政策为准：取消强制 TDD，不取消最小实现、代码委派、独立实现审查、云端门禁、开发测试留痕与合并前清理。历史方案流程文字仅记录当时顺序，不覆盖新政策；A1–A7 行为验收未变。
+- 实现作者 `01M5K9ZVVSASCNGBZJ3FBJ8VYD` / execution `01M5K9ZVVSGMC1GE862E6YMRT6` 负责 `message_anchors.rs` 与 `core.rs` 最小生产修复；主 Agent 不并写代码。返回 rail 自带的布局后观察器复用现有生产/测试挂载顺序，不为验证追加宿主接线；当前测试及断言保持不变。
