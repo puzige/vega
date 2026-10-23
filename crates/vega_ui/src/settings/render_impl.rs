@@ -984,6 +984,13 @@ impl Render for SettingsView {
             self.request_settings_section(3, cx);
             cx.set_global(PricingSettingsRequested(false));
         }
+        if cx
+            .try_global::<NativePreparationSettingsRequested>()
+            .is_some_and(|request| request.0)
+        {
+            self.request_settings_section(7, cx);
+            cx.set_global(NativePreparationSettingsRequested(false));
+        }
         self.resume_settings_navigation(window, cx);
         self.ensure_model_catalog(cx);
         let current_theme = theme(cx);
