@@ -1569,13 +1569,6 @@ impl Render for ConversationStream {
                                                 this.counters.record_row_callback(
                                                     row_t0.elapsed().as_nanos(),
                                                 );
-                                                #[cfg(any(test, feature = "artifact-test-observation"))]
-                                                let item = match entry {
-                                                    Some(StreamEntry::Assistant { .. }) => crate::artifact_card::observation::observe_stream_item(item, "assistant", None, None),
-                                                    Some(StreamEntry::Summary { card }) => crate::artifact_card::observation::observe_stream_item(item, "summary", Some(card.read(cx).summary().message_id.clone()), None),
-                                                    Some(StreamEntry::ArtifactGroup { group }) => crate::artifact_card::observation::observe_stream_item(item, "artifact-group", Some(group.read(cx).message_id().to_owned()), Some(group.read(cx).row_count())),
-                                                    _ => item,
-                                                };
                                                 if let Some(pinned) = pinned {
                                                     rendered_top_fade_guards.observe(item, pinned)
                                                 } else {

@@ -345,8 +345,6 @@ impl Element for SelectableStyledText {
             self.text
                 .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);
         }
-        #[cfg(any(test, feature = "artifact-test-observation"))]
-        crate::artifact_card::observation::record_shaped_text(self.text.layout(), bounds, window);
         for target in &mut prepaint.targets {
             target.paint(window, cx);
         }
