@@ -266,6 +266,8 @@ mod content;
 mod context_control;
 pub use context_control::ContextUsageProjection;
 mod context_usage;
+#[cfg(test)]
+mod context_usage_tests;
 pub use vega_conversation::types::{
     ContextCompactionCancelRequested, ContextCompactionRequested, ContextSettingsRequested,
     MessageLocationStatus,

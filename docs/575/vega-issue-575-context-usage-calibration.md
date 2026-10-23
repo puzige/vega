@@ -38,7 +38,7 @@
 ## 最小实现计划
 
 1. `context_control.rs` 增加最近主调用总量/来源状态；复用现有 active message/accounting/call identity。真实值使用 checked_add；保留分母。区分每次调用、压缩、run 结束/新 run/模型重置，保护异步投影不覆盖已知总量。
-2. `content.rs::apply_event` 单独接入 `UsageUpdated`，摘要 usage 仍不写环；在真正的新调用/消息边界重置本调用去重/高水位（不是整个任务保留 max）。`window/artifact.rs` 在既有 generation/thread/stream/model ownership 内接入；不改变 meter 的独立消费与计费。
+2. `window/artifact.rs` 在既有 generation/thread/stream/model ownership 内单独把 `UsageUpdated` 交给 context，再继续由 `content.rs::apply_event` 消费通用事件及累计 meter；摘要 usage 仍不写环。在真正的新调用（`network_retry.rs::checkpoint_response`）/消息边界重置本调用去重/高水位（不是整个任务保留 max），不改变 meter 的独立消费与计费。
 3. `context_usage.rs` / `render.rs` 只改必要数据来源传递和短标签，不改圆环/浮层布局与交互，不把真实值冒充预测输入，也不改分母为供应商验证容量。
 4. 按本卡状态转换风险添加少量新的开发 GPUI 回归，不恢复历史集合、不扩大 production public API；使用现有 `gpui_kit` test-support 功能，必要独占锁文件项留痕并在合并前清理。Git/index/commit/push 由主 Agent 统一处理。
 5. 实现者停写后，非实现者对精确版本独立审查；现有 draft PR Actions 运行开发回归。实际通过后固定原始源码/patch/full SHA，移除开发测试及独占支持；对最终无 Rust 测试 head 跑完整 required CI，成功后 squash merge。Issue 保持开放/In review 等用户手测。
