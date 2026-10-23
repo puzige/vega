@@ -1,6 +1,8 @@
 use super::*;
+use std::time::Duration;
 use vega_ui::artifact_card::ArtifactCard;
 use vega_ui::icons::{Icon, icon_button};
+use vega_ui::interaction::decorative_value;
 use vega_ui::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollableFadeExt};
 
 const MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH: f32 = 610.;
@@ -1164,6 +1166,18 @@ impl VegaWindow {
             let close_key = key.clone();
             let keyboard_key = key.clone();
             let active = selected.as_ref() == Some(&key);
+            let selection_sample = decorative_value(
+                SharedString::from(format!(
+                    "workspace:{tabs_selector}:tab:{key:?}:selected-background"
+                )),
+                if active { 1. } else { 0. },
+                Duration::from_millis(Motion::TAB_SELECTION_MS),
+                !self.workspace.hidden[index],
+                window,
+                cx,
+            );
+            #[cfg(test)]
+            motion_tests::observe_selection_sample(index, key.clone(), selection_sample.status, cx);
             let tab_color = if active {
                 colors.text_primary
             } else {
@@ -1219,6 +1233,7 @@ impl VegaWindow {
                 div()
                     .id(tab_selector.clone())
                     .aria_label(label.clone())
+                    .aria_selected(active)
                     .map(|tab| {
                         #[cfg(test)]
                         let tab = gpui_kit::test::TestSupportExt::test_support(tab);
@@ -1249,11 +1264,7 @@ impl VegaWindow {
                     .border_1()
                     .border_color(colors.bg_base.alpha(0.))
                     .focus_visible(|style| style.border_color(colors.accent))
-                    .bg(if active {
-                        colors.bg_active_alpha
-                    } else {
-                        colors.bg_sidebar.opacity(0.)
-                    })
+                    .bg(colors.bg_active_alpha.opacity(selection_sample.value))
                     .hover(move |s| s.bg(colors.bg_hover))
                     .cursor_pointer()
                     .on_mouse_up(

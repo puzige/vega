@@ -1,4 +1,5 @@
 use super::*;
+use core::prelude::v1::test;
 use gpui_kit as gpui;
 use gpui_kit::base::motion::MotionStatus;
 use gpui_kit::test::{ElementSnapshot, TestWindowExt};
@@ -156,6 +157,7 @@ fn isolated_owner(cx: &mut Context<VegaWindow>) -> VegaWindow {
         subagent_panel: subagent_panel::SubagentPanel::new(cx),
         automation_editors: Default::default(),
         image_preview: image_preview::ImagePreviewController::new(cx),
+        onboarding: cua_onboarding::OnboardingHost::default(),
         environment_collapsed: true,
         environment_overlay_open: false,
         sidebar_resize_dragging: false,
