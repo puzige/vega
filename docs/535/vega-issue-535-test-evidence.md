@@ -143,3 +143,19 @@ fetch 后保护全部改动，合入最新 master `9f9fa092a3ca391a65f08419c9206
 恢复 writer 已停止写入，13 个生产文件内容包 SHA-256 `0719c917f44fb5b1daf862e6b93faf78200b42d1646743a91dc44ba36b8d88f0`。相对恢复稿只补 `content.rs`：明确的 continuation successor 不执行上游 `begin_computer_use_task`，独立运行仍正常执行，避免把同次运行的消息切换当成新任务。其余已有最小实现保留，普通间距 token 未改。
 
 writer 实际执行 fmt/diff/offline locked no-deps metadata 均退出 0；主 Agent 再次独立复算生产包与三份测试源哈希一致，fmt/diff 退出 0。未执行本地编译、测试、Clippy 或 CUA。下一步固定提交，非写入者审查实现，现有 Actions 在同一版本执行 18 个开发测试；尚无行为通过结论。
+
+## 实现首轮 Actions：测试宏接线失败（2026-10-23）
+
+生产实现已固定并推送为 `be839cc63da09643c852f3bc2496e08ef932eb47`，生产内容包仍为 `0719c917f44fb5b1daf862e6b93faf78200b42d1646743a91dc44ba36b8d88f0`。独立实现审查针对该停写提交进行。
+
+[Actions 39891674978](https://github.com/puzige/vega/actions/runs/39891674978) 失败：Format、Python 发布脚本检查步骤成功；Clippy job `120212647786` 与 Nextest job `120212647991` 均在 `crates/vega/src/app_agent/continuation_tests.rs:4` 报 `recursion limit reached while expanding #[test]`。Nextest 未完成测试发现，行为断言未执行；发现/执行/通过/失败/忽略/跳过计数未取得，不记录为产品失败或行为通过。required job `120213914438` 随之失败。
+
+原始 failed-job 日志 676 行，SHA-256 `e97b64e73cc5e292e15c5a209c886fc6a3620cfc5e2ed9a536d5be684bddab09`。主 Agent 读取两个 job 的原始诊断，并静态核对锁定版本 `gpui-pre-macros 0.3.4` 的 `src/test.rs`：GPUI 宏生成未限定的 `#[test]`；app 测试的 `use super::*` 从父模块 `use gpui_kit::*` 导入同名测试过程宏，导致递归展开。责任层是开发测试导入接线，不是已证实的运行展示缺陷；不增加 recursion_limit 或更改产品实现来绕过。
+
+修复已限定委派为 app 测试头部的显式导入，保留全部测试正文、数据与断言。下一验证为同一生产版本配修正接线后再次运行现有完整 Actions；修复完成、类型检查及行为结果均另行记录。Rust 测试清理仍在未解决失败诊断与必要验证之后，不以清理制造通过。
+
+该 writer 子会话在改动导入后异常结束，终态为 failed，未交付 READY。主 Agent 确认该执行已停止，检查工作树仅新增预期 app 导入差异（其余脏文件是主 Agent 的本证据文档），当前 app 文件 SHA-256 `e2d289453b0a5eee1e298c81e73e0f5332592d23b251172d185311f6b3372d0c`；从 `#[gpui_kit::test]` 至文件尾与 `be839cc6` 逐字节一致。保留补丁交替补 writer 完成静态验证，不重新实现已完成部分；此时类型检查、行为结果和实现独立审查仍待取得。
+
+原独立实现 reviewer 子会话随后也以 failed 终止，未返回 findings 或审查结论。其只读范围没有改动；父会话确认生产仍为 `be839cc6`，不将异常结束记为通过。替补只读 reviewer 继续同一生产提交及上述接线差异，保留已完成的静态检查和实际 CI 失败证据，不重做根因或产品裁决。
+
+替补 writer 已 READY 并停止写入，未追加改动。当前 app 源 3,181 字节，SHA-256 `e2d289453b0a5eee1e298c81e73e0f5332592d23b251172d185311f6b3372d0c`；属性至 EOF 的 2,884 字节后缀与原版一致，SHA-256 `ee529494f57c8fce1d8495ab597fabf2e6cf6f9d60db86b1a575cd4cd74ef4fc`。已核对 TestAppContext 的 update/add_window_view、App::set_global 为固有方法，无需补入 trait wildcard；保留宏生成代码所需的 gpui 别名。writer 的 Rust 1.98 focused rustfmt 与 focused diff check 均退出 0。接线修正不等于编译或行为通过，下一步由新提交的现有完整 Actions 验证。

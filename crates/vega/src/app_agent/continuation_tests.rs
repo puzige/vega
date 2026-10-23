@@ -1,5 +1,10 @@
-use super::*;
+use super::{AppAgentController, RunCompletionOutcome};
 use gpui_kit::{TestAppContext, gpui};
+use vega_conversation::types::{
+    ConversationEvent, ConversationStopReason, PermissionMode, TaskBackend, Thread, ThreadMode,
+    ThreadStatus,
+};
+use vega_ui::conversation_stream::ConversationStream;
 
 #[gpui_kit::test]
 fn continuation_keeps_controller_active_and_queue_blocked_until_final_terminal(
