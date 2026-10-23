@@ -557,3 +557,10 @@ pub fn permission_decision_to_runtime(
 }
 
 pub type RunMode = ThreadMode;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionPresentation {
+    WaitingForTool,
+    Mismatch,
+    Ready,
+}

@@ -801,23 +801,25 @@ pub(crate) fn from_runtime_event(
                 chunk: ToolOutputChunk(chunk.clone()),
             })
         }
-        RuntimeEvent::ToolCallFinished(result) => Some(ConversationEvent::ToolCallFinished {
-            call_id: result.call_id.clone(),
-            result: ToolResult {
-                status: match result.status {
-                    RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
-                    RuntimeToolStatus::Success => ToolCallStatus::Success,
-                    RuntimeToolStatus::Failed => ToolCallStatus::Failed,
-                    RuntimeToolStatus::Cancelled => ToolCallStatus::Cancelled,
+        RuntimeEvent::ToolCallFinished(result) | RuntimeEvent::ToolReadFinished { result, .. } => {
+            Some(ConversationEvent::ToolCallFinished {
+                call_id: result.call_id.clone(),
+                result: ToolResult {
+                    status: match result.status {
+                        RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
+                        RuntimeToolStatus::Success => ToolCallStatus::Success,
+                        RuntimeToolStatus::Failed => ToolCallStatus::Failed,
+                        RuntimeToolStatus::Cancelled => ToolCallStatus::Cancelled,
+                    },
+                    output: result.output.clone(),
+                    reused: result.reused,
+                    exit_code: result.exit_code,
+                    duration_ms: result.duration_ms,
+                    truncated: result.truncated,
+                    invalid: None,
                 },
-                output: result.output.clone(),
-                reused: result.reused,
-                exit_code: result.exit_code,
-                duration_ms: result.duration_ms,
-                truncated: result.truncated,
-                invalid: None,
-            },
-        }),
+            })
+        }
         RuntimeEvent::SkillActivation { audit, .. } if audit.status == "loaded" => {
             Some(ConversationEvent::SkillActivated {
                 message_id: message_id.to_string(),
@@ -973,6 +975,7 @@ pub(crate) fn from_runtime_event(
                 },
             })
         }
+        RuntimeEvent::StageHandoff { .. } => None,
         RuntimeEvent::Finished(reason) => Some(ConversationEvent::MessageFinished {
             message_id: message_id.to_string(),
             execution_duration_ms: None,

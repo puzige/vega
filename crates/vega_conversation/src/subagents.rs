@@ -78,7 +78,37 @@ fn project_children(
     let projection = crate::privacy::DisplayProjection::load(store, parent)?;
     rows.into_iter()
         .map(|row| {
+            let checkpoint: Option<serde_json::Value> = vega_store::delegated_stages::latest(
+                store.conn(),
+                &row.child_thread_id,
+                &row.child_message_id,
+            )
+            .map_err(|error| ConversationError::Store(error.to_string()))?
+            .map(|value| serde_json::from_str(&projection.json(&value.to_string())))
+            .transpose()
+            .map_err(|_| ConversationError::InvalidTaskIdentity)?;
+            let release_state = vega_store::delegated_stages::release_state(
+                store.conn(),
+                &row.child_thread_id,
+                &row.child_message_id,
+            )
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+            let ready_for_review = release_state == "released"
+                && row.state == "completed"
+                && vega_store::delegated_stages::handoff(
+                    store.conn(),
+                    &row.child_thread_id,
+                    &row.child_message_id,
+                )
+                .map_err(|error| ConversationError::Store(error.to_string()))?
+                .is_some()
+                && checkpoint
+                    .as_ref()
+                    .is_some_and(|value| value["manifest"]["ready_for_review"] == true);
             Ok(SubagentSnapshot {
+                checkpoint,
+                release_state,
+                ready_for_review,
                 agent_id: row.child_thread_id,
                 parent_thread_id: row.parent_thread_id,
                 parent_message_id: row.parent_message_id,
