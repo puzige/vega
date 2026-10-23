@@ -134,6 +134,11 @@ impl ArtifactCard {
         2 + self.preview_lines.len() + usize::from(self.inline_error.is_some())
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_preview_lines(&self) -> &[String] {
+        &self.preview_lines
+    }
+
     pub fn apply_metadata(
         &mut self,
         projection: ArtifactProjection,

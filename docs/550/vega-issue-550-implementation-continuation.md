@@ -127,3 +127,38 @@ head `76fd200952154dc5be8c6cda1f6cd513badff106` 的 [Actions 39927968952](https:
 - writer 报告单文件 rustfmt、全仓 fmt check、diff check 均退出 0；父独立执行 `cargo fmt --all -- --check`、`git diff --check` 与静态范围检查均退出 0，确认 28 个测试名称保留、仅四个授权测试体变化、其余 24 个逐字节不变，以及 ToolCard 唯一差异为上述 test-only accessor。原断言未放宽或删除；writer 静态清点为原 204 个断言全部保留、新增 14 个，不作为执行计数。
 - 首次 writer 格式检查仅两处换行，修正后通过；其静态检查脚本首次误把 helper 计入相邻测试，修正函数边界后通过，未改变测试断言。未运行本地编译、程序或测试。固定提交后的独立审查与现有 Actions 尚待取得；五项范围外失败仍未决，不据此清理测试或合并。
 
+
+## 2026-10-24 artifact 兼容修复接手与实施契约
+
+- 本轮用户只授权修复 `visible_artifact_preview_and_real_control_focus_survive_first_final_collapse` 的 #542 API/fixture/观察兼容，独立审查后取得新 head 的现有 Actions 结果。不合并 #550/#552 或相关 PR，不修改 #552，不清理 Rust 测试，不扩修五类已知未决。当前规则不重新要求 TDD。
+- 接手重核原本地/远端/PR head 为 `ed14a21a1c6db5b09a8a4631df5d7e3eeb49c252`，index/worktree 干净，公开交接已释放前轮 writer/reviewer。本会话只读契约核对者没有源码写入权。fetch 后正常 merge master `73977c89eba718da4b2573227c44beb8bcff6911`，本轮基线 `725d63281f891189e81ed0b66665130001e196e6`；上游仅 #307 权限面板，四项旧修复以及 #542/#535/#344/#577 保留，主仓库文件未动。
+- 上轮 [Actions 39993796156](https://github.com/puzige/vega/actions/runs/39993796156) 对应 `ed14a21a1c6db5b09a8a4631df5d7e3eeb49c252`：Nextest `120551969424` 与 Clippy `120551969746` 均止于六处 E0599，required `120553551657` failure；Format/Python step success。Rust 发现未完成、行为未开始，执行/通过/失败/忽略/跳过计数未取得；不是 no Rust tests。原始日志仍在且 SHA-256 读回为 `01f9e2e2276e85fb4bc568e57bab1390460deeb76c410b9f604d5f6fb4b83ae5`。公开完整前轮结论见 [Issue](https://github.com/puzige/vega/issues/550#issuecomment-6370815322) / [PR](https://github.com/puzige/vega/pull/579#issuecomment-6370814655)。
+
+### 原验收与当前合法前置
+
+[#542](../542/vega-issue-542-artifact-card-row.md) 明确运行中不向对话流插入产物，产物改为结束回合后的独立聚合；workspace 仍使用 `ArtifactCard::render_row` 和原 `row_count()`。因此旧同段 `RunActivityChild::Artifact` 挂载与 `insert_after_tool/contains_artifact` 结构已不存在，不能恢复。先结束再补当前 Final 也不作为合法事件顺序。
+
+本轮采用同一实时会话、同一路由已完成前轮的合法产物：真实 `register_artifact_call` / `apply_artifact_card` 登记 → `MessageFinished` → 唯一匹配 `StreamEntry::ArtifactGroup` → 已打开同窗 workspace 预览 → 当前轮首次可信 Final。不是历史 hydration 回溯，不宣称继续验证已删除的同阶段内嵌结构。旧结构断言改为精确 card Entity、call owner/message_id、唯一匹配 ArtifactGroup 与聚合 `row_count()==1`；当前轮过程仍须在首次 Final 收起。
+
+| 必保目标 | 修复后的严格观察 |
+|---|---|
+| 合法产物归属与可见性 | 精确实体/call/回合归属、完成前不入流、完成后唯一聚合；Final 后身份/归属不变 |
+| 完整预览 | 当前生产 `render_row` 四行均实际 paint、可见、在 viewport 内，原逐行几何尺寸前后相等；精确比较两行预览正文 |
+| 真实控件焦点 | 真实 Preview 控件已有 FocusHandle，paint 后实际设焦，并通过 Enter/ArtifactActivate 产生字段匹配的 `ArtifactPreviewRequested` 阳性证据；Final 后继续保持同一焦点/控件可用 |
+| 首次 Final 隔离 | 当前轮真实 Final 路径收起当前过程，以上可见产物的预览/几何/焦点均保持 |
+
+最小 test-only fixture 在同一窗口并列挂载真实 ConversationStream 与 workspace 使用的相同 `uniform_list` / `ArtifactCard::render_row`，默认不启用预览，不改变其余用例前置。已有 snapshot 只提供几何/可见性与 AX，不能读预览 child 正文；允许在 `artifact_card.rs` 增加唯一 `#[cfg(test)] pub(crate) test_preview_lines() -> &[String]`，直接返回既有 `preview_lines`，不另算/复制业务投影，不扩大普通构建 API。该证据是实际行渲染加真实渲染数据观察，不是独立像素文本回读。
+
+### 唯一 writer 与验证边界
+
+- 唯一专职 writer 只改本 artifact 测试、必要的同文件 test-only surface/fixture，以及上述五行以内只读方法；不改其他 27 个测试体、四项旧修复、生产行为/算法、依赖、registry、framework 或通用 CI。writer 不操作 Git/index/commit/push；主 Agent 负责本记录、版本、提交和云端。
+- writer READY 必须附精确源码/diff 内容标识、实际静态检查及停写声明；随后主 Agent 核对 28 个名称、其余 27 个测试体与范围外断言保全，固定提交，交非写入者独立审查完整 SHA，继续原 Draft PR #579。
+- 本地仅快速静态/格式检查，禁止运行 Vega、编译/build/package、cargo check/Clippy/test/nextest/bench/profile、CUA/OS 自动化。自动测试只交原 Actions，不改 workflow；启动后每五分钟查询，完成/失败通知或用户即时请求除外。新结果分类后仅可继续修本轮授权内 fixture/API/观察错误，范围外失败只记录。
+
+### artifact 兼容修复停写产物
+
+- 唯一 writer 已 READY 并停写，父逐项复核实际 diff：只改 artifact 测试体及默认 `None` 的同文件预览 surface/fixture，`artifact_card.rs` 唯一差异为四行 `cfg(test)` crate-private 只读 `test_preview_lines` 方法；移除此接点后普通构建源文与基线逐字节相同。默认无预览 surface 仍生成原渲染树，不改其余用例前置。
+- 真实登记/apply 后运行中无 ArtifactGroup；前轮合法 Final 在 MessageFinished 之前，完成后唯一匹配聚合。当前轮开始后，精确 card/call/owner/group 及聚合行数前后不变；四行实际 paint、全 viewport bounds、原逐行几何比较与两行精确全文保留。真实 workspace Preview focus[0] 在首次 Final 前后均实际持焦，Enter 经既有 ArtifactActivate 产生精确 emitter EntityId 与 thread/project/card/file 请求字段，两次请求严格相等。当前轮真实 process_in_details 从 false 到 true，过程关闭，精确 Final 原文在外。
+- 测试源码 SHA-256 `b5d4ca9a458b600d34ba6cac3dfc2bd19da085572f32493f6e440415cec39157`；ArtifactCard 源码 `0877d19ebd5db4149dc6a3a8a1f05de5add202f839a41179ebae43f3718d150e`；两源码 binary diff `19db48afcea186637557382f0139b520ca821d06a0558e499b5c1f563537ce45`。父读回全部匹配 writer 停写内容。
+- 父实际 `cargo fmt --all -- --check`、`git diff --check`、词法边界静态范围检查以及唯一 accessor/字节保全检查均退出 0。28 个名称/顺序保留，其他 27 个测试体逐字节不变；四项旧修复、五类已知未决原断言、tool_card、workflow、Nextest 配置与依赖保持。静态 assert 宏计数 218→237，不是发现或运行计数；旧结构断言依据上述契约作当前身份/聚合观察等价替换，不放宽业务目标。
+- 未本地运行 Vega、编译/构建/check/Clippy/test/nextest/bench/profile/CUA；新 head 编译、发现与行为结果及非写入者审查仍待安排，不宣称通过。规格偏离无；证据仍是实际渲染加渲染数据观察，不是像素正文或真实文件/权限/外部应用验收。

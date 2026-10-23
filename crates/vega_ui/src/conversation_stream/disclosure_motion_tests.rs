@@ -853,14 +853,31 @@ fn append_final(stream: &Entity<ConversationStream>, id: &str, end: usize, cx: &
 
 struct StreamSurface {
     stream: Entity<ConversationStream>,
+    artifact_preview: Option<Entity<ArtifactCard>>,
 }
 
 impl Render for StreamSurface {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .child(gpui_kit::base::TextSelectionLayer)
-            .child(self.stream.clone())
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let surface = div().size_full().child(gpui_kit::base::TextSelectionLayer);
+        if let Some(card) = self.artifact_preview.clone() {
+            let count = card.read(cx).row_count();
+            let preview =
+                gpui_kit::uniform_list("workspace-preview", count, move |range, window, cx| {
+                    range
+                        .map(|row| ArtifactCard::render_row(card.clone(), row, window, cx))
+                        .collect()
+                })
+                .size_full();
+            surface.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .child(div().flex_1().min_w_0().h_full().child(self.stream.clone()))
+                    .child(div().flex_1().min_w_0().h_full().child(preview)),
+            )
+        } else {
+            surface.child(self.stream.clone())
+        }
     }
 }
 
@@ -885,6 +902,7 @@ impl StreamFixture {
             .open_window(size(px(640.), px(1200.)), |_, cx| {
                 cx.new(|_| StreamSurface {
                     stream: stream.clone(),
+                    artifact_preview: None,
                 })
             })
             .unwrap();
@@ -1811,36 +1829,111 @@ fn native_element_expanded_changes_with_body_in_the_same_event_not_at_animation_
 fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
     _: &mut gpui_kit::TestAppContext,
 ) {
+    use crate::artifact_card::{ArtifactActivate, ArtifactPreviewRequested};
     use gpui_kit::Focusable as _;
+
     let mut fixture = StreamFixture::open();
-    let (group, _) = fixture.begin("current");
     let preview_text = "Artifact preview remains visible.\nSecond artifact row.\n";
-    let artifact = fixture.cx.update(|cx| {
+    let (artifact, owner, expected_request) = fixture.cx.update(|cx| {
+        cx.bind_keys([gpui_kit::KeyBinding::new(
+            "enter",
+            ArtifactActivate,
+            Some("ArtifactCard"),
+        )]);
+        begin_process(&fixture.stream, "previous", cx);
         let (projection, preview) =
             vega_conversation::ArtifactService::in_memory_ui_fixture(preview_text)
                 .expect("WIRING: bounded memory projection, not filesystem authority");
-        let artifact = cx.new(|cx| {
-            crate::artifact_card::ArtifactCard::new(
-                "disclosure-thread".into(),
-                String::new(),
-                projection,
-                cx,
-            )
-        });
+        let expected_request = ArtifactPreviewRequested {
+            thread_id: "disclosure-thread".into(),
+            project_id: String::new(),
+            card_id: projection.id,
+            file_id: projection
+                .current_file_id
+                .expect("WIRING: bounded fixture has a preview capability"),
+        };
+        let artifact = cx
+            .new(|cx| ArtifactCard::new("disclosure-thread".into(), String::new(), projection, cx));
         artifact.update(cx, |card, cx| assert!(card.apply_preview(preview, cx)));
-        let tool = tool("artifact-owner", cx);
-        group.update(cx, |group, cx| {
-            group.append_tool(0, tool.clone(), false, cx);
-            assert!(group.insert_after_tool(&tool, artifact.clone(), cx));
-            assert!(group.contains_artifact(&artifact));
-            assert!(group.children().iter().any(|child| matches!(child,
-                RunActivityChild::Artifact(card) if card == &artifact)));
+        let owner = fixture.stream.update(cx, |stream, cx| {
+            assert!(stream.register_artifact_call("artifact-owner"));
+            assert!(stream.apply_artifact_card("artifact-owner", artifact.clone(), cx));
+            assert!(
+                !stream
+                    .entries
+                    .iter()
+                    .any(|entry| matches!(entry, StreamEntry::ArtifactGroup { .. }))
+            );
+            stream
+                .artifact_capture_owner("artifact-owner")
+                .expect("WIRING: real registration retains the originating turn")
         });
+        assert_eq!(owner.0, "previous");
+        (artifact, owner, expected_request)
+    });
+    let preview_requests = Rc::new(RefCell::new(Vec::new()));
+    let _subscription = fixture.cx.update(|cx| {
+        let requests = preview_requests.clone();
+        cx.subscribe(
+            &artifact,
+            move |card, event: &ArtifactPreviewRequested, _| {
+                requests
+                    .borrow_mut()
+                    .push((card.entity_id(), event.clone()));
+            },
+        )
+    });
+    fixture.final_event("previous", COMMENTARY.len() + FINAL_TEXT.len());
+    let artifact_group = fixture.cx.update(|cx| {
         fixture.stream.update(cx, |stream, cx| {
-            stream.invalidate_item(Some(0));
-            cx.notify();
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: "previous".into(),
+                    stop_reason: vega_conversation::types::ConversationStopReason::End,
+                    execution_duration_ms: Some(800),
+                },
+                cx,
+            );
+            stream.artifact_groups["previous"].clone()
+        })
+    });
+    let assert_artifact_owner = |fixture: &mut StreamFixture| {
+        fixture.cx.update(|cx| {
+            let stream = fixture.stream.read(cx);
+            assert_eq!(stream.artifact_cards.get("artifact-owner"), Some(&artifact));
+            assert_eq!(
+                stream.artifact_capture_owner("artifact-owner"),
+                Some(owner.clone())
+            );
+            assert_eq!(artifact_group.read(cx).message_id(), "previous");
+            assert_eq!(artifact_group.read(cx).row_count(), 1);
+            let groups = stream
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    StreamEntry::ArtifactGroup { group }
+                        if group.read(cx).message_id() == "previous" =>
+                    {
+                        Some(group)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0], &artifact_group);
         });
-        artifact
+    };
+    assert_artifact_owner(&mut fixture);
+    fixture
+        .window
+        .update(&mut fixture.cx, |surface, _, cx| {
+            surface.artifact_preview = Some(artifact.clone());
+            cx.notify();
+        })
+        .unwrap();
+    let (group, _) = fixture.begin("current");
+    fixture.cx.update(|cx| {
+        assert!(!group.read(cx).process_in_details());
     });
     fixture.cx.run_until_parked();
     fixture.draw();
@@ -1850,6 +1943,10 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
             .update_window(fixture.window.into(), |_, window, cx| {
                 let count = artifact.read(cx).row_count();
                 assert_eq!(count, 4);
+                assert_eq!(
+                    artifact.read(cx).test_preview_lines(),
+                    ["Artifact preview remains visible.", "Second artifact row."]
+                );
                 let snapshots = gpui_kit::base::test_support::snapshots(window);
                 (0..count)
                     .map(|row| {
@@ -1863,7 +1960,10 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
                             .find(|snapshot| snapshot.path().last() == Some(&id))
                             .expect("WIRING: actual ArtifactCard::render_row reached paint");
                         assert!(snapshot.visible());
+                        assert!(snapshot.bounds().size.width > px(0.));
                         assert!(snapshot.bounds().size.height > px(0.));
+                        assert!(snapshot.bounds().left() >= px(0.));
+                        assert!(snapshot.bounds().right() <= window.viewport_size().width);
                         assert!(snapshot.bounds().top() >= px(0.));
                         assert!(snapshot.bounds().bottom() <= window.viewport_size().height);
                         snapshot.bounds()
@@ -1873,15 +1973,22 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
             .unwrap()
     };
     let before_rows = painted_rows(&mut fixture);
+    assert!(preview_requests.borrow().is_empty());
     let focus = fixture
         .cx
         .update_window(fixture.window.into(), |_, window, cx| {
             let focus = artifact.read(cx).focus_handle(cx);
             focus.focus(window, cx);
-            assert!(artifact.read(cx).contains_focus(window, cx));
+            assert!(focus.is_focused(window));
+            window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+            assert!(focus.is_focused(window));
             focus
         })
         .unwrap();
+    assert_eq!(
+        preview_requests.borrow().as_slice(),
+        [(artifact.entity_id(), expected_request.clone())]
+    );
     fixture.final_event("current", COMMENTARY.len() + FINAL_TEXT.len());
     fixture.cx.run_until_parked();
     fixture.draw();
@@ -1889,16 +1996,40 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
         .cx
         .update_window(fixture.window.into(), |_, window, cx| {
             assert!(!group.read(cx).expanded());
+            assert!(group.read(cx).process_in_details());
+            assert_eq!(
+                fixture
+                    .stream
+                    .read(cx)
+                    .completion_response(&["current".into()], cx)
+                    .as_deref(),
+                Some(FINAL_TEXT)
+            );
             assert!(focus.is_focused(window));
-            assert!(artifact.read(cx).contains_focus(window, cx));
-            assert!(group.read(cx).contains_artifact(&artifact));
+            assert_eq!(artifact.read(cx).focus_handle(cx), focus);
         })
         .unwrap();
+    assert_artifact_owner(&mut fixture);
     let after_rows = painted_rows(&mut fixture);
     assert_eq!(after_rows.len(), before_rows.len());
     for (before, after) in before_rows.iter().zip(&after_rows) {
         assert_eq!(before.size, after.size);
     }
+    fixture
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
+            assert!(focus.is_focused(window));
+            window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+            assert!(focus.is_focused(window));
+        })
+        .unwrap();
+    assert_eq!(
+        preview_requests.borrow().as_slice(),
+        [
+            (artifact.entity_id(), expected_request.clone()),
+            (artifact.entity_id(), expected_request),
+        ]
+    );
 }
 
 #[derive(Debug, PartialEq, Eq)]
