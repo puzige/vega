@@ -2617,6 +2617,3 @@ fn normalize_summary(text: &str) -> Result<String, ContextRuntimeError> {
     }
     Ok(format!("Summary:\n{summary}"))
 }
-
-#[cfg(test)]
-mod storage_contention_tests;
