@@ -11,6 +11,7 @@ mod mutation;
 mod output;
 mod project_instructions;
 mod read;
+pub use read::ReadIdentity;
 pub mod reference;
 mod sandbox;
 mod sha256;
