@@ -1111,7 +1111,7 @@ fn repeated_continuations_keep_one_clock_and_late_terminal_cannot_restore_old_cl
                         reused: false,
                         exit_code: None,
                         duration_ms: None,
-                        truncated: None,
+                        truncated: Some(false),
                         invalid: None,
                     },
                 },

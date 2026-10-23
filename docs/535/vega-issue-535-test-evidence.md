@@ -189,3 +189,13 @@ writer 实际执行 fmt/diff/offline locked no-deps metadata 均退出 0；主 A
 三文件开发测试收尾阶段再次达到时限，仅留下 read 事件兼容行；父会话确认停写、复核差异后保留该行，未重跑 CI。余下任务收窄为单个 app 测试文件，由新 writer 完成并 READY：去除 unused gpui、将相同 Thread fixture 提取为 helper（原有测试断言不变），新增两个行为测试。一个循环覆盖一次/两次续接与当前成功/失败/停止的六种组合，各自在当前终态前后送入所有 predecessor 的成功/错误/停止；另一个覆盖错 generation/thread/stream 不能安装过滤或改终态、finish 所属校验及无 ID 启动错误。实际观察四个终态字段、活跃运行、取消标记和 finish 结果，不以内部 set 内容替代业务结果。
 
 三份停写开发源 SHA-256：app `9206160d8b7578f7be2220ffecfd965ed6b01ddcaf19931a90b25b196a18960e`、conversation `f3b36ee6ed99f288d554684f7d645d5d0a60b64e946deac2645417a756da8248`、UI `b1ef5df4af9d26f3b17db989d6688594cd7a1133c24f80d70f9108a0b9ee9166`。静态定义为 app 3 / conversation 9 / UI 8，共 20，不是发现/执行计数。父会话在该版实际执行 `cargo fmt --all -- --check`、`git diff --check`、`cargo metadata --no-deps --offline --locked --format-version 1` 均退出 0；未本地编译、运行或测试。下一步整合上游新出现的消息锚点修复，固定完整停写提交，继续增量审查与现有 Actions。
+
+## 当前整合版：控制器回归通过，UI 成功结果夹具缺字段（2026-10-23）
+
+上游消息锚点提交 `3277ebb5fd710d7d33080f91b6c5235e1558e0d3` 已无冲突合入 `830a41cb90b4dff585d821344382a31d548b1954`，READY 修复固定并推送为 `5ecf37ddde54115f059a7d965eb179a0102a4768`。非写入者完成该完整停写提交增量审查，无可操作发现：锚点先检查 hidden 再使用测高缓存，续接失效/历史预扫描与新 post-layout observer 无已知相互覆盖；三份测试增量没有放宽验收，原有测试断言保留。production14 内容包 SHA-256 `4f22e3dddc3fbc6f4e257c36c81ccb98e72348f412410ebaeb7e3d3bad7cc81a`。三份当前测试源均由 GitHub exact-SHA contents 读回核对哈希，PR 固定完整提交、源码与 patch。
+
+[Actions 39916016475](https://github.com/puzige/vega/actions/runs/39916016475)，head `5ecf37ddde54115f059a7d965eb179a0102a4768`：Format、Clippy job `120289657880`、Python 步骤成功。Nextest job `120289657603` 编译/发现成功，启动并执行 20 项 / 15 binaries，19 通过、1 失败、0 skipped，14.149 秒；三项 app controller（含新增迟到终态/所属/启动错误）、九项 conversation 和几何/滚动/重测对照通过。required job `120290937694` 因唯一 UI 失败而失败，不记录为全绿。原始 failed-job 日志 176 行，SHA-256 `0af930147c0ac3a2928ee914e62af5254c2e4af0ac493244760b1a9d6bccb104`。
+
+唯一失败仍在 repeated_continuations，但本次在任何续接之前的前置观测失败：UI 测试第 1157 行工具 category 为 Other，而期望 Read。主 Agent 读取原始失败及真实投影：fixture 的 ToolResult 为 Success / reused=false / truncated=None；`types/tool_calls.rs:887–896` 调用 `success_truncation_valid`（1231–1236），非复用成功必须带 Some(truncated)，缺失即 Corrupt，`ToolCard::apply_finished` 清空输入并变为异常卡片。真实 runtime 的 `read_result`（tools_exec.rs:2094–2106）写 Some(output.truncated || line_truncated)。该短输出应为 Some(false)，不改变任何输出或终态预期。
+
+这是已确认的测试数据契约遗漏，不是已证实的续接产品错误；两次同一用例未通过后父会话已复查原始证据、输入投影和完整成功结果校验，不盲重试。限定专职 writer 只将该 fixture 的 truncated 改为 Some(false)，所有实体/类别/Success/目标/真实展开输出、复制、计时与停止断言保留，生产严格投影不改。下一验证为此单行增量独立审查及新提交完整 Actions；清理测试不能消解该失败。
