@@ -18,7 +18,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ## 状态
 
-当前测试政策见 [Rust 测试开发/交付生命周期](docs/vega-rust-test-delivery-lifecycle.md)（[执行规则](docs/vega-exec-guide.md#72-test-first-与有效测试当前规则)）：先测 → RED → 实现 → GREEN → 删测 → 正式 PR；开发阶段可保留 Rust 测试，最终树不保留，原始测试和验证证据从 PR 追溯，Python 测试继续保留。以下测试数量与本地验证结果均为历史记录，不代表当前现状或本地执行授权。
+当前交付政策见 [验证与快速交付政策](docs/vega-rust-test-delivery-lifecycle.md)（[执行规则](docs/vega-exec-guide.md#72-快速交付与按风险验证当前规则)）：最小改动快速交付，按风险选择验证，可直接修复或先实现后补必要测试，不强制 TDD、RED/GREEN 或删测流程。本地只静态检查，云端 required CI 与用户手测要求不变；不批量恢复历史 Rust 测试，保留现存 Python 测试。以下测试数量与本地验证结果均为历史记录，不代表当前现状或本地执行授权。
 
 **2026-09-05 本地 review 更新**：[当前交付与待办](docs/vega-review-current-status.md) 是本轮入口。模型选择、UI 翻新、受信 Git、权限确认、Thinking、@file、Diff 刷新及 Provider/models 表单已本地集成。最新完整功能测试为 898 通过 / 0 失败 / 1 忽略，严格clippy/build/fmt通过。共享worker计数已修复；Astra随后修复了已排队结果被超时检查遗漏的确定性竞态，Git相关149/149及最终build通过；历史Diff/Artifact失败与该竞态的关联未证实，旧证据保留。Thinking 的独立配置原生保存、重启保持与深色显示已验收，不能据此宣称 Phase 1 完成。UI 参考本地 Zcode，性能测试按用户最新要求延期。以下 Sprint 状态保留历史验收边界。
 
