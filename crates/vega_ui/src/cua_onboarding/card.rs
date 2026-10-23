@@ -1,18 +1,18 @@
-use super::controller::{CardAction, CardController, CardEffect, CheckTicket};
+use super::controller::{CardAction, CardController, CardEffect};
+use super::model::{self, PreparationModel};
 use super::native::{self, DesktopGeometry, Screen};
 use super::placement::{Rect, follow_target, perch};
-use super::session::{self, InspectionIntent, ProbeClient, ServiceStatus};
+use super::{CallbackIdentity, PermissionPane};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, Context, DisplayId, FocusHandle, ScrollHandle, TitlebarOptions, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, point, px,
-    size,
+    App, Bounds, Context, DisplayId, Entity, FocusHandle, Image, ImageFormat, TitlebarOptions,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions,
+    point, px, size,
 };
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use vega_conversation::types::ComputerUseError;
 use vega_theme::Layout;
 
 mod view;
@@ -57,15 +57,9 @@ enum PanelFault {
 impl PanelFault {
     fn message(self) -> &'static str {
         match self {
-            Self::Geometry => {
-                "无法定位系统设置窗口，卡片暂不跟随。可手动打开权限设置；若卡片挡住操作，请关闭后重新打开。"
-            }
-            Self::Configuration => {
-                "无法启用悬浮窗口保护，卡片可能抢占焦点或无法跨桌面显示。请关闭卡片，在系统设置中手动授权后重新打开。"
-            }
-            Self::Movement => {
-                "无法跟随系统设置窗口，权限检测仍可用。若卡片挡住操作，请关闭后重新打开。"
-            }
+            Self::Geometry => "无法定位系统设置。请重新打开引导；挡住操作时可关闭。",
+            Self::Configuration => "悬浮保护不可用。请关闭引导，在系统设置中手动授权。",
+            Self::Movement => "无法跟随系统设置。请重新打开引导；挡住操作时可关闭。",
         }
     }
 }
@@ -90,11 +84,11 @@ pub struct GuidanceCard {
     controller: CardController,
     return_handler: ReturnHandler,
     has_task: bool,
-    client: Option<ProbeClient>,
-    pending: Option<CheckTicket>,
-    service_status: ServiceStatus,
-    adapter_error: Option<String>,
-    external_dispatch: Option<String>,
+    preparation: Entity<PreparationModel>,
+    preparation_owner: Option<CallbackIdentity>,
+    app_icon: Arc<Image>,
+    path_error: Option<String>,
+    permission_pane: PermissionPane,
     marker: String,
     _marker_lifetime: Arc<()>,
     origin: (f64, f64),
@@ -102,10 +96,6 @@ pub struct GuidanceCard {
     panel_fault: Option<PanelFault>,
     cancel: CancellationToken,
     focus: FocusHandle,
-    body_scroll: ScrollHandle,
-    body_focus: FocusHandle,
-    body_action_focuses: [FocusHandle; 3],
-    body_action_items: [usize; 3],
 }
 
 pub fn open(
@@ -117,7 +107,6 @@ pub fn open(
     let placement = initial_placement(cx)?;
     let lifetime = Arc::new(());
     let marker = format!("Vega preparation {:p}", Arc::as_ptr(&lifetime));
-    session::install_quit_hook(cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(placement.bounds)),
@@ -181,15 +170,21 @@ impl GuidanceCard {
         placement: InitialPlacement,
         cx: &mut Context<Self>,
     ) -> Self {
+        let preparation = model::shared(cx);
+        let preparation_owner = Some(preparation.update(cx, |model, cx| model.acquire(true, cx)));
+        cx.observe(&preparation, |_, _, cx| cx.notify()).detach();
         Self {
             controller: CardController::new(task, executable),
             return_handler,
             has_task: !task.is_empty(),
-            client: None,
-            pending: None,
-            service_status: session::service_status(),
-            adapter_error: None,
-            external_dispatch: None,
+            preparation,
+            preparation_owner,
+            app_icon: Arc::new(Image::from_bytes(
+                ImageFormat::Svg,
+                include_bytes!("../../../../assets/logo/vega-icon-smile-light.svg").to_vec(),
+            )),
+            path_error: None,
+            permission_pane: PermissionPane::Accessibility,
             marker,
             _marker_lifetime: marker_lifetime,
             origin: placement.origin,
@@ -197,37 +192,17 @@ impl GuidanceCard {
             panel_fault: placement.fault,
             cancel: CancellationToken::new(),
             focus: cx.focus_handle(),
-            body_scroll: ScrollHandle::new(),
-            body_focus: cx.focus_handle().tab_stop(true),
-            body_action_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
-            body_action_items: [0; 3],
         }
     }
 
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.on_release(|card, _| card.invalidate()).detach();
+        cx.on_release(|card, cx| card.invalidate(cx)).detach();
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
-            let _ = weak.update(cx, |card, _| card.invalidate());
+            let _ = weak.update(cx, |card, cx| card.invalidate(cx));
             true
         });
-        for focus in self.body_action_focuses.clone() {
-            cx.on_focus(&focus, window, |card, window, cx| {
-                card.reveal_body_focus(window, cx);
-            })
-            .detach();
-        }
         window.focus(&self.focus, cx);
-        if let Some(error) = self.service_status.last_inspection_error {
-            for effect in self.controller.act(CardAction::Recheck) {
-                if let CardEffect::Inspect { ticket, .. } = effect {
-                    self.controller.complete(ticket, Err(error));
-                }
-            }
-        } else if self.service_status.can_start_automatically() {
-            let effects = self.controller.act(CardAction::Recheck);
-            self.apply_effects(effects, InspectionIntent::Automatic, window, cx);
-        }
         let cancel = self.cancel.clone();
         cx.spawn_in(window, async move |weak, cx| {
             while !cancel.is_cancelled() {
@@ -246,82 +221,65 @@ impl GuidanceCard {
         .detach();
     }
 
-    fn invalidate(&mut self) {
+    fn release_preparation(&mut self, cx: &mut App) {
+        if let Some(owner) = self.preparation_owner.take() {
+            self.preparation
+                .update(cx, |model, cx| model.release(&owner, true, cx));
+        }
+    }
+
+    fn invalidate(&mut self, cx: &mut App) {
         self.controller.act(CardAction::Close);
         self.cancel.cancel();
-        if let Some(client) = self.client.take() {
-            client.cancel();
+        self.release_preparation(cx);
+    }
+
+    pub fn seek_settings(&mut self, pane: PermissionPane, cx: &mut Context<Self>) {
+        if !self.controller.view().open {
+            return;
         }
-        self.pending = None;
+        self.permission_pane = pane;
+        if matches!(self.tracking, Tracking::Waiting) {
+            self.tracking = Tracking::Seeking(INITIAL_SETTINGS_ATTEMPTS);
+        }
+        cx.notify();
     }
 
     fn dispatch(&mut self, action: CardAction, window: &mut Window, cx: &mut Context<Self>) {
         let effects = self.controller.act(action);
-        self.apply_effects(effects, InspectionIntent::Manual, window, cx);
+        self.apply_effects(effects, window, cx);
         cx.notify();
     }
 
     fn apply_effects(
         &mut self,
         effects: Vec<CardEffect>,
-        intent: InspectionIntent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         for effect in effects {
             match effect {
-                CardEffect::Inspect {
-                    ticket,
-                    prompt,
-                    probe_direct_capture,
-                } => {
-                    self.adapter_error = None;
-                    let result = if self.client.is_none() {
-                        ProbeClient::open().map(|client| self.client = Some(client))
-                    } else {
-                        Ok(())
-                    }
-                    .and_then(|()| {
-                        self.client
-                            .as_ref()
-                            .ok_or(session::AdapterError::Unavailable)?
-                            .inspect(ticket.clone(), prompt, probe_direct_capture, intent)
-                    });
-                    match result {
-                        Ok(()) => self.pending = Some(ticket),
-                        Err(error) => {
-                            self.adapter_error = Some(error.to_string());
-                            self.controller
-                                .complete(ticket, Err(ComputerUseError::Unavailable));
-                            self.pending = None;
-                            self.client = None;
-                        }
-                    }
+                CardEffect::Inspect { .. } => {
+                    self.controller.cancel_inspection();
+                    self.preparation.update(cx, |model, cx| model.recheck(cx));
                 }
                 CardEffect::OpenUrl(url) => {
                     cx.open_url(&url);
                     if matches!(self.tracking, Tracking::Waiting) {
                         self.tracking = Tracking::Seeking(INITIAL_SETTINGS_ATTEMPTS);
                     }
-                    self.external_dispatch =
-                        Some("若系统设置未出现，请从 Apple 菜单手动打开“隐私与安全性”。".into());
                 }
                 CardEffect::RevealInFinder(path) => {
                     if path.exists() {
                         cx.reveal_path(&path);
-                        self.external_dispatch =
-                            Some("若 Finder 未出现，请手动前往当前 Vega 的位置。".into());
+                        self.path_error = None;
                     } else {
-                        self.external_dispatch =
-                            Some("当前 Vega 的位置已不存在。请重新打开应用后重试。".into());
+                        self.path_error = Some("当前 Vega 的位置已不存在。请重新打开应用。".into());
                     }
                 }
                 CardEffect::CancelPending => {
                     self.cancel.cancel();
-                    if let Some(client) = self.client.take() {
-                        client.cancel();
-                    }
-                    self.pending = None;
+                    self.release_preparation(cx);
                 }
                 CardEffect::CloseWindow => window.remove_window(),
                 CardEffect::ReturnToTask(task) => {
@@ -333,42 +291,10 @@ impl GuidanceCard {
         }
     }
 
-    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.controller.view().open {
-            return;
+    fn tick(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.controller.view().open {
+            self.follow(cx);
         }
-        for _ in 0..16 {
-            let Some(client) = self.client.as_ref() else {
-                break;
-            };
-            match client.try_recv() {
-                Ok(Some(response)) => {
-                    if self.pending.as_ref() == Some(&response.ticket) {
-                        self.pending = None;
-                    }
-                    let effects = self.controller.complete(response.ticket, response.result);
-                    self.apply_effects(effects, InspectionIntent::Manual, window, cx);
-                    cx.notify();
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    if let Some(ticket) = self.pending.take() {
-                        self.controller
-                            .complete(ticket, Err(ComputerUseError::Unavailable));
-                    }
-                    self.adapter_error = Some(error.to_string());
-                    self.client = None;
-                    cx.notify();
-                    break;
-                }
-            }
-        }
-        let status = session::service_status();
-        if status != self.service_status {
-            self.service_status = status;
-            cx.notify();
-        }
-        self.follow(cx);
     }
 
     fn follow(&mut self, cx: &mut Context<Self>) {
@@ -394,6 +320,9 @@ impl GuidanceCard {
                 } else {
                     Tracking::Waiting
                 };
+                if matches!(self.tracking, Tracking::Waiting) {
+                    cx.notify();
+                }
             }
             return;
         };

@@ -138,11 +138,11 @@ impl Render for VegaWindow {
                 .detach();
                 cx.subscribe(
                     &settings,
-                    |this, view, _: &DesktopPreparationRequested, cx| {
+                    |this, view, request: &DesktopPreparationRequested, cx| {
                         if this.settings_view.as_ref() == Some(&view)
                             && cx.global::<SettingsOpen>().0
                         {
-                            this.request_settings_preparation(cx);
+                            this.request_settings_preparation(request.pane, cx);
                         }
                     },
                 )
