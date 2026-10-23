@@ -14,6 +14,11 @@ use crate::types::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryEntry {
+    RunContinuation {
+        previous_assistant_id: String,
+        user_message_id: String,
+        next_assistant_id: String,
+    },
     CredentialContinuation {
         seq: i64,
         message_id: String,
@@ -547,7 +552,15 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
     for calls in calls_by_message.values_mut() {
         calls.sort_by_key(|call| call.seq);
     }
-    let mut entries: Vec<HistoryEntry> = Vec::new();
+    let mut entries: Vec<HistoryEntry> = page
+        .continuations
+        .iter()
+        .map(|relation| HistoryEntry::RunContinuation {
+            previous_assistant_id: relation.previous_assistant_id.clone(),
+            user_message_id: relation.user_message_id.clone(),
+            next_assistant_id: relation.next_assistant_id.clone(),
+        })
+        .collect();
     for row in &page.rows {
         match row.role.as_str() {
             "user" => {

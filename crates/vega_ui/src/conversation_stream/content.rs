@@ -157,6 +157,28 @@ impl ConversationStream {
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
         let mut assistant_segments: HashMap<String, usize> = HashMap::new();
+        for entry in &history_entries {
+            if let HistoryEntry::RunContinuation {
+                previous_assistant_id,
+                user_message_id,
+                next_assistant_id,
+            } = entry
+            {
+                self.remember_run_continuation(
+                    vega_conversation::types::RunContinuation {
+                        previous_assistant_id: previous_assistant_id.clone(),
+                        user_message_id: user_message_id.clone(),
+                        next_assistant_id: next_assistant_id.clone(),
+                    },
+                    cx,
+                );
+            }
+        }
+        let continuation_runs = self
+            .run_continuations
+            .values()
+            .flat_map(|relation| [&relation.previous_assistant_id, &relation.next_assistant_id])
+            .collect::<HashSet<_>>();
         let response_boundaries = phase::history_response_boundaries(&history_entries);
         let mut assistant_offsets = HashMap::<String, usize>::new();
         let activity_runs: HashSet<_> = history_entries
@@ -175,7 +197,10 @@ impl ConversationStream {
                     status,
                     execution_duration_ms: duration,
                     ..
-                } if duration.is_some() || activity_runs.contains(message_id) => {
+                } if duration.is_some()
+                    || activity_runs.contains(message_id)
+                    || continuation_runs.contains(message_id) =>
+                {
                     Some((message_id.clone(), (*status, *duration)))
                 }
                 _ => None,
@@ -184,6 +209,7 @@ impl ConversationStream {
         let mut restored_responses: HashMap<String, phase::RunResponses> = HashMap::new();
         for entry in history_entries {
             match entry {
+                HistoryEntry::RunContinuation { .. } => {}
                 HistoryEntry::CredentialContinuation {
                     message_id,
                     failure,
@@ -494,7 +520,14 @@ impl ConversationStream {
         if let Some(group) = self.run_activity_groups.get(message_id) {
             return group.clone();
         }
-        let group = cx.new(|cx| RunActivityGroup::new(status, execution_duration_ms, false, cx));
+        let continued = self.run_continuations.contains_key(message_id);
+        let group = cx.new(|cx| {
+            let mut group = RunActivityGroup::new(status, execution_duration_ms, false, cx);
+            if continued {
+                group.continue_run(cx);
+            }
+            group
+        });
         self.observe_run_activity_group(&group, cx);
         entries.push(StreamEntry::RunActivity {
             group: group.clone(),
@@ -640,7 +673,7 @@ impl ConversationStream {
             | HistoryEntry::AssistantResponseMetadata { message_id: id, .. } => id == message_id,
             HistoryEntry::Plan { plan, .. } => plan.id == message_id,
             HistoryEntry::Summary { summary, .. } => summary.message_id == message_id,
-            HistoryEntry::SkillActivation { .. } => false,
+            HistoryEntry::SkillActivation { .. } | HistoryEntry::RunContinuation { .. } => false,
         });
         if !contains_target {
             self.message_location_status = Some(MessageLocationStatus::NotFound);
@@ -663,6 +696,7 @@ impl ConversationStream {
         self.preserve_subagent_requests(cx);
         self.subagent_executions.clear();
         self.run_activity_groups.clear();
+        self.run_continuations.clear();
         self.run_responses.clear();
         self.artifact_cards.clear();
         self.plan_cards.clear();
@@ -1041,6 +1075,59 @@ impl ConversationStream {
         .detach();
     }
 
+    fn remember_run_continuation(
+        &mut self,
+        relation: vega_conversation::types::RunContinuation,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let previous = &relation.previous_assistant_id;
+        let next = &relation.next_assistant_id;
+        if let Some(known) = self.run_continuations.get(previous) {
+            return known == &relation;
+        }
+        if previous == next
+            || previous == &relation.user_message_id
+            || next == &relation.user_message_id
+            || self.run_continuations.values().any(|known| {
+                known.next_assistant_id == *next
+                    || known.user_message_id == relation.user_message_id
+            })
+        {
+            return false;
+        }
+        let mut successor = next.as_str();
+        while let Some(known) = self.run_continuations.get(successor) {
+            successor = &known.next_assistant_id;
+            if successor == previous {
+                return false;
+            }
+        }
+        let anchor = self.scroll_anchor_snapshot();
+        if let Some(group) = self.run_activity_groups.get(previous) {
+            group.update(cx, |group, cx| group.continue_run(cx));
+        }
+        let indexes = self
+            .entry_identities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, identity)| {
+                identity
+                    .message_id
+                    .as_ref()
+                    .is_some_and(|id| id == previous || id == next)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        self.run_continuations.insert(previous.clone(), relation);
+        for index in indexes {
+            self.invalidate_item(Some(index));
+            self.invalidate_item((index + 1 < self.entries.len()).then_some(index + 1));
+        }
+        self.restore_scroll_anchor(&anchor);
+        cx.notify();
+        true
+    }
+
     fn finish_run_activity(
         &mut self,
         message_id: &str,
@@ -1073,9 +1160,42 @@ impl ConversationStream {
     /// Applies an already-durable shared lifecycle event. The UI never reads
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
+        let terminal_id = match &event {
+            ConversationEvent::MessageFinished { message_id, .. }
+            | ConversationEvent::Interrupted { message_id, .. }
+            | ConversationEvent::Error {
+                message_id: Some(message_id),
+                ..
+            } => Some(message_id),
+            _ => None,
+        };
+        if terminal_id.is_some_and(|id| self.run_continuations.contains_key(id)) {
+            return;
+        }
         self.feed_meter(&event, cx);
         self.clear_recovered_retry(&event);
         match event {
+            ConversationEvent::RunContinued {
+                previous_assistant_id,
+                user_message_id,
+                next_assistant_id,
+            } => {
+                if self
+                    .active_agent_message
+                    .as_ref()
+                    .is_some_and(|(active, _)| active == &previous_assistant_id)
+                    && self.remember_run_continuation(
+                        vega_conversation::types::RunContinuation {
+                            previous_assistant_id: previous_assistant_id.clone(),
+                            user_message_id,
+                            next_assistant_id,
+                        },
+                        cx,
+                    )
+                {
+                    self.finish_agent_message(&previous_assistant_id, cx);
+                }
+            }
             ConversationEvent::AssistantResponseStarted {
                 message_id,
                 response_id,
@@ -1118,7 +1238,13 @@ impl ConversationStream {
                 }
                 self.reset_live_context_usage();
                 self.last_finished_agent_message = None;
-                self.begin_computer_use_task(cx);
+                if !self
+                    .run_continuations
+                    .values()
+                    .any(|relation| relation.next_assistant_id == message_id)
+                {
+                    self.begin_computer_use_task(cx);
+                }
                 self.active_thinking = None;
                 self.active_skills.clear();
                 self.active_skill_focuses.clear();
