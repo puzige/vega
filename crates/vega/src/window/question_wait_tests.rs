@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
-use gpui_kit::gpui;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext, Entity, Global, SystemNotificationResponse, TestAppContext, VisualTestContext,
@@ -381,16 +380,17 @@ impl Fixture {
         assert_ne!(self.label(cx), "Waiting for your answer");
         let submission = cx.update(|cx| self.stream.read(cx).question_test_submission(cx).unwrap());
         assert!(submission.0);
-        assert_eq!(
-            submission.1,
-            vec![Some(expected_answer(skip).answers["color"].clone())]
+        assert!(
+            submission.1 == vec![Some(expected_answer(skip).answers["color"].clone())],
+            "submitted answer did not match"
         );
         let shown = cx.shown_system_notifications().len();
         for repeated_skip in [!skip, skip] {
             self.answer(repeated_skip, cx);
-            assert_eq!(
-                cx.update(|cx| self.stream.read(cx).question_test_submission(cx)),
-                Some(submission.clone())
+            assert!(
+                cx.update(|cx| self.stream.read(cx).question_test_submission(cx))
+                    == Some(submission.clone()),
+                "submitted state changed after repeated action"
             );
             assert!(!self.queue.has_pending());
             assert_ne!(self.label(cx), "Waiting for your answer");
