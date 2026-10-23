@@ -541,6 +541,9 @@ impl Layout {
     pub const SETTINGS_SWITCH_WIDTH: f32 = 32.0;
     /// Height of a Settings boolean switch.
     pub const SETTINGS_SWITCH_HEIGHT: f32 = 20.0;
+    pub const PREPARATION_CARD_WIDTH: f32 = 480.0;
+    pub const PREPARATION_CARD_HEIGHT: f32 = 420.0;
+    pub const PREPARATION_CARD_SHADOW_PADDING: f32 = 24.0;
     /// Maximum width of a multi-section floating menu.
     pub const MENU_MAX_WIDTH: f32 = 350.0;
     /// Preferred width of the global command/search palette.
