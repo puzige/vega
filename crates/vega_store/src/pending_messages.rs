@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PendingMessageRow {
     pub id: String,
     pub thread_id: String,
