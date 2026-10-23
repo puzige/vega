@@ -29,8 +29,9 @@ impl vega_runtime::RuntimeSubagentHook for StageHook {
         let permissions = self.permissions.clone();
         let registry = self.registry.clone();
         async move {
+            let input_text = input.to_string();
             if tool != "checkpoint_stage"
-                || !vega_runtime::valid_subagent_input(&tool, &input.to_string())
+                || !vega_runtime::valid_subagent_input(&tool, &input_text)
                 || !owner.verifies(&database, &snapshot.agent_id)
             {
                 return Err(failure("invalid stage declaration"));
@@ -41,11 +42,8 @@ impl vega_runtime::RuntimeSubagentHook for StageHook {
                 .transpose()
                 .map_err(|_| VegaError::CredentialCheckUnavailable)?
                 .unwrap_or_default();
-            if vega_runtime::redact_sensitive_credential_text_with_policy(
-                &input.to_string(),
-                &known,
-                None,
-            ) != input.to_string()
+            if vega_runtime::redact_sensitive_credential_text_with_policy(&input_text, &known, None)
+                != input_text
             {
                 return Err(VegaError::CredentialExposureBlocked);
             }

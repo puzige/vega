@@ -10,6 +10,8 @@ The first cloud baseline [39883065565](https://github.com/puzige/vega/actions/ru
 
 The combined repair integrated current master `9f9fa092` (#573) as `37b0291f`. That policy corrects #569: no mandatory TDD/freeze, but development Rust tests/support must be archived and removed before master, followed by the final complete empty-suite gate. The 10 #570 development cases were removed upstream; its production read fix remains. This task still verifies its own cases before cleanup. Extra validation/cleanup time and every failed attempt remain part of development wall time; neither a changed policy nor an empty-suite gate demonstrates delivery acceleration.
 
+The stopped repaired head `7873ffb8` passed independent static implementation review. Its [Actions 39891169248](https://github.com/puzige/vega/actions/runs/39891169248) lasted 375 seconds (02:43:56Z → 02:50:11Z); 24 Rust cases actually ran, 23 passed and 1 failed, with 0 skipped, while format and all 60 Python checks passed. Two Clippy comparison warnings and a cross-parent-run name-reservation regression still blocked delivery. The original writer repairs them without changing the 24 test cases or starting another research trial. Review and CI overlapped; neither their durations nor the later status-observation delay are added as separate serial phases. Failed execution and repair time stay in the total.
+
 ## Observed case: #514
 
 This is the actual completed observation, not a treatment/control experiment. Native start: 2026-10-22 06:31:57.103 UTC; merge: 14:59:55 UTC; final native terminal: 15:01:33.615 UTC. Both cancellations and all recovery gaps remain included. The observer's later closeout is excluded.

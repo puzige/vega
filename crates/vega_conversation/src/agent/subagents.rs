@@ -701,11 +701,10 @@ impl Supervisor {
                 .ok_or_else(|| failure("invalid input"))?
                 .trim()
                 .to_owned();
-            if state
-                .executions
-                .values()
-                .any(|record| record.snapshot.name == name)
-            {
+            if state.executions.values().any(|record| {
+                record.snapshot.parent_message_id == launch.parent_message
+                    && record.snapshot.name == name
+            }) {
                 return Err(failure("name already used in this run"));
             }
             (ulid::Ulid::generate().to_string(), name, None)
@@ -1005,7 +1004,10 @@ fn child_lifecycle_inner<'a>(
                         &known,
                         None,
                     ) == snapshot.name
-                    && resume.as_ref().is_none_or(|input| vega_runtime::redact_sensitive_credential_text_with_policy(&input.to_string(),&known,None) == input.to_string())
+                    && resume.as_ref().is_none_or(|input| {
+                        let input_text = input.to_string();
+                        vega_runtime::redact_sensitive_credential_text_with_policy(&input_text,&known,None) == input_text
+                    })
             });
             if !safe {
                 registry.discard(&snapshot, previous.as_ref());
