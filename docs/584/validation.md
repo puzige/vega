@@ -20,7 +20,17 @@ No local Vega execution, build, Clippy, tests, packaging, installation, restart 
 
 ## Test evidence and final cleanup
 
-Pending a successful development run. Preserve accessible original source links and full development SHA, actual discovered/executed/passed/failed/skipped counts, and raw run/job results before removing tests and exclusive support. Final no-test CI is a separate result and cannot be represented as behavior regression success.
+Successful development head: `58f569ac3d516dacb8cfa28d589c9c0e4b4c2d9b`.
+
+[Actions 40005438002](https://github.com/puzige/vega/actions/runs/40005438002) completed successfully: fmt, full-target Clippy, three Python suites (5 + 15 + 40 = 60 executed/passed), and required check. [Nextest job 120592041007](https://github.com/puzige/vega/actions/runs/40005438002/job/120592041007) reported **11 discovered / 11 executed / 11 passed / 0 failed / 0 skipped**. The exact full head also received independent static review GO.
+
+Accessible original sources, verified through GitHub API:
+
+- [Markdown/shared event tests](https://github.com/puzige/vega/blob/58f569ac3d516dacb8cfa28d589c9c0e4b4c2d9b/crates/vega_ui/src/conversation_stream/code_viewport_tests.rs), SHA256 `60d3499062ed29d0f6f36213e39c1c1915f143089e6266108dba6a3e6b5ef03c`.
+- [Thinking event tests](https://github.com/puzige/vega/blob/58f569ac3d516dacb8cfa28d589c9c0e4b4c2d9b/crates/vega_ui/src/conversation_stream/thinking_code_viewport_tests.rs), SHA256 `4f5ad35f93daa03190330b817c7e9feb01ba3d6048dff27682713b4581ecd12b`.
+- [Original commit patch](https://github.com/puzige/vega/commit/58f569ac3d516dacb8cfa28d589c9c0e4b4c2d9b.patch). The successful commit remains an ancestor of the cleanup commit; the source does not depend on a temporary artifact.
+
+[PR evidence comment](https://github.com/puzige/vega/pull/585#issuecomment-6372320036) fixes this exact source, hashes, run and counts and was read back before cleanup. Cleanup is limited to development Rust test modules, conditional observations, dev test-support and the ten-package exclusive lock closure. See [cleanup audit](test-cleanup.md). The final complete head requires a separate independent review and full required CI with `no Rust tests` (0 discovered/0 executed). Its exact SHA, run and actual result are recorded on the PR after that immutable head completes; empty-suite CI is not the eleven-test behavior validation above.
 
 ## Remaining manual acceptance
 

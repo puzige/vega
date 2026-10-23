@@ -8,10 +8,6 @@ use gpui_kit::{
 
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
-#[cfg(test)]
-#[path = "code_viewport_tests.rs"]
-pub(super) mod tests;
-
 #[derive(Default)]
 struct CodeScrollGesture {
     ongoing: OngoingScroll,
@@ -90,8 +86,6 @@ impl RenderOnce for CodeViewport {
                 .read(cx)
                 .clone()
         });
-        #[cfg(test)]
-        tests::observe(self.id.clone(), scroll.clone(), window, cx);
         let gesture = window
             .use_keyed_state((self.id.clone(), "scroll-gesture"), cx, |_, _| {
                 Rc::new(RefCell::new(CodeScrollGesture::default()))

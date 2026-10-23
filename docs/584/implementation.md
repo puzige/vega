@@ -2,6 +2,8 @@
 
 Contract: [code-horizontal-scroll.md](code-horizontal-scroll.md), v1.3. Baseline: `73977c89eba718da4b2573227c44beb8bcff6911`. Implementation handoff: 2026-10-24; changes are uncommitted for the root agent to integrate. Spec deviations: none.
 
+Development behavior validation passed at `58f569ac3d516dacb8cfa28d589c9c0e4b4c2d9b`: [Actions 40005438002](https://github.com/puzige/vega/actions/runs/40005438002), 11 discovered/executed/passed, 0 failed/skipped, full required check successful. Original sources, failed iterations, cleanup and final-head evidence are in [validation.md](validation.md). Handoff notes below record their state at the time; they do not replace that exact-head result.
+
 ## Implemented scope
 
 - `conversation_stream/code_viewport.rs` composes one clipped, tracked content area and a final sibling `Scrollbar::horizontal`. `overflow_hidden` follows the pinned toolkit's own horizontal viewport helper: the native area supplies measurement/clamping but does not remap or consume wheel input. One private handler on the stable viewport owns horizontal wheel routing; keyed per-window/per-block gesture state combines pinned `OngoingScroll::filter` with horizontal ownership for filtered-zero tails. Child-before-parent Bubble ordering lets it consume horizontal input before the ancestor List or Thinking vertical body. Its X offset clamps immediately, and horizontal input remains consumed at either edge or without overflow. Ordinary vertical input passes through.
@@ -16,17 +18,17 @@ Eleven development GPUI tests exercise production `selectable_markdown_content` 
 
 | Test | Contract coverage | Execution |
 | --- | --- | --- |
-| `markdown_code_routes_wheel_and_keeps_viewport_capture` | Pixel/line Y, diagonal and gesture wobble, zero-X horizontal tail, X with Shift, translated-content viewport edge, both clamp edges and their zero-X tails, parent Y | Pending Actions |
-| `thinking_code_routes_wheel_and_keeps_viewport_capture` | Same routing through actual Thinking body prepaint | Pending Actions |
-| `markdown_horizontal_gesture_releases_for_vertical_input` | Ended/Cancelled tails stay contained, following vertical Moved/Started passes, line Y clears precise gesture ownership and following pixel Y Moved passes without Started, unphased Moved after the recognizer timeout passes | Pending Actions |
-| `thinking_horizontal_gesture_releases_for_vertical_input` | Same gesture lifecycle through actual Thinking body | Pending Actions |
-| `markdown_scrollbar_drags_without_selecting_and_text_still_copies` | Thumb drag, track click, parent Y, no new selection from chrome, subsequent text selection/clipboard | Pending Actions |
-| `thinking_scrollbar_drags_without_selecting_and_text_still_copies` | Same through Thinking body | Pending Actions |
-| `markdown_code_offsets_remain_independent_after_append` | Two actual code blocks, independent X offsets and preserved viewport bounds after incremental append/rerender | Pending Actions |
-| `thinking_code_offsets_remain_independent_after_append` | Same with prepared Thinking body and retained map | Pending Actions |
-| `fitting_markdown_code_contains_horizontal_input_and_passes_vertical` | No overflow: horizontal containment including zero-X tail, finite stationary handle, ordinary Y passes | Pending Actions |
-| `fitting_thinking_code_contains_horizontal_input_and_passes_vertical` | Same through Thinking body | Pending Actions |
-| `same_markdown_identity_in_separate_windows_has_independent_offsets` | Same message identity in distinct windows keeps separate handle state | Pending Actions |
+| `markdown_code_routes_wheel_and_keeps_viewport_capture` | Pixel/line Y, diagonal and gesture wobble, zero-X horizontal tail, X with Shift, translated-content viewport edge, both clamp edges and their zero-X tails, parent Y | Passed at `58f569ac` |
+| `thinking_code_routes_wheel_and_keeps_viewport_capture` | Same routing through actual Thinking body prepaint | Passed at `58f569ac` |
+| `markdown_horizontal_gesture_releases_for_vertical_input` | Ended/Cancelled tails stay contained, following vertical Moved/Started passes, line Y clears precise gesture ownership and following pixel Y Moved passes without Started, unphased Moved after the recognizer timeout passes | Passed at `58f569ac` |
+| `thinking_horizontal_gesture_releases_for_vertical_input` | Same gesture lifecycle through actual Thinking body | Passed at `58f569ac` |
+| `markdown_scrollbar_drags_without_selecting_and_text_still_copies` | Thumb drag, track click, parent Y, no new selection from chrome, subsequent text selection/clipboard | Passed at `58f569ac` |
+| `thinking_scrollbar_drags_without_selecting_and_text_still_copies` | Same through Thinking body | Passed at `58f569ac` |
+| `markdown_code_offsets_remain_independent_after_append` | Two actual code blocks, independent X offsets and preserved viewport bounds after incremental append/rerender | Passed at `58f569ac` |
+| `thinking_code_offsets_remain_independent_after_append` | Same with prepared Thinking body and retained map | Passed at `58f569ac` |
+| `fitting_markdown_code_contains_horizontal_input_and_passes_vertical` | No overflow: horizontal containment including zero-X tail, finite stationary handle, ordinary Y passes | Passed at `58f569ac` |
+| `fitting_thinking_code_contains_horizontal_input_and_passes_vertical` | Same through Thinking body | Passed at `58f569ac` |
+| `same_markdown_identity_in_separate_windows_has_independent_offsets` | Same message identity in distinct windows keeps separate handle state | Passed at `58f569ac` |
 
 The drag fixture waits 12 ms between down and move because the pinned scrollbar uses wall-clock `Instant` to enforce its existing 120 fps update limit. Each gesture lifecycle regression waits once for 40 ms to establish expiry of pinned `OngoingScroll`'s 28 ms fallback before dispatching a new vertical Moved without Started. Its `scheduler::Instant` is a `web_time::Instant` reexport using wall clock on native targets; advancing the executor's separate TestClock would not establish this precondition. Contained-tail sequences dispatch consecutive events inside one window update and assert the actual code offset and parent List Y after each event, before rendering a new frame. These are cloud-test timing conditions only; production timing is unchanged. TestPlatform reports always-visible scrollbars, so the system Hover preference and physical-device Shift behavior still require manual acceptance. The Thinking fixture uses actual preparation/rendering and stable map state; it is not evidence for the full asynchronous Thinking controller lifecycle.
 

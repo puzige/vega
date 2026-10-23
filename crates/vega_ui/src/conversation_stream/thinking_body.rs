@@ -19,10 +19,6 @@ use std::{
 const HORIZONTAL_FRAGMENT_BYTES: usize = 1024;
 const VIEWPORT_OVERSCAN: f32 = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
 
-#[cfg(test)]
-#[path = "thinking_code_viewport_tests.rs"]
-mod code_viewport_tests;
-
 #[derive(Clone)]
 struct PreparationStyle {
     width: Pixels,
