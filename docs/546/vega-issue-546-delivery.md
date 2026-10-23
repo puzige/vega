@@ -2,10 +2,10 @@
 
 ## 范围与基线
 
-- Issue：[#546](https://github.com/puzige/vega/issues/546)；当前规格：[v2.0 状态纠正](vega-issue-546-capsule-state-correction.md)，[v1.1](vega-issue-546-composer-capsules.md)为上一轮历史。
+- Issue：[#546](https://github.com/puzige/vega/issues/546)；当前规格：[v2.1 状态纠正](vega-issue-546-capsule-state-correction.md)，[v1.1](vega-issue-546-composer-capsules.md)为上一轮历史。
 - 用户确认：只改 Compose 底栏模型选择与权限切换。其他文字按钮、图标按钮不随本卡变更。
 - 开始基线：`83fd51d79940516029cdc1eaf8e81566870c877b`。
-- 当前阶段：上一轮 [PR #558](https://github.com/puzige/vega/pull/558) 已合并为 `6615748f91273bfb8ee424011b3b5a09b3777d2b`，用户手测拒绝默认常驻底色。已回到 In progress，按 v2.0 和用户本轮免测裁决直接修复；下文保留上一轮记录，不将旧 9/9 GREEN 当作本轮通过。
+- 当前阶段：用户反馈 [PR #568](https://github.com/puzige/vega/pull/568) 去掉默认底色时也误删了 hover。已回到 In progress，按 v2.1 直接恢复 hover，保留默认透明；下文历史记录不作为当前行为验证。
 
 ## 同类样式盘点（静态事实，未改动）
 
@@ -110,3 +110,12 @@
 - 专职实现已 READY 并停写，主 Agent 独立复核实际代码差异：仅 `render.rs` 两个局部状态色和两处 `interaction_surface(surface, surface, colors.bg_active, enabled)`，18 行新增／20 行删除。原观察器／selector／test-support／dev feature 及两个未执行测试文件全部移除。Cargo、slider、theme、runtime、全局交互和 CI 与当前基线不变。
 - 主 Agent 实际运行 `cargo fmt --all -- --check`、`git diff --check` 均退出 0。Render SHA256 `c7dfb386c211ee604cbc52e566091f61810dc9020eac35cb0441d1cec7659849`；代码完整索引补丁 SHA256 `9309b655434de15459a65a3518a451bbdb326a8275ba2fbf255536e70a130322`。Theme 在新基线的 SHA256 为 `c497c9d62f5771d282a1c064ea5c61efac892f4a94f2092c7e168a56bae3e3c8`，与 HEAD 一致；旧交接里的 d4bb… 是上一轮旧版本，不作为本轮文件身份。
 - 本轮未运行 Vega、构建／编译、Clippy 或测试；未安装／重启。精确提交和独立审查结论在 PR／Issue 补充，未取得前不标通过。
+
+## 第三轮：恢复 hover 反馈
+
+用户指出现在只有选中／展开才显示背景，鼠标 hover 状态消失。v2.0 将 rest 与 hover 都传为透明，是 Agent 修复过度；当前 v2.1 明确默认透明、hover `bg_hover`、按下或菜单展开 `bg_active`。关闭时指针仍在则保持 hover，移出后透明，不增加投影。
+
+- 起始基线：`d4a65a381d95b6bb8e4ff8d2858a11a1042ffa3a`；分支 `feat/546-capsule-hover`，独立 worktree。
+- 最小方案：两个触发器直接复用现有 `InteractionExt::interactive`，移除重复 `surface`，保留胶囊几何、enabled／权限 guard、文字图标与菜单焦点行为。全局助手及其他 UI 不改。
+- 直接修复，不新增测试或测试脚手架，不做红绿；本地仅格式／差异／静态检查，独立实现审查与既有 required CI 不变，真实外观仍待用户手测。
+- 专职写入者已完成并停写。主 Agent 复核：生产代码仅 `render.rs` 2 行新增／18 行删除，两处恢复 `.interactive(...)`，其余 renderer／生产代码未变；`cargo fmt --all -- --check`、`git diff --check` 均退出 0。Render SHA256 `e15997c81edf6ef0cf0455ec72d4038e590566b8d03ec0ea83f7b2cc5302d2a9`；基线相对完整索引代码补丁 SHA256 `dc56c318972c7a703e9a96eeea222c1f4b2b321ea6f2d69a6a01f2854c22cd97`。本轮无运行／编译／Clippy／测试或原生验收声明，精确提交及审查／CI 在 PR／Issue 留存。
