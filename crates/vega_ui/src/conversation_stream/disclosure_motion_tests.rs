@@ -5,7 +5,7 @@ use crate::disclosure_paint_probe::{self as probe, GlyphPaint};
 use crate::icons::Icon;
 use gpui_kit::{
     AppContext, Bounds, HeadlessAppContext, InputEvent, Keystroke, Modifiers, MouseMoveEvent,
-    NoopTextSystem, Pixels, Point, WindowHandle, gpui, point, size,
+    NoopTextSystem, Pixels, Point, WindowHandle, point, size,
 };
 use vega_conversation::types::{
     AssistantResponseKind, AssistantResponseMetadata, PermissionMode, TaskBackend, ThreadMode,
@@ -1755,7 +1755,7 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
     let preview_text = "Artifact preview remains visible.\nSecond artifact row.\n";
     let artifact = fixture.cx.update(|cx| {
         let (projection, preview) =
-            vega_conversation::artifact::ArtifactService::in_memory_ui_fixture(preview_text)
+            vega_conversation::ArtifactService::in_memory_ui_fixture(preview_text)
                 .expect("WIRING: bounded memory projection, not filesystem authority");
         let artifact = cx.new(|cx| {
             crate::artifact_card::ArtifactCard::new(

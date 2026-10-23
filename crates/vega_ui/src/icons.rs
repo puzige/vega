@@ -212,7 +212,7 @@ pub(crate) fn configured_chevron_paint_control(color: Rgba, size: f32, radians: 
         .with_size(px(size))
         .text_color(color)
         .flex_shrink_0()
-        .rotate(radians)
+        .rotate(gpui_kit::Radians(radians))
         .into_any_element();
     crate::disclosure_paint_probe::observe_configured_icon(
         kind,

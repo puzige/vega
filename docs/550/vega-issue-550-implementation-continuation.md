@@ -41,3 +41,17 @@
 - 之前只有单文件格式检查通过；父实际 `cargo fmt --all -- --check` 退出 1，失败位于测试独占支持，不能记作此前全量格式已通过。本轮获准执行 `cargo fmt --all`，实际退出 0；只格式化 `core.rs` 四处测试记录、`phase.rs` 一处测试记录、`disclosure_layout_probe.rs` 的 `Item` literal，以及 `lib.rs` 的 cfg(test) 模块排序，无新增算法或生产行为改动。
 - 最终 `cargo fmt --all -- --check`、`git diff --check` 与实际 tracked diff SHA-256 随停写回报记录。未执行 Vega、本地编译/构建/check/Clippy/测试/nextest/bench/CUA；未更改 Git/index、依赖、CI、共享 motion 或 feature。后续由父提交、非写入者独立审查并使用现有 Actions 验证；开发验证留痕后，合并前仍须清理 Rust 测试及独占支持，对最终无 Rust 测试 head 跑完整 required CI。
 
+## 2026-10-23 原始云端编译失败后的窄修复
+
+- 原始首次云端 [Actions 39919579054](https://github.com/puzige/vega/actions/runs/39919579054) 对应实现 `fcf67c8b9038b298acff361bdfdc0b3aedce853e`：Nextest job `120301289770`、Clippy job `120301290193` 和 required 汇总 `120303414725` 均失败。原始日志 SHA-256 已核对为 `f28f302860fae839cb3f2d4cbfc5e7b8876a89ed7100fda505d97447208620ff`。失败发生在编译阶段、Nextest 发现/执行之前；没有取得发现/执行计数或行为结果，不是测试行为失败、GREEN 或 `no Rust tests`。
+- 父已 fetch 并 merge master `b032d0d2ab9ee057137f3e5ad2c0e517011ea1ae`；本轮修复基于 HEAD `7cf573b4659e957d5e13f7df9294a882a0d375a6`，保留 #575 context usage。此次单一 writer 不执行 Git/index 修改、提交、fetch、push、PR 或 CI 操作。
+- 分类与实际修复仅限以下五处，不改变验收：
+  1. `disclosure.rs` 的 `self.inner.id()` 被解析成消费 receiver 且需要参数的 `InteractiveElement::id`，产生 E0061/E0308。改为 `Element::id(&self.inner)`，继续委托真实 SVG identity，不伪造 ID、不返回固定 `None`。
+  2. 同文件 `Transformation::rotate` 需要 `Into<Radians>`，`f32` 不满足，产生 E0277。仅将同一采样值包装为 `gpui_kit::Radians(radians)`；实际 paint 和 recorder 仍使用同一个原始 float。
+  3. `icons.rs` 的 test-only `configured_chevron_paint_control` 存在相同 E0277；实际 `KitIcon::rotate` 同样包装 typed `Radians`，observer 仍记录原始 float。
+  4. `disclosure_motion_tests.rs` 的 fixture 通过私有 `artifact` 模块访问服务，产生 E0603。改用既有公开 re-export `vega_conversation::ArtifactService::in_memory_ui_fixture`，不扩大 API 可见性。
+  5. 同测试模块的显式 `gpui` re-export 被原始 Clippy `-D warnings` 证实冗余；仅删除该导入。此诊断取代上文保留/补充显式宏导入的旧建议，父模块 prelude 的现有上下文保留，不增加 alias、allow 或递归上限。
+- 前两处是生产实现的 API/类型编译错误，后三处是开发测试支持/接线错误；不是验收变更，也没有证据将其归为外部环境失败。仅修改 `disclosure.rs`、`icons.rs`、既有 `disclosure_motion_tests.rs` 并追加本文；D01–D11、28 个测试定义及全部断言/期望值保留，无删除、ignore 或放宽。原始保存源码 `6b675d2608dd9653f21acf25109192264cd67075` 的 Git blob 已读回，SHA-256 仍为 `db70f73a94dbee5adc32c9c067b5f0d8524290424603c3b9f4a5211f79a65ea8`。28 只是源码定义数，不是发现、执行或通过数。
+- 本地 `cargo fmt --all -- --check` 与 `git diff --check` 均退出 0；精确源码 delta 静态核对退出 0，确认只有上述五项替换，断言/期望值正文未改。未运行 Vega、编译、构建、check、Clippy、测试、nextest、bench 或 CUA；不改 Final、permission、list、shimmer、共享 motion、依赖或 workflow。
+- 修复后的 Actions 与新提交 head 的非写入者独立审查均待父安排；旧独立审查已中断，不能视作有结论。继承 opacity 与没有 inactive draw 时的证明边界继续留作审查限制，不在本次编译修复中扩建架构，也不把既有 recorder 证据称作独立 GPU/观感验证。停写回报附最终真实 Git diff SHA-256；后续开发验证留痕、独立删测和最终无 Rust 测试 head 的完整 required CI 仍由父负责。
+

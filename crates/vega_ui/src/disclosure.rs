@@ -138,7 +138,7 @@ impl Element for Chevron {
     type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
-        self.inner.id()
+        Element::id(&self.inner)
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -213,7 +213,7 @@ impl Element for Chevron {
         )
         .value;
         self.inner = std::mem::replace(&mut self.inner, svg())
-            .with_transformation(Transformation::rotate(radians));
+            .with_transformation(Transformation::rotate(gpui_kit::Radians(radians)));
         self.inner
             .paint(id, inspector, bounds, layout, hitbox, window, cx);
         #[cfg(test)]
