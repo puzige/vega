@@ -11,6 +11,8 @@ pub(crate) struct DelegatedAuthority {
 pub struct PersistenceActorConfig {
     pub(crate) subagent_host: Option<Arc<dyn crate::types::SubagentHost>>,
     pub(crate) delegated: bool,
+    pub(crate) delegated_owner: Option<Arc<vega_store::delegated_ownership::DelegatedOwnership>>,
+    pub(crate) stage_hook: Option<Arc<dyn vega_runtime::RuntimeSubagentHook>>,
     pub(crate) delegated_parent: Option<(String, String)>,
     pub(crate) delegated_message_id: Option<String>,
     pub(crate) delegated_authority: Option<DelegatedAuthority>,
@@ -386,6 +388,7 @@ pub(crate) struct RuntimeEnvelope {
 }
 
 pub(crate) struct PreparedRun {
+    pub(crate) _delegated_owner: Option<Arc<vega_store::delegated_ownership::DelegatedOwnership>>,
     pub(crate) database_path: PathBuf,
     pub(crate) project_id: String,
     pub(crate) model: String,
@@ -411,6 +414,7 @@ fn runtime_event_stage(event: &RuntimeEvent) -> vega_runtime::RuntimeFailureStag
         RuntimeEvent::ToolCallApproved { .. } => Stage::ToolApproval,
         RuntimeEvent::ToolCallRunning { .. } => Stage::ToolRunning,
         RuntimeEvent::ToolCallFinished(_)
+        | RuntimeEvent::ToolReadFinished { .. }
         | RuntimeEvent::ToolCallValidationRejected { .. }
         | RuntimeEvent::ToolCallConflict { .. } => Stage::ToolTerminal,
         _ => Stage::EventPipeline,

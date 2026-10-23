@@ -867,6 +867,13 @@ impl RunCapabilitySnapshot {
         self
     }
 
+    pub(crate) fn with_stage(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.definitions.push(super::subagents::stage_definition());
+        }
+        self
+    }
+
     pub(crate) fn with_automation(
         mut self,
         hook: Option<&Arc<dyn super::automation::RuntimeAutomationHook>>,

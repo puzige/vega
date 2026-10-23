@@ -241,6 +241,7 @@ where
                             );
                             let terminal_output = match &event {
                                 RuntimeEvent::ToolCallFinished(result)
+                                | RuntimeEvent::ToolReadFinished { result, .. }
                                 | RuntimeEvent::ToolCallValidationRejected { result, .. }
                                 | RuntimeEvent::ToolCallConflict { result, .. } => {
                                     Some(ConversationEvent::ToolCallOutput {
@@ -348,7 +349,8 @@ fn record_tool_lifecycle(
         }
         RuntimeEvent::ToolCallValidationRejected { result, .. }
         | RuntimeEvent::ToolCallConflict { result, .. }
-        | RuntimeEvent::ToolCallFinished(result) => {
+        | RuntimeEvent::ToolCallFinished(result)
+        | RuntimeEvent::ToolReadFinished { result, .. } => {
             let (attempt_id, started_at) = if let Some(attempt) = attempts.remove(&result.call_id) {
                 attempt
             } else {
@@ -421,6 +423,7 @@ fn record_tool_persistence_failure(
         RuntimeEvent::ToolCallApproved { call_id, .. }
         | RuntimeEvent::ToolCallRunning { call_id } => call_id,
         RuntimeEvent::ToolCallFinished(result)
+        | RuntimeEvent::ToolReadFinished { result, .. }
         | RuntimeEvent::ToolCallValidationRejected { result, .. }
         | RuntimeEvent::ToolCallConflict { result, .. } => &result.call_id,
         _ => return,
@@ -487,7 +490,10 @@ fn terminal_execution_duration(
 ) -> Option<u64> {
     matches!(
         event,
-        RuntimeEvent::Finished(_) | RuntimeEvent::Interrupted | RuntimeEvent::Error(_)
+        RuntimeEvent::Finished(_)
+            | RuntimeEvent::StageHandoff { .. }
+            | RuntimeEvent::Interrupted
+            | RuntimeEvent::Error(_)
     )
     .then(|| u64::try_from(run_started_at.elapsed().as_millis()).unwrap_or(u64::MAX))
 }
@@ -603,6 +609,12 @@ pub(crate) fn persist_runtime_event(
                     },
                 )?;
             }
+            vega_store::delegated_stages::inherit_execution(
+                &tx,
+                thread_id,
+                message_id,
+                &input.assistant_message_id,
+            )?;
             for (ordinal, image) in input.message.images.iter().enumerate() {
                 vega_store::image_attachments::insert(&tx, &input.id, ordinal, image.bytes())?;
             }
@@ -829,11 +841,15 @@ pub(crate) fn persist_runtime_event(
             }
             tool_calls::mark_running(store.conn(), call_id).map_err(tool_transition_error)?;
         }
-        RuntimeEvent::ToolCallFinished(result) if result.reused => {
+        RuntimeEvent::ToolCallFinished(result) | RuntimeEvent::ToolReadFinished { result, .. }
+            if result.reused =>
+        {
             let state = required_tool_state(store, &result.call_id, thread_id)?;
             validate_reused_terminal(project_id, thread_id, &state, result)?;
         }
-        RuntimeEvent::ToolCallFinished(result) if !result.reused => {
+        RuntimeEvent::ToolCallFinished(result) | RuntimeEvent::ToolReadFinished { result, .. }
+            if !result.reused =>
+        {
             let state = required_tool_state(store, &result.call_id, thread_id)?;
             if result.status == RuntimeToolStatus::Rejected {
                 let approval = result
@@ -890,8 +906,9 @@ pub(crate) fn persist_runtime_event(
                     RuntimeToolStatus::Cancelled => "cancelled",
                     RuntimeToolStatus::Rejected => return Err(safe_audit_error("permission")),
                 };
+                let tx = store.immediate_transaction()?;
                 tool_calls::finish(
-                    store.conn(),
+                    &tx,
                     tool_calls::FinishToolCall {
                         id: &result.call_id,
                         status,
@@ -902,6 +919,23 @@ pub(crate) fn persist_runtime_event(
                     },
                 )
                 .map_err(tool_transition_error)?;
+                if let RuntimeEvent::ToolReadFinished { identity, .. } = event {
+                    if result.status != RuntimeToolStatus::Success
+                        || result.truncated != Some(false)
+                        || !identity.complete
+                    {
+                        return Err(runtime_state_error());
+                    }
+                    vega_store::delegated_stages::record_read(
+                        &tx,
+                        thread_id,
+                        message_id,
+                        &result.call_id,
+                        &identity.canonical_path,
+                        &identity.sha256,
+                    )?;
+                }
+                tx.commit()?;
             }
         }
         RuntimeEvent::UsageUpdated {
@@ -1021,6 +1055,22 @@ pub(crate) fn persist_runtime_event(
                 },
             )?;
         }
+        RuntimeEvent::StageHandoff { checkpoint_id } => {
+            let tx = store.immediate_transaction()?;
+            vega_store::delegated_stages::mark_handoff(&tx, thread_id, message_id, checkpoint_id)?;
+            ensure_message_updated(
+                messages::finish_streaming_in_transaction(
+                    &tx,
+                    message_id,
+                    streamed_content,
+                    "done",
+                    execution_duration_ms,
+                )?,
+                message_id,
+            )?;
+            vega_store::threads::open_thread_in_transaction(&tx, thread_id, now_ms())?;
+            tx.commit()?;
+        }
         RuntimeEvent::Finished(_) => {
             if is_plan {
                 messages::complete_plan(
@@ -1102,7 +1152,8 @@ pub(crate) fn persist_runtime_event(
         | RuntimeEvent::DiagnosticAttempt(_)
         | RuntimeEvent::ContextAccountingUpdated(_)
         | RuntimeEvent::ToolCallOutput { .. }
-        | RuntimeEvent::ToolCallFinished(_) => {}
+        | RuntimeEvent::ToolCallFinished(_)
+        | RuntimeEvent::ToolReadFinished { .. } => {}
     }
     Ok(())
 }
