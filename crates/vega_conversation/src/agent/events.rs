@@ -664,7 +664,7 @@ pub(crate) fn persist_runtime_event(
             response_id,
             call_ids,
         } => {
-            let transaction = store.conn().unchecked_transaction()?;
+            let transaction = store.immediate_transaction()?;
             for call_id in call_ids {
                 transaction.execute(
                     "INSERT OR IGNORE INTO tool_call_rounds (message_id, call_id, response_id) VALUES (?1, ?2, ?3)",

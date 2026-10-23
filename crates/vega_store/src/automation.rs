@@ -20,6 +20,10 @@ pub fn save_task(
     revision: u64,
     data: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Automation,
+    )?;
     let revision = i64::try_from(revision)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     conn.execute(
@@ -31,6 +35,10 @@ pub fn save_task(
 }
 
 pub fn delete_task(conn: &Connection, thread: &str, kind: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Automation,
+    )?;
     conn.execute(
         "DELETE FROM automation_tasks WHERE thread_id=?1 AND kind=?2",
         params![thread, kind],
@@ -57,6 +65,10 @@ pub fn run(conn: &Connection, thread: &str, id: &str) -> rusqlite::Result<Option
 }
 
 pub fn insert_run(conn: &Connection, thread: &str, id: &str, data: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Automation,
+    )?;
     conn.execute(
         "INSERT INTO automation_runs(id,thread_id,data) VALUES (?1,?2,?3)",
         params![id, thread, data],
@@ -71,11 +83,19 @@ pub fn save_run(
     finished: bool,
     data: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Automation,
+    )?;
     conn.execute("UPDATE automation_runs SET data=?3,finished=?4 WHERE thread_id=?1 AND id=?2 AND finished=0", params![thread,id,data,finished])?;
     Ok(())
 }
 
 pub fn recover_claims(conn: &Connection) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Automation,
+    )?;
     conn.execute("UPDATE automation_runs SET finished=1 WHERE finished=0", [])?;
     Ok(())
 }

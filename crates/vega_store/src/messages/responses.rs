@@ -32,10 +32,17 @@ pub fn record_assistant_response(
     content: &str,
     response: &AssistantResponseRow,
 ) -> Result<bool, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     if response.message_id != message_id || !response.valid_for(content) {
         return Ok(false);
     }
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let owner = find(&tx, message_id)?;
     if !owner.is_some_and(|owner| {
         owner.role == "assistant" && owner.status == "streaming" && owner.content == content
