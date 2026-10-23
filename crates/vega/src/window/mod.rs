@@ -25,6 +25,7 @@ mod commit;
 mod commit_reconcile;
 mod composer_predictions;
 mod context;
+mod cua_onboarding;
 mod diff;
 mod file_index;
 mod image_preview;
@@ -115,6 +116,7 @@ pub(crate) struct VegaWindow {
         Entity<vega_ui::automation_editor::AutomationEditor>,
     >,
     image_preview: image_preview::ImagePreviewController,
+    onboarding: cua_onboarding::OnboardingHost,
     /// Explicit wide-rail choice. Width-driven hiding is derived separately
     /// from the live viewport so a resize never overwrites the user's choice.
     environment_collapsed: bool,
@@ -192,6 +194,7 @@ pub(crate) struct VegaWindow {
 impl VegaWindow {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         cx.on_release(|this, cx| {
+            this.onboarding.close(cx);
             if cx
                 .try_global::<crate::automation_controller::AutomationGlobal>()
                 .is_some()
@@ -316,6 +319,7 @@ impl VegaWindow {
             subagent_panel: subagent_panel::SubagentPanel::new(cx),
             automation_editors: Default::default(),
             image_preview: image_preview::ImagePreviewController::new(cx),
+            onboarding: cua_onboarding::OnboardingHost::default(),
             environment_collapsed: true,
             environment_overlay_open: false,
             sidebar_resize_dragging: false,

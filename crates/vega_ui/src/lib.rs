@@ -4,6 +4,7 @@ pub mod branch_selector;
 pub mod command_palette;
 pub mod commit_panel;
 pub mod conversation_stream;
+pub mod cua_onboarding;
 pub mod diff_view;
 mod disclosure;
 pub mod file_preview;

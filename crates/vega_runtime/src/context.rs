@@ -75,6 +75,11 @@ impl ContextBudget {
         self.automatic_compaction
     }
 
+    pub fn without_automatic_compaction(mut self) -> Self {
+        self.automatic_compaction = false;
+        self
+    }
+
     /// Input budget after reserving response capacity.
     pub fn input_budget(self) -> u64 {
         self.total_limit - self.output_reserve

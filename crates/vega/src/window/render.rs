@@ -4,6 +4,7 @@ use vega_ui::icons::{Icon, shell_icon_button};
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_navigation(cx);
+        self.sync_preparation(cx);
         self.sync_completion_attention(window, cx);
         #[cfg(test)]
         if cx
@@ -142,6 +143,17 @@ impl Render for VegaWindow {
                 cx.subscribe(&settings, |this, _, event: &SettingsSaved, cx| {
                     this.on_settings_saved(event.replay_identity_changed, cx);
                 })
+                .detach();
+                cx.subscribe(
+                    &settings,
+                    |this, view, _: &DesktopPreparationRequested, cx| {
+                        if this.settings_view.as_ref() == Some(&view)
+                            && cx.global::<SettingsOpen>().0
+                        {
+                            this.request_settings_preparation(cx);
+                        }
+                    },
+                )
                 .detach();
                 cx.subscribe(
                     &settings,
@@ -464,6 +476,8 @@ impl Render for VegaWindow {
             }
         }
         self.sync_navigation(cx);
+        self.sync_preparation(cx);
+        let preparation_error = self.render_preparation_error(cx);
         div()
             .key_context("VegaWindow")
             .on_action(cx.listener(Self::toggle_sidebar))
@@ -506,6 +520,7 @@ impl Render for VegaWindow {
                             })
                             .flatten(),
                     )
+                    .children(preparation_error)
                     .child(div().flex_1().min_h_0().child(content)),
             )
             .children((!settings_open).then(|| self.render_shell_slot_cluster(window, cx)))

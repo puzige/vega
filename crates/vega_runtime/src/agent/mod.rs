@@ -187,6 +187,9 @@ pub struct RuntimeSteeringInput {
 }
 
 pub trait RuntimeSteeringSource: Send + Sync {
+    fn ready(&self) -> BoxFuture<'_, Result<Option<String>, VegaError>> {
+        Box::pin(async { Ok(None) })
+    }
     fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>>;
 }
 

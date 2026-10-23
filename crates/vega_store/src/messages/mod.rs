@@ -6,7 +6,7 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 mod responses;
-pub use responses::{AssistantResponseRow, record_assistant_response};
+pub use responses::{AssistantResponseRow, completed_response_text, record_assistant_response};
 
 const COLUMNS: &str = "id, thread_id, seq, role, kind, content, status, created_at, \
                        plan_status, plan_review_note, plan_reviewed_at";
