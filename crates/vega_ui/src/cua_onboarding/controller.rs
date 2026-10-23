@@ -218,7 +218,3 @@ impl CardController {
         vec![CardEffect::CancelPending, CardEffect::CloseWindow]
     }
 }
-
-#[cfg(test)]
-#[path = "controller_tests.rs"]
-mod tests;

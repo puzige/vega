@@ -3,8 +3,8 @@
 ## 状态、依据与优先级
 
 - 用户在上一轮 #537 合并后反馈形态不符，并再次确认要所提供视频中的效果：系统设置是主操作界面，依附其底部的紧凑提示和应用图标负责拖拽，不是独立权限诊断大面板。
-- 本轮初始基线：`d649b490ebdf831c13fb4d8a770eb2b77f1f4239`；分支 `feat/307-compact-permission-guide`。实现前同步 master `d4a65a381d95b6bb8e4ff8d2858a11a1042ffa3a`，并在停写检查点集成 `f3eab9827dcd1ddb459088410d6f1eedcbce8864`，HEAD 为 `20b4f59a5b7023fe566d0c2b867891ef5dd3f805`。上游独立存储回归测试保持不变，不要求空集。原交付 `4c0d225daf47e66e559752ee78ba067520bea080`、原审查与 CI 记录保留，均不代表本轮视觉验收通过。
-- 此文覆盖主规格旧 R13/R15/R17 的浮层内容分配及上一轮 480×420 的布局决定。主规格最新 guidance/status-only 范围、安全与真实性边界继续有效。仓库最新快速交付政策优先于历史 TEST-FIRST/删测流程，不为本轮制造临时测试或 RED。
+- 本轮初始基线：`d649b490ebdf831c13fb4d8a770eb2b77f1f4239`；分支 `feat/307-compact-permission-guide`。实现前同步 master `d4a65a381d95b6bb8e4ff8d2858a11a1042ffa3a`，并在停写检查点集成 `f3eab9827dcd1ddb459088410d6f1eedcbce8864`，HEAD 为 `20b4f59a5b7023fe566d0c2b867891ef5dd3f805`。原上游存储回归测试随基线保持，后由最新 master `9f9fa092a3ca391a65f08419c9206f32979119e6`（#573）清理；本分支已同步该基线，集成 HEAD 为 `77bfcecd591699fb0e1cd7da8faaa15a308de095`。开发候选 `ccba58f8b9fa47ead8e3e516d234548bbc8ef608` 的本轮两个控制器回归与原上游十项均已通过 Actions；按最新规则，合并前清理本轮 Rust 测试并单独验证最终空集。原交付 `4c0d225daf47e66e559752ee78ba067520bea080`、原审查与 CI 记录保留，均不代表本轮视觉验收通过。
+- 此文覆盖主规格旧 R13/R15/R17 的浮层内容分配及上一轮 480×420 的布局决定。主规格最新 guidance/status-only 范围、安全与真实性边界继续有效。仓库最新快速交付政策优先于历史 TEST-FIRST 时序：不强制造临时测试或 RED，但开发 Rust 测试不得进入 master；原始源码、完整 SHA、patch 与实际验证记录须可恢复，最终清理不能替代开发行为验证。
 - 视频只作本地用户交互参考，不复制第三方资产、不解包第三方应用，不把原始录屏或含私人屏幕的帧上传公开 Issue。已有 ffmpeg/OCR 记录支持“简短指引、应用图标拖拽、设置窗口移动后浮层跟随”；无法从 OCR 证明模糊材质、完整窗口边界或真实原生拖放成功。
 
 ## 验收用例（先于实现计划）
@@ -69,13 +69,13 @@
 3. 最小连接设置页与已有准备状态/动作。允许新增UI内部共享model/投影模块来复用同一服务、保留独立事实与错误；不要让Settings每次render创建probe或把renderer当观察入口。既有`observe_global`/实体观察可用于状态传播，异步服务仍由已有适配层管理。
 4. 按实际API调整`DesktopPreparationRequested`和host导航，使设置页权限动作派发准确路由并显示/复用紧凑浮层。旧task/context/host lifetime校验不能弱化。原生adapter默认只读；如确需改动先给具体证据。
 5. 共享Layout更新width/height、图标及命中几何，不硬编码颜色/字体，不改无关主题或Composer。
-6. 必要回归按最新政策按风险选择：本轮优先检查拆分后的状态与生命周期不变量。若新增进程内测试，必须调用真实生产决策，不做源码字符串/机械转发断言，不批量恢复已删历史测试；只交现有Actions执行。
+6. 必要回归按最新政策按风险选择：本轮优先检查拆分后的状态与生命周期不变量。若新增进程内测试，必须调用真实生产决策，不做源码字符串/机械转发断言，不批量恢复已删历史测试；只交现有Actions执行。开发测试留痕后在合并前删除测试及独占接线，不改生产逻辑/安全断言或 Python/CI，最终 head 静态无残留且完整门禁确认 Rust 0发现/0执行。
 
 允许实现写入：`crates/vega_ui/src/cua_onboarding/`（native文件需先报告）、Settings的agents/state/mod/preferences及必要内部模块、`crates/vega/src/window/cua_onboarding.rs`与必要Settings订阅/路由、`vega_theme`限定上述token、必要新测试与本轮实现报告。runtime、驱动、依赖、工作流、发布、用户配置/数据均不改。
 
 ## 验证和交付
 
 - 本地只允许快速format/diff/hash/静态API与调用链检查，不运行Vega、构建、cargo check、Clippy、Rust/Python测试或UI harness。不得用截图/模拟输入绕过真实手测边界。
-- writer交付停写的精确hash/diff/manifest和实际检查，由非写入者独立复审；现有Actions验证同一最终head的fmt、全目标Clippy、Python、Rust发现/执行。无测试写`no Rust tests`，不冒充行为验证。
+- writer交付停写的精确hash/diff/manifest和实际检查，由非写入者独立复审；现有Actions验证同一最终head的fmt、全目标Clippy、Python、Rust发现/执行。开发测试原始源码/patch与实际结果另行固定；最终无测试写`no Rust tests`（0发现/0执行），不冒充行为验证。
 - 用户必须在包含修正的新构建核对C1–C6/C10的视觉、真实拖拽、跟随/冻结、不夺焦、管理员验证框不被挡及多屏/Spaces。CI和静态布局通过不代表“视频效果已验收”。
 - 新PR合并后Issue仍开放、In review；不安装/强退/改系统权限。需要用户反馈才关闭/Done。回退可revert本轮PR；保留上一轮安全会话实现，不回退其互斥/清理修复。
