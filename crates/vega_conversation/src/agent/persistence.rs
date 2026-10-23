@@ -551,9 +551,6 @@ fn runtime_event_stage(event: &RuntimeEvent) -> vega_runtime::RuntimeFailureStag
     }
 }
 
-#[cfg(test)]
-mod storage_tests;
-
 pub(crate) fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {
     !matches!(
         event,

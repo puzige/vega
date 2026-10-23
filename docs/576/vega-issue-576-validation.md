@@ -27,13 +27,13 @@
 
 ## 开发回归
 
-新增 18 个开发 Rust 测试，第二轮 Actions 已实际执行，17 通过、1 失败：
+新增 18 个开发 Rust 测试，保留失败轮证据后第四轮在修复 head 实际 18/18 通过（详见下方）；随后按交付政策清理，不带入 master：
 
 - `crates/vega_store/src/write_coordination/tests.rs`：14 个，真实临时文件 WAL、多连接；FIFO、分库、别名、嵌套、WAL 读取、失败/drop/rollback、取消/超时、队列满、外部短锁/持续锁、BUSY_SNAPSHOT/constraint 分类、checkpoint cancel/source/model/predecessor、privacy source fence、诊断容量及现有导出。队列满仅构造队列状态，不将此单项称作 128 线程压力测试。
 - `crates/vega_conversation/src/agent/persistence/storage_tests.rs`：4 个，三个并发 Actor 的文本、工具终态/audit、round/response、用量一条一次；超过普通 2 秒的外部锁恢复；持续锁 5 秒后真实失败及后续显式保存；2 秒/5 秒连接策略和只读失败。
 - 不执行真实 provider、工具、外部进程或 UI。原 #570 测试集合不恢复；其四处生产读事务逐字节保持。
 
-待云端成功后固定完整开发 SHA、原始测试源码/patch 和真实发现/执行/通过/失败/跳过计数，再移除测试及独占接线。最终无测试 head 必须通过完整 required CI 并确认 Rust 0 发现/0 执行（no Rust tests），不得用删测掩盖失败。
+带测试 GREEN 的完整 SHA、原始源码/patch、内容哈希和真实云端计数已固定并从 GitHub 读回，再移除测试及独占接线。最终无测试 head 必须通过完整 required CI 并确认 Rust 0 发现/0 执行（no Rust tests）；不把空集当作功能验证。
 
 ## 第一轮云端及修正
 
@@ -61,9 +61,20 @@
 - 修复前 fetch，干净分支 rebase 到 `988e1e37271c666f05ff8eae46d662324e91afd6`。新增上游仅 `pending_messages::mark_accepted` 是未覆盖 mutation，补完整函数许可，保留原 WHERE/continuation 和外层事务；新 message page 查询为纯读不改，0034 迁移原样保留。不得把同步成功当作该新基线的功能验证。
 - 本轮 `2026-10-23T08:40:56Z`：`cargo fmt --all -- --check`、`git diff --check`、`cargo metadata --no-deps --offline --locked --format-version 1` 均退出 0；测试源码静态 14 + 4 = 18；相对最新 master，`.github/`、`scripts/`、`.config/`、migrations 无差异，无新增生产注释、unwrap/expect 或 unsafe。本地未运行/编译 Vega 或 Rust/Python 测试。
 
+## 第四轮：带测试 GREEN 与清理
+
+- 精确开发 head `ae79df35114761510d13ad42fe2562e04c23528f`，基线 `988e1e37271c666f05ff8eae46d662324e91afd6`；[Actions 39926624160](https://github.com/puzige/vega/actions/runs/39926624160)。Clippy `120324497585`、Nextest `120324497202`、required `120326258081` 均成功。Rust 发现 18、执行 18、通过 18、失败 0、跳过 0，15 个 binaries；Nextest ID `fc8a90e0-1b78-4541-b679-8c3c50b68c8c`，运行 10.396 秒。Python 5 + 15 + 40 = 60 通过。
+- 持续外部锁用例 10.389 秒通过：同一 Actor 的两次请求各保持原 8 秒期限、至少 4 秒等待、Snapshot/5/5 分类、未误存与释放后显式恢复；超过 2 秒的短锁 2.417 秒通过，三 Actor 完整保存结果一次 0.222 秒通过。此前同一持续锁失败由 handler 修复，没有删测、放宽、ignore 或盲目重试。
+- [固定 PR 证据](https://github.com/puzige/vega/pull/577#issuecomment-6361181837)，[原始提交 patch](https://github.com/puzige/vega/commit/ae79df35114761510d13ad42fe2562e04c23528f.patch)。清理前通过 GitHub contents API 读回两份源码，字节 SHA-256 与本地完全一致，源码在开发提交历史保留：
+  - [store 14 个](https://github.com/puzige/vega/blob/ae79df35114761510d13ad42fe2562e04c23528f/crates/vega_store/src/write_coordination/tests.rs)：21113 字节，SHA-256 `a794e50fe9d4ebeb390002636f8ba64f3c86cfde1a4e26392480f770c70fe1ee`。
+  - [Actor 4 个](https://github.com/puzige/vega/blob/ae79df35114761510d13ad42fe2562e04c23528f/crates/vega_conversation/src/agent/persistence/storage_tests.rs)：12646 字节，SHA-256 `92f4b34f2c4a24d615b5acb8ae2fcf68842cae7ae4ec096c3a3148baf0254672`。
+- 清理范围仅以上两份 Rust 开发测试源码及 write_coordination.rs / persistence.rs 中两个唯一 cfg(test) module 声明。fixture/helper/import 全在删除文件内，无新增 test-only dependency/feature。生产 tracing 使用边保留；普通连接策略、Actor handler、写许可、真实安全断言、Python、CI 与迁移不变。
+- 清理后 `2026-10-23T08:53:22Z`：fmt --check、diff --check、offline locked metadata 均退出 0；工作区 Rust test/cfg(test)/cfg_attr(test)/测试宏、dev-dependencies、test-support 静态清点无残留（vendor 两处 doctest=false 为原有禁用设置）。混合文件除两个模块声明外逐字节等同带测试 GREEN；CI/Python/migrations 相对基线无差异。
+- 主 Agent 自审：复核最新基线 delta、完整写入口静态清点、FIFO 超时/取消移除、同连接嵌套、事务先 rollback 后释放字段顺序、读快照不排队、handler 无跨连接重入/外部回调、隐私/source/model/checkpoint/delegated fences、日志内容白名单。无新增 SQL 改写；自审不是独立审查。
+
 ## 未决与边界
 
-- v1.4 修复待完整 Actions；既有失败未消解，不移除任何测试。先前已通过的检查不冒充新 head 已验证。
+- 最终清理 head 的完整 Actions 尚待执行；须明确 Rust 0 发现/0 执行（no Rust tests）并核对最新 required check，不以开发 GREEN 替代最终门禁。
 - 不承诺冻结的外部 writer 会自行恢复；普通 native timeout 累计请求睡眠，Actor handler 限定单 episode 的实际等待，均不承诺整个多 SQL 事件的总截止时间或硬实时调度。
 - 绕开 store API 的原始 SQL、其他进程及 SQLite WAL 清理不受进程内许可保障。
 - 仍保留需要完整验证的原子启动事务，不为缩短持锁时间引入 TOCTOU。后续按诊断定位具体长期 holder，不把历史未知 holder 当作已确定。

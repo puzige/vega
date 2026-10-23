@@ -489,9 +489,6 @@ impl<'a> Deref for WriteTransaction<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 fn log_transaction<T>(
     permit: &WritePermit<'_>,
     action: StorageOperation,
