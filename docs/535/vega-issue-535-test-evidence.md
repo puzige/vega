@@ -158,4 +158,34 @@ writer 实际执行 fmt/diff/offline locked no-deps metadata 均退出 0；主 A
 
 原独立实现 reviewer 子会话随后也以 failed 终止，未返回 findings 或审查结论。其只读范围没有改动；父会话确认生产仍为 `be839cc6`，不将异常结束记为通过。替补只读 reviewer 继续同一生产提交及上述接线差异，保留已完成的静态检查和实际 CI 失败证据，不重做根因或产品裁决。
 
-替补 writer 已 READY 并停止写入，未追加改动。当前 app 源 3,181 字节，SHA-256 `e2d289453b0a5eee1e298c81e73e0f5332592d23b251172d185311f6b3372d0c`；属性至 EOF 的 2,884 字节后缀与原版一致，SHA-256 `ee529494f57c8fce1d8495ab597fabf2e6cf6f9d60db86b1a575cd4cd74ef4fc`。已核对 TestAppContext 的 update/add_window_view、App::set_global 为固有方法，无需补入 trait wildcard；保留宏生成代码所需的 gpui 别名。writer 的 Rust 1.98 focused rustfmt 与 focused diff check 均退出 0。接线修正不等于编译或行为通过，下一步由新提交的现有完整 Actions 验证。
+替补 writer 已 READY 并停止写入，未追加改动。当前 app 源 3,181 字节，SHA-256 `e2d289453b0a5eee1e298c81e73e0f5332592d23b251172d185311f6b3372d0c`；属性至 EOF 的 2,884 字节后缀与原版一致，SHA-256 `ee529494f57c8fce1d8495ab597fabf2e6cf6f9d60db86b1a575cd4cd74ef4fc`。已核对 TestAppContext 的 update/add_window_view、App::set_global 为固有方法，无需补入 trait wildcard；当时保留了 gpui 别名，其必要性判断被下一轮 Clippy 的 unused import 诊断推翻，见后续记录。writer 的 Rust 1.98 focused rustfmt 与 focused diff check 均退出 0。接线修正不等于编译或行为通过，下一步由新提交的现有完整 Actions 验证。
+
+## 首轮行为结果与实现审查修正（2026-10-23）
+
+接线修正提交 `9327fa4fe5b8bb41a3ea01cf2f870ffe634a1566` 的 [Actions 39893667074](https://github.com/puzige/vega/actions/runs/39893667074) 仍失败。Format 与 Python 检查步骤成功；Nextest job `120218998456` 成功编译并执行 18 个测试（15 个 binaries），17 通过、1 失败、0 skipped，耗时 11.909 秒；该结果不是全部通过。原始 failed-job 日志 731 行，SHA-256 `5d41a03473068af02f810530f5279a0bc628b468f11b74bf4626e2f93de81c7c`。Clippy job `120218998235` 唯一错误为 app 测试第 2 行的 unused `gpui` import，不能通过 allow 或删测试规避。
+
+17 项通过包括接受事务、两个 runtime 接受入口、普通独立投递负对照、三分页 API 与历史投影、controller 基础门禁、UI success/failure/echo/route，以及真实普通/queue/echo 气泡与最后图片间距、窄窗口/重测/滚动/复制对照。该进程内几何测试通过，未发现需额外改 token 的间距差异；不等于真实应用像素验收或整窗/外部系统 E2E。
+
+唯一测试失败位于 UI `repeated_continuations_keep_one_clock_and_late_terminal_cannot_restore_old_clock:1208`。主 Agent 读取原始失败与 fixture：工具已合法走完 Proposed→Approved→Running→Finished Success，而 `ToolCard::matches_call` 在第 260 行专用于 PendingApproval + 无 result 的重复提案判定，完成态必定 false。此为观测 API 误用，不是已证实的工具丢失；不得修改生产 matches_call 状态机迁就测试。修正为前后同一工具实体及实际目标、成功状态和真实展开输出，保留所有时钟、正文/Final、复制/剪贴板、工具开合/输出可见性、再次续接与停止断言。
+
+替补独立 reviewer 完成 `be839cc63da09643c852f3bc2496e08ef932eb47` 全部 13 个生产文件审查，独立复算内容包 `0719c917f44fb5b1daf862e6b93faf78200b42d1646743a91dc44ba36b8d88f0`，未发现其他可操作问题，但提出一个 P2 阻断：`window/artifact.rs:379` 在 UI 过滤前调用 controller，`app_agent.rs:526–589` 会让续接 predecessor 迟到终态覆盖 `queue_ready`、`completion_outcome`、`terminal_message_id`、`terminal_failure`。当前 successor 成功后迟到的旧 Error 可阻止 `window/agent.rs:1005–1008` 释放普通 queue，并使完成通知报告失败；仅 ConversationStream 过滤不够。主 Agent 已复核原始调用链，不将该版审查记为通过。
+
+规格 v2.3 在不改变 A1–A7 的前提下补齐 A4 的控制器显式续接终态归属。已委派同一 writer 仅修改 app controller、app 开发测试及 UI 开发测试：修复真实产品遗漏，保留当前 successor 的成功/失败/停止和无 ID 启动错误，补必要迟到终态回归；同时修正上述观测与导入错误。下一验证为 READY 停写版本的独立增量审查及完整 Actions；测试清理、最终空集门禁与合并均未进行。
+
+该修复 writer 在诊断后以 failed 结束，未留下任何代码改动。父会话确认终态和 diff：相对 `9327fa4f` 仅两份父会话文档变更；app_agent.rs、app 测试、UI 测试 SHA-256 仍分别为 `a7020e892d24e705683675f60d1ddc8f4d5b5af8a9f600bd3d0b90a3fb7ed34a`、`e2d289453b0a5eee1e298c81e73e0f5332592d23b251172d185311f6b3372d0c`、`de91195caef46ae787344ce0da6c6b3024a82edb0c933dc6ac4b873e6044856d`。这是协作执行异常，不是第二次产品测试失败；不重跑 CI 或恢复已完成的根因工作。将剩余 product 单文件与测试两文件拆为非重叠的小范围执行，沿用同一证据、spec 与下一个完整 Actions 验证动作。
+
+## 续接恢复与上游迁移整合（2026-10-23）
+
+控制器 writer 已 READY 停写：仅 `app_agent.rs` 增加显式、所属运行校验后的 predecessor 集合和迟到终态前置过滤，文件 SHA-256 `497c762c91d66759070236695206e9f604eae79ec0880e4e658c017980fbc0d1`；single-file rustfmt、diff 与新增行静态检查通过，尚未编译或执行。测试 writer 达到执行时限，未交付 READY；父会话确认已停止，保留其有效 UI 观测修正，文件 SHA-256 `b1ef5df4af9d26f3b17db989d6688594cd7a1133c24f80d70f9108a0b9ee9166`。app 测试仍为 `e2d289453b0a5eee1e298c81e73e0f5332592d23b251172d185311f6b3372d0c`，控制器补充回归和无用导入修正尚未完成，不记录通过。
+
+中断恢复检查确认无活跃旧子任务，原改动完整保存于检查点 `e58142f1d82adb099d8dba7a9b2a84cb610f258d`。原合并暂停在 store migration 清单冲突；重新 fetch 确认上游仍为 `6e490aefc18fd0e8a263cbcd6b67570bcbf9348e`。专职 writer 将本任务未发布的 `0033_run_continuations.sql` 原样顺延为 `0034_run_continuations.sql`，保留上游已发布 `0033_delegated_stage_recovery.sql`，父会话独立静态确认 34 项连续唯一、前 33 项顺序与 SQL 字节均和上游一致、本任务 SQL 字节与旧文件一致。合并提交 `e05de7baf350691beb1485138bc30927ec68f9dd`，检查点已无冲突恢复；没有重写已推送历史或修改用户数据。
+
+合并全量 `git diff --cached --check` 首次因上游原有 `docs/522/paired-existing.csv` 的 25 行 CRLF 报 trailing whitespace，退出 2；已逐字节确认该文件与上游一致，不为本任务改写。针对实际迁移解决范围的 diff check 退出 0，恢复后 `git diff --check` 退出 0。这些均为静态检查，不是数据库迁移执行结果。
+
+上游成功、完整 read 现在发 `ToolReadFinished { result, identity }`，而原 runtime 开发测试只观察 `ToolCallFinished`；父会话核对实际 loop 分支，适配两种真实事件，同时保留 read-call ID 和 retained tool output 断言。新专职 writer 仅完成三份开发测试的最小剩余修正及控制器 A4 回归，不重做原 17 项已通过内容；后续独立审查和新 head Actions 必须覆盖整合后版本。当前仍未取得全部行为通过、最终删测、合并或用户验收。
+
+新独立非写入者 reviewer 对停写生产版本 `e05de7baf350691beb1485138bc30927ec68f9dd` + 控制器补丁完成增量审查，前后独立复算 production14 内容包 SHA-256 `a02f7d3450193bc2d7806bf2f9a53cb4ba216d5e326d40717d32f5e9192a7e23` 一致。确认旧 P2 已在任何四项控制器终态字段变更前过滤，generation/thread/stream 与续接所属校验、多次/重复续接、当前合法终态和启动 Error(None) 分支保持；同事务续接与委派继承、迁移 1–34、上游工具/阶段事件和权限 UI 合并均未发现可操作生产阻塞。此结论不涵盖仍在写入的开发测试，不等于新 head CI、合并批准或用户外观验收；reviewer 已停止且无写入。
+
+三文件开发测试收尾阶段再次达到时限，仅留下 read 事件兼容行；父会话确认停写、复核差异后保留该行，未重跑 CI。余下任务收窄为单个 app 测试文件，由新 writer 完成并 READY：去除 unused gpui、将相同 Thread fixture 提取为 helper（原有测试断言不变），新增两个行为测试。一个循环覆盖一次/两次续接与当前成功/失败/停止的六种组合，各自在当前终态前后送入所有 predecessor 的成功/错误/停止；另一个覆盖错 generation/thread/stream 不能安装过滤或改终态、finish 所属校验及无 ID 启动错误。实际观察四个终态字段、活跃运行、取消标记和 finish 结果，不以内部 set 内容替代业务结果。
+
+三份停写开发源 SHA-256：app `9206160d8b7578f7be2220ffecfd965ed6b01ddcaf19931a90b25b196a18960e`、conversation `f3b36ee6ed99f288d554684f7d645d5d0a60b64e946deac2645417a756da8248`、UI `b1ef5df4af9d26f3b17db989d6688594cd7a1133c24f80d70f9108a0b9ee9166`。静态定义为 app 3 / conversation 9 / UI 8，共 20，不是发现/执行计数。父会话在该版实际执行 `cargo fmt --all -- --check`、`git diff --check`、`cargo metadata --no-deps --offline --locked --format-version 1` 均退出 0；未本地编译、运行或测试。下一步整合上游新出现的消息锚点修复，固定完整停写提交，继续增量审查与现有 Actions。

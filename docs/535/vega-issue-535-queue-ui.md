@@ -2,9 +2,9 @@
 
 ## 状态与基线
 
-实现方案 v2.2（A1–A7 产品验收不变）。最小生产实现稿已恢复，18 个开发测试定义保留待 Actions 行为验证；已取得的接口缺失 RED 与历史测试审查保留为事实证据。当前交付流程遵守最新验证政策，不再强制 TDD，但不删除未解决的失败测试逃避验证，最终 master 不包含 Rust 测试或独占支持。
+实现方案 v2.4（A1–A7 产品验收不变）。生产实现 `be839cc63da09643c852f3bc2496e08ef932eb47` 已推送，接线修正 head `9327fa4fe5b8bb41a3ea01cf2f870ffe634a1566` 的 Actions 实际执行 18 个开发测试：17 通过、1 个工具保留观测 API 误用失败，另有 app unused import 阻断 Clippy；几何对照测试通过不代表用户像素验收。独立实现审查发现的控制器迟到终态遗漏已在停写补丁中修正并获静态增量审查无阻塞；开发源现有 20 个静态测试定义，工具观测、read 事件兼容及 A4 控制器回归已完成，当前集成版的云端结果仍待取得。当前交付流程遵守最新验证政策，不强制 TDD，但不删除未解决的失败测试逃避验证，最终 master 不包含 Rust 测试或独占支持。
 初始基线：`83fd51d79940516029cdc1eaf8e81566870c877b`。
-原开发测试生产基线：`6615748f91273bfb8ee424011b3b5a09b3777d2b`。当前集成 HEAD：`0ea2910ce3d59824dd379af10490c009cddf89fd`，已合入 master `9f9fa092a3ca391a65f08419c9206f32979119e6`，保留最新上下文读取、委派边界、Computer Use 准备及 Composer 修复；三份开发测试源未变。
+原开发测试生产基线：`6615748f91273bfb8ee424011b3b5a09b3777d2b`。当前集成基线：`830a41cb90b4dff585d821344382a31d548b1954`，已合入 master `3277ebb5fd710d7d33080f91b6c5235e1558e0d3`，保留上游委派阶段恢复、紧凑权限引导及消息锚点/预览关闭修复。上游已发布的 `0033_delegated_stage_recovery.sql` 保持原位，本任务尚未发布的续接迁移顺延为 `0034_run_continuations.sql`，SQL 内容不变。工具观测错误和 read 完成事件兼容性仅在开发测试层修正，不改生产工具状态机。
 Issue：https://github.com/puzige/vega/issues/535
 
 ## 用户裁决
@@ -42,7 +42,7 @@ Issue：https://github.com/puzige/vega/issues/535
 
 现有 `pending_messages` 的 delivered + steer 不能证明实际插话：`window/pending_messages.rs::continue_pending_queue` 在空闲时也会取该消息独立启动，`agent/pipeline.rs` 使用同一个 `mark_delivered`，保留旧 behavior/generation。generation 是独立 ULID，不是旧 assistant ID。因此不按这些字段或缺时长猜测关系。
 
-最小新增一个 nullable 字段 `pending_messages.accepted_after_assistant_id`，用递增 migration，不新建运行表。仅 `agent/events.rs::persist_runtime_event` 的真实 SteeringAccepted 事务写旧 assistant ID；普通独立投递保持空值。该事务已验证 user seq，并原子插入 successor assistant（user.seq + 1）。store 在同一快照中按准确 user ID、线程、role 和 successor seq 校验关系，不用上一相邻行推测 predecessor。保留 pending 删除与线程级联生命周期；异常关系不得合并。
+最小新增一个 nullable 字段 `pending_messages.accepted_after_assistant_id`，用递增 migration `0034_run_continuations.sql`，不新建运行表。仅 `agent/events.rs::persist_runtime_event` 的真实 SteeringAccepted 事务写旧 assistant ID；普通独立投递保持空值。该事务已验证 user seq，并原子插入 successor assistant（user.seq + 1）。store 在同一快照中按准确 user ID、线程、role 和 successor seq 校验关系，不用上一相邻行推测 predecessor。保留 pending 删除与线程级联生命周期；异常关系不得合并。
 
 旧记录无法可靠回填，保持原有未知历史展示；修复后新接受的插话在 live 与 reload 中一致。测试必须覆盖“曾标为 steer，最终独立投递”不被误合并。
 
@@ -54,11 +54,18 @@ UI 收到续接时仅结束旧消息段的 parser/presentation，不标整个运
 
 `MessagePage` 各分页读取路径应携带明确 continuation 关系，`history::project_rows` 投影到 UI；查询须涵盖页外 successor，补载旧页不生成第二计时。UI hydration 根据明确 predecessor 关系使用相同展示模式，不依赖当前页相邻关系。同步渲染高度、锚点估算、列表失效和键盘可达性；不改全局48px留白。
 
+### 应用控制器的终态归属（v2.3）
+
+生产 ingress 在 `window/artifact.rs` 先调用 `AppAgentController::observe_terminal_message`，再调用 ConversationStream；仅 UI 忽略旧终态不足以保护队列释放和完成通知。控制器须在匹配的 generation/thread/stream 内记录显式 RunContinued 的 predecessor，在任何 queue_ready、completion_outcome、terminal_message_id、terminal_failure 变更前忽略该 predecessor 的 MessageFinished / Interrupted / Error(Some id)。不靠历史邻接推断；重复续接幂等，不结束当前运行，也不影响独立运行。
+
+保留当前 successor 的真实成功、失败与停止，以及无 message ID 的启动错误；不因过滤 predecessor 丢失合法错误或恢复诊断。必要回归覆盖一次/多次续接、当前终态前后到达的 predecessor success/error/interruption、当前成功后的队列可释放与结果归属，以及当前失败/停止和未启动错误。沿用真实 controller 边界，不扩建整窗/系统 E2E。
+
 ### 文件边界
 
 - `vega_store/migrations/`、`vega_store/src/lib.rs`、`pending_messages.rs`、`messages/mod.rs`：字段、真实接受事务写入、页内外关系查询。
 - `vega_conversation/src/types/`、`agent/events.rs`、`history.rs`：typed 续接事件、事件转换、历史投影；必要调用点只做接线。
 - `vega_ui/src/conversation_stream/{content,run_activity,phase,core,message_anchors,pending_messages,render,render_rows}.rs`：段生命周期、单计时、历史、真实布局与失效；只改验收所需路径。
+- `vega/src/app_agent.rs`：仅补齐显式续接 predecessor 的控制器终态过滤；不改 queue 调度、通知文案或权限逻辑。
 - 开发测试及最小 cfg(test)/dev feature 接线；不扩大 production public API。
 
 ### 测试与观测
@@ -75,4 +82,4 @@ v2.1 明确测试边界：保留真实接受事务/事件转换、真实 store �
 
 按最新仓库规则：专职子 Agent 最小实现，停写版本由非写入者独立审查并交现有 Actions。已有开发测试及断言继续用于本轮回归，不为流程追加测试；测试自身错误修责任层并留证，不放宽预期。固定可恢复源码及实际云端结果后清理 Rust 测试与独占支持，最终 head 静态清点及 required CI 确认 0 发现/0 执行后才合并。真实 UI 外观由用户手测，静态调查或进程内测试不冒充像素验收。
 
-v2.2 仅同步基线及 #569/#573 的验证政策，不改变运行归属、计时、内容/复制、历史或几何验收。
+v2.2 仅同步基线及 #569/#573 的验证政策，不改变运行归属、计时、内容/复制、历史或几何验收。v2.3 根据实际 Actions 与独立审查补齐原 A4 的应用控制器归属遗漏，并将 A3 工具保留观测修正为前后同一实体、保留实际目标/成功状态及真实展开输出；不再误用仅适用于待审批重复提案的 matches_call。全部原有计时、复制、工具展开与输出断言保留，不更改产品取舍。v2.4 仅同步上游基线、迁移顺序和成功 read 新增 ToolReadFinished 的开发观测兼容；call ID 与真实工具输出的预期不变。

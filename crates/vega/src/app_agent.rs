@@ -163,6 +163,7 @@ pub(crate) struct ActiveAgentRun {
     pub(crate) composer_prediction: Option<ComposerPredictionRequest>,
     pub(crate) root_message_id: Option<String>,
     pub(crate) message_ids: Vec<String>,
+    predecessor_message_ids: HashSet<String>,
     pub(crate) cancellation_reason: Option<RunCancellationReason>,
     pub(crate) completion_outcome: Option<RunCompletionOutcome>,
     pub(crate) delegated_message_id: Option<String>,
@@ -472,6 +473,7 @@ impl AppAgentController {
                 composer_prediction: None,
                 root_message_id: None,
                 message_ids: Vec::new(),
+                predecessor_message_ids: HashSet::new(),
                 cancellation_reason: None,
                 completion_outcome: None,
                 delegated_message_id: None,
@@ -533,6 +535,32 @@ impl AppAgentController {
         if self.matches(generation, thread_id, stream)
             && let Some(active) = self.active.get_mut(thread_id)
         {
+            match event {
+                ConversationEvent::RunContinued {
+                    previous_assistant_id,
+                    user_message_id,
+                    next_assistant_id,
+                } if active.message_ids.last() == Some(previous_assistant_id)
+                    && previous_assistant_id != next_assistant_id
+                    && !active.message_ids.contains(next_assistant_id)
+                    && next_assistant_id != user_message_id
+                    && !active.message_ids.contains(user_message_id)
+                    && !active
+                        .predecessor_message_ids
+                        .contains(previous_assistant_id) =>
+                {
+                    active
+                        .predecessor_message_ids
+                        .insert(previous_assistant_id.clone());
+                }
+                ConversationEvent::MessageFinished { message_id, .. }
+                | ConversationEvent::Interrupted { message_id, .. }
+                | ConversationEvent::Error {
+                    message_id: Some(message_id),
+                    ..
+                } if active.predecessor_message_ids.contains(message_id) => return,
+                _ => {}
+            }
             if let ConversationEvent::MessageStarted { message_id, .. } = event {
                 active
                     .root_message_id

@@ -1146,13 +1146,24 @@ fn repeated_continuations_keep_one_clock_and_late_terminal_cannot_restore_old_cl
             );
         })
     });
-    cx.update(|window, cx| {
+    let original_tool_id = cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(
-            !view.read(cx).run_activity_groups["first"]
-                .read(cx)
-                .expanded()
+        let stream = view.read(cx);
+        assert!(!stream.run_activity_groups["first"].read(cx).expanded());
+        let tool = stream
+            .tool_cards
+            .get("read-call")
+            .expect("original tool is addressable before continuation");
+        assert_eq!(
+            tool.read(cx).activity_category(),
+            crate::tool_card::ToolActivityCategory::Read
         );
+        assert_eq!(
+            tool.read(cx).activity_state(),
+            crate::tool_card::ToolActivityState::Success
+        );
+        assert!(tool.read(cx).compact_title().contains("input.txt"));
+        tool.entity_id()
     });
     cx.update(|_, cx| {
         view.update(cx, |view, cx| {
@@ -1205,14 +1216,16 @@ fn repeated_continuations_keep_one_clock_and_late_terminal_cannot_restore_old_cl
             .tool_cards
             .get("read-call")
             .expect("predecessor tool remains addressable");
-        assert!(
-            tool.read(cx)
-                .matches_call(&vega_conversation::types::ToolCall {
-                    id: "read-call".into(),
-                    tool: "read".into(),
-                    input_json: r#"{"path":"input.txt"}"#.into()
-                })
+        assert_eq!(tool.entity_id(), original_tool_id);
+        assert_eq!(
+            tool.read(cx).activity_category(),
+            crate::tool_card::ToolActivityCategory::Read
         );
+        assert_eq!(
+            tool.read(cx).activity_state(),
+            crate::tool_card::ToolActivityState::Success
+        );
+        assert!(tool.read(cx).compact_title().contains("input.txt"));
         let tool_id = tool.entity_id();
         let copy_id = copy.id;
         click_message_copy(window, cx, copy_id);

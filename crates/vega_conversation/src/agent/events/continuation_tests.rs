@@ -487,7 +487,7 @@ async fn response_end_and_tool_batch_acceptance_keep_one_runtime_until_successor
                 .any(|event| matches!(event, RuntimeEvent::TextDelta(text) if text == "after"))
         );
         if tool_boundary {
-            assert!(outcome.events[..accepted].iter().any(|event| matches!(event, RuntimeEvent::ToolCallFinished(result) if result.call_id == "read-call" && result.output.contains("retained tool output"))));
+            assert!(outcome.events[..accepted].iter().any(|event| matches!(event, RuntimeEvent::ToolCallFinished(result) | RuntimeEvent::ToolReadFinished { result, .. } if result.call_id == "read-call" && result.output.contains("retained tool output"))));
         }
         assert!(provider.0.lock().unwrap().is_empty());
     }
