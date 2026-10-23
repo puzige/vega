@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-2026-10-23 暂停恢复续接；本轮为 #552 的窄实现阶段唯一 writer，前任已停止、无活跃写入权。本 worktree `/Users/puzige/Workspace/worktrees/vega-552-workspace-motion`，分支 `feat/552-workspace-motion`，HEAD `490ccae81beed7668b6e4bc4f270345d8f10ab24`。父 Agent 已 fetch 并合入 master `5a1ec8ad26fa53fd6210a8e58b6ad85e739dd8bb`；本轮只读核对其为 HEAD 祖先，不再次 fetch/merge，不修改 Git/index 或外部状态。
+2026-10-23 暂停恢复续接；本轮为 #552 的窄实现阶段唯一 writer，前任已停止、无活跃写入权。本 worktree 位于约定的 worktrees 目录下 `vega-552-workspace-motion`，分支 `feat/552-workspace-motion`，HEAD `490ccae81beed7668b6e4bc4f270345d8f10ab24`。父 Agent 已 fetch 并合入 master `5a1ec8ad26fa53fd6210a8e58b6ad85e739dd8bb`；本轮只读核对其为 HEAD 祖先，不再次 fetch/merge，不修改 Git/index 或外部状态。
 
 恢复入口的 tracked `git diff --binary` SHA-256 精确匹配 `11a8227d48db6a8b56487832c3ccce7e2f4f5373a7455fb0576b54fb16dd6d0c`。两份 Rust 源码哈希也精确匹配下表；本轮检查后没有必要的源码/API/格式修正，保存的 product/harness diff 原样保留，唯一新增写入是本续接报告。原 spec §1 的 W1–W12、§2–3 的视觉与生命周期验收不变；当前政策不强制 TDD，旧文档的有效 RED/冻结顺序只作历史。
 

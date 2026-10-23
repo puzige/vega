@@ -1,6 +1,5 @@
 use super::*;
 use core::prelude::v1::test;
-use gpui_kit as gpui;
 use gpui_kit::base::motion::MotionStatus;
 use gpui_kit::test::{ElementSnapshot, TestWindowExt};
 use std::{rc::Rc, time::Duration};
@@ -30,10 +29,6 @@ struct SelectionSamples(std::collections::HashMap<(usize, TabKey), Option<Motion
 
 impl Global for SelectionSamples {}
 
-#[allow(
-    dead_code,
-    reason = "connected only by the later real production fill sampler"
-)]
 pub(super) fn observe_selection_sample(
     pane: usize,
     key: TabKey,
@@ -124,6 +119,68 @@ pub(super) fn observe_body<V: Render + 'static>(view: Entity<V>) -> AnyElement {
     .into_any_element()
 }
 
+struct FrameObserver {
+    inner: AnyElement,
+}
+
+impl IntoElement for FrameObserver {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for FrameObserver {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.inner.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.inner.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        cx.global_mut::<PaintedBodies>().0.clear();
+        cx.global_mut::<PaintLog>().0.clear();
+        self.inner.paint(window, cx);
+    }
+}
+
 struct WorkspaceRoot {
     owner: Entity<VegaWindow>,
 }
@@ -131,6 +188,14 @@ struct WorkspaceRoot {
 impl Render for WorkspaceRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         cx.global_mut::<RenderCount>().0 += 1;
+        cx.global_mut::<SelectionSamples>().0 = self
+            .owner
+            .read(cx)
+            .workspace
+            .tabs
+            .iter()
+            .map(|(key, bottom)| ((usize::from(*bottom), key.clone()), None))
+            .collect();
         let opacity = cx.global::<ParentOpacity>().0;
         let workspace = self.owner.update(cx, |owner, cx| {
             let conversation = owner.stream_view.as_ref().map_or_else(
@@ -139,7 +204,13 @@ impl Render for WorkspaceRoot {
             );
             owner.render_workspace(conversation, window, cx)
         });
-        div().size_full().opacity(opacity).child(workspace)
+        FrameObserver {
+            inner: div()
+                .size_full()
+                .opacity(opacity)
+                .child(workspace)
+                .into_any_element(),
+        }
     }
 }
 
@@ -277,22 +348,18 @@ impl Harness {
             owner: owner.expect("workspace owner"),
             files,
         };
+        harness.visual.update(|window, _| window.activate_window());
+        harness.visual.run_until_parked();
+        harness
+            .visual
+            .update(|window, _| assert!(window.is_window_active()));
         harness.frame();
         harness.update(|owner, window, cx| owner.workspace_focus(0, window, cx));
         harness
     }
 
     fn frame(&mut self) {
-        self.visual.update(|window, cx| {
-            cx.global_mut::<PaintedBodies>().0.clear();
-            cx.global_mut::<PaintLog>().0.clear();
-            let keys = self.owner.read(cx).workspace.tabs.clone();
-            cx.global_mut::<SelectionSamples>().0 = keys
-                .into_iter()
-                .map(|(key, bottom)| ((usize::from(bottom), key), None))
-                .collect();
-            window.render_frame(cx);
-        });
+        self.visual.update(|window, cx| window.render_frame(cx));
     }
 
     fn update<R>(
@@ -314,22 +381,126 @@ impl Harness {
         self.frame();
     }
 
+    fn reveal_tab(&mut self, key: &TabKey) -> usize {
+        let pane = self.update(|owner, _, cx| {
+            let bottom = owner
+                .workspace
+                .tabs
+                .iter()
+                .find(|(tab, _)| tab == key)
+                .expect("tab must exist before a pointer gesture")
+                .1;
+            let position = owner
+                .workspace
+                .tabs
+                .iter()
+                .filter(|(_, dock)| *dock == bottom)
+                .position(|(tab, _)| tab == key)
+                .expect("tab must belong to its pane");
+            let pane = usize::from(bottom);
+            owner.workspace.tab_scroll[pane].scroll_to_item(position);
+            cx.notify();
+            pane
+        });
+        self.frame();
+        assert!(self.tab(key).visible(), "tab must be visible before input");
+        pane
+    }
+
     fn click(&mut self, key: &TabKey) {
-        let bounds = self.tab(key).bounds();
-        let position = point(bounds.left() + px(18.), bounds.center().y);
+        let pane = self.reveal_tab(key);
+        let label = self.update(|owner, _, cx| owner.workspace_label(key, cx));
+        let record = self.painted(self.owner.entity_id(), &label);
+        let visible = record.bounds.intersect(&record.clip);
+        assert!(visible.size.width > px(0.) && visible.size.height > px(0.));
+        let position = visible.center();
+        assert!(self.tab(key).bounds().contains(&position));
         self.visual
             .simulate_mouse_move(position, None, Modifiers::none());
         self.visual.simulate_click(position, Modifiers::none());
         self.pointer_out();
+        self.update(|owner, window, cx| {
+            assert_eq!(owner.workspace.selected[pane].as_ref(), Some(key));
+            match key {
+                TabKey::File(id) => assert!(
+                    owner.workspace.files[id]
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                ),
+                TabKey::Terminal(id) => assert!(
+                    owner.workspace.terminals[id]
+                        .view
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                ),
+                TabKey::Diff => assert!(
+                    owner
+                        .diff_controller
+                        .active
+                        .as_ref()
+                        .expect("selected Diff must have its real view")
+                        .view
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                ),
+                _ => {}
+            }
+        });
     }
 
     fn close(&mut self, key: &TabKey) {
-        let bounds = self.tab(key).bounds();
-        let position = point(bounds.right() - px(18.), bounds.center().y);
+        let pane = self.reveal_tab(key);
+        let tab = self.tab(key).bounds();
+        self.visual
+            .simulate_mouse_move(tab.center(), None, Modifiers::none());
+        self.frame();
+        let record = self.painted(
+            self.owner.entity_id(),
+            &format!("close-workspace-tab-{key:?}"),
+        );
+        let visible = record.bounds.intersect(&record.clip);
+        assert!(visible.size.width > px(0.) && visible.size.height > px(0.));
+        let position = visible.center();
+        assert!(self.tab(key).bounds().contains(&position));
         self.visual
             .simulate_mouse_move(position, None, Modifiers::none());
         self.visual.simulate_click(position, Modifiers::none());
         self.pointer_out();
+        self.update(|owner, window, cx| {
+            assert!(!owner.workspace.tabs.iter().any(|(tab, _)| tab == key));
+            assert!(
+                !owner
+                    .workspace
+                    .selected
+                    .iter()
+                    .any(|tab| tab.as_ref() == Some(key))
+            );
+            match key {
+                TabKey::File(id) => assert!(!owner.workspace.files.contains_key(id)),
+                TabKey::Terminal(id) => assert!(!owner.workspace.terminals.contains_key(id)),
+                TabKey::Diff => assert!(owner.diff_controller.active.is_none()),
+                _ => {}
+            }
+            match owner.workspace.selected[pane].as_ref() {
+                Some(TabKey::File(id)) => assert!(
+                    owner.workspace.files[id]
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                ),
+                Some(TabKey::Terminal(id)) => assert!(
+                    owner.workspace.terminals[id]
+                        .view
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx)
+                ),
+                _ => {}
+            }
+        });
     }
 
     fn open_file(&mut self, index: usize) {
@@ -658,7 +829,15 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        self.visual.update(|window, _| window.remove_window());
+        if std::thread::panicking() {
+            return;
+        }
+        let handle = self.visual.window_handle();
+        if self.visual.windows().contains(&handle) {
+            self.visual
+                .update_window(handle, |_, window, _| window.remove_window())
+                .expect("existing fixture window must be removable");
+        }
     }
 }
 
@@ -930,7 +1109,10 @@ fn diff_loading_failure_retry_and_missing_body_never_wait_for_the_decorative_clo
         })
     });
     h.visual.update(|_, cx| {
-        diff.update(cx, |view, cx| view.begin_refresh(true, cx));
+        diff.update(cx, |view, cx| {
+            assert!(view.generation().is_none());
+            view.begin_refresh(true, cx);
+        });
     });
     h.click(&TabKey::Diff);
     h.assert_text(diff.entity_id(), "Loading workspace diff…");
@@ -1207,7 +1389,7 @@ fn terminal_driver_uses_real_parser_poll_paste_input_scroll_and_close(cx: &mut T
     assert!(!driver.closed());
     let weak = terminal.downgrade();
     h.close(&key);
-    drop(terminal);
+    h.visual.update(|_, _| drop(terminal));
     h.visual.run_until_parked();
     assert!(
         driver.closed(),
@@ -1396,17 +1578,17 @@ fn repeated_terminal_diff_file_switches_preserve_reading_entities_and_isolate_in
     h.click(&TabKey::File(1));
     let weak_diff = diff.downgrade();
     h.close(&TabKey::Diff);
-    drop(diff);
+    h.visual.update(|_, _| drop(diff));
     h.visual.run_until_parked();
     assert!(weak_diff.upgrade().is_none());
     let weak_file = file.downgrade();
     h.close(&TabKey::File(1));
-    h.files.remove(0);
-    drop(file);
+    let fixture_file = h.files.remove(0);
+    h.visual.update(|_, _| drop((file, fixture_file)));
     h.visual.run_until_parked();
     assert!(weak_file.upgrade().is_none());
     h.close(&terminal_key);
-    drop(terminal);
+    h.visual.update(|_, _| drop(terminal));
     h.visual.run_until_parked();
     assert!(driver.closed());
 }
