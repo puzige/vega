@@ -32,8 +32,9 @@
 
 ## 最小实现计划与允许范围
 
-- 仅修 `crates/vega_ui/src/cua_onboarding/card.rs` 和 `native/macos.rs`，确有必要的native包装接线可改 `native.rs`。父Agent维护本规格与关联文档；实现由专职子Agent写入，非实现者独立审查。
-- 采用锁定GPUI真实支持的原生构造路径，让nonactivating在首次显示/交互前成立；若需要先隐藏构造再配置并非激活地显示，先核对 `show:false`、window-kind及显示API的实际生命周期，不能把激活主应用作为补救。
+- 仅修 `crates/vega_ui/src/cua_onboarding/card.rs` 和 `native/macos.rs`，确有必要的native包装接线可改 `native.rs`。2026-10-23 用户在委派故障后明确要求本轮不使用子Agent、由当前Agent直接修复；本轮据此直接实现与自查，不将自查称为独立审查，不改变仓库其他任务的协作规则。
+- 采用锁定GPUI真实支持的原生构造路径，让nonactivating在首次显示/交互前成立：`WindowKind::PopUp` 在 `initWithContentRect` 前设置 NonactivatingPanel，配合 `show:false`、`focus:false`、无tabbing identifier隐藏创建；不使用其默认高层级显示。`App::open_window` 完成root构造、首次绘制并注册handle后，再对唯一自有panel配置并读回level3、失活不隐藏、跨应用collection，随后仅一次 `orderFrontRegardless` 非激活显示。没有NonactivatingPanel样式即拒绝，不靠事后补style修复初始化语义。
+- 配置/显示失败时关闭新建的隐藏卡片，经既有invalidate/release取消跟随并释放准备owner，返回host现有持久失败入口；不得留下不可见活动卡片或回退到高层级/激活显示。保留GPUI内部 `window.focus` 的键盘焦点初始化（该API只修改内部focus并刷新，不激活原生窗口）。
 - 精确匹配且唯一的自有panel上显式禁用失活隐藏，采用适合跨应用组的collection行为并读回验证；保留floating level3，不升级到popup/menu/screen-saver层级，不注入外部窗口，不修改系统设置或用户权限。
 - 只在必要初次显示/显式打开时使用非激活排序；不得150ms反复orderFrontRegardless/activate/makeKeyAndOrderFront强夺前台，不用轮询掩盖错误生命周期。
 - 跟随改用不需要Window的主线程实体更新，保留150ms、永久冻结、marker、失效/cancel，在排队更新内再次核对取消。不要为移动重写系统设置识别、坐标数学或服务层。
@@ -41,8 +42,26 @@
 
 ## 验证、阶段与恢复
 
-本地仅快速静态API/SDK/格式/diff/hash检查，不运行Vega、编译、build、cargo check、Clippy、测试或UI harness，不调用桌面输入/修改权限/安装应用替代用户验收。开发测试按风险决定，不为流程制造原生伪验证；若有Rust开发测试，必须实际Actions验证、留存可恢复源码/完整SHA/结果并在合并前清理。最终无Rust测试完整head由既有required `check (fmt, clippy, test)`验证；5分钟CI查询。独立审查绑定停写完整提交。
+本地仅快速静态API/SDK/格式/diff/hash检查，不运行Vega、编译、build、cargo check、Clippy、测试或UI harness，不调用桌面输入/修改权限/安装应用替代用户验收。开发测试按风险决定，不为流程制造原生伪验证；若有Rust开发测试，必须实际Actions验证、留存可恢复源码/完整SHA/结果并在合并前清理。最终无Rust测试完整head由既有required `check (fmt, clippy, test)`验证；5分钟CI查询。本轮按用户明确要求不使用子Agent，最终报告单列自查、云端门禁及未取得的独立审查/用户手测，不混称。
 
-截至此规格：录屏已读取，原生配置缺口已静态核实，跟随退出触发仍为待验证；未修改任何源码、未创建修复PR或取得本轮CI/审查。委派工具两次返回capacity_exceeded；历史执行被工具报告为running/release_state unknown，取消请求未得到已释放确认，复用同一旧writer也返回agent_busy。全量list_agents返回receipt too large且当前接口无筛选参数；精确wait/cancel读回仍未释放。不能以该执行环境故障冒充实现完成或绕过代码委派/独立审查要求。
+初始检查点（实现前）：录屏已读取，原生配置缺口已静态核实，跟随退出触发仍为待验证；当时未修改任何源码、未创建修复PR或取得本轮CI/审查。委派工具两次返回capacity_exceeded；历史执行被工具报告为running/release_state unknown，取消请求未得到已释放确认，复用同一旧writer也返回agent_busy。全量list_agents返回receipt too large且当前接口无筛选参数；精确wait/cancel读回仍未释放。不能以该执行环境故障冒充实现完成或绕过代码委派/独立审查要求。
 
-恢复条件：委派工具释放至少一个实现执行槽位，并能完成后续非写入独立审查；随后按上述最小范围实现、停写、审查和最终云端门禁。用户仍需在包含修正的新构建手测V1–V6；即使CI绿与合并，也只转In review、Issue开放，不能宣称跨应用拖放/跟随已验收。回滚仅revert本轮原生修复，不回退#574的紧凑界面与安全修复。
+恢复更新：用户已明确要求本轮不使用子Agent、由当前Agent直接修复，故不再等待委派槽位；此前没有新原生修复writer被成功启动，修复分支干净且源码未改。按上述最小范围直接实现、自查和最终云端门禁。用户仍需在包含修正的新构建手测V1–V6；即使CI绿与合并，也只转In review、Issue开放，不能宣称跨应用拖放/跟随已验收。回滚仅revert本轮原生修复，不回退#574的紧凑界面与安全修复。
+
+## 直接修复检查点（2026-10-23）
+
+已直接修改三份源码，未改保护路径。`card.rs` 隐藏构造原生nonactivating panel，在完整window/root注册后才请求显示，失败走既有Close→CancelPending→释放owner→移除窗口及host错误恢复入口；原卡内Configuration分支已由该失败路径替代。`native.rs`仅更新显示桥接名称。`native/macos.rs`限定唯一自有NSPanel、主线程和已隐藏/已nonactivating前置；清理与AllSpaces/FullScreenAuxiliary/CanJoinAllApplications冲突位，设置level3、hidesOnDeactivate=false、worksWhenModal=false并读回，全部成功后仅一次orderFrontRegardless，确认isVisible。没有新增激活、周期置前、捕获或权限操作。
+
+跟随改为`Context::spawn`（锁定GPUI明确在主线程执行）与`WeakEntity::update`；timer后与实体更新内均检查取消，tick仍检查open，follow仍检查following。150ms、首次拖拽同步冻结、18pt/1pt/clamp、寻找/重获设置窗口和关闭清理不变。GPUI内部focus不等于平台activate；不强制禁止panel成为key，保留原键盘入口。实际非激活输入、后台可见与授权窗口遮挡仍需手测，SDK配置不能替代。
+
+静态自查覆盖V1–V8对应的构造顺序、失败清理、collection互斥、BOOL/void ABI（arm64 bool、x86_64 i8）、owned-marker查找、主线程/生命周期及未变保护路径；未取得独立审查。`rustfmt --check --edition 2024 --config skip_children=true`（三份源码）、`cargo fmt --all -- --check`、`git diff --check`均退出0。保护路径相对基线diff为空。首次新增代码扫描使用了不受grep -E支持的lookahead而失败；改用rg PCRE2静态扫描后无违规新增，未把首次扫描当通过。
+
+未新增开发Rust测试：此delta是AppKit构造/排序与GPUI任务绑定，镜像mask或源码字符串测试不能证明真实跨应用交互；选择锁定API/SDK核对、云端完整required门禁及用户原生手测。最终树静态无Rust测试属性、测试路径、独占dev wiring；现有doctext只有text围栏，源码字符串中的Markdown不是可执行doctest。无本地运行/编译/测试，无CI修改、安装或权限变更。当前云端结果待取得，后续精确提交、run/job和实际计数写入PR/Issue。
+
+| 源码 | SHA256 |
+| --- | --- |
+| `card.rs` | `2b0cc42fb17a4849d2d7d3fa2458278f8fe07c562df6ec1a0c921d381b61860d` |
+| `native.rs` | `0501f2a263e6762c2f962c4517c2abcab43c235fc7b087f3706053f4039837bd` |
+| `native/macos.rs` | `294b6a74a7a80a5b39a71acdc57b530dae975cbfb7bac9ff8fcd35cd106d1cab` |
+
+相对初始规格提交`d32b61726074c49820024f28e8574c501f83e01c`的三源码binary diff SHA256：`2e93bdac0642d7cf8252f9fc8113c8849f8af53a7a8079fbc9ea8278f7a3154b`。

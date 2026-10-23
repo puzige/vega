@@ -51,13 +51,13 @@ pub(super) fn geometry() -> Result<DesktopGeometry, NativeError> {
     }
 }
 
-pub(super) fn configure_panel(marker: &str) -> Result<(), NativeError> {
+pub(super) fn show_panel(marker: &str) -> Result<(), NativeError> {
     #[cfg(all(
         target_os = "macos",
         any(target_arch = "aarch64", target_arch = "x86_64")
     ))]
     {
-        macos::configure_panel(marker)
+        macos::show_panel(marker)
     }
     #[cfg(not(all(
         target_os = "macos",
