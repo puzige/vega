@@ -43,7 +43,7 @@ struct Browser {
     connection: String,
 }
 
-fn environment(root: &Path) -> Vec<(OsString, OsString)> {
+pub(super) fn environment(root: &Path) -> Vec<(OsString, OsString)> {
     let mut env = vec![
         ("TMPDIR".into(), root.join("tmp").into_os_string()),
         ("LANG".into(), "en_US.UTF-8".into()),
@@ -54,7 +54,7 @@ fn environment(root: &Path) -> Vec<(OsString, OsString)> {
     env
 }
 
-fn private_directory() -> Result<PathBuf, Error> {
+pub(super) fn private_directory() -> Result<PathBuf, Error> {
     let root = std::env::temp_dir().join(format!("vega-computer-{}", ulid::Ulid::generate()));
     std::fs::create_dir(&root).map_err(|_| Error::Unavailable)?;
     #[cfg(unix)]
@@ -67,7 +67,7 @@ fn private_directory() -> Result<PathBuf, Error> {
     Ok(root)
 }
 
-fn server(executable: PathBuf, args: Vec<String>, root: &Path) -> LocalServer {
+pub(super) fn server(executable: PathBuf, args: Vec<String>, root: &Path) -> LocalServer {
     LocalServer {
         credential_policy: None,
         executable,
@@ -704,7 +704,7 @@ impl Backends {
     }
 }
 
-const DESKTOP_TOOLS: &[&str] = &[
+pub(super) const DESKTOP_TOOLS: &[&str] = &[
     "check_permissions",
     "list_apps",
     "list_windows",
@@ -716,15 +716,15 @@ const DESKTOP_TOOLS: &[&str] = &[
     "scroll",
 ];
 
-fn desktop_policy() -> Value {
+pub(super) fn desktop_policy() -> Value {
     json!({"allow":{"tools":DESKTOP_TOOLS}})
 }
 
-fn desktop_policy_path(root: &Path) -> PathBuf {
+pub(super) fn desktop_policy_path(root: &Path) -> PathBuf {
     root.join("policy.yaml")
 }
 
-fn desktop_environment(root: &Path) -> Vec<(OsString, OsString)> {
+pub(super) fn desktop_environment(root: &Path) -> Vec<(OsString, OsString)> {
     let mut values = environment(root);
     values.push((
         "CUA_DRIVER_POLICY_FILE".into(),
@@ -733,7 +733,7 @@ fn desktop_environment(root: &Path) -> Vec<(OsString, OsString)> {
     values
 }
 
-fn desktop_daemon_arguments(socket: &Path) -> Vec<OsString> {
+pub(super) fn desktop_daemon_arguments(socket: &Path) -> Vec<OsString> {
     [
         "serve",
         "--embedded",

@@ -1,6 +1,6 @@
-# Rust 测试清零与测试先行规则
+# Rust 测试清零与测试先行规则（历史规格）
 
-**当前交付规则更新**：以 [Rust 测试开发/交付生命周期](vega-rust-test-delivery-lifecycle.md) 为准：仅 Rust 执行 **测试 → RED → 实现 → GREEN → 删除测试与独占支持 → 最终空集门禁 → 正式 PR**。允许 draft PR 执行 RED/GREEN；Python 测试继续保留。本文原清零数量和历史验证记录不变。
+**已被取代的历史规格**：本文下方的清零范围、强制测试先行/RED/GREEN/冻结/禁止补测流程与验证记录仅用于解释当时操作，不是当前交付要求。现行规则以 [验证与快速交付政策](vega-rust-test-delivery-lifecycle.md) 和 [执行指南 §7.2](vega-exec-guide.md#72-快速交付与按风险验证当前规则) 为准：取消强制 TDD，按风险验证；Rust 测试可在开发分支辅助并留痕，但合并前必须清理，不得进入 master。现存 Python 测试保留；历史原文与证据不重写。
 
 ## 用户裁决与范围
 

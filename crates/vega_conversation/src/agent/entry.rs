@@ -711,6 +711,12 @@ where
         prepared.request.tool_config.exact_rules = authority.exact_rules.clone();
         prepared.request.context_budget = actor_config.delegated_context_budget;
     }
+    if actor_config.delegated {
+        prepared.request.context_budget = prepared
+            .request
+            .context_budget
+            .map(vega_runtime::ContextBudget::without_automatic_compaction);
+    }
     let subagent_mcp = mcp_servers.clone();
     prepared.request.tool_config = prepared
         .request
