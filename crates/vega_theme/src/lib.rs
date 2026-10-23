@@ -315,6 +315,8 @@ pub struct Motion;
 
 impl Motion {
     pub const INTERACTION_DURATION_MS: u64 = 120;
+    pub const DISCLOSURE_TURN_MS: u64 = 120;
+    pub const TAB_SELECTION_MS: u64 = 120;
     pub const THINKING_SHIMMER_MS: u64 = 1800;
 }
 
