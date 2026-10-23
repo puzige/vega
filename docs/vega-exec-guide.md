@@ -137,7 +137,7 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ### 7.1 历史 E2E 证据分级与仓库模板
 
-以下分级与示例仅用于解释既有历史报告，不要求保留其中 Rust 测试、恢复真实 E2E 或在本地执行。当前清零范围、后续测试和门禁以 [本轮规格](vega-rust-test-reset-tdd.md) 与 §7.2 为准。
+以下分级与示例仅用于解释既有历史报告，不要求保留其中 Rust 测试、恢复真实 E2E 或在本地执行。后续测试、最终清理和门禁以 [当前验证与交付政策](vega-rust-test-delivery-lifecycle.md) 与 §7.2 为准；[最初清零规格](vega-rust-test-reset-tdd.md) 仅作历史记录，不恢复其强制 TDD。
 
 | 等级 | 允许的 seam | 可证明的范围 |
 |---|---|---|
