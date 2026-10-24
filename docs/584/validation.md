@@ -2,6 +2,10 @@
 
 Issue [#584](https://github.com/puzige/vega/issues/584), PR [#585](https://github.com/puzige/vega/pull/585).
 
+## User acceptance follow-up (2026-10-25)
+
+The user reports that the scrollbar works but ordinary-reply text drag selection does not automatically scroll at the right edge. This is not accepted. #584 is back In progress; the new investigation starts from the merged #511 implementation, not from the earlier scroll-only branch. See the [follow-up contract](code-selection-repeat-drag.md) and [current validation record](selection-repeat-validation.md). The historical results below retain their original scope.
+
 ## Development verification
 
 Original development head: `89e75717df40b167553f0b04c47ae97b91ad5d21`, based on `b2248996cc68497ef050539fd69f05cc723e4c0a`.

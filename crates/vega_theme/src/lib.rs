@@ -317,6 +317,8 @@ impl Motion {
     pub const INTERACTION_DURATION_MS: u64 = 120;
     pub const DISCLOSURE_TURN_MS: u64 = 120;
     pub const TAB_SELECTION_MS: u64 = 120;
+    pub const COPY_SWAP_MS: u64 = 80;
+    pub const COPY_RECEIPT_MS: u64 = 1000;
     pub const THINKING_SHIMMER_MS: u64 = 1800;
 }
 
@@ -351,7 +353,7 @@ impl Layout {
     pub const CONVERSATION_DIVIDER_GAP: f32 = 4.5;
     pub const CONVERSATION_DIVIDER_HEIGHT: f32 = 1.0;
     pub const CONVERSATION_BODY_TOP: f32 = 16.0;
-    pub const CONVERSATION_PARAGRAPH_GAP: f32 = 15.5;
+    pub const CONVERSATION_PARAGRAPH_GAP: f32 = 14.0;
     pub const CONVERSATION_STAGE_TOP: f32 = 24.0;
     pub const CONVERSATION_TOOL_HEIGHT: f32 = 25.0;
     pub const CONVERSATION_MARKER_WIDTH: f32 = 6.0;
@@ -427,7 +429,7 @@ impl Layout {
     pub const MARKDOWN_PARAGRAPH_GAP: f32 = 12.0;
     pub const MARKDOWN_HEADING_BEFORE: f32 = 24.0;
     pub const MARKDOWN_HEADING_AFTER: f32 = 12.0;
-    pub const MARKDOWN_LIST_ITEM_GAP: f32 = 6.0;
+    pub const MARKDOWN_LIST_ITEM_GAP: f32 = 0.0;
     pub const MARKDOWN_LIST_INDENT: f32 = 24.0;
     pub const MARKDOWN_LIST_PARAGRAPH_GAP: f32 = 8.0;
     pub const MARKDOWN_CODE_PADDING: f32 = 12.0;

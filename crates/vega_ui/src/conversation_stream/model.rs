@@ -195,6 +195,7 @@ impl QuoteOwner {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StreamCodeBlock {
+    pub(crate) identity: (u64, usize),
     pub(crate) language: Option<String>,
     pub(crate) code: Arc<str>,
 }
@@ -440,6 +441,7 @@ pub(crate) fn flatten_node(
         }
         RenderNode::CodeBlock { language, code } => {
             let code_block = Arc::new(StreamCodeBlock {
+                identity: (block_id, node_identity),
                 language: language.clone(),
                 code: code.as_str().into(),
             });

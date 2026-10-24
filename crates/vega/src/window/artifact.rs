@@ -721,17 +721,21 @@ impl VegaWindow {
         let capture = expected.capture.clone();
         let stream = active.identity.stream.clone();
         let call_id = capture.as_ref().map(|(call_id, _)| call_id);
+        let capture_error = match &result {
+            Ok((_, result)) => result.capture_error,
+            Err(code) => Some(*code),
+        };
         if capture.as_ref().is_some_and(|(call_id, owner)| {
             !stream
                 .read(cx)
                 .matches_artifact_capture_owner(call_id, owner)
         }) {
-            if let Err(
+            if let Some(
                 code @ (GitWorkspaceErrorCode::ArtifactConflict
                 | GitWorkspaceErrorCode::ArtifactLimit),
-            ) = &result
+            ) = capture_error
             {
-                self.fail_artifact_capture_route(identity, *code, cx);
+                self.fail_artifact_capture_route(identity, code, cx);
                 return;
             }
             if let Some(active) = self.artifact_controller.route_mut(identity) {
@@ -740,20 +744,6 @@ impl VegaWindow {
             self.launch_artifact_terminal_for(identity, cx);
             self.artifact_controller.retire_drained();
             return;
-        }
-        if let Err(code) = &result {
-            if let Some(call_id) = &call_id {
-                stream.update(cx, |stream, cx| {
-                    stream.apply_artifact_capture_error(call_id, *code, cx)
-                });
-            }
-            if matches!(
-                code,
-                GitWorkspaceErrorCode::ArtifactConflict | GitWorkspaceErrorCode::ArtifactLimit
-            ) {
-                self.fail_artifact_capture_route(identity, *code, cx);
-                return;
-            }
         }
         if let Some(active) = self.artifact_controller.route_mut(identity) {
             active.terminal_in_flight = None;
@@ -820,6 +810,20 @@ impl VegaWindow {
                         active.cards.insert(projection.id, card);
                     }
                 }
+            }
+        }
+        if let Some(code) = capture_error {
+            if let Some(call_id) = &call_id {
+                stream.update(cx, |stream, cx| {
+                    stream.apply_artifact_capture_error(call_id, code, cx)
+                });
+            }
+            if matches!(
+                code,
+                GitWorkspaceErrorCode::ArtifactConflict | GitWorkspaceErrorCode::ArtifactLimit
+            ) {
+                self.fail_artifact_capture_route(identity, code, cx);
+                return;
             }
         }
         self.launch_artifact_terminal_for(identity, cx);

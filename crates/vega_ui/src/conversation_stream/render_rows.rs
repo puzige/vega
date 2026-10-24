@@ -1,5 +1,6 @@
 use super::code_drag::CodeDragSelection;
 use super::code_viewport::CodeViewport;
+use super::copy_receipt::{CopyReceiptButton, CopySource};
 use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
@@ -832,8 +833,11 @@ fn code_header(
     ordinal: usize,
     colors: &ThemeColors,
 ) -> AnyElement {
-    let source = code.code.clone();
     let selector = format!("markdown-code-copy-{owner}-{ordinal}");
+    let receipt_id = format!(
+        "code-copy-receipt-{owner}-{}-{}",
+        code.identity.0, code.identity.1
+    );
     div()
         .w_full()
         .min_w_0()
@@ -851,17 +855,19 @@ fn code_header(
                 .text_color(colors.text_secondary)
                 .children(code.language.clone()),
         )
-        .child(
-            crate::icons::icon_button(Icon::Copy, "复制代码", *colors, move |_, _, cx| {
-                if !source.is_empty() {
-                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(source.to_string()));
-                }
-            })
-            .id(gpui_kit::SharedString::from(selector.clone()))
-            .size(px(Layout::COPY_ACTION_SIZE))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .focus_visible(|style| style.bg(colors.bg_active)),
-        )
+        .child(CopyReceiptButton::new(
+            receipt_id.into(),
+            CopySource::Code(code.code.clone()),
+            "复制代码",
+            *colors,
+            |button| {
+                button
+                    .id(gpui_kit::SharedString::from(selector))
+                    .size(px(Layout::COPY_ACTION_SIZE))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .focus_visible(|style| style.bg(colors.bg_active))
+            },
+        ))
         .into_any_element()
 }
 
@@ -1490,7 +1496,6 @@ pub(super) fn message_with_copy(
         return body;
     }
     let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
-    let source = copy.clone();
     div()
         .id(("message-with-copy", id))
         .group(group.clone())
@@ -1511,24 +1516,25 @@ pub(super) fn message_with_copy(
                 })
                 .when(!user, |row| row.left_0().bottom_0())
                 .flex()
-                .child(
-                    crate::icons::icon_button(
-                        crate::icons::Icon::Copy,
-                        if user {
-                            "复制消息"
-                        } else {
-                            "复制最终回复"
-                        },
-                        colors,
-                        move |_, _, cx| source.copy(cx),
-                    )
-                    .id(("message-copy", id))
-                    .size(px(Layout::COPY_ACTION_SIZE))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .opacity(0.)
-                    .group_hover(group, |style| style.opacity(1.))
-                    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
-                ),
+                .child(CopyReceiptButton::new(
+                    format!("message-copy-receipt-{}", copy.id).into(),
+                    CopySource::Message(copy.clone()),
+                    if user {
+                        "复制消息"
+                    } else {
+                        "复制最终回复"
+                    },
+                    colors,
+                    |button| {
+                        button
+                            .id(("message-copy", id))
+                            .size(px(Layout::COPY_ACTION_SIZE))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .opacity(0.)
+                            .group_hover(group, |style| style.opacity(1.))
+                            .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
+                    },
+                )),
         )
         .into_any_element()
 }

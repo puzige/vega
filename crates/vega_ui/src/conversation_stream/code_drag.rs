@@ -430,10 +430,13 @@ impl Element for CodeDragElement {
                     state.cancel();
                     return;
                 }
-                state.pause();
                 state.pointer = event.position;
                 state.window_pointer = event.position;
                 if state.origin.is_none() {
+                    return;
+                }
+                if state.delta() == px(0.) {
+                    state.pause();
                     return;
                 }
             }
