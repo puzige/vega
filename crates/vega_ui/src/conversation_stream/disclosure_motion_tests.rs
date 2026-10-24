@@ -1,5 +1,11 @@
 use super::*;
-use std::{cell::RefCell, f32::consts::FRAC_PI_2, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    f32::consts::FRAC_PI_2,
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::disclosure_paint_probe::{self as probe, GlyphPaint};
 use crate::icons::Icon;
@@ -840,6 +846,10 @@ fn stage_final_text(stream: &Entity<ConversationStream>, id: &str, cx: &mut App)
 
 fn append_final(stream: &Entity<ConversationStream>, id: &str, end: usize, cx: &mut App) {
     stage_final_text(stream, id, cx);
+    complete_final(stream, id, end, cx);
+}
+
+fn complete_final(stream: &Entity<ConversationStream>, id: &str, end: usize, cx: &mut App) {
     stream.update(cx, |stream, cx| {
         stream.apply_event(
             ConversationEvent::AssistantResponseCompleted {
@@ -854,10 +864,12 @@ fn append_final(stream: &Entity<ConversationStream>, id: &str, end: usize, cx: &
 struct StreamSurface {
     stream: Entity<ConversationStream>,
     artifact_preview: Option<Entity<ArtifactCard>>,
+    root_renders: Rc<Cell<usize>>,
 }
 
 impl Render for StreamSurface {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.root_renders.set(self.root_renders.get() + 1);
         let surface = div().size_full().child(gpui_kit::base::TextSelectionLayer);
         if let Some(card) = self.artifact_preview.clone() {
             let count = card.read(cx).row_count();
@@ -885,6 +897,7 @@ struct StreamFixture {
     stream: Entity<ConversationStream>,
     window: WindowHandle<StreamSurface>,
     cx: HeadlessAppContext,
+    root_renders: Rc<Cell<usize>>,
 }
 
 impl StreamFixture {
@@ -898,18 +911,25 @@ impl StreamFixture {
             cx.set_global(vega_theme::Theme::light());
         });
         let stream = cx.new(|cx| ConversationStream::new(thread(), cx));
+        let root_renders = Rc::new(Cell::new(0));
         let window = cx
             .open_window(size(px(640.), px(1200.)), |_, cx| {
                 cx.new(|_| StreamSurface {
                     stream: stream.clone(),
                     artifact_preview: None,
+                    root_renders: root_renders.clone(),
                 })
             })
             .unwrap();
         cx.update_window(window.into(), |_, window, _| window.activate_window())
             .unwrap();
         cx.run_until_parked();
-        Self { cx, window, stream }
+        Self {
+            cx,
+            window,
+            stream,
+            root_renders,
+        }
     }
 
     fn draw(&mut self) -> Vec<GlyphPaint> {
@@ -2177,6 +2197,97 @@ fn measured_work() -> (
     (counts, observations)
 }
 
+impl StreamFixture {
+    fn measurement_frame(
+        &mut self,
+        owner: &str,
+        phase: &str,
+        step: usize,
+    ) -> (
+        Vec<GlyphPaint>,
+        LayoutCounts,
+        Vec<crate::disclosure_layout_probe::Observation>,
+    ) {
+        use crate::disclosure_layout_probe::{self as layout, Observation};
+        let prior_paints = probe::take();
+        let prior_observations = layout::take();
+        assert!(
+            prior_paints.is_empty(),
+            "phase={phase} step={step} unexpected work before clock: {prior_paints:?}"
+        );
+        assert!(
+            prior_observations.is_empty(),
+            "phase={phase} step={step} unexpected layout before clock: {prior_observations:?}"
+        );
+        let before_renders = self.root_renders.get();
+        let executor = self.cx.background_executor().clone();
+        let before = executor.now();
+        executor
+            .dispatcher()
+            .as_test()
+            .expect("WIRING: measurement uses the real headless sampler clock")
+            .scheduler()
+            .clock()
+            .advance(Duration::from_millis(15));
+        let clock_paints = probe::take();
+        let clock_observations = layout::take();
+        assert_eq!(
+            executor.now(),
+            before + Duration::from_millis(15),
+            "phase={phase} step={step} sampler time"
+        );
+        assert_eq!(
+            self.root_renders.get(),
+            before_renders,
+            "phase={phase} step={step} pure clock advance rendered root"
+        );
+        assert!(
+            clock_paints.is_empty(),
+            "phase={phase} step={step} pure clock advance painted glyphs: {clock_paints:?}"
+        );
+        assert!(
+            clock_observations.is_empty(),
+            "phase={phase} step={step} pure clock advance caused layout work: {clock_observations:?}"
+        );
+        let callbacks = self
+            .cx
+            .update_window(self.window.into(), |_, window, cx| {
+                let callbacks = window.simulate_next_frame(cx);
+                window.refresh();
+                callbacks
+            })
+            .unwrap();
+        let paints = probe::take();
+        let (counts, observations) = measured_work();
+        assert_eq!(
+            self.root_renders.get(),
+            before_renders + 1,
+            "phase={phase} step={step} callbacks={callbacks} requires one full-window root render; glyphs={paints:?}; observations={observations:?}"
+        );
+        assert_eq!(
+            paints
+                .iter()
+                .filter(|paint| paint.scope.owner.as_ref() == owner)
+                .count(),
+            1,
+            "phase={phase} step={step} target glyph must paint once: {paints:?}"
+        );
+        assert!(
+            observations
+                .iter()
+                .any(|event| matches!(event, Observation::Layout(_, _))),
+            "phase={phase} step={step} real item layout: {observations:?}"
+        );
+        assert!(
+            observations.iter().any(
+                |event| matches!(event, Observation::Bounds(_, _, bounds) if !bounds.is_empty())
+            ),
+            "phase={phase} step={step} real item prepaint bounds: {observations:?}"
+        );
+        (paints, counts, observations)
+    }
+}
+
 #[gpui_kit::test]
 fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redraws(
     _: &mut gpui_kit::TestAppContext,
@@ -2277,20 +2388,22 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
             .map(|(owner, index)| (owner, Some(index)))
             .collect::<Vec<_>>()
     );
+    fixture.cx.run_until_parked();
+    fixture.source_paint(&thinking);
+    let (_, preparation_observations) = measured_work();
+    assert!(
+        preparation_observations.iter().any(
+            |event| matches!(event, layout::Observation::Bounds(_, _, bounds) if !bounds.is_empty())
+        ),
+        "WIRING: prepared source reached actual item prepaint: {preparation_observations:?}"
+    );
     let body = fixture
         .cx
         .update(|cx| fixture.stream.read(cx).list.bounds_for_item(0).unwrap());
     let mut moving_work = Vec::new();
     for step in 1..=8 {
-        layout::take();
-        fixture.cx.advance_clock(Duration::from_millis(15));
-        fixture
-            .cx
-            .update_window(fixture.window.into(), |_, window, cx| {
-                window.simulate_next_frame(cx);
-            })
-            .unwrap();
-        let paints = fixture.draw();
+        let (paints, counts, observations) =
+            fixture.measurement_frame(header.scope.owner.as_ref(), "moving", step);
         let glyph = paints
             .iter()
             .find(|paint| paint.scope.owner == header.scope.owner)
@@ -2304,7 +2417,6 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
                 .update(|cx| fixture.stream.read(cx).list.bounds_for_item(0).unwrap()),
             body
         );
-        let (counts, observations) = measured_work();
         assert!(
             counts.invalidates.is_empty(),
             "decoration must not invalidate a message for any owner/index: {observations:?}"
@@ -2313,26 +2425,18 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
             counts.remeasures.is_empty(),
             "decoration must not explicitly remeasure a message for any owner/index: {observations:?}"
         );
-        moving_work.push(counts);
+        moving_work.push((counts, observations));
     }
-    for expected in moving_work {
-        layout::take();
-        fixture.cx.advance_clock(Duration::from_millis(15));
-        fixture
-            .cx
-            .update_window(fixture.window.into(), |_, window, cx| {
-                window.simulate_next_frame(cx);
-            })
-            .unwrap();
-        fixture.draw();
-        let (settled, observations) = measured_work();
+    for (step, (expected, moving_observations)) in moving_work.into_iter().enumerate() {
+        let (_, settled, observations) =
+            fixture.measurement_frame(header.scope.owner.as_ref(), "settled", step + 1);
         assert!(
             !settled.layouts.is_empty(),
             "WIRING: ordinary List layout measures visible messages"
         );
         assert_eq!(
             expected, settled,
-            "same input/window/clock redraw: no extra decorative message layout: {observations:?}"
+            "same input/window/clock redraw: no extra decorative message layout; moving={moving_observations:?}; settled={observations:?}"
         );
     }
 }
@@ -2903,6 +3007,7 @@ impl StreamFixture {
 fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_states_once(
     _: &mut gpui_kit::TestAppContext,
 ) {
+    use crate::disclosure_layout_probe::{self as layout, SelectionPaint};
     for reading in ["manual", "focus", "scrolled"] {
         let mut fixture = StreamFixture::open();
         if reading == "scrolled" {
@@ -2922,13 +3027,16 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             .find(|paint| {
                 paint.scope.owner.as_ref() == format!("run-stage-{}-0", group.entity_id())
             })
-            .expect("WIRING: actual expanded current stage");
+            .unwrap_or_else(|| panic!("reading={reading} WIRING: actual expanded current stage"));
         fixture
             .cx
             .update_window(fixture.window.into(), |_, window, cx| {
                 if reading == "focus" {
                     stage.scope.focus.focus(window, cx);
-                    assert!(stage.scope.focus.is_focused(window));
+                    assert!(
+                        stage.scope.focus.is_focused(window),
+                        "reading={reading} WIRING: real stage owns focus"
+                    );
                 } else {
                     fixture
                         .stream
@@ -2945,18 +3053,18 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 let stream = fixture.stream.read(cx);
                 assert!(
                     !stream.following_tail(),
-                    "WIRING: actual wheel input detached tail follow"
+                    "reading={reading} WIRING: actual wheel input detached tail follow"
                 );
                 assert_ne!(
                     stream.scroll_anchor_snapshot(),
                     before_scroll,
-                    "WIRING: actual scroll changed reading position"
+                    "reading={reading} WIRING: actual scroll changed reading position"
                 );
             });
         }
         assert!(
             fixture.selected_text().is_empty(),
-            "independent reading precondition, no selection"
+            "reading={reading} independent reading precondition, no selection"
         );
         let source = fixture.source_paint(&thinking);
         let anchor = fixture
@@ -2968,15 +3076,81 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 window.focused(cx).unwrap()
             })
             .unwrap();
-        crate::disclosure_layout_probe::take_selection_paints();
-        fixture.final_event("current", COMMENTARY.len() + FINAL_TEXT.len());
+        fixture
+            .cx
+            .update(|cx| stage_final_text(&fixture.stream, "current", cx));
+        let pretrust_paints = layout::take_selection_paints();
+        let pretrust_glyphs = probe::take();
         fixture.cx.update(|cx| {
-            assert!(!group.read(cx).expanded());
-            assert!(group.read(cx).process_in_details());
-            assert!(!thinking.read(cx).source_painted());
+            assert!(
+                group.read(cx).expanded(),
+                "reading={reading} untrusted Final keeps process open; source_paints={}; glyphs={pretrust_glyphs:?}",
+                pretrust_paints.len()
+            );
+            assert!(
+                thinking.read(cx).source_painted(),
+                "reading={reading} untrusted Final preserves visible source; source_paints={}; glyphs={pretrust_glyphs:?}",
+                pretrust_paints.len()
+            );
+        });
+        let thinking_owner = format!("thinking-disclosure-{}", thinking.entity_id());
+        let assert_hidden = |batch: &str, paints: &[SelectionPaint], glyphs: &[GlyphPaint]| {
+            assert!(
+                paints.iter().all(|paint| paint.copy_id != source.copy_id),
+                "reading={reading} {batch} must not paint hidden source; records={:?}",
+                paints
+                    .iter()
+                    .map(|paint| (
+                        paint.copy_id,
+                        paint.handle_id,
+                        paint.bounds,
+                        paint.content_mask
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                glyphs.iter().all(|paint| {
+                    paint.scope.owner != stage.scope.owner
+                        && paint.scope.owner.as_ref() != thinking_owner
+                }),
+                "reading={reading} {batch} must not paint hidden stage or Thinking controls: {glyphs:?}"
+            );
+        };
+        fixture.cx.update(|cx| {
+            complete_final(
+                &fixture.stream,
+                "current",
+                COMMENTARY.len() + FINAL_TEXT.len(),
+                cx,
+            )
+        });
+        let automatic_paints = layout::take_selection_paints();
+        let automatic_glyphs = probe::take();
+        assert_hidden(
+            "first Final automatic frames",
+            &automatic_paints,
+            &automatic_glyphs,
+        );
+        let collapsed = fixture.draw();
+        let collapsed_paints = layout::take_selection_paints();
+        assert_hidden("first Final explicit frame", &collapsed_paints, &collapsed);
+        fixture.cx.update(|cx| {
+            assert!(
+                !group.read(cx).expanded(),
+                "reading={reading} first trusted Final closes process"
+            );
+            assert!(
+                group.read(cx).process_in_details(),
+                "reading={reading} first trusted Final moves process into details"
+            );
+            assert!(
+                !thinking.read(cx).source_painted(),
+                "reading={reading} first trusted Final hides source"
+            );
             assert_eq!(
                 thinking.read(cx).source_copy.original_text(),
-                SOURCE.repeat(12)
+                SOURCE.repeat(12),
+                "reading={reading} source bytes survive first trusted Final"
             );
             assert_eq!(
                 fixture
@@ -2984,87 +3158,128 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                     .read(cx)
                     .completion_response(&["current".into()], cx)
                     .as_deref(),
-                Some(FINAL_TEXT)
+                Some(FINAL_TEXT),
+                "reading={reading} exact Final bytes"
             );
             if reading == "scrolled" {
-                assert_eq!(fixture.stream.read(cx).scroll_anchor_snapshot(), anchor);
+                assert_eq!(
+                    fixture.stream.read(cx).scroll_anchor_snapshot(),
+                    anchor,
+                    "reading={reading} first Final preserves reading anchor"
+                );
             }
         });
-        assert!(
-            crate::disclosure_layout_probe::take_selection_paints()
-                .iter()
-                .all(|paint| paint.copy_id != source.copy_id),
-            "first Final stops painting the previously visible source"
-        );
-        let collapsed = fixture.draw();
-        assert!(
-            collapsed.iter().all(|paint| {
-                paint.scope.owner != stage.scope.owner
-                    && paint.scope.owner.as_ref()
-                        != format!("thinking-disclosure-{}", thinking.entity_id())
-            }),
-            "hidden stage and Thinking controls are no longer painted"
-        );
         let header = collapsed
             .into_iter()
             .find(|paint| {
                 paint.scope.owner.as_ref() == format!("run-disclosure-{}", group.entity_id())
             })
-            .expect("WIRING: current run header stays visible after first Final");
+            .unwrap_or_else(|| {
+                panic!(
+                    "reading={reading} WIRING: current run header stays visible after first Final"
+                )
+            });
         fixture
             .cx
             .update_window(fixture.window.into(), |_, window, cx| {
-                assert!(!thinking.read(cx).contains_focus(window, cx));
-                assert!(!stage.scope.focus.is_focused(window));
+                assert!(
+                    !thinking.read(cx).contains_focus(window, cx),
+                    "reading={reading} hidden Thinking cannot hold focus"
+                );
+                assert!(
+                    !stage.scope.focus.is_focused(window),
+                    "reading={reading} hidden stage cannot hold focus"
+                );
                 if reading == "focus" {
                     assert!(
                         header.scope.focus.is_focused(window),
-                        "hidden process focus returns to visible run header"
+                        "reading={reading} hidden process focus returns to visible run header"
                     );
                 } else {
                     assert_eq!(
                         window.focused(cx),
                         Some(before_focus),
-                        "manual/scrolled reading must not steal Composer focus"
+                        "reading={reading} reading must not steal Composer focus"
                     );
                     header.scope.focus.focus(window, cx);
                 }
                 window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
-                assert!(group.read(cx).expanded());
+                assert!(
+                    group.read(cx).expanded(),
+                    "reading={reading} real Enter reopens process"
+                );
             })
             .unwrap();
         let reopened = fixture.source_paint(&thinking);
-        assert_eq!(reopened.copy_id, source.copy_id);
-        assert_eq!(reopened.handle_id, source.handle_id);
+        assert_eq!(
+            reopened.copy_id, source.copy_id,
+            "reading={reading} reopened source copy"
+        );
+        assert_eq!(
+            reopened.handle_id, source.handle_id,
+            "reading={reading} reopened source handle"
+        );
+        layout::take_selection_paints();
+        probe::take();
         fixture
             .cx
             .update_window(fixture.window.into(), |_, window, cx| {
-                assert!(header.scope.focus.is_focused(window));
+                assert!(
+                    header.scope.focus.is_focused(window),
+                    "reading={reading} real header keeps focus before Enter closes"
+                );
                 window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
-                assert!(!group.read(cx).expanded());
+                assert!(
+                    !group.read(cx).expanded(),
+                    "reading={reading} real Enter closes process"
+                );
             })
             .unwrap();
-        crate::disclosure_layout_probe::take_selection_paints();
-        fixture.draw();
-        assert!(
-            crate::disclosure_layout_probe::take_selection_paints()
-                .iter()
-                .all(|paint| paint.copy_id != source.copy_id)
+        let automatic_paints = layout::take_selection_paints();
+        let automatic_glyphs = probe::take();
+        assert_hidden(
+            "Enter close automatic frames",
+            &automatic_paints,
+            &automatic_glyphs,
         );
-        fixture
-            .cx
-            .update(|cx| assert!(!thinking.read(cx).source_painted()));
+        let closed = fixture.draw();
+        let closed_paints = layout::take_selection_paints();
+        assert_hidden("Enter close explicit frame", &closed_paints, &closed);
+        assert!(
+            closed
+                .iter()
+                .any(|paint| paint.scope.owner == header.scope.owner),
+            "reading={reading} WIRING: real run header paints after Enter closes"
+        );
+        fixture.cx.update(|cx| {
+            assert!(
+                !thinking.read(cx).source_painted(),
+                "reading={reading} source stays hidden after Enter closes"
+            )
+        });
         fixture
             .cx
             .update_window(fixture.window.into(), |_, window, cx| {
-                assert!(header.scope.focus.is_focused(window));
+                assert!(
+                    header.scope.focus.is_focused(window),
+                    "reading={reading} real header keeps focus for second reopen"
+                );
                 window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
-                assert!(group.read(cx).expanded());
+                assert!(
+                    group.read(cx).expanded(),
+                    "reading={reading} real Enter reopens process again"
+                );
             })
             .unwrap();
         let restored = fixture.source_paint(&thinking);
-        assert_eq!(restored.copy_id, source.copy_id);
-        assert_eq!(restored.handle_id, source.handle_id);
+        assert_eq!(
+            restored.copy_id, source.copy_id,
+            "reading={reading} restored source copy"
+        );
+        assert_eq!(
+            restored.handle_id, source.handle_id,
+            "reading={reading} restored source handle"
+        );
         fixture.cx.update(|cx| {
             fixture.stream.update(cx, |stream, cx| {
                 stream.apply_event(
@@ -3087,11 +3302,12 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
         fixture.cx.update(|cx| {
             assert!(
                 group.read(cx).expanded(),
-                "manual reopen wins after first forced collapse"
+                "reading={reading} manual reopen wins after first forced collapse"
             );
             assert_eq!(
                 thinking.read(cx).source_copy.original_text(),
-                SOURCE.repeat(12)
+                SOURCE.repeat(12),
+                "reading={reading} source bytes survive repeated Final and completion"
             );
             assert_eq!(
                 fixture
@@ -3099,7 +3315,8 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                     .read(cx)
                     .completion_response(&["current".into()], cx)
                     .as_deref(),
-                Some(FINAL_TEXT)
+                Some(FINAL_TEXT),
+                "reading={reading} repeated Final keeps exact completion text"
             );
         });
     }

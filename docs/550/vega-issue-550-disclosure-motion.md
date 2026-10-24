@@ -125,3 +125,19 @@
 - D07 的真实 source 拖选须起于实际已准备并 paint 的可选文本 run/hitbox，按同一 source copy 身份与现有 layout/bounds/content mask 定位。不能以 chevron 的猜测坐标、直接改缓存或常量 selection 代替真实鼠标事件；原非空、清理、焦点/Enter 与原文字节断言保留。
 - D04 的无内容/disabled Thinking header 应跳过键盘 Tab，已有可展开 Thinking 保持可达；显式 `FocusHandle` 的 tab-stop 必须随真实 `can_expand` 同步，不能只设置外层 div 标志。稳定 handle identity、enabled 顺序与原热区/显隐保持。
 - D05 的目标继续是失活后恢复不补播，包括没有失活 glyph 采样的情况。当前 Headless 自动 draw 与原严格前置的关系仍在只读核查；没有固定合法观察路线前，不删除或放宽该回归来合并。
+
+### 2026-10-24 用户对 D05 验证边界的裁决
+
+用户已明确选择：“保留生产要求，明确记录 D05 未获动态证明，经其余修复/独审/CI 后合并（推荐）”。该裁决取代上文等待合法路线/用户答复的合并停止边界，不改变 D05 产品目标，也不将现有严格测试改为通过。锁定 GPUI test-support 的真实 activation 自动 draw 使 no-inactive-draw 前提未成立，静态生产审查未见相应缺陷；该场景仍未获得同一保留 channel 的动态证明。
+
+其余必要行为修复和非写入者独审继续完成，严格 D05 开发测试及原始失败、固定源码/patch 保留验证留痕。随后按当前仓库政策统一清理整套开发 Rust 测试及独占支持，对最终无 Rust 测试 head 做独审与完整 required CI；0 发现/0 执行只证明交付树门禁，不充作 D05 或整体行为全通过。合并后保持 Issue 开放，等待用户在 master 手测。
+
+### 2026-10-24 Final 观察事件边界
+
+D07/#416 的隐藏阴性窗口从合法 `AssistantResponseCompleted(Final)` 开始。Started/TextDelta 尚未确认可信 Final，仍允许原 source 正文正常绘制，不能将这段记录混入 Final 后“未绘制”断言。测试在仅 Completed 之前划清 pre-trust 边界，并分别逐条检查该事件之后的全部自动 paint 和显式当前帧；显式帧须有同轮真实 run header 阳性。不得在 Completed 后丢弃自动记录、只保留末帧或轮询直到消失；Enter 重关也按操作前边界检查所有后续帧。原 source/focus/selection/anchor/全文/真实 Enter 恢复和一次性契约不变。
+
+### 2026-10-24 D06 相同真实绘制边界
+
+原 moving 样本经模拟帧回调自动 draw 后又显式 draw，settled 样本只显式 draw，不能直接比较这两种不同数量的绘制。D06 两 phase 共用窄测试 helper：使用锁定公开 API 的同一真实 TestClock 仅推进15ms，验证 sampler now 同步且期间无root/glyph/layout工作，再在同一次 update 中 simulate_next_frame + refresh，统一由test-support flush自动绘制，不再显式补画。每步要求真实根render增加一次、目标glyph实际paint一次及真实item Layout/Bounds阳性；计数只限受控full-window刷新，不泛化为全部cached draw。
+
+保留原始全量owner/index记录，八个装饰样本的角度/几何、零额外invalidate/显式remeasure及与同输入终态样本的LayoutCounts精确比较；不除以draw数、不去重、不改期望总数、不按moving测得次数填充settled。该fixture没有RunStarted，group started_at=None因而未排clock_task；既有shimmer显式停用，开始比较前保留异步停泊及真实source已准备/paint阳性。不取消生产任务，不改timer、List、框架/registry或通用CI。若统一边界后仍失败，以新原始记录继续诊断。

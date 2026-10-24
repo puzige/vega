@@ -268,3 +268,56 @@ D05 依赖事实固定为 gpui-kit/gpui-base `0.6.1`、gpui-pre `0.3.4`：`platf
 父读回七文件 SHA-256 均与 writer manifest 精确相同；writer 的原始 unified patch SHA-256 `ed24040286b3fa067a6647066a0292b8c9f7673922f0562adfeb5a22511c7256`，父独立生成的 git binary diff（含 git headers/函数上下文，格式不同）SHA-256 `aa79b827c07a6b8f90b0015e1668d82486d2890924027764fc37c51df6e91570`，未将两种 patch 格式误记为逐字节相同。测试源码 SHA-256 `51046452ffafb38327b550cfe7e696262f5a91631a87cb4caa800002c6d5993a`。父实际词法范围检查 exit 0：28 名称/顺序保持，仅四授权测试体改变，其余24体逐字节一致；静态 assert 宏计数237→292，不是发现或执行计数。artifact、前轮四项修复、D05原体、motion算法、tool_card、依赖与CI配置保全。
 
 父实际 `cargo fmt --all -- --check`、相对集成 master 的完整 `git diff --check` 及静态范围/受保护路径检查均 exit 0；fetch 后 master 仍为 `5bc062b245d5f1c7cee3b333df896ef31810fc11`，远端任务分支无并发写入。未本地运行/编译/构建/check/Clippy/test/nextest/bench/profile/CUA；普通构建生产改动仅上述两处门控，临时观察均随开发测试清理。当前尚待固定提交的非写入者增量审查和 Actions 编译/行为结果，不能称四项已动态通过；D05选择仍待用户答复。
+
+## 2026-10-24 四项修复的独审与首轮云端结果
+
+固定完整提交 **`f54f803927ccaa27720d74c740c879b2e780fc02`** 已正常推送；[测试源码](https://github.com/puzige/vega/blob/f54f803927ccaa27720d74c740c879b2e780fc02/crates/vega_ui/src/conversation_stream/disclosure_motion_tests.rs)与[完整提交 patch](https://github.com/puzige/vega/commit/f54f803927ccaa27720d74c740c879b2e780fc02.patch)均已远端读取，抓取的提交 patch SHA-256 `84e500e3f894c2c791a7c147022de4bf531ca1251477ad9a60d50099c9bdf0d0`（包含 docs，区别于前述七源码 delta）。非写入者已完成此完整 SHA 的增量审查：未发现可证新增生产问题或验收弱化，真实选择/全量测量/Final配对/同Id门控与所定契约相符；28名称/24体保全、七文件哈希、delta/full-base diff-check 均核对通过。该静态结论不代替行为结果，D05仍未决。
+
+[Actions 40069105826](https://github.com/puzige/vega/actions/runs/40069105826) 关联上述 PR head，2026-10-24 14:09:56（Asia/Shanghai）启动、14:14:35 完成；父14:10:09首次读取、14:15:55再次读取，未短轮询。Nextest 与 Clippy 原始 Checkout 均为合成 merge **`72de7af04237364556cec1b5d5e75125cebd0292`**，已通过 commit API 核对父为 base **`5bc062b245d5f1c7cee3b333df896ef31810fc11`** 与 head **`f54f803927ccaa27720d74c740c879b2e780fc02`**；tree **`0ef881104ebc352f44f970331620e34175732f15`** 与本地固定 head tree 精确相同。实际执行仍归属该合成 checkout，不称 PR 已合并。
+
+| Job / 实际命令 | 结果 |
+|---|---|
+| Nextest `120798494308`，原 `cargo nextest list --workspace --message-format json` / `cargo nextest run --workspace` | failure，workspace step exit100；banner `Starting 28 tests across 15 binaries`，实际 **28执行/25通过/3失败/0跳过** |
+| Clippy `120798494171`，Format 与 `cargo clippy --workspace --all-targets -- -D warnings` | success |
+| required `120799412273` | failure |
+| 原 Python 三组 | 5+15+40=60项，均OK |
+
+独立 list JSON 总数仍未在日志打印、未取得；aggregate ignored 计数未取得，不由个别二进制的过滤/忽略统计推算。真实拖选 `first_trusted_final_collapses_reading_selection_and_focus_then_enter_reopens` **PASS（0.459s）**；键盘 `tab_and_shift_tab_visit_only_enabled_real_headers_and_not_the_decorative_glyph` **PASS（0.238s）**，含真实 disabled Stage。artifact及前轮四项修复仍均PASS，未回退。
+
+以下函数均带完整模块前缀 `conversation_stream::thinking::disclosure_motion_tests::`，源码位置绑定本轮固定 SHA：
+
+| 函数 / 首个失败 | 已知与下一责任层 |
+|---|---|
+| `decorative_frames_do_no_more_message_measurement_than_identical_settled_redraws:2333`：moving 每个真实 owner/index Layout 为2，settled为1 | 新增的动态 run 一次失效/重测及原始归属/配对均已通过；装饰失效/显式重测均零。需核对 simulate_next_frame 的自动 draw 与显式 draw 是否造成输入边界不等，不将期望改2、去重或删除记录 |
+| `first_final_overrides_independent_manual_focus_and_real_scrolled_reading_states_once:2993`：`first Final stops painting the previously visible source` | 外层关闭、process_in_details、当前 source_painted=false、原文/Final断言已过；需核对累积 SelectionPaint 是否混入 append_final 的合法前置阶段，尚不判定隐藏正文生产失败 |
+| `rapid_reactivation_without_an_inactive_draw_does_not_replay_missed_motion:2595`：root render12 vs11 | 原无inactive draw前提仍失败，恢复断言未执行；用户处置仍待答复 |
+
+本轮原始全文日志 SHA-256 **`3797bccea25cbb5b7a1aee802eb8658c4f3e22d69f83bc563017e020ed05168e`**，保留 raw 与单独清理副本，逐条解析核对28项与footer。首轮结果不是27/28，也不能据静态独审称四项全部通过。主 Agent 已发起上述两项后续责任层诊断；继续相同唯一 writer，不改生产算法/通用CI，不清理Rust测试以掩盖失败。
+
+### 用户已明确接受 D05 动态验证边界
+
+2026-10-24 14:21（Asia/Shanghai）前，用户在本会话的验证处置问题中明确选择：**“保留生产要求，明确记录 D05 未获动态证明，经其余修复/独审/CI 后合并（推荐）”。** 该答复解除等待用户选择的阻碍，取代本阶段前文的“尚待答复”；D05 产品要求不变，严格无 inactive draw 的同 channel 动态证明仍未取得，不改写为通过，也不据此修改框架、忽略或放宽原测试。
+
+下一轮行为验证仍执行全部28项并保留D05原体/实际结果，其余27项的未解失败继续处理。取得其余必要行为证据、独审后，按仓库政策统一留痕并删除整套开发Rust测试/独占支持；最终无Rust测试head的独审和完整required CI成功后可合并。最终空集和D05获用户接受的动态验证缺口必须分别披露，不能将清理/空集CI冒充D05或整体行为全通过。Issue仍等master用户手测，不关闭/Done。
+
+### 后续 Final 观察窗口诊断
+
+`final_event` 经 `append_final` 先独立 update 发送 Started/TextDelta，再另一次 update 发送可信 `AssistantResponseCompleted(Final)`；Headless 外层 update只借用App，每次 entity update都可能经finish_update/flush自动draw。当前在整组事件之前清SelectionPaint、之后检查“从未画source”，错误地包含了合法可信Final前的source绘制。`source_painted=false`与累积旧记录并不矛盾，但当前日志不足以证明所有可信Final后的自动帧正确。
+
+最小修正限定该测试：先真实stage Final text，随后在仅Completed事件之前划清pre-trust边界；发送Completed后，先原样检查全部自动SelectionPaint/glyph阴性，再显式绘制并独立检查当前最终帧与真实run header阳性。不得在Completed之后清空自动记录求绿、只取末帧或等待直到消失。Enter重关也在操作之前清边界，分别检查其后自动和显式帧。manual/focus/scrolled、source阳性/全文、scope/copy/handle、锚点/Composer/真实焦点/Enter重开重关和重复Final一次性全部保留，不改Final生产算法。
+
+### 后续 D06 真实绘制边界诊断与第二实现切片
+
+锁定 `simulate_next_frame` 执行既有animation callback，`cx.notify`使窗口dirty，update退出时test-support自动draw；后续 `fixture.draw` 再refresh并draw一次。settled无运行callback时前一步不dirty，只画后一次。该调用链解释本轮2vs1，但日志未带逐draw标签，不能声称已取得独立逐draw trace。`HeadlessAppContext::advance_clock` 还经TestScheduler::advance_clock运行任务，不能将它误认纯时间加法。
+
+同一公开TestClock路线已核对：BackgroundExecutor.dispatcher → as_test → scheduler → clock → advance仅更新真实now/utc，不执行任务；Kit sampler的BackgroundExecutor.now经相同scheduler读取同一clock。D06专用同文件helper采用纯clock前进15ms且断期间无root/glyph/layout工作，再统一同一次update simulate_next_frame+refresh，退出交原flush自动draw；moving/settled复用相同helper，不额外显式draw、不按观测次数补齐。增加同文件Rc<Cell<usize>>只读root render计数，配真实glyph和全量item观察，严格一个受控刷新样本，保留全量记录精确比较、八帧角度/几何与零额外失效。
+
+此fixture仅MessageStarted等、未发RunStarted，group.started_at=None且schedule_clock直接返回，静态上未排group clock task。原shimmer关闭与异步停泊保留，比较前增加同源真实SelectionPaint准备/paint阳性；不取消任务或修改生产时钟/正文。第二writer切片只改这两个测试体及必要同文件fixture/helper，其他26体/28名称顺序、D05原体与七文件中其他源码保全。主Agent仅维护docs/Git/CI；待固定停写版本再独审和原Actions。
+
+第二切片执行中会话发生中断。恢复时已核对旧子Agent均不再运行、没有第二轮READY报告；当前只有测试文件部分D06 helper/counter改动与父两份文档未提交，Final第二轮修改尚未完成。主Agent保留当前diff检查点，不reset或覆盖；fetch读回head/远端仍为`f54f803927ccaa27720d74c740c879b2e780fc02`、master仍`5bc062b245d5f1c7cee3b333df896ef31810fc11`，无并发写入。新专职writer接续同一部分产物、原诊断与授权，不重做已完成修复；仍需完整静态核对、READY停写、固定版本独审和Actions。
+
+### 第二切片 READY 与父静态核对
+
+新唯一writer已完成并停写。源码SHA-256 **`963847a732cef649d1e776c4db40c2ba8e82d92ecca878182a8baefd0ec40f7d`**，仅该源码相对f54f8039…的原始git binary patch SHA-256 **`89ac6e4a7002a847c59663b8fe1f598e67f017b63addc3b825a62ee1ab48bb16`**；父独立读取文件与patch逐字节核对匹配。D06每步真实纯clock/统一flush/root+1/glyph一次/全量item阳性及完整原始精确对照保留；Final在仅Completed之后检查自动和显式两批，Enter重关也同样检查全部两批，pre-trust仍须保持正文和过程可见。
+
+父实际静态范围检查exit0：28名称/顺序相同，仅D06与Final两体改变，其他26体逐字节一致；静态assert宏292→305，非执行数。其他源码/依赖/通用CI完全不变，严格D05原体保留。父实际cargo fmt与完整diff-check均exit0；fetch后master/远端无新写入。尚未本地运行/编译/测试Vega；新固定版本的非写入者独审与Actions编译/行为结果待取得，不能称其余27项已过。
