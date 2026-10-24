@@ -217,6 +217,11 @@ impl ThinkingBlock {
         self.focus.contains_focused(window, cx)
     }
 
+    #[cfg(test)]
+    pub(super) fn source_painted(&self) -> bool {
+        self.body.painted.get()
+    }
+
     pub(crate) fn title(&self) -> &str {
         if !self.summary_preview.title.is_empty() {
             &self.summary_preview.title
@@ -464,6 +469,7 @@ impl Render for ThinkingBlock {
         let colors = theme(cx).colors;
         let title = self.title().to_owned();
         let can_expand = self.has_source_text();
+        self.focus = self.focus.clone().tab_stop(can_expand);
         div()
             .w_full()
             .min_w_0()

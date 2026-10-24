@@ -1023,6 +1023,124 @@ impl StreamFixture {
             .unwrap()
     }
 
+    fn source_paint(
+        &mut self,
+        thinking: &Entity<ThinkingBlock>,
+    ) -> crate::disclosure_layout_probe::SelectionPaint {
+        use crate::disclosure_layout_probe as layout;
+        let (copy_id, scope) = self.cx.update(|cx| {
+            let source = &thinking.read(cx).source_copy;
+            assert_eq!(source.original_text(), SOURCE.repeat(12));
+            (source.id, source.selection_scope())
+        });
+        layout::take_selection_paints();
+        self.draw();
+        self.cx.run_until_parked();
+        layout::take_selection_paints();
+        self.draw();
+        let mut paints = layout::take_selection_paints()
+            .into_iter()
+            .filter(|paint| paint.copy_id == copy_id);
+        let paint = paints
+            .next()
+            .expect("WIRING: prepared source reached actual body paint after registration");
+        assert!(paints.next().is_none(), "source has one real participant");
+        assert_eq!(paint.scope, scope);
+        assert!(
+            paint
+                .content
+                .contains("Thinking source remains selectable and complete.")
+        );
+        assert!(
+            paint.runs.iter().any(|run| {
+                !run.text().is_empty()
+                    && !run
+                        .bounds()
+                        .intersect(&paint.bounds)
+                        .intersect(&paint.content_mask)
+                        .is_empty()
+            }),
+            "WIRING: source has prepared glyphs inside participant and current content mask"
+        );
+        self.cx.update(|cx| {
+            assert!(thinking.read(cx).source_painted());
+            assert_eq!(
+                thinking.read(cx).source_copy.original_text(),
+                SOURCE.repeat(12)
+            );
+        });
+        paint
+    }
+
+    fn select_source(&mut self, thinking: &Entity<ThinkingBlock>) {
+        let paint = self.source_paint(thinking);
+        let (start, end, expected) = paint
+            .runs
+            .iter()
+            .find_map(|run| {
+                let points = run
+                    .text()
+                    .char_indices()
+                    .filter(|(_, character)| character.is_alphanumeric())
+                    .filter_map(|(index, character)| {
+                        let left = run.layout().position_for_index(index)?;
+                        let right = run
+                            .layout()
+                            .position_for_index(index + character.len_utf8())?;
+                        if left.y != right.y || left.x >= right.x {
+                            return None;
+                        }
+                        let point = point(
+                            (left.x + right.x) / 2.,
+                            left.y + run.layout().line_height() / 2.,
+                        );
+                        if !run.bounds().contains(&point)
+                            || !paint.bounds.contains(&point)
+                            || !paint.content_mask.contains(&point)
+                        {
+                            return None;
+                        }
+                        let index = run.layout().index_for_position(point).ok()?;
+                        Some((index, point))
+                    })
+                    .collect::<Vec<_>>();
+                for (start_index, start) in &points {
+                    for (end_index, end) in points.iter().rev() {
+                        if start.y == end.y && start_index < end_index {
+                            let expected = run.text().get(*start_index..*end_index)?;
+                            assert!(!expected.is_empty());
+                            assert_eq!(run.layout().index_for_position(*start), Ok(*start_index));
+                            assert_eq!(run.layout().index_for_position(*end), Ok(*end_index));
+                            return Some((*start, *end, expected.to_owned()));
+                        }
+                    }
+                }
+                None
+            })
+            .expect("WIRING: same painted source run provides two visible distinct glyph indices");
+        self.drag(start, end);
+        assert_eq!(
+            self.selected_text(),
+            expected,
+            "real drag selects the same source run"
+        );
+        self.cx.update(|cx| {
+            assert!(thinking.read(cx).source_copy.selection_has_cursor(cx));
+            assert!(thinking.read(cx).source_copy.has_selected_text());
+            assert_eq!(thinking.read(cx).source_copy.selection_scope(), paint.scope);
+            assert_eq!(
+                thinking.read(cx).source_copy.original_text(),
+                SOURCE.repeat(12)
+            );
+        });
+        let after = crate::disclosure_layout_probe::take_selection_paints()
+            .into_iter()
+            .find(|after| after.copy_id == paint.copy_id)
+            .expect("selected source still reaches actual paint");
+        assert_eq!(after.handle_id, paint.handle_id);
+        assert_eq!(after.scope, paint.scope);
+    }
+
     fn select_entry(&mut self, index: usize) -> String {
         let bounds = self.cx.update(|cx| {
             self.stream
@@ -1051,16 +1169,12 @@ fn first_trusted_final_collapses_reading_selection_and_focus_then_enter_reopens(
 ) {
     let mut fixture = StreamFixture::open();
     let (group, thinking) = fixture.begin("current");
-    let source_paint = fixture
+    fixture
         .draw()
         .into_iter()
         .find(|paint| paint.scope.owner.as_ref() == format!("run-stage-{}-0", group.entity_id()))
         .expect("WIRING: expanded production stage actually mounted");
-    let start = point(
-        px(36.),
-        source_paint.bounds.bottom() + px(Layout::PROCESS_ITEM_GAP + 14.),
-    );
-    fixture.drag(start, start + point(px(120.), px(0.)));
+    fixture.select_source(&thinking);
     assert!(
         !fixture.selected_text().is_empty(),
         "WIRING: real mouse drag must select visible source before Final"
@@ -2034,29 +2148,33 @@ fn visible_artifact_preview_and_real_control_focus_survive_first_final_collapse(
 
 #[derive(Debug, PartialEq, Eq)]
 struct LayoutCounts {
-    invalidates: Vec<usize>,
-    remeasures: Vec<Option<usize>>,
-    layouts: std::collections::BTreeMap<usize, usize>,
+    invalidates: Vec<(gpui_kit::EntityId, usize)>,
+    remeasures: Vec<(gpui_kit::EntityId, Option<usize>)>,
+    layouts: std::collections::BTreeMap<(gpui_kit::EntityId, usize), usize>,
 }
 
-fn measured_work(owner: gpui_kit::EntityId) -> LayoutCounts {
+fn measured_work() -> (
+    LayoutCounts,
+    Vec<crate::disclosure_layout_probe::Observation>,
+) {
     use crate::disclosure_layout_probe::{self as layout, Observation};
     let mut counts = LayoutCounts {
         invalidates: Vec::new(),
         remeasures: Vec::new(),
         layouts: Default::default(),
     };
-    for event in layout::take() {
+    let observations = layout::take();
+    for event in &observations {
         match event {
-            Observation::Invalidate(index) => counts.invalidates.push(index),
-            Observation::Remeasure(index) => counts.remeasures.push(index),
-            Observation::Layout(entity, index) if entity == owner => {
-                *counts.layouts.entry(index).or_default() += 1
+            Observation::Invalidate(entity, index) => counts.invalidates.push((*entity, *index)),
+            Observation::Remeasure(entity, index) => counts.remeasures.push((*entity, *index)),
+            Observation::Layout(entity, index) => {
+                *counts.layouts.entry((*entity, *index)).or_default() += 1
             }
             _ => {}
         }
     }
-    counts
+    (counts, observations)
 }
 
 #[gpui_kit::test]
@@ -2081,32 +2199,82 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
         .into_iter()
         .find(|paint| paint.scope.owner.as_ref() == format!("run-disclosure-{}", group.entity_id()))
         .unwrap();
-    layout::take();
     fixture
         .cx
         .update_window(fixture.window.into(), |_, window, cx| {
             header.scope.focus.focus(window, cx);
+        })
+        .unwrap();
+    fixture.cx.run_until_parked();
+    fixture.draw();
+    let (owner, run_index, related) = fixture.cx.update(|cx| {
+        let stream = fixture.stream.read(cx);
+        let run_index = stream
+            .entries
+            .iter()
+            .position(|entry| matches!(entry, StreamEntry::RunActivity { group: owned } if owned == &group))
+            .expect("WIRING: toggle belongs to a real run entry");
+        let mut related = stream
+            .run_details(&group, cx)
+            .into_iter()
+            .map(|(index, _)| index)
+            .collect::<std::collections::BTreeSet<_>>();
+        related.insert(run_index);
+        (fixture.stream.entity_id(), run_index, related)
+    });
+    layout::take();
+    fixture
+        .cx
+        .update_window(fixture.window.into(), |_, window, cx| {
+            assert!(header.scope.focus.is_focused(window));
             window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
         })
         .unwrap();
     fixture.cx.run_until_parked();
     fixture.draw();
-    let fold = measured_work(fixture.stream.entity_id());
+    let (fold, fold_observations) = measured_work();
     assert!(
         !fold.invalidates.is_empty(),
         "WIRING: real fold must retain necessary message invalidation"
     );
     assert_eq!(
-        fold.invalidates.len(),
+        fold.invalidates
+            .iter()
+            .filter(|(entity, index)| *entity == owner && *index == run_index)
+            .count(),
         1,
-        "one real fold, not decorative invalidation"
+        "one real run entry fold, not decorative invalidation: {fold_observations:?}"
     );
+    assert_eq!(
+        fold.remeasures
+            .iter()
+            .filter(|(entity, index)| *entity == owner && *index == Some(run_index))
+            .count(),
+        1,
+        "one paired run entry remeasure: {fold_observations:?}"
+    );
+    for observation in &fold_observations {
+        match observation {
+            layout::Observation::Invalidate(entity, index)
+            | layout::Observation::Remeasure(entity, Some(index)) => {
+                assert_eq!(*entity, owner, "fold event owner: {fold_observations:?}");
+                assert!(
+                    related.contains(index),
+                    "fold event must belong to an associated entry: {fold_observations:?}"
+                );
+            }
+            layout::Observation::Remeasure(_, None) => {
+                panic!("fold must not remeasure the entire list: {fold_observations:?}");
+            }
+            _ => {}
+        }
+    }
     assert_eq!(
         fold.remeasures,
         fold.invalidates
             .iter()
             .copied()
-            .map(Some)
+            .map(|(owner, index)| (owner, Some(index)))
             .collect::<Vec<_>>()
     );
     let body = fixture
@@ -2136,14 +2304,14 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
                 .update(|cx| fixture.stream.read(cx).list.bounds_for_item(0).unwrap()),
             body
         );
-        let counts = measured_work(fixture.stream.entity_id());
+        let (counts, observations) = measured_work();
         assert!(
             counts.invalidates.is_empty(),
-            "decoration must not invalidate a message"
+            "decoration must not invalidate a message for any owner/index: {observations:?}"
         );
         assert!(
             counts.remeasures.is_empty(),
-            "decoration must not explicitly remeasure a message"
+            "decoration must not explicitly remeasure a message for any owner/index: {observations:?}"
         );
         moving_work.push(counts);
     }
@@ -2157,14 +2325,14 @@ fn decorative_frames_do_no_more_message_measurement_than_identical_settled_redra
             })
             .unwrap();
         fixture.draw();
-        let settled = measured_work(fixture.stream.entity_id());
+        let (settled, observations) = measured_work();
         assert!(
             !settled.layouts.is_empty(),
             "WIRING: ordinary List layout measures visible messages"
         );
         assert_eq!(
             expected, settled,
-            "same input/window/clock redraw: no extra decorative message layout"
+            "same input/window/clock redraw: no extra decorative message layout: {observations:?}"
         );
     }
 }
@@ -2319,6 +2487,70 @@ fn tab_and_shift_tab_visit_only_enabled_real_headers_and_not_the_decorative_glyp
                     cx,
                 );
                 assert!(!header.read(cx).expanded(cx));
+            })
+            .unwrap();
+        }
+        if entry == Entry::Stage && !disabled {
+            let source = cx.update(|cx| header.read(cx).thinking.read(cx).text.clone());
+            assert_eq!(source, SOURCE);
+            header.update(&mut cx, |view, cx| {
+                view.thinking.update(cx, |card, cx| {
+                    card.append("Completed thinking summary", true, THINKING_VIEW_BYTES);
+                    assert_eq!(card.text, source);
+                    assert_eq!(
+                        card.source_copy.original_text(),
+                        "Completed thinking summary"
+                    );
+                    cx.notify();
+                });
+                cx.notify();
+            });
+            probe::take();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+            assert!(
+                probe::take()
+                    .iter()
+                    .all(|paint| paint.scope.owner.as_ref() != owner)
+            );
+            cx.update_window(window.into(), |_, window, cx| {
+                let id = ("run-stage-toggle", 0usize).into();
+                let mut headers = gpui_kit::base::test_support::snapshots(window)
+                    .into_iter()
+                    .filter(|snapshot| snapshot.path().last() == Some(&id));
+                let stage = headers
+                    .next()
+                    .expect("disabled stage header is still rendered");
+                assert!(headers.next().is_none());
+                assert!(stage.visible());
+                assert!(stage.bounds().size.height > px(0.));
+                assert_eq!(stage.label(), Some("Completed thinking summary"));
+                assert_eq!(stage.expanded(), None);
+                before.focus(window, cx);
+                window.dispatch_keystroke(Keystroke::parse("tab").unwrap(), cx);
+                assert!(after.is_focused(window), "disabled stage is skipped by Tab");
+                window.dispatch_keystroke(Keystroke::parse("shift-tab").unwrap(), cx);
+                assert!(
+                    before.is_focused(window),
+                    "disabled stage is skipped by Shift-Tab"
+                );
+                glyph.scope.focus.focus(window, cx);
+                assert!(glyph.scope.focus.is_focused(window));
+                window.dispatch_keystroke(Keystroke::parse("space").unwrap(), cx);
+                window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+                assert!(!header.read(cx).expanded(cx));
+                window.refresh();
+                window.draw(cx).clear(cx);
+                let stage = gpui_kit::base::test_support::snapshots(window)
+                    .into_iter()
+                    .find(|snapshot| snapshot.path().last() == Some(&id))
+                    .expect("disabled stage keeps its actual focus binding");
+                assert_eq!(stage.focused(), Some(true));
+                assert_eq!(window.focused(cx), Some(glyph.scope.focus.clone()));
+                assert_eq!(header.read(cx).thinking.read(cx).text, source);
             })
             .unwrap();
         }
@@ -2726,6 +2958,7 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             fixture.selected_text().is_empty(),
             "independent reading precondition, no selection"
         );
+        let source = fixture.source_paint(&thinking);
         let anchor = fixture
             .cx
             .update(|cx| fixture.stream.read(cx).scroll_anchor_snapshot());
@@ -2735,17 +2968,44 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 window.focused(cx).unwrap()
             })
             .unwrap();
+        crate::disclosure_layout_probe::take_selection_paints();
         fixture.final_event("current", COMMENTARY.len() + FINAL_TEXT.len());
         fixture.cx.update(|cx| {
             assert!(!group.read(cx).expanded());
             assert!(group.read(cx).process_in_details());
-            assert!(!thinking.read(cx).expanded);
+            assert!(!thinking.read(cx).source_painted());
+            assert_eq!(
+                thinking.read(cx).source_copy.original_text(),
+                SOURCE.repeat(12)
+            );
+            assert_eq!(
+                fixture
+                    .stream
+                    .read(cx)
+                    .completion_response(&["current".into()], cx)
+                    .as_deref(),
+                Some(FINAL_TEXT)
+            );
             if reading == "scrolled" {
                 assert_eq!(fixture.stream.read(cx).scroll_anchor_snapshot(), anchor);
             }
         });
-        let header = fixture
-            .draw()
+        assert!(
+            crate::disclosure_layout_probe::take_selection_paints()
+                .iter()
+                .all(|paint| paint.copy_id != source.copy_id),
+            "first Final stops painting the previously visible source"
+        );
+        let collapsed = fixture.draw();
+        assert!(
+            collapsed.iter().all(|paint| {
+                paint.scope.owner != stage.scope.owner
+                    && paint.scope.owner.as_ref()
+                        != format!("thinking-disclosure-{}", thinking.entity_id())
+            }),
+            "hidden stage and Thinking controls are no longer painted"
+        );
+        let header = collapsed
             .into_iter()
             .find(|paint| {
                 paint.scope.owner.as_ref() == format!("run-disclosure-{}", group.entity_id())
@@ -2754,6 +3014,8 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
         fixture
             .cx
             .update_window(fixture.window.into(), |_, window, cx| {
+                assert!(!thinking.read(cx).contains_focus(window, cx));
+                assert!(!stage.scope.focus.is_focused(window));
                 if reading == "focus" {
                     assert!(
                         header.scope.focus.is_focused(window),
@@ -2771,6 +3033,38 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 assert!(group.read(cx).expanded());
             })
             .unwrap();
+        let reopened = fixture.source_paint(&thinking);
+        assert_eq!(reopened.copy_id, source.copy_id);
+        assert_eq!(reopened.handle_id, source.handle_id);
+        fixture
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
+                assert!(header.scope.focus.is_focused(window));
+                window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+                assert!(!group.read(cx).expanded());
+            })
+            .unwrap();
+        crate::disclosure_layout_probe::take_selection_paints();
+        fixture.draw();
+        assert!(
+            crate::disclosure_layout_probe::take_selection_paints()
+                .iter()
+                .all(|paint| paint.copy_id != source.copy_id)
+        );
+        fixture
+            .cx
+            .update(|cx| assert!(!thinking.read(cx).source_painted()));
+        fixture
+            .cx
+            .update_window(fixture.window.into(), |_, window, cx| {
+                assert!(header.scope.focus.is_focused(window));
+                window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+                assert!(group.read(cx).expanded());
+            })
+            .unwrap();
+        let restored = fixture.source_paint(&thinking);
+        assert_eq!(restored.copy_id, source.copy_id);
+        assert_eq!(restored.handle_id, source.handle_id);
         fixture.cx.update(|cx| {
             fixture.stream.update(cx, |stream, cx| {
                 stream.apply_event(
@@ -2794,7 +3088,19 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             assert!(
                 group.read(cx).expanded(),
                 "manual reopen wins after first forced collapse"
-            )
+            );
+            assert_eq!(
+                thinking.read(cx).source_copy.original_text(),
+                SOURCE.repeat(12)
+            );
+            assert_eq!(
+                fixture
+                    .stream
+                    .read(cx)
+                    .completion_response(&["current".into()], cx)
+                    .as_deref(),
+                Some(FINAL_TEXT)
+            );
         });
     }
 }

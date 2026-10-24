@@ -115,3 +115,13 @@
 4. **补齐组合而非交给实现后**：D04 的真实 keyboard Tab/disabled、D05 的无失活 draw 快速恢复与 offscreen/shimmer、D07 的真实上滚/选择/回焦、D10 的必要权限入口、D11 的长 Thinking 流式交错/输入，均先写齐断言并停写。headless a11y tree 不可用时须记录系统层缺口，同时尽可能读取真实 Element 的 aria-expanded 属性，不将 None 当空树通过。
 
 父 Agent 复用同一 writer，仅写原测试和上述临时支持。完整停写包经非写入者独审后才建 draft PR 运行现有 Actions。当前没有有效 RED/GREEN，不放行生产；若指定观察仍技术不可行，给出精确 API/证据与最小下一步，不用删测、常量 recorder 或无关编译错误换绿。
+
+## 2026-10-24 合并阶段的可观察契约解释
+
+用户已授权本卡继续至 master；本段解释先前失败测试与原 D01–D11/#416 的映射，不按现有输出降低目标。
+
+- D07/#416 的首次自动关闭对象是同一轮 `RunActivityGroup` 过程总入口。子 Thinking 的局部展开偏好不是“过程已关闭”的判据；本文件早先提及的 `expanded=false` 在该语义下指过程总入口。应通过 Final 前真实源正文已绘制的阳性前置、Final 后真实正文/阶段控件不再绘制、隐藏选择清理/焦点迁移、真实 Enter 重开/重关、原文完整及重复 Final 不二次收起来验收。无需改变 Final 算法来强清子卡偏好。
+- D06 的“一次真实折叠”指真实被切换的 run 入口条目一次显式失效；过程汇总、阶段和 owned commentary 是不同列表项，各自必要失效不能混为同一条目重复。观测保留原始全量事件，按真实 owner/动态 run entry index 严格验证该条目恰好一次，且后续装饰帧对全部相关条目均不得额外 invalidate/显式 remeasure；相同输入的 settled redraw 测量对照保留。不得把全量预期改为 3、去重或删记录。
+- D07 的真实 source 拖选须起于实际已准备并 paint 的可选文本 run/hitbox，按同一 source copy 身份与现有 layout/bounds/content mask 定位。不能以 chevron 的猜测坐标、直接改缓存或常量 selection 代替真实鼠标事件；原非空、清理、焦点/Enter 与原文字节断言保留。
+- D04 的无内容/disabled Thinking header 应跳过键盘 Tab，已有可展开 Thinking 保持可达；显式 `FocusHandle` 的 tab-stop 必须随真实 `can_expand` 同步，不能只设置外层 div 标志。稳定 handle identity、enabled 顺序与原热区/显隐保持。
+- D05 的目标继续是失活后恢复不补播，包括没有失活 glyph 采样的情况。当前 Headless 自动 draw 与原严格前置的关系仍在只读核查；没有固定合法观察路线前，不删除或放宽该回归来合并。

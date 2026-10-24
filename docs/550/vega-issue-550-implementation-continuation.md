@@ -229,3 +229,42 @@ artifact 兼容范围没有剩余修复或执行环境阻碍，唯一 writer 与
 [实际合成 merge](https://github.com/puzige/vega/commit/c07c27dcc4a62bedad5750851527254abcf3efa8) / [其 base](https://github.com/puzige/vega/commit/b2248996cc68497ef050539fd69f05cc723e4c0a) 与前述固定 PR head 共同提供恢复条件。合成 tree 中测试源码 blob `bf5ce272fd3456886e10cd53bf9f73dcbc9052f5`、ArtifactCard blob `9458f5cd04056110799e82d5ad3b4a37ed99305c` 已分别远端读回，与固定 PR head 两文件完全一致；五个根失败的源行号也相同。#583 实际已在 CI 的合成 base 中，本地任务实现 commit 并未另行合入它。独立 list JSON 总数和 ignored 独立计数仍未取得。
 
 本次仅纠正文档版本归属，源码未变；修正后文档 head 及其自身 Actions 状态由最终 Issue/PR 回执明确记录，不能把先前合成 tree 的结果充作新 head 的完整 required check。没有新增代码修复、测试重跑或合并授权。
+
+## 2026-10-24 继续推进至 master 的授权与基线
+
+用户最新明确要求“继续推进 直到合并master”，取代上一阶段仅 artifact、不合并/不清理的停止边界。本阶段在 #550 范围内解决五类未决，先固定可观察契约和最小责任层修复，保留回归强度；经专职 writer、非写入者独审与云端开发验证后，留痕并清理开发 Rust 测试及独占支持，对最终 head 执行完整 required CI，成功后 squash merge。#552、无关 PR、用户手测/关闭 Issue 不在此授权内。
+
+- 接手时任务 HEAD/远端/PR 一致为 `08d2f9f403d9888bb2bcd65e35bc43817a71c8a1`，工作树干净，原 writer/reviewer 已停止。fetch 后正常 merge 最新 master `5bc062b245d5f1c7cee3b333df896ef31810fc11`，当前集成基线 `55813aa37fd3f0d02cd230b62ae93073ae11fbe7`；保留 #583、#585 横向代码滚动和 #586 两阶段权限准备，不回退上游。目标树没有 nested AGENTS。
+- 上一文档 head 的 [Actions 40001818592](https://github.com/puzige/vega/actions/runs/40001818592) 已完成：Nextest `120579776420` failure、Clippy `120579776698` success、required `120581778233` failure；原始日志再次是实际 28 执行/23 通过/5 失败/0 跳过，五个首断言与前轮相同。实际 checkout 合成 merge `27ffe4bc8d8f5a4ec85db27a1f26af1c226ecfca`，base 为 `b2248996cc68497ef050539fd69f05cc723e4c0a`；该 run 不验证新集成基线。原始日志 SHA-256 `dc10e2007befc0d96422219e70d63a4c4a769d7f0636df76962f780bc01c96c2`。
+- 主 Agent 先只读分析并登记具体实施契约；三个非写入诊断切片分别核对生命周期/Tab、测量/真实选择、Final 可观察契约。代码仍只委派一个 writer，停写后独审。所有本地执行限制和五分钟 CI 查询规则不变；不通过删测、改为当前输出或盲重试掩盖未解失败。
+
+### 合并阶段已核责任层与第一实现切片
+
+只读诊断已定位四项：
+
+1. Final 测试错误地要求子 `ThinkingBlock.expanded` 清零，#416 实际要求外层 run 入口关闭；通过既有 `body.painted`、实际 stage/glyph 绘制与焦点/Enter 前后阳性/阴性观察替换该内部位断言，保留 manual/focus/scrolled 全部模式、锚点、原文、重复 Final 和一次性语义。不修改 Final 生产算法。
+2. fold 的全量 invalidate 日志包含 run/segment/owned commentary 三个不同条目，原 `measured_work(owner)` 也未给 Invalidate/Remeasure 加 owner；应保留全量原始记录并用动态 run entry index 对被切换条目严格断一次，装饰帧仍检查全量零额外失效及 settled 对照。最小只读记录可补 owner，不能去重或将期望改为 3。
+3. 真实拖选的固定 x=36 位于 source participant x>=40 之外，MouseDown 未激活真实 source scope。允许在现有 SelectableMessage 真 prepaint/paint 路径加入仅 cfg(test) 的窄只读观察：copy/source handle 身份、实际已准备的 text run/layout bounds、content mask、实际 paint 到达。fixture 从同一源的真实可见 glyph 内部点 drag；不增加 production public API、不复制布局/选择决策。此临时观察随测试清理。
+4. Thinking 真实 FocusHandle 构造时 tab_stop=true，div.tab_stop(false) 不会覆盖显式 track_focus handle。最小生产修复仅 Thinking render 同步 `self.focus = self.focus.clone().tab_stop(can_expand)`，identity 不变；工具已有正确门控，不改其他 focus 算法。
+
+第一专职 writer 只实施上述四项、其必要同文件 fixture/只读接线和 Thinking 单点门控。其余测试体、artifact 及四项前轮修复保持。D05 no-inactive-draw 仍由非写入诊断核查，路线明确后再交同一个 writer；父仅维护 docs/Git/CI，不并行写源码。后续固定停写版本必须经非写入者独立审查和现有 Actions，全部有效行为验证完成后才清理开发测试，不以空集消解真实未决。
+
+补充静态 API 核对：`RunActivityGroup::render_segment` 的 stage handle 同样由显式 `track_focus` 接管，构造时的 tab-stop 也须随 `can_expand` 同步；与 Thinking 使用同一最小门控，保持 handle identity。工具卡和过程总入口已有正确门控，不修改。Thinking 的私有 body 字段不跨兄弟模块公开；允许增加唯一 `#[cfg(test)] pub(super) source_painted() -> bool`，直接返回既有 `body.painted.get()`，与实际 source SelectionPaint/glyph 的首次 Final 前阳性、后阴性配对，随测试删除。上述为同一四项修复的窄接点，不改 Final 或正文布局决策。
+
+D05 只读诊断已确认：测试平台的每次失活/激活回调都经 `handle.update` 强制 `window.refresh`，test-support 的 effect flush 自动绘制 dirty window，因此原断言在重新激活前已经因额外一次 root render 失败。跳过 inactive paint 会丢失需逐帧保留的 keyed channel/sampler state，无法证明同一 channel 的无重播；持有 App borrow 阻止回调也不是合法测试路线。当前未找到合法公开的暂停自动绘制 API，未改框架/registry/CI，未删改严格测试。主 Agent 已向用户提交验证处置选择，尚待答复；其他四项及完整生产独审继续。静态代码审查不能冒充这一动态前置已证，测试清理不能消解此未决。
+
+### 固定基线的完整生产独审与 D05 诊断证据
+
+非写入者已对固定 `55813aa37fd3f0d02cd230b62ae93073ae11fbe7` 相对集成 master `5bc062b245d5f1c7cee3b333df896ef31810fc11` 完成生产增量审查，未发现可证的新增 P0–P3 产品缺陷：同一 sampled angle 只进入真实 Svg 绘制变换，layout/prepaint/AX 委托保留；五类 owner/key 稳定，锁定 Kit 的首次挂载/反转/零时长逻辑与共享 activation observer 对齐；Final、选择、焦点、失效和产物生产算法未改。结论不覆盖尚未停写的四项修复，不代表动态验证完成或可合并。固定 crates diff-check exit 0；全量历史 delta 的唯一 EOF 空白已经本阶段文档批次修复，当前全量 diff-check exit 0。
+
+D05 依赖事实固定为 gpui-kit/gpui-base `0.6.1`、gpui-pre `0.3.4`：`platform/test/platform.rs::set_active_window:284–303` 依次异步发送 false/true，`window.rs:1862–1880` 每个通知均单独 update、通知 observers 并 refresh，`app.rs::finish_update:1078–1095` / `flush_effects:1712–1723` 在 test-support 中自动 draw。原严格断言的 `12 != 11` 出现在 blocker 已激活、目标窗重新激活之前，恢复端点/续帧断言未执行。
+
+`window.rs::use_keyed_state:3930–3948` / `WindowFrame::finish:1124–1133` 只保留连续访问的 element states；`skip_drawing` 仍 finish/交换/清理 frame。跳过 glyph paint 或 draw_roots 会使 paint-only lifecycle/sampler 首次重建为 target，不能充作同一 channel 的无重播证明；内部 replay/PaintIndex 非公开。`HeadlessAppContext::update:149–152` 只持有 RefCell borrow，异步 callback 的 `try_borrow_mut` 会失败，不是合法批处理路线。生产 observer 收到 inactive 后保留 `interrupted=true`，下一采样 `mem::take` 后传零时长；Kit `motion.rs:286–302` 静态上直达 target 且不请求帧。这解释未见对应生产根因，但仍未动态证明无 inactive draw 场景。
+
+### 四项修复停写与父静态核对
+
+专职 writer 已 READY 并停止七文件写入：实际 source SelectionPaint 在真实 body.paint 返回后记录，同源可见 run/layout 供真实 drag 使用；owner/index 原始测量日志保留，真实 run 条目严格一次失效及配对重测；Final 前后实际正文/控件 paint、隐藏焦点、原文与真实 Enter 重开/重关配对；Thinking 和 Stage 同一 FocusId 的 tab-stop 随真实 can_expand 同步。原 Stage enabled 回归之后，还用真实 summary 令相同 stage 禁用，确认真实 title/header 仍渲染、raw source 保全、Tab/Shift-Tab 跳过且同一绑定持焦时 Enter/Space 不展开。
+
+父读回七文件 SHA-256 均与 writer manifest 精确相同；writer 的原始 unified patch SHA-256 `ed24040286b3fa067a6647066a0292b8c9f7673922f0562adfeb5a22511c7256`，父独立生成的 git binary diff（含 git headers/函数上下文，格式不同）SHA-256 `aa79b827c07a6b8f90b0015e1668d82486d2890924027764fc37c51df6e91570`，未将两种 patch 格式误记为逐字节相同。测试源码 SHA-256 `51046452ffafb38327b550cfe7e696262f5a91631a87cb4caa800002c6d5993a`。父实际词法范围检查 exit 0：28 名称/顺序保持，仅四授权测试体改变，其余24体逐字节一致；静态 assert 宏计数237→292，不是发现或执行计数。artifact、前轮四项修复、D05原体、motion算法、tool_card、依赖与CI配置保全。
+
+父实际 `cargo fmt --all -- --check`、相对集成 master 的完整 `git diff --check` 及静态范围/受保护路径检查均 exit 0；fetch 后 master 仍为 `5bc062b245d5f1c7cee3b333df896ef31810fc11`，远端任务分支无并发写入。未本地运行/编译/构建/check/Clippy/test/nextest/bench/profile/CUA；普通构建生产改动仅上述两处门控，临时观察均随开发测试清理。当前尚待固定提交的非写入者增量审查和 Actions 编译/行为结果，不能称四项已动态通过；D05选择仍待用户答复。

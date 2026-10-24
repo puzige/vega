@@ -502,7 +502,10 @@ impl ConversationStream {
         {
             #[cfg(test)]
             crate::disclosure_layout_probe::record(
-                crate::disclosure_layout_probe::Observation::Remeasure(Some(index)),
+                crate::disclosure_layout_probe::Observation::Remeasure(
+                    self.disclosure_probe_owner,
+                    Some(index),
+                ),
             );
             self.list.remeasure_items(index..index + 1);
             self.list.scroll_to(gpui_kit::ListOffset {

@@ -1534,7 +1534,10 @@ impl RunActivityGroup {
         let visible_children = state.visible_segment_children(segment_index, cx);
         let can_expand = state.segment_can_expand(segment_index, cx);
         let expanded = state.segments[segment_index].expanded && can_expand;
-        let header_focus = state.segments[segment_index].header_focus.clone();
+        let header_focus = state.segments[segment_index]
+            .header_focus
+            .clone()
+            .tab_stop(can_expand);
         let title_view = state.segments[segment_index].title_view.clone();
         let tool_ids = state
             .stage_tool_calls(segment_index, cx)

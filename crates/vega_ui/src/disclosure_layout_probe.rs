@@ -1,5 +1,6 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::Arc};
 
+use gpui_kit::base::{TextSelectionRun, TextSelectionScopeId};
 use gpui_kit::{
     AnyElement, App, Bounds, Element, ElementId, EntityId, GlobalElementId, InspectorElementId,
     IntoElement, LayoutId, Pixels, Window,
@@ -7,14 +8,34 @@ use gpui_kit::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Observation {
-    Invalidate(usize),
-    Remeasure(Option<usize>),
+    Invalidate(EntityId, usize),
+    Remeasure(EntityId, Option<usize>),
     Layout(EntityId, usize),
     Bounds(EntityId, usize, Bounds<Pixels>),
 }
 
+#[derive(Clone)]
+pub(crate) struct SelectionPaint {
+    pub(crate) copy_id: u64,
+    pub(crate) handle_id: EntityId,
+    pub(crate) scope: TextSelectionScopeId,
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) content_mask: Bounds<Pixels>,
+    pub(crate) content: Arc<str>,
+    pub(crate) runs: Vec<TextSelectionRun>,
+}
+
 thread_local! {
     static OBSERVATIONS: RefCell<Vec<Observation>> = const { RefCell::new(Vec::new()) };
+    static SELECTION_PAINTS: RefCell<Vec<SelectionPaint>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn record_selection_paint(paint: SelectionPaint) {
+    SELECTION_PAINTS.with(|paints| paints.borrow_mut().push(paint));
+}
+
+pub(crate) fn take_selection_paints() -> Vec<SelectionPaint> {
+    SELECTION_PAINTS.with(|paints| std::mem::take(&mut *paints.borrow_mut()))
 }
 
 pub(crate) fn record(observation: Observation) {
