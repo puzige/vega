@@ -59,6 +59,10 @@ impl SettingsView {
         destination: SettingsDestination,
         cx: &mut Context<Self>,
     ) {
+        let before = self.settings_motion_destination();
+        if matches!(destination, SettingsDestination::Section(0)) {
+            self.remember_model_return_focus();
+        }
         let section = match destination {
             SettingsDestination::ProviderCommand => {
                 self.pending_section = None;
@@ -75,6 +79,7 @@ impl SettingsView {
         self.section = section;
         self.pending_section = None;
         self.settings_help_open = None;
+        self.commit_settings_motion(before);
         cx.notify();
     }
 
@@ -362,10 +367,13 @@ impl SettingsView {
                             cx,
                         ))
                         .child(
-                            div()
-                                .min_w_0()
-                                .text_color(colors.text_secondary)
-                                .child(format!("{provider} / {model}")),
+                            self.motion_title(
+                                div()
+                                    .min_w_0()
+                                    .text_color(colors.text_secondary)
+                                    .child(format!("{provider} / {model}")),
+                                cx.entity_id(),
+                            ),
                         ),
                 )
                 .child(
@@ -378,20 +386,27 @@ impl SettingsView {
                         .into_iter()
                         .map(|(section, label, id)| {
                             let active = self.section == section;
-                            div()
-                                .child(self.settings_route_button(
-                                    id,
-                                    label,
-                                    !active && (section != 0 || available),
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.request_settings_destination(
-                                            SettingsDestination::ModelSection(section),
-                                            cx,
-                                        )
-                                    }),
-                                    cx,
-                                ))
-                                .when(active, |view| view.border_b_2().border_color(colors.accent))
+                            self.motion_model_marker(
+                                div()
+                                    .border_b_2()
+                                    .border_color(gpui_kit::transparent_black())
+                                    .child(self.settings_route_button(
+                                        id,
+                                        label,
+                                        !active && (section != 0 || available),
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.request_settings_destination(
+                                                SettingsDestination::ModelSection(section),
+                                                cx,
+                                            )
+                                        }),
+                                        cx,
+                                    )),
+                                (provider, model, section),
+                                active,
+                                colors.accent,
+                                cx.entity_id(),
+                            )
                         }),
                     ),
                 );

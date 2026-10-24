@@ -8,6 +8,7 @@ pub struct SettingsView {
     pub(crate) updater_notes_open: bool,
     pub(crate) updater_notes_scroll: gpui_kit::ScrollHandle,
     pub(crate) provider_management: super::provider_management::ProviderManagement,
+    pub(super) settings_motion: super::motion::SettingsMotion,
     pub(crate) section: usize,
     pub(crate) model_settings: Option<(String, String)>,
     pub(crate) settings_help_open: Option<String>,
@@ -157,6 +158,7 @@ impl SettingsView {
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             if !cx.global::<SettingsOpen>().0 {
+                this.settings_motion.interrupt();
                 this.cancel_provider_operation(cx);
                 this.cancel_mcp_oauth(cx);
                 this.close_skills_session();
@@ -205,6 +207,7 @@ impl SettingsView {
             updater_notes_open: false,
             updater_notes_scroll: gpui_kit::ScrollHandle::new(),
             provider_management: Default::default(),
+            settings_motion: Default::default(),
             section_scrolls: std::array::from_fn(|_| gpui_kit::ScrollHandle::new()),
             model_settings: None,
             settings_help_open: None,
