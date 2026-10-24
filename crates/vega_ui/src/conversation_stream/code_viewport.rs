@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::{
@@ -9,6 +9,26 @@ use gpui_kit::{
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
 use super::code_drag::{CodeDragElement, CodeDragSelection};
+
+#[derive(Clone, Default)]
+pub(super) struct CodeScrollHandle {
+    handle: ScrollHandle,
+    identity: Rc<()>,
+}
+
+impl CodeScrollHandle {
+    pub(super) fn same_binding(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
+impl Deref for CodeScrollHandle {
+    type Target = ScrollHandle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.handle
+    }
+}
 
 #[derive(Default)]
 struct CodeScrollGesture {
@@ -48,7 +68,7 @@ pub(super) struct CodeViewport {
     id: ElementId,
     content: AnyElement,
     background: Rgba,
-    scroll: Option<ScrollHandle>,
+    scroll: Option<CodeScrollHandle>,
     height: Option<Pixels>,
     selection: Option<CodeDragSelection>,
 }
@@ -69,7 +89,7 @@ impl CodeViewport {
         }
     }
 
-    pub(super) fn scroll(mut self, scroll: ScrollHandle) -> Self {
+    pub(super) fn scroll(mut self, scroll: CodeScrollHandle) -> Self {
         self.scroll = Some(scroll);
         self
     }
@@ -87,14 +107,15 @@ impl CodeViewport {
 
 impl RenderOnce for CodeViewport {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let scroll = self.scroll.unwrap_or_else(|| {
+        let binding = self.scroll.unwrap_or_else(|| {
             window
                 .use_keyed_state((self.id.clone(), "scroll-handle"), cx, |_, _| {
-                    ScrollHandle::new()
+                    CodeScrollHandle::default()
                 })
                 .read(cx)
                 .clone()
         });
+        let scroll = binding.handle.clone();
         let gesture = window
             .use_keyed_state((self.id.clone(), "scroll-gesture"), cx, |_, _| {
                 Rc::new(RefCell::new(CodeScrollGesture::default()))
@@ -151,7 +172,7 @@ impl RenderOnce for CodeViewport {
                 (self.id.clone(), "code-drag").into(),
                 viewport,
                 selection,
-                scroll.clone(),
+                binding,
             )
             .into_any_element()
         } else {

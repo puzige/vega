@@ -1,17 +1,20 @@
 use super::super::code_drag::CodeDragController;
 use super::super::{CopySelectedText, MessageCopy, StreamCounters, StreamModel, render_rows};
 use super::ThinkingBlock;
-use gpui_kit as gpui;
-use gpui_kit::base::{ScrollbarHandle, TextSelection, TextSelectionLayer};
+use gpui_kit::base::{ScrollbarHandle, TextSelection, TextSelectionLayer, TextSelectionSnapshot};
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    App, Bounds, Context, ElementId, Entity, FocusHandle, Global, Modifiers, MouseButton, Pixels,
-    Point, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, TestAppContext,
-    TextLayout, VisualTestContext, Window, WindowId, div, point, px, size,
+    App, Bounds, Context, DragMoveEvent, ElementId, Empty, Entity, FocusHandle, Global, Modifiers,
+    MouseButton, Pixels, Point, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString,
+    TestAppContext, TextLayout, VisualTestContext, Window, WindowId, div, point, px, size,
 };
 use std::time::Duration;
-use std::{cell::RefCell, collections::HashMap, rc::Weak};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::{Rc, Weak},
+};
 use vega_markdown::MarkdownStream;
 use vega_theme::{Theme, Typography, theme};
 
@@ -228,6 +231,8 @@ struct InteractionView {
     outside_focus: FocusHandle,
     mounted: bool,
     clipped: bool,
+    framework_drag: bool,
+    drag_moves: Rc<RefCell<Vec<Point<Pixels>>>>,
 }
 
 impl InteractionView {
@@ -268,6 +273,8 @@ impl InteractionView {
             outside_focus: cx.focus_handle().tab_stop(true),
             mounted: true,
             clipped: false,
+            framework_drag: false,
+            drag_moves: Rc::default(),
         }
     }
 }
@@ -283,7 +290,15 @@ impl Render for InteractionView {
                 content = content.child(thinking.clone());
             }
         }
+        let drag_moves = self.drag_moves.clone();
         div()
+            .id("fixture-drag-owner")
+            .when(self.framework_drag, |body| {
+                body.on_drag((), |_, _, _, cx| cx.new(|_| Empty))
+                    .on_drag_move(move |event: &DragMoveEvent<()>, _, _| {
+                        drag_moves.borrow_mut().push(event.event.position);
+                    })
+            })
             .size_full()
             .flex()
             .flex_col()
@@ -432,8 +447,7 @@ impl Session {
 
     fn text_point(&self, text: &str, byte: usize) -> Point<Pixels> {
         let run = self.text(text);
-        run.layout.position_for_index(byte).unwrap()
-            + point(px(0.1), run.layout.line_height().half())
+        run.layout.position_for_index(byte).unwrap() + point(px(0.1), run.layout.line_height() / 2.)
     }
 
     fn edge(&self, right: bool) -> Point<Pixels> {
@@ -505,6 +519,24 @@ impl Session {
             .read_from_clipboard()
             .and_then(|item| item.text())
             .unwrap()
+    }
+
+    fn selection_snapshot(&mut self) -> Option<TextSelectionSnapshot> {
+        self.visual.update(|window, cx| {
+            let view = self.view.read(cx);
+            let (copy, focus) = match self.surface {
+                Surface::Answer => (
+                    view.messages[0].copy.clone(),
+                    view.messages[0].focus.clone(),
+                ),
+                Surface::Thinking => {
+                    let thinking = view.thinking.as_ref().unwrap().read(cx);
+                    (thinking.source_copy.clone(), thinking.focus.clone())
+                }
+            };
+            copy.ensure_selection_handle(&focus, window, cx)
+                .snapshot(cx)
+        })
     }
 
     fn outer(&self) -> Point<Pixels> {
@@ -761,6 +793,15 @@ fn clearing_focus_loss_and_deactivation_stop_held_code_selection_scroll(cx: &mut
         }
         if stop == "clear" && session.visual.update(TextSelection::has_selection) {
             failures.push("clear: selection remained active".to_owned());
+        }
+        if stop == "deactivate" {
+            let selection = session.selection_snapshot();
+            session.visual.update(|window, _| window.activate_window());
+            session.frame();
+            session.hold(3);
+            assert_eq!(session.code(0).offset, stopped);
+            assert_eq!(session.selection_snapshot(), selection);
+            session.visual.deactivate_window();
         }
         session.up(session.edge(true));
     }
@@ -1229,5 +1270,132 @@ fn pending_cursor_refresh_is_rejected_after_controller_end_or_content_replacemen
         let stopped = session.code(0).offset;
         session.hold(3);
         assert_eq!(session.code(0).offset, stopped);
+    }
+}
+
+#[gpui_kit::test]
+fn thinking_layout_index_reuse_rebinds_the_driver_to_the_current_scroll_handle(
+    cx: &mut TestAppContext,
+) {
+    let mut session = Session::new(cx, Surface::Thinking);
+    let first = session.code(0);
+    let second = session.code(1);
+    let (first_handle, second_handle, old_driver) = session.visual.read(|cx| {
+        let observations = &cx.global::<Observations>().windows[&session.window];
+        (
+            observations.handles[&first.id].clone(),
+            observations.handles[&second.id].clone(),
+            observations.drivers[&ElementId::from((second.id.clone(), "code-drag"))]
+                .upgrade()
+                .unwrap(),
+        )
+    });
+    session.down(session.text_point(SIBLING, 0));
+    let edge = point(
+        second.visible.right() + px(1.),
+        session.text_point(SIBLING, 0).y,
+    );
+    session.drag(edge);
+    session.hold(2);
+    assert!(second_handle.offset().x < px(0.));
+    let first_before = first_handle.offset();
+    session.visual.update(|_, cx| {
+        let thinking = session.view.read(cx).thinking.clone().unwrap();
+        thinking.update(cx, |card, cx| card.insert_layout_blocks_before_code(cx));
+        let observations = cx
+            .global_mut::<Observations>()
+            .windows
+            .get_mut(&session.window)
+            .unwrap();
+        observations.scrolls.clear();
+        observations.handles.clear();
+        observations.drivers.clear();
+    });
+    session.frame();
+    let reused = session.visual.read(|cx| {
+        cx.global::<Observations>().windows[&session.window].drivers
+            [&ElementId::from((second.id.clone(), "code-drag"))]
+            .upgrade()
+            .unwrap()
+    });
+    assert!(Rc::ptr_eq(&old_driver, &reused));
+    let stopped_second = second_handle.offset();
+    let selection = session.selection_snapshot();
+    session.hold(3);
+    assert_eq!(second_handle.offset(), stopped_second);
+    assert_eq!(first_handle.offset(), first_before);
+    assert_eq!(session.selection_snapshot(), selection);
+    session.up(edge);
+    let start = session.begin_right();
+    session.hold(2);
+    assert!(first_handle.offset().x < first_before.x);
+    assert_eq!(second_handle.offset(), stopped_second);
+    let copied = session.copied();
+    assert!(!copied.is_empty());
+    assert!(CODE[start..].starts_with(&copied));
+    session.hold(256);
+    assert_eq!(first_handle.offset().x, -first_handle.max_offset().x);
+    assert_eq!(second_handle.offset(), stopped_second);
+    assert_eq!(session.copied(), &CODE[start..]);
+    session.up(session.edge(true));
+}
+
+#[gpui_kit::test]
+fn framework_drag_takeover_permanently_stops_code_scroll_and_synthetic_drag_moves(
+    cx: &mut TestAppContext,
+) {
+    for surface in [Surface::Answer, Surface::Thinking] {
+        let mut session = Session::new(cx, surface);
+        session.visual.update(|_, cx| {
+            session.view.update(cx, |view, cx| {
+                view.framework_drag = true;
+                cx.notify();
+            })
+        });
+        session.frame();
+        let viewport = session.code(0).visible;
+        let start = CODE
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .find(|byte| {
+                let position = session.text_point(CODE, *byte);
+                position.x >= viewport.right() - px(20.) && position.x < viewport.right() - px(5.)
+            })
+            .unwrap();
+        let down = session.text_point(CODE, start) - point(px(0.75), px(0.));
+        session.down(down);
+        session.drag(down + point(px(1.5), px(0.)));
+        assert!(!session.visual.read(|cx| cx.has_active_drag()));
+        let before = session.code(0).offset.x;
+        session.hold(2);
+        assert!(session.code(0).offset.x < before);
+        session.drag(down + point(px(10.), px(0.)));
+        assert!(session.visual.read(|cx| cx.has_active_drag()));
+        let stopped = session.code(0).offset;
+        let selection = session.selection_snapshot();
+        assert!(
+            selection
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.is_selecting())
+        );
+        let moves = session
+            .visual
+            .read(|cx| session.view.read(cx).drag_moves.borrow().clone());
+        session.hold(3);
+        assert_eq!(session.code(0).offset, stopped);
+        assert_eq!(session.selection_snapshot(), selection);
+        assert_eq!(
+            session
+                .visual
+                .read(|cx| session.view.read(cx).drag_moves.borrow().clone()),
+            moves
+        );
+        session
+            .visual
+            .update(|window, cx| assert!(cx.stop_active_drag(window)));
+        session.hold(3);
+        assert_eq!(session.code(0).offset, stopped);
+        assert_eq!(session.selection_snapshot(), selection);
+        session.up(down);
     }
 }

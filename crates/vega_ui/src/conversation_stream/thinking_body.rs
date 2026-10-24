@@ -1,5 +1,5 @@
 use super::super::{
-    code_viewport::CodeViewport,
+    code_viewport::{CodeScrollHandle, CodeViewport},
     inline_code,
     links::{LinkRange, fragment_link_ranges, link_ranges},
     selection::SelectionDocumentBuilder,
@@ -38,7 +38,7 @@ pub(super) struct ThinkingBody {
     pending_follow: Option<bool>,
     prepared_epoch: u64,
     pub(super) painted: Rc<Cell<bool>>,
-    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
+    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, CodeScrollHandle>>>,
 }
 
 impl ThinkingBody {
@@ -188,6 +188,31 @@ impl ThinkingBlock {
                 .unwrap_or(px(0.))
         };
         self.scroll.set_offset(point(px(0.), y));
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_layout_blocks_before_code(&mut self, cx: &mut Context<Self>) {
+        let mut prepared = (**self.body.prepared.as_ref().unwrap()).clone();
+        let mut blocks = prepared.blocks.to_vec();
+        let code_indices: Vec<_> = blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, block)| block.code.then_some(index))
+            .collect();
+        let shift = code_indices[1] - code_indices[0];
+        assert!(shift > 0);
+        blocks.splice(
+            0..0,
+            std::iter::repeat_with(PreparedBlock::default).take(shift),
+        );
+        prepared.blocks = blocks.into();
+        prepared.horizontal_ranges = prepared
+            .horizontal_ranges
+            .iter()
+            .map(|(range, index)| (range.clone(), index + shift))
+            .collect();
+        self.publish_body(prepared, cx);
+        cx.notify();
     }
 
     fn publish_body(&mut self, prepared: PreparedBody, cx: &mut Context<Self>) {
@@ -990,7 +1015,7 @@ fn add_fragment(
 }
 
 struct BodyElement {
-    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
+    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, CodeScrollHandle>>>,
     prepared: Arc<PreparedBody>,
     document: SelectionDocumentBuilder,
 }

@@ -7,12 +7,11 @@ use std::{
 use gpui_kit::base::{TextSelectionEvent, TextSelectionHandle};
 use gpui_kit::{
     AnyElement, App, AppContext, Bounds, Element, ElementId, Entity, FocusHandle, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, ScrollHandle, Subscription, Task,
-    Window, WindowId, px,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, PlatformInput, Point, Subscription, Task, Window, WindowId, px,
 };
 
-use super::model::MessageCopy;
+use super::{code_viewport::CodeScrollHandle, model::MessageCopy};
 
 const INTERVAL: Duration = Duration::from_millis(16);
 
@@ -76,13 +75,12 @@ struct DragOrigin {
 
 pub(super) struct CodeDragController {
     selection: CodeDragSelection,
-    scroll: ScrollHandle,
+    scroll: CodeScrollHandle,
     window: WindowId,
     visible: Bounds<Pixels>,
     mounted: bool,
     origin: Option<DragOrigin>,
     pointer: Point<Pixels>,
-    modifiers: Modifiers,
     epoch: RefreshEpoch,
     timer: Option<Task<()>>,
     synthetic: bool,
@@ -110,6 +108,7 @@ impl CodeDragController {
         self.mounted
             && self.window == window.window_handle().window_id()
             && window.is_window_active()
+            && !cx.has_active_drag()
             && window.mouse_position() == self.pointer
             && self.selection.focus.contains_focused(window, cx)
             && self.selection.copy.content_generation() == origin.content_generation
@@ -182,7 +181,7 @@ pub(super) struct CodeDragElement {
     id: ElementId,
     body: AnyElement,
     selection: CodeDragSelection,
-    scroll: ScrollHandle,
+    scroll: CodeScrollHandle,
 }
 
 impl CodeDragElement {
@@ -190,7 +189,7 @@ impl CodeDragElement {
         id: ElementId,
         body: AnyElement,
         selection: CodeDragSelection,
-        scroll: ScrollHandle,
+        scroll: CodeScrollHandle,
     ) -> Self {
         Self {
             id,
@@ -252,7 +251,6 @@ impl Element for CodeDragElement {
                         mounted: true,
                         origin: None,
                         pointer: Point::default(),
-                        modifiers: Modifiers::default(),
                         epoch: RefreshEpoch::default(),
                         timer: None,
                         synthetic: false,
@@ -272,7 +270,6 @@ impl Element for CodeDragElement {
                 mounted: false,
                 origin: None,
                 pointer: Point::default(),
-                modifiers: Modifiers::default(),
                 epoch: RefreshEpoch::default(),
                 timer: None,
                 synthetic: false,
@@ -283,17 +280,20 @@ impl Element for CodeDragElement {
         };
         {
             let mut controller = state.borrow_mut();
-            if controller.selection.handle.entity_id() != self.selection.handle.entity_id()
+            if !controller.scroll.same_binding(&self.scroll)
+                || controller.selection.handle.entity_id() != self.selection.handle.entity_id()
                 || controller.selection.copy.id != self.selection.copy.id
             {
                 controller.cancel();
                 controller.selection_changed = None;
             }
+            controller.scroll = self.scroll.clone();
             controller.selection = self.selection.clone();
             controller.visible = visible;
             controller.mounted = id.is_some();
             if visible.is_empty()
                 || !window.is_window_active()
+                || cx.has_active_drag()
                 || controller.origin.as_ref().is_some_and(|origin| {
                     controller.selection.copy.content_generation() != origin.content_generation
                         || controller.selection.copy.visible_text() != origin.content
@@ -362,6 +362,7 @@ impl Element for CodeDragElement {
             if event.button != MouseButton::Left
                 || event.click_count != 1
                 || !window.is_window_active()
+                || cx.has_active_drag()
                 || !state.visible.contains(&event.position)
             {
                 return;
@@ -375,7 +376,6 @@ impl Element for CodeDragElement {
                 content: state.selection.copy.visible_text(),
             };
             state.pointer = event.position;
-            state.modifiers = event.modifiers;
             let token = state.epoch.value;
             let weak = Rc::downgrade(&down);
             window.defer(cx, move |window, cx| {
@@ -387,6 +387,7 @@ impl Element for CodeDragElement {
                     if state.epoch.value != token
                         || !state.mounted
                         || !window.is_window_active()
+                        || cx.has_active_drag()
                         || !state.selection.focus.contains_focused(window, cx)
                         || state.selection.copy.content_generation() != origin.content_generation
                         || state.selection.copy.visible_text() != origin.content
@@ -416,13 +417,12 @@ impl Element for CodeDragElement {
             }
             {
                 let mut state = moved.borrow_mut();
-                if event.pressed_button != Some(MouseButton::Left) {
+                if event.pressed_button != Some(MouseButton::Left) || cx.has_active_drag() {
                     state.cancel();
                     return;
                 }
                 state.pause();
                 state.pointer = event.position;
-                state.modifiers = event.modifiers;
                 if state.origin.is_none() {
                     return;
                 }
@@ -501,9 +501,9 @@ fn refresh(
         }
         controller.synthetic = true;
         MouseMoveEvent {
-            position: controller.pointer,
+            position: window.mouse_position(),
             pressed_button: Some(MouseButton::Left),
-            modifiers: controller.modifiers,
+            modifiers: window.modifiers(),
         }
     };
     window.dispatch_event(PlatformInput::MouseMove(event), cx);
