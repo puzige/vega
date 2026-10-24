@@ -214,9 +214,13 @@ impl SettingsView {
                 }
                 self.save_preferences(config, cx);
             }
-            NativeAgentAction::Prepare | NativeAgentAction::Accessibility => {
+            NativeAgentAction::Prepare => {
                 self.acquire_preparation(cx);
-                cx.emit(DesktopPreparationRequested { pane: PermissionPane::Accessibility });
+                cx.emit(DesktopPreparationRequested { pane: None });
+            }
+            NativeAgentAction::Accessibility => {
+                self.acquire_preparation(cx);
+                cx.emit(DesktopPreparationRequested { pane: Some(PermissionPane::Accessibility) });
             }
             NativeAgentAction::Check => {
                 self.acquire_preparation(cx);
@@ -224,7 +228,7 @@ impl SettingsView {
             }
             NativeAgentAction::ScreenRecording => {
                 self.acquire_preparation(cx);
-                cx.emit(DesktopPreparationRequested { pane: PermissionPane::ScreenRecording });
+                cx.emit(DesktopPreparationRequested { pane: Some(PermissionPane::ScreenRecording) });
             }
             NativeAgentAction::Extension => {
                 cx.open_url("https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/extension/README.md")

@@ -16,7 +16,13 @@ const MAX_WINDOWS: usize = 16_384;
 const MAX_MARKER_BYTES: usize = 1024;
 const NONACTIVATING_PANEL: usize = 1 << 7;
 const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+const MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
+const FULL_SCREEN_PRIMARY: usize = 1 << 7;
 const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+const FULL_SCREEN_NONE: usize = 1 << 9;
+const PRIMARY: usize = 1 << 16;
+const AUXILIARY: usize = 1 << 17;
+const CAN_JOIN_ALL_APPLICATIONS: usize = 1 << 18;
 const FLOATING_LEVEL: isize = 3;
 const HIDDEN_TITLE: isize = 1;
 const ON_SCREEN_ONLY: u32 = 1;
@@ -168,32 +174,51 @@ pub(super) fn geometry() -> Result<DesktopGeometry, NativeError> {
     }
 }
 
-pub(super) fn configure_panel(marker: &str) -> Result<(), NativeError> {
+pub(super) fn show_panel(marker: &str) -> Result<(), NativeError> {
     let _pool = AutoreleasePool::new()?;
     // SAFETY: Lookup proves an exact unique owned NSPanel before any mutation, inside the main-thread pool.
     unsafe {
         let panel = find_panel(marker)?;
         let style = send_unsigned(panel, c"styleMask");
+        if style & NONACTIVATING_PANEL == 0 || send_bool(panel, c"isVisible") {
+            return Err(NativeError::PanelConfigurationRejected);
+        }
+        let decoration = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 15);
+        let required_style = style & !decoration;
+        set_unsigned(panel, c"setStyleMask:", required_style);
+        set_bool(panel, c"setHasShadow:", false);
+        set_bool(panel, c"setOpaque:", false);
+        let clear = required_object(send_object(class(c"NSColor")?, c"clearColor"))?;
+        set_object(panel, c"setBackgroundColor:", clear);
+        set_bool(panel, c"setMovable:", false);
+        set_bool(panel, c"setMovableByWindowBackground:", false);
         let behavior = send_unsigned(panel, c"collectionBehavior");
-        let required_style = style | NONACTIVATING_PANEL;
-        let required_behavior = behavior | CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
-        if style != required_style {
-            set_unsigned(panel, c"setStyleMask:", required_style);
-        }
-        if send_signed(panel, c"level") != FLOATING_LEVEL {
-            set_signed(panel, c"setLevel:", FLOATING_LEVEL);
-        }
-        if behavior != required_behavior {
-            set_unsigned(panel, c"setCollectionBehavior:", required_behavior);
-        }
-        if send_signed(panel, c"titleVisibility") != HIDDEN_TITLE {
-            set_signed(panel, c"setTitleVisibility:", HIDDEN_TITLE);
-        }
+        let conflicting_behavior =
+            MOVE_TO_ACTIVE_SPACE | FULL_SCREEN_PRIMARY | FULL_SCREEN_NONE | PRIMARY | AUXILIARY;
+        let required_behavior = (behavior & !conflicting_behavior)
+            | CAN_JOIN_ALL_SPACES
+            | FULL_SCREEN_AUXILIARY
+            | CAN_JOIN_ALL_APPLICATIONS;
+        set_signed(panel, c"setLevel:", FLOATING_LEVEL);
+        set_unsigned(panel, c"setCollectionBehavior:", required_behavior);
+        set_signed(panel, c"setTitleVisibility:", HIDDEN_TITLE);
+        set_bool(panel, c"setHidesOnDeactivate:", false);
+        set_bool(panel, c"setWorksWhenModal:", false);
         if send_unsigned(panel, c"styleMask") != required_style
+            || send_bool(panel, c"hasShadow")
+            || send_bool(panel, c"isMovable")
+            || send_bool(panel, c"isMovableByWindowBackground")
+            || send_bool(panel, c"isOpaque")
             || send_unsigned(panel, c"collectionBehavior") != required_behavior
             || send_signed(panel, c"level") != FLOATING_LEVEL
             || send_signed(panel, c"titleVisibility") != HIDDEN_TITLE
+            || send_bool(panel, c"hidesOnDeactivate")
+            || send_bool(panel, c"worksWhenModal")
         {
+            return Err(NativeError::PanelConfigurationRejected);
+        }
+        send_void(panel, c"orderFrontRegardless");
+        if !send_bool(panel, c"isVisible") {
             return Err(NativeError::PanelConfigurationRejected);
         }
         Ok(())
@@ -518,6 +543,35 @@ unsafe fn send_pid(application: Object) -> i32 {
         let send: unsafe extern "C" fn(Object, Selector) -> i32 =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(application, sel_registerName(c"processIdentifier".as_ptr()))
+    }
+}
+
+unsafe fn send_void(receiver: Object, selector: &'static CStr) {
+    // SAFETY: The owned NSPanel selector takes no arguments and returns void.
+    unsafe {
+        let send: unsafe extern "C" fn(Object, Selector) =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        send(receiver, sel_registerName(selector.as_ptr()));
+    }
+}
+
+unsafe fn set_object(receiver: Object, selector: &'static CStr, value: Object) {
+    // SAFETY: The owned NSPanel setter takes one live NSColor object and returns void within the main-thread pool.
+    unsafe {
+        let send: unsafe extern "C" fn(Object, Selector, Object) =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        send(receiver, sel_registerName(selector.as_ptr()), value);
+    }
+}
+
+unsafe fn set_bool(receiver: Object, selector: &'static CStr, value: bool) {
+    #[cfg(target_arch = "x86_64")]
+    let value = i8::from(value);
+    // SAFETY: The owned NSPanel selector takes the architecture-specific BOOL by value and returns void.
+    unsafe {
+        let send: unsafe extern "C" fn(Object, Selector, ObjcBool) =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        send(receiver, sel_registerName(selector.as_ptr()), value);
     }
 }
 

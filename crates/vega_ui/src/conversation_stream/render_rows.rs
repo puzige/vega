@@ -1,3 +1,6 @@
+use super::code_drag::CodeDragSelection;
+use super::code_viewport::CodeViewport;
+use super::copy_receipt::{CopyReceiptButton, CopySource};
 use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
@@ -360,16 +363,22 @@ fn markdown_message_item(
         .pt(px(Layout::CONVERSATION_BODY_TOP))
         .flex()
         .flex_col()
-        .children(markdown_blocks(model, colors, code_owner, |line, index| {
-            let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
-            let marker =
-                independent_list_marker(line).map(|marker| render_line(&marker, colors, &id));
-            let content = list_item_content(line);
-            (
-                marker,
-                render_line(content.as_ref().unwrap_or(line), colors, &id),
-            )
-        }))
+        .children(markdown_blocks(
+            model,
+            colors,
+            code_owner,
+            None,
+            |line, index| {
+                let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
+                let marker =
+                    independent_list_marker(line).map(|marker| render_line(&marker, colors, &id));
+                let content = list_item_content(line);
+                (
+                    marker,
+                    render_line(content.as_ref().unwrap_or(line), colors, &id),
+                )
+            },
+        ))
         .children(
             failure.map(|reason| div().child(plain_error_notice(reason.message(), colors.danger))),
         )
@@ -560,36 +569,44 @@ pub(crate) fn selectable_markdown_content(
     let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
     let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
     let mut previous: Option<(u64, LineKind, Option<Arc<StreamCodeBlock>>)> = None;
-    let blocks = markdown_blocks(model, colors, Some(copy.id), |line, index| {
-        if !matches!(line.kind, LineKind::Rule)
-            && let Some((previous_block, previous_kind, previous_code)) = &previous
-        {
-            let same_multiline_block = (*previous_kind == LineKind::Code
-                && line.kind == LineKind::Code
-                && previous_code
-                    .as_ref()
-                    .zip(line.code_block.as_ref())
-                    .is_some_and(|(previous, current)| Arc::ptr_eq(previous, current)))
-                || (*previous_block == line.block_id
-                    && (matches!(previous_kind, LineKind::ListItem)
-                        && matches!(line.kind, LineKind::ListItem)));
-            document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
-        }
-        let marker = independent_list_marker(line)
-            .map(|marker| render_line_selectable(&marker, colors, &mut document, index, copy.id));
-        let content = list_item_content(line);
-        let element = render_line_selectable(
-            content.as_ref().unwrap_or(line),
-            colors,
-            &mut document,
-            index,
-            copy.id,
-        );
-        if !matches!(line.kind, LineKind::Rule) {
-            previous = Some((line.block_id, line.kind, line.code_block.clone()));
-        }
-        (marker, element)
-    });
+    let selection = document.code_drag_selection(window, cx);
+    let blocks = markdown_blocks(
+        model,
+        colors,
+        Some(copy.id),
+        Some(selection),
+        |line, index| {
+            if !matches!(line.kind, LineKind::Rule)
+                && let Some((previous_block, previous_kind, previous_code)) = &previous
+            {
+                let same_multiline_block = (*previous_kind == LineKind::Code
+                    && line.kind == LineKind::Code
+                    && previous_code
+                        .as_ref()
+                        .zip(line.code_block.as_ref())
+                        .is_some_and(|(previous, current)| Arc::ptr_eq(previous, current)))
+                    || (*previous_block == line.block_id
+                        && (matches!(previous_kind, LineKind::ListItem)
+                            && matches!(line.kind, LineKind::ListItem)));
+                document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
+            }
+            let marker = independent_list_marker(line).map(|marker| {
+                render_line_selectable(&marker, colors, &mut document, index, copy.id)
+            });
+            let content = list_item_content(line);
+            let element = render_line_selectable(
+                content.as_ref().unwrap_or(line),
+                colors,
+                &mut document,
+                index,
+                copy.id,
+            );
+            if !matches!(line.kind, LineKind::Rule) {
+                previous = Some((line.block_id, line.kind, line.code_block.clone()));
+            }
+            (marker, element)
+        },
+    );
     selection_context_menu(
         document.wrap(body.children(blocks).into_any_element(), window, cx),
         copy,
@@ -627,6 +644,7 @@ fn markdown_blocks(
     model: &StreamModel,
     colors: &ThemeColors,
     code_owner: Option<u64>,
+    selection: Option<CodeDragSelection>,
     mut render: impl FnMut(&StreamLine, usize) -> (Option<AnyElement>, AnyElement),
 ) -> Vec<AnyElement> {
     let lines: Vec<_> = model
@@ -683,26 +701,22 @@ fn markdown_blocks(
                     })
                     .children(header)
                     .child(
-                        div()
-                            .id(gpui_kit::SharedString::from(format!(
+                        CodeViewport::new(
+                            gpui_kit::SharedString::from(format!(
                                 "markdown-code-scroll-{}-{block_id}-{start}",
                                 code_owner.unwrap_or_default(),
-                            )))
-                            .w_full()
-                            .min_w_0()
-                            .pb(px(Layout::MARKDOWN_CODE_PADDING))
-                            .overflow_x_scroll()
-                            .flex()
-                            .child(
-                                div()
-                                    .min_w_full()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .flex_col()
-                                    .items_start()
-                                    .children(content),
-                            )
-                            .scroll_edge_fade(colors.code_bg, ScrollFade::compact()),
+                            )),
+                            div()
+                                .min_w_full()
+                                .flex_shrink_0()
+                                .pb(px(Layout::MARKDOWN_CODE_PADDING))
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .children(content),
+                            colors.code_bg,
+                        )
+                        .selection(selection.clone()),
                     ),
             )
         } else {
@@ -819,8 +833,11 @@ fn code_header(
     ordinal: usize,
     colors: &ThemeColors,
 ) -> AnyElement {
-    let source = code.code.clone();
     let selector = format!("markdown-code-copy-{owner}-{ordinal}");
+    let receipt_id = format!(
+        "code-copy-receipt-{owner}-{}-{}",
+        code.identity.0, code.identity.1
+    );
     div()
         .w_full()
         .min_w_0()
@@ -838,17 +855,19 @@ fn code_header(
                 .text_color(colors.text_secondary)
                 .children(code.language.clone()),
         )
-        .child(
-            crate::icons::icon_button(Icon::Copy, "复制代码", *colors, move |_, _, cx| {
-                if !source.is_empty() {
-                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(source.to_string()));
-                }
-            })
-            .id(gpui_kit::SharedString::from(selector.clone()))
-            .size(px(Layout::COPY_ACTION_SIZE))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .focus_visible(|style| style.bg(colors.bg_active)),
-        )
+        .child(CopyReceiptButton::new(
+            receipt_id.into(),
+            CopySource::Code(code.code.clone()),
+            "复制代码",
+            *colors,
+            |button| {
+                button
+                    .id(gpui_kit::SharedString::from(selector))
+                    .size(px(Layout::COPY_ACTION_SIZE))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .focus_visible(|style| style.bg(colors.bg_active))
+            },
+        ))
         .into_any_element()
 }
 
@@ -1477,7 +1496,6 @@ pub(super) fn message_with_copy(
         return body;
     }
     let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
-    let source = copy.clone();
     div()
         .id(("message-with-copy", id))
         .group(group.clone())
@@ -1498,24 +1516,25 @@ pub(super) fn message_with_copy(
                 })
                 .when(!user, |row| row.left_0().bottom_0())
                 .flex()
-                .child(
-                    crate::icons::icon_button(
-                        crate::icons::Icon::Copy,
-                        if user {
-                            "复制消息"
-                        } else {
-                            "复制最终回复"
-                        },
-                        colors,
-                        move |_, _, cx| source.copy(cx),
-                    )
-                    .id(("message-copy", id))
-                    .size(px(Layout::COPY_ACTION_SIZE))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .opacity(0.)
-                    .group_hover(group, |style| style.opacity(1.))
-                    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
-                ),
+                .child(CopyReceiptButton::new(
+                    format!("message-copy-receipt-{}", copy.id).into(),
+                    CopySource::Message(copy.clone()),
+                    if user {
+                        "复制消息"
+                    } else {
+                        "复制最终回复"
+                    },
+                    colors,
+                    |button| {
+                        button
+                            .id(("message-copy", id))
+                            .size(px(Layout::COPY_ACTION_SIZE))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .opacity(0.)
+                            .group_hover(group, |style| style.opacity(1.))
+                            .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
+                    },
+                )),
         )
         .into_any_element()
 }

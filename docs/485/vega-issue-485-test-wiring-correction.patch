@@ -1,0 +1,29 @@
+diff --git a/crates/vega_ui/src/conversation_stream/quote_layout_tests.rs b/crates/vega_ui/src/conversation_stream/quote_layout_tests.rs
+index eda501f5..0bddd7a8 100644
+--- a/crates/vega_ui/src/conversation_stream/quote_layout_tests.rs
++++ b/crates/vega_ui/src/conversation_stream/quote_layout_tests.rs
+@@ -2,9 +2,9 @@ use std::cell::RefCell;
+ 
+ use gpui_kit::prelude::*;
+ use gpui_kit::{
+-    AnyElement, App, AppContext as _, AvailableSpace, Bounds, Context, Element, ElementId,
+-    GlobalElementId, InspectorElementId, LayoutId, Pixels, Point, Size, StyledText, TestAppContext,
+-    TextLayout, VisualTestContext, Window, canvas, point, px, size,
++    AnyElement, App, AvailableSpace, Bounds, Context, Element, ElementId, GlobalElementId,
++    InspectorElementId, LayoutId, Pixels, Point, Size, StyledText, TestAppContext, TextLayout,
++    VisualTestContext, Window, canvas, point, px, size,
+ };
+ use vega_markdown::MarkdownStream;
+ use vega_theme::{Layout, Theme};
+diff --git a/crates/vega_ui/src/conversation_stream/thinking_body.rs b/crates/vega_ui/src/conversation_stream/thinking_body.rs
+index 51a832a0..31e9fdfd 100644
+--- a/crates/vega_ui/src/conversation_stream/thinking_body.rs
++++ b/crates/vega_ui/src/conversation_stream/thinking_body.rs
+@@ -1320,6 +1320,7 @@ mod quote_layout_tests {
+     #[gpui_kit::test]
+     fn thinking_quotes_keep_width_constrained_layout_and_copy_projection(cx: &mut TestAppContext) {
+         cx.update(gpui_kit::init);
++        cx.update(|cx| cx.set_global(Theme::light()));
+         let visual = cx.add_empty_window();
+         for (source, expected) in layout::LONG_QUOTES
+             .into_iter()

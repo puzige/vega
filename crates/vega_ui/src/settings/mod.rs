@@ -60,7 +60,7 @@ pub struct SettingsSaved {
 }
 
 pub struct DesktopPreparationRequested {
-    pub pane: crate::cua_onboarding::PermissionPane,
+    pub pane: Option<crate::cua_onboarding::PermissionPane>,
 }
 
 pub struct NativePreparationSettingsRequested(pub bool);

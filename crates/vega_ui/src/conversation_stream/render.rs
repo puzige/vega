@@ -1540,7 +1540,7 @@ impl Render for ConversationStream {
                                                                 &this.selection_focus,
                                                             );
                                                             if let StreamEntry::Assistant { copy, .. } = entry
-                                                                && let Some(source) = this.final_copy_for_entry(index)
+                                                                && let Some(source) = this.copy_source_for_entry(index)
                                                             {
                                                                 render_rows::message_with_copy(body, source, copy.id, false, theme(cx).colors)
                                                             } else {

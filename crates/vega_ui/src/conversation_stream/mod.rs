@@ -262,8 +262,11 @@ pub(crate) use composer_predictions::ComposerPredictionsEnabled;
 pub use composer_predictions::set_composer_predictions_enabled;
 mod composer_actions;
 use composer_actions::ComposerActions;
+mod code_drag;
+mod code_viewport;
 mod content;
 mod context_control;
+mod copy_receipt;
 pub use context_control::ContextUsageProjection;
 mod context_usage;
 pub use vega_conversation::types::{

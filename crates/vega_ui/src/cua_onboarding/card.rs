@@ -17,6 +17,27 @@ use vega_theme::Layout;
 
 mod view;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Overview,
+    Guide,
+}
+
+impl Stage {
+    fn surface_size(self) -> (f32, f32) {
+        match self {
+            Self::Overview => (
+                Layout::PREPARATION_OVERVIEW_WIDTH,
+                Layout::PREPARATION_OVERVIEW_HEIGHT,
+            ),
+            Self::Guide => (
+                Layout::PREPARATION_CARD_WIDTH,
+                Layout::PREPARATION_CARD_HEIGHT,
+            ),
+        }
+    }
+}
+
 const FOLLOW_INTERVAL: Duration = Duration::from_millis(150);
 const INITIAL_SETTINGS_ATTEMPTS: u8 = 20;
 
@@ -50,7 +71,6 @@ impl std::error::Error for OpenError {}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PanelFault {
     Geometry,
-    Configuration,
     Movement,
 }
 
@@ -58,7 +78,6 @@ impl PanelFault {
     fn message(self) -> &'static str {
         match self {
             Self::Geometry => "无法定位系统设置。请重新打开引导；挡住操作时可关闭。",
-            Self::Configuration => "悬浮保护不可用。请关闭引导，在系统设置中手动授权。",
             Self::Movement => "无法跟随系统设置。请重新打开引导；挡住操作时可关闭。",
         }
     }
@@ -89,6 +108,10 @@ pub struct GuidanceCard {
     app_icon: Arc<Image>,
     path_error: Option<String>,
     permission_pane: PermissionPane,
+    stage: Stage,
+    stage_identity: CallbackIdentity,
+    placement_pending: bool,
+    drag_gesture: Option<std::rc::Weak<()>>,
     marker: String,
     _marker_lifetime: Arc<()>,
     origin: (f64, f64),
@@ -107,49 +130,59 @@ pub fn open(
     let placement = initial_placement(cx)?;
     let lifetime = Arc::new(());
     let marker = format!("Vega preparation {:p}", Arc::as_ptr(&lifetime));
-    cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(placement.bounds)),
-            display_id: Some(placement.display),
-            titlebar: Some(TitlebarOptions {
-                title: Some(marker.clone().into()),
-                appears_transparent: true,
-                traffic_light_position: Some(point(
-                    px(-Layout::PREPARATION_CARD_WIDTH),
-                    px(-Layout::PREPARATION_CARD_HEIGHT),
-                )),
-            }),
-            focus: false,
-            kind: WindowKind::Floating,
-            is_movable: false,
-            is_resizable: false,
-            is_minimizable: false,
-            window_background: WindowBackgroundAppearance::Transparent,
-            ..Default::default()
-        },
-        |window, cx| {
-            cx.new(|cx| {
-                let mut card = GuidanceCard::new(
-                    task,
-                    &executable,
-                    return_handler,
-                    marker,
-                    lifetime,
-                    placement,
-                    cx,
-                );
-                window.set_window_title(&card.marker);
-                if let Err(error) = native::configure_panel(&card.marker) {
-                    tracing::warn!(?error, "preparation panel configuration failed");
-                    card.panel_fault = Some(PanelFault::Configuration);
-                    card.tracking = Tracking::Disabled;
-                }
-                card.start(window, cx);
-                card
-            })
-        },
-    )
-    .map_err(|error| OpenError::Window(error.to_string()))
+    let handle = cx
+        .open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(placement.bounds)),
+                display_id: Some(placement.display),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(marker.clone().into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(
+                        px(-Layout::PREPARATION_CARD_WIDTH),
+                        px(-Layout::PREPARATION_CARD_HEIGHT),
+                    )),
+                }),
+                focus: false,
+                show: false,
+                kind: WindowKind::PopUp,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |window, cx| {
+                cx.new(|cx| {
+                    let mut card = GuidanceCard::new(
+                        task,
+                        &executable,
+                        return_handler,
+                        marker,
+                        lifetime,
+                        placement,
+                        cx,
+                    );
+                    window.set_window_title(&card.marker);
+                    card.start(window, cx);
+                    card
+                })
+            },
+        )
+        .map_err(|error| OpenError::Window(error.to_string()))?;
+    handle
+        .update(cx, |card, window, cx| {
+            if let Err(error) = native::show_panel(&card.marker) {
+                tracing::warn!(?error, "preparation panel presentation failed");
+                card.close(window, cx);
+                return Err(OpenError::Window(
+                    "无法安全显示浮层。请重新打开引导，或在系统设置中手动授权。".into(),
+                ));
+            }
+            Ok(())
+        })
+        .map_err(|error| OpenError::Window(error.to_string()))??;
+    Ok(handle)
 }
 
 impl GuidanceCard {
@@ -185,6 +218,10 @@ impl GuidanceCard {
             )),
             path_error: None,
             permission_pane: PermissionPane::Accessibility,
+            stage: Stage::Overview,
+            stage_identity: CallbackIdentity::default(),
+            placement_pending: false,
+            drag_gesture: None,
             marker,
             _marker_lifetime: marker_lifetime,
             origin: placement.origin,
@@ -197,6 +234,10 @@ impl GuidanceCard {
 
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.on_release(|card, cx| card.invalidate(cx)).detach();
+        cx.observe_window_bounds(window, |card, window, cx| {
+            card.finish_stage_placement(window, cx);
+        })
+        .detach();
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
             let _ = weak.update(cx, |card, cx| card.invalidate(cx));
@@ -204,14 +245,18 @@ impl GuidanceCard {
         });
         window.focus(&self.focus, cx);
         let cancel = self.cancel.clone();
-        cx.spawn_in(window, async move |weak, cx| {
+        cx.spawn(async move |weak, cx| {
             while !cancel.is_cancelled() {
                 cx.background_executor().timer(FOLLOW_INTERVAL).await;
                 if cancel.is_cancelled() {
                     break;
                 }
                 if weak
-                    .update_in(cx, |card, window, cx| card.tick(window, cx))
+                    .update(cx, |card, cx| {
+                        if !cancel.is_cancelled() {
+                            card.tick(cx);
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -234,18 +279,109 @@ impl GuidanceCard {
         self.release_preparation(cx);
     }
 
-    pub fn seek_settings(&mut self, pane: PermissionPane, cx: &mut Context<Self>) {
+    pub fn seek_settings(
+        &mut self,
+        pane: PermissionPane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.permission_pane = pane;
+        self.set_stage(Stage::Guide, window, cx);
+    }
+
+    pub fn show_overview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_stage(Stage::Overview, window, cx);
+    }
+
+    fn set_stage(&mut self, stage: Stage, window: &mut Window, cx: &mut Context<Self>) {
         if !self.controller.view().open {
             return;
         }
-        self.permission_pane = pane;
-        if matches!(self.tracking, Tracking::Waiting) {
-            self.tracking = Tracking::Seeking(INITIAL_SETTINGS_ATTEMPTS);
+        let (width, height) = outer_size(stage);
+        let target_size = size(px(width as f32), px(height as f32));
+        let needs_resize = self.placement_pending || window.viewport_size() != target_size;
+        self.stage = stage;
+        self.stage_identity = CallbackIdentity::default();
+        self.placement_pending = true;
+        self.tracking = Tracking::Disabled;
+        self.panel_fault = None;
+        window.focus(&self.focus, cx);
+        if needs_resize {
+            window.resize(target_size);
+        } else {
+            self.finish_stage_placement(window, cx);
         }
         cx.notify();
     }
 
+    fn finish_stage_placement(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let stage = self.stage;
+        let (width, height) = outer_size(stage);
+        if !self.controller.view().open
+            || !self.placement_pending
+            || window.viewport_size() != size(px(width as f32), px(height as f32))
+        {
+            return;
+        }
+        self.placement_pending = false;
+        let geometry = match native::geometry() {
+            Ok(geometry) => geometry,
+            Err(error) => {
+                tracing::warn!(?error, "preparation stage placement unavailable");
+                self.panel_fault = Some(PanelFault::Geometry);
+                self.tracking = Tracking::Disabled;
+                cx.notify();
+                return;
+            }
+        };
+        let settings = (stage == Stage::Guide)
+            .then_some(geometry.settings)
+            .flatten();
+        let screen = settings
+            .and_then(|settings| settings_screen(&geometry, settings))
+            .or_else(|| {
+                let display = window.display(cx)?;
+                geometry
+                    .screens
+                    .iter()
+                    .find(|screen| DisplayId::new(screen.id) == display.id())
+            });
+        if let Some(screen) = screen {
+            let origin = if stage == Stage::Guide {
+                perch(settings, outer_size(stage), screen.visible)
+            } else {
+                centered(outer_size(stage), screen.visible)
+            };
+            match native::move_panel(&self.marker, screen, origin) {
+                Ok(()) => self.origin = origin,
+                Err(error) => {
+                    tracing::warn!(?error, "preparation stage move failed");
+                    self.panel_fault = Some(PanelFault::Movement);
+                }
+            }
+        } else {
+            self.panel_fault = Some(PanelFault::Geometry);
+        }
+        self.tracking = if stage == Stage::Overview || !self.controller.view().following {
+            Tracking::Disabled
+        } else if settings.is_some() {
+            Tracking::Following
+        } else {
+            Tracking::Seeking(INITIAL_SETTINGS_ATTEMPTS)
+        };
+        cx.notify();
+    }
+
     fn dispatch(&mut self, action: CardAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            CardAction::AccessibilitySettings => {
+                self.seek_settings(PermissionPane::Accessibility, window, cx)
+            }
+            CardAction::ScreenRecordingSettings => {
+                self.seek_settings(PermissionPane::ScreenRecording, window, cx)
+            }
+            _ => {}
+        }
         let effects = self.controller.act(action);
         self.apply_effects(effects, window, cx);
         cx.notify();
@@ -291,14 +427,32 @@ impl GuidanceCard {
         }
     }
 
-    fn tick(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    fn tick(&mut self, cx: &mut Context<Self>) {
         if self.controller.view().open {
+            if self
+                .drag_gesture
+                .as_ref()
+                .is_some_and(|gesture| gesture.upgrade().is_none())
+            {
+                self.drag_gesture = None;
+                self.controller.drag_ended();
+                if self.stage == Stage::Guide
+                    && !self.placement_pending
+                    && self.panel_fault.is_none()
+                    && matches!(self.tracking, Tracking::Disabled)
+                {
+                    self.tracking = Tracking::Seeking(INITIAL_SETTINGS_ATTEMPTS);
+                }
+                cx.notify();
+            }
             self.follow(cx);
         }
     }
 
     fn follow(&mut self, cx: &mut Context<Self>) {
-        if !self.controller.view().following
+        if self.stage != Stage::Guide
+            || self.placement_pending
+            || !self.controller.view().following
             || matches!(self.tracking, Tracking::Waiting | Tracking::Disabled)
         {
             return;
@@ -332,7 +486,7 @@ impl GuidanceCard {
         };
         if let Some(origin) = follow_target(
             Some(settings),
-            outer_size(),
+            outer_size(self.stage),
             screen.visible,
             self.origin,
             !self.controller.view().following,
@@ -350,10 +504,18 @@ impl GuidanceCard {
     }
 }
 
-fn outer_size() -> (f64, f64) {
+fn outer_size(stage: Stage) -> (f64, f64) {
+    let (width, height) = stage.surface_size();
     (
-        f64::from(Layout::PREPARATION_CARD_WIDTH + Layout::PREPARATION_CARD_SHADOW_PADDING * 2.0),
-        f64::from(Layout::PREPARATION_CARD_HEIGHT + Layout::PREPARATION_CARD_SHADOW_PADDING * 2.0),
+        f64::from(width + Layout::PREPARATION_CARD_SHADOW_PADDING * 2.0),
+        f64::from(height + Layout::PREPARATION_CARD_SHADOW_PADDING * 2.0),
+    )
+}
+
+fn centered(card: (f64, f64), visible: Rect) -> (f64, f64) {
+    (
+        visible.x + ((visible.width - card.0) / 2.0).max(0.0),
+        visible.y + ((visible.height - card.1) / 2.0).max(0.0),
     )
 }
 
@@ -388,8 +550,8 @@ fn initial_placement(cx: &App) -> Result<InitialPlacement, OpenError> {
                     .find(|screen| DisplayId::new(screen.id) == main.id())
             });
         if let Some(screen) = screen {
-            let origin = perch(geometry.settings, outer_size(), screen.visible);
-            let (width, height) = outer_size();
+            let origin = centered(outer_size(Stage::Overview), screen.visible);
+            let (width, height) = outer_size(Stage::Overview);
             return Ok(InitialPlacement {
                 bounds: Bounds::new(
                     point(
@@ -400,11 +562,7 @@ fn initial_placement(cx: &App) -> Result<InitialPlacement, OpenError> {
                 ),
                 display: DisplayId::new(screen.id),
                 origin,
-                tracking: if geometry.settings.is_some() {
-                    Tracking::Following
-                } else {
-                    Tracking::Seeking(INITIAL_SETTINGS_ATTEMPTS)
-                },
+                tracking: Tracking::Disabled,
                 fault: None,
             });
         }
@@ -420,8 +578,8 @@ fn initial_placement(cx: &App) -> Result<InitialPlacement, OpenError> {
         f64::from(f32::from(visible.size.width)),
         f64::from(f32::from(visible.size.height)),
     );
-    let origin = perch(None, outer_size(), visible);
-    let (width, height) = outer_size();
+    let origin = centered(outer_size(Stage::Overview), visible);
+    let (width, height) = outer_size(Stage::Overview);
     Ok(InitialPlacement {
         bounds: Bounds::new(
             point(px(origin.0 as f32), px(origin.1 as f32)),
