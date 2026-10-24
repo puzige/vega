@@ -214,7 +214,7 @@ pub(crate) fn capture_filter_identity(
         cancel,
     )?;
     let path_bytes: Arc<[u8]> = paths.stdout.into();
-    let parsed_paths = parse_nul_paths(&path_bytes)?;
+    let parsed_paths = parse_filter_scan_paths(&path_bytes)?;
     let remaining = limit
         .checked_sub(path_bytes.len())
         .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
@@ -236,8 +236,12 @@ pub(crate) fn capture_filter_identity(
     })
 }
 
-pub(crate) fn parse_nul_paths(bytes: &[u8]) -> Result<Vec<Vec<u8>>, GitWorkspaceError> {
-    parse_nul_paths_with_limit(bytes, PATH_LIMIT, GitWorkspaceErrorCode::OutputTooLarge)
+fn parse_filter_scan_paths(bytes: &[u8]) -> Result<Vec<Vec<u8>>, GitWorkspaceError> {
+    parse_nul_paths_with_limit(
+        bytes,
+        FILTER_SCAN_PATH_LIMIT,
+        GitWorkspaceErrorCode::OutputTooLarge,
+    )
 }
 
 pub(crate) fn parse_nul_paths_with_limit(
