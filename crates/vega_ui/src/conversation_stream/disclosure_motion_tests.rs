@@ -3001,6 +3001,83 @@ impl StreamFixture {
             .unwrap();
         self.draw();
     }
+
+    fn anchor_observation(
+        &mut self,
+        phase: &str,
+        original: &ThreadScrollAnchor,
+        original_index: usize,
+        paints: &[crate::disclosure_layout_probe::SelectionPaint],
+        glyphs: &[GlyphPaint],
+    ) -> String {
+        self.cx.update(|cx| {
+            let stream = self.stream.read(cx);
+            let list = &stream.list;
+            let top = list.logical_scroll_top();
+            let viewport = list.viewport_bounds();
+            let foreground = stream.foreground_height;
+            let original_indexes = (0..list.item_count())
+                .filter(|index| {
+                    original.identity.as_deref().is_some_and(|identity| {
+                        stream.entry_identity_at(*index) == Some(identity)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let items = (original_index.min(top.item_ix)..list.item_count())
+                .map(|index| {
+                    (
+                        index,
+                        stream.entry_identity_at(index),
+                        list.bounds_for_item(index),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut observation = format!(
+                "phase={phase} original={original:?} original_index={original_index} original_current_indexes={original_indexes:?} anchor={:?} top={top:?} following={} viewport={viewport:?} foreground={foreground:?} effective_reading_bottom={:?} item_count={} scrollbar_offset={:?} scrollbar_max_without_padding={:?} is_scrolled_to_end={:?} items={items:?} glyphs={glyphs:?}",
+                stream.scroll_anchor_snapshot(),
+                list.is_following_tail(),
+                viewport.bottom() - foreground,
+                list.item_count(),
+                list.scroll_px_offset_for_scrollbar(),
+                list.max_offset_for_scrollbar(),
+                list.is_scrolled_to_end(),
+            );
+            for (paint_index, paint) in paints.iter().enumerate() {
+                observation.push_str(&format!(
+                    "\npaint[{paint_index}] copy={} handle={:?} scope={:?} bounds={:?} mask={:?} content={:?}",
+                    paint.copy_id,
+                    paint.handle_id,
+                    paint.scope,
+                    paint.bounds,
+                    paint.content_mask,
+                    paint.content,
+                ));
+                for (run_index, run) in paint.runs.iter().enumerate() {
+                    let positions = run
+                        .text()
+                        .char_indices()
+                        .map(|(index, _)| index)
+                        .chain(std::iter::once(run.text().len()))
+                        .map(|index| (index, run.layout().position_for_index(index)))
+                        .collect::<Vec<_>>();
+                    let shaped = run
+                        .layout()
+                        .line_layouts()
+                        .iter()
+                        .map(|line| line.runs().to_vec())
+                        .collect::<Vec<_>>();
+                    observation.push_str(&format!(
+                        "\npaint[{paint_index}].run[{run_index}] bounds={:?} layout_bounds={:?} line_height={:?} text={:?} window_positions={positions:?} shaped_line_runs={shaped:?}",
+                        run.bounds(),
+                        run.layout().bounds(),
+                        run.layout().line_height(),
+                        run.text(),
+                    ));
+                }
+            }
+            observation
+        })
+    }
 }
 
 #[gpui_kit::test]
@@ -3070,17 +3147,34 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
         let anchor = fixture
             .cx
             .update(|cx| fixture.stream.read(cx).scroll_anchor_snapshot());
+        let anchor_index = fixture
+            .cx
+            .update(|cx| fixture.stream.read(cx).list.logical_scroll_top().item_ix);
         let before_focus = fixture
             .cx
             .update_window(fixture.window.into(), |_, window, cx| {
                 window.focused(cx).unwrap()
             })
             .unwrap();
+        let geometry_a = fixture.anchor_observation(
+            "A after wheel and source preparation, before Final text",
+            &anchor,
+            anchor_index,
+            std::slice::from_ref(&source),
+            &[],
+        );
         fixture
             .cx
             .update(|cx| stage_final_text(&fixture.stream, "current", cx));
         let pretrust_paints = layout::take_selection_paints();
         let pretrust_glyphs = probe::take();
+        let geometry_b = fixture.anchor_observation(
+            "B after Final text, before Completed",
+            &anchor,
+            anchor_index,
+            &pretrust_paints,
+            &pretrust_glyphs,
+        );
         fixture.cx.update(|cx| {
             assert!(
                 !group.read(cx).process_in_details(),
@@ -3171,6 +3265,13 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
         });
         let automatic_paints = layout::take_selection_paints();
         let automatic_glyphs = probe::take();
+        let geometry_c = fixture.anchor_observation(
+            "C after Completed automatic paint batch, before explicit draw",
+            &anchor,
+            anchor_index,
+            &automatic_paints,
+            &automatic_glyphs,
+        );
         assert_hidden(
             "first Final automatic frames",
             &automatic_paints,
@@ -3178,6 +3279,13 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
         );
         let collapsed = fixture.draw();
         let collapsed_paints = layout::take_selection_paints();
+        let geometry_d = fixture.anchor_observation(
+            "D after explicit Final draw, before anchor assertion",
+            &anchor,
+            anchor_index,
+            &collapsed_paints,
+            &collapsed,
+        );
         assert_hidden("first Final explicit frame", &collapsed_paints, &collapsed);
         fixture.cx.update(|cx| {
             assert!(
@@ -3210,7 +3318,7 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 assert_eq!(
                     fixture.stream.read(cx).scroll_anchor_snapshot(),
                     anchor,
-                    "reading={reading} first Final preserves reading anchor"
+                    "reading={reading} first Final preserves reading anchor\n{geometry_a}\n{geometry_b}\n{geometry_c}\n{geometry_d}"
                 );
             }
         });

@@ -341,3 +341,27 @@ D05 依赖事实固定为 gpui-kit/gpui-base `0.6.1`、gpui-pre `0.3.4`：`platf
 第三切片writer已READY停写，非写入者另结合原日志独立确认该P2前置错误并纠正先前纯静态遗漏。父核对最终源码SHA-256 **`d5fe9c4b0799e19480041fdaba394e489d71fe6e3ddb5d89a81d3c81606f100e`**、仅源码git binary patch SHA-256 **`5ec3164c1bf1644fc4ca02157e9d254c599562aa0c421febe8fe3ca33228b09c`** 与停写产物精确一致。真实source同copy/handle/scope/content、可见prepared run/shaped glyph、同stage真实paint阳性取代错误内部位，source全文和source_painted保留。
 
 父实际词法检查28名称/顺序、其他27体逐字节保全、仅pre-trust block与两份docs变化，exit0；cargo fmt与full-base diff-check均0。Completed/Enter后全部检查、已PASS的D06、D05严格原体及生产代码均不变，未本地运行/编译/测试Vega。新固定版本的窄增量独审与Actions仍待取得，不先放行删测。
+
+## 2026-10-24 pre-trust 修复独审与实际滚动锚点失败
+
+固定完整head **`431ec02bbc840354bda15b83a4331915271fd17e`** 已推送。远端[源码](https://github.com/puzige/vega/blob/431ec02bbc840354bda15b83a4331915271fd17e/crates/vega_ui/src/conversation_stream/disclosure_motion_tests.rs)完整读取与本地SHA-256 `d5fe9c4b0799e19480041fdaba394e489d71fe6e3ddb5d89a81d3c81606f100e`一致，blob `df75fd2e7c06bba0918bc48357c99736ebd1e27a`；[完整提交patch](https://github.com/puzige/vega/commit/431ec02bbc840354bda15b83a4331915271fd17e.patch)抓取SHA-256 `09935be54a2acdc4c75f355208c9e6e7b5312b127031f57aab6acc26b0f4c114`。非写入者完成窄增量独审，确认pre-trust P2已修复、实际API/真实记录与28名称/27体及块前后保全，无新增静态发现；该结论不替代后续行为和滚动诊断。
+
+[Actions40076729448](https://github.com/puzige/vega/actions/runs/40076729448) 2026-10-24 16:06:16（Asia/Shanghai）启动、16:10:08完成；父16:07:02首次读取、16:12:36再次读取，遵守五分钟间隔。Nextest/Clippy实际checkout **`ef30eca9d82ea49cdd86be50b615f7cfc2a51477`**，API核对父为base **`5bc062b245d5f1c7cee3b333df896ef31810fc11`** 与head **`431ec02bbc840354bda15b83a4331915271fd17e`**；tree **`658098c947dc4500cb0323cd2fd4b5b66cd2b3ab`** 与固定head完全相同。
+
+- Nextest `120821558133` failure/exit100：banner28 across15 binaries，实际 **28执行/26通过/2失败/0跳过**；独立list JSON与aggregate ignored计数仍未取得。
+- Clippy `120821558370`、Format success；Python5+15+40=60项均OK；required `120822308670` failure。
+- D06全项继续PASS（0.393s）；source真实选择、Tab、artifact及前轮四修复仍PASS。
+- Final用例已通过manual/focus两个完整分支，scrolled分支的pre-trust阳性和Completed后隐藏检查也走过；首次失败推进到固定`:3210`，`reading=scrolled first Final preserves reading anchor`。Final后为history-6/run-activity、offset20.5、following_tail=true；Final前为history-8/run-activity、offset14.5、following_tail=false。该函数整体仍FAIL，不把分支执行拆成独立PASS计数。
+- D05仍在`:2699`原严格无inactive draw前提12vs11失败，恢复断言未执行；继续按用户接受的动态验证边界留痕。
+
+原始全文日志SHA-256 **`d23f7dab313ae4306e2ccbb1702f25f83924ed75ad915d4629a5aa581278bcfe`**，保留raw/单独清理副本、逐条28项与footer。不是27/28；没有因D05获处置而跳过滚动失败。
+
+主Agent将新锚点失败交非写入者只读诊断，核对#416/#344/#545与锁定List回填/paused Tail恢复路径。现日志没有viewport/total/offset等几何，尚不认定是合法clamp或生产恢复缺陷。保留精确identity/offset/following_tail与真实wheel/source阳性断言；不任意放大72、不改expected、不清理测试，不动生产List/anchor算法。只读清理计划虽已列齐4删除/13恢复/6生产保留，仍等待滚动失败解决及其余27项必要行为证据。
+
+### 锚点诊断观察切片（不改验收或输入）
+
+非写入者确认锁定List在旧top到tail不足视口时回填，并在距离底部1px内恢复paused Tail；当前数字与之相容，但未取得几何不能认定因果。下一切片仅在原Final测试及同文件helper增加四阶段只读快照：A真实wheel/source准备后、stage text前；B stage text后且Completed前；C Completed自动批次已收集后、显式draw前；D显式draw后原anchor断言前。记录当前/旧anchor index与identity、offset/follow、viewport、foreground padding、逐项identity及Option<真实bounds>、辅助scrollbar offset/max（明确max不含padding，不独作判底），以及同source真实run/glyph/mask位置。不得draw/notify/park/改scroll或丢弃任何paint批次。
+
+原16历史、640×1200窗口、wheel72、短Final、原精确anchor/follow断言及全部Completed/Enter后覆盖保持，不改变expected或添加放宽/ignore；其他27体/D05原文保全。这是新增责任层观测，不是盲重试或行为修复。若旧identity唯一且offset合法、suffix全部连续已测，按 `sum(h_i) - old_offset + foreground - viewport_height` 判断旧top的真实余量；None不当0，0..1px不能证明非尾随可保留。取得数据后再确定仅fixture修正或真实生产责任层；长Final候选也须先证明实际可达与有效阅读区source阳性，不能直接按行数换绿。
+
+观察writer已READY停写，父读回源码SHA-256 **`e0d4a7aeb974e5b75e1ef3e993b7d4118786708ef8df30bad9ea21088a041b33`**、仅源码git binary patch SHA-256 **`428919c96d145351a507e671b3575efe97d8f743fec0679b5521ca993b914c5e`** 与停写产物精确一致。父重跑静态范围脚本exit0：28名称/27体保全，移除只读helper/5个let与还原唯一错误消息后，整个源码与431基线逐字节相同，静态assert宏308不变；证明原输入/断言表达式/批次时序未改。父cargo fmt、完整diff-check均0，未本地运行/编译/测试Vega。新head的独审和原Actions待取得，不把本切片称行为修复完成。
