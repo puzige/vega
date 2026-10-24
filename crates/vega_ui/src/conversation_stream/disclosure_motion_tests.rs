@@ -3260,7 +3260,7 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             "reading={reading} untrusted Final paints the real enabled expanded stage: {pretrust_glyphs:?}"
         );
         let pending_final = if reading == "scrolled" {
-            let (index, identity, copy_id, scope, pending_bounds, reading_clip) =
+            let (index, identity, copy_id, scope, pending_bounds, reading_clip, hidden_records) =
                 fixture.cx.update(|cx| {
                     let stream = fixture.stream.read(cx);
                     let list = &stream.list;
@@ -3300,10 +3300,35 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                     let (index, copy, model) = pending[0];
                     assert!(model.row_count() > 0, "reading={reading} pending Final has materialized content");
                     assert!(stream.final_copy_for_entry(index).is_none(), "reading={reading} pending Final is not trusted yet");
+                    let current_assistants = stream.entries.iter().enumerate().filter_map(|(index, entry)| {
+                        if stream.entry_identities[index].message_id.as_deref() != Some("current") {
+                            return None;
+                        }
+                        if let StreamEntry::Assistant { copy, model, failure, .. } = entry {
+                            assert!(failure.is_none(), "reading={reading} current response has no failure");
+                            Some((index, copy, model))
+                        } else {
+                            None
+                        }
+                    }).collect::<Vec<_>>();
+                    assert_eq!(current_assistants.len(), 2, "reading={reading} exact current Commentary and pending Final sequence");
+                    let (commentary_index, commentary_copy, commentary_model) = current_assistants[0];
+                    assert_eq!(commentary_copy.original_text(), COMMENTARY);
+                    assert!(commentary_model.row_count() > 0);
+                    assert_eq!(current_assistants[1].0, index);
+                    assert_eq!(current_assistants[1].1.id, copy.id);
+                    assert_ne!(commentary_index, index);
+                    assert_ne!(commentary_copy.id, copy.id);
+                    let commentary_range = 0..commentary_copy.original_text().len();
+                    let pending_range = commentary_range.end..commentary_range.end + copy.original_text().len();
+                    assert_eq!(commentary_range, 0..COMMENTARY.len());
+                    assert_eq!(pending_range, COMMENTARY.len()..COMMENTARY.len() + final_text.len());
+                    assert_eq!(stream.active_response_start, Some(COMMENTARY.len()));
+                    assert_eq!(stream.active_response_id.as_deref(), Some("final"));
                     let hidden = stream.entries.iter().enumerate().filter_map(|(index, entry)| {
                         match entry {
                             StreamEntry::RunActivitySegment { group: owner, .. } if owner == &group => Some(index),
-                            StreamEntry::Assistant { copy, .. } if group.read(cx).owns_process_copy(copy.id) => {
+                            StreamEntry::Assistant { copy, failure: None, .. } if index == commentary_index && copy.id == commentary_copy.id => {
                                 assert_eq!(stream.entry_identities[index].message_id.as_deref(), Some("current"));
                                 assert_eq!(copy.original_text(), COMMENTARY, "reading={reading} only owned commentary is budgeted");
                                 Some(index)
@@ -3316,6 +3341,13 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                     assert_eq!(hidden.iter().filter(|index| matches!(&stream.entries[**index], StreamEntry::Assistant { .. })).count(), 1);
                     assert!(index > anchor_index && hidden.iter().all(|index| *index > anchor_index));
                     assert!(!hidden.contains(&index), "reading={reading} pending Final remains outside hidden budget");
+                    let hidden_records = hidden.iter().map(|index| {
+                        let copy_id = match &stream.entries[*index] {
+                            StreamEntry::Assistant { copy, .. } => Some(copy.id),
+                            _ => None,
+                        };
+                        (*index, stream.entry_identity_at(*index).unwrap().to_owned(), copy_id)
+                    }).collect::<Vec<_>>();
                     let hidden_height = hidden.iter().map(|index| {
                         list.bounds_for_item(*index)
                             .unwrap_or_else(|| panic!("reading={reading} hidden item {index} is measured\n{geometry_b}"))
@@ -3337,6 +3369,7 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                         copy.selection_scope(),
                         list.bounds_for_item(index).unwrap(),
                         Bounds::from_corners(viewport.origin, point(viewport.right(), viewport.bottom() - foreground)),
+                        hidden_records,
                     )
                 });
             assert!(
@@ -3394,7 +3427,14 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 }),
                 "reading={reading} source glyph is readable above Composer; reading_clip={reading_clip:?}\n{geometry_b}"
             );
-            Some((index, identity, copy_id, scope, pending_bounds))
+            Some((
+                index,
+                identity,
+                copy_id,
+                scope,
+                pending_bounds,
+                hidden_records,
+            ))
         } else {
             None
         };
@@ -3481,7 +3521,7 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 "reading={reading} exact Final bytes"
             );
             if reading == "scrolled" {
-                let (index, identity, copy_id, scope, pending_bounds) = pending_final.as_ref().unwrap();
+                let (index, identity, copy_id, scope, pending_bounds, hidden_records) = pending_final.as_ref().unwrap();
                 let stream = fixture.stream.read(cx);
                 assert_eq!(stream.entry_identity_at(*index), Some(identity.as_str()), "reading={reading} same retained Final entry");
                 let StreamEntry::Assistant { copy, .. } = &stream.entries[*index] else {
@@ -3492,6 +3532,25 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 assert_eq!(copy.original_text(), final_text);
                 assert_eq!(stream.final_copy_for_entry(*index).unwrap().original_text(), final_text);
                 assert!(!stream.process_entry_hidden(*index, cx));
+                assert!(!group.read(cx).owns_process_copy(copy.id));
+                for (hidden_index, hidden_identity, hidden_copy_id) in hidden_records {
+                    assert_eq!(stream.entry_identity_at(*hidden_index), Some(hidden_identity.as_str()));
+                    match (&stream.entries[*hidden_index], hidden_copy_id) {
+                        (StreamEntry::Assistant { copy, failure: None, .. }, Some(expected)) => {
+                            assert_eq!(copy.id, *expected);
+                            assert_eq!(copy.original_text(), COMMENTARY);
+                            assert!(group.read(cx).owns_process_copy(copy.id));
+                            assert!(stream.process_entry_hidden(*hidden_index, cx));
+                        }
+                        (StreamEntry::RunActivitySegment { group: owner, .. }, None) => {
+                            assert!(owner == &group);
+                            assert!(group.read(cx).process_in_details());
+                        }
+                        _ => panic!("reading={reading} hidden budget preserves its real entry kind"),
+                    }
+                    assert_eq!(stream.list.bounds_for_item(*hidden_index).unwrap().size.height, px(0.),
+                        "reading={reading} actual hidden budget item {hidden_identity} has zero height\n{geometry_b}\n{geometry_c}\n{geometry_d}");
+                }
                 let retained_bounds = stream.list.bounds_for_item(*index).unwrap();
                 assert_eq!(retained_bounds.size.width, pending_bounds.size.width);
                 assert!(retained_bounds.size.height >= pending_bounds.size.height,

@@ -151,3 +151,5 @@ D07/#416 的隐藏阴性窗口从合法 `AssistantResponseCompleted(Final)` 开�
 仅scrolled分支可使用合法多段Final文本，Started/TextDelta、Completed及重复Final的字节范围和全文期望必须与输入一致。不能把段数、估高或未知None当实测高度：Completed前检查原历史identity唯一、offset合法、following=false，并从该identity到tail获取连续真实Bounds；预算仅计实际将隐藏的stage与owned commentary，保留run header和独立Final。扣除预算后剩余高度加foreground padding仍须超过viewport，且有明确大于native 1px门限的余量。待确认Final只在原正文上追加copy footer，因此其未确认状态实测高度可作保留内容下界；Completed后仍核对同一Final entry实际高度未缩小与精确字节。
 
 同source copy/handle/scope的非空prepared shaped glyph必须落在participant、content mask和实际有效阅读区（viewport减foreground padding）的交集内，不能只在Composer覆盖区paint。manual/focus保留原短Final输入；原始锚点identity/offset/following精确相等、首次收起后的全部自动/显式正文和控件阴性、focus、真实Enter重开/重关、全文与一次性契约均保留。其他27测试体、D05严格前提及生产算法不变。
+
+可信Final之前 `RunActivityGroup::process_copies` 尚未赋值，不能提前用 `owns_process_copy` 识别待隐藏commentary。此时依据已真实完成的Commentary输入范围0..COMMENTARY.len、同current稳定message身份及唯一精确commentary正文定位实际copy/index，stage仍按同group实体；pending Final须为不同copy/index。Completed后再读取真实group归属、相同commentary identity/copy、隐藏状态与实测0高，验证前置预算的确对应实际收起项。不提前confirm_final，不新增metadata getter或镜像业务投影，不将预算项数2改成1。
