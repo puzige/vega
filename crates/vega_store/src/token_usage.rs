@@ -34,6 +34,8 @@ pub struct NewTokenUsage<'a> {
 
 /// Inserts one provider-call usage row.
 pub fn insert(conn: &Connection, usage: NewTokenUsage<'_>) -> Result<i64, rusqlite::Error> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Usage)?;
     let input_tokens = sql_i64(usage.input_tokens, "input_tokens")?;
     let output_tokens = sql_i64(usage.output_tokens, "output_tokens")?;
     let cache_read_tokens = sql_i64(usage.cache_read_tokens, "cache_read_tokens")?;

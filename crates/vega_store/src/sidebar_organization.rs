@@ -22,6 +22,10 @@ fn invalid_metadata(message: &str) -> rusqlite::Error {
 }
 
 pub fn promote_thread(conn: &Connection, thread_id: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Sidebar,
+    )?;
     let source: Option<(Option<String>, bool)> = conn
         .query_row(
             "SELECT project_id,pinned FROM threads WHERE id=?1 AND (parent_thread_id IS NULL OR pinned=1)",
@@ -185,6 +189,10 @@ pub fn threads(
 /// Persists validated metadata. Must be called within the caller's write transaction.
 /// Existing groups are updated in place; only dissolved groups are deleted.
 pub fn write(conn: &Connection, rows: &OrganizationRows) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Sidebar,
+    )?;
     let existing = read(conn)?;
     let mut preferences: Map<String, Value> =
         serde_json::from_str(&existing.preferences).map_err(metadata_error)?;

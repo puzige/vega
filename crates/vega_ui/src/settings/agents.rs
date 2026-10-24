@@ -1,5 +1,8 @@
 use super::*;
+use crate::cua_onboarding::PermissionPane;
+use crate::cua_onboarding::controller::CheckState;
 use crate::interaction::InteractionExt;
+use vega_conversation::types::{ComponentState, PermissionState};
 
 impl SettingsView {
     pub(crate) fn save_codex_profile(&mut self, cx: &mut Context<Self>) {
@@ -183,12 +186,22 @@ enum NativeAgentAction {
     Desktop,
     Browser,
     Check,
+    Prepare,
     Accessibility,
     ScreenRecording,
     Extension,
 }
 
 impl SettingsView {
+    pub(crate) fn acquire_preparation(&mut self, cx: &mut Context<Self>) {
+        if self.preparation_owner.is_none() {
+            self.preparation_owner = Some(
+                self.preparation
+                    .update(cx, |model, cx| model.acquire(false, cx)),
+            );
+        }
+    }
+
     fn native_agent_action(&mut self, action: NativeAgentAction, cx: &mut Context<Self>) {
         match action {
             NativeAgentAction::Desktop | NativeAgentAction::Browser => {
@@ -201,32 +214,22 @@ impl SettingsView {
                 }
                 self.save_preferences(config, cx);
             }
-            NativeAgentAction::Check => {
-                if self.computer_use_check_pending {
-                    return;
-                }
-                self.computer_use_check_pending = true;
-                let worker = cx.background_executor().spawn(async {
-                    vega_conversation::types::ManagedComponents::detect()
-                        .map(|_| "随包组件已就绪。系统权限和浏览器连接将在使用时检查。".to_string())
-                        .unwrap_or_else(|error| error.to_string())
-                });
-                cx.spawn(async move |this, cx| {
-                    let result = worker.await;
-                    let _ = this.update(cx, |this, cx| {
-                        this.computer_use_check = Some(result);
-                        this.computer_use_check_pending = false;
-                        cx.notify();
-                    });
-                })
-                .detach();
+            NativeAgentAction::Prepare => {
+                self.acquire_preparation(cx);
+                cx.emit(DesktopPreparationRequested { pane: None });
             }
-            NativeAgentAction::Accessibility => cx.open_url(
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            ),
-            NativeAgentAction::ScreenRecording => cx.open_url(
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-            ),
+            NativeAgentAction::Accessibility => {
+                self.acquire_preparation(cx);
+                cx.emit(DesktopPreparationRequested { pane: Some(PermissionPane::Accessibility) });
+            }
+            NativeAgentAction::Check => {
+                self.acquire_preparation(cx);
+                self.preparation.update(cx, |model, cx| model.recheck(cx));
+            }
+            NativeAgentAction::ScreenRecording => {
+                self.acquire_preparation(cx);
+                cx.emit(DesktopPreparationRequested { pane: Some(PermissionPane::ScreenRecording) });
+            }
             NativeAgentAction::Extension => {
                 cx.open_url("https://github.com/microsoft/playwright/blob/e8149b8257d32dcf8f72573ecc43e72439da7080/packages/extension/README.md")
             }
@@ -245,6 +248,8 @@ impl SettingsView {
         let colors = theme(cx).colors;
         settings_action_chrome(colors)
             .id(id)
+            .role(gpui_kit::Role::Button)
+            .aria_label(label.to_string())
             .interaction_surface(
                 colors.bg_elevated,
                 colors.bg_hover,
@@ -281,6 +286,26 @@ impl SettingsView {
 
     fn render_native_agent(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let snapshot = self.preparation.read(cx).snapshot();
+        let view = &snapshot.view;
+        let permission = |state| match state {
+            PermissionState::Granted => "已开启",
+            PermissionState::Denied => "未授权",
+            PermissionState::Unknown
+                if view.check_state == CheckState::Idle && !snapshot.retained =>
+            {
+                "未检测"
+            }
+            PermissionState::Unknown => "未知",
+        };
+        let component = match view.component {
+            Some(ComponentState::Available) => "可用",
+            Some(ComponentState::Missing) => "未安装",
+            Some(ComponentState::Incompatible) => "版本不兼容",
+            Some(ComponentState::UnsupportedPlatform) => "系统不支持",
+            None if view.check_state == CheckState::Idle && !snapshot.retained => "未检测",
+            None => "未知",
+        };
         settings_group(colors)
             .child(section_title("Native · 电脑与浏览器", colors.text_primary))
             .child(div().mt_2().text_size(px(Typography::METADATA)).text_color(colors.text_secondary)
@@ -290,12 +315,28 @@ impl SettingsView {
             .child(settings_field("浏览器操控", Some("使用已登录的 Chrome 标签页".into()),
                 self.native_agent_button("settings-browser-use-toggle", if self.config.agent.browser_use_enabled { "已开启" } else { "已关闭" }, NativeAgentAction::Browser, self.provider_management.saving, cx), colors))
             .child(div().mt_3().flex().flex_wrap().gap_2()
-                .child(self.native_agent_button("settings-computer-use-check", if self.computer_use_check_pending { "检测中…" } else { "检测随包组件" }, NativeAgentAction::Check, self.computer_use_check_pending, cx))
-                .child(self.native_agent_button("settings-computer-use-accessibility", "辅助功能设置", NativeAgentAction::Accessibility, false, cx))
-                .child(self.native_agent_button("settings-computer-use-screen-recording", "屏幕录制设置", NativeAgentAction::ScreenRecording, false, cx))
-                .child(self.native_agent_button("settings-computer-use-extension", "安装浏览器扩展", NativeAgentAction::Extension, false, cx)))
-            .child(div().mt_2().text_size(px(Typography::METADATA)).text_color(colors.text_secondary)
-                .child(self.computer_use_check.clone().unwrap_or_else(|| "组件随 Vega 提供。查看窗口和截图需要屏幕录制权限；读取控件和输入还需要辅助功能权限。浏览器扩展需由你安装并选择标签页。".into())))
+                .child(self.native_agent_button("settings-desktop-use-prepare", "电脑操控准备", NativeAgentAction::Prepare, false, cx))
+                .child(self.native_agent_button("settings-computer-use-check", if view.can_recheck { "重新检测" } else { "检测中…" }, NativeAgentAction::Check, !view.can_recheck, cx)))
+            .children(snapshot.feedback.iter().map(|feedback| {
+                div().mt_2().text_size(px(Typography::METADATA))
+                    .text_color(if feedback.warning { colors.warning } else { colors.text_secondary })
+                    .child(feedback.message.clone())
+            }))
+            .child(settings_field("电脑操控组件", None, div().child(component).into_any_element(), colors))
+            .child(settings_field("辅助功能", None,
+                div().flex().items_center().gap_2()
+                    .child(permission(view.accessibility))
+                    .child(self.native_agent_button("settings-computer-use-accessibility", "辅助功能设置", NativeAgentAction::Accessibility, false, cx))
+                    .into_any_element(), colors))
+            .child(settings_field("屏幕录制", None,
+                div().flex().items_center().gap_2()
+                    .child(permission(view.screen_recording))
+                    .child(self.native_agent_button("settings-computer-use-screen-recording", "屏幕录制设置", NativeAgentAction::ScreenRecording, false, cx))
+                    .into_any_element(), colors))
+            .child(div().text_size(px(Typography::METADATA)).text_color(colors.text_secondary)
+                .child("修改屏幕录制权限后，如系统提示重启，请退出并重新打开 Vega。"))
+            .child(settings_field("实际屏幕抓取", None, div().child("未验证").into_any_element(), colors))
+            .child(div().mt_3().child(self.native_agent_button("settings-computer-use-extension", "安装浏览器扩展", NativeAgentAction::Extension, false, cx)))
             .into_any_element()
     }
 }

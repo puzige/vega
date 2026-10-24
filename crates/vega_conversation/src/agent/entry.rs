@@ -711,13 +711,20 @@ where
         prepared.request.tool_config.exact_rules = authority.exact_rules.clone();
         prepared.request.context_budget = actor_config.delegated_context_budget;
     }
+    if actor_config.delegated {
+        prepared.request.context_budget = prepared
+            .request
+            .context_budget
+            .map(vega_runtime::ContextBudget::without_automatic_compaction);
+    }
     let subagent_mcp = mcp_servers.clone();
     prepared.request.tool_config = prepared
         .request
         .tool_config
         .with_mcp_servers(mcp_servers)
         .with_computer_use(actor_config.computer_use.clone())
-        .with_user_questions(actor_config.user_questions.clone());
+        .with_user_questions(actor_config.user_questions.clone())
+        .with_stage(actor_config.stage_hook.clone());
     let skill_launch = super::skills::prepare_skill_run(
         store,
         &prepared.project_id,

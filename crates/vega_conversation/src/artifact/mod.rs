@@ -125,6 +125,7 @@ impl ArtifactRecord {
             id: self.id,
             label: self.label.clone(),
             source: self.source,
+            size_bytes: self.evidence.as_ref().map(|evidence| evidence.size),
             current_file_id: self.current_file_id,
             preview_available: !self.stale_disabled
                 && self.current_file_id.is_some()

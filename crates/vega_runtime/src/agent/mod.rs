@@ -66,6 +66,7 @@ pub const LEGACY_BASH_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid bash inp
 /// Stable content-free result when cancellation is observed after durable
 /// approval/running but before any tool worker starts.
 pub const CANCELLED_BEFORE_EXECUTION_OUTPUT: &str = "Tool cancelled before execution.";
+pub const INVALID_READ_INPUT_OUTPUT: &str = r#"Tool error: read requires path identifying a regular text file. Expected {"path":"src/lib.rs","offset":null,"limit":null}"#;
 
 const OUTPUT_HALF_LINES: usize = 2_000;
 const OUTPUT_TRUNCATION_MARKER: &str = "…[tool output truncated: middle lines omitted]";
@@ -186,6 +187,9 @@ pub struct RuntimeSteeringInput {
 }
 
 pub trait RuntimeSteeringSource: Send + Sync {
+    fn ready(&self) -> BoxFuture<'_, Result<Option<String>, VegaError>> {
+        Box::pin(async { Ok(None) })
+    }
     fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>>;
 }
 
@@ -209,6 +213,7 @@ pub struct RuntimeToolConfig {
     pub turn_limit: usize,
     automation: Option<Arc<dyn automation::RuntimeAutomationHook>>,
     subagents: Option<Arc<dyn RuntimeSubagentHook>>,
+    stage: Option<Arc<dyn RuntimeSubagentHook>>,
     usage_observer: Option<Arc<dyn automation::RuntimeAutomationHook>>,
     steering_source: Option<Arc<dyn RuntimeSteeringSource>>,
     user_questions: Option<Arc<dyn RuntimeUserQuestionHook>>,
@@ -242,6 +247,7 @@ impl RuntimeToolConfig {
             turn_limit: 0,
             automation: None,
             subagents: None,
+            stage: None,
             usage_observer: None,
             steering_source: None,
             user_questions: None,
@@ -286,6 +292,11 @@ impl RuntimeToolConfig {
 
     pub fn with_subagents(mut self, hook: Option<Arc<dyn RuntimeSubagentHook>>) -> Self {
         self.subagents = hook.filter(|_| self.run_mode == RuntimeRunMode::Execute);
+        self
+    }
+
+    pub fn with_stage(mut self, hook: Option<Arc<dyn RuntimeSubagentHook>>) -> Self {
+        self.stage = hook;
         self
     }
 
@@ -998,7 +1009,11 @@ pub enum RuntimeAssistantResponseKind {
 #[derive(Clone)]
 pub enum RuntimeEvent {
     AssistantResponseStarted {
+        response_id: String,
         text_start_bytes: usize,
+    },
+    ReasoningCompleted {
+        response_id: String,
     },
     ResponseRetrying {
         text_start_bytes: usize,
@@ -1069,6 +1084,13 @@ pub enum RuntimeEvent {
     },
     /// Terminal tool result.
     ToolCallFinished(RuntimeToolResult),
+    ToolReadFinished {
+        result: RuntimeToolResult,
+        identity: vega_tools::ReadIdentity,
+    },
+    StageHandoff {
+        checkpoint_id: String,
+    },
     /// Content-free activation audit and optional frozen private Store state.
     /// The conversation adapter persists this before another provider round.
     SkillActivation {
@@ -1114,9 +1136,17 @@ pub enum RuntimeEvent {
 impl fmt::Debug for RuntimeEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AssistantResponseStarted { text_start_bytes } => formatter
+            Self::AssistantResponseStarted {
+                response_id,
+                text_start_bytes,
+            } => formatter
                 .debug_struct("AssistantResponseStarted")
+                .field("response_id_bytes", &response_id.len())
                 .field("text_start_bytes", text_start_bytes)
+                .finish(),
+            Self::ReasoningCompleted { response_id } => formatter
+                .debug_struct("ReasoningCompleted")
+                .field("response_id_bytes", &response_id.len())
                 .finish(),
             Self::ResponseRetrying {
                 text_start_bytes,
@@ -1205,7 +1235,7 @@ impl fmt::Debug for RuntimeEvent {
                 .field("call_id_bytes", &call_id.len())
                 .field("chunk_bytes", &chunk.len())
                 .finish(),
-            Self::ToolCallFinished(result) => formatter
+            Self::ToolCallFinished(result) | Self::ToolReadFinished { result, .. } => formatter
                 .debug_tuple("ToolCallFinished")
                 .field(result)
                 .finish(),
@@ -1241,6 +1271,7 @@ impl fmt::Debug for RuntimeEvent {
                 .field(decision)
                 .finish(),
             Self::SteeringAccepted(_) => formatter.write_str("SteeringAccepted"),
+            Self::StageHandoff { .. } => formatter.write_str("StageHandoff"),
             Self::Finished(reason) => formatter.debug_tuple("Finished").field(reason).finish(),
             Self::Interrupted => formatter.write_str("Interrupted"),
             Self::Error(_) => formatter.write_str("Error([redacted])"),
@@ -1291,7 +1322,10 @@ pub use loop_::{
     run_agent_with_sink,
 };
 pub(crate) use tools_exec::*;
-pub use tools_exec::{GREP_INVALID_INPUT_OUTPUT, tool_definitions, tool_names_equivalent};
+pub use tools_exec::{
+    GREP_INVALID_INPUT_OUTPUT, read_identity_with_permission, tool_definitions,
+    tool_names_equivalent,
+};
 
 mod automation;
 pub use automation::RuntimeAutomationHook;

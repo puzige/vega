@@ -42,6 +42,10 @@ pub fn suspend(
     reason: &str,
     now: i64,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        tx,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     let source = crate::context_compaction::load_source_in_transaction(tx, thread_id)?;
     let user_message_id: String = tx.query_row(
         "SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < (SELECT seq FROM messages WHERE id = ?2) ORDER BY seq DESC LIMIT 1",
@@ -91,6 +95,10 @@ pub fn claim(
     receipt: &CredentialContinuation,
     operation_id: &str,
 ) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        tx,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     let current =
         crate::context_compaction::load_source_version_in_transaction(tx, &receipt.thread_id)?;
     if current.source_version != receipt.source_version
@@ -107,11 +115,19 @@ pub fn claim(
 }
 
 pub fn attach(tx: &Transaction<'_>, receipt_id: &str, message_id: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        tx,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     tx.execute("UPDATE credential_continuations SET continuation_message_id = ?2 WHERE id = ?1 AND state = 'claimed'", params![receipt_id, message_id])?;
     Ok(())
 }
 
 pub fn complete(conn: &Connection, message_id: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     conn.execute("UPDATE credential_continuations SET state = 'completed' WHERE continuation_message_id = ?1 AND state = 'claimed'", [message_id])?;
     Ok(())
 }

@@ -32,10 +32,17 @@ pub fn record_assistant_response(
     content: &str,
     response: &AssistantResponseRow,
 ) -> Result<bool, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     if response.message_id != message_id || !response.valid_for(content) {
         return Ok(false);
     }
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let owner = find(&tx, message_id)?;
     if !owner.is_some_and(|owner| {
         owner.role == "assistant" && owner.status == "streaming" && owner.content == content
@@ -127,4 +134,35 @@ pub(super) fn for_page(
         }
     }
     Ok(validated)
+}
+
+pub fn completed_response_text(
+    conn: &Connection,
+    message_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    let Some(owner) = find(conn, message_id)? else {
+        return Ok(None);
+    };
+    if owner.role != "assistant" || owner.status != "done" {
+        return Ok(None);
+    }
+    let responses = read_for_message(conn, message_id)?;
+    let mut end = 0;
+    let mut final_text = None;
+    for response in responses {
+        if !response.valid_for(&owner.content)
+            || response.text_start_bytes < end
+            || final_text.is_some()
+        {
+            return Ok(None);
+        }
+        end = response.text_end_bytes;
+        if response.kind == "final" {
+            final_text = owner
+                .content
+                .get(response.text_start_bytes..response.text_end_bytes)
+                .map(str::to_string);
+        }
+    }
+    Ok(final_text)
 }

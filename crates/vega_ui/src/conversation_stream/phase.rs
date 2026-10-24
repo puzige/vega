@@ -325,9 +325,7 @@ impl ConversationStream {
                         group.read(cx).segment_children(*segment),
                         cx,
                     ) {
-                        if !matches!(child, RunActivityChild::Artifact(_)) {
-                            details.push((index, RunDetail::Operation(child)));
-                        }
+                        details.push((index, RunDetail::Operation(child)));
                     }
                 }
                 StreamEntry::Assistant { copy, .. } if group.read(cx).hides_copy(copy.id) => {
@@ -509,15 +507,6 @@ impl ConversationStream {
             });
             return true;
         }
-        if let StreamEntry::RunActivitySegment { group, segment } = &self.entries[index]
-            && group
-                .read(cx)
-                .segment_children(*segment)
-                .iter()
-                .any(|child| matches!(child, RunActivityChild::Artifact(_)))
-        {
-            return false;
-        }
         let Some(group) = self.entry_identities[index]
             .message_id
             .as_ref()
@@ -626,6 +615,9 @@ impl ConversationStream {
     pub(crate) fn process_entry_hidden(&self, index: usize, cx: &App) -> bool {
         if self.compaction_failure_resolved(index) {
             return true;
+        }
+        if let Some(StreamEntry::RunActivity { group }) = self.entries.get(index) {
+            return group.read(cx).header_hidden();
         }
         if matches!(self.entries.get(index), Some(StreamEntry::ContextCompaction { record, .. })
             if matches!(record.status, vega_conversation::types::ContextCompactionStatus::Succeeded | vega_conversation::types::ContextCompactionStatus::Cancelled))

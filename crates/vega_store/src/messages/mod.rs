@@ -3,10 +3,10 @@
 use std::io;
 
 use rusqlite::types::Type;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 mod responses;
-pub use responses::{AssistantResponseRow, record_assistant_response};
+pub use responses::{AssistantResponseRow, completed_response_text, record_assistant_response};
 
 const COLUMNS: &str = "id, thread_id, seq, role, kind, content, status, created_at, \
                        plan_status, plan_review_note, plan_reviewed_at";
@@ -64,10 +64,19 @@ pub fn next_seq(conn: &Connection, thread_id: &str) -> Result<i64, rusqlite::Err
 }
 
 pub fn insert(conn: &Connection, row: &MessageRow) -> Result<(), rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     validate_message(row)?;
     let tx = conn
         .is_autocommit()
-        .then(|| Transaction::new_unchecked(conn, TransactionBehavior::Immediate))
+        .then(|| {
+            crate::write_coordination::WriteTransaction::new(
+                conn,
+                crate::write_coordination::WriteCategory::Messages,
+            )
+        })
         .transpose()?;
     conn.execute(
         "INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at, \
@@ -102,6 +111,10 @@ pub fn finish(
     content: &str,
     status: &str,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     conn.execute(
         "UPDATE messages SET content = ?1, status = ?2 WHERE id = ?3",
         params![content, status, id],
@@ -113,6 +126,10 @@ pub fn update_streaming_content(
     id: &str,
     content: &str,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     conn.execute(
         "UPDATE messages SET content = ?1 WHERE id = ?2 AND status = 'streaming'",
         params![content, id],
@@ -126,7 +143,14 @@ pub fn finish_streaming(
     status: &str,
     execution_duration_ms: Option<i64>,
 ) -> Result<usize, rusqlite::Error> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let updated = finish_streaming_in_transaction(&tx, id, content, status, execution_duration_ms)?;
     tx.commit()?;
     Ok(updated)
@@ -139,6 +163,8 @@ pub fn finish_streaming_in_transaction(
     status: &str,
     execution_duration_ms: Option<i64>,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit =
+        crate::write_coordination::acquire(tx, crate::write_coordination::WriteCategory::Messages)?;
     validate_terminal_duration(status, execution_duration_ms)?;
     let updated = tx.execute(
         "UPDATE messages SET content = ?1, status = ?2 WHERE id = ?3 AND status = 'streaming'",
@@ -169,7 +195,14 @@ pub fn complete_plan(
     now: i64,
     execution_duration_ms: Option<i64>,
 ) -> Result<(), PlanTransitionError> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let mode: Option<String> = tx
         .query_row(
             "SELECT mode FROM threads WHERE id = ?1",
@@ -228,6 +261,10 @@ pub fn review_plan(
     conn: &Connection,
     review: PlanReview<'_>,
 ) -> Result<PlanReviewResult, PlanTransitionError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let approved = match review.status {
         "approved" => true,
         "changes_requested" | "abandoned" => false,
@@ -236,7 +273,10 @@ pub fn review_plan(
     if approved != review.instruction.is_some() || (approved && review.note.is_some()) {
         return Err(PlanTransitionError::CorruptState);
     }
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let _ = validated_plans(&tx, review.thread_id)?;
     let current = find(&tx, review.plan_id)?;
     let Some(current) = current else {
@@ -362,6 +402,7 @@ pub struct MessagePage {
     pub rows: Vec<MessageRow>,
     pub execution_durations_ms: std::collections::HashMap<String, i64>,
     pub assistant_responses: Vec<AssistantResponseRow>,
+    pub continuations: Vec<RunContinuation>,
     /// `Some(oldest_seq)` when older rows may exist — pass
     /// [`PageCursor::Before`] to continue. `None` marks the oldest end of the
     /// thread, so another request cannot produce new rows.
@@ -369,6 +410,13 @@ pub struct MessagePage {
     pub newer_cursor: Option<i64>,
     /// Tool-call audit rows for this page's messages, ascending call seq.
     pub tool_calls: Vec<PageToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunContinuation {
+    pub previous_assistant_id: String,
+    pub user_message_id: String,
+    pub next_assistant_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,6 +478,7 @@ pub fn page_before(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
@@ -440,6 +489,7 @@ pub fn page_before(
         older_cursor,
         newer_cursor,
         tool_calls,
+        continuations,
     })
 }
 
@@ -524,6 +574,7 @@ pub fn page_containing_message(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let continuations = page_continuations(&tx, thread_id, &rows)?;
     tx.commit()?;
     Ok(Some(MessagePage {
         images,
@@ -533,6 +584,7 @@ pub fn page_containing_message(
         older_cursor,
         newer_cursor,
         tool_calls,
+        continuations,
     }))
 }
 
@@ -574,6 +626,7 @@ pub fn page_after(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
@@ -584,7 +637,43 @@ pub fn page_after(
         older_cursor,
         newer_cursor,
         tool_calls,
+        continuations,
     })
+}
+
+fn page_continuations(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    rows: &[MessageRow],
+) -> rusqlite::Result<Vec<RunContinuation>> {
+    let (Some(oldest), Some(newest)) = (rows.first(), rows.last()) else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = tx.prepare(
+        "WITH page AS (SELECT id, seq FROM messages WHERE thread_id = ?1 \
+         AND seq >= ?2 AND seq <= ?3 AND status != 'streaming'), \
+         candidates AS ( \
+         SELECT p.id FROM page m JOIN pending_messages p \
+         ON p.thread_id = ?1 AND p.accepted_after_assistant_id = m.id \
+         UNION SELECT p.id FROM page m JOIN pending_messages p ON p.id = m.id \
+         UNION SELECT p.id FROM page m JOIN messages u \
+         ON u.thread_id = ?1 AND u.seq = m.seq - 1 JOIN pending_messages p ON p.id = u.id) \
+         SELECT previous.id, u.id, successor.id FROM candidates c \
+         JOIN pending_messages p ON p.id = c.id AND p.thread_id = ?1 AND p.state = 'delivered' \
+         JOIN messages u ON u.id = p.id AND u.thread_id = ?1 AND u.role = 'user' AND u.status = 'done' \
+         JOIN messages previous ON previous.id = p.accepted_after_assistant_id \
+         AND previous.thread_id = ?1 AND previous.role = 'assistant' AND previous.seq < u.seq \
+         JOIN messages successor ON successor.thread_id = ?1 AND successor.seq = u.seq + 1 \
+         AND successor.role = 'assistant' ORDER BY u.seq",
+    )?;
+    stmt.query_map(params![thread_id, oldest.seq, newest.seq], |row| {
+        Ok(RunContinuation {
+            previous_assistant_id: row.get(0)?,
+            user_message_id: row.get(1)?,
+            next_assistant_id: row.get(2)?,
+        })
+    })?
+    .collect()
 }
 
 /// Batch-reads the tool-call audit rows owned by `rows` in ONE query scoped to

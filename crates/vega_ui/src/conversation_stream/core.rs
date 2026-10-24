@@ -1,4 +1,5 @@
 use super::*;
+use crate::cua_onboarding::lifecycle::{EntryLifecycle, TaskContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelPickerLevel {
@@ -33,6 +34,8 @@ pub struct ConversationStream {
     pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
+    pub(crate) computer_use_entry: EntryLifecycle,
+    pub(crate) computer_use_task: TaskContext,
     pub(crate) computer_use_diagnostic: Option<(u64, String)>,
     pub(crate) computer_use_notice_generation: u64,
     pub(crate) computer_use_diagnostic_focus: FocusHandle,
@@ -50,6 +53,7 @@ pub struct ConversationStream {
     pub(crate) foreground_height: Pixels,
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
     pub(crate) measured_entry_heights: HashMap<String, f32>,
+    pub(crate) message_anchor_layout: super::message_anchors::MessageAnchorLayout,
     pub(crate) message_anchor_hovered: Option<String>,
     pub(crate) message_anchor_rail_hovered: bool,
     pub(crate) message_anchor_preview_hovered: Option<String>,
@@ -70,8 +74,12 @@ pub struct ConversationStream {
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     pub(crate) run_responses: HashMap<String, phase::RunResponses>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
-    /// Exact call id to its sole inline artifact card.
+    pub(crate) run_continuations: HashMap<String, vega_conversation::types::RunContinuation>,
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
+    pub(crate) artifact_call_owners: HashMap<String, Option<String>>,
+    pub(crate) artifact_history_generation: u64,
+    pub(crate) artifact_groups: HashMap<String, Entity<ArtifactGroup>>,
+    pub(crate) finished_artifact_turns: HashSet<String>,
     /// Route-owned safe branch selector; Git authority remains in the app controller.
     pub(crate) branch_selector: Entity<BranchSelector>,
     /// IO-free canonical commit panel; repository authority stays in app/headless.
@@ -104,6 +112,8 @@ pub struct ConversationStream {
     pub(crate) active_agent_sequence: Option<i64>,
     pub(crate) active_segment_ordinal: usize,
     pub(crate) active_response_start: Option<usize>,
+    pub(crate) active_response_id: Option<String>,
+    pub(crate) response_reasoning_completed: bool,
     pub(crate) response_checkpoint: Option<network_retry::ResponseCheckpoint>,
     pub(crate) network_retry: Option<(String, u32, u32)>,
     /// Whether the current Markdown segment contains text; a tool boundary
@@ -201,6 +211,7 @@ pub struct ConversationStream {
     pub(crate) _permission_listener_task: gpui_kit::Task<()>,
 }
 
+impl EventEmitter<crate::cua_onboarding::PreparationRequested> for ConversationStream {}
 impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
@@ -446,6 +457,8 @@ impl ConversationStream {
             },
         )
         .detach();
+        let mut computer_use_entry = EntryLifecycle::default();
+        let computer_use_task = computer_use_entry.begin_task(&thread.id);
         Self {
             prediction_waiting_for_queue: false,
             prediction_owner: None,
@@ -458,6 +471,8 @@ impl ConversationStream {
             delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
             computer_use_control: None,
+            computer_use_entry,
+            computer_use_task,
             computer_use_diagnostic: None,
             computer_use_notice_generation: 0,
             computer_use_diagnostic_focus: cx.focus_handle(),
@@ -477,6 +492,7 @@ impl ConversationStream {
             entry_identities: Vec::new(),
             measured_entry_heights: HashMap::new(),
             assistant_role_rows: Vec::new(),
+            message_anchor_layout: super::message_anchors::MessageAnchorLayout::default(),
             message_anchor_hovered: None,
             message_anchor_rail_hovered: false,
             message_anchor_preview_hovered: None,
@@ -493,7 +509,12 @@ impl ConversationStream {
             tool_cards: HashMap::new(),
             run_responses: HashMap::new(),
             run_activity_groups: HashMap::new(),
+            run_continuations: HashMap::new(),
             artifact_cards: HashMap::new(),
+            artifact_call_owners: HashMap::new(),
+            artifact_history_generation: 0,
+            artifact_groups: HashMap::new(),
+            finished_artifact_turns: HashSet::new(),
             branch_selector,
             commit_panel,
             permission_queue,
@@ -516,6 +537,8 @@ impl ConversationStream {
             active_agent_sequence: None,
             active_segment_ordinal: 0,
             active_response_start: None,
+            active_response_id: None,
+            response_reasoning_completed: false,
             response_checkpoint: None,
             network_retry: None,
             active_thinking: None,
@@ -967,6 +990,7 @@ impl ConversationStream {
             panel.rebind_draft_project(&thread.project_id, cx);
         });
         self.invalidate_file_index(cx);
+        self.begin_computer_use_task(cx);
         self.thread = thread;
         self.project_label = label;
         cx.notify();
@@ -1670,8 +1694,10 @@ impl ConversationStream {
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::PendingMessageDelivered { .. }
             | ConversationEvent::RunStarted { .. }
+            | ConversationEvent::RunContinued { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
+            | ConversationEvent::ReasoningCompleted { .. }
             | ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }
             | ConversationEvent::SkillActivated { .. }

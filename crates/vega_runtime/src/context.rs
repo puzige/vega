@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{ChatMessage, ToolDefinition, VegaError};
 
 /// Version stamped on every budget estimate and durable compaction checkpoint.
-pub const CONTEXT_ESTIMATOR_VERSION: &str = "vega-context-estimator-v2";
+pub const CONTEXT_ESTIMATOR_VERSION: &str = "vega-context-estimator-v3";
 
 /// A fixed protocol framing charge applied to every request.
 pub const CONTEXT_PROTOCOL_OVERHEAD_TOKENS: u64 = 32;
@@ -73,6 +73,11 @@ impl ContextBudget {
     /// Whether automatic compaction is enabled.
     pub fn automatic_compaction(self) -> bool {
         self.automatic_compaction
+    }
+
+    pub fn without_automatic_compaction(mut self) -> Self {
+        self.automatic_compaction = false;
+        self
     }
 
     /// Input budget after reserving response capacity.
@@ -784,29 +789,19 @@ fn estimate_message_image(
 }
 
 fn estimate_image(image: &crate::ImageAttachment) -> Result<u64, ContextEstimateError> {
-    let bytes = u64::try_from(image.bytes().len()).map_err(|_| ContextEstimateError::Overflow)?;
     let pixels = u64::from(image.width())
         .checked_mul(u64::from(image.height()))
         .ok_or(ContextEstimateError::Overflow)?;
-    estimate_image_contribution(bytes, pixels)
+    estimate_image_contribution(pixels)
 }
 
-fn estimate_image_contribution(bytes: u64, pixels: u64) -> Result<u64, ContextEstimateError> {
-    // The encoded PNG/JPEG size is not its provider token count. Counting
-    // every byte as one token made an ordinary 1024px image exceed the new
-    // 300k default before its first send, even though no old turn could be
-    // compacted. Charge both encoded size (ceil(bytes / 4)) and geometry
-    // (ceil(pixels / 256)), plus a fixed image floor. This remains a bounded,
-    // deliberately nonzero approximation: genuinely large binaries or pixel
-    // counts still cross the input budget. Never alter the actual image bytes.
-    let encoded = bytes.checked_add(3).ok_or(ContextEstimateError::Overflow)? / 4;
+fn estimate_image_contribution(pixels: u64) -> Result<u64, ContextEstimateError> {
     let geometry = pixels
         .checked_add(255)
         .ok_or(ContextEstimateError::Overflow)?
         / 256;
     1024u64
-        .checked_add(encoded)
-        .and_then(|value| value.checked_add(geometry))
+        .checked_add(geometry)
         .ok_or(ContextEstimateError::Overflow)
 }
 

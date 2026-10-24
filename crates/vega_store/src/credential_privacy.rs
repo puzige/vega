@@ -15,6 +15,10 @@ pub fn allow(
     rule: &str,
     fingerprint: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     conn.execute("INSERT OR IGNORE INTO credential_privacy_exceptions(thread_id,rule_id,fingerprint) VALUES (?1,?2,?3)", params![thread,rule,fingerprint])?;
     Ok(())
 }
@@ -25,6 +29,10 @@ pub fn revoke(
     rule: &str,
     fingerprint: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     conn.execute("DELETE FROM credential_privacy_exceptions WHERE thread_id=?1 AND rule_id=?2 AND fingerprint=?3", params![thread,rule,fingerprint])?;
     Ok(())
 }
@@ -37,7 +45,14 @@ pub fn set_exception_checked(
     fingerprint: &str,
     allowed: bool,
 ) -> rusqlite::Result<()> {
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     let current = source_fingerprint_in_transaction(&tx, thread)?;
     if current != source_fingerprint {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -53,7 +68,7 @@ pub fn set_exception_checked(
 }
 
 pub fn fields(conn: &Connection, thread: &str) -> rusqlite::Result<Vec<(String, String, String)>> {
-    let mut query = conn.prepare("SELECT id,'message',content FROM messages WHERE thread_id=?1 UNION ALL SELECT id,'tool.input',input_json FROM tool_calls WHERE thread_id=?1 UNION ALL SELECT id,'tool.output',output_text FROM tool_calls WHERE thread_id=?1 AND output_text IS NOT NULL UNION ALL SELECT CAST(id AS TEXT),'summary',summary FROM context_checkpoints WHERE thread_id=?1 UNION ALL SELECT id,'plan.note',plan_review_note FROM messages WHERE thread_id=?1 AND plan_review_note IS NOT NULL UNION ALL SELECT id,'pending.model',model_content FROM pending_messages WHERE thread_id=?1 AND model_content IS NOT NULL UNION ALL SELECT id,'pending.content',json_extract(payload,'$.content') FROM pending_messages WHERE thread_id=?1 AND payload != '' AND json_valid(payload) AND json_type(payload,'$.content')='text' UNION ALL SELECT child_message_id,'delegation.name',name FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_message_id,'delegation.task',task FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_message_id,'delegation.result',result FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1")?;
+    let mut query = conn.prepare("SELECT id,'message',content FROM messages WHERE thread_id=?1 UNION ALL SELECT id,'tool.input',input_json FROM tool_calls WHERE thread_id=?1 UNION ALL SELECT id,'tool.output',output_text FROM tool_calls WHERE thread_id=?1 AND output_text IS NOT NULL UNION ALL SELECT CAST(id AS TEXT),'summary',summary FROM context_checkpoints WHERE thread_id=?1 UNION ALL SELECT id,'plan.note',plan_review_note FROM messages WHERE thread_id=?1 AND plan_review_note IS NOT NULL UNION ALL SELECT id,'pending.model',model_content FROM pending_messages WHERE thread_id=?1 AND model_content IS NOT NULL UNION ALL SELECT id,'pending.content',json_extract(payload,'$.content') FROM pending_messages WHERE thread_id=?1 AND payload != '' AND json_valid(payload) AND json_type(payload,'$.content')='text' UNION ALL SELECT child_message_id,'delegation.name',name FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_message_id,'delegation.task',task FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_message_id,'delegation.result',result FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT id,'stage.payload',payload FROM delegated_stage_checkpoints WHERE child_thread_id=?1 OR child_thread_id IN (SELECT id FROM threads WHERE parent_thread_id=?1) UNION ALL SELECT child_message_id,'stage.reconciliations',reconciliations FROM delegated_execution_recovery WHERE child_thread_id=?1 OR child_thread_id IN (SELECT id FROM threads WHERE parent_thread_id=?1)")?;
     query
         .query_map([thread], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect()
@@ -141,6 +156,10 @@ fn clean_delegations<F>(conn: &Connection, thread: &str, redact: &mut F) -> rusq
 where
     F: FnMut(&str, &[usize]) -> (String, Vec<usize>),
 {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     for row in crate::subagents::privacy_scope(conn, thread)? {
         let name = cleaned_delegation_name(conn, &row, &redact(&row.name, &[]).0)?;
         let (mut task, _) = bounded_delegation_text(&redact(&row.task, &[]).0, 32 * 1024);
@@ -175,7 +194,14 @@ pub fn clean<F>(
 where
     F: FnMut(&str, &[usize]) -> (String, Vec<usize>),
 {
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     let source = source_fingerprint_in_transaction(&tx, thread)?;
     let running: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id=?1 AND status='streaming') OR EXISTS(SELECT 1 FROM delegated_executions WHERE (parent_thread_id=?1 OR child_thread_id=?1) AND state IN ('running','cancelling'))",
@@ -231,7 +257,7 @@ where
     for (id, field, value) in fields(&tx, thread)? {
         let changed = match field.as_str() {
             "message" | "plan.note" | "pending.model" | "pending.content" => redact(&value, &[]).0,
-            "tool.input" => {
+            "tool.input" | "stage.payload" | "stage.reconciliations" => {
                 fn visit<F: FnMut(&str, &[usize]) -> (String, Vec<usize>)>(
                     value: &mut serde_json::Value,
                     redact: &mut F,
@@ -290,6 +316,15 @@ where
                 "pending.content" => {
                     tx.execute("UPDATE pending_messages SET payload=json_set(payload,'$.content',?1) WHERE id=?2 AND thread_id=?3", params![changed,id,thread])?;
                 }
+                "stage.payload" => {
+                    tx.execute(
+                        "UPDATE delegated_stage_checkpoints SET payload=?1 WHERE id=?2",
+                        params![changed, id],
+                    )?;
+                }
+                "stage.reconciliations" => {
+                    tx.execute("UPDATE delegated_execution_recovery SET reconciliations=?1 WHERE child_message_id=?2",params![changed,id])?;
+                }
                 "tool.input" => {
                     tx.execute(
                         "UPDATE tool_calls SET input_json=?1 WHERE id=?2 AND thread_id=?3",
@@ -315,7 +350,14 @@ pub fn source_message_id(
     id: &str,
 ) -> rusqlite::Result<Option<String>> {
     match field {
-        "message" | "plan.note" => Ok(Some(id.into())),
+        "message" | "plan.note" | "stage.reconciliations" => Ok(Some(id.into())),
+        "stage.payload" => conn
+            .query_row(
+                "SELECT child_message_id FROM delegated_stage_checkpoints WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional(),
         "tool.input" | "tool.output" => conn
             .query_row(
                 "SELECT message_id FROM tool_calls WHERE id=?1",
@@ -328,6 +370,10 @@ pub fn source_message_id(
 }
 
 pub fn refresh_epoch(conn: &Connection, digest: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     fn current(conn: &Connection) -> rusqlite::Result<Option<String>> {
         conn.query_row(
             "SELECT digest FROM credential_privacy_epoch WHERE singleton=1",
@@ -339,7 +385,10 @@ pub fn refresh_epoch(conn: &Connection, digest: &str) -> rusqlite::Result<()> {
     if current(conn)?.as_deref() == Some(digest) {
         return Ok(());
     }
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Credentials,
+    )?;
     let prior = current(&tx)?;
     if prior.as_deref() != Some(digest) {
         tx.execute("DELETE FROM credential_privacy_exceptions", [])?;
@@ -370,6 +419,8 @@ pub fn source_label(conn: &Connection, field: &str, id: &str) -> rusqlite::Resul
         "delegation.name" => "子任务名称",
         "delegation.task" => "子任务内容",
         "delegation.result" => "子任务结果",
+        "stage.payload" => "阶段交接",
+        "stage.reconciliations" => "恢复核对",
         _ => "对话记录",
     };
     Ok(label.into())

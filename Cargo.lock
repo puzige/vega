@@ -683,8 +683,6 @@ dependencies = [
 [[package]]
 name = "block"
 version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
 
 [[package]]
 name = "block-buffer"
@@ -4042,8 +4040,6 @@ dependencies = [
 [[package]]
 name = "mdstream"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3327364edd79c4f66b36db667c0a28e078389351b0855e5f95ed4f22d778821"
 dependencies = [
  "pulldown-cmark",
 ]
@@ -7984,6 +7980,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.20",
  "toml 1.1.4+spec-1.1.0",
+ "tracing",
  "ulid",
  "vega_credentials",
 ]

@@ -78,6 +78,7 @@ pub struct TextInput {
     mouse_selection: Option<mouse_selection::MouseSelection>,
     bare_chrome: bool,
     editor_scroll: Option<(Range<usize>, u64, usize)>,
+    scroll_handle: element::TextScrollHandle,
     scrollable_editor: bool,
     scroll_fade_on_base: bool,
     total_visual_rows: usize,

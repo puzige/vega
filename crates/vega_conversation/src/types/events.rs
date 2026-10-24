@@ -315,7 +315,7 @@ impl RunFailureKind {
             Self::CredentialOutcomeUnknown => "Some action outcomes are unknown. Check the tool records before continuing.".into(),
             Self::CredentialContinuationUnavailable => "Recovery is unavailable because it was already used, the conversation changed, or an action outcome is unknown. Check tool records, then send a new message.".into(),
             Self::ContextOverLimit => {
-                "Context exceeds available capacity. The conversation is preserved. Adjust context capacity, narrow tool queries, or start a new conversation.".into()
+                "Context exceeds available capacity. The conversation is preserved. Reduce the current input or remove images, then retry. For long tasks, narrow tool queries or start a new conversation.".into()
             }
             Self::Compaction(failure) => failure.message().into(),
             Self::ReasoningLimit(_) => {
@@ -367,7 +367,12 @@ fn now_unix_millis() -> i64 {
 pub enum ConversationEvent {
     AssistantResponseStarted {
         message_id: MessageId,
+        response_id: String,
         text_start_bytes: usize,
+    },
+    ReasoningCompleted {
+        message_id: MessageId,
+        response_id: String,
     },
     ResponseRetrying {
         message_id: MessageId,
@@ -390,6 +395,11 @@ pub enum ConversationEvent {
     RunStarted {
         message_id: MessageId,
         started_at: std::time::Instant,
+    },
+    RunContinued {
+        previous_assistant_id: MessageId,
+        user_message_id: MessageId,
+        next_assistant_id: MessageId,
     },
     AssistantResponseCompleted {
         message_id: MessageId,
@@ -516,11 +526,22 @@ impl std::fmt::Debug for ConversationEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AssistantResponseStarted {
-                text_start_bytes, ..
+                response_id,
+                text_start_bytes,
+                ..
             } => formatter
                 .debug_struct("AssistantResponseStarted")
+                .field("response_id_bytes", &response_id.len())
                 .field("text_start_bytes", text_start_bytes)
                 .finish_non_exhaustive(),
+            Self::ReasoningCompleted {
+                message_id,
+                response_id,
+            } => formatter
+                .debug_struct("ReasoningCompleted")
+                .field("message_id_bytes", &message_id.len())
+                .field("response_id_bytes", &response_id.len())
+                .finish(),
             Self::ResponseRetrying {
                 text_start_bytes,
                 attempt,
@@ -537,6 +558,7 @@ impl std::fmt::Debug for ConversationEvent {
                 .debug_struct("ScreenshotDelivered")
                 .field("image_bytes", &image.bytes().len())
                 .finish_non_exhaustive(),
+            Self::RunContinued { .. } => formatter.write_str("RunContinued"),
             Self::RunStarted { message_id, .. } => formatter
                 .debug_struct("RunStarted")
                 .field("message_id_bytes", &message_id.len())
@@ -669,10 +691,18 @@ pub(crate) fn from_runtime_event(
     use vega_runtime::{RuntimeEvent, RuntimeFinishReason, RuntimeToolStatus};
 
     match event {
-        RuntimeEvent::AssistantResponseStarted { text_start_bytes } => {
-            Some(ConversationEvent::AssistantResponseStarted {
+        RuntimeEvent::AssistantResponseStarted {
+            response_id,
+            text_start_bytes,
+        } => Some(ConversationEvent::AssistantResponseStarted {
+            message_id: message_id.into(),
+            response_id: response_id.clone(),
+            text_start_bytes: *text_start_bytes,
+        }),
+        RuntimeEvent::ReasoningCompleted { response_id } => {
+            Some(ConversationEvent::ReasoningCompleted {
                 message_id: message_id.into(),
-                text_start_bytes: *text_start_bytes,
+                response_id: response_id.clone(),
             })
         }
         RuntimeEvent::ResponseRetrying {
@@ -777,23 +807,25 @@ pub(crate) fn from_runtime_event(
                 chunk: ToolOutputChunk(chunk.clone()),
             })
         }
-        RuntimeEvent::ToolCallFinished(result) => Some(ConversationEvent::ToolCallFinished {
-            call_id: result.call_id.clone(),
-            result: ToolResult {
-                status: match result.status {
-                    RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
-                    RuntimeToolStatus::Success => ToolCallStatus::Success,
-                    RuntimeToolStatus::Failed => ToolCallStatus::Failed,
-                    RuntimeToolStatus::Cancelled => ToolCallStatus::Cancelled,
+        RuntimeEvent::ToolCallFinished(result) | RuntimeEvent::ToolReadFinished { result, .. } => {
+            Some(ConversationEvent::ToolCallFinished {
+                call_id: result.call_id.clone(),
+                result: ToolResult {
+                    status: match result.status {
+                        RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
+                        RuntimeToolStatus::Success => ToolCallStatus::Success,
+                        RuntimeToolStatus::Failed => ToolCallStatus::Failed,
+                        RuntimeToolStatus::Cancelled => ToolCallStatus::Cancelled,
+                    },
+                    output: result.output.clone(),
+                    reused: result.reused,
+                    exit_code: result.exit_code,
+                    duration_ms: result.duration_ms,
+                    truncated: result.truncated,
+                    invalid: None,
                 },
-                output: result.output.clone(),
-                reused: result.reused,
-                exit_code: result.exit_code,
-                duration_ms: result.duration_ms,
-                truncated: result.truncated,
-                invalid: None,
-            },
-        }),
+            })
+        }
         RuntimeEvent::SkillActivation { audit, .. } if audit.status == "loaded" => {
             Some(ConversationEvent::SkillActivated {
                 message_id: message_id.to_string(),
@@ -949,6 +981,7 @@ pub(crate) fn from_runtime_event(
                 },
             })
         }
+        RuntimeEvent::StageHandoff { .. } => None,
         RuntimeEvent::Finished(reason) => Some(ConversationEvent::MessageFinished {
             message_id: message_id.to_string(),
             execution_duration_ms: None,

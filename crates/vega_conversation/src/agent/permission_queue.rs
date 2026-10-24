@@ -1,12 +1,40 @@
 use super::*;
+use crate::types::PermissionPresentation;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PermissionOrigin {
+    Tool,
+    ArtifactValidation,
+}
 
 pub struct PendingPermission {
     pub(crate) request: Option<PermissionRequest>,
     pub(crate) responder: Option<PermissionResponder>,
     pub(crate) armed: bool,
+    origin: PermissionOrigin,
 }
 
 impl PendingPermission {
+    pub fn presentation(&self, tool: Option<(&str, &str)>) -> PermissionPresentation {
+        let Some(request) = self.request() else {
+            return PermissionPresentation::Mismatch;
+        };
+        if self.origin == PermissionOrigin::ArtifactValidation {
+            return PermissionPresentation::Ready;
+        }
+        match tool {
+            Some((name, target)) if name == request.tool && target == request.display_target => {
+                PermissionPresentation::Ready
+            }
+            Some(_) => PermissionPresentation::Mismatch,
+            None => PermissionPresentation::WaitingForTool,
+        }
+    }
+
+    pub fn allows_persistent_permission(&self) -> bool {
+        self.origin == PermissionOrigin::Tool
+    }
+
     /// Content-free request safe for card rendering.
     pub fn request(&self) -> Option<&PermissionRequest> {
         self.request.as_ref()
@@ -103,6 +131,7 @@ impl fmt::Debug for PendingPermission {
 }
 
 pub(crate) struct PermissionResponseState {
+    activity: Option<super::stage_activity::PendingActivity>,
     pub(crate) sender: Mutex<Option<oneshot::Sender<PermissionDecision>>>,
 }
 
@@ -131,6 +160,9 @@ impl PermissionResponder {
         let Some(sender) = sender.take() else {
             return false;
         };
+        if let Some(activity) = &self.state.activity {
+            activity.finish();
+        }
         let _ = sender.send(decision);
         true
     }
@@ -250,10 +282,18 @@ pub(crate) struct PermissionQueueState {
 /// human decision and resolves every disappearance as Timeout.
 #[derive(Clone, Default)]
 pub struct PermissionQueue {
+    activity: Option<super::stage_activity::StageActivity>,
     pub(crate) state: Arc<Mutex<PermissionQueueState>>,
 }
 
 impl PermissionQueue {
+    pub(super) fn with_activity(activity: super::stage_activity::StageActivity) -> Self {
+        Self {
+            activity: Some(activity),
+            ..Self::default()
+        }
+    }
+
     /// Creates an empty queue.
     pub fn new() -> Self {
         Self::default()
@@ -361,16 +401,46 @@ impl PermissionHook for PermissionQueue {
         request: PermissionRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
+        self.enqueue(request, cancel, PermissionOrigin::Tool)
+    }
+}
+
+impl PermissionQueue {
+    pub(crate) fn request_artifact_validation(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
+        if request.tool != "read"
+            || request.external.is_some()
+            || request.acp_options.is_some()
+            || request.danger_rule_id.is_some()
+            || request.danger_reason.is_some()
+            || !std::path::Path::new(&request.display_target).is_absolute()
+        {
+            return async { Ok(PermissionDecision::Timeout) }.boxed();
+        }
+        self.enqueue(request, cancel, PermissionOrigin::ArtifactValidation)
+    }
+
+    fn enqueue(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+        origin: PermissionOrigin,
+    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
         if !valid_permission_request(&request) {
             return async { Ok(PermissionDecision::Timeout) }.boxed();
         }
         let (sender, receiver) = oneshot::channel();
         let responder = PermissionResponder {
             state: Arc::new(PermissionResponseState {
+                activity: self.activity.as_ref().map(|activity| activity.pending()),
                 sender: Mutex::new(Some(sender)),
             }),
         };
         let pending = PendingPermission {
+            origin,
             request: Some(request),
             responder: Some(responder.clone()),
             armed: true,
@@ -416,7 +486,20 @@ impl PermissionHook for PermissionQueue {
                 }
                 result = receiver => result.unwrap_or(PermissionDecision::Timeout),
             };
-            Ok(decision)
+            Ok(
+                if origin == PermissionOrigin::ArtifactValidation
+                    && !matches!(
+                        decision,
+                        PermissionDecision::Once
+                            | PermissionDecision::Deny { .. }
+                            | PermissionDecision::Timeout
+                    )
+                {
+                    PermissionDecision::Timeout
+                } else {
+                    decision
+                },
+            )
         }
         .boxed()
     }
@@ -530,6 +613,23 @@ impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
                     PermissionDecision::AcpOption { .. } => RuntimeUserDecision::Timeout,
                 })
             })
+            .boxed()
+    }
+}
+
+pub(crate) struct ArtifactReadPermissionAdapter<'a> {
+    pub(crate) shared: &'a PermissionQueue,
+}
+
+impl RuntimePermissionHook for ArtifactReadPermissionAdapter<'_> {
+    fn request(
+        &self,
+        prompt: vega_runtime::RuntimePermissionPrompt,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
+        self.shared
+            .request_artifact_validation(permission_request_from_runtime(&prompt), cancel)
+            .map(|decision| decision.map(permission_decision_to_runtime))
             .boxed()
     }
 }

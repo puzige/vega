@@ -51,6 +51,10 @@ pub fn create(
     name: &str,
     git_default_branch: Option<&str>,
 ) -> Result<Project, ProjectsError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Projects,
+    )?;
     let now = now_ms();
     let id = ulid::Ulid::generate().to_string();
     let inserted = conn.execute(
@@ -148,7 +152,14 @@ pub fn find_by_path(conn: &Connection, path: &str) -> Result<Option<Project>, Pr
 }
 
 pub fn remove(conn: &Connection, id: &str) -> Result<bool, ProjectsError> {
-    let transaction = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Projects,
+    )?;
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Projects,
+    )?;
     transaction.execute(
         "UPDATE threads SET project_id = NULL WHERE project_id = ?1",
         rusqlite::params![id],
@@ -161,6 +172,10 @@ pub fn remove(conn: &Connection, id: &str) -> Result<bool, ProjectsError> {
 
 /// Updates `last_opened_at` to "now" for the project with `id`.
 pub fn touch_last_opened(conn: &Connection, id: &str) -> Result<(), ProjectsError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Projects,
+    )?;
     conn.execute(
         "UPDATE projects SET last_opened_at = ?1 WHERE id = ?2",
         rusqlite::params![now_ms(), id],

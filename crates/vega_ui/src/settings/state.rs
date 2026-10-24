@@ -32,8 +32,8 @@ pub struct SettingsView {
     pub(crate) codex_executable_input: Entity<TextInput>,
     pub(crate) codex_args_input: Entity<TextInput>,
     pub(crate) codex_profile_saving: bool,
-    pub(crate) computer_use_check: Option<String>,
-    pub(crate) computer_use_check_pending: bool,
+    pub(crate) preparation: Entity<crate::cua_onboarding::model::PreparationModel>,
+    pub(crate) preparation_owner: Option<crate::cua_onboarding::CallbackIdentity>,
     pub(crate) provider_api_focuses: [FocusHandle; 2],
     pub(crate) provider_save_focus: FocusHandle,
     pub(crate) provider_edit_focuses: Vec<(String, FocusHandle)>,
@@ -75,6 +75,7 @@ impl EventEmitter<PricingReloadRequested> for SettingsView {}
 impl EventEmitter<PricingRetryRequested> for SettingsView {}
 impl EventEmitter<PricingDiscardRequested> for SettingsView {}
 impl EventEmitter<SettingsSaved> for SettingsView {}
+impl EventEmitter<DesktopPreparationRequested> for SettingsView {}
 impl EventEmitter<ModelContextLoadRequested> for SettingsView {}
 impl EventEmitter<ModelContextSaveRequested> for SettingsView {}
 impl EventEmitter<ReasoningProfileSaveRequested> for SettingsView {}
@@ -135,6 +136,16 @@ impl SettingsView {
     /// App-level acceptance tests and other embedders can supply an owned
     /// snapshot so constructing the view never reads the host user's files.
     pub fn from_config(config: AppConfig, error: Option<String>, cx: &mut Context<Self>) -> Self {
+        let preparation = crate::cua_onboarding::model::shared(cx);
+        let preparation_owner = None;
+        cx.observe(&preparation, |_, _, cx| cx.notify()).detach();
+        cx.on_release(|view, cx| {
+            if let Some(owner) = view.preparation_owner.take() {
+                view.preparation
+                    .update(cx, |model, cx| model.release(&owner, false, cx));
+            }
+        })
+        .detach();
         cx.observe_global::<crate::conversation_stream::RunningMessageDefault>(|this, cx| {
             this.config.agent.running_message_behavior = cx
                 .global::<crate::conversation_stream::RunningMessageDefault>()
@@ -149,6 +160,10 @@ impl SettingsView {
                 this.cancel_provider_operation(cx);
                 this.cancel_mcp_oauth(cx);
                 this.close_skills_session();
+                if let Some(owner) = this.preparation_owner.take() {
+                    this.preparation
+                        .update(cx, |model, cx| model.release(&owner, false, cx));
+                }
             }
         })
         .detach();
@@ -221,8 +236,8 @@ impl SettingsView {
             codex_executable_input,
             codex_args_input,
             codex_profile_saving: false,
-            computer_use_check: None,
-            computer_use_check_pending: false,
+            preparation,
+            preparation_owner,
             provider_api_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             provider_save_focus: cx.focus_handle().tab_stop(true),
             provider_edit_focuses: Vec::new(),
