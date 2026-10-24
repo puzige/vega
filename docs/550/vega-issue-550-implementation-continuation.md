@@ -412,3 +412,13 @@ A/B原history-8 identity唯一、offset14.5、following=false不变；C开始才
 父清理前fetch发现master仅新增 **`8861240f863927a695fa401db98760a883b9cb14`**（#592，一份docs/591规格），无源码、依赖或规则变化，正常merge并完整保留。清理固定基线改为8861240f…；6be的27项行为证据只归属6be与上述synthetic，不冒充新head门禁。最新集成head源文件字节仍与6be相同。
 
 现向同一唯一writer授权统一删除整套28项开发Rust测试及独占支持：删除4个新增测试/支持文件，13个仅测试接线文件恢复最新master精确blob，3个混合文件仅去测试部分，保留共享decorative生命周期/120ms motion与两处tab-stop门控。不得挑删D05、保留helper、忽略失败或改生产求绿；Python/fixtures、benchmark、依赖生产版本、所有workflow/Nextest均保全。预计最终相对master只剩6个生产源码delta和5份既有本卡文档；实际清点、非写入者完整最终head独审及完整required CI尚待完成，必须明确 **no Rust tests（0发现/0执行）** 后才能合并。Issue保持开放，合并后In review等用户master手测。
+
+### 最终清理 READY 与父核对（最终云端门禁待取得）
+
+唯一writer在父版本 `bbb230cec03ae478276e689baedd6ecefa4f6b34` 上完成统一清理并停写。实际删除4个专用文件，13个仅测试文件/manifest/lock逐字节恢复886基线；Thinking与RunActivity严格等于该master仅加各自一处已验证tab-stop门控，三个纯生产文件与6be逐字节一致，Chevron仅去测试scope/asset字段/记录与多余asset clone，保留相同真实Svg、channel、angle、gate、布局/AX委托。
+
+父独立执行最终静态脚本、fmt、父版本/master的diff-check，全部exit0；核对454个剩余tracked Rust文件无test属性、cfg(test)、独占模块/接线、可执行/default/缩进doctest候选，唯一text架构fence保留。所有16个Cargo manifest的writer独立清点无dev dependency、test-support或显式test target。最终差异精确为6个生产源码+5份历史docs；13个恢复文件、所有workflow/config/scripts原文核对相同，writer另逐一核其余1188个基线文件与symlink原link bytes相同，Python/fixtures、benchmark/vendor、生产依赖未改。root静态也按精确整文件验证Thinking/RunActivity只有两处预定门控，无Final/List/selection/artifact生产改动。
+
+相对bbb父版本的实际源码清理binary patch（Cargo.lock+crates）SHA-256 **`da8ef8f86d0dff673c4df4eb82e1aa52241640925d059c38f0f80331a2be3573`**；相对886的最终六生产源码binary patch SHA-256 **`157f0394527daea06e2fbfe6c172973df06872c9625343cbb1bb1651c1faddff`**，两者基线/范围不同。writer报告SHA-256 `e48e6cde18bd15f7ee354c7d651d3f9723dd0624f2d5d29ba1c5e888b1a9b12e`、完整manifest `d992d4d2e5f8cd93557563aa5bd8b4bd05ed7820320b871feb79828d554176cf`，与父六文件内容hash对应。本地未执行Vega或编译/测试。
+
+下一步固定清理提交，非写入者审查完整最终head并由原Actions验证；静态零残留不等于Rust实际0发现/0执行，更不等于28项行为全通过。最终run/job/actual checkout与required结果只在取得后写回PR/Issue，避免为记录最终CI再改变已验证head。最新required成功且完整独审无阻断才squash merge，不启用auto merge、不绕过保护；合并后Issue保持开放/In review等用户master手测。

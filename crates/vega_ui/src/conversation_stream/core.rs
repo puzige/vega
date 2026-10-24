@@ -21,8 +21,6 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
-    #[cfg(test)]
-    pub(crate) disclosure_probe_owner: gpui_kit::EntityId,
     pub(crate) prediction_waiting_for_queue: bool,
     pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
     pub(crate) prediction_generation: u64,
@@ -262,13 +260,6 @@ impl ConversationStream {
         self.hydration.paused_direction = None;
         self.foreground_height = px(0.);
         self.measured_entry_heights.clear();
-        #[cfg(test)]
-        crate::disclosure_layout_probe::record(
-            crate::disclosure_layout_probe::Observation::Remeasure(
-                self.disclosure_probe_owner,
-                None,
-            ),
-        );
         self.list.remeasure();
         cx.notify();
     }
@@ -290,13 +281,6 @@ impl ConversationStream {
             self.ensure_entry_identities();
             let top = self.list.logical_scroll_top();
             let anchor = self.scroll_anchor_snapshot();
-            #[cfg(test)]
-            crate::disclosure_layout_probe::record(
-                crate::disclosure_layout_probe::Observation::Remeasure(
-                    self.disclosure_probe_owner,
-                    None,
-                ),
-            );
             self.list.remeasure();
             self.restore_scroll_anchor_at(&anchor, top.item_ix);
             cx.notify();
@@ -476,8 +460,6 @@ impl ConversationStream {
         let mut computer_use_entry = EntryLifecycle::default();
         let computer_use_task = computer_use_entry.begin_task(&thread.id);
         Self {
-            #[cfg(test)]
-            disclosure_probe_owner: cx.entity_id(),
             prediction_waiting_for_queue: false,
             prediction_owner: None,
             prediction_generation: 0,
@@ -870,25 +852,11 @@ impl ConversationStream {
         if let Some(index) = index
             && index < self.list.item_count()
         {
-            #[cfg(test)]
-            crate::disclosure_layout_probe::record(
-                crate::disclosure_layout_probe::Observation::Invalidate(
-                    self.disclosure_probe_owner,
-                    index,
-                ),
-            );
             if let Some(identity) = self.entry_identities.get(index) {
                 self.measured_entry_heights.remove(&identity.key);
             }
             let top = self.list.logical_scroll_top();
             let anchor = self.scroll_anchor_snapshot();
-            #[cfg(test)]
-            crate::disclosure_layout_probe::record(
-                crate::disclosure_layout_probe::Observation::Remeasure(
-                    self.disclosure_probe_owner,
-                    Some(index),
-                ),
-            );
             self.list.remeasure_items(index..index + 1);
             self.restore_scroll_anchor_at(&anchor, top.item_ix);
         }

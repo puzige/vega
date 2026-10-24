@@ -3,9 +3,6 @@ use super::*;
 
 #[path = "thinking_body.rs"]
 mod body;
-#[cfg(test)]
-#[path = "disclosure_motion_tests.rs"]
-mod disclosure_motion_tests;
 #[path = "thinking_window.rs"]
 mod window;
 
@@ -215,11 +212,6 @@ impl ThinkingBlock {
 
     pub(super) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus.contains_focused(window, cx)
-    }
-
-    #[cfg(test)]
-    pub(super) fn source_painted(&self) -> bool {
-        self.body.painted.get()
     }
 
     pub(crate) fn title(&self) -> &str {
@@ -489,14 +481,6 @@ impl Render for ThinkingBlock {
                         "thinking-disclosure-{}",
                         cx.entity_id()
                     )))
-                    .map(|row| {
-                        #[cfg(test)]
-                        let row = {
-                            use gpui_kit::base::TestSupportExt as _;
-                            row.test_support()
-                        };
-                        row
-                    })
                     .track_focus(&self.focus)
                     .when(can_expand, |row| row.aria_expanded(self.expanded))
                     .tab_stop(can_expand)

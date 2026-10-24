@@ -3,10 +3,6 @@ name = "vega_conversation"
 version.workspace = true
 edition.workspace = true
 
-[features]
-default = []
-test-support = []
-
 [dependencies]
 html5ever.workspace = true
 image.workspace = true

@@ -212,14 +212,6 @@ impl ToolActivityGroup {
             div()
                 .id(("tool-activity-group-toggle", group.entity_id()))
                 .group(disclosure_group.clone())
-                .map(|row| {
-                    #[cfg(test)]
-                    let row = {
-                        use gpui_kit::base::TestSupportExt as _;
-                        row.test_support()
-                    };
-                    row
-                })
                 .track_focus(&focus)
                 .aria_expanded(expanded)
                 .aria_label(format!(

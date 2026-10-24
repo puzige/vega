@@ -692,11 +692,6 @@ impl ToolCard {
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
             .group(disclosure_group.clone());
-        #[cfg(test)]
-        let row = {
-            use gpui_kit::base::TestSupportExt as _;
-            row.test_support()
-        };
         let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)
@@ -1202,11 +1197,6 @@ impl ToolCard {
             | Some(ToolCardInputProjection::CodexAcp { .. }) => self.output_rows.len(),
             _ => 0,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_detail_output(&self) -> Option<Vec<String>> {
-        self.detail().map(|detail| detail.output)
     }
 
     fn detail(&self) -> Option<ToolDetail> {

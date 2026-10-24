@@ -25,9 +25,6 @@ pub(crate) fn chevron(
     colors: ThemeColors,
     window: &Window,
 ) -> AnyElement {
-    #[cfg(test)]
-    let _paint_scope =
-        crate::disclosure_paint_probe::scope(group.clone(), expanded, enabled, focus);
     div()
         .w(px(Layout::DISCLOSURE_TRAILING_SLOT))
         .h(px(Layout::ICON_SIZE))
@@ -55,9 +52,6 @@ pub(crate) fn inline_chevron(
     colors: ThemeColors,
     window: &Window,
 ) -> AnyElement {
-    #[cfg(test)]
-    let _paint_scope =
-        crate::disclosure_paint_probe::scope(group.clone(), expanded, enabled, focus);
     div()
         .size(px(Layout::CONVERSATION_CHEVRON_SIZE))
         .flex_shrink_0()
@@ -78,10 +72,6 @@ struct Chevron {
     channel: SharedString,
     target: f32,
     enabled: bool,
-    #[cfg(test)]
-    scope: Option<crate::disclosure_paint_probe::Scope>,
-    #[cfg(test)]
-    asset_path: SharedString,
 }
 
 impl Chevron {
@@ -94,10 +84,9 @@ impl Chevron {
         size: f32,
         window: &Window,
     ) -> Self {
-        let asset_path = IconName::ChevronRight.path();
         Self {
             inner: svg()
-                .path(asset_path.clone())
+                .path(IconName::ChevronRight.path())
                 .size(px(size))
                 .flex_shrink_0()
                 .text_color(color)
@@ -117,10 +106,6 @@ impl Chevron {
             channel: format!("{group}-chevron-angle").into(),
             target: if expanded { FRAC_PI_2 } else { 0. },
             enabled,
-            #[cfg(test)]
-            scope: crate::disclosure_paint_probe::current_scope(),
-            #[cfg(test)]
-            asset_path,
         }
     }
 }
@@ -216,19 +201,5 @@ impl Element for Chevron {
             .with_transformation(Transformation::rotate(gpui_kit::Radians(radians)));
         self.inner
             .paint(id, inspector, bounds, layout, hitbox, window, cx);
-        #[cfg(test)]
-        if let Some(scope) = self.scope.clone() {
-            crate::disclosure_paint_probe::record_paint(
-                crate::disclosure_paint_probe::GlyphPaint {
-                    scope,
-                    asset: crate::icons::Icon::ChevronRight,
-                    asset_path: self.asset_path.clone(),
-                    rotation: radians,
-                    bounds,
-                    opacity: style.opacity.unwrap_or(1.),
-                },
-                cx,
-            );
-        }
     }
 }

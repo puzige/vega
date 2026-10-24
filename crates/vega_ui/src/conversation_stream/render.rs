@@ -1569,14 +1569,11 @@ impl Render for ConversationStream {
                                                 this.counters.record_row_callback(
                                                     row_t0.elapsed().as_nanos(),
                                                 );
-                                                let item = if let Some(pinned) = pinned {
+                                                if let Some(pinned) = pinned {
                                                     rendered_top_fade_guards.observe(item, pinned)
                                                 } else {
                                                     item
-                                                };
-                                                #[cfg(test)]
-                                                let item = crate::disclosure_layout_probe::observe(cx.entity_id(), index, item);
-                                                item
+                                                }
                                             },
                                         ),
                                     )

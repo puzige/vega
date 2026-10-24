@@ -377,8 +377,6 @@ struct SelectableMessage {
 
 struct MessagePrepaint {
     hitbox: Hitbox,
-    #[cfg(test)]
-    selection_paint: crate::disclosure_layout_probe::SelectionPaint,
 }
 
 impl IntoElement for SelectableMessage {
@@ -551,25 +549,14 @@ impl Element for SelectableMessage {
             .to_owned();
         self.copy.set_selected_text(self.generation, selection_text);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
-            .with_scope(self.scope)
-            .with_text_bounds(runs.iter().map(|run| run.bounds).collect());
-        #[cfg(test)]
-        let selection_paint = crate::disclosure_layout_probe::SelectionPaint {
-            copy_id: self.copy.id,
-            handle_id: self.handle.entity_id(),
-            scope: registration.scope(),
-            bounds,
-            content_mask: window.content_mask().bounds,
-            content: self.content.clone(),
-            runs: text_runs,
-        };
-        self.handle.register(registration, window, cx);
-        MessagePrepaint {
-            hitbox,
-            #[cfg(test)]
-            selection_paint,
-        }
+        self.handle.register(
+            TextSelectionRegistration::new(hitbox.clone(), bounds)
+                .with_scope(self.scope)
+                .with_text_bounds(runs.iter().map(|run| run.bounds).collect()),
+            window,
+            cx,
+        );
+        MessagePrepaint { hitbox }
     }
 
     fn paint(
@@ -641,8 +628,6 @@ impl Element for SelectableMessage {
             }
         });
         self.body.paint(window, cx);
-        #[cfg(test)]
-        crate::disclosure_layout_probe::record_selection_paint(prepaint.selection_paint.clone());
     }
 }
 

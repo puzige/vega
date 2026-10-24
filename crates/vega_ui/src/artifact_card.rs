@@ -134,11 +134,6 @@ impl ArtifactCard {
         2 + self.preview_lines.len() + usize::from(self.inline_error.is_some())
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_preview_lines(&self) -> &[String] {
-        &self.preview_lines
-    }
-
     pub fn apply_metadata(
         &mut self,
         projection: ArtifactProjection,
@@ -598,15 +593,6 @@ impl ArtifactCard {
             .px_3()
             .bg(colors.bg_elevated)
             .border_color(colors.border_subtle);
-        #[cfg(test)]
-        let base = {
-            use gpui_kit::base::TestSupportExt as _;
-            base.id(gpui_kit::SharedString::from(format!(
-                "artifact-row-{}-{row}",
-                card.entity_id()
-            )))
-            .test_support()
-        };
         if row == 0 {
             return base
                 .border_t_1()

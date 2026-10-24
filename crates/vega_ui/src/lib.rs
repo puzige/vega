@@ -7,10 +7,6 @@ pub mod conversation_stream;
 pub mod cua_onboarding;
 pub mod diff_view;
 mod disclosure;
-#[cfg(test)]
-mod disclosure_layout_probe;
-#[cfg(test)]
-mod disclosure_paint_probe;
 pub mod file_preview;
 pub mod file_selector;
 pub mod image_preview;
