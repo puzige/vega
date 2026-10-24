@@ -172,6 +172,7 @@ impl CopyReceiptButton {
             .child(GlyphLayer::new(Icon::Copy, colors, blend.clone(), false))
             .child(GlyphLayer::new(Icon::Check, colors, blend.clone(), true));
         let clicked = binding.clone();
+        let accessible = binding.clone();
         let button =
             crate::icons::icon_button_with_content(content, label, colors, move |_, window, cx| {
                 activate(&clicked.borrow(), window, cx);
@@ -180,8 +181,11 @@ impl CopyReceiptButton {
             id: id.into(),
             source,
             body: ReceiptSurface {
-                button: style(button),
-                binding: binding.clone(),
+                button: style(button)
+                    .role(gpui_kit::Role::Button)
+                    .on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, window, cx| {
+                        activate(&accessible.borrow(), window, cx)
+                    }),
                 blend,
                 active: active.clone(),
             }
@@ -275,7 +279,6 @@ impl Element for CopyReceiptButton {
 
 struct ReceiptSurface {
     button: Interaction,
-    binding: Rc<RefCell<Weak<RefCell<Receipt>>>>,
     blend: Rc<Cell<f32>>,
     active: Rc<Cell<bool>>,
 }
@@ -352,12 +355,6 @@ impl Element for ReceiptSurface {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.active.set(
-            self.binding
-                .borrow()
-                .upgrade()
-                .is_some_and(|owner| owner.borrow().active(cx.background_executor().now())),
-        );
         let style = self
             .button
             .interactivity()
