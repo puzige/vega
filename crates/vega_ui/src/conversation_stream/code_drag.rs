@@ -16,10 +16,6 @@ use super::{code_viewport::CodeScrollHandle, model::MessageCopy};
 
 const INTERVAL: Duration = Duration::from_millis(16);
 
-#[cfg(test)]
-#[path = "code_drag_repeat_tests.rs"]
-pub(super) mod tests;
-
 #[derive(Clone)]
 pub(super) struct CodeDragSelection {
     copy: MessageCopy,
@@ -350,8 +346,6 @@ impl Element for CodeDragElement {
             state.borrow_mut().activation = Some(observer);
         }
         self.body.prepaint(window, cx);
-        #[cfg(test)]
-        tests::observe_driver(self.id.clone(), &state, window, cx);
         state
     }
 

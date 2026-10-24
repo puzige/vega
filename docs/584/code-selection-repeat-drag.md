@@ -31,4 +31,4 @@ Local work is limited to fast static checks, rustfmt, diff and offline metadata.
 
 ## Status
 
-Contract prepared from source inspection; implementation and cloud behavior validation pending. Issue remains open and In progress. Successful CI and merge still require a new user manual acceptance.
+Development implementation received independent review and its four focused regressions passed in Actions; exact source/run/counts and subsequent upstream integration are recorded in [validation](selection-repeat-validation.md). Final cleaned-head review and required CI remain separate. Issue remains open and In progress until merge; successful CI and merge still require a new user manual acceptance.

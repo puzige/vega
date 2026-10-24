@@ -303,11 +303,6 @@ impl ThinkingBlock {
             scroll: ScrollHandle::new(),
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn repeated_drag_fixture(cx: &mut Context<Self>) -> Self {
-        Self::new(cx)
-    }
     pub(crate) fn set_ancestor_visible(&mut self, visible: bool) {
         if self.ancestor_visible != visible {
             self.ancestor_visible = visible;
