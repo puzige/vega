@@ -9,6 +9,9 @@ use std::collections::BTreeMap;
 use tokio::sync::Notify;
 #[path = "subagents/lifecycle_ownership.rs"]
 mod lifecycle_ownership;
+#[cfg(test)]
+#[path = "subagents/recovery_tests.rs"]
+mod recovery_tests;
 #[path = "subagents/stage_recovery.rs"]
 mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
@@ -391,10 +394,12 @@ impl AgentRecord {
         let mut snapshot = self.snapshot.clone();
         if self.occupied {
             snapshot.ready_for_review = false;
-            if self.cancel.is_cancelled() {
-                snapshot.state = SubagentState::Cancelling;
-            } else if snapshot.state.is_terminal() {
-                snapshot.state = SubagentState::Running;
+            if !(snapshot.state.is_terminal() && snapshot.release_state == "unknown") {
+                if self.cancel.is_cancelled() {
+                    snapshot.state = SubagentState::Cancelling;
+                } else if snapshot.state.is_terminal() {
+                    snapshot.state = SubagentState::Running;
+                }
             }
         }
         snapshot
