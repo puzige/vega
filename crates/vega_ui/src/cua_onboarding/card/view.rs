@@ -23,6 +23,7 @@ struct AppDrag {
 }
 
 struct DragPreview {
+    _gesture: Rc<()>,
     icon: Arc<Image>,
 }
 
@@ -464,6 +465,7 @@ impl GuidanceCard {
                 }
             }))
             .on_drag(drag, move |drag, _, _, cx| {
+                let gesture = Rc::new(());
                 let bundle = weak
                     .update(cx, |card, cx| {
                         if card.stage != Stage::Guide
@@ -473,6 +475,9 @@ impl GuidanceCard {
                             return None;
                         }
                         let bundle = card.controller.begin_drag();
+                        if bundle.is_some() {
+                            card.drag_gesture = Some(Rc::downgrade(&gesture));
+                        }
                         let bundle = bundle.filter(|path| {
                             if path.exists() {
                                 true
@@ -489,6 +494,7 @@ impl GuidanceCard {
                     .flatten();
                 *drag.bundle.borrow_mut() = bundle;
                 cx.new(|_| DragPreview {
+                    _gesture: gesture,
                     icon: app_icon.clone(),
                 })
             })
