@@ -688,6 +688,7 @@ impl ConversationStream {
         self.controller_runtime_error = None;
         self.entry_identities.clear();
         self.measured_entry_heights.clear();
+        self.text_cache.get_mut().clear();
         self.message_anchor_hovered = None;
         self.message_anchor_preview_hovered = None;
         self.message_anchor_keyboard_id = None;
