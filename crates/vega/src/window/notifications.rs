@@ -5,6 +5,8 @@ pub(super) struct CompletionAttention {
     window: Option<AnyWindowHandle>,
     visible_thread: Option<String>,
     activation_subscription: Option<Subscription>,
+    question_subscriptions:
+        std::collections::HashMap<EntityId, (WeakEntity<ConversationStream>, Subscription)>,
 }
 
 impl VegaWindow {
@@ -56,12 +58,105 @@ impl VegaWindow {
                 .is_some_and(|(id, _)| id == thread_id)
     }
 
+    pub(super) fn bind_question_attention(
+        &mut self,
+        stream: &Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        self.completion_attention
+            .question_subscriptions
+            .retain(|_, (stream, _)| stream.upgrade().is_some());
+        if self
+            .completion_attention
+            .question_subscriptions
+            .contains_key(&stream.entity_id())
+        {
+            return;
+        }
+        let subscription =
+            cx.subscribe(stream, |this, stream, event: &UserQuestionAttention, cx| {
+                this.apply_question_attention(&stream, event, cx);
+            });
+        self.completion_attention
+            .question_subscriptions
+            .insert(stream.entity_id(), (stream.downgrade(), subscription));
+    }
+
+    fn apply_question_attention(
+        &mut self,
+        stream: &Entity<ConversationStream>,
+        event: &UserQuestionAttention,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((thread_id, generation)) = self
+            .agent_controller
+            .active
+            .values()
+            .find(|run| run.stream == *stream)
+            .map(|run| (run.thread_id.clone(), run.generation))
+        else {
+            return;
+        };
+        match event {
+            UserQuestionAttention::Pending { request_id } => {
+                if stream.read(cx).pending_user_question_id(cx).as_ref() != Some(request_id) {
+                    return;
+                }
+                let Some(run) = self.agent_controller.active.get_mut(&thread_id) else {
+                    return;
+                };
+                if run.cancel.is_cancelled() || run.question_notifications.contains_key(request_id)
+                {
+                    return;
+                }
+                run.question_notifications.insert(request_id.clone(), None);
+                let queue_generation = run.queue_generation.clone();
+                if self.completion_is_foreground(&thread_id, cx) {
+                    return;
+                }
+                let Some(thread) = cx.global::<VegaStore>().0.as_ref().ok().and_then(|store| {
+                    vega_conversation::threads::get_thread(store, &thread_id).ok()
+                }) else {
+                    return;
+                };
+                let tag = crate::app_notifications::show_question(
+                    NavigationRoute::Task {
+                        project: thread.project_binding().map(str::to_owned),
+                        task: thread.id,
+                    },
+                    &thread.title,
+                    generation,
+                    &queue_generation,
+                    request_id,
+                    cx,
+                );
+                if let Some(run) = self.agent_controller.active.get_mut(&thread_id) {
+                    run.question_notifications.insert(request_id.clone(), tag);
+                }
+            }
+            UserQuestionAttention::Resolved { request_id } => {
+                if let Some(tag) = self
+                    .agent_controller
+                    .active
+                    .get_mut(&thread_id)
+                    .and_then(|run| run.question_notifications.get_mut(request_id))
+                    .and_then(Option::take)
+                {
+                    crate::app_notifications::dismiss(&tag, cx);
+                }
+            }
+        }
+    }
+
     pub(super) fn finish_completion_attention(
         &mut self,
         run: &ActiveAgentRun,
         success: bool,
         cx: &mut Context<Self>,
     ) {
+        for tag in run.question_notifications.values().flatten() {
+            crate::app_notifications::dismiss(tag, cx);
+        }
         if run.delegated_parent_thread.is_some()
             || run.cancellation_reason == Some(RunCancellationReason::ReviewHandoff)
             || self.completion_is_foreground(&run.thread_id, cx)

@@ -800,6 +800,7 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         };
+        self.bind_question_attention(&stream, cx);
         crate::automation_controller::ensure_global(cx);
         let claim = match &run {
             PendingAgentRun::Automation(claim) => Some(claim.as_ref().clone()),
@@ -1539,6 +1540,7 @@ impl VegaWindow {
             cx.set_global(OpenedThread(Some(thread.clone())));
             return;
         };
+        self.bind_question_attention(&stream, cx);
         stream.update(cx, |stream, cx| stream.set_draft_route(false, cx));
         vega_ui::sidebar::set_thread_running(&thread_id, true, cx);
         self.begin_context_primary_owner(generation, cx);

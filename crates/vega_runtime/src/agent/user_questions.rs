@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -216,6 +217,15 @@ pub trait RuntimeUserQuestionHook: Send + Sync {
         request: RuntimeUserQuestionRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, RuntimeUserQuestionResponse>;
+
+    fn request_with_resolution(
+        &self,
+        request: RuntimeUserQuestionRequest,
+        cancel: CancellationToken,
+        _on_resolved: Arc<dyn Fn() + Send + Sync>,
+    ) -> BoxFuture<'static, RuntimeUserQuestionResponse> {
+        self.request(request, cancel)
+    }
 }
 
 pub fn user_question_validation_audit(code: &str, raw: &str) -> String {
