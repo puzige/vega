@@ -1,5 +1,5 @@
 use super::super::{
-    code_viewport::CodeViewport,
+    code_viewport::{CodeScrollHandle, CodeViewport},
     inline_code,
     links::{LinkRange, fragment_link_ranges, link_ranges},
     selection::SelectionDocumentBuilder,
@@ -38,7 +38,7 @@ pub(super) struct ThinkingBody {
     pending_follow: Option<bool>,
     prepared_epoch: u64,
     pub(super) painted: Rc<Cell<bool>>,
-    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
+    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, CodeScrollHandle>>>,
 }
 
 impl ThinkingBody {
@@ -990,7 +990,7 @@ fn add_fragment(
 }
 
 struct BodyElement {
-    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
+    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, CodeScrollHandle>>>,
     prepared: Arc<PreparedBody>,
     document: SelectionDocumentBuilder,
 }
@@ -1074,6 +1074,11 @@ impl Element for BodyElement {
                             },
                         )
                         .scroll(scroll)
+                        .selection(
+                            block
+                                .code
+                                .then(|| self.document.code_drag_selection(window, cx)),
+                        )
                         .height(block.size.height),
                     )
                     .into_any_element()
