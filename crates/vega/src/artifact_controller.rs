@@ -51,6 +51,7 @@ pub(crate) struct ArtifactProposal {
 
 pub(crate) struct ArtifactTerminalResult {
     pub(crate) captured: Option<(String, ArtifactProjection)>,
+    pub(crate) capture_error: Option<GitWorkspaceErrorCode>,
     pub(crate) cards: Vec<ArtifactProjection>,
 }
 
@@ -247,6 +248,11 @@ pub(crate) fn run_artifact_terminal_worker(
                         job.sequence,
                         ArtifactTerminalResult {
                             captured: None,
+                            capture_error: matches!(
+                                &job.work,
+                                ArtifactTerminalWork::Capture { .. }
+                            )
+                            .then_some(failure.code()),
                             cards: service.cards(),
                         },
                     ));
@@ -265,7 +271,14 @@ pub(crate) fn run_artifact_terminal_worker(
                     .reconcile(cancel)
                     .await
                     .map_err(|failure| failure.code())?;
-                Ok((job.sequence, ArtifactTerminalResult { captured, cards }))
+                Ok((
+                    job.sequence,
+                    ArtifactTerminalResult {
+                        captured,
+                        capture_error: None,
+                        cards,
+                    },
+                ))
             })
         });
     let _ = sender.send(result);

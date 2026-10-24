@@ -41,6 +41,7 @@ const STDERR_LIMIT: usize = 64 * 1024;
 const MUTATION_STDOUT_LIMIT: usize = 1024 * 1024;
 const SNAPSHOT_LIMIT: usize = 8 * 1024 * 1024;
 const PATH_LIMIT: usize = 10_000;
+const FILTER_SCAN_PATH_LIMIT: usize = 100_000;
 const PATCH_LIMIT: usize = 4 * 1024 * 1024;
 const PATCH_ROW_LIMIT: usize = 20_000;
 const PATCH_LINE_LIMIT: usize = 64 * 1024;
