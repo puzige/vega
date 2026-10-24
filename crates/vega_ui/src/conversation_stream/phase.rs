@@ -265,7 +265,7 @@ impl ConversationStream {
         {
             return None;
         }
-        (!copy.original_text().is_empty()).then_some(copy)
+        copy.has_text().then_some(copy)
     }
 
     fn invalidate_copy_owner(&mut self, owner: Option<u64>) {
@@ -456,11 +456,7 @@ impl ConversationStream {
                     previous_assistant = false;
                 }
                 RunDetail::Assistant(entry_index) => {
-                    height += message_anchors::estimate_entry_height(
-                        &self.entries[*entry_index],
-                        cx,
-                        self.workspace_width,
-                    );
+                    height += self.estimated_entry_height(*entry_index, cx, false);
                     previous_assistant = true;
                 }
             }
