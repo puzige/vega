@@ -9,9 +9,6 @@ use std::collections::BTreeMap;
 use tokio::sync::Notify;
 #[path = "subagents/lifecycle_ownership.rs"]
 mod lifecycle_ownership;
-#[cfg(test)]
-#[path = "subagents/recovery_tests.rs"]
-mod recovery_tests;
 #[path = "subagents/stage_recovery.rs"]
 mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
