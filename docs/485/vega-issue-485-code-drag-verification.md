@@ -2,7 +2,26 @@
 
 关联 [#485](https://github.com/puzige/vega/issues/485)、[PR #511](https://github.com/puzige/vega/pull/511)、[独立周期规格](vega-issue-485-code-drag-autoscroll.md)。此记录只针对用户追加的代码拖选交互，不改写[引用折行周期](vega-issue-485-verification.md)结论。
 
-## 起点与证据边界
+## 接手验证记录（2026-10-24，当前阶段）
+
+本节覆盖下文历史阶段状态，不改写旧证据。当前采用[规格接手修订](vega-issue-485-code-drag-autoscroll.md#接手修订2026-10-24当前有效)的快速交付与分层验证，保留 D1–D9。
+
+- 接手前最后一次 [run 39409511774](https://github.com/puzige/vega/actions/runs/39409511774)，head `4aa28ac1dcfc9401e7caea6c69205e5cb732e537`，实际停在测试编译：unused `gpui_kit as gpui` 与缺失 `Half` trait。未取得行为执行结果，不作为有效行为 RED。
+- 合入 master `a100f7307c73e51fefcc56012c117b7b832e292e` 的 merge 为 `c3880c66dddf828da3864121797f34fe37c20c11`；接手规格为 `6abbca2dbacc261b069529daa2265a15343098d2`。旧 Quote 特判冲突按新生产结构处理，保留自然折行。
+- 初版 `10bd8f127b736b7c4100280061c292bdcc7c76d0` 独立静态审查 NO-GO：上述测试编译错误、Thinking 块序号复用后持久 controller 未重绑 handle、未排除 active drag。没有推送该版运行 CI；修正后再验证。
+- 修正版 `bb73a0bbd12421b5ae5a4d1b9d089b59e42ff45e`，合入 master `4db4992df27e9b54e62927209a7fcde420b601f6`。独立静态实现复审 GO，无 P1/P2，不代表行为通过。
+- [run 40085512761](https://github.com/puzige/vega/actions/runs/40085512761)：Format 成功；Python 分组 5 / 15 / 40 项成功；Nextest 21 发现 / 21 执行 / 20 通过 / 1 失败 / 0 跳过。失败为 `thinking_code_vertical_edges_and_corners_use_the_inner_y_viewport`，corner=false/true 的原始逻辑选区扩展断言失败，Y 推进、X 隔离与外层不动未报告失败。Clippy 因 `code_drag.rs` 的 `collapsible_if` 失败，完整 required check 失败，不能合并。
+- 本轮失败分类：Thinking 纵向拖选刷新接线为产品/集成缺口；Clippy 为代码结构问题。源码表明内部 Y 消费 wheel 后停止传播，而原生选择仅在 bubble 刷新 cursor；新几何不会自动触发非 self-scroll 参与者刷新。修复只补新布局后的正常选择刷新，不新增 Y 驱动；原始拖选点与原生 wheel 的裁剪命中点分开记录，避免纵向 corner 误横滚。保留全部失败断言和其他回归，没有调整 expected-prefix。
+- 修复完整 head `fb8415e4d88840164798486cd550f92cf8a5f68a` 的独立静态 delta 复审 GO，无 P1/P2。[run 40086661542](https://github.com/puzige/vega/actions/runs/40086661542) / [Nextest job 120850893747](https://github.com/puzige/vega/actions/runs/40086661542/job/120850893747)：21 发现 / 21 执行 / 21 通过 / 0 失败 / 0 跳过；Format、全目标 Clippy、Python 5 / 15 / 40 项与 required check 全部成功。
+- [原始 19 项事件测试源码](https://github.com/puzige/vega/blob/fb8415e4d88840164798486cd550f92cf8a5f68a/crates/vega_ui/src/conversation_stream/code_drag_tests.rs)，SHA-256 `5a0ce201542abcdc7919363622c136ce358fd9f5717f29f1c7d0ad21078da774`，GitHub API 已读回 blob `b40601ae6fde0c5126b50b5726fab169a22b503c`；[2 项 epoch 单元测试与 pending-refresh 分层接线](https://github.com/puzige/vega/blob/fb8415e4d88840164798486cd550f92cf8a5f68a/crates/vega_ui/src/conversation_stream/code_drag.rs)，整文件 SHA-256 `547bd111f476a5e688f6f8d2980e42bfcb7c741588e640bd3236f1a72e4fab41`。fixture/Cargo/所有独占接线均可在同一完整提交恢复。[PR 验证留痕](https://github.com/puzige/vega/pull/511#issuecomment-6383251863)。
+- pending-refresh 用例执行生产 controller/scheduler 的过期回调决策，与实际事件停止回归分层验证；不宣称已在同步 GPUI flush 内精确注入真实 MouseUp，也不冒充真实桌面验收。
+- 本地仅 rustfmt / diff / 静态检查；没有运行、编译、构建或测试 Vega，没有 CUA、安装、重启和运行数据修改。原始历史 `.patch` 的上下文空行保留原始补丁格式，不为全历史 diff whitespace 提示改写证据；本轮实现增量的 `git diff --check` 通过。
+
+清理提交为 `11e79b54f94f270b5f8c47f6be29ce71987fa18e`：删除 19 项事件测试、2 项 epoch 测试、测试 helper/观测/模块接线和 test-support dev dependency；Cargo manifests 与锁文件逐字节恢复为生产 master `4db4992df27e9b54e62927209a7fcde420b601f6`，没有依赖升级。静态清点无 Rust 测试或独占支持残留；455 个 Rust 文件的固定 Rust 1.98.0 rustfmt 检查与本轮 diff 检查通过。
+
+清理生产投影：从已验证 `fb8415e4` 排除独占测试文件，按语法单元移除 11 处 `cfg(test)`，对 7 个受影响文件作同版 rustfmt 规范化，其余按字节比较。455 个生产 Rust 路径的 path-NUL-byte_length-NUL-content 聚合 SHA-256 两侧均为 `91306281f9d0985e0664efb3e3a1793d3f74d662360d8454d9fe3d0ea5c68e79`。最终完整 head 还须独立复核与 required CI 确认 `no Rust tests`（0 发现 / 0 执行）；空集不是开发测试通过。当前尚未合并，用户手测未完成。
+
+## 历史起点与证据边界
 
 - 起始生产基线：`99e270b13c0f4def33492c432ba25bd81244c2a3`；测试冻结前同步后的未修复生产基线：`db4e27851bdf83d2e49710d0f8707998f9c6b089`。
 - 远端 master 起始为 `3a2ef8e9795d609f022b7b81011360db102e3de6`；再次 fetch 后为 `9baca7519d97995267de31eb9c2e213f0c171e67`（#512 侧栏排序）。保护测试草稿后同步上游并合并原已发布分支，保留引用周期全部原始提交为祖先，不强推；UI、Cargo 和工作流生产文件与起始基线一致。原主仓库用户未提交文件保留。
