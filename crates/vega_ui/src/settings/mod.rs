@@ -205,6 +205,7 @@ mod model_capabilities;
 mod model_catalog;
 pub use model_capabilities::ModelCapabilityFocusTarget;
 mod model_configuration;
+mod motion;
 use model_configuration::SettingsDestination;
 mod preferences;
 mod provider_management;
