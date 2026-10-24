@@ -8,6 +8,12 @@
 
 基线为已合并提交 `5bc062b245d5f1c7cee3b333df896ef31810fc11`，分支 `feat/307-panel-chrome-drag-follow`，独立 worktree。主 checkout 和旧任务分支的任何改动均不移动、不清理。
 
+## 后续用户裁决（本次实施范围）
+
+用户进一步明确：权限框不可由鼠标手动移动，只有 Vega 应用行可拖动；底部引导继续跟随系统设置。确认当前 Vega 在对应列表中后，应结束引导展示（回总览），不等同于权限已开启。公开授权查询只返回授权布尔值，无法区分未添加和已添加但关闭；用户选择“保留原目标，先修其他两项”。因此本次交付原生外壳、禁止手动移动和既定跟随恢复；列表成员检测及据此自动收起明确待解决，不以松手、拖拽结束或 Granted 冒充列表事实，不新增 TCC 数据库读取、AX/抓屏授权或私有 API。
+
+本次委派再次返回 capacity_exceeded，未启动实现写入者；沿用本卡用户允许当前 Agent 直接实现的方式，仅记录自审，不声称独立审查。
+
 ## 原始证据与责任层
 
 - `card/view.rs` 给真实表面四周预留每边 24pt 透明阴影区域，并自行绘制圆角、边框和阴影。
@@ -30,7 +36,7 @@
 
 ## 最小实施计划
 
-1. `native/macos.rs::show_panel` 在隐藏、已核实的自有 NSPanel 上移除 Titled/Closable/Minimizable/Resizable/FullSizeContentView 装饰位，保留创建时已有的 NonactivatingPanel 位，关闭系统阴影并确认非 opaque / 清晰透明背景。复用现有 Objective-C ABI helper，必要的对象 setter 只用于自有面板和 NSColor clearColor；不新增依赖、不改 GPUI 注册表源码。显示前读回并核实相关状态。
+1. `native/macos.rs::show_panel` 在隐藏、已核实的自有 NSPanel 上移除 Titled/Closable/Minimizable/Resizable/FullSizeContentView 装饰位，保留创建时已有的 NonactivatingPanel 位，关闭系统阴影及 movable/movableByWindowBackground 并读回确认，保持非 opaque / 清晰透明背景。复用现有 Objective-C ABI helper，必要的对象 setter 只用于自有面板和 NSColor clearColor；不新增依赖、不改 GPUI 注册表源码。显示前读回并核实相关状态。
 2. `controller.rs::drag_ended` 在 open 时允许跟随恢复，closed 时保持关闭。`card.rs` 与 `card/view.rs` 用一次手势专属弱生命周期跟踪预览持有的强令牌，在既有 150ms tick 中发现释放后结束暂停；不为此新建 daemon、自动探测链或公共跨层类型。恢复前核对当前阶段/placement_pending/panel_fault/tracking，不覆盖真实错误。
 3. 保留 view 表面、阴影余量和纯几何算法，不靠把 padding 改为0掩盖原生外壳。准备表面600×440、外框648×488；引导表面560×120、外框608×168（均为表面各边加24：宽/高+48）。设置右/下缘表面内缩18的算术沿用原算法，本轮不改数值和主题 token。
 
@@ -47,4 +53,6 @@
 
 ## 状态
 
-规格 v1.0：已确认验收及底层 API/生命周期可行路线，产品补丁待实现。本轮原生配置和跟随语义均须重新审查、跑最新 head CI；尚无本轮视觉/行为验收。
+规格 v1.1：已直接实现并自审四份产品源码：精确自有隐藏 NSPanel 移除装饰，关闭原生阴影、opaque 与两种手动移动，设置 clearColor；保留非激活位及原层级/collection/失活/模态配置并读回。DragPreview 独占手势强令牌，卡片仅存弱令牌，既有 tick 确认释放后恢复 open 控制器的 following，保持阶段/尺寸/故障守卫；不触发权限检测或完成任务。当前源窗口回入后 GPUI 消费预览的时序仍须用户真实拖拽验证，不能把源码生命周期审查称作系统验收。
+
+实际本地 `cargo fmt --all -- --check`、`git diff --check`、`cargo metadata --no-deps --offline --locked --format-version 1` 成功；Rust 测试属性/cfg(test)/test-support/dev-dependency 扫描无匹配。未修改依赖、CI、脚本、runtime、共享检测或权限判定；无本地运行、编译或测试。委派受容量限制，本轮仅自审，不声称独立审查。最新完整 head 的 required CI 待结果；原生外观、不可手动移动、拖拽/取消/跟随、跨屏和焦点仍待用户手测。列表成员检测与自动收起保留为未完成目标，不纳入本次已实现声明。

@@ -183,6 +183,15 @@ pub(super) fn show_panel(marker: &str) -> Result<(), NativeError> {
         if style & NONACTIVATING_PANEL == 0 || send_bool(panel, c"isVisible") {
             return Err(NativeError::PanelConfigurationRejected);
         }
+        let decoration = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 15);
+        let required_style = style & !decoration;
+        set_unsigned(panel, c"setStyleMask:", required_style);
+        set_bool(panel, c"setHasShadow:", false);
+        set_bool(panel, c"setOpaque:", false);
+        let clear = required_object(send_object(class(c"NSColor")?, c"clearColor"))?;
+        set_object(panel, c"setBackgroundColor:", clear);
+        set_bool(panel, c"setMovable:", false);
+        set_bool(panel, c"setMovableByWindowBackground:", false);
         let behavior = send_unsigned(panel, c"collectionBehavior");
         let conflicting_behavior =
             MOVE_TO_ACTIVE_SPACE | FULL_SCREEN_PRIMARY | FULL_SCREEN_NONE | PRIMARY | AUXILIARY;
@@ -195,7 +204,11 @@ pub(super) fn show_panel(marker: &str) -> Result<(), NativeError> {
         set_signed(panel, c"setTitleVisibility:", HIDDEN_TITLE);
         set_bool(panel, c"setHidesOnDeactivate:", false);
         set_bool(panel, c"setWorksWhenModal:", false);
-        if send_unsigned(panel, c"styleMask") != style
+        if send_unsigned(panel, c"styleMask") != required_style
+            || send_bool(panel, c"hasShadow")
+            || send_bool(panel, c"isMovable")
+            || send_bool(panel, c"isMovableByWindowBackground")
+            || send_bool(panel, c"isOpaque")
             || send_unsigned(panel, c"collectionBehavior") != required_behavior
             || send_signed(panel, c"level") != FLOATING_LEVEL
             || send_signed(panel, c"titleVisibility") != HIDDEN_TITLE
@@ -539,6 +552,15 @@ unsafe fn send_void(receiver: Object, selector: &'static CStr) {
         let send: unsafe extern "C" fn(Object, Selector) =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         send(receiver, sel_registerName(selector.as_ptr()));
+    }
+}
+
+unsafe fn set_object(receiver: Object, selector: &'static CStr, value: Object) {
+    // SAFETY: The owned NSPanel setter takes one live NSColor object and returns void within the main-thread pool.
+    unsafe {
+        let send: unsafe extern "C" fn(Object, Selector, Object) =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        send(receiver, sel_registerName(selector.as_ptr()), value);
     }
 }
 

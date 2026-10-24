@@ -111,6 +111,7 @@ pub struct GuidanceCard {
     stage: Stage,
     stage_identity: CallbackIdentity,
     placement_pending: bool,
+    drag_gesture: Option<std::rc::Weak<()>>,
     marker: String,
     _marker_lifetime: Arc<()>,
     origin: (f64, f64),
@@ -220,6 +221,7 @@ impl GuidanceCard {
             stage: Stage::Overview,
             stage_identity: CallbackIdentity::default(),
             placement_pending: false,
+            drag_gesture: None,
             marker,
             _marker_lifetime: marker_lifetime,
             origin: placement.origin,
@@ -427,6 +429,22 @@ impl GuidanceCard {
 
     fn tick(&mut self, cx: &mut Context<Self>) {
         if self.controller.view().open {
+            if self
+                .drag_gesture
+                .as_ref()
+                .is_some_and(|gesture| gesture.upgrade().is_none())
+            {
+                self.drag_gesture = None;
+                self.controller.drag_ended();
+                if self.stage == Stage::Guide
+                    && !self.placement_pending
+                    && self.panel_fault.is_none()
+                    && matches!(self.tracking, Tracking::Disabled)
+                {
+                    self.tracking = Tracking::Seeking(INITIAL_SETTINGS_ATTEMPTS);
+                }
+                cx.notify();
+            }
             self.follow(cx);
         }
     }

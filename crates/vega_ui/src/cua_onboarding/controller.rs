@@ -209,7 +209,9 @@ impl CardController {
         Some(bundle)
     }
 
-    pub fn drag_ended(&mut self) {}
+    pub fn drag_ended(&mut self) {
+        self.following = self.open;
+    }
 
     fn close(&mut self) -> Vec<CardEffect> {
         self.open = false;
