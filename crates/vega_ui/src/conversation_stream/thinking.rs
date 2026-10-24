@@ -465,6 +465,7 @@ impl Render for ThinkingBlock {
         let colors = theme(cx).colors;
         let title = self.title().to_owned();
         let can_expand = self.has_source_text();
+        self.focus = self.focus.clone().tab_stop(can_expand);
         div()
             .w_full()
             .min_w_0()
