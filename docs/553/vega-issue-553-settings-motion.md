@@ -51,6 +51,17 @@
 - 发现真实基线焦点缺口，先记录精确入口及修复范围，保留 S7/S14，不用“原行为不变”遮蔽。
 - 实现前定点调查需明确实际 API、有限标题入场和生命周期路线；不可因 API 猜测而扩大到整个操作栏淡入。
 
+### 定点调查确认的实施路线
+
+源码基线仍为 `0fe30576d5884df6f7c2e5f75a0bb580eb883b9f`；规格首提交为 `5ce8a9d905e04695567cc5397952b6b1f6d26cd0`。只读调查未改源码，确认无新增依赖/API 阻塞。
+
+- 新增 Settings 私有 `motion.rs`，使用真实 provider/model/section 身份、一次性导航许可及最近模式；许可仅在守卫后的真实变更产生，render 在 `resume_settings_navigation` 后投影最新目的地，不让配置重排、宽窗自动 `detail_open=true` 或同目标保存重开误触发。
+- 锁定 Kit 首次采样直接落 target，且 keyed state 只在 prepaint/paint 可用。采用委托现有 Element 的私有绘制适配，只包装 provider 名字和 model 名字文字节点。合法许可首次 paint 同 channel 零时长 seed 0，再以 120ms 采样到 1；后续只取 1。计时、缓动和帧请求交共享 sampler，不自建时钟。
+- seed 前检查可见性、激活和 Reduce Motion；owner 在失活时撤销未消费许可，模式变化/隐藏/离开清除许可并直接终态。不能用采样后 opacity=0 反判自身不可见，不能因重新挂载 keyed state 重播。
+- provider row 当前按 index 的绘制身份改成稳定 provider 名字；选中填色隔离为装饰背景层，不被 `.interactive(..., selected)` 的立即选中 rest 覆盖或重复绘制。保留文字、命中、焦点环、hover/pressed 和拖拽原行为。model marker 按 provider/model/section 稳定身份采样 accent alpha，透明边框槽位保持几何不变。
+- 已确认焦点缺口：`BackToList` 当前仅设 `detail_open=false`；model 返回清掉 model 配置但无入口回焦。修复仅在真实返回提交后记录目标，于目标 render 同步实际 FocusHandle 后消费，不等动画回调。provider 复用 `provider_edit_focuses` 的稳定 name 映射；model 配置入口增加 `(provider, model)` 稳定 focus；对象消失回到有效邻项/可见入口，空列表回到实际添加入口。保留所有 scroll handle 和输入实体。
+- 文件限 `settings/{motion,mod,state,provider_management,model_configuration,render_impl}.rs`；主 Agent 写本规格，唯一专职实现者写源码，非实现者审查。共享 interaction/theme、依赖、CI 不改。
+
 ## 验证与交付
 
 - 本地：`git diff --check`、限定格式检查、静态检查稳定身份、守卫后接线、表单/scroll 实体保留、注释/依赖/CI 无越界。静态分析不称运行验证。
