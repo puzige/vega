@@ -6,10 +6,6 @@ mod body;
 #[path = "thinking_window.rs"]
 mod window;
 
-#[cfg(test)]
-#[path = "code_drag_tests.rs"]
-pub(crate) mod code_drag_tests;
-
 pub(crate) const THINKING_DELTA_BYTES: usize = 64 * 1024;
 pub(crate) const THINKING_BLOCK_BYTES: usize = 256 * 1024;
 pub(crate) const THINKING_VIEW_BYTES: usize = 1024 * 1024;

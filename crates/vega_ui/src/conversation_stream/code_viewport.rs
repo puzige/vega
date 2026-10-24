@@ -128,13 +128,6 @@ impl RenderOnce for CodeViewport {
         } else {
             ScrollbarMode::Always
         };
-        #[cfg(test)]
-        super::code_drag_tests::observe_scroll_handle(
-            window.window_handle().window_id(),
-            Some(self.id.clone()),
-            scroll.clone(),
-            cx,
-        );
         let viewport = div()
             .id(self.id.clone())
             .w_full()

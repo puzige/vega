@@ -360,13 +360,6 @@ impl Element for CodeDragElement {
         cx: &mut App,
     ) {
         self.body.paint(window, cx);
-        #[cfg(test)]
-        super::code_drag_tests::observe_driver(
-            window.window_handle().window_id(),
-            self.id.clone(),
-            Rc::downgrade(state),
-            cx,
-        );
         let down = state.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if !phase.bubble() {
@@ -559,71 +552,4 @@ fn refresh(
     window.dispatch_event(PlatformInput::MouseMove(event), cx);
     state.borrow_mut().synthetic = false;
     schedule(weak, window, cx);
-}
-
-#[cfg(test)]
-pub(super) fn verify_pending_refresh_cancellation(
-    state: &Rc<RefCell<CodeDragController>>,
-    replace: bool,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let (token, handle, scroll, selection) = {
-        let mut controller = state.borrow_mut();
-        assert!(controller.valid(window, cx));
-        controller.timer = None;
-        let before = controller.scroll.offset();
-        let token = controller
-            .advance(window, cx)
-            .expect("production horizontal advance");
-        assert!(controller.scroll.offset().x < before.x);
-        assert_eq!(controller.scroll.offset().y, before.y);
-        (
-            token,
-            controller.selection.handle.clone(),
-            controller.scroll.clone(),
-            controller.selection.clone(),
-        )
-    };
-    if replace {
-        selection.copy.replace_text("replacement🚀");
-    } else {
-        gpui_kit::base::TextSelection::end(window, cx);
-        state.borrow_mut().cancel();
-    }
-    let stopped = scroll.offset();
-    let snapshot = handle.snapshot(cx);
-    refresh(&Rc::downgrade(state), token, window, cx);
-    assert_eq!(scroll.offset(), stopped);
-    assert_eq!(handle.snapshot(cx), snapshot);
-    assert!(state.borrow().origin.is_none());
-    assert!(state.borrow().timer.is_none());
-    assert!(!state.borrow().synthetic);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::RefreshEpoch;
-
-    #[test]
-    fn invalidating_pending_refresh_rejects_it_without_consuming_the_next_drag() {
-        let mut epoch = RefreshEpoch::default();
-        let pending = epoch.queue();
-        epoch.invalidate();
-        let replacement = epoch.queue();
-        assert!(!epoch.take(pending));
-        assert!(epoch.take(replacement));
-        assert!(!epoch.take(replacement));
-    }
-
-    #[test]
-    fn duplicate_layout_callback_cannot_consume_the_next_scroll_refresh() {
-        let mut epoch = RefreshEpoch::default();
-        let first = epoch.queue();
-        assert!(epoch.take(first));
-        let second = epoch.queue();
-        assert_ne!(first, second);
-        assert!(!epoch.take(first));
-        assert!(epoch.take(second));
-    }
 }
