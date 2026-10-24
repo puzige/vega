@@ -317,6 +317,8 @@ impl Motion {
     pub const INTERACTION_DURATION_MS: u64 = 120;
     pub const DISCLOSURE_TURN_MS: u64 = 120;
     pub const TAB_SELECTION_MS: u64 = 120;
+    pub const COPY_SWAP_MS: u64 = 80;
+    pub const COPY_RECEIPT_MS: u64 = 1000;
     pub const THINKING_SHIMMER_MS: u64 = 1800;
 }
 

@@ -48,7 +48,7 @@ A4 澄清：缓存必须支持现有分页/身份替换入口；本卡不新建�
 - core.rs：缓存 owner/初始化及 identity/removal retirement。
 - message_anchors.rs（允许私有 sibling cache module）：有界存储、source key、admission、预览/正文估高 helper、rail/geometry 输入。
 - render.rs：prepare 及传入当帧 insets。
-- phase.rs：estimated_run_height 的助手估高复用 helper，保留现有 display composition。
+- phase.rs：estimated_run_height 的助手估高复用 helper，保留现有 display composition。集成上游 #517 后，copy_source_for_entry 的非空检查使用现有 copy.has_text()，避免每次 geometry fallback 为判断非空而 clone 全文；保持新 Codex copy/footer eligibility，不改变复制来源或结果。
 - content.rs：history window replacement 清理。
 
 先实现最小生产修改；开发测试按风险覆盖同长正文版本变化、finish、同 key 新 incarnation、宽度变化与 preview 复用、有界/超限/admission/retirement、冷暖输出及正文组合。不得新增依赖、schema、runtime/store 改动、通用 CI 或新的产品说明文字。代码不新增注释/unwrap/expect。

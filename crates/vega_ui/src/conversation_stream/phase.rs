@@ -236,6 +236,38 @@ impl ConversationStream {
             .map(|(_, source)| source)
     }
 
+    pub(crate) fn copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
+        if let Some(source) = self.final_copy_for_entry(index) {
+            return Some(source);
+        }
+        if self.thread.backend != TaskBackend::Codex {
+            return None;
+        }
+        let StreamEntry::Assistant {
+            copy,
+            failure: None,
+            ..
+        } = self.entries.get(index)?
+        else {
+            return None;
+        };
+        let message_id = self
+            .entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_deref());
+        if message_id.is_some_and(|id| self.run_failures.contains_key(id))
+            || self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active_id, active_index)| {
+                    *active_index == index || message_id == Some(active_id.as_str())
+                })
+        {
+            return None;
+        }
+        copy.has_text().then_some(copy)
+    }
+
     fn invalidate_copy_owner(&mut self, owner: Option<u64>) {
         if let Some(owner) = owner {
             let index = self.entries.iter().position(
