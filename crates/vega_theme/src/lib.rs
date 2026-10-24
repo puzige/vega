@@ -543,13 +543,22 @@ impl Layout {
     pub const SETTINGS_SWITCH_WIDTH: f32 = 32.0;
     /// Height of a Settings boolean switch.
     pub const SETTINGS_SWITCH_HEIGHT: f32 = 20.0;
-    pub const PREPARATION_CARD_WIDTH: f32 = 400.0;
-    pub const PREPARATION_CARD_HEIGHT: f32 = 140.0;
+    pub const PREPARATION_CARD_WIDTH: f32 = 560.0;
+    pub const PREPARATION_CARD_HEIGHT: f32 = 120.0;
     pub const PREPARATION_CARD_SHADOW_PADDING: f32 = 24.0;
-    pub const PREPARATION_APP_ICON_SIZE: f32 = 56.0;
-    pub const PREPARATION_APP_TARGET_WIDTH: f32 = 88.0;
-    pub const PREPARATION_APP_TARGET_HEIGHT: f32 = 72.0;
-    pub const PREPARATION_APP_LABEL_HEIGHT: f32 = 16.0;
+    pub const PREPARATION_OVERVIEW_WIDTH: f32 = 600.0;
+    pub const PREPARATION_OVERVIEW_HEIGHT: f32 = 440.0;
+    pub const PREPARATION_OVERVIEW_PADDING: f32 = 32.0;
+    pub const PREPARATION_OVERVIEW_ICON: f32 = 56.0;
+    pub const PREPARATION_OVERVIEW_TITLE_LINE: f32 = 34.0;
+    pub const PREPARATION_OVERVIEW_DESCRIPTION_WIDTH: f32 = 420.0;
+    pub const PREPARATION_OVERVIEW_DESCRIPTION_LINE: f32 = 21.0;
+    pub const PREPARATION_PERMISSION_HEIGHT: f32 = 84.0;
+    pub const PREPARATION_PERMISSION_ICON: f32 = 40.0;
+    pub const PREPARATION_APP_ICON_SIZE: f32 = 28.0;
+    pub const PREPARATION_APP_TARGET_HEIGHT: f32 = 42.0;
+    pub const PREPARATION_GUIDE_CONTROL: f32 = 32.0;
+    pub const PREPARATION_GUIDE_GAP: f32 = 12.0;
     pub const PREPARATION_CLOSE_SIZE: f32 = 24.0;
     /// Maximum width of a multi-section floating menu.
     pub const MENU_MAX_WIDTH: f32 = 350.0;
