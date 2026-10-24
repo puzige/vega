@@ -136,6 +136,8 @@
 
 D07/#416 的隐藏阴性窗口从合法 `AssistantResponseCompleted(Final)` 开始。Started/TextDelta 尚未确认可信 Final，仍允许原 source 正文正常绘制，不能将这段记录混入 Final 后“未绘制”断言。测试在仅 Completed 之前划清 pre-trust 边界，并分别逐条检查该事件之后的全部自动 paint 和显式当前帧；显式帧须有同轮真实 run header 阳性。不得在 Completed 后丢弃自动记录、只保留末帧或轮询直到消失；Enter 重关也按操作前边界检查所有后续帧。原 source/focus/selection/anchor/全文/真实 Enter 恢复和一次性契约不变。
 
+可信Final之前的“正文保持可见”通过同source copy/handle的实际可见SelectionPaint、同stage的实际enabled/expanded glyph和既有source_painted阳性验证，同时要求尚未process_in_details。此时过程内容按live阶段独立显示，外层run入口不可展开且局部expanded可为false；不能新增“外层expanded必须true”作为可见前提，也不通过强制reveal改变fixture。可信Final之后外层成为真实可用的过程入口，关闭、焦点迁移和Enter重开契约照常严格检查。
+
 ### 2026-10-24 D06 相同真实绘制边界
 
 原 moving 样本经模拟帧回调自动 draw 后又显式 draw，settled 样本只显式 draw，不能直接比较这两种不同数量的绘制。D06 两 phase 共用窄测试 helper：使用锁定公开 API 的同一真实 TestClock 仅推进15ms，验证 sampler now 同步且期间无root/glyph/layout工作，再在同一次 update 中 simulate_next_frame + refresh，统一由test-support flush自动绘制，不再显式补画。每步要求真实根render增加一次、目标glyph实际paint一次及真实item Layout/Bounds阳性；计数只限受控full-window刷新，不泛化为全部cached draw。

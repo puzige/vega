@@ -3083,8 +3083,8 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
         let pretrust_glyphs = probe::take();
         fixture.cx.update(|cx| {
             assert!(
-                group.read(cx).expanded(),
-                "reading={reading} untrusted Final keeps process open; source_paints={}; glyphs={pretrust_glyphs:?}",
+                !group.read(cx).process_in_details(),
+                "reading={reading} untrusted Final preserves live process; source_paints={}; glyphs={pretrust_glyphs:?}",
                 pretrust_paints.len()
             );
             assert!(
@@ -3092,7 +3092,52 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                 "reading={reading} untrusted Final preserves visible source; source_paints={}; glyphs={pretrust_glyphs:?}",
                 pretrust_paints.len()
             );
+            assert_eq!(
+                thinking.read(cx).source_copy.original_text(),
+                SOURCE.repeat(12),
+                "reading={reading} untrusted Final preserves all source bytes"
+            );
         });
+        assert!(
+            pretrust_paints.iter().any(|paint| {
+                paint.copy_id == source.copy_id
+                    && paint.handle_id == source.handle_id
+                    && paint.scope == source.scope
+                    && paint.content == source.content
+                    && !paint.bounds.intersect(&paint.content_mask).is_empty()
+                    && paint.runs.iter().any(|run| {
+                        !run.text().is_empty()
+                            && !run
+                                .bounds()
+                                .intersect(&paint.bounds)
+                                .intersect(&paint.content_mask)
+                                .is_empty()
+                            && run.layout().line_layouts().iter().any(|line| {
+                                line.runs().iter().any(|shaped| !shaped.glyphs.is_empty())
+                            })
+                    })
+            }),
+            "reading={reading} untrusted Final paints the same source with visible prepared glyphs; records={:?}",
+            pretrust_paints
+                .iter()
+                .map(|paint| (
+                    paint.copy_id,
+                    paint.handle_id,
+                    paint.bounds,
+                    paint.content_mask
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            pretrust_glyphs.iter().any(|paint| {
+                paint.scope.owner == stage.scope.owner
+                    && paint.scope.enabled
+                    && paint.scope.expanded
+                    && paint.opacity > 0.
+                    && !paint.bounds.is_empty()
+            }),
+            "reading={reading} untrusted Final paints the real enabled expanded stage: {pretrust_glyphs:?}"
+        );
         let thinking_owner = format!("thinking-disclosure-{}", thinking.entity_id());
         let assert_hidden = |batch: &str, paints: &[SelectionPaint], glyphs: &[GlyphPaint]| {
             assert!(

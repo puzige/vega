@@ -321,3 +321,23 @@ D05 依赖事实固定为 gpui-kit/gpui-base `0.6.1`、gpui-pre `0.3.4`：`platf
 新唯一writer已完成并停写。源码SHA-256 **`963847a732cef649d1e776c4db40c2ba8e82d92ecca878182a8baefd0ec40f7d`**，仅该源码相对f54f8039…的原始git binary patch SHA-256 **`89ac6e4a7002a847c59663b8fe1f598e67f017b63addc3b825a62ee1ab48bb16`**；父独立读取文件与patch逐字节核对匹配。D06每步真实纯clock/统一flush/root+1/glyph一次/全量item阳性及完整原始精确对照保留；Final在仅Completed之后检查自动和显式两批，Enter重关也同样检查全部两批，pre-trust仍须保持正文和过程可见。
 
 父实际静态范围检查exit0：28名称/顺序相同，仅D06与Final两体改变，其他26体逐字节一致；静态assert宏292→305，非执行数。其他源码/依赖/通用CI完全不变，严格D05原体保留。父实际cargo fmt与完整diff-check均exit0；fetch后master/远端无新写入。尚未本地运行/编译/测试Vega；新固定版本的非写入者独审与Actions编译/行为结果待取得，不能称其余27项已过。
+
+## 2026-10-24 第二切片云端结果与 Final 前置修正
+
+固定完整head **`2527b421ff0fe928ab8e071637c16b02f7de30fe`** 已推送；[源码](https://github.com/puzige/vega/blob/2527b421ff0fe928ab8e071637c16b02f7de30fe/crates/vega_ui/src/conversation_stream/disclosure_motion_tests.rs)已远端完整读回，blob `6ac178ea8eeb60469eb4d094917a5baa84188a49`、SHA-256 `963847a732cef649d1e776c4db40c2ba8e82d92ecca878182a8baefd0ec40f7d` 与本地一致；[完整提交patch](https://github.com/puzige/vega/commit/2527b421ff0fe928ab8e071637c16b02f7de30fe.patch)抓取SHA-256 `76bc073abae52cd22fd7bb6f22d614316da45c4f9f2f4627429f331f3ad65843`。非写入者已独立核对28名称/顺序、26体与严格D05保全、同源clock/正常flush及Completed后全部批次，静态检查均0；其静态未发现问题不代替下列真实失败，新增前置问题已反馈独审者复核。
+
+[Actions40075910590](https://github.com/puzige/vega/actions/runs/40075910590) 2026-10-24 15:53:29（Asia/Shanghai）启动、15:58:05完成；父15:53:53首次读取，15:58:54之后再次读取，遵守五分钟间隔。Nextest与Clippy实际Checkout **`58d6c5aad65a3aa5857a4c84b6d3b3e89c90f5da`**，API核对父为base **`5bc062b245d5f1c7cee3b333df896ef31810fc11`** 和head **`2527b421ff0fe928ab8e071637c16b02f7de30fe`**；tree **`797f1e0a5a631554bbbea5a2e46650ff29435642`** 与固定head完全相同。
+
+- Nextest `120819081902` failure/exit100：banner28 across15 binaries，实际 **28执行/26通过/2失败/0跳过**；独立list JSON与aggregate ignored仍未取得。
+- Clippy `120819082020` success，Format success；Python5+15+40=60项均OK；required `120819923114` failure。
+- D06 `decorative_frames_do_no_more_message_measurement_than_identical_settled_redraws` **PASS（0.578s）**，统一边界后原始全量精确比较、八样本角度/几何、零额外失效与真实run一次失效全部执行。
+- Final `first_final_overrides_independent_manual_focus_and_real_scrolled_reading_states_once:3085` 在新增pre-trust `group.expanded()` 阳性失败，reading=manual；日志同批实际stage expanded=true/enabled=true、外层run expanded=false/enabled=false、source_paints=6。尚未执行Completed后覆盖，不称Final三模式通过。
+- D05 `rapid_reactivation_without_an_inactive_draw_does_not_replay_missed_motion:2699` 仍原前提12vs11；保持用户已接受的动态边界，不改产品要求或结果。其余26项，包括拖选/Tab/artifact/前轮修复，均PASS。
+
+原始全文日志SHA-256 **`b27544fb172c606364b6ba56c94e82d0d6db741e187f3c6af4492b8e90fff540`**，保留raw/单独清理副本，逐条核对28项及footer。不是27/28，也未因D05已获处置而清理另一项未解失败。
+
+本次新增pre-trust前置再次误用了外层局部偏好位：可信Final之前正文按live阶段独立渲染，外层run尚未process_in_details，其不可展开入口的expanded并不表示live正文是否可见。第三窄切片仅替换这一新增错误前置：要求!process_in_details，并用同source copy/handle、真实可见run/mask及同stage enabled/expanded glyph加source_painted做阳性；不要求外层偏好true、不强制reveal、不改生产算法。Completed后全部自动/显式阴性、三mode/focus/anchor/Enter/once/全文不动；D06及其余27体逐字节保全，再交独审和原Actions。
+
+第三切片writer已READY停写，非写入者另结合原日志独立确认该P2前置错误并纠正先前纯静态遗漏。父核对最终源码SHA-256 **`d5fe9c4b0799e19480041fdaba394e489d71fe6e3ddb5d89a81d3c81606f100e`**、仅源码git binary patch SHA-256 **`5ec3164c1bf1644fc4ca02157e9d254c599562aa0c421febe8fe3ca33228b09c`** 与停写产物精确一致。真实source同copy/handle/scope/content、可见prepared run/shaped glyph、同stage真实paint阳性取代错误内部位，source全文和source_painted保留。
+
+父实际词法检查28名称/顺序、其他27体逐字节保全、仅pre-trust block与两份docs变化，exit0；cargo fmt与full-base diff-check均0。Completed/Enter后全部检查、已PASS的D06、D05严格原体及生产代码均不变，未本地运行/编译/测试Vega。新固定版本的窄增量独审与Actions仍待取得，不先放行删测。
