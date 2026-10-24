@@ -365,3 +365,5 @@ D05 依赖事实固定为 gpui-kit/gpui-base `0.6.1`、gpui-pre `0.3.4`：`platf
 原16历史、640×1200窗口、wheel72、短Final、原精确anchor/follow断言及全部Completed/Enter后覆盖保持，不改变expected或添加放宽/ignore；其他27体/D05原文保全。这是新增责任层观测，不是盲重试或行为修复。若旧identity唯一且offset合法、suffix全部连续已测，按 `sum(h_i) - old_offset + foreground - viewport_height` 判断旧top的真实余量；None不当0，0..1px不能证明非尾随可保留。取得数据后再确定仅fixture修正或真实生产责任层；长Final候选也须先证明实际可达与有效阅读区source阳性，不能直接按行数换绿。
 
 观察writer已READY停写，父读回源码SHA-256 **`e0d4a7aeb974e5b75e1ef3e993b7d4118786708ef8df30bad9ea21088a041b33`**、仅源码git binary patch SHA-256 **`428919c96d145351a507e671b3575efe97d8f743fec0679b5521ca993b914c5e`** 与停写产物精确一致。父重跑静态范围脚本exit0：28名称/27体保全，移除只读helper/5个let与还原唯一错误消息后，整个源码与431基线逐字节相同，静态assert宏308不变；证明原输入/断言表达式/批次时序未改。父cargo fmt、完整diff-check均0，未本地运行/编译/测试Vega。新head的独审和原Actions待取得，不把本切片称行为修复完成。
+
+观察切片固定为`13379172d763399153f0a63d0e52a690f9273315`。停写后fetch发现master新增`a100f7307c73e51fefcc56012c117b7b832e292e`（#587，CUA面板chrome/拖动跟随）；规范、依赖、#550测试/生产文件均无交叉。主Agent正常merge该新基线，不回退上游；测试源码字节与观察切片相同。后续实际Actions按新完整head及其synthetic checkout记录，不能把旧head结果冒充新集成验证。清理计划与最终静态审查基线同步改为a100f730…，执行前重新核对13个拟恢复blob与保护路径，保留上游CUA源文。
