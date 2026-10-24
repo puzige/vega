@@ -266,6 +266,7 @@ mod code_drag;
 mod code_viewport;
 mod content;
 mod context_control;
+mod copy_receipt;
 pub use context_control::ContextUsageProjection;
 mod context_usage;
 pub use vega_conversation::types::{
