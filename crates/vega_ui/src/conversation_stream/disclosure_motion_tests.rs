@@ -3086,6 +3086,11 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
 ) {
     use crate::disclosure_layout_probe::{self as layout, SelectionPaint};
     for reading in ["manual", "focus", "scrolled"] {
+        let final_text = if reading == "scrolled" {
+            format!("{FINAL_TEXT}\n").repeat(16)
+        } else {
+            FINAL_TEXT.to_owned()
+        };
         let mut fixture = StreamFixture::open();
         if reading == "scrolled" {
             for index in 0..16 {
@@ -3163,9 +3168,31 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             std::slice::from_ref(&source),
             &[],
         );
-        fixture
-            .cx
-            .update(|cx| stage_final_text(&fixture.stream, "current", cx));
+        if reading == "scrolled" {
+            fixture.cx.update(|cx| {
+                fixture.stream.update(cx, |stream, cx| {
+                    stream.apply_event(
+                        ConversationEvent::AssistantResponseStarted {
+                            message_id: "current".into(),
+                            response_id: "final".into(),
+                            text_start_bytes: COMMENTARY.len(),
+                        },
+                        cx,
+                    );
+                    stream.apply_event(
+                        ConversationEvent::TextDelta {
+                            message_id: "current".into(),
+                            delta: final_text.clone(),
+                        },
+                        cx,
+                    );
+                })
+            });
+        } else {
+            fixture
+                .cx
+                .update(|cx| stage_final_text(&fixture.stream, "current", cx));
+        }
         let pretrust_paints = layout::take_selection_paints();
         let pretrust_glyphs = probe::take();
         let geometry_b = fixture.anchor_observation(
@@ -3232,6 +3259,145 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             }),
             "reading={reading} untrusted Final paints the real enabled expanded stage: {pretrust_glyphs:?}"
         );
+        let pending_final = if reading == "scrolled" {
+            let (index, identity, copy_id, scope, pending_bounds, reading_clip) =
+                fixture.cx.update(|cx| {
+                    let stream = fixture.stream.read(cx);
+                    let list = &stream.list;
+                    assert_eq!(
+                        stream.scroll_anchor_snapshot(), anchor,
+                        "reading={reading} Final preparation preserves the original reading anchor\n{geometry_b}"
+                    );
+                    assert!(!list.is_following_tail(), "reading={reading} remains detached");
+                    assert!(anchor.message_id.as_deref().is_some_and(|id| id.starts_with("history-")));
+                    let matches = (0..list.item_count())
+                        .filter(|index| stream.entry_identity_at(*index) == anchor.identity.as_deref())
+                        .collect::<Vec<_>>();
+                    assert_eq!(matches, [anchor_index], "reading={reading} unique historical anchor\n{geometry_b}");
+                    let suffix = (anchor_index..list.item_count())
+                        .map(|index| list.bounds_for_item(index).map(|bounds| (index, bounds)))
+                        .collect::<Option<Vec<_>>>()
+                        .unwrap_or_else(|| panic!("reading={reading} every suffix height must be measured\n{geometry_b}"));
+                    assert!(suffix.iter().all(|(_, bounds)| {
+                        f32::from(bounds.size.width).is_finite()
+                            && bounds.size.width > px(0.)
+                            && f32::from(bounds.size.height).is_finite()
+                            && bounds.size.height >= px(0.)
+                    }), "reading={reading} real suffix geometry\n{geometry_b}");
+                    let offset = px(anchor.offset_in_item_px);
+                    assert!(f32::from(offset).is_finite() && offset >= px(0.) && offset < suffix[0].1.size.height);
+                    let pending = stream.entries.iter().enumerate().filter_map(|(index, entry)| {
+                        if stream.entry_identities[index].message_id.as_deref() != Some("current") {
+                            return None;
+                        }
+                        match entry {
+                            StreamEntry::Assistant { copy, model, failure: None, .. }
+                                if copy.original_text() == final_text && !group.read(cx).owns_process_copy(copy.id) => Some((index, copy, model)),
+                            _ => None,
+                        }
+                    }).collect::<Vec<_>>();
+                    assert_eq!(pending.len(), 1, "reading={reading} unique same-turn pending Final");
+                    let (index, copy, model) = pending[0];
+                    assert!(model.row_count() > 0, "reading={reading} pending Final has materialized content");
+                    assert!(stream.final_copy_for_entry(index).is_none(), "reading={reading} pending Final is not trusted yet");
+                    let hidden = stream.entries.iter().enumerate().filter_map(|(index, entry)| {
+                        match entry {
+                            StreamEntry::RunActivitySegment { group: owner, .. } if owner == &group => Some(index),
+                            StreamEntry::Assistant { copy, .. } if group.read(cx).owns_process_copy(copy.id) => {
+                                assert_eq!(stream.entry_identities[index].message_id.as_deref(), Some("current"));
+                                assert_eq!(copy.original_text(), COMMENTARY, "reading={reading} only owned commentary is budgeted");
+                                Some(index)
+                            }
+                            _ => None,
+                        }
+                    }).collect::<Vec<_>>();
+                    assert_eq!(hidden.len(), 2, "reading={reading} one real stage and one owned commentary");
+                    assert_eq!(hidden.iter().filter(|index| matches!(&stream.entries[**index], StreamEntry::RunActivitySegment { .. })).count(), 1);
+                    assert_eq!(hidden.iter().filter(|index| matches!(&stream.entries[**index], StreamEntry::Assistant { .. })).count(), 1);
+                    assert!(index > anchor_index && hidden.iter().all(|index| *index > anchor_index));
+                    assert!(!hidden.contains(&index), "reading={reading} pending Final remains outside hidden budget");
+                    let hidden_height = hidden.iter().map(|index| {
+                        list.bounds_for_item(*index)
+                            .unwrap_or_else(|| panic!("reading={reading} hidden item {index} is measured\n{geometry_b}"))
+                            .size.height
+                    }).sum::<Pixels>();
+                    let viewport = list.viewport_bounds();
+                    let foreground = stream.foreground_height;
+                    assert!(foreground >= px(0.) && foreground < viewport.size.height);
+                    let suffix_height = suffix.iter().map(|(_, bounds)| bounds.size.height).sum::<Pixels>();
+                    let lower_slack = suffix_height - offset + foreground - viewport.size.height - hidden_height;
+                    let native_tail_threshold = px(1.);
+                    let separation = px(2.);
+                    assert!(lower_slack > native_tail_threshold + separation,
+                        "reading={reading} measured retained suffix stays beyond native Tail threshold; suffix={suffix_height:?} offset={offset:?} padding={foreground:?} viewport={viewport:?} hidden={hidden:?}/{hidden_height:?} lower_slack={lower_slack:?}\n{geometry_b}");
+                    (
+                        index,
+                        stream.entry_identity_at(index).unwrap().to_owned(),
+                        copy.id,
+                        copy.selection_scope(),
+                        list.bounds_for_item(index).unwrap(),
+                        Bounds::from_corners(viewport.origin, point(viewport.right(), viewport.bottom() - foreground)),
+                    )
+                });
+            assert!(
+                pretrust_paints.iter().any(|paint| {
+                    paint.copy_id == copy_id
+                        && paint.scope == scope
+                        && !paint
+                            .bounds
+                            .intersect(&pending_bounds)
+                            .intersect(&paint.content_mask)
+                            .is_empty()
+                        && paint.runs.iter().any(|run| {
+                            !run.text().is_empty()
+                                && run.layout().line_layouts().iter().any(|line| {
+                                    line.runs().iter().any(|shaped| !shaped.glyphs.is_empty())
+                                })
+                        })
+                }),
+                "reading={reading} real same-entry pending Final reached prepared body paint\n{geometry_b}"
+            );
+            assert!(
+                pretrust_paints.iter().any(|paint| {
+                    paint.copy_id == source.copy_id
+                        && paint.handle_id == source.handle_id
+                        && paint.scope == source.scope
+                        && paint.content == source.content
+                        && paint.runs.iter().any(|run| {
+                            let visible = run
+                                .bounds()
+                                .intersect(&paint.bounds)
+                                .intersect(&paint.content_mask)
+                                .intersect(&reading_clip);
+                            !visible.is_empty()
+                                && run.text().char_indices().any(|(index, character)| {
+                                    if !character.is_alphanumeric() {
+                                        return false;
+                                    }
+                                    let Some(left) = run.layout().position_for_index(index) else {
+                                        return false;
+                                    };
+                                    let Some(right) = run
+                                        .layout()
+                                        .position_for_index(index + character.len_utf8())
+                                    else {
+                                        return false;
+                                    };
+                                    left.y == right.y
+                                        && left.x < right.x
+                                        && visible.contains(&point(
+                                            (left.x + right.x) / 2.,
+                                            left.y + run.layout().line_height() / 2.,
+                                        ))
+                                })
+                        })
+                }),
+                "reading={reading} source glyph is readable above Composer; reading_clip={reading_clip:?}\n{geometry_b}"
+            );
+            Some((index, identity, copy_id, scope, pending_bounds))
+        } else {
+            None
+        };
         let thinking_owner = format!("thinking-disclosure-{}", thinking.entity_id());
         let assert_hidden = |batch: &str, paints: &[SelectionPaint], glyphs: &[GlyphPaint]| {
             assert!(
@@ -3259,7 +3425,7 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
             complete_final(
                 &fixture.stream,
                 "current",
-                COMMENTARY.len() + FINAL_TEXT.len(),
+                COMMENTARY.len() + final_text.len(),
                 cx,
             )
         });
@@ -3311,10 +3477,25 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                     .read(cx)
                     .completion_response(&["current".into()], cx)
                     .as_deref(),
-                Some(FINAL_TEXT),
+                Some(final_text.as_str()),
                 "reading={reading} exact Final bytes"
             );
             if reading == "scrolled" {
+                let (index, identity, copy_id, scope, pending_bounds) = pending_final.as_ref().unwrap();
+                let stream = fixture.stream.read(cx);
+                assert_eq!(stream.entry_identity_at(*index), Some(identity.as_str()), "reading={reading} same retained Final entry");
+                let StreamEntry::Assistant { copy, .. } = &stream.entries[*index] else {
+                    panic!("reading={reading} retained Final remains an Assistant entry");
+                };
+                assert_eq!(copy.id, *copy_id);
+                assert_eq!(copy.selection_scope(), *scope);
+                assert_eq!(copy.original_text(), final_text);
+                assert_eq!(stream.final_copy_for_entry(*index).unwrap().original_text(), final_text);
+                assert!(!stream.process_entry_hidden(*index, cx));
+                let retained_bounds = stream.list.bounds_for_item(*index).unwrap();
+                assert_eq!(retained_bounds.size.width, pending_bounds.size.width);
+                assert!(retained_bounds.size.height >= pending_bounds.size.height,
+                    "reading={reading} trusted Final only adds its footer; pending={pending_bounds:?} retained={retained_bounds:?}\n{geometry_b}\n{geometry_c}\n{geometry_d}");
                 assert_eq!(
                     fixture.stream.read(cx).scroll_anchor_snapshot(),
                     anchor,
@@ -3442,7 +3623,7 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                             "final",
                             AssistantResponseKind::Final,
                             COMMENTARY.len(),
-                            COMMENTARY.len() + FINAL_TEXT.len(),
+                            COMMENTARY.len() + final_text.len(),
                         ),
                     },
                     cx,
@@ -3468,7 +3649,7 @@ fn first_final_overrides_independent_manual_focus_and_real_scrolled_reading_stat
                     .read(cx)
                     .completion_response(&["current".into()], cx)
                     .as_deref(),
-                Some(FINAL_TEXT),
+                Some(final_text.as_str()),
                 "reading={reading} repeated Final keeps exact completion text"
             );
         });

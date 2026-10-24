@@ -367,3 +367,26 @@ D05 依赖事实固定为 gpui-kit/gpui-base `0.6.1`、gpui-pre `0.3.4`：`platf
 观察writer已READY停写，父读回源码SHA-256 **`e0d4a7aeb974e5b75e1ef3e993b7d4118786708ef8df30bad9ea21088a041b33`**、仅源码git binary patch SHA-256 **`428919c96d145351a507e671b3575efe97d8f743fec0679b5521ca993b914c5e`** 与停写产物精确一致。父重跑静态范围脚本exit0：28名称/27体保全，移除只读helper/5个let与还原唯一错误消息后，整个源码与431基线逐字节相同，静态assert宏308不变；证明原输入/断言表达式/批次时序未改。父cargo fmt、完整diff-check均0，未本地运行/编译/测试Vega。新head的独审和原Actions待取得，不把本切片称行为修复完成。
 
 观察切片固定为`13379172d763399153f0a63d0e52a690f9273315`。停写后fetch发现master新增`a100f7307c73e51fefcc56012c117b7b832e292e`（#587，CUA面板chrome/拖动跟随）；规范、依赖、#550测试/生产文件均无交叉。主Agent正常merge该新基线，不回退上游；测试源码字节与观察切片相同。后续实际Actions按新完整head及其synthetic checkout记录，不能把旧head结果冒充新集成验证。清理计划与最终静态审查基线同步改为a100f730…，执行前重新核对13个拟恢复blob与保护路径，保留上游CUA源文。
+
+## 2026-10-24 四阶段实测：原滚动前置不可达
+
+固定集成head `f9dd2aa8edb30ac2b9e0fbd51fa2e084496ad6f5` 的[Actions 40078719933](https://github.com/puzige/vega/actions/runs/40078719933) 已完成；Nextest `120827645358` failure、Clippy `120827645530` success、required `120828276959` failure。两执行job实际checkout `daf06648e537a7e7a4274c70dfce523e81695a15`，API核对父为a100基线与f9dd完整head，tree `4493b12e2bd1c9c91d949efb8e0625df3c18df1d` 与head相同。实际 **28执行/26通过/2失败/0跳过**，独立list JSON与aggregate ignored仍未取得。Final原锚点断言在`:3318`失败；D05仍在原`:2699`前提12vs11失败，其余26项PASS。原始全文1,025,872 bytes，SHA-256 `382511e3414e60f355716469fcca6871b8b7c017c31930692d987331fcc5eb22`；保留完整raw与单独ANSI清理副本。
+
+唯一writer停写后，非写入者确认观察增量只读，移除helper/五个let及还原错误消息后与431源码逐字节相同；28名称、其余27体、原输入/断言表达式/时序均保全。主Agent和独审者再各自从原日志重算四阶段，均无未知高度：suffix连续、全部Some、隐藏零高保留，宽576、viewport高1200、foreground padding170均不变，有效阅读底边1030。
+
+| 阶段 | 原history-8/index32至tail的实测高度和 | 减原offset14.5、加padding170后的剩余高度 | 超出viewport的余量 |
+|---|---:|---:|---:|
+| A wheel/source后、Final文字前 | 1116.5 | 1272 | 72 |
+| B Final文字后、Completed前 | 1155.5 | 1311 | 111 |
+| C Completed自动帧后 | 859.5 | 1015 | -185 |
+| D 显式draw后 | 859.5 | 1015 | -185 |
+
+A/B原history-8 identity唯一、offset14.5、following=false不变；C开始才移动。stage285与owned commentary39收为0，独立Final39增至67，净减少296；111−296=−185。真实scrollbar offset由−778.5变为−593.5，回填恰好185；tail bottom1030恰好有效阅读底边。锁定List原生不足高度回填与1px内恢复Tail有完整物理依据，本轮没有证据表明#550新增锚点缺陷。A/B同source copy73/handle93v3的真实首glyph line位于y823–846，有效阅读区内，原source可读前提确实成立。
+
+下一窄切片只修正scrolled合成输入：使用合法较长Final，在Completed前测量真实保留Final和连续suffix，以仅实际将隐藏的stage/owned commentary作为收缩预算，证明原历史锚点仍可达且距native 1px门限有余量；同时要求同source真实glyph在有效阅读区内、原锚点/非尾随未变。manual/focus继续原短Final，原Completed后的自动/显式隐藏、完整Final/source字节、锚点identity/offset/following、焦点、Enter往返与once断言保留；不改List/Final/锚点生产算法、D05或其余27测试。先修spec再由唯一writer实施，实际行为结果仍待新的完整Actions，不提前删测。
+
+### 可达前置切片 READY（行为待 CI）
+
+同一唯一writer已停写，只改目标测试体，所有helper/其余27体与28名称顺序保全。scrolled仅使用16段合法Final输入；首次与重复Completed end、两次完整Final期望均精确绑定实际输入，manual/focus仍原短Final helper/时序。原wheel72、16历史、四阶段、精确anchor相等和全部Completed/Enter自动/显式批次保留。新增实测前置要求唯一合法历史anchor、连续suffix全Some、仅同group stage与owned commentary两项隐藏预算、保留内容lower_slack>3px；同source真实字符内点落入有效阅读clip，真实pending Final同copy/scope且prepared glyph已paint。Completed后再核同Final identity/copy/scope/精确全文及实测高度不减，验证原body仅追加footer的下界。
+
+最终测试源码SHA-256 `a46118ae29918d78eafe7085ccf43921ec1a0074ad943f59db26e1a969f6f147`；相对f9dd的源码git binary patch SHA-256 `01a72d29f1b6af60a3a198a8bf18c76b6da35c50a7f1e6808e40edf12f2d3845`。父实际词法核对28名称/27体、仅目标测试+两份docs变化，assert宏308→336；fmt、head/master diff-check全部exit0。原35个目标assert调用顺序与表达式保留，两处全文期望仅随合法输入变更；没有新增draw/park、接点、生产、依赖或CI改动。上一run的Python三组实际5+15+40=60项成功；本新版本仍待非写入者固定head独审与现有Actions，不称27项已通过，也未开始清理。

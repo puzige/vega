@@ -143,3 +143,11 @@ D07/#416 的隐藏阴性窗口从合法 `AssistantResponseCompleted(Final)` 开�
 原 moving 样本经模拟帧回调自动 draw 后又显式 draw，settled 样本只显式 draw，不能直接比较这两种不同数量的绘制。D06 两 phase 共用窄测试 helper：使用锁定公开 API 的同一真实 TestClock 仅推进15ms，验证 sampler now 同步且期间无root/glyph/layout工作，再在同一次 update 中 simulate_next_frame + refresh，统一由test-support flush自动绘制，不再显式补画。每步要求真实根render增加一次、目标glyph实际paint一次及真实item Layout/Bounds阳性；计数只限受控full-window刷新，不泛化为全部cached draw。
 
 保留原始全量owner/index记录，八个装饰样本的角度/几何、零额外invalidate/显式remeasure及与同输入终态样本的LayoutCounts精确比较；不除以draw数、不去重、不改期望总数、不按moving测得次数填充settled。该fixture没有RunStarted，group started_at=None因而未排clock_task；既有shimmer显式停用，开始比较前保留异步停泊及真实source已准备/paint阳性。不取消生产任务，不改timer、List、框架/registry或通用CI。若统一边界后仍失败，以新原始记录继续诊断。
+
+### 2026-10-24 滚动阅读的物理可达前置
+
+四阶段实际Actions证明，原短Final场景在首次收起后原历史锚点处剩余高度比viewport少185px，native List恰好回填185px并恢复Tail；原严格不动断言的物理前提不成立。该证据不降低#416的历史锚点/非尾随要求，也不授权改List或Final算法。
+
+仅scrolled分支可使用合法多段Final文本，Started/TextDelta、Completed及重复Final的字节范围和全文期望必须与输入一致。不能把段数、估高或未知None当实测高度：Completed前检查原历史identity唯一、offset合法、following=false，并从该identity到tail获取连续真实Bounds；预算仅计实际将隐藏的stage与owned commentary，保留run header和独立Final。扣除预算后剩余高度加foreground padding仍须超过viewport，且有明确大于native 1px门限的余量。待确认Final只在原正文上追加copy footer，因此其未确认状态实测高度可作保留内容下界；Completed后仍核对同一Final entry实际高度未缩小与精确字节。
+
+同source copy/handle/scope的非空prepared shaped glyph必须落在participant、content mask和实际有效阅读区（viewport减foreground padding）的交集内，不能只在Composer覆盖区paint。manual/focus保留原短Final输入；原始锚点identity/offset/following精确相等、首次收起后的全部自动/显式正文和控件阴性、focus、真实Enter重开/重关、全文与一次性契约均保留。其他27测试体、D05严格前提及生产算法不变。
