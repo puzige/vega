@@ -398,3 +398,17 @@ A/B原history-8 identity唯一、offset14.5、following=false不变；C开始才
 [Actions40081100194](https://github.com/puzige/vega/actions/runs/40081100194) 对完整4aea的实际结果与该静态P2一致：Nextest `120834659216` failure，Final`:3314`预算len1vs2；D05`:2699`仍12vs11。实际 **28执行/26通过/2失败/0跳过**，Clippy `120834659424`与Format、Python5+15+40=60项成功，required `120835375755`失败；独立list JSON/aggregate ignored未取得。两job实际checkout `199bff6e91be8e189dd4a9112f2d2ec861ab5f32`，API读回父为1ced基线+4aea、tree `2daabe237610fad0d344cb099999674bab7830bc`与该head相同。原始全文195,211 bytes，SHA-256 `419da466233e9eacb0f934975205504dbaca452b912bfa372c7d30b8db4c3848`。父首次09:13:53 UTC、再次09:18:58 UTC读取，间隔超过5分钟，失败后读取原日志；不是盲重跑，也未将尚未到达的新增几何/Completed后验记为通过。
 
 预算时序修复writer已READY停写：只在原Final体中通过current两条真实Assistant顺序、精确原文/累计字节范围、实际active response边界定位commentary，保存其稳定identity/copy；Completed后核真实owns、隐藏/0高，stage同group/details与0高，Final不owned。原两项预算、lower_slack>3px、精确anchor、全部批次及其他27体保全。父实际fmt、head/master diff-check和词法范围检查exit0；源码SHA-256 `bfbed9c3e3ae284ba349497a5c06a9ae767ad927ae0768a931da16ea870417f5`，相对4aea源码binary patch SHA-256 `59a6562d4a7c6c36bb84e57d9faadc8cf78c5956bf7d2accd900349804f1cee8`。assert宏336→357，原63调用顺序保留；这是静态证据，新固定head独审与实际云端行为待取得，尚未清理。
+
+## 2026-10-24 必要行为验证收敛与统一清理授权
+
+固定开发head **`6be3e57e3461dd768003c2b5072e375a5e1249d6`** 已由非写入者完成增量独审，预算时序P2关闭、无新增发现，其他未改生产结论复用。父/独审分别核对28名称、其他27体与helper字节、实际输入/metadata范围、全部paint批次和原精确anchor保全；本地仅fmt/diff/静态检查，均0。
+
+[Actions40081720206](https://github.com/puzige/vega/actions/runs/40081720206) 对该head实际 **28执行/27通过/1失败/0跳过**；父逐条核全部28名与footer，唯一FAIL为D05 `rapid_reactivation_without_an_inactive_draw_does_not_replay_missed_motion:2699` 原WIRING前提12vs11。Final三模式、真实滚动可达/锚点、Completed/Enter全过程、D06、Tab、拖选、artifact与其余26项均实际PASS。Nextest `120836476023` failure、Clippy `120836476261`及Format success、Python5+15+40=60项成功，required `120837183892`仍failure；绝不称28项全通过。独立list JSON/aggregate ignored仍未取得。父09:23:10 UTC首次、09:28:30 UTC再次读取，遵守5分钟间隔。
+
+两job实际checkout **`97b7bad4cc3221d0957fc8125d253bc521dc50b3`**，API核父为1ced基线+6be开发head，tree **`44264648e428b45a993ede84ae144c62b3589234`** 与head相同。原始全文193,447 bytes，SHA-256 **`2bcce18df40e67becbc747b028fb45f158c35b665512367cb364e2910fce96e8`**，保留raw/独立清理副本。D05按用户既有裁决继续保留生产目标并明确未获动态证明；本轮无其他未解决行为失败。
+
+清理前已从远端实际读取并逐字节核对[完整4001行开发测试源码](https://github.com/puzige/vega/blob/6be3e57e3461dd768003c2b5072e375a5e1249d6/crates/vega_ui/src/conversation_stream/disclosure_motion_tests.rs)，blob `0cd333f9991ce7752e683c48056e6c50f35ce8a8`、SHA-256 `bfbed9c3e3ae284ba349497a5c06a9ae767ad927ae0768a931da16ea870417f5`；[本次修复完整commit patch](https://github.com/puzige/vega/commit/6be3e57e3461dd768003c2b5072e375a5e1249d6.patch) SHA-256 `99a4c2f24bca0e3068d5769e6344c5efba4215ad50b0e79bdcb30710483d5086`；[相对当时master的完整开发diff](https://github.com/puzige/vega/compare/1ced1f10985a3f197cd91e72393e42cc001041e1...6be3e57e3461dd768003c2b5072e375a5e1249d6.diff) 经API原始diff实际读回343,988 bytes，SHA-256 `c77c59dc09c8878ccbcbeb0093e54476fe9a1a71c2b4b89514627dc7759b9487`。历史源码/补丁保留D05严格失败与全部原始断言，统一删测不销毁验证留痕。
+
+父清理前fetch发现master仅新增 **`8861240f863927a695fa401db98760a883b9cb14`**（#592，一份docs/591规格），无源码、依赖或规则变化，正常merge并完整保留。清理固定基线改为8861240f…；6be的27项行为证据只归属6be与上述synthetic，不冒充新head门禁。最新集成head源文件字节仍与6be相同。
+
+现向同一唯一writer授权统一删除整套28项开发Rust测试及独占支持：删除4个新增测试/支持文件，13个仅测试接线文件恢复最新master精确blob，3个混合文件仅去测试部分，保留共享decorative生命周期/120ms motion与两处tab-stop门控。不得挑删D05、保留helper、忽略失败或改生产求绿；Python/fixtures、benchmark、依赖生产版本、所有workflow/Nextest均保全。预计最终相对master只剩6个生产源码delta和5份既有本卡文档；实际清点、非写入者完整最终head独审及完整required CI尚待完成，必须明确 **no Rust tests（0发现/0执行）** 后才能合并。Issue保持开放，合并后In review等用户master手测。
