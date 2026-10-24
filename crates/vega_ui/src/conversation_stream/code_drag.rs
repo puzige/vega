@@ -8,7 +8,8 @@ use gpui_kit::base::{TextSelectionEvent, TextSelectionHandle};
 use gpui_kit::{
     AnyElement, App, AppContext, Bounds, Element, ElementId, Entity, FocusHandle, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, PlatformInput, Point, Subscription, Task, Window, WindowId, px,
+    MouseUpEvent, Pixels, PlatformInput, Point, ScrollWheelEvent, Subscription, Task, Window,
+    WindowId, point, px,
 };
 
 use super::{code_viewport::CodeScrollHandle, model::MessageCopy};
@@ -78,9 +79,12 @@ pub(super) struct CodeDragController {
     scroll: CodeScrollHandle,
     window: WindowId,
     visible: Bounds<Pixels>,
+    layout_origin: Point<Pixels>,
+    selection_mask: Bounds<Pixels>,
     mounted: bool,
     origin: Option<DragOrigin>,
     pointer: Point<Pixels>,
+    window_pointer: Point<Pixels>,
     epoch: RefreshEpoch,
     timer: Option<Task<()>>,
     synthetic: bool,
@@ -109,7 +113,7 @@ impl CodeDragController {
             && self.window == window.window_handle().window_id()
             && window.is_window_active()
             && !cx.has_active_drag()
-            && window.mouse_position() == self.pointer
+            && window.mouse_position() == self.window_pointer
             && self.selection.focus.contains_focused(window, cx)
             && self.selection.copy.content_generation() == origin.content_generation
             && self.selection.copy.visible_text() == origin.content
@@ -248,9 +252,12 @@ impl Element for CodeDragElement {
                         scroll: self.scroll.clone(),
                         window: window.window_handle().window_id(),
                         visible,
+                        layout_origin: bounds.origin,
+                        selection_mask: window.content_mask().bounds,
                         mounted: true,
                         origin: None,
                         pointer: Point::default(),
+                        window_pointer: Point::default(),
                         epoch: RefreshEpoch::default(),
                         timer: None,
                         synthetic: false,
@@ -267,9 +274,12 @@ impl Element for CodeDragElement {
                 scroll: self.scroll.clone(),
                 window: window.window_handle().window_id(),
                 visible: Bounds::default(),
+                layout_origin: bounds.origin,
+                selection_mask: window.content_mask().bounds,
                 mounted: false,
                 origin: None,
                 pointer: Point::default(),
+                window_pointer: Point::default(),
                 epoch: RefreshEpoch::default(),
                 timer: None,
                 synthetic: false,
@@ -287,9 +297,12 @@ impl Element for CodeDragElement {
                 controller.cancel();
                 controller.selection_changed = None;
             }
+            let moved = controller.layout_origin != bounds.origin;
+            controller.layout_origin = bounds.origin;
             controller.scroll = self.scroll.clone();
             controller.selection = self.selection.clone();
             controller.visible = visible;
+            controller.selection_mask = window.content_mask().bounds;
             controller.mounted = id.is_some();
             if visible.is_empty()
                 || !window.is_window_active()
@@ -300,18 +313,20 @@ impl Element for CodeDragElement {
                 })
             {
                 controller.cancel();
+            } else if moved && controller.valid(window, cx) {
+                controller.pause();
+                controller.epoch.queue();
             }
         }
         if state.borrow().selection_changed.is_none() {
             let weak = Rc::downgrade(&state);
             let subscription = self.selection.handle.subscribe(move |event, _| {
-                if matches!(event, TextSelectionEvent::Cleared)
-                    || matches!(event, TextSelectionEvent::SelectionChanged(Some(snapshot)) if !snapshot.is_selecting())
+                if (matches!(event, TextSelectionEvent::Cleared)
+                    || matches!(event, TextSelectionEvent::SelectionChanged(Some(snapshot)) if !snapshot.is_selecting()))
+                    && let Some(state) = weak.upgrade()
                 {
-                    if let Some(state) = weak.upgrade() {
-                        let mut state = state.borrow_mut();
-                        if state.origin.is_some() { state.cancel(); }
-                    }
+                    let mut state = state.borrow_mut();
+                    if state.origin.is_some() { state.cancel(); }
                 }
             }, cx);
             state.borrow_mut().selection_changed = Some(subscription);
@@ -376,6 +391,7 @@ impl Element for CodeDragElement {
                 content: state.selection.copy.visible_text(),
             };
             state.pointer = event.position;
+            state.window_pointer = event.position;
             let token = state.epoch.value;
             let weak = Rc::downgrade(&down);
             window.defer(cx, move |window, cx| {
@@ -423,12 +439,46 @@ impl Element for CodeDragElement {
                 }
                 state.pause();
                 state.pointer = event.position;
+                state.window_pointer = event.position;
                 if state.origin.is_none() {
                     return;
                 }
             }
             let weak = Rc::downgrade(&moved);
             window.defer(cx, move |window, cx| schedule(&weak, window, cx));
+        });
+        let scrolled = state.clone();
+        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            if !phase.capture() {
+                return;
+            }
+            let mut state = scrolled.borrow_mut();
+            if state.origin.is_none() {
+                return;
+            }
+            let mask = state.selection_mask;
+            if mask.size.width < px(2.) || mask.size.height < px(2.) {
+                state.cancel();
+                return;
+            }
+            let hit_point = point(
+                state
+                    .pointer
+                    .x
+                    .clamp(mask.left() + px(1.), mask.right() - px(1.)),
+                state
+                    .pointer
+                    .y
+                    .clamp(mask.top() + px(1.), mask.bottom() - px(1.)),
+            );
+            if event.position != state.pointer && event.position != hit_point {
+                state.cancel();
+                return;
+            }
+            state.window_pointer = event.position;
+            if !state.valid_origin(window, cx) {
+                state.cancel();
+            }
         });
         let pending = state.borrow().epoch.pending;
         if let Some(token) = pending {
@@ -495,7 +545,7 @@ fn refresh(
         if !controller.epoch.take(token) {
             return;
         }
-        if !controller.valid(window, cx) || controller.delta() == px(0.) {
+        if !controller.valid(window, cx) {
             controller.cancel();
             return;
         }

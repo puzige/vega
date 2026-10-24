@@ -1000,9 +1000,13 @@ fn assert_code_vertical_handoff(cx: &mut TestAppContext, surface: Surface) {
         session.tick();
         let first = session.vertical().offset;
         let first_text = session.copied();
+        let first_snapshot = session.selection_snapshot();
+        let first_geometry = (session.code(0).bounds, session.code(0).visible);
         session.tick();
         let second = session.vertical().offset;
         let second_text = session.copied();
+        let second_snapshot = session.selection_snapshot();
+        let second_geometry = (session.code(0).bounds, session.code(0).visible);
         if !(first.y < viewport.offset.y && second.y < first.y) {
             failures.push(format!(
                 "corner={corner}: vertical code-edge hold must move the related y viewport on successive ticks: {:?}, {first:?}, {second:?}",
@@ -1023,8 +1027,28 @@ fn assert_code_vertical_handoff(cx: &mut TestAppContext, surface: Surface) {
             || !second_text.starts_with(&first_text)
             || second_text.len() <= first_text.len()
         {
+            let describe = |selected: &str| {
+                let prefix_bytes = expected
+                    .bytes()
+                    .zip(selected.bytes())
+                    .take_while(|(expected, actual)| expected == actual)
+                    .count();
+                let range = expected
+                    .find(selected)
+                    .map(|start| anchor + start..anchor + start + selected.len());
+                format!(
+                    "bytes={}, expected_prefix_bytes={prefix_bytes}, logical_range={range:?}, head={:?}, tail_reversed={:?}",
+                    selected.len(),
+                    selected.chars().take(48).collect::<String>(),
+                    selected.chars().rev().take(48).collect::<String>()
+                )
+            };
             failures.push(format!(
-                "corner={corner}: vertical hold did not extend the original logical code selection"
+                "corner={corner}: vertical hold did not extend the original logical code selection; expected_anchor={anchor}, expected_bytes={}; first=[{}], snapshot={first_snapshot:?}, geometry={first_geometry:?}, offset={first:?}; second=[{}], snapshot={second_snapshot:?}, geometry={second_geometry:?}, offset={second:?}; pointer={position:?}, viewport={:?}",
+                expected.len(),
+                describe(&first_text),
+                describe(&second_text),
+                viewport.bounds,
             ));
         }
         if matches!(surface, Surface::Thinking) && session.outer() != outer {
