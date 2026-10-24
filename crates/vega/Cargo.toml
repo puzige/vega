@@ -26,8 +26,3 @@ vega_tools.workspace = true
 vega_ui.workspace = true
 vega_acp.workspace = true
 ulid.workspace = true
-
-[dev-dependencies]
-gpui_kit = { workspace = true, features = ["test-support"] }
-vega_ui = { workspace = true, features = ["question-test-support"] }
-vega_runtime = { workspace = true, features = ["question-test-support"] }

@@ -3,9 +3,6 @@ name = "vega_runtime"
 version.workspace = true
 edition.workspace = true
 
-[features]
-question-test-support = []
-
 [dependencies]
 vega_credentials = { workspace = true }
 image = { workspace = true }

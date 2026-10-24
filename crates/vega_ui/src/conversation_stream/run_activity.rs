@@ -1130,11 +1130,6 @@ impl RunActivityGroup {
         self.collapsed_sticky.take()
     }
 
-    #[cfg(feature = "question-test-support")]
-    pub(crate) fn question_test_label(&self) -> String {
-        self.label()
-    }
-
     fn label(&self) -> String {
         if self.continued {
             return "Activity".into();

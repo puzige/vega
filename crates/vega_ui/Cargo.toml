@@ -3,9 +3,6 @@ name = "vega_ui"
 version.workspace = true
 edition.workspace = true
 
-[features]
-question-test-support = []
-
 [dependencies]
 gpui_kit.workspace = true
 tracing.workspace = true
