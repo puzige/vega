@@ -1410,6 +1410,7 @@ impl Render for ConversationStream {
         self.settle_final_presentation(window, cx);
         self.refresh_run_notices(cx);
         let stage_top_insets = self.stage_top_insets(cx);
+        self.prepare_text_cache();
 
         let at_top = self.scroll_at_top();
         let at_bottom = self.scroll_at_bottom();
@@ -1464,7 +1465,7 @@ impl Render for ConversationStream {
             let top_fade_guards = ScrollFadeTopGuards::default();
             let rendered_top_fade_guards = top_fade_guards.clone();
             let (message_anchor_rail, preview, preview_in_lane) =
-                self.render_message_anchor_rail(window, cx);
+                self.render_message_anchor_rail(&stage_top_insets, window, cx);
             message_anchor_rail_overlay = Some(message_anchor_rail);
             message_anchor_preview = preview;
             message_anchor_preview_in_lane = preview_in_lane;
