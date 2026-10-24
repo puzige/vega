@@ -60,11 +60,12 @@ pub fn recover_thread_with_owner(
     }
     let abandoned = delegated.as_ref().filter(|row| {
         matches!(row.state.as_str(), "running" | "cancelling")
-            || (row.state == "interrupted"
+            || (matches!(row.state.as_str(), "interrupted" | "completed" | "failed")
                 && crate::delegated_stages::release_state(tx, thread_id, &row.child_message_id)
                     .is_ok_and(|state| state == "unknown"))
     });
     let effects = abandoned
+        .filter(|row| !matches!(row.state.as_str(), "completed" | "failed"))
         .map(|row| crate::delegated_stages::unknown_effects(tx, thread_id, &row.child_message_id))
         .transpose()?;
     let counts = recover_stopped_with_owner(tx, thread_id, now_ms, owner)?;
@@ -80,14 +81,16 @@ pub fn recover_thread_with_owner(
                 &serde_json::json!([]),
             )?;
         }
-        crate::delegated_stages::final_checkpoint(
-            tx,
-            thread_id,
-            &row.child_message_id,
-            true,
-            effects.unwrap_or(serde_json::json!([])),
-            now_ms,
-        )?;
+        if !matches!(row.state.as_str(), "completed" | "failed") {
+            crate::delegated_stages::final_checkpoint(
+                tx,
+                thread_id,
+                &row.child_message_id,
+                true,
+                effects.unwrap_or(serde_json::json!([])),
+                now_ms,
+            )?;
+        }
         crate::delegated_stages::set_release(
             tx,
             thread_id,
