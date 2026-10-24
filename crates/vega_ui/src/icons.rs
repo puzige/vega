@@ -296,6 +296,15 @@ pub fn icon_button(
     colors: vega_theme::ThemeColors,
     activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
 ) -> Interaction {
+    icon_button_with_content(icon(kind, colors.text_secondary), label, colors, activate)
+}
+
+pub(crate) fn icon_button_with_content(
+    content: impl IntoElement,
+    label: impl Into<gpui_kit::SharedString>,
+    colors: vega_theme::ThemeColors,
+    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> Interaction {
     use gpui_kit::{MouseButton, div};
     let label = label.into();
     let tooltip_label = label.clone();
@@ -327,7 +336,7 @@ pub fn icon_button(
                 keyboard(&(), window, cx);
             }
         })
-        .child(icon(kind, colors.text_secondary))
+        .child(content)
 }
 
 /// Builds a native tooltip using the current theme.
