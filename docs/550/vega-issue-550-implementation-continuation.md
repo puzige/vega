@@ -390,3 +390,5 @@ A/B原history-8 identity唯一、offset14.5、following=false不变；C开始才
 同一唯一writer已停写，只改目标测试体，所有helper/其余27体与28名称顺序保全。scrolled仅使用16段合法Final输入；首次与重复Completed end、两次完整Final期望均精确绑定实际输入，manual/focus仍原短Final helper/时序。原wheel72、16历史、四阶段、精确anchor相等和全部Completed/Enter自动/显式批次保留。新增实测前置要求唯一合法历史anchor、连续suffix全Some、仅同group stage与owned commentary两项隐藏预算、保留内容lower_slack>3px；同source真实字符内点落入有效阅读clip，真实pending Final同copy/scope且prepared glyph已paint。Completed后再核同Final identity/copy/scope/精确全文及实测高度不减，验证原body仅追加footer的下界。
 
 最终测试源码SHA-256 `a46118ae29918d78eafe7085ccf43921ec1a0074ad943f59db26e1a969f6f147`；相对f9dd的源码git binary patch SHA-256 `01a72d29f1b6af60a3a198a8bf18c76b6da35c50a7f1e6808e40edf12f2d3845`。父实际词法核对28名称/27体、仅目标测试+两份docs变化，assert宏308→336；fmt、head/master diff-check全部exit0。原35个目标assert调用顺序与表达式保留，两处全文期望仅随合法输入变更；没有新增draw/park、接点、生产、依赖或CI改动。上一run的Python三组实际5+15+40=60项成功；本新版本仍待非写入者固定head独审与现有Actions，不称27项已通过，也未开始清理。
+
+可达前置切片固定为 `5af009694d097a2645db4655e807ebcdf0120ef1`。提交前fetch发现master新增 `1ced1f10985a3f197cd91e72393e42cc001041e1`（#590，仅docs/588与docs/589两份规格），与本卡源码/规则/依赖均无交叉；父正常merge并完整保留两份上游文档。后续独审/Actions绑定新的完整集成head，源码内容hash不变。清理与最终静态审查基线同步改为1ced1f10…，不得借恢复旧测试支持回退新上游。
