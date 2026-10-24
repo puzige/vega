@@ -273,7 +273,7 @@ pub(super) fn load(
     for row in rows {
         let mut row = row;
         if (matches!(row.state.as_str(), "running" | "cancelling")
-            || (row.state == "interrupted"
+            || (matches!(row.state.as_str(), "interrupted" | "completed" | "failed")
                 && stages::release_state(
                     store.conn(),
                     &row.child_thread_id,
