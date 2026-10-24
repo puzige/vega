@@ -315,6 +315,13 @@ impl Element for SelectableStyledText {
             logical_range: self.logical_range.clone(),
             selected: self.selected.clone(),
         });
+        #[cfg(test)]
+        super::code_drag::tests::observe_text(
+            self.content.clone(),
+            self.text.layout().clone(),
+            window,
+            cx,
+        );
         let lines = self.paint_runs.as_ref().and_then(|runs| {
             super::inline_code::shape(self.content.clone(), runs, self.text.layout(), window)
         });
