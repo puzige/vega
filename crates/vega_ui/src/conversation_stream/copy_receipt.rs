@@ -6,9 +6,9 @@ use std::{
 };
 
 use gpui_kit::{
-    AnyElement, App, Bounds, Div, Element, ElementId, GlobalElementId, Hitbox, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, Pixels, SharedString, Task, Window, div, prelude::*,
-    px,
+    AnyElement, App, Bounds, Div, Element, ElementId, GlobalElementId, InspectorElementId,
+    InteractiveElement, IntoElement, LayoutId, Pixels, SharedString, Stateful, Task, Window, div,
+    prelude::*, px,
 };
 use vega_theme::{Layout, Motion, ThemeColors};
 
@@ -160,7 +160,7 @@ impl CopyReceiptButton {
         source: CopySource,
         label: &'static str,
         colors: ThemeColors,
-        style: impl FnOnce(Interaction) -> Interaction,
+        style: impl FnOnce(Interaction) -> Stateful<Interaction>,
     ) -> Self {
         let binding = Rc::new(RefCell::new(Weak::new()));
         let blend = Rc::new(Cell::new(0.));
@@ -278,7 +278,7 @@ impl Element for CopyReceiptButton {
 }
 
 struct ReceiptSurface {
-    button: Interaction,
+    button: Stateful<Interaction>,
     blend: Rc<Cell<f32>>,
     active: Rc<Cell<bool>>,
 }
@@ -292,8 +292,8 @@ impl IntoElement for ReceiptSurface {
 }
 
 impl Element for ReceiptSurface {
-    type RequestLayoutState = <Interaction as Element>::RequestLayoutState;
-    type PrepaintState = Option<Hitbox>;
+    type RequestLayoutState = <Stateful<Interaction> as Element>::RequestLayoutState;
+    type PrepaintState = <Stateful<Interaction> as Element>::PrepaintState;
 
     fn id(&self) -> Option<ElementId> {
         Element::id(&self.button)
@@ -319,7 +319,7 @@ impl Element for ReceiptSurface {
         prepaint: &mut Self::PrepaintState,
         builder: &mut gpui_kit::A11ySubtreeBuilder,
     ) {
-        self.button.a11y_synthetic_children(prepaint, builder);
+        Element::a11y_synthetic_children(&mut self.button, prepaint, builder);
     }
 
     fn request_layout(
