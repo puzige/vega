@@ -77,4 +77,10 @@
 
 ## 当前证据状态
 
-已读取原卡与接手评论、确认 Project In progress、fetch 并更新基线、新建隔离分支；尚未实现、未触发 CI、未手测，不宣称行为或性能改善。
+- 首版实现：`ec42819c02c6051f18915c07408b7c055e2bd7e8`，[PR #597](https://github.com/puzige/vega/pull/597)。六个 Settings 源码文件，复用共享 sampler；未改共享层、依赖或 CI，无新增 Rust 测试。
+- 本地限定六文件 rustfmt check、`git diff --check` 退出码 0；未运行、编译、测试 Vega 或使用 CUA。
+- 首版 [Actions 40118162855](https://github.com/puzige/vega/actions/runs/40118162855) 的 Clippy、Nextest、required 汇总成功；日志明确 Python 5/15/40 tests，Rust `no Rust tests`（0 发现/0 执行）。此结果不覆盖后续修复。
+- 独立审查首版 NO-GO：取消 provider 表单和新增 model 表单时未记录有效回焦，S7/S14 尚有缺口。主 Agent 核对原 Cancel/remember_model_return_focus/restore 路径，确认是实现遗漏，不是测试或环境问题。
+- 修复增量仅 `provider_management.rs`：真实 Cancel 没有 model 返回目标时记录 provider/list 返回目标，按目标 render 的实际可见入口回焦；Escape 有草稿时沿既有 ProviderCommand 确认路径，批准后才提交 Cancel，无草稿仍直接 Cancel。保存、放弃、留在本页、失败和 busy 决策保持原守卫，不提前回焦。原 S7/S14 不变，不放宽验收。
+- 修复未提交时 diff SHA-256：`5d803559a11a929fb53390a64d8d7b15b912fb12648123f7b515f53daeb072e1`；限定格式和 diff 检查退出码 0。新 head 独立复审及完整 required CI 待取得。
+- 尚未用户手测，不宣称真实动画、焦点、scroll、生命周期或性能通过。

@@ -159,6 +159,18 @@ impl SettingsView {
         self.settings_motion.committed(before, after);
     }
 
+    fn remember_provider_list_return_focus(&mut self) {
+        let provider = self.provider_management.selected.clone();
+        let index = self
+            .config
+            .providers
+            .iter()
+            .position(|candidate| Some(&candidate.name) == provider.as_ref())
+            .unwrap_or(0);
+        self.provider_management.return_focus =
+            Some(super::motion::ReturnFocus::ProviderList { provider, index });
+    }
+
     pub(super) fn remember_model_return_focus(&mut self) {
         if let Some((provider, model)) = self.model_settings.clone() {
             self.provider_management.detail_open = true;
@@ -389,7 +401,9 @@ impl SettingsView {
                 || self.provider_management.cancel.is_some())
         {
             if self.provider_has_draft(cx) {
-                self.request_settings_section(0, cx);
+                self.provider_management.pending_command = Some(Command::Cancel);
+                self.pending_section = Some(SettingsDestination::ProviderCommand);
+                cx.notify();
             } else {
                 self.provider_command(Command::Cancel, cx);
             }
@@ -563,15 +577,7 @@ impl SettingsView {
                     .map(|provider| (provider.name, model));
             }
             Command::BackToList => {
-                let provider = self.provider_management.selected.clone();
-                let index = self
-                    .config
-                    .providers
-                    .iter()
-                    .position(|candidate| Some(&candidate.name) == provider.as_ref())
-                    .unwrap_or(0);
-                self.provider_management.return_focus =
-                    Some(super::motion::ReturnFocus::ProviderList { provider, index });
+                self.remember_provider_list_return_focus();
                 self.provider_management.detail_open = false;
             }
             Command::PriceLibrary => {
@@ -638,6 +644,9 @@ impl SettingsView {
             }
             Command::Cancel => {
                 self.remember_model_return_focus();
+                if self.provider_management.return_focus.is_none() {
+                    self.remember_provider_list_return_focus();
+                }
                 self.cancel_provider_operation(cx);
                 self.provider_management.model_editor = None;
                 self.provider_management.form = false;
