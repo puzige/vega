@@ -1132,6 +1132,26 @@ impl ConversationStream {
         true
     }
 
+    fn invalidate_codex_copy_entries(&mut self, message_id: &str) {
+        if self.thread.backend != TaskBackend::Codex {
+            return;
+        }
+        let indexes = self
+            .entries
+            .iter()
+            .zip(&self.entry_identities)
+            .enumerate()
+            .filter_map(|(index, (entry, identity))| {
+                (matches!(entry, StreamEntry::Assistant { .. })
+                    && identity.message_id.as_deref() == Some(message_id))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in indexes {
+            self.invalidate_item(Some(index));
+        }
+    }
+
     fn finish_run_activity(
         &mut self,
         message_id: &str,
@@ -1159,6 +1179,7 @@ impl ConversationStream {
                 group.complete(status, execution_duration_ms, cx)
             });
         }
+        self.invalidate_codex_copy_entries(message_id);
     }
 
     /// Applies an already-durable shared lifecycle event. The UI never reads
@@ -1680,6 +1701,7 @@ impl ConversationStream {
             .active_agent_message
             .take()
             .filter(|(_, index)| *index != usize::MAX);
+        self.invalidate_codex_copy_entries(message_id);
         self.active_segment_has_text = false;
         self.active_segment_has_visible_text = false;
         self.active_segment_ordinal = 0;
