@@ -214,7 +214,7 @@ pub(crate) fn capture_filter_identity(
         cancel,
     )?;
     let path_bytes: Arc<[u8]> = paths.stdout.into();
-    let parsed_paths = parse_nul_paths(&path_bytes)?;
+    let parsed_paths = parse_filter_scan_paths(&path_bytes)?;
     let remaining = limit
         .checked_sub(path_bytes.len())
         .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
@@ -236,8 +236,12 @@ pub(crate) fn capture_filter_identity(
     })
 }
 
-pub(crate) fn parse_nul_paths(bytes: &[u8]) -> Result<Vec<Vec<u8>>, GitWorkspaceError> {
-    parse_nul_paths_with_limit(bytes, PATH_LIMIT, GitWorkspaceErrorCode::OutputTooLarge)
+fn parse_filter_scan_paths(bytes: &[u8]) -> Result<Vec<Vec<u8>>, GitWorkspaceError> {
+    parse_nul_paths_with_limit(
+        bytes,
+        FILTER_SCAN_PATH_LIMIT,
+        GitWorkspaceErrorCode::OutputTooLarge,
+    )
 }
 
 pub(crate) fn parse_nul_paths_with_limit(
@@ -788,5 +792,113 @@ pub(crate) fn parse_change(value: u8) -> Result<WorkspaceChangeKind, GitWorkspac
         b'T' => Ok(WorkspaceChangeKind::TypeChanged),
         b'U' => Ok(WorkspaceChangeKind::Unmerged),
         _ => Err(error(GitWorkspaceErrorCode::MalformedOutput)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracked_paths(count: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for index in 0..count {
+            bytes.extend_from_slice(format!("tracked/{index}.txt\0").as_bytes());
+        }
+        bytes
+    }
+
+    fn changed_paths(count: usize) -> Vec<u8> {
+        let mut bytes = b"# branch.oid (initial)\0# branch.head main\0".to_vec();
+        for index in 0..count {
+            bytes.extend_from_slice(format!("? changed/{index}.txt\0").as_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn filter_scan_accepts_large_repository_and_full_path_boundary() {
+        for count in [14_502, 100_000] {
+            let bytes = tracked_paths(count);
+            assert!(bytes.len() < SNAPSHOT_LIMIT);
+            let paths = parse_filter_scan_paths(&bytes).expect("valid tracked paths");
+            assert_eq!(paths.len(), count);
+            assert_eq!(paths.first(), Some(&b"tracked/0.txt".to_vec()));
+            assert_eq!(
+                paths.last(),
+                Some(&format!("tracked/{}.txt", count - 1).into_bytes())
+            );
+            assert!(validate_filter_attrs(&paths, b"").is_ok());
+        }
+    }
+
+    #[test]
+    fn filter_scan_rejects_paths_above_full_repository_boundary() {
+        assert_eq!(
+            parse_filter_scan_paths(&tracked_paths(100_001))
+                .err()
+                .map(|failure| failure.code()),
+            Some(GitWorkspaceErrorCode::OutputTooLarge)
+        );
+    }
+
+    #[test]
+    fn filter_scan_rejects_malformed_duplicate_and_unsafe_paths() {
+        for bytes in [
+            b"unterminated".as_slice(),
+            b"valid\0\0other\0",
+            b"same\0same\0",
+            b"/absolute\0",
+            b"../outside\0",
+            b"nested/../outside\0",
+            b"nested/./file\0",
+            b"nested//file\0",
+            b".git/config\0",
+        ] {
+            assert_eq!(
+                parse_filter_scan_paths(bytes)
+                    .err()
+                    .map(|failure| failure.code()),
+                Some(GitWorkspaceErrorCode::MalformedOutput)
+            );
+        }
+    }
+
+    #[test]
+    fn changed_file_parser_keeps_original_path_boundary() {
+        assert_eq!(
+            parse_status(&changed_paths(10_000))
+                .map(|status| status.files.len())
+                .map_err(|failure| failure.code()),
+            Ok(10_000)
+        );
+        assert_eq!(
+            parse_status(&changed_paths(10_001))
+                .err()
+                .map(|failure| failure.code()),
+            Some(GitWorkspaceErrorCode::OutputTooLarge)
+        );
+    }
+
+    #[test]
+    fn filter_scan_preserves_attribute_validation_and_filter_denial() {
+        let paths = parse_filter_scan_paths(b"tracked/file\0").expect("valid path");
+        assert_eq!(
+            validate_filter_attrs(&paths, b"tracked/file\0filter\0driver\0")
+                .err()
+                .map(|failure| failure.code()),
+            Some(GitWorkspaceErrorCode::GitFailed)
+        );
+        for attrs in [
+            b"other/file\0text\0set\0".as_slice(),
+            b"tracked/file\0text\0set",
+            b"tracked/file\0text\0set\0tracked/file\0text\0set\0",
+        ] {
+            assert_eq!(
+                validate_filter_attrs(&paths, attrs)
+                    .err()
+                    .map(|failure| failure.code()),
+                Some(GitWorkspaceErrorCode::MalformedOutput)
+            );
+        }
     }
 }

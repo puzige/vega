@@ -235,6 +235,9 @@ pub(crate) fn run_artifact_terminal_worker(
         .and_then(|runtime| {
             runtime.block_on(async {
                 let refreshed = workspace.refresh(cancel.child_token()).await;
+                if matches!(&job.work, ArtifactTerminalWork::Capture { .. }) {
+                    refreshed.as_ref().map_err(|failure| failure.code())?;
+                }
                 service
                     .reconcile(cancel.child_token())
                     .await
