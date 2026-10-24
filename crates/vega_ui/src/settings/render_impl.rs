@@ -992,6 +992,8 @@ impl Render for SettingsView {
             cx.set_global(NativePreparationSettingsRequested(false));
         }
         self.resume_settings_navigation(window, cx);
+        self.prepare_provider_presentation(window);
+        self.project_settings_motion(window, cx);
         self.ensure_model_catalog(cx);
         let current_theme = theme(cx);
         self.config.ui.theme = if current_theme.follow_system {

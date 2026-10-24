@@ -41,6 +41,9 @@ pub(crate) struct ProviderManagement {
     next_model_context_request: u64,
     pending_model_reopen: Option<(String, Option<String>)>,
     pending_command: Option<Command>,
+    return_focus: Option<super::motion::ReturnFocus>,
+    model_focuses: BTreeMap<(String, String), FocusHandle>,
+    action_focuses: BTreeMap<String, FocusHandle>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +113,121 @@ enum Command {
 }
 
 impl SettingsView {
+    pub(super) fn prepare_provider_presentation(&mut self, window: &Window) {
+        if self.section != 0 || self.provider_management.model_editor.is_some() {
+            return;
+        }
+        if self.provider_management.selected.is_none()
+            || (!self.provider_management.form && self.selected_provider().is_none())
+        {
+            self.provider_management.selected = self
+                .config
+                .providers
+                .first()
+                .map(|provider| provider.name.clone());
+            self.provider_management.form = self.config.providers.is_empty();
+        }
+        if !super::motion::narrow(window) {
+            self.provider_management.detail_open = true;
+        }
+    }
+
+    pub(super) fn settings_motion_destination(&self) -> super::motion::Destination {
+        use super::motion::Destination;
+        if !matches!(self.section, 0 | 2 | 3) {
+            return Destination::Other(self.section);
+        }
+        if let Some((provider, model)) = &self.model_settings {
+            return Destination::Model(provider.clone(), model.clone(), self.section);
+        }
+        if self.section != 0 {
+            return Destination::Other(self.section);
+        }
+        if self.provider_management.form || self.provider_management.model_editor.is_some() {
+            return Destination::ProviderForm(self.provider_management.selected.clone());
+        }
+        if self.provider_management.detail_open
+            && let Some(provider) = self.selected_provider()
+        {
+            return Destination::Provider(provider.name);
+        }
+        Destination::ProviderList
+    }
+
+    pub(super) fn commit_settings_motion(&mut self, before: super::motion::Destination) {
+        let after = self.settings_motion_destination();
+        self.settings_motion.committed(before, after);
+    }
+
+    pub(super) fn remember_model_return_focus(&mut self) {
+        if let Some((provider, model)) = self.model_settings.clone() {
+            self.provider_management.detail_open = true;
+            self.provider_management.return_focus =
+                Some(super::motion::ReturnFocus::Model { provider, model });
+        }
+    }
+
+    fn restore_provider_return_focus(
+        &mut self,
+        show_detail: bool,
+        narrow: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = self.provider_management.return_focus.take() else {
+            return;
+        };
+        let list_visible = !narrow || !show_detail;
+        let provider_visible =
+            show_detail && !self.provider_management.form && self.selected_provider().is_some();
+        let fallback = if provider_visible {
+            self.provider_management
+                .action_focuses
+                .get("provider-edit")
+                .cloned()
+        } else if list_visible {
+            self.provider_management
+                .action_focuses
+                .get("provider-add")
+                .cloned()
+        } else if self.provider_management.form {
+            Some(self.name_input.read(cx).focus_handle(cx))
+        } else {
+            Some(self.section_focuses[0].clone())
+        };
+        let focus = match target {
+            super::motion::ReturnFocus::ProviderList { provider, index } if list_visible => self
+                .provider_edit_focuses
+                .iter()
+                .find(|(name, _)| Some(name) == provider.as_ref())
+                .or_else(|| {
+                    self.provider_edit_focuses
+                        .get(index.min(self.provider_edit_focuses.len().saturating_sub(1)))
+                })
+                .map(|(_, focus)| focus.clone())
+                .or_else(|| {
+                    self.provider_management
+                        .action_focuses
+                        .get("provider-add")
+                        .cloned()
+                }),
+            super::motion::ReturnFocus::Model { provider, model }
+                if provider_visible
+                    && self.provider_management.selected.as_ref() == Some(&provider) =>
+            {
+                self.provider_management
+                    .model_focuses
+                    .get(&(provider, model))
+                    .cloned()
+            }
+            _ => None,
+        }
+        .or(fallback);
+        if let Some(focus) = focus {
+            window.focus(&focus, cx);
+        }
+    }
+
     fn provider_test_help_control(
         &self,
         index: usize,
@@ -426,6 +544,8 @@ impl SettingsView {
         ) {
             self.provider_management.delete_model = None;
         }
+        let before = self.settings_motion_destination();
+        self.provider_management.return_focus = None;
         match command {
             Command::Menu(id) => {
                 self.provider_management.menu =
@@ -442,7 +562,18 @@ impl SettingsView {
                     .filter(|provider| provider.models.contains(&model))
                     .map(|provider| (provider.name, model));
             }
-            Command::BackToList => self.provider_management.detail_open = false,
+            Command::BackToList => {
+                let provider = self.provider_management.selected.clone();
+                let index = self
+                    .config
+                    .providers
+                    .iter()
+                    .position(|candidate| Some(&candidate.name) == provider.as_ref())
+                    .unwrap_or(0);
+                self.provider_management.return_focus =
+                    Some(super::motion::ReturnFocus::ProviderList { provider, index });
+                self.provider_management.detail_open = false;
+            }
             Command::PriceLibrary => {
                 self.model_settings = None;
                 self.request_settings_section(3, cx);
@@ -506,6 +637,7 @@ impl SettingsView {
                 self.provider_network(ProviderNetworkAction::TestModel { model }, cx)
             }
             Command::Cancel => {
+                self.remember_model_return_focus();
                 self.cancel_provider_operation(cx);
                 self.provider_management.model_editor = None;
                 self.provider_management.form = false;
@@ -654,6 +786,7 @@ impl SettingsView {
             }
             Command::Reload => self.reload_providers(cx),
         }
+        self.commit_settings_motion(before);
         cx.notify();
     }
 
@@ -1153,6 +1286,20 @@ impl SettingsView {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let key_command = command.clone();
+        let focus = match &command {
+            Command::EditModel(model) => {
+                self.provider_management
+                    .selected
+                    .as_ref()
+                    .and_then(|provider| {
+                        self.provider_management
+                            .model_focuses
+                            .get(&(provider.clone(), model.clone()))
+                    })
+            }
+            _ => self.provider_management.action_focuses.get(&id),
+        }
+        .cloned();
         let destructive = matches!(
             command,
             Command::DeleteModel(_, _) | Command::ConfirmDelete(_)
@@ -1185,6 +1332,8 @@ impl SettingsView {
             })
             .key_context("ProviderControl")
             .focusable()
+            .tab_stop(enabled)
+            .when_some(focus.as_ref(), |button, focus| button.track_focus(focus))
             .text_color(if enabled {
                 if destructive {
                     colors.danger
@@ -1496,6 +1645,27 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.sync_provider_edit_focuses(cx);
+        self.provider_management
+            .model_focuses
+            .retain(|(provider, model), _| {
+                self.config.providers.iter().any(|candidate| {
+                    candidate.name == *provider && candidate.models.contains(model)
+                })
+            });
+        for provider in &self.config.providers {
+            for model in &provider.models {
+                self.provider_management
+                    .model_focuses
+                    .entry((provider.name.clone(), model.clone()))
+                    .or_insert_with(|| cx.focus_handle().tab_stop(true));
+            }
+        }
+        for id in ["provider-add", "provider-edit"] {
+            self.provider_management
+                .action_focuses
+                .entry(id.into())
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
         let colors = theme(cx).colors;
         if self.provider_management.model_editor.is_some() {
             return div()
@@ -1507,28 +1677,14 @@ impl SettingsView {
                 .scroll_edge_fade(colors.bg_base, ScrollFade::reading())
                 .into_any_element();
         }
-        if self.provider_management.selected.is_none() {
-            self.provider_management.selected =
-                self.config.providers.first().map(|p| p.name.clone());
-            self.provider_management.form = self.config.providers.is_empty();
-        }
         let busy = self.provider_management.saving;
-        let content_width = (f32::from(window.viewport_size().width)
-            - Layout::SETTINGS_NAV_WIDTH
-            - Layout::SETTINGS_SECTION_GAP * 2.)
-            .min(Layout::SETTINGS_CONTENT_MAX_WIDTH);
-        let narrow = content_width
-            < Layout::SETTINGS_PROVIDER_LIST_WIDTH
-                + Layout::SETTINGS_PROVIDER_COLUMN_GAP
-                + Layout::SETTINGS_PROVIDER_DETAIL_MIN_WIDTH;
-        if !narrow {
-            self.provider_management.detail_open = true;
-        }
+        let narrow = super::motion::narrow(window);
         let show_detail =
             !narrow || self.provider_management.detail_open || self.provider_management.form;
         let network_busy = self.provider_management.cancel.is_some();
         let mut list = div()
             .id("provider-list")
+            .role(gpui_kit::Role::ListBox)
             .h_full()
             .track_scroll(&self.provider_management.list_scroll)
             .w(px(Layout::SETTINGS_PROVIDER_LIST_WIDTH))
@@ -1566,64 +1722,80 @@ impl SettingsView {
             let name = p.name.clone();
             let key_name = name.clone();
             list = list.child(
-                div()
-                    .id(("provider-select", index))
-                    .interactive(colors, true, selected)
-                    .track_focus(&self.provider_edit_focuses[index].1)
-                    .tab_stop(true)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .p_2()
-                    .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                    .border_1()
-                    .border_color(gpui_kit::transparent_black())
-                    .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .when(selected, |row| row.bg(colors.bg_active))
-                    .cursor_pointer()
-                    .focus_visible(move |style| style.border_color(colors.accent))
-                    .on_drag(ProviderDrag(name.clone()), |drag, _, _, cx| {
-                        cx.new(|_| drag.clone())
-                    })
-                    .on_drop(cx.listener(move |this, drag: &ProviderDrag, _, cx| {
-                        if !this.provider_management.saving
-                            && !this.provider_has_draft(cx)
-                            && let Some(from) =
-                                this.config.providers.iter().position(|p| p.name == drag.0)
-                        {
-                            this.provider_management.selected = Some(drag.0.clone());
-                            this.move_provider(from, index, cx);
-                        }
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.provider_command(Command::Select(name.clone()), cx)
-                        }),
-                    )
-                    .on_key_down(
-                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.provider_command(Command::Select(key_name.clone()), cx);
-                                cx.stop_propagation();
-                            }
-                        }),
-                    )
-                    .child(
-                        div()
-                            .size(px(Layout::ICON_SIZE))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(if p.enabled {
-                                colors.success
+                self.motion_provider_row(
+                    div()
+                        .id(format!("provider-select:{:?}", p.name))
+                        .role(gpui_kit::Role::ListBoxOption)
+                        .aria_selected(selected)
+                        .interaction_surface(
+                            gpui_kit::transparent_black().into(),
+                            if selected {
+                                gpui_kit::transparent_black().into()
                             } else {
-                                colors.text_tertiary
-                            })
-                            .child("●"),
-                    )
-                    .child(div().min_w_0().truncate().child(p.name)),
+                                colors.bg_hover
+                            },
+                            colors.bg_active,
+                            true,
+                        )
+                        .track_focus(&self.provider_edit_focuses[index].1)
+                        .tab_stop(true)
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .p_2()
+                        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(gpui_kit::transparent_black())
+                        .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                        .cursor_pointer()
+                        .focus_visible(move |style| style.border_color(colors.accent))
+                        .on_drag(ProviderDrag(name.clone()), |drag, _, _, cx| {
+                            cx.new(|_| drag.clone())
+                        })
+                        .on_drop(cx.listener(move |this, drag: &ProviderDrag, _, cx| {
+                            if !this.provider_management.saving
+                                && !this.provider_has_draft(cx)
+                                && let Some(from) =
+                                    this.config.providers.iter().position(|p| p.name == drag.0)
+                            {
+                                this.provider_management.selected = Some(drag.0.clone());
+                                this.move_provider(from, index, cx);
+                            }
+                        }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.provider_command(Command::Select(name.clone()), cx)
+                            }),
+                        )
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    this.provider_command(Command::Select(key_name.clone()), cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .child(
+                            div()
+                                .size(px(Layout::ICON_SIZE))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_color(if p.enabled {
+                                    colors.success
+                                } else {
+                                    colors.text_tertiary
+                                })
+                                .child("●"),
+                        )
+                        .child(div().min_w_0().truncate().child(p.name.clone())),
+                    &p.name,
+                    selected,
+                    colors.bg_active,
+                    cx.entity_id(),
+                ),
             );
         }
         list = list.child(self.provider_button(
@@ -1710,12 +1882,15 @@ impl SettingsView {
                 .child(
                     settings_actions()
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(px(Typography::HEADING_CARD))
-                                .font_weight(Typography::HEADING_CARD_WEIGHT)
-                                .child(p.name.clone()),
+                            self.motion_title(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(Typography::HEADING_CARD))
+                                    .font_weight(Typography::HEADING_CARD_WEIGHT)
+                                    .child(p.name.clone()),
+                                cx.entity_id(),
+                            ),
                         )
                         .child(self.provider_button(
                             "provider-enabled".into(),
@@ -1984,6 +2159,7 @@ impl SettingsView {
                 colors,
             ));
         }
+        self.restore_provider_return_focus(show_detail, narrow, window, cx);
         div()
             .id("provider-management")
             .size_full()
