@@ -1,3 +1,4 @@
+use super::super::code_drag::CodeDragController;
 use super::super::{CopySelectedText, MessageCopy, StreamCounters, StreamModel, render_rows};
 use super::ThinkingBlock;
 use gpui_kit as gpui;
@@ -9,8 +10,8 @@ use gpui_kit::{
     Point, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, TestAppContext,
     TextLayout, VisualTestContext, Window, WindowId, div, point, px, size,
 };
-use std::collections::HashMap;
 use std::time::Duration;
+use std::{cell::RefCell, collections::HashMap, rc::Weak};
 use vega_markdown::MarkdownStream;
 use vega_theme::{Theme, Typography, theme};
 
@@ -18,7 +19,7 @@ const CODE: &str = concat!(
     "起点 α，alpha_01 = 中文值；beta_02 = (x + y)；gamma_03 = \"保持原文\"；",
     "delta_04 = [1, 2, 3]；epsilon_05 = {键: 值}；zeta_06 = a -> b；",
     "eta_07 = λ + 42；theta_08 = \"没有软换行\"；iota_09 = foo(bar)；",
-    "kappa_10 = left & right；lambda_11 = 中英文标点，。；tail_终点。"
+    "kappa_10 = left & right；lambda_11 = 中英文标点，。👩🏽‍💻🚀；tail_终点。"
 );
 const SIBLING: &str = concat!(
     "sibling_独立代码块 = 保持不动；1111111111222222222233333333334444444444",
@@ -62,6 +63,7 @@ struct WindowObservations {
     scrolls: HashMap<ElementId, ScrollObservation>,
     handles: HashMap<ElementId, ScrollHandle>,
     documents: HashMap<u64, Vec<TextObservation>>,
+    drivers: HashMap<ElementId, Weak<RefCell<CodeDragController>>>,
 }
 
 #[derive(Default)]
@@ -70,6 +72,22 @@ struct Observations {
 }
 
 impl Global for Observations {}
+
+pub(in crate::conversation_stream) fn observe_driver(
+    window: WindowId,
+    id: ElementId,
+    driver: Weak<RefCell<CodeDragController>>,
+    cx: &mut App,
+) {
+    if cx.has_global::<Observations>() {
+        cx.global_mut::<Observations>()
+            .windows
+            .entry(window)
+            .or_default()
+            .drivers
+            .insert(id, driver);
+    }
+}
 
 pub(crate) fn observe_scroll_handle(
     window: WindowId,
@@ -1110,4 +1128,106 @@ fn ordinary_vertical_text_selection_uses_real_events_and_exact_clipboard_order(
     );
     session.hold(3);
     assert_eq!(session.outer(), outer);
+}
+
+#[gpui_kit::test]
+fn code_copy_preserves_empty_lines_and_emoji_on_both_surfaces(cx: &mut TestAppContext) {
+    for surface in [Surface::Answer, Surface::Thinking] {
+        let source = format!("```text\n{CODE}\n\n中间👩🏽‍💻 = 原文；\n\n终行🚀。\n```\n");
+        let mut session = Session::with_source(cx, surface, Some(&source));
+        let anchor = CODE.find("alpha_01").unwrap();
+        let end = "终行🚀。";
+        session.down(session.text_point(CODE, anchor));
+        session.drag(session.text_point(end, end.len()));
+        session.up(session.text_point(end, end.len()));
+        assert_eq!(
+            session.copied(),
+            format!("{}\n\n中间👩🏽‍💻 = 原文；\n\n终行🚀。", &CODE[anchor..])
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn adjacent_message_keys_copy_exact_utf8_and_replacement_invalidates_old_selection(
+    cx: &mut TestAppContext,
+) {
+    let mut session = Session::new(cx, Surface::Answer);
+    let first = "首条🙂正文，保留后缀。";
+    let second = "第二条👩🏽‍💻正文，止于这里🚀。";
+    session.visual.update(|_, cx| {
+        session.view.update(cx, |view, cx| {
+            view.messages = vec![
+                MessageFixture::new(first, cx),
+                MessageFixture::new(second, cx),
+            ];
+            cx.notify();
+        });
+    });
+    session.owner = session
+        .visual
+        .read(|cx| session.view.read(cx).messages[0].copy.id);
+    session.frame();
+    let first_start = first.find('🙂').unwrap();
+    session.down(session.text_point(first, first_start));
+    session.drag(session.text_point(first, first.len()));
+    session.up(session.text_point(first, first.len()));
+    assert_eq!(session.copied(), &first[first_start..]);
+    let second_owner = session
+        .visual
+        .read(|cx| session.view.read(cx).messages[1].copy.id);
+    session.owner = second_owner;
+    let second_end = second.find('🚀').unwrap();
+    let cursor = session.text_point(second, second_end);
+    session.down(session.text_point(second, 0));
+    session.drag(cursor);
+    session.up(cursor);
+    assert_eq!(session.copied(), &second[..second_end]);
+    assert_eq!(
+        session.visual.update(TextSelection::selected_text),
+        &second[..second_end]
+    );
+    assert!(
+        !session
+            .visual
+            .read(|cx| session.view.read(cx).messages[0].copy.has_selected_text())
+    );
+    session.visual.update(|_, cx| {
+        session.view.update(cx, |view, cx| {
+            view.messages[1].copy.replace_text("替换后的新正文🙂。");
+            view.messages[1].model = MessageFixture::new("替换后的新正文🙂。", cx).model;
+            cx.notify();
+        });
+    });
+    session.frame();
+    assert!(!session.visual.update(TextSelection::has_selection));
+    assert!(
+        !session
+            .visual
+            .read(|cx| session.view.read(cx).messages[1].copy.has_selected_text())
+    );
+}
+
+#[gpui_kit::test]
+fn pending_cursor_refresh_is_rejected_after_controller_end_or_content_replacement(
+    cx: &mut TestAppContext,
+) {
+    for replace in [false, true] {
+        let mut session = Session::new(cx, Surface::Answer);
+        session.begin_right();
+        let id = ElementId::from((session.code(0).id, "code-drag"));
+        let driver = session.visual.read(|cx| {
+            cx.global::<Observations>().windows[&session.window].drivers[&id]
+                .upgrade()
+                .unwrap()
+        });
+        session.visual.update(|window, cx| {
+            super::super::code_drag::verify_pending_refresh_cancellation(
+                &driver, replace, window, cx,
+            );
+        });
+        session.up(session.edge(true));
+        let stopped = session.code(0).offset;
+        session.hold(3);
+        assert_eq!(session.code(0).offset, stopped);
+    }
 }

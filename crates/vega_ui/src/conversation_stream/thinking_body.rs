@@ -1074,6 +1074,11 @@ impl Element for BodyElement {
                             },
                         )
                         .scroll(scroll)
+                        .selection(
+                            block
+                                .code
+                                .then(|| self.document.code_drag_selection(window, cx)),
+                        )
                         .height(block.size.height),
                     )
                     .into_any_element()

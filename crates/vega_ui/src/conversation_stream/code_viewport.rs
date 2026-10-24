@@ -8,6 +8,8 @@ use gpui_kit::{
 
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
+use super::code_drag::{CodeDragElement, CodeDragSelection};
+
 #[derive(Default)]
 struct CodeScrollGesture {
     ongoing: OngoingScroll,
@@ -48,6 +50,7 @@ pub(super) struct CodeViewport {
     background: Rgba,
     scroll: Option<ScrollHandle>,
     height: Option<Pixels>,
+    selection: Option<CodeDragSelection>,
 }
 
 impl CodeViewport {
@@ -62,11 +65,17 @@ impl CodeViewport {
             background,
             scroll: None,
             height: None,
+            selection: None,
         }
     }
 
     pub(super) fn scroll(mut self, scroll: ScrollHandle) -> Self {
         self.scroll = Some(scroll);
+        self
+    }
+
+    pub(super) fn selection(mut self, selection: Option<CodeDragSelection>) -> Self {
+        self.selection = selection;
         self
     }
 
@@ -98,44 +107,62 @@ impl RenderOnce for CodeViewport {
         } else {
             ScrollbarMode::Always
         };
+        #[cfg(test)]
+        super::code_drag_tests::observe_scroll_handle(
+            window.window_handle().window_id(),
+            Some(self.id.clone()),
+            scroll.clone(),
+            cx,
+        );
+        let viewport = div()
+            .id(self.id.clone())
+            .w_full()
+            .min_w_0()
+            .when_some(self.height, |body, height| body.h(height))
+            .overflow_hidden()
+            .track_scroll(&scroll)
+            .on_scroll_wheel(move |event, window, cx| {
+                let delta = gesture
+                    .borrow_mut()
+                    .horizontal_delta(event, window.line_height());
+                if let Some(delta) = delta {
+                    let mut offset = wheel_scroll.offset();
+                    let max = wheel_scroll.max_offset().x;
+                    let next =
+                        (offset.x.clamp(-max, Pixels::ZERO) + delta).clamp(-max, Pixels::ZERO);
+                    if next != offset.x {
+                        offset.x = next;
+                        wheel_scroll.set_offset(offset);
+                        window.refresh();
+                    }
+                    cx.stop_propagation();
+                }
+            })
+            .flex()
+            .child(self.content)
+            .tracked_scroll_edge_fade(
+                scroll.clone(),
+                self.background,
+                ScrollFade::compact().horizontal_viewport(),
+            )
+            .into_any_element();
+        let viewport = if let Some(selection) = self.selection {
+            CodeDragElement::new(
+                (self.id.clone(), "code-drag").into(),
+                viewport,
+                selection,
+                scroll.clone(),
+            )
+            .into_any_element()
+        } else {
+            viewport
+        };
         div()
             .id((self.id.clone(), "viewport"))
             .w_full()
             .min_w_0()
             .relative()
-            .child(
-                div()
-                    .id(self.id.clone())
-                    .w_full()
-                    .min_w_0()
-                    .when_some(self.height, |body, height| body.h(height))
-                    .overflow_hidden()
-                    .track_scroll(&scroll)
-                    .on_scroll_wheel(move |event, window, cx| {
-                        let delta = gesture
-                            .borrow_mut()
-                            .horizontal_delta(event, window.line_height());
-                        if let Some(delta) = delta {
-                            let mut offset = wheel_scroll.offset();
-                            let max = wheel_scroll.max_offset().x;
-                            let next = (offset.x.clamp(-max, Pixels::ZERO) + delta)
-                                .clamp(-max, Pixels::ZERO);
-                            if next != offset.x {
-                                offset.x = next;
-                                wheel_scroll.set_offset(offset);
-                                window.refresh();
-                            }
-                            cx.stop_propagation();
-                        }
-                    })
-                    .flex()
-                    .child(self.content)
-                    .tracked_scroll_edge_fade(
-                        scroll.clone(),
-                        self.background,
-                        ScrollFade::compact().horizontal_viewport(),
-                    ),
-            )
+            .child(viewport)
             .child(
                 Scrollbar::horizontal(&scroll)
                     .id((self.id, "scrollbar"))
