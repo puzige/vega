@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use image::{DynamicImage, ImageFormat};
 use serde_json::{Value, json};
 use vega_runtime::{ChatRole, RuntimeToolStatus};
-use vega_store::{Store, context_compaction, messages, thread_fork, tool_calls};
+use vega_store::{Store, context_compaction, image_attachments, messages, thread_fork, tool_calls};
 
 use crate::history::{HistoryEntry, latest_history_page};
 use crate::threads::{ForkThreadError, create_thread, fork_thread};
@@ -261,8 +261,9 @@ fn cancelled_delivered_capture_and_alias_survive_fork_reload_and_preparation() -
         let reopened = Store::open(&fixture.database)?;
         let fork = crate::threads::open_thread(&reopened, &fork.id)?;
         let source = context_compaction::load_source(reopened.conn(), &fork.id)?;
-        assert_eq!(source.images.len(), 1);
-        assert_eq!(source.images[0].encoded, fixture.image);
+        let images = image_attachments::for_messages(reopened.conn(), &fork.id, &source.messages)?;
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].encoded, fixture.image);
         let capture = source
             .tool_calls
             .iter()
@@ -277,8 +278,9 @@ fn cancelled_delivered_capture_and_alias_survive_fork_reload_and_preparation() -
         assert_ne!(alias.id, "alias");
         assert_eq!(capture.status, "cancelled");
         assert_eq!(alias.status, "success");
+        assert_eq!(images[0].message_id, capture.message_id);
         assert_eq!(
-            source.images[0].artifact_call_id.as_deref(),
+            images[0].artifact_call_id.as_deref(),
             Some(capture.id.as_str())
         );
         for call in [capture, alias] {
@@ -316,7 +318,7 @@ fn cancelled_delivered_capture_and_alias_survive_fork_reload_and_preparation() -
             );
         }
         let page = latest_history_page(&reopened, &fork.id, 20)?;
-        assert!(page.entries.iter().any(|entry| matches!(entry, HistoryEntry::AssistantScreenshot { call_id, image, .. } if call_id == &capture.id && image.bytes() == fixture.image.as_slice())));
+        assert!(page.entries.iter().any(|entry| matches!(entry, HistoryEntry::AssistantScreenshot { message_id, call_id, image, .. } if message_id == &capture.message_id && call_id == &capture.id && image.bytes() == fixture.image.as_slice())));
         assert!(page.entries.iter().any(|entry| matches!(entry, HistoryEntry::Tool { call_id, status: ToolCallStatus::Cancelled, input: Some(_), result: Some(result), .. } if call_id == &capture.id && !matches!(result, ToolCardResultProjection::Corrupt))));
         assert!(page.entries.iter().any(|entry| matches!(entry, HistoryEntry::Tool { call_id, status: ToolCallStatus::Success, input: Some(_), result: Some(result), .. } if call_id == &alias.id && !matches!(result, ToolCardResultProjection::Corrupt))));
         assert_no_authority(&reopened)?;
@@ -327,7 +329,18 @@ fn cancelled_delivered_capture_and_alias_survive_fork_reload_and_preparation() -
         let second = fork_thread(&reopened, &fork.id, &cutoff.id)?;
         let second_source = context_compaction::load_source(reopened.conn(), &second.id)?;
         assert_eq!(second_source.tool_calls[0].status, "cancelled");
-        assert_eq!(second_source.images[0].encoded, fixture.image);
+        let second_images =
+            image_attachments::for_messages(reopened.conn(), &second.id, &second_source.messages)?;
+        assert_eq!(second_images.len(), 1);
+        assert_eq!(second_images[0].encoded, fixture.image);
+        assert_eq!(
+            second_images[0].message_id,
+            second_source.tool_calls[0].message_id
+        );
+        assert_eq!(
+            second_images[0].artifact_call_id.as_deref(),
+            Some(second_source.tool_calls[0].id.as_str())
+        );
         for call in &second_source.tool_calls {
             let output: Value = serde_json::from_str(
                 call.output_text
@@ -339,6 +352,8 @@ fn cancelled_delivered_capture_and_alias_survive_fork_reload_and_preparation() -
                 format!("screenshot:{}", second_source.tool_calls[0].id)
             );
         }
+        let second_page = latest_history_page(&reopened, &second.id, 20)?;
+        assert!(second_page.entries.iter().any(|entry| matches!(entry, HistoryEntry::AssistantScreenshot { message_id, call_id, image, .. } if message_id == &second_source.tool_calls[0].message_id && call_id == &second_source.tool_calls[0].id && image.bytes() == fixture.image.as_slice())));
         let prepared = prepare_run_with_images_and_reasoning(
             fixture.database.clone(),
             fork.id.clone(),
@@ -549,6 +564,15 @@ fn successful_capture_keeps_first_line_receipt_fork_compatibility() -> TestResul
             .as_deref()
             .is_some_and(|output| output.ends_with("\nLegacy observation remainder"))
     );
-    assert_eq!(source.images[0].encoded, fixture.image);
+    let images = image_attachments::for_messages(fixture.store.conn(), &fork.id, &source.messages)?;
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].encoded, fixture.image);
+    assert_eq!(images[0].message_id, source.tool_calls[0].message_id);
+    assert_eq!(
+        images[0].artifact_call_id.as_deref(),
+        Some(source.tool_calls[0].id.as_str())
+    );
+    let page = latest_history_page(&fixture.store, &fork.id, 20)?;
+    assert!(page.entries.iter().any(|entry| matches!(entry, HistoryEntry::AssistantScreenshot { message_id, call_id, image, .. } if message_id == &source.tool_calls[0].message_id && call_id == &source.tool_calls[0].id && image.bytes() == fixture.image.as_slice())));
     Ok(())
 }
