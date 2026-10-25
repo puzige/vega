@@ -681,6 +681,45 @@ fn attachment_paths(window: &Window) -> Vec<Vec<ElementId>> {
     paths
 }
 
+async fn revealed_user_echo_paths(
+    fixture: &Fixture,
+    message_ids: &[&str],
+    cx: &mut TestAppContext,
+) -> Vec<Vec<ElementId>> {
+    let mut paths = Vec::new();
+    let mut identities = Vec::new();
+    for message_id in message_ids {
+        let anchor = fixture.stream.update(cx, |stream, cx| {
+            assert!(stream.reveal_loaded_message(message_id, cx));
+            stream.scroll_anchor_snapshot()
+        });
+        assert_eq!(anchor.message_id.as_deref(), Some(*message_id));
+        let identity = anchor.identity.unwrap();
+        assert!(!identities.contains(&identity));
+        identities.push(identity);
+        fixture
+            .wait_window(
+                "revealed durable user echo registered",
+                fixture.window.into(),
+                cx,
+                |window, _| !user_echo_paths(window).is_empty(),
+            )
+            .await;
+        let observed = cx
+            .update_window(fixture.window.into(), |_, window, _| {
+                user_echo_paths(window)
+            })
+            .unwrap();
+        for path in observed {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort_by_cached_key(|path| format!("{path:?}"));
+    paths
+}
+
 async fn attach(fixture: &Fixture, cx: &mut TestAppContext) {
     let image = image();
     cx.update(|cx| {
@@ -953,7 +992,7 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
         .unwrap();
         cx.update_window(fixture.window.into(), |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.find("composer-stop").visible());
+            assert!(window.find("composer-running-send").visible());
             assert_eq!(attachment_paths(window), owner_attachments);
         })
         .unwrap();
@@ -961,7 +1000,19 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
             controller.stream_view = Some((fixture.thread.id.clone(), fixture.stream.clone()));
             cx.set_global(OpenedThread(Some(fixture.thread.clone())));
         });
-        fixture.click("composer-stop", cx);
+        fixture.stream.update(cx, |stream, cx| {
+            assert!(stream.has_active_agent());
+            stream.request_composer_stop(cx);
+        });
+        assert!(
+            second
+                .cancel
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_cancelled()
+        );
         fixture.drained(&second, cx).await;
         second.join();
         assert_eq!(first.primary_count(), 1);
@@ -1034,9 +1085,10 @@ async fn running_send_now_is_consumed_by_real_runtime_once_without_ordinary_admi
         assert!(stream.reveal_loaded_message(&pending.id, cx));
         assert!(stream.projected_pending_ids().is_empty());
     });
+    let revealed_echoes = revealed_user_echo_paths(&fixture, &[&first_user, &pending.id], cx).await;
+    assert_eq!(revealed_echoes.len(), 2);
     cx.update_window(fixture.window.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(user_echo_paths(window).len(), 2);
         assert!(window.find("composer-stop").visible());
     }).unwrap();
     launch.script.releases[1].cancel();
@@ -1063,9 +1115,11 @@ async fn running_send_now_is_consumed_by_real_runtime_once_without_ordinary_admi
     });
     assert!(for_thread(fixture.database, &fixture.thread.id).unwrap().is_empty());
     assert_eq!(launch.primary_count(), 2);
+    let finished_echoes = revealed_user_echo_paths(&fixture, &[&first_user, &pending.id], cx).await;
+    assert_eq!(finished_echoes.len(), 2);
+    assert_eq!(finished_echoes, revealed_echoes);
     cx.update_window(fixture.window.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(user_echo_paths(window).len(), 2);
         assert!(window.try_find("composer-stop").is_none());
     }).unwrap();
     assert!(launch.script.auxiliary.lock().unwrap().contains(&"title"));
