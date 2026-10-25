@@ -382,12 +382,9 @@ impl Fixture {
     }
 
     fn launch(&mut self, duplicates: bool, cx: &mut TestAppContext) -> Arc<WorkerLaunch> {
-        let model = self
-            .stream
-            .read(cx)
-            .model_snapshot_for_submit()
-            .unwrap()
-            .unwrap();
+        let model = self.stream.read_with(cx, |stream, _| {
+            stream.model_snapshot_for_submit().unwrap().unwrap()
+        });
         let launch = WorkerLaunch::new(*model, duplicates);
         self.controller.update(cx, |controller, _| {
             controller.worker_test_launches.push_back(launch.clone())
@@ -645,8 +642,9 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
         let receipt = receipt.clone();
         assert_eq!(receipt.persisted_text, FIRST);
         assert_eq!(receipt.persisted_images, vec![image()]);
-        let old_generation =
-            fixture.controller.read(cx).agent_controller.active[&fixture.thread.id].generation;
+        let old_generation = fixture.controller.read_with(cx, |controller, _| {
+            controller.agent_controller.active[&fixture.thread.id].generation
+        });
         fixture.click("composer-stop", cx);
         assert!(
             first
@@ -721,13 +719,16 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
         fixture.draft("new owner input", cx);
         fixture.submit(cx);
         fixture.primary(&second, 1, cx).await;
-        let new_generation =
-            fixture.controller.read(cx).agent_controller.active[&fixture.thread.id].generation;
+        let new_generation = fixture.controller.read_with(cx, |controller, _| {
+            controller.agent_controller.active[&fixture.thread.id].generation
+        });
         assert_ne!(old_generation, new_generation);
         fixture.draft("new owner draft", cx);
         attach(&fixture, cx).await;
         let before = fixture.rows(cx);
-        let owner_anchor = fixture.stream.read(cx).scroll_anchor_snapshot();
+        let owner_anchor = fixture
+            .stream
+            .read_with(cx, |stream, _| stream.scroll_anchor_snapshot());
         let owner_attachments = cx
             .update_window(fixture.window.into(), |_, window, cx| {
                 window.render_frame(cx);
@@ -786,7 +787,7 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
             attachment_paths(window).len() == 1
         })
         .await;
-        let b_anchor = b_stream.read(cx).scroll_anchor_snapshot();
+        let b_anchor = b_stream.read_with(cx, |stream, _| stream.scroll_anchor_snapshot());
         let (b_attachments, b_echoes) = cx
             .update_window(b_window.into(), |_, window, _| {
                 (attachment_paths(window), user_echo_paths(window))
@@ -824,18 +825,20 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
         });
         assert!(fixture.rows(cx) == before);
         assert_eq!(
-            fixture.stream.read(cx).scroll_anchor_snapshot().identity,
+            fixture
+                .stream
+                .read_with(cx, |stream, _| stream.scroll_anchor_snapshot().identity),
             owner_anchor.identity
         );
         assert_eq!(
-            b_stream.read(cx).scroll_anchor_snapshot().identity,
+            b_stream.read_with(cx, |stream, _| stream.scroll_anchor_snapshot().identity),
             b_anchor.identity
         );
         assert_eq!(
-            b_stream.read(cx).composer_input().read(cx).text(),
+            b_stream.read_with(cx, |stream, cx| stream.composer_input().read(cx).text()),
             "B route draft"
         );
-        assert!(!b_stream.read(cx).has_active_agent());
+        assert!(!b_stream.read_with(cx, |stream, _| stream.has_active_agent()));
         cx.update(|cx| {
             assert!(
                 vega_store::context_compaction::load_source(
@@ -894,11 +897,11 @@ async fn running_send_now_is_consumed_by_real_runtime_once_without_ordinary_admi
     fixture.click("composer-running-send", cx);
     let stream = fixture.stream.clone();
     fixture.wait(cx, move |cx| !stream.read(cx).pending_queue().busy && stream.read(cx).pending_queue().messages.len() == 1).await;
-    let pending = fixture.stream.read(cx).pending_queue().messages[0].clone();
+    let pending = fixture.stream.read_with(cx, |stream, _| stream.pending_queue().messages[0].clone());
     assert_eq!(pending.content, STEER);
     assert_eq!(pending.images, vec![image()]);
     assert_eq!(pending.behavior, vega_conversation::types::PendingMessageBehavior::Steer);
-    assert_eq!(fixture.stream.read(cx).projected_pending_ids(), vec![pending.id.clone()]);
+    assert_eq!(fixture.stream.read_with(cx, |stream, _| stream.projected_pending_ids()), vec![pending.id.clone()]);
     assert!(for_thread(fixture.database, &fixture.thread.id).unwrap().is_empty());
     fixture.controller.update(cx, |controller, cx| {
         assert!(controller.agent_controller.ordinary_preparing.is_empty());
