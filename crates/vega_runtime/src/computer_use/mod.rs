@@ -17,10 +17,6 @@ mod preparation_session;
 mod prepare;
 mod probe;
 mod progress;
-#[cfg(any(test, debug_assertions))]
-pub mod recovery_test_support;
-#[cfg(test)]
-mod recovery_tests;
 
 pub use components::ManagedComponents;
 pub use control::{ComputerUseControl, ControlPhase, ControlSnapshot};
@@ -500,13 +496,6 @@ impl ComputerUseRun {
             ControlPhase::Pausing | ControlPhase::Stopping | ControlPhase::Failed
         ) {
             self.cleanup_revoked().await;
-        }
-        #[cfg(any(test, debug_assertions))]
-        {
-            let driver = self.backend.lock().await.test_driver.clone();
-            if let Some(driver) = driver {
-                driver.executed(call_id);
-            }
         }
         result
     }

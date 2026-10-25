@@ -70,6 +70,34 @@
 - [MCP support 与测试（1 项）](https://github.com/puzige/vega/blob/4771298d0a37b09ff87015c822bcd5d68a6d88ab/crates/vega_mcp/src/managed_recovery_test_support.rs)
 - [runtime support](https://github.com/puzige/vega/blob/4771298d0a37b09ff87015c822bcd5d68a6d88ab/crates/vega_runtime/src/computer_use/recovery_test_support.rs) 与 [原始修复 patch](https://github.com/puzige/vega/commit/cff7707e0b846eb7b865ff4c9949b51392256e46.patch)、[harness patch](https://github.com/puzige/vega/commit/4771298d0a37b09ff87015c822bcd5d68a6d88ab.patch)。
 
+## 开发回归最终通过版本
+
+`543e2b8d54614a49fd2587f8cea91c4bc86f0388`，[run 40173293281](https://github.com/puzige/vega/actions/runs/40173293281)：
+
+| 检查 | 实际结果 |
+|---|---|
+| fmt / Clippy `121108529101` | 成功 |
+| Nextest `121108528961` | 20 发现、20 执行、20 通过、0 跳过 |
+| 三组 Python | 5 + 15 + 40 = 60 执行通过 |
+| required `121109316926` | 成功 |
+| 本地 | fmt/diff 静态检查通过，无编译/测试/应用执行 |
+| 独立增量审查 | `cff7707e…`→`543e2b8d…` 小增量无发现，未放宽审计或断言 |
+
+本轮动态覆盖补足受管传输零写入/部分写入、Desktop/Browser 发送前暂停恢复、四类晚到 Stop/截图持久化及撤权抑制、磁盘重新打开/历史投影/下轮准备、有限旧 Cancelled 记录兼容。均为进程内受控依赖证据，不是真实外部桌面或原生 UI 验收。
+
+### 固定原始源码与内容标识
+
+以下完整版本经 GitHub contents API 读回核实可达；源码固定在 `543e2b8d54614a49fd2587f8cea91c4bc86f0388`，清理后不依赖临时文件或会过期 artifact：
+
+| 源码 | 定义数 | SHA-256 |
+|---|---:|---|
+| [runtime recovery_tests.rs](https://github.com/puzige/vega/blob/543e2b8d54614a49fd2587f8cea91c4bc86f0388/crates/vega_runtime/src/computer_use/recovery_tests.rs) | 9 | `e2d262a6426151fe451a5b0b257516f0e97507d72577b6de46b2a2f4c820d134` |
+| [conversation cua_recovery_tests.rs](https://github.com/puzige/vega/blob/543e2b8d54614a49fd2587f8cea91c4bc86f0388/crates/vega_conversation/src/agent/cua_recovery_tests.rs) | 10 | `822c7410187a2244fd66e2b9452880c6b97d7fe987486ef505f62bbf352868f6` |
+| [MCP managed_recovery_test_support.rs](https://github.com/puzige/vega/blob/543e2b8d54614a49fd2587f8cea91c4bc86f0388/crates/vega_mcp/src/managed_recovery_test_support.rs) | 1 | `1713366b628cf86f314c6bb9f01c962bfc00d759f3933c432629d95744a1003d` |
+| [runtime recovery_test_support.rs](https://github.com/puzige/vega/blob/543e2b8d54614a49fd2587f8cea91c4bc86f0388/crates/vega_runtime/src/computer_use/recovery_test_support.rs) | 支持 | `2d44b3cf191d236a6af522349c5ec05f52fab40a6f88aa661dac825dc633c444` |
+
+原始累计变化可从 [PR #613 files/commits](https://github.com/puzige/vega/pull/613/commits) 和上述各完整 commit `.patch` 恢复。独占接线在 runtime backend/batch/mod、conversation pipeline、MCP managed/lib，最终树全部移除；生产 feedback、typed send evidence 与 screenshot sink acknowledgement 不属于删测范围。
+
 ## 验证限制与后续
 
 组件/协议/身份的各类实际故障、断连/动作后观察失败变体、完整截图容量流、权限恢复后真实预检、分页/TTL/压缩/附件竞态及原生焦点交互尚无本轮动态验收，静态覆盖与具体限制以 spec 矩阵和最终报告为准。未做真实外部进程/网络 E2E。

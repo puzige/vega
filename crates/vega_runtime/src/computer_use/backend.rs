@@ -20,10 +20,6 @@ use vega_mcp::{LocalServer, ManagedClient, ManagedSendEvidence};
 pub(super) struct Backends {
     desktop: Option<Desktop>,
     browser: Option<Browser>,
-    #[cfg(any(test, debug_assertions))]
-    pub(super) test_driver: Option<super::recovery_test_support::Driver>,
-    #[cfg(any(test, debug_assertions))]
-    pub(super) test_action_client: Option<ManagedClient>,
 }
 struct Dispatch<'a> {
     cancel: &'a CancellationToken,
@@ -154,10 +150,6 @@ impl Backends {
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Vec<DesktopTarget>, Error> {
-        #[cfg(any(test, debug_assertions))]
-        if let Some(driver) = &self.test_driver {
-            return driver.windows();
-        }
         self.desktop
             .as_mut()
             .ok_or(Error::NotReady)?
@@ -171,10 +163,6 @@ impl Backends {
         args: Value,
         cancel: &CancellationToken,
     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
-        #[cfg(any(test, debug_assertions))]
-        if let Some(driver) = &self.test_driver {
-            return driver.call(name, args);
-        }
         self.desktop
             .as_mut()
             .and_then(|desktop| desktop.client.as_mut())
@@ -191,18 +179,6 @@ impl Backends {
         cancel: &CancellationToken,
         send: &mut ManagedSendEvidence,
     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
-        #[cfg(any(test, debug_assertions))]
-        {
-            if let Some(client) = &mut self.test_action_client {
-                return client
-                    .call_with_send_evidence(name, args, cancel, send)
-                    .await;
-            }
-            if let Some(driver) = &self.test_driver {
-                *send = ManagedSendEvidence::WriteStarted;
-                return driver.call(name, args);
-            }
-        }
         let client = match capability {
             Capability::Desktop => self
                 .desktop
@@ -479,16 +455,6 @@ impl Backends {
         epoch: u64,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        #[cfg(any(test, debug_assertions))]
-        if let Some(driver) = &self.test_driver {
-            if run.control.status().phase == super::ControlPhase::Disconnected {
-                driver.connected();
-                run.control.begin(capability)?;
-                run.control
-                    .connected(epoch, capability, Target::DesktopCatalog)?;
-            }
-            return Ok(());
-        }
         if match capability {
             Capability::Desktop => self.desktop.is_some(),
             Capability::Browser => {
@@ -617,11 +583,6 @@ impl Backends {
         cancel: &CancellationToken,
         navigation: bool,
     ) -> Result<(), Error> {
-        #[cfg(any(test, debug_assertions))]
-        if self.test_driver.is_some() {
-            run.control.check_epoch(epoch)?;
-            return Ok(());
-        }
         let browser = self.browser.as_mut().ok_or(Error::NotReady)?;
         let current = browser.current_target(cancel).await?;
         let previous = run

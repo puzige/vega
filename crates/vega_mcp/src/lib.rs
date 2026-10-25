@@ -15,8 +15,6 @@ pub use auth::{
     ResourceAuthorization, ScopeChallenge,
 };
 pub use http::HttpClient;
-#[cfg(any(test, debug_assertions))]
-pub use managed::recovery_test_support;
 pub use managed::{ManagedClient, ManagedImage, ManagedResult, ManagedSendEvidence};
 pub use stdio::StdioClient;
 

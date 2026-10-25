@@ -31,10 +31,6 @@ pub enum ManagedSendEvidence {
     WriteStarted,
 }
 
-#[cfg(any(test, debug_assertions))]
-#[path = "managed_recovery_test_support.rs"]
-pub mod recovery_test_support;
-
 pub struct ManagedClient {
     child: Option<Child>,
     stdin: Box<dyn AsyncWrite + Unpin + Send>,
@@ -43,8 +39,6 @@ pub struct ManagedClient {
     tools: HashMap<String, Value>,
     closed: bool,
     browser_connection_started: bool,
-    #[cfg(any(test, debug_assertions))]
-    before_send: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl ManagedClient {
@@ -77,8 +71,6 @@ impl ManagedClient {
             tools: HashMap::new(),
             closed: false,
             browser_connection_started: false,
-            #[cfg(any(test, debug_assertions))]
-            before_send: None,
         })
     }
 
@@ -277,10 +269,6 @@ impl ManagedClient {
         }
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).ok_or(McpError::LimitExceeded)?;
-        #[cfg(any(test, debug_assertions))]
-        if let Some(before_send) = self.before_send.take() {
-            before_send();
-        }
         let exchange = async {
             self.write_with_send_evidence(
                 json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),

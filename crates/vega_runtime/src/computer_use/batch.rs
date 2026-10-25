@@ -28,22 +28,6 @@ pub(super) struct ModelBatch {
     bridge: bool,
 }
 
-#[cfg(any(test, debug_assertions))]
-impl ModelBatch {
-    pub(super) fn fill_text_budget(&mut self, target: DesktopTarget, epoch: u64) {
-        self.reads.clear();
-        self.reads.push(ReadProjection {
-            call_id: "earlier-read".into(),
-            content: "x".repeat(MAX_TEXT_BYTES).into(),
-            images: Vec::new(),
-            target,
-            epoch,
-            observed_at_unix_ms: 0,
-            preserve_text: false,
-        });
-    }
-}
-
 fn image_budget<'a>(messages: impl Iterator<Item = &'a ChatMessage>) -> (usize, usize) {
     messages
         .filter(|message| message.role == ChatRole::Tool)
