@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// The `SELECT` column list shared by the row-loading queries.
 const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, backend, \
-                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id";
+                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id, forked_from_thread_id, forked_from_message_id";
 
 /// A raw `threads` row, field-for-field with the DDL.
 ///
@@ -12,6 +12,8 @@ const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, back
 pub struct ThreadRow {
     pub parent_thread_id: Option<String>,
     pub workspace_owner_thread_id: Option<String>,
+    pub forked_from_thread_id: Option<String>,
+    pub forked_from_message_id: Option<String>,
     /// Primary key (ulid).
     pub id: String,
     /// Owning project id (`projects.id`). An empty value represents a
@@ -446,6 +448,8 @@ fn thread_from_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadRow> {
     Ok(ThreadRow {
         parent_thread_id: row.get(12)?,
         workspace_owner_thread_id: row.get(13)?,
+        forked_from_thread_id: row.get(14)?,
+        forked_from_message_id: row.get(15)?,
         id: row.get(0)?,
         project_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
         title: row.get(2)?,

@@ -69,9 +69,13 @@ pub fn set_exception_checked(
 
 pub fn fields(conn: &Connection, thread: &str) -> rusqlite::Result<Vec<(String, String, String)>> {
     let mut query = conn.prepare("SELECT id,'message',content FROM messages WHERE thread_id=?1 UNION ALL SELECT id,'tool.input',input_json FROM tool_calls WHERE thread_id=?1 UNION ALL SELECT id,'tool.output',output_text FROM tool_calls WHERE thread_id=?1 AND output_text IS NOT NULL UNION ALL SELECT CAST(id AS TEXT),'summary',summary FROM context_checkpoints WHERE thread_id=?1 UNION ALL SELECT id,'plan.note',plan_review_note FROM messages WHERE thread_id=?1 AND plan_review_note IS NOT NULL UNION ALL SELECT id,'pending.model',model_content FROM pending_messages WHERE thread_id=?1 AND model_content IS NOT NULL UNION ALL SELECT id,'pending.content',json_extract(payload,'$.content') FROM pending_messages WHERE thread_id=?1 AND payload != '' AND json_valid(payload) AND json_type(payload,'$.content')='text' UNION ALL SELECT child_message_id,'delegation.name',name FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_message_id,'delegation.task',task FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT child_message_id,'delegation.result',result FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION ALL SELECT id,'stage.payload',payload FROM delegated_stage_checkpoints WHERE child_thread_id=?1 OR child_thread_id IN (SELECT id FROM threads WHERE parent_thread_id=?1) UNION ALL SELECT child_message_id,'stage.reconciliations',reconciliations FROM delegated_execution_recovery WHERE child_thread_id=?1 OR child_thread_id IN (SELECT id FROM threads WHERE parent_thread_id=?1)")?;
-    query
+    let mut values = query
         .query_map([thread], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect()
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    values.extend(conn.prepare("SELECT message_id,'historical.model',model_content FROM historical_message_delivery WHERE thread_id=?1 AND model_content IS NOT NULL UNION ALL SELECT call_id,'historical.input',input_json FROM historical_tool_receipts WHERE thread_id=?1 UNION ALL SELECT call_id,'historical.output',output_text FROM historical_tool_receipts WHERE thread_id=?1 AND output_text IS NOT NULL UNION ALL SELECT call_id,'historical.references',references_json FROM historical_tool_receipts WHERE thread_id=?1 UNION ALL SELECT call_id,'historical.identity',json_array(source_thread_id,source_message_id,source_call_id) FROM historical_tool_receipts WHERE thread_id=?1")?
+        .query_map([thread], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?);
+    Ok(values)
 }
 
 pub fn source_fingerprint(conn: &Connection, thread: &str) -> rusqlite::Result<String> {
@@ -256,8 +260,14 @@ where
     crate::context_compaction::redact_legacy_thread_content(&tx, thread, &mut redact)?;
     for (id, field, value) in fields(&tx, thread)? {
         let changed = match field.as_str() {
-            "message" | "plan.note" | "pending.model" | "pending.content" => redact(&value, &[]).0,
-            "tool.input" | "stage.payload" | "stage.reconciliations" => {
+            "message" | "plan.note" | "pending.model" | "pending.content" | "historical.model"
+            | "historical.output" => redact(&value, &[]).0,
+            "tool.input"
+            | "stage.payload"
+            | "stage.reconciliations"
+            | "historical.input"
+            | "historical.references"
+            | "historical.identity" => {
                 fn visit<F: FnMut(&str, &[usize]) -> (String, Vec<usize>)>(
                     value: &mut serde_json::Value,
                     redact: &mut F,
@@ -307,6 +317,25 @@ where
                         params![changed, id, thread],
                     )?;
                 }
+                "historical.model" => {
+                    tx.execute("UPDATE historical_message_delivery SET model_content=?1 WHERE message_id=?2 AND thread_id=?3", params![changed,id,thread])?;
+                }
+                "historical.identity" => {
+                    let values: Vec<String> = serde_json::from_str(&changed)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    let [source_thread, source_message, source_call] = values.as_slice() else {
+                        return Err(rusqlite::Error::InvalidQuery);
+                    };
+                    tx.execute("UPDATE historical_tool_receipts SET source_thread_id=?1,source_message_id=?2,source_call_id=?3 WHERE call_id=?4 AND thread_id=?5",params![source_thread,source_message,source_call,id,thread])?;
+                }
+                "historical.input" | "historical.output" | "historical.references" => {
+                    let column = match field.as_str() {
+                        "historical.input" => "input_json",
+                        "historical.output" => "output_text",
+                        _ => "references_json",
+                    };
+                    tx.execute(&format!("UPDATE historical_tool_receipts SET {column}=?1 WHERE call_id=?2 AND thread_id=?3"), params![changed,id,thread])?;
+                }
                 "pending.model" => {
                     tx.execute(
                         "UPDATE pending_messages SET model_content=?1 WHERE id=?2 AND thread_id=?3",
@@ -350,7 +379,9 @@ pub fn source_message_id(
     id: &str,
 ) -> rusqlite::Result<Option<String>> {
     match field {
-        "message" | "plan.note" | "stage.reconciliations" => Ok(Some(id.into())),
+        "message" | "plan.note" | "stage.reconciliations" | "historical.model" => {
+            Ok(Some(id.into()))
+        }
         "stage.payload" => conn
             .query_row(
                 "SELECT child_message_id FROM delegated_stage_checkpoints WHERE id=?1",
@@ -358,7 +389,12 @@ pub fn source_message_id(
                 |row| row.get(0),
             )
             .optional(),
-        "tool.input" | "tool.output" => conn
+        "tool.input"
+        | "tool.output"
+        | "historical.input"
+        | "historical.output"
+        | "historical.references"
+        | "historical.identity" => conn
             .query_row(
                 "SELECT message_id FROM tool_calls WHERE id=?1",
                 [id],
@@ -414,7 +450,10 @@ pub fn source_label(conn: &Connection, field: &str, id: &str) -> rusqlite::Resul
         "tool.output" => "工具结果",
         "summary" => "对话摘要",
         "plan.note" => "计划反馈",
-        "pending.model" => "已发送请求",
+        "pending.model" | "historical.model" => "已发送请求",
+        "historical.input" => "历史工具调用",
+        "historical.output" => "历史工具结果",
+        "historical.references" | "historical.identity" => "历史引用",
         "pending.content" => "待发送消息",
         "delegation.name" => "子任务名称",
         "delegation.task" => "子任务内容",
