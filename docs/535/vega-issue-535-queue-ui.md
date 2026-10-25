@@ -2,7 +2,9 @@
 
 ## 状态与基线
 
-实现方案 v2.4（A1–A7 产品验收不变）。开发验证提交 `ba9c155f6392d3df280fda69aad3d3f4681708ac` 已获独立审查无阻塞，并在 [Actions 39918356968](https://github.com/puzige/vega/actions/runs/39918356968) 完成 20 发现 / 20 执行 / 20 通过 / 0 跳过，fmt、Clippy、Python 与 required check 全部成功。控制器迟到终态遗漏已修复；历史工具观测、导入和成功 read 元数据夹具错误均已按责任层纠正，保留原始证据与断言，不以清理掩盖失败。开发 Rust 测试及独占支持已完成清理并停写，静态清点为零；最终无测试 head 的独立审查与完整 required CI 尚待完成，不等于已合并、安装或用户像素/真实系统验收。
+当前方案 v3：用户手测明确不通过，插话后不得再显示 Working for 计时分隔，按真实新用户消息继续对话流；下方 v2.4 为上一轮历史证据，不代表本轮验收。v3 当前基线 `13fd5d02c798a2f8862f86175e35018cebf8da77`。
+
+上一轮实现方案 v2.4（当时 A1–A7 产品验收不变）。开发验证提交 `ba9c155f6392d3df280fda69aad3d3f4681708ac` 已获独立审查无阻塞，并在 [Actions 39918356968](https://github.com/puzige/vega/actions/runs/39918356968) 完成 20 发现 / 20 执行 / 20 通过 / 0 跳过，fmt、Clippy、Python 与 required check 全部成功。控制器迟到终态遗漏已修复；历史工具观测、导入和成功 read 元数据夹具错误均已按责任层纠正，保留原始证据与断言，不以清理掩盖失败。开发 Rust 测试及独占支持已完成清理并停写，静态清点为零；最终无测试 head 的独立审查与完整 required CI 尚待完成，不等于已合并、安装或用户像素/真实系统验收。
 初始基线：`83fd51d79940516029cdc1eaf8e81566870c877b`。
 原开发测试生产基线：`6615748f91273bfb8ee424011b3b5a09b3777d2b`。当前集成基线：`0ab2e5b5092b7a0a0a8977a9eeb769088c3b8454`，已合入 master `b032d0d2ab9ee057137f3e5ad2c0e517011ea1ae`，保留上游委派阶段恢复、紧凑权限引导、消息锚点/预览关闭及实时上下文用量修复。上游已发布的 `0033_delegated_stage_recovery.sql` 保持原位，本任务尚未发布的续接迁移顺延为 `0034_run_continuations.sql`，SQL 内容不变。工具观测错误和 read 完成事件兼容性仅在开发测试层修正，不改生产工具状态机。
 Issue：https://github.com/puzige/vega/issues/535
@@ -11,10 +13,10 @@ Issue：https://github.com/puzige/vega/issues/535
 
 - 排队消息发出后上方出现 Completed，用户消息气泡与下方 Working for 间距不一致。
 - 不使用 CUA；本地不运行、构建或测试 Vega，自动验证只交现有 Actions。
-- 同一次运行只保留一个计时。插话不是任务完成，不以 Completed / Worked for 表示插话边界；普通排队开始的独立运行仍各自计时。
+- v3 用户验收纠正：插话到来后像真实用户新发消息一样继续对话流，用户气泡后不再出现 Working for 或替代性的运行计时标题/分隔线。内部同一运行的起点、耗时和 WorkClock 不重置；不将内部计时等同于必须显示计时。真实终态和必要待用户操作状态保留，普通独立排队仍按既有规则展示。
 - 只修排队切换的不一致，保留普通消息的既有间距，不全局收紧。
 
-## 已确认事实
+## 上一轮根因与已确认事实（历史）
 
 `vega_conversation::agent::events::process_runtime_events` 在处理 `RuntimeEvent::SteeringAccepted` 时，依次发出旧消息 `MessageFinished(duration=None)`、用户投递、新消息开始及沿用原起点的 `RunStarted`。UI 的 `finish_run_activity` 将旧 group 置为 Completed，`RunActivityGroup::label` 因缺少 duration 显示 Completed。持久化也将旧助手消息结束且不写耗时；因此只替换字符串或补上旧段耗时不符合本次裁决。
 
@@ -24,19 +26,19 @@ Issue：https://github.com/puzige/vega/issues/535
 
 | 编号 | 场景 | 预期 |
 |---|---|---|
-| A1 | 同一次运行接受一条或多条插话 | 只显示一个当前运行计时，不出现虚假的分段 Completed / Worked for；起点不重置 |
+| A1 | 同一次运行接受一条或多条插话 | 插话后的运行中回复不显示 Working for / Working / 替代计时标题及其分隔线；旧段不伪完成，不重复标题，内部起点不重置 |
 | A2 | 普通 queue 在前一运行真正完成后启动 | 前一运行真实终态保留，新运行独立计时，不合并不同运行 |
 | A3 | 插话前已有正文、思考、工具、图片或最终回复元数据 | 历史内容、过程展开、复制来源与归属完整；不因移除旧计时标题隐藏过程或串联回复 |
 | A4 | 插话后正常结束、失败、用户停止 | 当前运行真实终态正确，具体错误与恢复入口保留；重复或旧消息终态不污染新运行 |
-| A5 | 切换会话、历史重载及分页 | 显式运行/续接归属维持单计时；不靠相邻文本、缺时长或时间戳猜测同次运行，不将未知历史伪造为插话 |
-| A6 | 普通发送、排队直接投递、插话 echo 原位转正 | 相同内容和窗口下，用户气泡到后继运行行的真实布局一致；无重复消息、额外空行、重叠或无效占位 |
+| A5 | 切换会话、历史重载及分页 | 显式续接关系维持同一运行与一致展示；恢复后不重现运行中的续接计时标题，不靠相邻文本、缺时长或时间戳猜测同次运行 |
+| A6 | 普通发送、排队直接投递、插话 echo 原位转正 | 插话共用普通用户气泡布局；隐藏标题在渲染、高度估算和锚点中均为零占位。气泡后首个思考/工具按正文顶部间距，不误用助手段间距；无重复、空行或重叠 |
 | A7 | 长文换行、图片、窄窗口、复制 hover/focus、列表重新测量 | 维持各自普通路径的几何与交互；图片按同一普通附图基线比较，不把附图高度当成文字间距 |
 
 ## 范围与非目标
 
 修正运行展示归属与排队布局一致性。保留队列消费时机、顺序、去重、持久化事务、安全与权限、输入内容、复制文本以及普通消息几何。不得用修改全局间距、隐藏全部旧过程或猜测同一运行替代修复。不新增依赖、真实外部 E2E 或 CUA 门禁。
 
-## 具体方案与先行测试包
+## 具体方案（v3 优先；保留 v2 历史实施依据）
 
 ### 真实续接关系
 
@@ -50,9 +52,19 @@ Issue：https://github.com/puzige/vega/issues/535
 
 在 `vega_conversation::types` 定义明确续接 payload / event，包含前后 assistant ID 和 user ID。`process_runtime_events` 用续接事件替代旧普通 MessageFinished，后续用户投递、MessageStarted、RunStarted 顺序与同一计时起点不变；两个 runtime 接受入口都沿用此转换。需核对 debug、meter 及其他事件消费者的穷举匹配，但不改变计费/队列调度。
 
-UI 收到续接时仅结束旧消息段的 parser/presentation，不标整个运行 Completed。仍为新 assistant 建独立 `RunActivityGroup`，避免 final 收起、隐藏正文和复制集合跨消息污染。旧组进入 continuation 前段模式，停止独立计时；有被收起内容时保留简短 Activity 展开入口，无内容时不留标题占位。新组位于最新插话（含图片）之后，显示唯一当前运行计时。旧正文/工具/复制/错误不移动、不丢失。重复事件幂等，旧终态不得重新唤醒旧计时。
+UI 收到续接时仅结束旧消息段的 parser/presentation，不标整个运行 Completed。仍为新 assistant 建独立 `RunActivityGroup`，避免 final 收起、隐藏正文和复制集合跨消息污染。旧组进入 continuation 前段模式，停止独立计时；有被收起内容时保留简短 Activity 展开入口，无内容时不留标题占位。v3 改为：新组位于最新插话（含图片）之后，明确标为 continuation successor，运行中隐藏纯计时标题和分隔线，不调用 continue_run（该方法会释放运行展示并忽略终态）。等待用户回答/授权所需状态不能隐藏；成功、失败、停止后沿用真实终态及最终过程展开入口。旧正文/工具/复制/错误不移动、不丢失。重复事件幂等，旧终态不得重新唤醒旧计时。
 
 `MessagePage` 各分页读取路径应携带明确 continuation 关系，`history::project_rows` 投影到 UI；查询须涵盖页外 successor，补载旧页不生成第二计时。UI hydration 根据明确 predecessor 关系使用相同展示模式，不依赖当前页相邻关系。同步渲染高度、锚点估算、列表失效和键盘可达性；不改全局48px留白。
+
+### v3 最小实现与布局核对
+
+根因：`remember_run_continuation` 只对 predecessor 调用 `continue_run`；successor 的 `MessageStarted` 新建普通 Running group，`RunStarted` 又沿用原时钟，故气泡后仍渲染 Working for。不是 runtime 错误，不改调度、store 或时钟。
+
+- 在 `run_activity.rs` 增加独立的 successor 展示标记/方法；统一 `header_hidden` 供真实渲染、estimated_header_height、process_entry_hidden 使用。仅隐藏运行中的纯计时标题，不能复用 predecessor 的释放/终态过滤语义。
+- `content.rs` 在 live MessageStarted、hydrate group 创建、迟到关系补载到已有 successor 时同步标记；依靠现有明确 next_assistant_id，不猜邻接。
+- `phase.rs::stage_top_insets` 跳过零高标题后，首个可见阶段若紧接 User / UserImages 应使用 CONVERSATION_BODY_TOP；后续正文/过程沿用原段落规则，普通独立运行不变。
+- 逻辑数值核对：用户气泡现有底部空间48；隐藏标题高度0；正文顶部16。续接首阶段顶部应为48+0+16=64，不应误叠加24形成72（额外8），更不能保留标题23+4.5+分隔线高度。数值为静态结构推导，不冒充像素实测。复制槽28不新增空间，保留48-28=20尾部余量；图片组用实际末图底部单独核对。
+- 当前是明确的展示验收修订，原始20条历史测试证据保留，不声称继续满足旧A1。最小修复不恢复已删除Rust测试；静态审查live/多次续接/历史分页/等待/终态/首段与后续间距，最终同版Actions fmt、Clippy、Python及required check。原生外观、真实打断继续由用户手测。
 
 ### 应用控制器的终态归属（v2.3）
 
@@ -68,9 +80,11 @@ UI 收到续接时仅结束旧消息段的 parser/presentation，不标整个运
 - `vega/src/app_agent.rs`：仅补齐显式续接 predecessor 的控制器终态过滤；不改 queue 调度、通知文案或权限逻辑。
 - 开发测试及最小 cfg(test)/dev feature 接线；不扩大 production public API。
 
-### 测试与观测
+### 上一轮测试与观测（历史，非本轮执行指令）
 
-先写齐 A1–A7 的有效测试。store 使用内存/隔离临时数据库，验证真实事务结果、独立发送负对照与跨页投影；conversation 验证真实事件转换而不是测试镜像算法。GPUI 使用当前 `gpui-kit 0.6.1` 的 test-support、TestAppContext 和真实 ConversationStream，观测真实 header 的 label/bounds、气泡 painted quads、list bounds、展开行为和 clipboard。观测支持仅最小接线，不改生产决策；snapshot label 不冒充像素文字。
+以下记录 v2 的测试方案与当时证据；v3 的验证方式见上文，不恢复已删除的测试，不将旧验收结果当作本轮结果。
+
+当时要求先写齐 A1–A7 的有效测试。store 使用内存/隔离临时数据库，验证真实事务结果、独立发送负对照与跨页投影；conversation 验证真实事件转换而不是测试镜像算法。GPUI 使用当前 `gpui-kit 0.6.1` 的 test-support、TestAppContext 和真实 ConversationStream，观测真实 header 的 label/bounds、气泡 painted quads、list bounds、展开行为和 clipboard。观测支持仅最小接线，不改生产决策；snapshot label 不冒充像素文字。
 
 几何加入普通发送阳性对照、直接投递、echo转正、echo后旧run继续输出、零高行及重新测量。相同内容/窗口下比较真实气泡到后继运行行的距离；若中间仍有合法旧内容，记录其实际顺序而非删除内容强行相等。当前尚无间距根因证据，测试若均一致，不得虚构间距修复或改token；报告未复现并保留回归。
 

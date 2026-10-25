@@ -129,6 +129,7 @@ pub(crate) struct RunActivityGroup {
     tool_starts: Vec<(Entity<ToolCard>, u64)>,
     presentation_released: bool,
     continued: bool,
+    continuation_successor: bool,
     process_copies: HashSet<u64>,
     final_confirmed: bool,
     body_in_details: bool,
@@ -456,7 +457,23 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn mark_continuation_successor(&mut self, cx: &mut Context<Self>) {
+        if self.continuation_successor {
+            return;
+        }
+        self.continuation_successor = true;
+        cx.notify();
+    }
+
     pub(crate) fn header_hidden(&self) -> bool {
+        if !self.continued
+            && self.continuation_successor
+            && self.status == RunActivityStatus::Running
+            && !self.waiting_for_user
+            && !self.waiting_for_answer
+        {
+            return true;
+        }
         let has_details = !self.process_copies.is_empty()
             || self
                 .segments
@@ -628,6 +645,7 @@ impl RunActivityGroup {
             tool_starts: Vec::new(),
             presentation_released: false,
             continued: false,
+            continuation_successor: false,
             process_copies: HashSet::new(),
             final_confirmed: false,
             body_in_details: false,

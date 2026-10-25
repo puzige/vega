@@ -521,8 +521,15 @@ impl ConversationStream {
             return group.clone();
         }
         let continued = self.run_continuations.contains_key(message_id);
+        let continuation_successor = self
+            .run_continuations
+            .values()
+            .any(|relation| relation.next_assistant_id == message_id);
         let group = cx.new(|cx| {
             let mut group = RunActivityGroup::new(status, execution_duration_ms, false, cx);
+            if continuation_successor {
+                group.mark_continuation_successor(cx);
+            }
             if continued {
                 group.continue_run(cx);
             }
@@ -1111,6 +1118,9 @@ impl ConversationStream {
         if let Some(group) = self.run_activity_groups.get(previous) {
             group.update(cx, |group, cx| group.continue_run(cx));
         }
+        if let Some(group) = self.run_activity_groups.get(next) {
+            group.update(cx, |group, cx| group.mark_continuation_successor(cx));
+        }
         let indexes = self
             .entry_identities
             .iter()
@@ -1267,18 +1277,24 @@ impl ConversationStream {
                 }
                 self.reset_live_context_usage();
                 self.last_finished_agent_message = None;
-                if !self
+                let continuation_successor = self
                     .run_continuations
                     .values()
-                    .any(|relation| relation.next_assistant_id == message_id)
-                {
+                    .any(|relation| relation.next_assistant_id == message_id);
+                if !continuation_successor {
                     self.begin_computer_use_task(cx);
                 }
                 self.active_thinking = None;
                 self.active_skills.clear();
                 self.active_skill_focuses.clear();
-                let group =
-                    cx.new(|cx| RunActivityGroup::new(RunActivityStatus::Running, None, false, cx));
+                let group = cx.new(|cx| {
+                    let mut group =
+                        RunActivityGroup::new(RunActivityStatus::Running, None, false, cx);
+                    if continuation_successor {
+                        group.mark_continuation_successor(cx);
+                    }
+                    group
+                });
                 self.observe_run_activity_group(&group, cx);
                 self.run_activity_groups
                     .insert(message_id.clone(), group.clone());

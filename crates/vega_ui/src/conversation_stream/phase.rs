@@ -384,7 +384,11 @@ impl ConversationStream {
                     | StreamEntry::ContextCompaction { .. }
             ) {
                 let top = match previous_visible.and_then(|previous| self.entries.get(previous)) {
-                    Some(StreamEntry::RunActivity { .. }) => Layout::CONVERSATION_BODY_TOP,
+                    Some(
+                        StreamEntry::RunActivity { .. }
+                        | StreamEntry::User { .. }
+                        | StreamEntry::UserImages { .. },
+                    ) => Layout::CONVERSATION_BODY_TOP,
                     Some(StreamEntry::Assistant { .. }) => Layout::CONVERSATION_STAGE_TOP,
                     _ => 0.,
                 };
@@ -412,7 +416,12 @@ impl ConversationStream {
                     }
                     insets.insert(
                         index,
-                        if previous_clock.get(owner) == Some(&true) {
+                        if previous_clock.get(owner) == Some(&true)
+                            || matches!(
+                                previous_visible.and_then(|previous| self.entries.get(previous)),
+                                Some(StreamEntry::User { .. } | StreamEntry::UserImages { .. })
+                            )
+                        {
                             Layout::CONVERSATION_BODY_TOP
                         } else {
                             Layout::CONVERSATION_STAGE_TOP
