@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod fork_tests;
-
 use vega_store::Store;
 use vega_store::context_compaction;
 use vega_store::messages as store_messages;
