@@ -18,6 +18,21 @@ impl SkillSettingsService {
         thread_id: &str,
         intent: &SkillSelectionIntent,
     ) -> Result<(), SkillSettingsError> {
+        let store = self.store()?;
+        let admission = crate::thread_access::acquire(&store, thread_id)
+            .map_err(|_| SkillSettingsError::Stale)?;
+        self.ensure_composer_pin_with_owner(thread_id, intent, &admission)
+    }
+
+    pub fn ensure_composer_pin_with_owner(
+        &self,
+        thread_id: &str,
+        intent: &SkillSelectionIntent,
+        admission: &vega_store::thread_admission::ThreadAdmission,
+    ) -> Result<(), SkillSettingsError> {
+        let store = self.store()?;
+        crate::thread_access::verify(&store, thread_id, admission)
+            .map_err(|_| SkillSettingsError::Stale)?;
         let projection = self.composer_projection(thread_id)?;
         if projection.candidates.iter().any(|candidate| {
             candidate.selected
@@ -27,7 +42,7 @@ impl SkillSettingsService {
         }) {
             return Ok(());
         }
-        self.apply_composer(
+        self.apply_composer_with_owner(
             thread_id,
             intent.expected_consent_generation,
             SkillComposerMutation::Pin {
@@ -35,6 +50,7 @@ impl SkillSettingsService {
                 name: intent.name.clone(),
                 content_sha256: intent.content_sha256.clone(),
             },
+            admission,
         )
     }
 
@@ -159,6 +175,21 @@ impl SkillSettingsService {
         mutation: SkillComposerMutation,
     ) -> Result<(), SkillSettingsError> {
         let store = self.store()?;
+        let admission = crate::thread_access::acquire(&store, thread_id)
+            .map_err(|_| SkillSettingsError::Stale)?;
+        self.apply_composer_with_owner(thread_id, expected_generation, mutation, &admission)
+    }
+
+    fn apply_composer_with_owner(
+        &self,
+        thread_id: &str,
+        expected_generation: u64,
+        mutation: SkillComposerMutation,
+        admission: &vega_store::thread_admission::ThreadAdmission,
+    ) -> Result<(), SkillSettingsError> {
+        let store = self.store()?;
+        crate::thread_access::verify(&store, thread_id, admission)
+            .map_err(|_| SkillSettingsError::Stale)?;
         self.composer_thread(&store, thread_id)?;
         match mutation {
             SkillComposerMutation::Pin {

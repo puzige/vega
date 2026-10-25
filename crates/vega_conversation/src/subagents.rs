@@ -144,8 +144,15 @@ pub(crate) fn recover_children(
                 child.child_thread_id.clone(),
             ))
         {
-            vega_store::recovery::recover_thread(store.conn(), &child.child_thread_id, now)
-                .map_err(|error| ConversationError::Store(error.to_string()))?;
+            let admission = vega_store::thread_admission::try_acquire(
+                store.database_identity(),
+                &child.child_thread_id,
+            )
+            .map_err(|_| ConversationError::InvalidTaskIdentity)?;
+            if let Some(_admission) = admission {
+                vega_store::recovery::recover_thread(store.conn(), &child.child_thread_id, now)
+                    .map_err(|error| ConversationError::Store(error.to_string()))?;
+            }
         }
     }
     Ok(())

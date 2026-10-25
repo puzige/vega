@@ -1158,23 +1158,20 @@ fn child_lifecycle_inner<'a>(
                         user_questions: Some(Arc::new(questions.clone())),
                         ..Default::default()
                     };
-                    if let Some(reader) = &config.owner_credential_reader {
-                        config.steering_source =
-                            Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
-                                database.clone(),
-                                tools.root().to_path_buf(),
-                                snapshot.agent_id.clone(),
-                                queue_generation,
-                                reader.clone(),
-                                cancel.clone(),
-                            )));
-                    }
                     let scoped_provider = ChildProvider {
                         inner: provider,
                         reader: config.owner_credential_reader.clone(),
                     };
                     match Store::open(&database) {
-                        Ok(store) => {
+                        Ok(store) => async {
+                            let admission = crate::thread_access::acquire(&store, &snapshot.agent_id)?;
+                            config.admission = Some(admission.clone());
+                            if let Some(reader) = &config.owner_credential_reader {
+                                config.steering_source = Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
+                                    database.clone(), tools.root().to_path_buf(), snapshot.agent_id.clone(), queue_generation,
+                                    reader.clone(), cancel.clone(),
+                                ).with_thread_admission(admission)));
+                            }
                             let child_host = host.clone();
                             let id = snapshot.agent_id.clone();
                             let run = snapshot.message_id.clone();
@@ -1196,7 +1193,7 @@ fn child_lifecycle_inner<'a>(
                                 mcp,
                             )
                             .await
-                        }
+                        }.await,
                         Err(_) => Err(ConversationError::Store("child storage unavailable".into())),
                     }
                 }

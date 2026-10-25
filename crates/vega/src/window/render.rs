@@ -377,6 +377,7 @@ impl Render for VegaWindow {
                                     Err(_) => stream.apply_controller_error(cx),
                                 });
                             }
+                            self.rehydrate_ordinary(&view, &thread.id, cx);
                             self.stream_view = Some((thread.id.clone(), view.clone()));
                             if !draft_route {
                                 self.load_pending_queue(view.clone(), thread.id.clone(), cx);
@@ -400,6 +401,7 @@ impl Render for VegaWindow {
                             view
                         }
                     };
+                    stream.update(cx, ConversationStream::refresh_ordinary_submissions);
                     self.sync_context_route(&stream, cx);
                     // Settings close invalidates the catalog even when this
                     // thread entity remains cached; restart the worker on

@@ -280,6 +280,7 @@ impl VegaWindow {
         if !self.agent_controller.matches(generation, thread_id, stream) {
             return AgentBatchIngress::Stale;
         }
+        stream.update(cx, ConversationStream::refresh_ordinary_submissions);
         if let Some(request) = batch.composer_prediction
             && let Some(active) = self.agent_controller.active.get_mut(thread_id)
         {

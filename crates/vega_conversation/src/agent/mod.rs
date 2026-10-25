@@ -44,7 +44,13 @@ mod credential_guard;
 mod diagnostics;
 mod entry;
 mod events;
+mod ordinary;
+#[cfg(test)]
+mod ordinary_tests;
 mod permission_queue;
+pub use ordinary::{
+    OrdinaryHistoryObservation, OrdinaryRun, finish_ordinary_worker, observe_ordinary_history,
+};
 mod stage_activity;
 mod subagents;
 mod user_question_queue;

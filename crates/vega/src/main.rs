@@ -28,6 +28,7 @@ mod commit_controller;
 mod diff_controller;
 mod model_catalog;
 mod native_subagents;
+mod ordinary_submission;
 mod pricing_controller;
 mod reasoning_capabilities;
 mod thread_reload;

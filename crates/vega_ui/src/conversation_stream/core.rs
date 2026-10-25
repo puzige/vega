@@ -21,6 +21,7 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) ordinary: Vec<super::ordinary_submissions::OrdinaryRow>,
     pub(crate) prediction_waiting_for_queue: bool,
     pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
     pub(crate) prediction_generation: u64,
@@ -218,6 +219,7 @@ impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
+impl EventEmitter<super::ordinary_submissions::OrdinaryActionRequested> for ConversationStream {}
 impl EventEmitter<SkillComposerProjectionRequested> for ConversationStream {}
 impl EventEmitter<SkillComposerMutationRequested> for ConversationStream {}
 impl EventEmitter<ContextSettingsRequested> for ConversationStream {}
@@ -480,6 +482,7 @@ impl ConversationStream {
             attachment_import_pending: false,
             attachment_error: None,
             submitted_attachments: Vec::new(),
+            ordinary: Vec::new(),
             thread,
             entries: Vec::new(),
             counters: Arc::new(StreamCounters::default()),
@@ -963,6 +966,10 @@ impl ConversationStream {
     /// Project identity of the route currently projected by this cached view.
     pub fn route_project_id(&self) -> &str {
         &self.thread.project_id
+    }
+
+    pub fn thread_snapshot(&self) -> Thread {
+        self.thread.clone()
     }
 
     pub fn task_backend(&self) -> TaskBackend {

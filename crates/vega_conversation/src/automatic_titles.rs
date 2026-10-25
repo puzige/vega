@@ -15,6 +15,7 @@ pub struct AutomaticTitleRequest {
     provider: Arc<dyn Provider>,
     cancel: CancellationToken,
     notifications: mpsc::Sender<()>,
+    admission: Option<vega_store::thread_admission::ThreadAdmission>,
 }
 
 impl std::fmt::Debug for AutomaticTitleRequest {
@@ -37,7 +38,16 @@ impl AutomaticTitleRequest {
             provider,
             cancel,
             notifications,
+            admission: None,
         }
+    }
+
+    pub(crate) fn with_thread_admission(
+        mut self,
+        admission: vega_store::thread_admission::ThreadAdmission,
+    ) -> Self {
+        self.admission = Some(admission);
+        self
     }
 
     pub(crate) fn fallback(&self) -> String {
@@ -61,6 +71,7 @@ impl AutomaticTitleRequest {
         let worker = std::thread::Builder::new()
             .name("vega-auto-title".into())
             .spawn(move || {
+                let _admission = self.admission.clone();
                 let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -79,6 +90,11 @@ impl AutomaticTitleRequest {
                     );
                     return;
                 };
+                if self.admission.as_ref().is_none_or(|admission| {
+                    !admission.verifies(store.database_identity(), &thread_id)
+                }) {
+                    return;
+                }
 
                 if let Some((input, output, cache_read, cache_write)) = usage {
                     let quote = pricing.as_ref().and_then(|catalog| {

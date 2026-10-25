@@ -86,6 +86,7 @@ pub struct ConversationCompactionHook<'a> {
     credential_reader: Option<vega_runtime::CredentialReader>,
     credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     diagnostics: Option<super::diagnostics::DiagnosticsContext>,
+    admission: Option<crate::types::ThreadAdmission>,
 }
 
 impl<'a> ConversationCompactionHook<'a> {
@@ -108,7 +109,13 @@ impl<'a> ConversationCompactionHook<'a> {
             credential_reader: None,
             credential_exceptions: None,
             diagnostics: None,
+            admission: None,
         }
+    }
+
+    pub fn with_thread_admission(mut self, admission: crate::types::ThreadAdmission) -> Self {
+        self.admission = Some(admission);
+        self
     }
 
     pub(crate) fn with_credential_exceptions(
@@ -195,6 +202,7 @@ pub fn save_context_settings(
     store: &Store,
     settings: &crate::types::ContextSettings,
 ) -> Result<(), crate::types::ConversationError> {
+    let _admission = crate::thread_access::acquire(store, &settings.thread_id)?;
     save_settings(
         store.conn(),
         &StoreContextSettings {
@@ -530,6 +538,42 @@ pub async fn compact_thread_manually_with_credential_reader(
     pricing_catalog: Option<vega_token::PricingCatalog>,
     credential_reader: Option<vega_runtime::CredentialReader>,
 ) -> Result<ContextCompactionResult, ContextCompactionFailure> {
+    let admission = crate::thread_access::acquire(store, thread_id)
+        .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?;
+    compact_thread_manually_owned(
+        store,
+        provider,
+        thread_id,
+        expected_model,
+        system_prompt,
+        tools,
+        budget,
+        cancel,
+        reasoning,
+        pricing_catalog,
+        credential_reader,
+        admission,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compact_thread_manually_owned(
+    store: &Store,
+    provider: &dyn Provider,
+    thread_id: &str,
+    expected_model: &str,
+    system_prompt: &str,
+    tools: Vec<ToolDefinition>,
+    budget: ContextBudget,
+    cancel: CancellationToken,
+    reasoning: Option<FrozenReasoning>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    credential_reader: Option<vega_runtime::CredentialReader>,
+    admission: crate::types::ThreadAdmission,
+) -> Result<ContextCompactionResult, ContextCompactionFailure> {
+    crate::thread_access::verify(store, thread_id, &admission)
+        .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?;
     let database_path = store
         .database_path()
         .ok_or_else(|| failure(context_error(ContextRuntimeError::SourceChanged), None))?
@@ -632,6 +676,7 @@ pub async fn compact_thread_manually_with_credential_reader(
         reasoning,
         pricing_catalog,
     )
+    .with_thread_admission(admission)
     .with_credential_reader(credential_reader)
     .with_credential_exceptions(exceptions)
     .with_diagnostics(diagnostics_context);
@@ -731,6 +776,7 @@ pub async fn compact_thread_manually_accounted_with_credential_reader(
     generation: u64,
     credential_reader: Option<vega_runtime::CredentialReader>,
 ) -> Result<Vec<crate::types::ConversationEvent>, crate::types::ConversationError> {
+    let admission = crate::thread_access::acquire(store, thread_id)?;
     let model_snapshot = provider.model_snapshot().ok_or_else(|| {
         conversation_runtime_error(context_error(ContextRuntimeError::MissingHook))
     })?;
@@ -801,7 +847,7 @@ pub async fn compact_thread_manually_accounted_with_credential_reader(
         record: started_record,
     }];
 
-    let result = compact_thread_manually_with_credential_reader(
+    let result = compact_thread_manually_owned(
         store,
         provider,
         thread_id,
@@ -813,6 +859,7 @@ pub async fn compact_thread_manually_accounted_with_credential_reader(
         reasoning,
         pricing_catalog,
         credential_reader,
+        admission,
     )
     .await;
     match result {
@@ -1400,8 +1447,12 @@ impl ConversationCompactionHook<'_> {
         let path = self.database_path.clone();
         let thread_id = self.thread_id.clone();
         let model = self.model.clone();
+        let admission = self.admission.clone();
         let capture = tokio::task::spawn_blocking(move || {
             let store = Store::open(path).map_err(VegaError::Store)?;
+            let admission =
+                super::ordinary::verified_admission(&store, &thread_id, admission.as_ref())
+                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
             // Capture source and predecessor from one SQLite snapshot.  A
             // pair of independent reads could otherwise summarize one
             // revision while installing against another revision that shares
@@ -1425,9 +1476,9 @@ impl ConversationCompactionHook<'_> {
             let checkpoint = latest_checkpoint_in_transaction(&transaction, &thread_id, &model)
                 .map_err(VegaError::Store)?;
             transaction.commit().map_err(VegaError::Store)?;
-            Ok::<_, VegaError>((source, checkpoint))
+            Ok::<_, VegaError>((source, checkpoint, admission))
         });
-        let (source, checkpoint) = tokio::select! {
+        let (source, checkpoint, admission) = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(failure(VegaError::Cancelled, None)),
             _ = tokio::time::sleep_until(deadline) => {
@@ -1919,6 +1970,7 @@ impl ConversationCompactionHook<'_> {
             let path = self.database_path.clone();
             let install_cancel = cancel.clone();
             move || {
+                let _admission = admission;
                 let store = Store::open(path).map_err(VegaError::Store)?;
                 vega_store::context_compaction::install_checkpoint_with_guard(
                     store.conn(),

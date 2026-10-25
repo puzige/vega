@@ -40,3 +40,29 @@ error: could not compile `vega_store` (lib) due to 2 previous errors
 父核 `Cargo.toml` 实际锁定 `ulid = "=3.0.0"`，仓库既有代码使用 `Ulid::generate()`。相同不适配还存在新 conversation 模块，应一并修正；不改依赖/CI，不重跑未变化版本，不称功能 RED 或测试通过。当前原 writer 修独审发现，后续同 writer 纳入此精确编译错误，再对新固定 SHA 交原 PR Actions。
 
 最终 head 尚未产生；没有功能通过、合并或用户手测结论。开发测试和独占支持最终须在实际验证留痕后独立清理，不能用零测试空集消解上述未解决错误。
+
+## F 修复基础层：bc15fb9a240327ab679fc0dd9173a73bf3c762b9
+
+- 同一 writer 已修上述三个发现，所有九处 ULID 调用使用锁定 API `Ulid::generate()`。原 14 个测试和 65 个断言保留，新增 8 个有区分度回归，合计 22 个源码定义。
+- [固定源码](https://github.com/puzige/vega/tree/bc15fb9a240327ab679fc0dd9173a73bf3c762b9) / [修复 patch](https://github.com/puzige/vega/commit/bc15fb9a240327ab679fc0dd9173a73bf3c762b9.patch)。accepted、persisted 及原始快照分域；真实 committer 在 sibling 异常后仍能确认真实 commit，同时不清除异常与禁重试事实。
+- 非写入者增量独审：READY-delta-review，无 actionable delta finding。审查前后复算三文件 SHA-256 一致：store/thread_admission `485d9a6cf24179aba90b20703c20e4d5bfedb68d5d837f77be96096e6d3d565a`、conversation/ordinary_submissions `ebb63614d498effcc5ae9c24f73fe89135f858a87b14c02c769b8472cd243fbe`、conversation/types/mod `1e828594e5f0017192c300c6542ddea885a66942a6f7541ba8c6e2387227e2f9`。
+- 父独立执行 targeted Rust 1.98.0 rustfmt check、`git diff --check` exit 0；没有本地编译/测试或运行。
+
+### Actions 修复轮：基础层 22/22，非完整功能验收
+
+[Run 40160927551](https://github.com/puzige/vega/actions/runs/40160927551) 精确绑定 head `bc15fb9a240327ab679fc0dd9173a73bf3c762b9`，completed / success。
+
+| job | ID | 实际结果 |
+|---|---|---|
+| Clippy（含 fmt） | 121072127169 | success |
+| Nextest（含保留 Python 检查） | 121072127003 | success；22 发现 / 22 执行 / 22 通过 / 0 失败 / 0 跳过 |
+| required `check (fmt, clippy, test)` | 121072751435 | success |
+
+父读取原始 job 日志，Python 实际 5 + 15 + 40 = 60 项，均 OK；Nextest 原文：
+
+```text
+Summary [0.197s] 22 tests run: 22 passed, 0 skipped
+Rust: nonempty suite completed successfully (22 discovered, including ignored/skipped)
+```
+
+此结果验证基础层能力/事实边界，不验证 UI、本卡完整 A1–A12、真实网络或 OS 呈现。基础层同字节独审/云端可复用；后续 I/G/U 集成增量和最终无 Rust 测试 head 必须分别验证，不能只拿此轮通过合并。当前单一 writer 接 UI/app/pipeline/冲突服务边界，仍 draft / In progress，无合并或用户手测。

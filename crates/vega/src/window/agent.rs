@@ -622,7 +622,17 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
+        self.agent_controller
+            .request_active_cancel(&request.thread_id);
         self.pause_automation_all(&request.thread_id, "已由你停止", cx);
+        if self
+            .agent_controller
+            .ordinary_preparing
+            .contains_key(&request.thread_id)
+        {
+            stream.update(cx, ConversationStream::refresh_ordinary_submissions);
+            return;
+        }
         if self
             .agent_controller
             .active
@@ -728,7 +738,9 @@ impl VegaWindow {
         }
         let pending_user_content = match &run {
             PendingAgentRun::Automation(claim) => Some(automation_trigger(claim).into()),
-            PendingAgentRun::UserMessage(content) => Some(content.content.clone()),
+            PendingAgentRun::UserMessage(content) => {
+                content.ordinary.is_none().then(|| content.content.clone())
+            }
             PendingAgentRun::ApprovedPlan(_) | PendingAgentRun::CredentialContinuation(_) => None,
         };
         let pending_approved_instruction = match &run {
@@ -756,24 +768,60 @@ impl VegaWindow {
             }
             return;
         }
-        let prepared = match &cx.global::<VegaStore>().0 {
-            Ok(store) => (|| {
-                let database_path = store
-                    .database_path()
-                    .ok_or_else(|| "agent store is not file-backed".to_string())?
-                    .to_path_buf();
-                let thread = vega_conversation::threads::open_thread(store, thread_id)
-                    .map_err(|error| error.to_string())?;
-                // Project tasks run in their registered folder; standalone
-                // tasks get an app-owned scratch root scoped to this thread.
-                // Keeping this resolution in the conversation layer makes
-                // the workspace fence identical for UI-created and resumed
-                // runs, without introducing a synthetic project row.
-                let workspace = vega_conversation::threads::task_workspace_root(store, thread_id)
-                    .map_err(|error| error.to_string())?;
-                Ok((database_path, workspace, thread))
-            })(),
-            Err(error) => Err(error.clone()),
+        let ordinary_launch = match &run {
+            PendingAgentRun::UserMessage(submission) => submission.ordinary.as_ref(),
+            _ => None,
+        };
+        let ordinary_cancel = ordinary_launch.map(|launch| launch.cancel.clone());
+        let admission = match &cx.global::<VegaStore>().0 {
+            Ok(store) => match ordinary_launch.and_then(|launch| launch.run()) {
+                Some(run) => Some(run.worker.admission().clone()),
+                None => {
+                    vega_store::thread_admission::try_acquire(store.database_identity(), thread_id)
+                        .ok()
+                        .flatten()
+                }
+            },
+            Err(_) => None,
+        };
+        let Some(admission) = admission else {
+            stream.update(cx, ConversationStream::apply_agent_busy);
+            return;
+        };
+        let prepared = if let Some(launch) = ordinary_launch {
+            let valid = match &cx.global::<VegaStore>().0 {
+                Ok(store) => launch.run().is_some_and(|run| {
+                    run.worker
+                        .admission()
+                        .verifies(store.database_identity(), thread_id)
+                }),
+                Err(_) => false,
+            };
+            if valid && !launch.cancel.is_cancelled() {
+                Ok((
+                    launch.database.clone(),
+                    launch.workspace.clone(),
+                    launch.thread.clone(),
+                ))
+            } else {
+                Err("Submission is no longer available".to_owned())
+            }
+        } else {
+            match &cx.global::<VegaStore>().0 {
+                Ok(store) => (|| {
+                    let database_path = store
+                        .database_path()
+                        .ok_or_else(|| "agent store is not file-backed".to_string())?
+                        .to_path_buf();
+                    let thread = vega_conversation::threads::open_thread(store, thread_id)
+                        .map_err(|error| error.to_string())?;
+                    let workspace =
+                        vega_conversation::threads::task_workspace_root(store, thread_id)
+                            .map_err(|error| error.to_string())?;
+                    Ok((database_path, workspace, thread))
+                })(),
+                Err(error) => Err(error.clone()),
+            }
         };
         let Ok((database_path, project_path, thread)) = prepared else {
             if pending_user_content.is_some() {
@@ -799,6 +847,14 @@ impl VegaWindow {
         ) else {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
+        };
+        let cancel = if let Some(cancel) = ordinary_cancel {
+            if let Some(active) = self.agent_controller.active.get_mut(thread_id) {
+                active.cancel = cancel.clone();
+            }
+            cancel
+        } else {
+            cancel
         };
         self.bind_question_attention(&stream, cx);
         crate::automation_controller::ensure_global(cx);
@@ -864,7 +920,16 @@ impl VegaWindow {
             cx,
         );
         let worker_sender = sender.clone();
-        let config_path = self.composer_config_path();
+        let config_path = match &run {
+            PendingAgentRun::UserMessage(submission) => submission
+                .ordinary
+                .as_ref()
+                .and_then(|launch| launch.run())
+                .and_then(|run| crate::ordinary_submission::context(run.submission.id()))
+                .map(|context| context.config)
+                .unwrap_or_else(|| self.composer_config_path()),
+            _ => self.composer_config_path(),
+        };
         let mcp_settings = self.mcp_settings.clone();
         let file_read_state = self
             .agent_controller
@@ -910,6 +975,7 @@ impl VegaWindow {
                     queue_context,
                     automation_pauses,
                     replay_registry,
+                    admission,
                 );
                 drop(worker_activity);
             });
@@ -1144,6 +1210,13 @@ impl VegaWindow {
         request: &ComposerSubmitted,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .agent_controller
+            .ordinary_requests
+            .contains(&request.request_id)
+        {
+            return;
+        }
         if crate::updater::installing() {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
@@ -1194,72 +1267,16 @@ impl VegaWindow {
             }
         };
 
-        let Some(lease) = self
-            .trusted_actions
-            .acquire(TrustedActionKind::AgentPreflight, 0, 0)
-        else {
-            stream.update(cx, |stream, cx| {
-                stream.reject_composer_submission(cx);
-                stream.apply_controller_error(cx);
-            });
-            return;
-        };
-        self.agent_controller.preparation_stream = Some(stream.clone());
-        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
-        let config_path = self.composer_config_path();
-        let model = stream.read(cx).displayed_model().to_owned();
-        let content = request.content.clone();
-        let images = request.images.clone();
-        let skill_intent = request.skill_intent.clone();
-        let thread_id = request.thread_id.clone();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let worker_model = model.clone();
-        let worker = std::thread::Builder::new()
-            .name("vega-agent-preflight".into())
-            .spawn(move || {
-                let outcome = preflight_provider(config_path.as_deref(), &worker_model);
-                let _ = sender.send(outcome);
-            });
-        if worker.is_err() {
-            let _ = self.trusted_actions.release(lease);
-            self.agent_controller.preparation_stream = None;
-            stream.update(cx, |stream, cx| {
-                stream.set_trusted_action_busy(false, cx);
-                stream.reject_composer_submission(cx);
-                stream.apply_controller_error(cx);
-            });
+        if self.trusted_actions.is_busy()
+            || self.reasoning_save_pending.is_some()
+            || self.model_catalog_loading
+            || stream.read(cx).has_pending_model_selection()
+            || stream.read(cx).reasoning_unavailable()
+        {
+            stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         }
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(AGENT_PREFLIGHT_POLL).await;
-                let outcome = match receiver.try_recv() {
-                    Ok(outcome) => outcome,
-                    Err(mpsc::TryRecvError::Empty) => continue,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        Err(ProviderPreflightFailure::ProviderUnavailable {
-                            model: model.clone(),
-                            providers: Vec::new(),
-                        })
-                    }
-                };
-                let _ = this.update(cx, |this, cx| {
-                    this.finish_agent_preflight(
-                        stream.clone(),
-                        thread_id.clone(),
-                        content.clone(),
-                        images.clone(),
-                        skill_intent.clone(),
-                        reasoning.clone(),
-                        lease,
-                        outcome,
-                        cx,
-                    )
-                });
-                break;
-            }
-        })
-        .detach();
+        self.submit_ordinary(stream, request, reasoning, cx);
     }
 
     pub(crate) fn submit_codex_composer(
@@ -1704,62 +1721,6 @@ impl VegaWindow {
             }
         })
         .detach();
-    }
-
-    /// Applies the worker's typed readiness result. The route fence and the
-    /// single-flight lease are checked before any materialization or run
-    /// start, so late/stale results cannot create a task.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_agent_preflight(
-        &mut self,
-        stream: Entity<ConversationStream>,
-        thread_id: String,
-        content: String,
-        images: Vec<vega_conversation::types::ImageAttachment>,
-        skill_intent: Option<SkillSelectionIntent>,
-        reasoning: Option<FrozenReasoning>,
-        lease: TrustedActionToken,
-        outcome: Result<(), ProviderPreflightFailure>,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.trusted_actions.release(lease) {
-            return;
-        }
-        self.agent_controller.preparation_stream = None;
-        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
-        if cx.global::<SettingsOpen>().0 || !self.owns_stream_request(&stream, &thread_id, cx) {
-            stream.update(cx, ConversationStream::reject_composer_submission);
-            return;
-        }
-        if let Err(failure) = outcome {
-            stream.update(cx, |stream, cx| {
-                stream.apply_provider_preflight_error(failure, cx)
-            });
-            return;
-        }
-
-        if let Some(draft) = self.draft_for_route(&thread_id)
-            && self.materialize_draft(&draft, cx).is_err()
-        {
-            stream.update(cx, |stream, cx| {
-                stream.reject_composer_submission(cx);
-                stream.apply_controller_error(cx);
-            });
-            return;
-        }
-        if let Some(intent) = skill_intent {
-            self.start_skill_pin_before_agent(
-                stream, thread_id, content, images, reasoning, intent, cx,
-            );
-            return;
-        }
-        self.start_agent_run_with_reasoning(
-            stream,
-            &thread_id,
-            PendingAgentRun::UserMessage(crate::app_agent::UserSubmission { content, images }),
-            reasoning,
-            cx,
-        );
     }
 }
 

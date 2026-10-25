@@ -342,6 +342,7 @@ impl ConversationStream {
                                         div()
                                             .id("composer-send")
                                             .aria_label("发送")
+                                            .when(self.ordinary_pending_before_run(), |button| button.aria_description("本次发送尚在准备；可继续编辑，或在消息下方取消"))
                                             .track_focus(&self.action_focus[1])
                                             .tab_stop(true)
                                             .flex_shrink_0()
@@ -1551,6 +1552,9 @@ impl Render for ConversationStream {
                                                         None => div().into_any_element(),
                                                     }
                                                 };
+                                                let item = if let Some(controls) = this.ordinary_controls(index, cx) {
+                                                    div().w_full().flex().flex_col().child(item).child(controls).into_any_element()
+                                                } else { item };
                                                 let item = if let Some(notice) =
                                                     this.run_notices.get(&index)
                                                 {

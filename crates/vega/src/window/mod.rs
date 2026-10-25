@@ -35,6 +35,7 @@ mod model_context;
 mod native_subagents;
 pub(crate) mod navigation;
 mod notifications;
+mod ordinary_send;
 mod pending_messages;
 mod pricing;
 mod privacy;
@@ -349,6 +350,9 @@ impl VegaWindow {
         self.image_preview.retire();
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
+        for (_, cancel) in self.agent_controller.ordinary_preparing.drain() {
+            cancel.cancel();
+        }
         for (_, active) in self.agent_controller.active.drain() {
             if let Some(control) = &active.computer_use {
                 control.stop();

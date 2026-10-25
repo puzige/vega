@@ -549,6 +549,7 @@ impl VegaWindow {
             PendingAgentRun::UserMessage(UserSubmission {
                 content: message.content,
                 images: message.images,
+                ordinary: None,
             }),
             cx,
         );

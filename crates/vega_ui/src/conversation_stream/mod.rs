@@ -1,7 +1,9 @@
 mod privacy;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 mod attachments;
+mod ordinary_submissions;
 mod pending_messages;
+pub use ordinary_submissions::{OrdinaryAction, OrdinaryActionRequested};
 mod user_questions;
 pub use pending_messages::{PendingQueueAction, PendingQueueRequested, RunningMessageDefault};
 pub mod bench;
@@ -126,8 +128,11 @@ pub struct TaskBackendSelectionRequested {
 }
 
 /// Composer submission routed to the application controller.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ComposerSubmitted {
+    pub request_id: u64,
+    pub draft_revision: u64,
+    pub attachment_ids: Vec<u64>,
     pub pending_behavior: Option<PendingMessageBehavior>,
     pub images: Vec<ImageAttachment>,
     pub thread_id: String,
@@ -140,6 +145,15 @@ pub struct ComposerSubmitted {
     /// provider-default fallback. The app controller can reject the submit
     /// while keeping the input draft intact.
     pub reasoning: Result<Option<FrozenReasoning>, ReasoningSubmitError>,
+}
+
+impl std::fmt::Debug for ComposerSubmitted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ComposerSubmitted")
+            .field("request_id", &self.request_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Read-only, bounded Skills catalog request for this exact route.

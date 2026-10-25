@@ -40,6 +40,7 @@ pub(crate) enum PendingAgentRun {
 pub(crate) struct UserSubmission {
     pub content: String,
     pub images: Vec<vega_conversation::types::ImageAttachment>,
+    pub ordinary: Option<crate::ordinary_submission::OrdinaryLaunch>,
 }
 
 impl From<String> for UserSubmission {
@@ -47,6 +48,7 @@ impl From<String> for UserSubmission {
         Self {
             content,
             images: Vec::new(),
+            ordinary: None,
         }
     }
 }
@@ -369,6 +371,8 @@ type SubagentReleaseReply = tokio::sync::oneshot::Sender<Result<(), vega_runtime
 
 #[derive(Default)]
 pub(crate) struct AppAgentController {
+    pub(crate) ordinary_preparing: HashMap<String, tokio_util::sync::CancellationToken>,
+    pub(crate) ordinary_requests: HashSet<u64>,
     pub(crate) delegated_unbound: HashSet<String>,
     pub(crate) queue_streams: HashMap<String, Entity<ConversationStream>>,
     pub(crate) queue_dispatches: HashMap<String, String>,
@@ -416,6 +420,9 @@ impl AppAgentController {
     }
 
     pub(crate) fn request_active_cancel(&self, thread_id: &str) {
+        if let Some(cancel) = self.ordinary_preparing.get(thread_id) {
+            cancel.cancel();
+        }
         if let Some(active) = self.active.get(thread_id) {
             if let Some(control) = &active.computer_use {
                 control.stop();
@@ -914,7 +921,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     database_path: std::path::PathBuf,
     project_path: std::path::PathBuf,
     thread: Thread,
-    run: PendingAgentRun,
+    mut run: PendingAgentRun,
     permission_queue: vega_conversation::agent::PermissionQueue,
     user_questions: vega_conversation::agent::UserQuestionQueue,
     cancel: tokio_util::sync::CancellationToken,
@@ -933,7 +940,15 @@ pub(crate) fn run_agent_worker_with_mcp(
     queue_context: Option<PendingRunContext>,
     automation_pauses: Vec<AutomationTask>,
     replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
+    admission: ThreadAdmission,
 ) {
+    let ordinary = match &mut run {
+        PendingAgentRun::UserMessage(submission) => submission
+            .ordinary
+            .as_mut()
+            .and_then(|launch| launch.take_run()),
+        _ => None,
+    };
     let automation_claim = match &run {
         PendingAgentRun::Automation(claim) => Some(claim.as_ref().clone()),
         _ => None,
@@ -1172,7 +1187,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                     context.generation.clone(),
                     owner_credential_reader.clone(),
                     cancel.clone(),
-                ).with_credential_exceptions(credential_exceptions.clone()),
+                ).with_thread_admission(admission.clone()).with_credential_exceptions(credential_exceptions.clone()),
             ) as Arc<dyn vega_runtime::RuntimeSteeringSource>
         });
         let pending_message_id = queue_context.and_then(|context| context.message_id);
@@ -1186,6 +1201,10 @@ pub(crate) fn run_agent_worker_with_mcp(
 
                 let title_source = content.clone();
 
+                let accepted = ordinary.as_ref().and_then(|run| run.submission.snapshot().accepted);
+                let content = if let Some(accepted) = accepted {
+                    accepted.text().to_owned()
+                } else {
                 let refs = match vega_tools::reference::resolve_bounded_references(
                     &project_path,
                     &content,
@@ -1208,7 +1227,16 @@ pub(crate) fn run_agent_worker_with_mcp(
                         content
                     )
                 };
+                if let Some(ordinary) = &ordinary {
+                    ordinary.worker.bind_accepted_payload(content.clone()).map_err(|_| ())?;
+                }
+                content
+                };
                 let provider = guard_provider(make_provider()?);
+                if let Some(ordinary) = &ordinary {
+                    let model = provider.model_snapshot().ok_or(())?;
+                    ordinary.submission.raw().validate_model(&model).map_err(|_| ())?;
+                }
                 if automation_claim.is_none()
                     && thread.parent_thread_id.is_none()
                     && thread.backend == TaskBackend::Native
@@ -1286,6 +1314,8 @@ pub(crate) fn run_agent_worker_with_mcp(
                         event_sink,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
                             .with_subagent_host(subagent_host.clone())
+                            .with_thread_admission(admission.clone())
+                            .with_ordinary_submission(ordinary.clone())
                             .with_automation_claim(automation_claim.clone())
                             .with_automatic_title(automatic_title)
                             .with_turn_limit(turn_limit)
@@ -1365,6 +1395,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         Some(reasoning),
                         mcp_servers,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_thread_admission(admission.clone())
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1433,6 +1464,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         &permission_queue,
                         event_sink,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_thread_admission(admission.clone())
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1482,6 +1514,25 @@ pub(crate) fn run_agent_worker_with_mcp(
     if let Some(run) = &computer_use {
         run.control.stop();
     }
+    if let Some(ordinary) = ordinary {
+        let snapshot = ordinary.submission.snapshot();
+        if snapshot.attempts.last().is_some_and(|attempt| {
+            attempt.primary == PrimaryFact::Started
+                && !attempt.abnormal
+                && matches!(attempt.commit, CommitFact::Committed(_))
+        }) {
+            crate::ordinary_submission::retire_context(ordinary.submission.id());
+        }
+        crate::ordinary_submission::finish_root(
+            ordinary,
+            if success {
+                Ok(())
+            } else {
+                Err(SubmissionFailure::PreparationFailed)
+            },
+        );
+    }
+    drop(admission);
     let _ = sender.send(AgentUpdate::Finished {
         success,
         reference_failure,

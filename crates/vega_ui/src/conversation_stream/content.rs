@@ -247,6 +247,16 @@ impl ConversationStream {
                     message_id,
                     images,
                 } => {
+                    let identity =
+                        self.durable_entry_identity(&message_id, "user-images", Some(seq));
+                    if let Some(existing) = self
+                        .entry_identities
+                        .iter_mut()
+                        .find(|existing| existing.key == identity.key)
+                    {
+                        existing.sequence = Some(seq);
+                        continue;
+                    }
                     hydrated.push(StreamEntry::UserImages {
                         images: self.history_image_previews(images, cx),
                     });
@@ -261,6 +271,15 @@ impl ConversationStream {
                     message_id,
                     content,
                 } => {
+                    let identity = self.durable_entry_identity(&message_id, "user-text", Some(seq));
+                    if let Some(existing) = self
+                        .entry_identities
+                        .iter_mut()
+                        .find(|existing| existing.key == identity.key)
+                    {
+                        existing.sequence = Some(seq);
+                        continue;
+                    }
                     let block_id = self.user_block_seq;
                     self.user_block_seq += 1;
                     hydrated.push(StreamEntry::User {
